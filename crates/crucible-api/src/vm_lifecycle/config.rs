@@ -27,6 +27,59 @@ impl ProductionVmLifecycleConfig {
         self.completion_timeout
     }
 
+    /// Returns the terminal instruction ceiling for each QEMU process.
+    #[must_use]
+    pub const fn run_ceiling_icount(&self) -> u64 {
+        self.run_ceiling_icount
+    }
+
+    /// Returns the production lifecycle quantum budget.
+    #[must_use]
+    pub const fn quantum_budget(&self) -> u64 {
+        self.quantum_budget
+    }
+
+    /// Returns the operational host-worker ceiling for concurrent QEMU advances.
+    #[must_use]
+    pub const fn maximum_host_workers(&self) -> usize {
+        self.maximum_host_workers
+    }
+
+    /// Returns this configuration with the selected bounded host-worker ceiling.
+    ///
+    /// Lifecycle construction rejects zero or values above the production
+    /// maximum before allocating host resources. The ceiling governs host
+    /// dispatch only; it does not enter canonical scheduler state.
+    #[must_use]
+    pub const fn with_maximum_host_workers(mut self, maximum: usize) -> Self {
+        self.maximum_host_workers = maximum;
+        self
+    }
+
+    /// Returns the configured fixed scheduler rendezvous interval.
+    #[must_use]
+    pub const fn rendezvous_interval_icount(&self) -> Option<u64> {
+        self.rendezvous_interval_icount
+    }
+
+    /// Returns the observation-only coverage switch.
+    #[must_use]
+    pub const fn coverage(&self) -> QemuLaunchPluginSwitch {
+        self.coverage
+    }
+
+    /// Returns the authoritative signal artifact store, when configured.
+    #[must_use]
+    pub fn signal_artifacts(&self) -> Option<&dyn DagStore> {
+        self.signal_artifacts.as_deref()
+    }
+
+    /// Returns the authoritative World artifact store, when configured.
+    #[must_use]
+    pub fn world_artifacts(&self) -> Option<&dyn DagStore> {
+        self.world_artifacts.as_deref()
+    }
+
     /// Returns this configuration with a distinct durable recovery root.
     ///
     /// Fixed worker pools use stable per-worker children so concurrent runs of
@@ -89,16 +142,16 @@ impl ProductionVmLifecycleConfig {
             guest_assets,
             initrd: None,
             kernel_cmdline_prefix: None,
-            root_image_format: ProductionRootImageFormat::Qcow2,
+            root_image_format: QemuRootImageFormat::Qcow2,
             run_state_root: run_state_root.into(),
             run_ceiling_icount: DEFAULT_RUN_CEILING_ICOUNT,
             quantum_budget: DEFAULT_QUANTUM_BUDGET,
+            maximum_host_workers: quantum_loop::MAX_PRODUCTION_QEMU_HOST_WORKERS,
             rendezvous_interval_icount: None,
             completion_timeout: Duration::from_secs(240),
-            coverage: ProductionPluginSwitch::Off,
+            coverage: QemuLaunchPluginSwitch::Off,
             debug_gateway_executable: None,
             debug: None,
-            logical_replay_boundary: None,
             branch: None,
             continuation_branches: Vec::new(),
             signal_fault_replay: None,
@@ -108,7 +161,6 @@ impl ProductionVmLifecycleConfig {
             signal_artifacts: None,
             fault_replay: None,
             world_artifacts: None,
-            validate_guest_asset_references: false,
             bounded_scheduler_preemption: None,
         }
     }
@@ -127,15 +179,8 @@ impl ProductionVmLifecycleConfig {
         self.with_bounded_scheduler_preemption_flights(vec![evidence])
     }
 
-    /// Returns this configuration with one fresh host preemption sequence per flight.
-    ///
-    /// Cloned lifecycle factories share the finite flight queue, but every
-    /// construction consumes and claims a distinct single-use evidence handle.
-    /// Construction fails closed when more lifecycles are requested than the
-    /// supplied evidence handles. An empty vector therefore rejects the first
-    /// lifecycle construction rather than silently disabling the adversary.
     #[must_use]
-    pub fn with_bounded_scheduler_preemption_flights(
+    fn with_bounded_scheduler_preemption_flights(
         mut self,
         evidence: Vec<crucible_qemu::BoundedSchedulerPreemptionEvidence>,
     ) -> Self {
@@ -153,24 +198,6 @@ impl ProductionVmLifecycleConfig {
             .as_ref()
             .map(BoundedSchedulerPreemptionFlights::claim_next)
             .transpose()
-    }
-
-    /// Returns this configuration with an exact logical replay stop boundary.
-    ///
-    /// Thin replay starts fresh QEMU processes and stops them at the saved
-    /// logical configuration and virtual time without changing scheduler
-    /// history at that boundary.
-    #[must_use]
-    pub fn with_logical_replay_boundary(
-        mut self,
-        configuration: Configuration,
-        frontier: VirtualTime,
-    ) -> Self {
-        self.logical_replay_boundary = Some(ProductionVmLogicalReplayBoundary {
-            configuration,
-            frontier,
-        });
-        self
     }
 
     /// Returns this configuration with the materialized initrd passed to QEMU.
@@ -207,19 +234,9 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    /// Returns this configuration with fail-closed boot-asset reference validation.
-    ///
-    /// When enabled, every declared kernel and root-image content reference must
-    /// equal the BLAKE3 digest of the concrete file selected for that architecture.
-    #[must_use]
-    pub const fn with_guest_asset_reference_validation(mut self) -> Self {
-        self.validate_guest_asset_references = true;
-        self
-    }
-
     /// Returns this configuration with the immutable root image's format.
     #[must_use]
-    pub const fn with_root_image_format(mut self, format: ProductionRootImageFormat) -> Self {
+    pub const fn with_root_image_format(mut self, format: QemuRootImageFormat) -> Self {
         self.root_image_format = format;
         self
     }
@@ -257,7 +274,7 @@ impl ProductionVmLifecycleConfig {
 
     /// Returns this configuration with observation-only basic-block coverage.
     #[must_use]
-    pub const fn with_coverage(mut self, coverage: ProductionPluginSwitch) -> Self {
+    pub const fn with_coverage(mut self, coverage: QemuLaunchPluginSwitch) -> Self {
         self.coverage = coverage;
         self
     }
@@ -273,35 +290,8 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    /// Returns this configuration with one mediated QEMU gdbstub channel.
-    ///
-    /// `node` selects a World VM by canonical name. When omitted, the first VM
-    /// owns the debugger channel. The operator listener accepts the same stable
-    /// address syntax as [`GdbListen`], including `127.0.0.1:0`.
     #[must_use]
-    pub fn with_debug_gdbstub(
-        mut self,
-        node: Option<String>,
-        operator_listen: impl Into<String>,
-    ) -> Self {
-        self.debug = Some(ProductionVmDebugConfig {
-            node,
-            operator_listen: operator_listen.into(),
-            all_nodes: false,
-            allow_requested_loopback_listen: false,
-        });
-        self
-    }
-
-    /// Returns this configuration with mediated gdbstub backends for every node.
-    ///
-    /// The operator listener is still created lazily for one requested node at
-    /// a time. A caller may select any loopback listener; the configured value
-    /// remains the default used by clients that do not request one explicitly.
-    /// This mode is intended for a long-lived daemon whose submitted scenarios
-    /// are not known when the server configuration is constructed.
-    #[must_use]
-    pub fn with_debug_gdbstubs_for_all_nodes(mut self, operator_listen: impl Into<String>) -> Self {
+    fn with_debug_gdbstubs_for_all_nodes(mut self, operator_listen: impl Into<String>) -> Self {
         self.debug = Some(ProductionVmDebugConfig {
             node: None,
             operator_listen: operator_listen.into(),

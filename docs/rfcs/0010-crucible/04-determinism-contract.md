@@ -1,7 +1,7 @@
 # 04 — The Determinism Contract
 
 This file is the spine of the RFC. Everything else — the execution model, the
-temporal graph, the scheduler, the QEMU patch series, the test harness — exists
+temporal graph, the scheduler, the atomic QEMU patch, the test harness — exists
 to *establish*, *exploit*, or *defend* the contract stated here. The headline
 goal [G-1] and the invariants [INV-1], [INV-4], [INV-10] are made precise in
 this file; the rest of the spec satisfies them.
@@ -158,7 +158,7 @@ the cross-node machinery.
 
 Contract A is entirely about *removing entropy from inside one VM*: it is the
 union of every elimination in §4.6. It says nothing about *when* inputs arrive —
-it takes their arrival icounts as given. It is the L0/L2 + patch-series property.
+it takes their arrival icounts as given. It is the L0/L2 + atomic-patch property.
 
 ### Contract B — injection determinism
 
@@ -276,8 +276,8 @@ computing a frame versus when process B is ready to receive it — never enters.
 - **[DET-15]** Determinism MUST be achieved entirely host-side. Crucible MUST
   NOT require modifications to the guest kernel, the guest userspace, or the
   on-disk image to obtain [DET-1] (this is [INV-5] / [G-2]). All elimination
-  mechanisms in §4.6 MUST act through launch-time configuration, the QEMU patch
-  series, the in-VM plugin, or seeded firmware/cmdline values — never through
+  mechanisms in §4.6 MUST act through launch-time configuration, the atomic QEMU
+  patch, the in-VM plugin, or seeded firmware/cmdline values — never through
   content placed inside the guest. *Gate:* `gate:any-guest`. *Spec:* §4.5,
   forward-ref 16.
 
@@ -304,7 +304,7 @@ boundary has been pinned from outside.
 This is the exhaustive list. Each row names a source, says how it leaks into `S`
 or `T`, states the elimination mechanism, and classifies it as **launch** (a
 QEMU flag or cmdline value), **plugin** (logic in `crucible-qemu-plugin`), or
-**patch** (a change in the AOS QEMU patch series, 11). A source is *eliminated*
+**patch** (a change in the AOS atomic QEMU patch, 11). A source is *eliminated*
 when it can no longer cause two runs of fixed `(image, cmdline, seed, I)` to
 differ.
 
@@ -330,7 +330,7 @@ differ.
 | E17 | Input devices (keyboard, mouse, serial) | Asynchronous human/host input perturbs the guest | No interactive input during a run; all input arrives via the injection contract (4.4) with a delivery icount | launch |
 | E18 | Network arrival timing | Frames delivered "as they arrive" race producer vs consumer | Contract B (4.4): every frame carries a delivery icount; the scheduler assigns it; transport timing is irrelevant | plugin + patch |
 | E19 | Block / 9p I/O completion timing | Disk/filesystem completions land at host-timing-dependent points | I/O sub-nodes (15) are first-class scheduling nodes with deterministic completion icounts; completions obey the injection contract | plugin + patch |
-| E20 | Snapshot/restore state loss | `loadvm` that drops icount or TCG state diverges from a fresh boot | Snapshot must preserve icount, bias, and TCG/device state completely; verified by the replay oracle. Completeness is a SPIKE (4.9) | patch |
+| E20 | Snapshot/restore state loss | An incomplete descriptor restore drops icount or TCG state and diverges from a fresh replay | Version-nine device and direct-plus-delta RAM descriptors must preserve icount, bias, and TCG/device state completely; verified by the replay oracle | patch |
 | E21 | RR vCPU-switch quantum | The granularity and order in which vCPUs are switched on the single host thread determines the interleaving | Fixed content-addressed `rr_switch_quantum` in node-icount units, with a fixed ascending vCPU rotation; never QEMU's adaptive `rr_quantum`, never realtime | launch + patch |
 | E22 | Inter-vCPU IPI / cross-CPU interrupt timing | A vCPU-to-vCPU IPI taken one instruction earlier/later on the target forks the path | The IPI becomes visible to the target at a deterministic node-icount = sender's icount + a fixed modeled IPI latency, delivered at the next RR switch boundary; never at a host-timing-dependent point | patch |
 | E23 | Per-vCPU TSC / RNG | Each vCPU's timestamp counter or entropy reads could diverge per vCPU | Every per-vCPU TSC/RNG value is derived from the node icount, and a uniform `-cpu` model is pinned across ALL vCPUs (no per-vCPU feature variation), so per-vCPU reads are pure functions of node icount | launch |
@@ -344,7 +344,7 @@ differ.
 
 - **[DET-19]** Hardware entropy instructions (E1) MUST NOT reach the host: either
   the configured `-cpu` model MUST NOT advertise `RDRAND`/`RDSEED`, or the patch
-  series MUST emulate them from the seeded stream. A run in which the guest
+  atomic patch MUST emulate them from the seeded stream. A run in which the guest
   obtains true hardware entropy is a contract violation. *Gate:*
   `gate:layer0-determinism`. *Spec:* §4.6 (E1), forward-ref 11.
 
@@ -355,7 +355,7 @@ differ.
 
 - **[DET-21]** All entropy consumed by *QEMU itself* (device MACs, IDs, internal
   PRNG draws — E9) MUST be seeded deterministically from the run seed via the
-  patch series, so that device state in `T` is reproducible, not only guest
+  atomic patch, so that device state in `T` is reproducible, not only guest
   memory. *Gate:* `gate:layer0-determinism`. *Spec:* §4.6 (E9), forward-ref 11.
 
 - **[DET-22]** Guest entropy (E8) MUST be seeded as a pure function of the
@@ -371,8 +371,8 @@ differ.
   reject a launch configuration that requests MTTCG or an unpinned switch
   quantum. *Gate:* `gate:layer0-determinism`. *Spec:* §4.6 (E13, E21).
 
-The patch-series mechanisms (E2, E3, E9, E14, E18, E19, E20) are specified in
-[`11-qemu-patches.md`](11-qemu-patches.md); each patch MUST be inert unless
+The atomic-patch mechanisms (E2, E3, E9, E14, E18, E19, E20) are specified in
+[`11-qemu-patches.md`](11-qemu-patches.md); the patch MUST be inert unless
 simulation mode is active ([INV-7], 4.10).
 
 ## 4.7 The single seeded decision source for *intended* randomness
@@ -482,10 +482,12 @@ A full bit-for-bit comparison of `T` at every instruction is too expensive to ru
 continuously. The fingerprint is the cheap divergence detector that approximates
 it.
 
-- **[DET-29]** Each VM MUST expose an **execution fingerprint**: at a fixed
-  periodic icount cadence (and at every cross-node interaction point), a digest
-  combining the current icount with a hash of architectural registers and a hash
-  (or rolling hash) of guest memory and device state. For a multi-vCPU node, the
+- **[DET-29]** Each VM MUST expose an **execution fingerprint** when the host
+  submits an authenticated on-demand request naming an exact aggregate icount:
+  a digest combining that icount with a hash of architectural registers and a
+  hash (or rolling hash) of guest memory and device state. The worker MUST
+  acknowledge the matching request generation after publishing the sample. For
+  a multi-vCPU node, the
   fingerprint MUST include *every* vCPU's register file and the RR scheduler
   cursor (the current vCPU, the quantum-remaining, and the per-vCPU retired
   instruction counts), all keyed by the node's aggregate icount. Per-vCPU state
@@ -502,10 +504,11 @@ it.
   `gate:single-vm-fingerprint`, `gate:divergence-bisect`. *Spec:* §4.8,
   forward-ref 24.
 
-- **[DET-31]** The fingerprint cadence and the set of state included MUST be
-  fixed and content-addressed alongside the scenario, so that two builds compare
-  the *same* digest over the *same* state; changing the fingerprint definition is
-  a versioned change. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §4.8.
+- **[DET-31]** The authenticated request contract and the set of state included
+  MUST be fixed and content-addressed alongside the scenario, so that two builds
+  compare the *same* digest over the *same* state at the same requested
+  coordinate; changing the fingerprint definition is a versioned change. *Gate:*
+  `gate:single-vm-fingerprint`. *Spec:* §4.8.
 
 The fingerprint is the operational form of [DET-1]: [DET-1] says `T` is
 bit-identical; the fingerprint is a deterministic, cheap-to-compare *witness* of
@@ -519,12 +522,12 @@ structural risks in the mechanisms themselves. Each is called out, assigned a
 disposition, and (where unresolved) flagged as a spike forward-referencing
 [`30-risks-spikes.md`](30-risks-spikes.md).
 
-- **[DET-32]** **Snapshot/restore completeness (spike).** Fork and fast-resume
-  rely on `loadvm` reproducing a state bit-identical to a fresh replay to the
-  same icount. It MUST be verified that the snapshot captures and restores the
-  icount, the icount bias, the full TCG/device/timer state, and the plugin's
-  time-control state, such that the replay oracle ([INV-2]) holds for a restored
-  fat checkpoint. Until verified, snapshot-based resume is gated behind a spike.
+- **[DET-32]** **Descriptor-restore completeness.** Fork and fast-resume rely on
+  version-nine descriptor restore reproducing a state bit-identical to a fresh
+  replay to the same icount. The snapshot MUST capture and restore the icount,
+  icount bias, full TCG/device/timer state, guest RAM, and plugin time-control
+  state such that the replay oracle ([INV-2]) holds for a restored fat
+  checkpoint. Monolithic VMState carries no runtime authority.
   *Gate:* `gate:replay-oracle`. *Spec:* §4.9 (E20), forward-ref 30.
 
 - **[DET-33]** **KASLR/ASLR reproducibility (spike, resolved).** S6/T-RISK-6
@@ -544,7 +547,7 @@ disposition, and (where unresolved) flagged as a spike forward-referencing
   *Gate:* `gate:layer1-injection`. *Spec:* §4.9, forward-ref 08, 13.
 
 - **[DET-35]** **QEMU version/build drift.** Determinism is only stable for a
-  *fixed* QEMU build: TCG codegen, device models, and the patch series all affect
+  *fixed* QEMU build: TCG codegen, device models, and the atomic patch all affect
   `T`. The patched QEMU MUST ship as a pinned, from-source AOS package (G-7); the
   build identity MUST be part of the reproduction artifact so a run reproduces
   only against the build that produced it, and a build change is a versioned,
@@ -559,9 +562,9 @@ disposition, and (where unresolved) flagged as a spike forward-referencing
   upstream ([INV-7]); a determinism mechanism MUST NOT change non-sim behavior.
   *Gate:* `gate:qemu-inert`. *Spec:* §4.10, forward-ref 11.
 
-- **[DET-37]** Each patch MUST carry a micro-test demonstrating both that it
-  *takes effect* in sim mode (some entropy source is eliminated) and that it is
-  *inert* out of sim mode (upstream behavior unchanged). *Gate:* `gate:qemu-inert`.
+- **[DET-37]** Each patch-class capability MUST have a component microtest that
+  demonstrates its sim-mode effect. The atomic patch MUST also have a
+  pristine-QEMU attribution negative and MUST be inert out of sim mode. *Gate:* `gate:qemu-inert`.
   *Spec:* §4.10, forward-ref 11.
 
 ## 4.11 Verification: run-twice-and-diff under adversarial conditions
@@ -678,21 +681,18 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-7** Implement Contract A in isolation: a single-VM driver that
   feeds an icount-stamped recorded input list `I` and runs `run` with no
   scheduler/transport. — satisfies [DET-5], [DET-1]; spec §4.2.1.
-- [x] **T-DET-8** Implement the execution fingerprint (periodic icount +
+- [x] **T-DET-8** Implement the execution fingerprint (requested boundary icount +
   register/memory/device digest), computed black-box from the host, with a fixed
   content-addressed definition. — satisfies [DET-29], [DET-31], [DET-17]; spec
   §4.8.
-  - Completed by `checks.crucible.phase2.qemuLivePluginFingerprint`. The
-    production `PluginFingerprintRunner` boots the fixed guest twice with the
-    Rust plugin as the sole fingerprint authority and samples SHA-256
-    register-file, writable-RAM, and serialized non-RAM VMState material at
-    periodic boundaries, an actual shared-memory frame delivery, and an
-    acknowledged exact-icount fault activation. The definition binds cadence,
-    event plan, topology, RR quantum, and QEMU/plugin build identities. The
-    negative-control pass introduces a real second-launch divergence, refines it
-    by fresh-run exact-icount probes, terminally exports complete registers,
-    writable RAM, and VMState from both live QEMU processes, and validates the
-    content-addressed structured dump.
+  - The production flight defines and captures the exact
+    `VOLATILE | DEVICE | CONTROL` projection, runs a fixed four-vCPU real-QEMU
+    configuration in reference and host-preempted variants, and compares the
+    exact fingerprint stream. The comparator rejects the first differing
+    canonical sample and component. Adjacent authenticated samples at aggregate
+    icounts 2,000,000 and 2,000,001 retain the exact RR owner and cursor,
+    require the owning vCPU register digest and execution fingerprint to change,
+    and give the comparator a one-instruction first-mismatch window.
 - [x] **T-DET-9** Implement `gate:single-vm-fingerprint`: run-twice-and-diff a
   single VM, asserting identical fingerprint sequences. — satisfies [DET-1],
   [DET-2], [DET-30]; spec §4.8, §4.11.
@@ -759,17 +759,16 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   proving black-box operation remains functional when that optional host/plugin
   channel is enabled but unused. This completion does not claim live any-guest
   white-box-on QEMU fingerprint equivalence.
-- [x] **T-DET-23** Implement `gate:qemu-inert`: prove every patch is inert out of
-  sim mode (production QEMU behaviorally identical to upstream) and effective in
-  sim mode, with a per-patch micro-test. — satisfies [DET-36], [DET-37], routes
+- [x] **T-DET-23** Implement `gate:qemu-inert`: prove the atomic integration
+  patch is inert out of sim mode (production QEMU behaviorally identical to
+  upstream) and effective in sim mode, with focused component microtests. — satisfies [DET-36], [DET-37], routes
   [INV-7]; spec §4.10.
   - Completed by `checks.crucible.phase2.gates.qemuInert` plus
     `checks.crucible.phase2.gates.patchMicrotests`. The former compares the
     unpatched pinned QEMU with patched sim-off QEMU over raw boot serial,
     device-I/O execution output, QMP, migration, and snapshot/restore surfaces;
-    the latter gives every one of the 86 carried patches prefix provenance and
-    exactly one live drop-one attribution. The aggregate rejects composition and
-    structural fallback classifications. The async virtio-rng delivery-timing
+    the latter exercises every capability task and provides one pristine-QEMU
+    attribution negative for the atomic patch. The async virtio-rng delivery-timing
     residual is closed structurally by `phase2-qemu-rng-delivery-inert.nix`,
     which proves the sim-off delivery path byte-identical to the reference.
 - [x] **T-DET-24** Pin the QEMU build identity into the reproduction artifact and
@@ -777,8 +776,8 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   satisfies [DET-35]; spec §4.9.
   - Completed by `checks.crucible.phase2.qemuPatchRegeneration`: the patched QEMU
     package now emits a manifest-derived `qemu_build_id` with the QEMU version,
-    source hash, qemu.nix hash, configure flag hash, patch count,
-    patch-series hash, tracked-branch bundle/material hashes, and sim capability
+    source hash, qemu.nix hash, configure flag hash, atomic-patch hash,
+    tracked-commit bundle/material hashes, and sim capability
     flags. The gate embeds that identity in a reproduction-artifact-shaped fixture
     and verifies both a matching artifact and a changed-build negative control, so
     replay is tied to the exact QEMU build that produced the run.
@@ -793,19 +792,21 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     injection, varied worker counts, and a role-aware producer/consumer skew
     runner. The check runs the focused harness regression tests and the
     model-side single-VM fingerprint adversarial matrix through the shared
-    runner while leaving the later `gate:adversarial-determinism` placeholder
-    untouched.
-- [ ] **T-DET-26** Implement `gate:e2e-determinism`: a representative multi-VM
+    runner. The native form of this profile matrix is exercised by
+    `gate:e2e-determinism`.
+- [x] **T-DET-26** Implement `gate:e2e-determinism`: a representative multi-VM
   fault-injected scenario runs bit-identically under adversarial conditions and
   reproduces from its self-contained artifact. — satisfies [DET-40], [DET-4],
   [G-1]; spec §4.11.
-  - T-DET-26 remains open: `checks.crucible.phase4.gates.e2eDeterminism.rawGate`
-    and `checks.crucible.phase7.gates.e2eDeterminism.rawGate` cover scheduler
-    and mock artifact semantics. `checks.fleet.crucible-e2e-determinism` executes each
-    reduction through the packaged QEMU/plugin lifecycle and compares non-empty
-    live fingerprint and event streams under observer scheduling perturbations.
-    The required artifact replay on a different machine profile is not yet an
-    executed acceptance check.
+  - Completed by `checks.crucible.phase4.gates.e2eDeterminism.rawGate`: the
+    representative three-VM workload executes through the packaged QEMU/plugin
+    lifecycle under quiet one-core, randomized-worker two-core, and I/O-stalled
+    four-core host profiles. The gate requires byte-identical canonical event
+    logs, non-empty fingerprint streams, and reproduction artifacts across all
+    profiles, then replays the one-core artifact under the preempted four-core
+    profile from an empty content store. It retains every JSONL transcript,
+    profile description, artifact digest, canonical comparison, replay log, and
+    package/QEMU/plugin/kernel identity manifest.
 - [x] **T-DET-27** Add the `gate:replay-oracle` reproduction-artifact round-trip:
   re-run from `(seed, scenario, schedule, build identity)` and assert
   fingerprint and oracle equality. — satisfies [DET-28], [DET-41], [DET-40];
@@ -859,22 +860,18 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     boundary, and emits the resulting interrupt through the commanded-icount
     preemption path rather than a realtime callback.
   - Live per-vCPU uniformity evidence is provided by
-    `checks.crucible.phase2.qemuLivePluginFingerprintSmp` (frozen `-smp 4` pin,
-    corroborated at `-smp 2`): every vCPU's register-file digest is sampled and is
-    byte-identical across two runs (the second under bounded scheduler preemption) plus a restart
-    probe, so the uniform `-cpu` pin and node-icount-derived per-vCPU TSC/RNG
-    (E23) produce a deterministic, uniform per-vCPU architectural state.
-    Deterministic secondary-vCPU SIPI/INIT bringup with no runtime hotplug (E24)
-    is exercised by the same live `-smp 4` boot.
-  - Live E22 closure is provided by
-    `checks.crucible.phase2.qemuLivePluginPreemption`: at `-smp 2`, the gate
-    samples the authoritative sender vCPU and RR quantum, adds the fixed modeled
-    node-icount IPI latency, rounds the earliest delivery to the next RR switch
-    with the same `crucible_protocol::deterministic_ipi_delivery_icount` function
-    used by the plugin planner, and commands delivery to the other vCPU through
-    the ABI-v5 mailbox and `qemu_plugin_inject_preemption`. The exact delivery,
-    mailbox acknowledgement, terminal fingerprint, and host-observable schedule
-    repeat byte-identically under bounded scheduler preemption and match `SimDouble`.
+    `checks.crucible.phase2.qemuRrQuantumIcount` and
+    `checks.crucible.phase0.s11MultiVcpuFingerprint`: the current multi-vCPU
+    workload pins the RR cursor and architectural projection across repeated
+    runs under bounded scheduler preemption.
+  - E22 command-path closure is provided by
+    `checks.crucible.phase2.qemuPluginPreemption` and
+    `checks.crucible.phase2.qemuPreemptionInject`: the plugin contract samples
+    the authoritative sender vCPU and RR quantum, applies the fixed modeled
+    node-icount IPI latency, and rounds to the next RR switch with
+    `crucible_protocol::deterministic_ipi_delivery_icount`; the exact-source
+    QEMU microtest proves that the resulting mailbox command reaches
+    `qemu_plugin_inject_preemption` and rejects an out-of-window coordinate.
 - [x] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
   name-hash fork, each draw a recorded `Decision` delivered under the injection
@@ -886,7 +883,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     `checks.crucible.phase1.gates.layer0Determinism`: `DecisionRecorder` owns
     the single seeded `DecisionRng`, forks streams by the canonical
     `(node, stream-name)` tag, records the raw `RngDraw` plus
-    `Decision::AppRandom`, and rejects ambient engine entropy APIs. The optional
+    `BackendRngEvidence`, and rejects ambient engine entropy APIs. The optional
     white-box `random_request` doorbell requires white-box opt-in, replies at the
     trap icount through the host-to-guest injection gate, and its zero-request
     path records no decisions and writes no replies, preserving byte identity.
@@ -900,5 +897,5 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     stream, writes the reply at the trap icount, and sends the typed causal
     record through shmem. The host independently reconstructs the value with
     `DecisionRecorder`, rejects any mismatch, and records the authoritative
-    `RngDraw` plus `Decision::AppRandom`. The same gate's off/unused legs retain
+    `RngDraw` plus `BackendRngEvidence`. The same gate's off/unused legs retain
     identical fingerprints and zero app-random decisions.

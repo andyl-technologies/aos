@@ -7,52 +7,7 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    /// Durably reserves the exact observation as an in-progress publication root.
-    ///
-    /// The operational ledger entry is established before immutable candidate
-    /// bytes are written. GC therefore treats the observation closure as an
-    /// in-progress root even across a daemon crash. The execution-model worker
-    /// is considered physically stopped when this actor method is called.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalExecutorError`] for an invalid execution token, ledger
-    /// failure, or a conflicting observation.
-    pub fn stage_observation_publication(
-        &mut self,
-        queued: &QueuedAttempt,
-        observation: ObservationId,
-    ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
-        self.stage_observation_publication_with_candidate(queued, observation, None)
-    }
-
-    /// Durably reserves an observation and finding candidate before publication.
-    ///
-    /// Both deterministic identities enter the same assignment-ledger state
-    /// transition. The caller must compute and preflight them without writes,
-    /// invoke this method, and only then publish either immutable closure. A
-    /// crash therefore leaves the exact missing or complete candidate root for
-    /// bounded restart recovery, while destructive GC fails closed on an
-    /// incomplete closure.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LocalExecutorError`] for an invalid execution token, ledger
-    /// failure, or a conflicting observation or finding candidate.
-    pub fn stage_observation_and_finding_candidate_publication(
-        &mut self,
-        queued: &QueuedAttempt,
-        observation: ObservationId,
-        finding_candidate: crucible_campaign::FindingCandidateBundleId,
-    ) -> Result<ObservationPublicationOutcome, LocalExecutorError<L::Error>> {
-        self.stage_observation_publication_with_candidate(
-            queued,
-            observation,
-            Some(finding_candidate),
-        )
-    }
-
-    pub(super) fn stage_observation_publication_with_candidate(
+    pub(super) fn stage_observation_publication(
         &mut self,
         queued: &QueuedAttempt,
         observation: ObservationId,
@@ -227,7 +182,7 @@ where
     /// Returns [`LocalExecutorError::ConflictingCompletion`] when the current
     /// execution retains a different observation or finding candidate. Other
     /// ledger and semantic validation failures are returned unchanged.
-    pub fn stage_and_reconcile_completion_with_finding_candidate(
+    pub(crate) fn stage_and_reconcile_completion_with_finding_candidate(
         &mut self,
         queued: &QueuedAttempt,
         observation: ObservationId,
@@ -413,6 +368,65 @@ where
                 }
                 Err(error)
             }
+        }
+    }
+}
+
+/// Establishes the durable publication root with a short supervisor CAS.
+///
+/// # Errors
+///
+/// Returns [`LocalExecutorError`] for stale, conflicting, or unavailable
+/// operational ledger state.
+pub fn stage_prepared_attempt_result<L, V>(
+    supervisor: &mut LocalExecutorSupervisor<L, V>,
+    prepared: PreparedAttemptResult,
+) -> Result<AttemptResultStageOutcome, AttemptResultStagingError<LocalExecutorError<L::Error>>>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let observation = prepared.observation();
+    let stage_result = supervisor.stage_observation_publication(
+        prepared.queued(),
+        observation,
+        prepared.finding_candidate(),
+    );
+    let stage = match stage_result {
+        Ok(stage) => stage,
+        Err(source) => {
+            return Err(AttemptResultStagingError {
+                prepared: Box::new(prepared),
+                source,
+            });
+        }
+    };
+    match stage {
+        ObservationPublicationOutcome::Staged | ObservationPublicationOutcome::AlreadyStaged => Ok(
+            AttemptResultStageOutcome::Publish(Box::new(StagedAttemptResult::new(prepared))),
+        ),
+        ObservationPublicationOutcome::Canceled => Ok(AttemptResultStageOutcome::Finished {
+            prepared: Box::new(prepared),
+            outcome: AttemptWorkerReconcileOutcome::Discarded {
+                observation,
+                completion: CompletionOutcome::Canceled,
+            },
+        }),
+        ObservationPublicationOutcome::NotCurrent => Ok(AttemptResultStageOutcome::Finished {
+            prepared: Box::new(prepared),
+            outcome: AttemptWorkerReconcileOutcome::Discarded {
+                observation,
+                completion: CompletionOutcome::NotCurrent,
+            },
+        }),
+        ObservationPublicationOutcome::AlreadyCompleted => {
+            Ok(AttemptResultStageOutcome::Finished {
+                prepared: Box::new(prepared),
+                outcome: AttemptWorkerReconcileOutcome::Reconciled {
+                    observation,
+                    completion: CompletionOutcome::AlreadyCompleted,
+                },
+            })
         }
     }
 }

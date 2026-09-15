@@ -32,26 +32,21 @@ const SOCKET_STAGING_DIRECTORY_NAME: &str = ".crucible-socket-staging";
 #[cfg(target_os = "linux")]
 pub(crate) struct ExpectedPeerUnixListener {
     listener: UnixListener,
-    expected_credentials: Option<(u32, u32)>,
+    expected_credentials: (u32, u32),
 }
 
 #[cfg(target_os = "linux")]
 impl ExpectedPeerUnixListener {
-    /// Wraps a listener for an uncontained QEMU process.
-    pub(crate) fn for_process(listener: UnixListener) -> io::Result<Self> {
-        Self::new(listener, None)
-    }
-
     /// Wraps a listener for QEMU running as one admitted child identity.
     pub(crate) fn for_child(
         listener: UnixListener,
         user_id: u32,
         group_id: u32,
     ) -> io::Result<Self> {
-        Self::new(listener, Some((user_id, group_id)))
+        Self::new(listener, (user_id, group_id))
     }
 
-    fn new(listener: UnixListener, expected_credentials: Option<(u32, u32)>) -> io::Result<Self> {
+    fn new(listener: UnixListener, expected_credentials: (u32, u32)) -> io::Result<Self> {
         // The caller accepts only after QEMU's plugin setup ACK, which is
         // emitted after chardev realization. Nonblocking mode converts any
         // violated ordering invariant into a launch failure instead of a hang.
@@ -67,9 +62,8 @@ impl ExpectedPeerUnixListener {
         let (stream, _address) = self.listener.accept()?;
         let peer = rustix::net::sockopt::socket_peercred(&stream)?;
         let process_matches = u32::try_from(peer.pid.as_raw_pid()).ok() == Some(process_id);
-        let credentials_match = self.expected_credentials.is_none_or(|(user_id, group_id)| {
-            peer.uid.as_raw() == user_id && peer.gid.as_raw() == group_id
-        });
+        let (user_id, group_id) = self.expected_credentials;
+        let credentials_match = peer.uid.as_raw() == user_id && peer.gid.as_raw() == group_id;
         if !process_matches || !credentials_match {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -87,7 +81,7 @@ pub(crate) fn connect(path: &Path) -> io::Result<UnixStream> {
 }
 
 /// Binds a filesystem Unix socket without embedding a long parent path.
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn bind(path: &Path) -> io::Result<UnixListener> {
     let resolved = ResolvedSocketPath::new(path)?;
     UnixListener::bind(&resolved.path)
@@ -504,7 +498,8 @@ mod tests {
         let root = tempfile::tempdir()?;
         let socket = root.path().join("activation.sock");
         let listener = UnixListener::bind(&socket)?;
-        let listener = ExpectedPeerUnixListener::for_process(listener)?;
+        let listener =
+            ExpectedPeerUnixListener::for_child(listener, geteuid().as_raw(), getegid().as_raw())?;
 
         let absent = match listener.accept_from(std::process::id()) {
             Ok(_stream) => panic!("absent QEMU connection must not succeed"),

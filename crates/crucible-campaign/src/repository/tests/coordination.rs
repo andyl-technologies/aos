@@ -133,34 +133,42 @@ impl crate::CampaignPrincipalAuthorizer for RecordAndDenyDeriveTarget {
 
 fn policy_with_seed(policy: &CampaignPolicy, seed: [u8; 32]) -> CampaignPolicy {
     CampaignPolicy::new(
-        policy.scenario(),
-        CampaignSeed::from_bytes(seed),
-        policy.mode(),
-        policy.explorer().clone(),
-        policy.choice_policies().clone(),
-        policy.objectives().clone(),
-        policy.guidance().clone(),
-        policy.stop_conditions().clone(),
-        policy.fairness(),
-        policy.retention(),
-        policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            policy.scenario(),
+            CampaignSeed::from_bytes(seed),
+            policy.mode(),
+            policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            policy.choice_policies().clone(),
+            policy.objectives().clone(),
+            policy.guidance().clone(),
+            policy.stop_conditions().clone(),
+            policy.fairness(),
+            policy.retention(),
+            policy.admits_scenario_defaults(),
+        ),
     )
     .expect("policy with changed seed")
 }
 
 fn policy_with_mode(policy: &CampaignPolicy, mode: CampaignMode) -> CampaignPolicy {
     CampaignPolicy::new(
-        policy.scenario(),
-        policy.campaign_seed(),
-        mode,
-        policy.explorer().clone(),
-        policy.choice_policies().clone(),
-        policy.objectives().clone(),
-        policy.guidance().clone(),
-        policy.stop_conditions().clone(),
-        policy.fairness(),
-        policy.retention(),
-        policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            policy.scenario(),
+            policy.campaign_seed(),
+            mode,
+            policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            policy.choice_policies().clone(),
+            policy.objectives().clone(),
+            policy.guidance().clone(),
+            policy.stop_conditions().clone(),
+            policy.fairness(),
+            policy.retention(),
+            policy.admits_scenario_defaults(),
+        ),
     )
     .expect("policy with changed mode")
 }
@@ -295,8 +303,11 @@ fn campaign_service_creation_replays_the_exact_genesis_after_later_mutation() {
 #[test]
 fn campaign_service_streams_the_imported_generator_closure_before_writes() {
     let (repository, lineage, _, blobs) = counted_fixture();
-    let generator =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator");
+    let generator = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("generator");
     let generator_id = repository
         .publish_generator(&generator)
         .expect("import generator");
@@ -635,13 +646,15 @@ fn streaming_to_strict_derivation_reconstructs_inherited_completion_holes() {
     );
     let third_observation = Observation::new(
         third.attempt,
-        first_observation.child(),
-        first_observation.child_content(),
-        third_path.id().expect("third path ID"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        first_observation.measurements(),
-        first_observation.properties(),
-        first_observation.coverage(),
+        Observation::outcome(
+            first_observation.child(),
+            first_observation.child_content(),
+            third_path.id().expect("third path ID"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            first_observation.measurements(),
+            first_observation.properties(),
+            first_observation.coverage(),
+        ),
         BTreeSet::from([third_request.opportunity()]),
     )
     .expect("third observation");
@@ -1141,7 +1154,7 @@ fn derivation_authorizes_both_names_before_repository_access() {
         crate::CampaignName::new("missing-source").expect("source name"),
         CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            2,
+            3,
             b"missing-source-snapshot",
         ))
         .expect("source snapshot"),
@@ -1461,17 +1474,21 @@ fn policy_activation_cannot_change_campaign_reproducibility_mode() {
         .create("policy-mode", &lineage, &policy, &BTreeMap::new())
         .expect("create");
     let streaming = CampaignPolicy::new(
-        policy.scenario(),
-        policy.campaign_seed(),
-        CampaignMode::Streaming,
-        policy.explorer().clone(),
-        policy.choice_policies().clone(),
-        policy.objectives().clone(),
-        policy.guidance().clone(),
-        policy.stop_conditions().clone(),
-        policy.fairness(),
-        policy.retention(),
-        policy.admits_scenario_defaults(),
+        CampaignPolicy::identity(
+            policy.scenario(),
+            policy.campaign_seed(),
+            CampaignMode::Streaming,
+            policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            policy.choice_policies().clone(),
+            policy.objectives().clone(),
+            policy.guidance().clone(),
+            policy.stop_conditions().clone(),
+            policy.fairness(),
+            policy.retention(),
+            policy.admits_scenario_defaults(),
+        ),
     )
     .expect("streaming policy");
     let streaming = CampaignPolicyId::from_content_id(
@@ -1531,6 +1548,7 @@ fn policy_activation_cannot_change_campaign_reproducibility_mode() {
         streaming,
         roots,
         CampaignFactId::from_content_id(control_content).expect("control fact id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged mode-change successor");
     let forged_content = repository
@@ -1711,6 +1729,7 @@ fn choice_discovery_is_exact_replayable_and_required_before_branching() {
             .snapshot
             .transition()
             .expect("discovery transition"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged discovery successor");
     let forged_content = repository
@@ -1752,10 +1771,12 @@ fn choice_authority_is_scoped_to_the_exact_parent_branch_point() {
         .load_choice_opportunity(request.opportunity())
         .expect("load opportunity");
     let cross_parent = BranchRequest::new(
-        opportunity.branch_point_id(observation.child()),
-        observation.child_content(),
-        request.opportunity(),
-        request.domain(),
+        BranchRequest::identity(
+            opportunity.branch_point_id(observation.child()),
+            observation.child_content(),
+            request.opportunity(),
+            request.domain(),
+        ),
         request.source().clone(),
         request.cause(),
         request.budget(),
@@ -1780,128 +1801,6 @@ fn choice_authority_is_scoped_to_the_exact_parent_branch_point() {
         discovered.new_snapshot
     );
     assert_ne!(genesis, observed.new_snapshot);
-}
-
-#[test]
-fn legacy_mutations_never_create_partial_choice_or_frontier_indexes() {
-    let (repository, lineage, policy) = fixture();
-    let lineage_content = repository.put_lineage(&lineage).expect("lineage");
-    let policy_content = repository.put_policy(&policy).expect("policy");
-    let empty = repository.merkle.empty().expect("empty root").content_id();
-    let graph = repository
-        .merkle
-        .insert(
-            empty,
-            map_key_hash("graph.configuration", lineage.genesis().as_hash()),
-            lineage.genesis_content().content_id(),
-        )
-        .expect("legacy graph");
-    let corpus = repository
-        .merkle
-        .insert(
-            empty,
-            map_key_hash("corpus.configuration", lineage.genesis().as_hash()),
-            lineage.genesis_content().content_id(),
-        )
-        .expect("legacy corpus");
-    let legacy = CampaignSnapshot::genesis(
-        CampaignLineageId::from_content_id(lineage_content).expect("lineage id"),
-        CampaignPolicyId::from_content_id(policy_content).expect("policy id"),
-        crate::CampaignRoots {
-            graph: graph.content_id(),
-            exploration: empty,
-            observations: empty,
-            corpus: corpus.content_id(),
-            coverage: empty,
-            findings: empty,
-            pins: empty,
-            accounting: empty,
-            coordination: empty,
-        },
-    )
-    .expect("legacy snapshot");
-    let legacy_content = repository
-        .put_snapshot(&legacy)
-        .expect("legacy snapshot body");
-    repository
-        .refs
-        .compare_exchange(
-            &campaign_ref("legacy-choice-index").expect("campaign ref"),
-            None,
-            legacy_content,
-        )
-        .expect("publish legacy head");
-    let legacy_id =
-        CampaignSnapshotId::from_content_id(legacy_content).expect("legacy snapshot id");
-    repository
-        .head("legacy-choice-index")
-        .expect("authenticate legacy head");
-
-    let request = branch_request(
-        &repository,
-        &lineage,
-        lineage.genesis_content(),
-        lineage.genesis(),
-        "legacy-choice",
-    );
-    let discovered = repository
-        .discover_choice_opportunity(
-            "legacy-choice-index",
-            legacy_id,
-            request.parent(),
-            request.opportunity(),
-        )
-        .expect("discover on legacy head");
-    let head = repository
-        .head("legacy-choice-index")
-        .expect("legacy successor");
-    assert_eq!(head.snapshot_id(), discovered.new_snapshot);
-    assert_eq!(
-        repository
-            .merkle
-            .get(head.snapshot().roots().graph, choice_index_anchor_key())
-            .expect("choice-index lookup"),
-        None
-    );
-    assert!(matches!(
-        repository.scan_choice_page(head.snapshot().roots().graph, None, 1),
-        Err(CampaignRepositoryError::InvalidRequest {
-            reason: "campaign-snapshot-has-no-choice-index"
-        })
-    ));
-
-    let accepted = repository
-        .submit_branch_request("legacy-choice-index", discovered.new_snapshot, &request)
-        .expect("submit request on legacy head");
-    let requested = repository
-        .head("legacy-choice-index")
-        .expect("legacy request successor");
-    assert_eq!(requested.snapshot_id(), accepted.new_snapshot);
-    assert_eq!(
-        repository
-            .merkle
-            .get(
-                requested.snapshot().roots().exploration,
-                frontier_index_anchor_key(),
-            )
-            .expect("frontier-index lookup"),
-        None
-    );
-    assert!(matches!(
-        repository.scan_frontier_page(requested.snapshot().roots().exploration, None, 1),
-        Err(CampaignRepositoryError::InvalidRequest {
-            reason: "campaign-snapshot-has-no-frontier-index"
-        })
-    ));
-    assert!(matches!(
-        repository.lookup_frontier_projection(
-            requested.snapshot().roots().exploration,
-            request.id().expect("request id"),
-        ),
-        Err(CampaignRepositoryError::InvalidRequest {
-            reason: "campaign-snapshot-has-no-frontier-index"
-        })
-    ));
 }
 
 #[test]
@@ -1937,10 +1836,12 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         b"debugger-authority",
     ));
     let debugger_request = BranchRequest::new(
-        operator_request.branch_point(),
-        operator_request.parent(),
-        operator_request.opportunity(),
-        operator_request.domain(),
+        BranchRequest::identity(
+            operator_request.branch_point(),
+            operator_request.parent(),
+            operator_request.opportunity(),
+            operator_request.domain(),
+        ),
         operator_request.source().clone(),
         BranchRequestCause::Debugger(session),
         operator_request.budget(),
@@ -1991,54 +1892,6 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         objects_before_debugger_rejection
     );
 
-    // Keep the aggregate-only ledger vector fixed while also exercising the
-    // current indexed ledger. Only the expected snapshot identity differs.
-    let legacy_ledger = crate::CampaignBudgetLedger::empty()
-        .id()
-        .expect("legacy ledger id");
-    let legacy_genesis = CampaignSnapshot::genesis(
-        debugger_genesis.snapshot().lineage(),
-        debugger_genesis.snapshot().active_policy(),
-        legacy_genesis_roots(&repository, debugger_genesis.snapshot().roots()),
-    )
-    .expect("legacy genesis")
-    .with_budget_ledger(legacy_ledger);
-    let discovered_snapshot = repository
-        .head("debugger-authority")
-        .expect("discovered head");
-    let legacy_discovered = CampaignSnapshot::successor(
-        legacy_genesis.id().expect("legacy genesis"),
-        discovered_snapshot.snapshot().lineage(),
-        discovered_snapshot.snapshot().active_policy(),
-        legacy_genesis_roots(&repository, discovered_snapshot.snapshot().roots()),
-        discovered_snapshot
-            .snapshot()
-            .transition()
-            .expect("discovery fact"),
-    )
-    .expect("legacy discovery")
-    .with_budget_ledger(legacy_ledger);
-    let legacy_debugger = DebuggerSubmission::authorize(
-        &debugger_key,
-        legacy_discovered.id().expect("legacy discovery id"),
-        session,
-        debugger_request.clone(),
-    )
-    .expect("legacy debugger submission");
-    assert_eq!(
-        CampaignHash::derive(
-            "crucible.test.debugger-submission-vector.v1",
-            &legacy_debugger.canonical_bytes()
-        )
-        .to_hex(),
-        "ff56dbf506193292e161684db60ddcf38ad7883ea8f7b21e3d23321356d4f602"
-    );
-    assert!(
-        DebuggerSubmission::from_canonical_bytes(&legacy_debugger.canonical_bytes())
-            .expect("legacy debugger round trip")
-            .verify(&debugger_key)
-    );
-
     let debugger_submission = DebuggerSubmission::authorize(
         &debugger_key,
         discovered.new_snapshot,
@@ -2054,7 +1907,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         )
         .to_hex(),
         // Version-3 snapshots now bind the version-2 indexed budget ledger.
-        "59dbaca9d6bf8a2cb838a0baccd7a956f54872d997c97b9a9f03441299d1d31e",
+        "e8c0e26f0d8ca317b9c15a0b48aaca58b955f43dc01ec6b285a024b9ba48215a",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
@@ -2162,40 +2015,6 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         measured,
     )
     .expect("authorize planner submission");
-    let legacy_invocation = PlannerInvocation::new(
-        invocation.engine(),
-        invocation.policy_artifact(),
-        invocation.policy(),
-        invocation.planner_state(),
-        legacy_genesis.planning_view().id().expect("legacy view"),
-        invocation.scan_page().clone(),
-        invocation.budget(),
-    )
-    .expect("legacy invocation");
-    let legacy_proposal = no_work_proposal(
-        legacy_invocation.id().expect("legacy invocation id"),
-        proposal.next_state().clone(),
-    );
-    let legacy_planner = PlannerSubmission::authorize(
-        &planner_key,
-        legacy_genesis.id().expect("legacy genesis id"),
-        legacy_proposal,
-        measured,
-    )
-    .expect("legacy planner submission");
-    assert_eq!(
-        CampaignHash::derive(
-            "crucible.test.planner-submission-vector.v1",
-            &legacy_planner.canonical_bytes()
-        )
-        .to_hex(),
-        "5d2c533e0a67e19ddc66637e1f31233a4a1c8ff590921cef505e5e67716b3dd4"
-    );
-    assert!(
-        PlannerSubmission::from_canonical_bytes(&legacy_planner.canonical_bytes())
-            .expect("legacy planner round trip")
-            .verify(&planner_key)
-    );
     let planner_bytes = planner_submission.canonical_bytes();
     assert_eq!(
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
@@ -2214,7 +2033,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     let different_request = PlannerRequest::new(
         CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            2,
+            3,
             b"different planner request snapshot",
         ))
         .expect("different snapshot"),
@@ -2348,6 +2167,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         accepted_snapshot.snapshot.active_policy(),
         accepted_snapshot.snapshot.roots(),
         CampaignFactId::from_content_id(forged_fact).expect("forged fact id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged successor");
     let forged_content = repository
@@ -2407,7 +2227,6 @@ fn branch_request_is_one_lazy_exact_indexed_delta_and_replays() {
     );
     assert_eq!(accepted.summary.maximum_proposals(), 2);
     assert_eq!(accepted.summary.maximum_attempts(), 2);
-    assert!(accepted.summary_recorded);
     assert_eq!(
         accepted.acceptance_fact,
         CampaignFact::BranchRequestAccepted {
@@ -2504,7 +2323,6 @@ fn branch_request_is_one_lazy_exact_indexed_delta_and_replays() {
     assert_eq!(replay.summary, accepted.summary);
     assert_eq!(replay.snapshot, accepted.snapshot);
     assert_eq!(replay.acceptance_fact, accepted.acceptance_fact);
-    assert!(replay.summary_recorded);
 
     let service = crate::RepositoryCampaignService::new(&repository, PermitAlice);
     let client = crate::CampaignClient::new(service);
@@ -2524,10 +2342,12 @@ fn branch_request_is_one_lazy_exact_indexed_delta_and_replays() {
     assert_eq!(service_replay.new_snapshot(), accepted.new_snapshot);
 
     let reused_command = BranchRequest::new(
-        request.branch_point(),
-        request.parent(),
-        request.opportunity(),
-        request.domain(),
+        BranchRequest::identity(
+            request.branch_point(),
+            request.parent(),
+            request.opportunity(),
+            request.domain(),
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
             .expect("changed finite source"),
         request.cause(),
@@ -2556,215 +2376,6 @@ fn branch_request_is_one_lazy_exact_indexed_delta_and_replays() {
 }
 
 #[test]
-fn legacy_branch_request_replay_uses_its_original_graph_and_transition() {
-    let campaign = "legacy-branch-replay";
-    let (repository, lineage, policy) = fixture();
-    let genesis = repository
-        .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
-        .expect("create funded campaign");
-    let request = branch_request(
-        &repository,
-        &lineage,
-        lineage.genesis_content(),
-        lineage.genesis(),
-        campaign,
-    );
-    let discovered = repository
-        .discover_choice_opportunity(
-            campaign,
-            genesis.snapshot_id(),
-            request.parent(),
-            request.opportunity(),
-        )
-        .expect("discover request opportunity");
-    let accepted = repository
-        .submit_branch_request(campaign, discovered.new_snapshot, &request)
-        .expect("accept branch request");
-
-    let legacy_fact = CampaignFact::BranchRequestIssued(accepted.request);
-    let legacy_fact_content = repository
-        .put_fact(&legacy_fact)
-        .expect("publish legacy acceptance fact");
-    let BranchRequestCause::Operator(command) = request.cause() else {
-        panic!("operator request")
-    };
-    let mut legacy_roots = accepted.snapshot.roots();
-    legacy_roots.accounting = repository
-        .merkle
-        .insert(
-            legacy_roots.accounting,
-            map_key_hash("accounting.command", command.as_hash()),
-            legacy_fact_content,
-        )
-        .expect("replace acceptance command index")
-        .content_id();
-    let legacy_snapshot = CampaignSnapshot::successor(
-        accepted.prior_snapshot,
-        accepted.snapshot.lineage(),
-        accepted.snapshot.active_policy(),
-        legacy_roots,
-        CampaignFactId::from_content_id(legacy_fact_content).expect("legacy acceptance fact ID"),
-    )
-    .expect("build legacy acceptance snapshot")
-    .with_budget_ledger(
-        accepted
-            .snapshot
-            .budget_ledger()
-            .expect("accepted snapshot budget ledger"),
-    );
-    let legacy_snapshot_content = repository
-        .put_snapshot(&legacy_snapshot)
-        .expect("publish legacy acceptance snapshot");
-    let legacy_snapshot_id =
-        CampaignSnapshotId::from_content_id(legacy_snapshot_content).expect("legacy snapshot ID");
-
-    repository
-        .validated_heads
-        .lock()
-        .expect("validated-head cache")
-        .clear();
-    repository
-        .validate_complete_head(legacy_snapshot_content)
-        .expect("validate cold legacy acceptance");
-    assert!(matches!(
-        repository
-            .refs
-            .compare_exchange(
-                &campaign_ref(campaign).expect("campaign ref"),
-                Some(accepted.new_snapshot.content_id()),
-                legacy_snapshot_content,
-            )
-            .expect("install legacy acceptance head"),
-        RefCasOutcome::Advanced { .. }
-    ));
-
-    let proposal = finite_proposal(
-        &request,
-        &policy,
-        &repository.head(campaign).expect("legacy head"),
-        ChoiceValue::Boolean(false),
-        1,
-    );
-    let proposed = repository
-        .issue_proposal(campaign, legacy_snapshot_id, &proposal)
-        .expect("issue proposal after legacy acceptance");
-    let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
-    let admitted = repository
-        .admit_proposal(
-            campaign,
-            proposed.new_snapshot,
-            proposed.proposal,
-            &selection,
-            &path,
-            &attempt,
-        )
-        .expect("admit proposal after legacy acceptance");
-    let child = ConfigurationId::from_hash(CampaignHash::derive(
-        "test.legacy-branch-replay.child",
-        campaign.as_bytes(),
-    ));
-    let child_content = repository
-        .publish_configuration_artifact(
-            lineage.scenario(),
-            lineage.scenario_content(),
-            child,
-            1,
-            b"legacy replay child".to_vec(),
-        )
-        .expect("publish observed child");
-    let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
-        .expect("publish measurements");
-    let properties = repository
-        .publish_property_verdict_set(
-            &PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
-        )
-        .expect("publish properties");
-    let coverage = repository
-        .publish_coverage_projection(
-            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
-        )
-        .expect("publish coverage");
-    let prior_opportunity = repository
-        .load_choice_opportunity(request.opportunity())
-        .expect("load prior opportunity");
-    let declaration = repository
-        .load_selectable(prior_opportunity.declaration())
-        .expect("load selectable declaration");
-    let domain = repository
-        .load_choice_domain(prior_opportunity.domain())
-        .expect("load choice domain");
-    let child_opportunity = ChoiceOpportunity::new(
-        lineage.scenario(),
-        &declaration,
-        &domain,
-        ChoiceCoordinate {
-            scheduler: CampaignHash::derive(
-                "test.legacy-branch-replay.scheduler",
-                campaign.as_bytes(),
-            ),
-            producer: CampaignHash::derive(
-                "test.legacy-branch-replay.producer",
-                campaign.as_bytes(),
-            ),
-        },
-        "legacy-replay-child-choice",
-        None,
-    )
-    .expect("child choice opportunity");
-    let child_opportunity_id = child_opportunity.id().expect("child opportunity ID");
-    repository
-        .publish_choice_opportunity(&child_opportunity)
-        .expect("publish child choice opportunity");
-    let observation = Observation::new(
-        admitted.attempt,
-        child,
-        child_content,
-        path.id().expect("path ID"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurements,
-        properties,
-        coverage,
-        BTreeSet::from([child_opportunity_id]),
-    )
-    .expect("observation");
-    let observed = repository
-        .publish_observation(campaign, admitted.new_snapshot, &observation)
-        .expect("publish observation after legacy acceptance");
-    let current_summary = repository
-        .branch_acceptance_summary(
-            repository
-                .head(campaign)
-                .expect("observed head")
-                .snapshot()
-                .roots()
-                .graph,
-            &request,
-        )
-        .expect("summarize against later graph");
-    assert_ne!(current_summary, accepted.summary);
-
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    let replay = restarted
-        .submit_branch_request(campaign, discovered.new_snapshot, &request)
-        .expect("replay legacy acceptance after graph change");
-    assert!(replay.replayed);
-    assert!(!replay.summary_recorded);
-    assert_eq!(replay.prior_snapshot, discovered.new_snapshot);
-    assert_eq!(replay.new_snapshot, legacy_snapshot_id);
-    assert_eq!(replay.snapshot, legacy_snapshot);
-    assert_eq!(replay.acceptance_fact, legacy_fact);
-    assert_eq!(replay.summary, accepted.summary);
-    assert_eq!(
-        restarted
-            .head(campaign)
-            .expect("current head")
-            .snapshot_id(),
-        observed.new_snapshot
-    );
-}
-
-#[test]
 fn ten_thousand_mixed_mutations_use_incremental_validation_and_replay_indexes() {
     const MUTATIONS: u64 = 10_000;
 
@@ -2787,10 +2398,12 @@ fn ten_thousand_mixed_mutations_use_incremental_validation_and_replay_indexes() 
     for ordinal in 0..MUTATIONS {
         if ordinal % 2 == 0 {
             let request = BranchRequest::new(
-                template.branch_point(),
-                template.parent(),
-                template.opportunity(),
-                template.domain(),
+                BranchRequest::identity(
+                    template.branch_point(),
+                    template.parent(),
+                    template.opportunity(),
+                    template.domain(),
+                ),
                 template.source().clone(),
                 BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
                     CampaignHash::derive("test.branch-scale", &ordinal.to_be_bytes()),
@@ -3023,16 +2636,19 @@ fn conservative_closure_limit_rebases_through_complete_validation() {
 
 #[test]
 fn reused_active_policy_generator_is_an_incremental_closure_anchor() {
-    const GENERATOR_DEPTH: u32 = 256;
+    const GENERATOR_DEPTH: u32 = crate::ORDERED_MIXTURE_GENERATOR_MAX_DEPTH as u32;
 
     let (repository, lineage, _) = fixture();
-    let leaf =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("leaf generator");
+    let leaf = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("leaf generator");
     let mut generator = leaf.id().expect("leaf generator id");
     let mut generators = BTreeMap::from([(generator, leaf)]);
-    for ordinal in 2..=GENERATOR_DEPTH {
+    for _ in 2..=GENERATOR_DEPTH {
         let parent = CandidateGeneratorSpec::new(
-            ordinal,
+            crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
             CandidateGeneratorAlgorithm::OrderedMixture {
                 components: vec![
                     WeightedGenerator::new(generator, 1).expect("generator component"),
@@ -3055,10 +2671,12 @@ fn reused_active_policy_generator_is_an_incremental_closure_anchor() {
         "generator-anchor-template",
     );
     let request = BranchRequest::new(
-        template.branch_point(),
-        template.parent(),
-        template.opportunity(),
-        template.domain(),
+        BranchRequest::identity(
+            template.branch_point(),
+            template.parent(),
+            template.opportunity(),
+            template.domain(),
+        ),
         CandidateSource::generated(generator),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -3154,6 +2772,7 @@ fn imported_successor_must_carry_the_exact_parent_result_locator() {
         valid.snapshot.active_policy(),
         roots,
         valid.snapshot.transition().expect("child transition"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged child");
     let forged_content = repository.put_snapshot(&forged).expect("put forged child");
@@ -3201,81 +2820,4 @@ fn conflicted_successors_are_never_promoted_as_validated_heads() {
     assert!(checkpoints.contains_key(&genesis.content_id()));
 }
 
-#[test]
-fn finite_proposal_is_an_exact_indexed_delta_and_replays_before_staleness() {
-    let (repository, lineage, policy) = fixture();
-    let genesis = repository
-        .create_funded("finite-proposal", &lineage, &policy, &BTreeMap::new())
-        .expect("create");
-    let request = branch_request(
-        &repository,
-        &lineage,
-        lineage.genesis_content(),
-        lineage.genesis(),
-        "finite-proposal",
-    );
-    let requested = repository
-        .submit_known_branch_request("finite-proposal", genesis.snapshot_id(), &request)
-        .expect("submit request");
-    let request_head = repository.head("finite-proposal").expect("request head");
-
-    let wrong_order = finite_proposal(
-        &request,
-        &policy,
-        &request_head,
-        ChoiceValue::Boolean(true),
-        1,
-    );
-    assert!(matches!(
-        repository.issue_proposal("finite-proposal", requested.new_snapshot, &wrong_order,),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "proposal-value-does-not-match-source-order"
-        })
-    ));
-
-    let first = finite_proposal(
-        &request,
-        &policy,
-        &request_head,
-        ChoiceValue::Boolean(false),
-        1,
-    );
-    let accepted = repository
-        .issue_proposal("finite-proposal", requested.new_snapshot, &first)
-        .expect("issue proposal");
-    assert!(!accepted.replayed);
-    assert_eq!(accepted.proposal, first.id().expect("proposal id"));
-    assert_eq!(
-        repository
-            .load_proposal(accepted.proposal)
-            .expect("load proposal"),
-        first
-    );
-
-    let proposal_head = repository.head("finite-proposal").expect("proposal head");
-    let prior = request_head.snapshot().roots();
-    let next = proposal_head.snapshot().roots();
-    assert_ne!(prior.exploration, next.exploration);
-    assert_eq!(prior.graph, next.graph);
-    assert_eq!(prior.observations, next.observations);
-    assert_eq!(prior.corpus, next.corpus);
-    assert_eq!(prior.coverage, next.coverage);
-    assert_eq!(prior.findings, next.findings);
-    assert_eq!(prior.pins, next.pins);
-    assert_eq!(prior.accounting, next.accounting);
-    assert_eq!(
-        repository
-            .merkle
-            .inspect_shallow(next.exploration)
-            .expect("exploration root")
-            .entry_count(),
-        7
-    );
-
-    let replay = repository
-        .issue_proposal("finite-proposal", genesis.snapshot_id(), &first)
-        .expect("replay proposal");
-    assert!(replay.replayed);
-    assert_eq!(replay.prior_snapshot, accepted.prior_snapshot);
-    assert_eq!(replay.new_snapshot, accepted.new_snapshot);
-}
+mod finite_proposal;

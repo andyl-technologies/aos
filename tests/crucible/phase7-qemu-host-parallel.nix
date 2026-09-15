@@ -3,34 +3,151 @@
   lib,
   attrPath ? "checks.crucible.phase7.qemuHostParallel",
   taskIds ? ["T-PERF-29"],
-  dependencies ? [],
+  productionPluginFlight,
+  campaignComposition ? null,
+  testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  idleInitramfs = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
+  scheduler = builtins.readFile ../../crates/crucible/src/scheduler/event_log/backend_loop.rs;
+  lifecycle = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
+  lifecycleConfig = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/config.rs;
+  nodeSet = builtins.readFile ../../crates/crucible-qemu/src/node_set.rs;
+  concurrentNodeSet = builtins.readFile ../../crates/crucible-qemu/src/node_set/concurrent.rs;
   taskList = builtins.concatStringsSep "," taskIds;
-in
-  pkgs.mkDerivation {
-    pname = "crucible-phase7-qemu-host-parallel";
+  inherit (import ./_lib.nix {inherit lib;}) failuresFor hasInfix;
+
+  failures =
+    failuresFor "crates/crucible/src/scheduler/event_log/backend_loop.rs" scheduler [
+      {
+        label = "speculative scheduler preparation";
+        needle = ".prepare_concurrent_quantum(request)?";
+      }
+      {
+        label = "backend completion precedes scheduler commit";
+        needle = "self.backend.execute_concurrent_runs(runs, max_host_workers)";
+      }
+      {
+        label = "scheduler installs only completed staged publication";
+        needle = "*self.loop_impl.borrow_mut() = staged_scheduler;";
+      }
+      {
+        label = "interceptor installs only completed staged publication";
+        needle = "self.network_output_interceptor = staged_interceptor;";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" lifecycle [
+      {
+        label = "production lifecycle concurrent dispatch";
+        needle = "crucible_session::drive_engine_concurrent_quantum(";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/config.rs" lifecycleConfig [
+      {
+        label = "operational host dispatch ceiling";
+        needle = "pub const fn maximum_host_workers";
+      }
+      {
+        label = "host worker ceiling remains outside canonical scheduler state";
+        needle = "it does not enter canonical scheduler state";
+      }
+      {
+        label = "operational host worker configuration";
+        needle = "pub const fn with_maximum_host_workers";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/node_set/concurrent.rs" concurrentNodeSet [
+      {
+        label = "production QEMU backend concurrency";
+        needle = "impl ConcurrentSimulationBackend for QemuNodeSet";
+      }
+    ]
+    ++ lib.optionals (hasInfix "host_worker_pool" nodeSet) [
+      "crates/crucible-qemu/src/node_set.rs: superseded facade remains reachable"
+    ];
+  liveLog =
+    if campaignComposition == null
+    then "${productionPluginFlight}/serial.log"
+    else "${productionPluginFlight}/raw-result";
+  liveResult =
+    if campaignComposition == null
+    then "${productionPluginFlight}/result"
+    else "${productionPluginFlight}/raw-result";
+  modeDependencyAuthentication = lib.optionalString (campaignComposition != null) ''
+    grep -Fxq PASS ${productionPluginFlight}/raw-result
+    grep -Fxq 'gate=gate:production-rust-plugin-flight' ${productionPluginFlight}/raw-result
+    grep -Fxq ${lib.escapeShellArg "campaign_mode=${campaignComposition.mode}"} ${productionPluginFlight}/raw-result
+    grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"} ${productionPluginFlight}/raw-result
+    grep -Fxq ${lib.escapeShellArg "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"} ${productionPluginFlight}/raw-result
+  '';
+  verifyScript = ''
+    set -eu
+    ${modeDependencyAuthentication}
+    live=${lib.escapeShellArg liveLog}
+    export CARGO_HOME="$TMPDIR/cargo"
+    mkdir -p "$CARGO_HOME" .cargo
+    sed "s|@vendor@|${cargoDeps}|g" \
+      "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
+    for exact_test in \
+      scheduler::tests::concurrent::concurrent_prepare_is_private_until_canonical_commit \
+      scheduler::tests::concurrent::concurrent_backend_failure_leaves_scheduler_uncommitted \
+      scheduler::tests::concurrent::concurrent_publication_failure_leaves_logical_state_uncommitted_and_poisons
+    do
+      listing=$(cargo test --frozen --offline \
+        --manifest-path crates/Cargo.toml \
+        --target-dir "$TMPDIR/target" \
+        -p crucible --lib "$exact_test" -- --list)
+      test "$(printf '%s\n' "$listing" | grep -Fxc "$exact_test: test")" -eq 1
+      cargo test --frozen --offline \
+        --manifest-path crates/Cargo.toml \
+        --target-dir "$TMPDIR/target" \
+        -p crucible --lib "$exact_test" -- --exact
+    done
+
+    grep -Fxq PASS ${lib.escapeShellArg liveResult}
+    grep -Fxq 'production_host_parallel_requested_runs=2' "$live"
+    grep -Fxq 'production_host_parallel_maximum_workers=2' "$live"
+    grep -Fxq 'production_host_parallel_realized_parallelism=2' "$live"
+    grep -Fxq 'production_host_parallel_commit_order=curl,io-probe' "$live"
+    grep -Fxq 'production_host_parallel_state_identity=true' "$live"
+    grep -Fxq 'production_host_parallel_time_identity=true' "$live"
+    grep -Fxq 'production_host_parallel_canonical_log_identity=true' "$live"
+    grep -Fxq 'production_host_parallel_worker_count_absent_from_checkpoint=true' "$live"
+    grep -Fxq 'production_vm_lifecycle_path=true' "$live"
+    grep -Fxq 'production_host_parallel_failure_healthy_peer_advanced=true' "$live"
+    grep -Fxq 'production_host_parallel_failure_logical_state_uncommitted=true' "$live"
+    grep -Fxq 'production_host_parallel_failure_retry_poisoned=true' "$live"
+    grep -Fxq 'production_host_parallel_authenticated_exact_recovery=true' "$live"
+
+    mkdir -p "$out"
+    cp "$live" "$out/production-flight.log"
+    cat > "$out/result" <<'RESULT'
+    PASS
+    check=${attrPath}
+    gate=gate:qemu-host-parallel
+    tasks=${taskList}
+    status=complete
+    scheduler_commit=after-all-fixed-runs-complete
+    backend=qemu-node-set
+    production_lifecycle=ProductionVmLifecycleLoop
+    real_nodes=2
+    realized_parallelism=2
+    canonical_commit_order=curl,io-probe
+    state_identity=bit-identical
+    time_identity=bit-identical
+    canonical_log_identity=bit-identical
+    worker_count_in_scheduler_checkpoint=absent
+    failed_round_healthy_peer=physically-advanced
+    mid_round_failure=terminally-poisoned
+    failed_round_logical_commit=none
+    recovery=authenticated-exact-checkpoint
+    RESULT
+  '';
+  authoritativeGate = pkgs.mkDerivation {
+    pname = "crucible-qemu-host-parallel";
     version = "0";
-    src = crucibleSrc;
-
-    buildDeps =
-      [
-        pkgs.coreutils
-        pkgs.crucible-qemu-plugin
-        pkgs.grep
-        pkgs.qemu-crucible
-        pkgs.rust
-        pkgs.sed
-      ]
-      ++ dependencies;
-
-    GUEST_KERNEL = builtins.toString pkgs.linux;
-    GUEST_INITRD = "${idleInitramfs}/initrd.img";
-    GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
-    CRUCIBLE_HOST_PARALLEL_KERNEL_APPEND = "console=ttyS0 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off";
-    CRUCIBLE_HOST_PARALLEL_TIMEOUT_SECS = "240";
+    src = source;
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed productionPluginFlight];
 
     phases = [
       {
@@ -42,125 +159,34 @@ in
         '';
       }
       {
-        name = "configure";
-        script = ''
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
-      {
-        name = "run-live-host-parallel";
-        script = ''
-          set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          vmlinuz=$(ls "$GUEST_KERNEL"/boot/vmlinuz-* | head -1)
-          test -n "$vmlinuz"
-
-          retry_test_list="$TMPDIR/host-worker-retry.tests"
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/live-host-parallel-target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible-qemu \
-            --test host_worker_pool \
-            -- \
-            --list > "$retry_test_list"
-          grep -Fxq \
-            'qemu_host_worker_allows_the_complete_network_retry_budget: test' \
-            "$retry_test_list"
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/live-host-parallel-target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible-qemu \
-            --test host_worker_pool \
-            qemu_host_worker_allows_the_complete_network_retry_budget \
-            -- \
-            --exact
-
-          fingerprint_test='supervision::host_parallel_gate::tests::host_parallel_gate_enables_fingerprinting_before_launch'
-          fingerprint_test_list="$TMPDIR/host-parallel-fingerprint.tests"
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/live-host-parallel-target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible-qemu \
-            --lib \
-            -- \
-            --list > "$fingerprint_test_list"
-          grep -Fxq "$fingerprint_test: test" "$fingerprint_test_list"
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/live-host-parallel-target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible-qemu \
-            --lib \
-            "$fingerprint_test" \
-            -- \
-            --exact \
-            --include-ignored
-
-          cargo build \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/live-host-parallel-target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible-qemu \
-            --example crucible-qemu-live-host-parallel
-
-          report="$TMPDIR/live-host-parallel.result"
-          timeout -k 15 1100 \
-            "$TMPDIR/live-host-parallel-target/debug/examples/crucible-qemu-live-host-parallel" \
-            ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
-            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
-            "$vmlinuz" \
-            "$GUEST_FIRMWARE" \
-            "$TMPDIR/live-host-parallel-run" \
-            "$GUEST_INITRD" \
-            > "$report"
-
-          cat "$report"
-          grep -Fxq PASS "$report"
-          grep -Fxq 'gate=gate:live-host-parallel' "$report"
-          grep -Fxq 'backend=real-qemu-node' "$report"
-          grep -Fxq 'serial_realized_parallelism=1' "$report"
-          grep -Fxq 'parallel_realized_parallelism=2' "$report"
-          grep -Eq '^serial_dispatch_wall_us=[1-9][0-9]*$' "$report"
-          grep -Eq '^parallel_dispatch_wall_us=[1-9][0-9]*$' "$report"
-          grep -Fxq 'state_bit_identical=true' "$report"
-          grep -Fxq 'time_bit_identical=true' "$report"
-          grep -Fxq 'canonical_log_bit_identical=true' "$report"
-          grep -Fxq 'worker_count_in_content_hash=false' "$report"
-          serial_hash=$(sed -n 's/^serial_evidence_hash=//p' "$report")
-          parallel_hash=$(sed -n 's/^parallel_evidence_hash=//p' "$report")
-          test -n "$serial_hash"
-          test "$serial_hash" = "$parallel_hash"
-
-          mkdir -p "$out"
-          cp "$report" "$out/result"
-          {
-            printf 'check=%s\n' "${attrPath}"
-            printf 'tasks=%s\n' "${taskList}"
-            printf 'scope=real-qemu-scheduler-host-worker-path\n'
-            printf 'proven=bounded-worker-pool,completion-key-order,serial-parallel-S-T-log-identity,worker-neutral-content-hash,measured-realized-P\n'
-          } >> "$out/result"
-        '';
+        name = "test";
+        script = verifyScript;
       }
     ];
-  }
+  };
+  modeScript = ''
+    cp -R ${source} source
+    chmod -R u+w source
+    cd source
+    ${verifyScript}
+  '';
+in
+  if failures != []
+  then throw "crucible QEMU host-parallel check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else if campaignComposition != null
+  then
+    import ./phase9-campaign-mode-system-gate.nix {
+      inherit pkgs lib testing;
+      inherit (campaignComposition) mode system;
+      gateName = "gate:qemu-host-parallel";
+      authoritativeAttr = attrPath;
+      executionFamily = "qemu-runtime";
+      name = "qemu-host-parallel";
+      runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed];
+      runtimeClosures = [source cargoDeps productionPluginFlight];
+      runtimeScript = modeScript;
+      timeout = 3600;
+      memoryMiB = 4096;
+      varSizeMiB = 8192;
+    }
+  else authoritativeGate

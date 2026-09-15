@@ -25,40 +25,23 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_campaign::{
-    AssignmentId, AttemptExecutionScope, AttemptId, AttemptResourceLimits, AttemptStartMode,
-    CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineageId, CampaignSnapshotId,
-    ConfigurationArtifactId, DaemonEpoch, ExactCheckpointId, ExecutionId, ExecutionRetentionIntent,
-    FindingCandidateBundleId, ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
-    attempt_execution_basis_digest_for_start_mode,
+    AssignmentId, AttemptAdmissionId, AttemptExecutionScope, AttemptId, AttemptResourceLimits,
+    AttemptRetentionPolicyBasis, AttemptRetentionPolicyDisposition, AttemptStartMode,
+    CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineageId, CampaignPolicyId,
+    CampaignSnapshotId, ConfigurationArtifactId, DaemonEpoch, ExactCheckpointId, ExecutionId,
+    ExecutionRetentionIntent, FindingCandidateBundleId, ObservationId, SubmitAttemptRequest,
+    SubmitAttemptResponse, attempt_execution_basis_digest_for_start_mode,
 };
 use rustix::fs::{FlockOperation, flock};
 
+mod record_codec;
+
+use record_codec::*;
+
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v12\0";
-const ATTEMPT_STATE_MAGIC_V11: &[u8] = b"crucible.executor.attempt-state-record.v11\0";
-const ATTEMPT_STATE_MAGIC_V10: &[u8] = b"crucible.executor.attempt-state-record.v10\0";
-const ATTEMPT_STATE_MAGIC_V9: &[u8] = b"crucible.executor.attempt-state-record.v9\0";
-const ATTEMPT_STATE_MAGIC_V8: &[u8] = b"crucible.executor.attempt-state-record.v8\0";
-const ATTEMPT_STATE_MAGIC_V7: &[u8] = b"crucible.executor.attempt-state-record.v7\0";
-const ATTEMPT_STATE_MAGIC_V6: &[u8] = b"crucible.executor.attempt-state-record.v6\0";
-const ATTEMPT_STATE_MAGIC_V5: &[u8] = b"crucible.executor.attempt-state-record.v5\0";
-const ATTEMPT_STATE_MAGIC_V4: &[u8] = b"crucible.executor.attempt-state-record.v4\0";
-const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v3\0";
-const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
-const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v15\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v12";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V11: &str = "crucible.executor.attempt-state-record.v11";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V10: &str = "crucible.executor.attempt-state-record.v10";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V9: &str = "crucible.executor.attempt-state-record.v9";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V8: &str = "crucible.executor.attempt-state-record.v8";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V7: &str = "crucible.executor.attempt-state-record.v7";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V6: &str = "crucible.executor.attempt-state-record.v6";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V5: &str = "crucible.executor.attempt-state-record.v5";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V4: &str = "crucible.executor.attempt-state-record.v4";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V3: &str = "crucible.executor.attempt-state-record.v3";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V2: &str = "crucible.executor.attempt-state-record.v2";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V1: &str = "crucible.executor.attempt-state-record.v1";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v15";
 const RETENTION_STATE_MAGIC: &[u8] = b"crucible.executor.assignment-retention-state.v1\0";
 const RETENTION_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-retention-state.v1";
 const RETENTION_GENERATION_DOMAIN: &str = "crucible.executor.assignment-retention-generation.v1";
@@ -272,15 +255,6 @@ impl CompletedFindingCandidate {
         }
     }
 
-    /// Returns the candidate while its operational GC root remains live.
-    #[must_use]
-    pub const fn pending_candidate(self) -> Option<FindingCandidateBundleId> {
-        match self {
-            Self::Pending(candidate) => Some(candidate),
-            Self::None | Self::Acknowledged(_) => None,
-        }
-    }
-
     /// Reports whether the exact candidate was acknowledged as incorporated.
     #[must_use]
     pub const fn is_acknowledged(self) -> bool {
@@ -294,6 +268,7 @@ pub struct CheckpointPromotionExecutionBasis {
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     start_mode: AttemptStartMode,
+    retention_policy: AttemptRetentionPolicyDisposition,
 }
 
 impl CheckpointPromotionExecutionBasis {
@@ -302,11 +277,13 @@ impl CheckpointPromotionExecutionBasis {
     pub const fn new(
         resources: AttemptResourceLimits,
         retention: ExecutionRetentionIntent,
+        retention_policy: AttemptRetentionPolicyDisposition,
     ) -> Self {
         Self {
             resources,
             retention,
             start_mode: AttemptStartMode::Execute,
+            retention_policy,
         }
     }
 
@@ -316,11 +293,13 @@ impl CheckpointPromotionExecutionBasis {
         resources: AttemptResourceLimits,
         retention: ExecutionRetentionIntent,
         start_mode: AttemptStartMode,
+        retention_policy: AttemptRetentionPolicyDisposition,
     ) -> Self {
         Self {
             resources,
             retention,
             start_mode,
+            retention_policy,
         }
     }
 
@@ -340,6 +319,12 @@ impl CheckpointPromotionExecutionBasis {
     #[must_use]
     pub const fn start_mode(self) -> AttemptStartMode {
         self.start_mode
+    }
+
+    /// Returns the exact automatic-finding retention policy disposition.
+    #[must_use]
+    pub const fn retention_policy(self) -> AttemptRetentionPolicyDisposition {
+        self.retention_policy
     }
 }
 
@@ -661,7 +646,7 @@ impl AttemptRuntimeState {
 
     /// Returns the candidate that remains an operational retention root.
     #[must_use]
-    pub const fn pending_finding_candidate(self) -> Option<FindingCandidateBundleId> {
+    const fn pending_finding_candidate(self) -> Option<FindingCandidateBundleId> {
         match self {
             Self::Publishing {
                 finding_candidate, ..
@@ -679,16 +664,6 @@ impl AttemptRuntimeState {
             | Self::Canceled { .. }
             | Self::TerminalFailure { .. } => None,
         }
-    }
-
-    /// Reports whether the candidate identity is an incorporated tombstone.
-    #[must_use]
-    pub const fn finding_candidate_acknowledged(self) -> bool {
-        matches!(
-            self,
-            Self::Completed { finding_candidate, .. }
-                if finding_candidate.is_acknowledged()
-        )
     }
 
     /// Returns an exact-checkpoint retention root, when one is durable.
@@ -1785,798 +1760,6 @@ impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
         next: Option<AttemptRuntimeState>,
     ) -> Result<AttemptStateCas, Self::BackendError> {
         self.ledger.compare_exchange_attempt(key, expected, next)
-    }
-}
-
-fn encode_assignment_record(record: &AssignmentRecord) -> Vec<u8> {
-    let request = record.request.canonical_bytes();
-    let response = record.response.canonical_bytes();
-    let mut payload = Vec::with_capacity(
-        ASSIGNMENT_MAGIC.len() + request.len() + response.len() + 2 * size_of::<u32>(),
-    );
-    payload.extend_from_slice(ASSIGNMENT_MAGIC);
-    push_bytes(&mut payload, &request);
-    push_bytes(&mut payload, &response);
-    seal(payload, ASSIGNMENT_CHECKSUM_DOMAIN)
-}
-
-fn decode_assignment_record(bytes: &[u8]) -> Result<AssignmentRecord, AssignmentLedgerError> {
-    let payload = open_sealed(bytes, ASSIGNMENT_CHECKSUM_DOMAIN)?;
-    let mut cursor = RecordCursor::new(payload);
-    cursor.require(ASSIGNMENT_MAGIC)?;
-    let request = SubmitAttemptRequest::from_canonical_bytes(cursor.bytes()?)?;
-    let response = SubmitAttemptResponse::from_canonical_bytes(cursor.bytes()?)?;
-    cursor.finish()?;
-    AssignmentRecord::new(request, response).map_err(Into::into)
-}
-
-fn encode_attempt_state(key: AttemptExecutionKey, state: AttemptRuntimeState) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC);
-    push_bytes(&mut payload, key.lineage.to_text().as_bytes());
-    push_bytes(&mut payload, key.attempt.to_text().as_bytes());
-    push_bytes(&mut payload, &key.scope.canonical_bytes());
-    payload.extend_from_slice(&state.execution_basis().as_bytes());
-    encode_attempt_origin(&mut payload, state.origin());
-    match state {
-        AttemptRuntimeState::Running {
-            daemon_epoch,
-            execution,
-            ..
-        } => {
-            payload.push(0);
-            payload.extend_from_slice(&daemon_epoch.as_bytes());
-            payload.extend_from_slice(&execution.as_bytes());
-        }
-        AttemptRuntimeState::CheckpointRequested {
-            daemon_epoch,
-            execution,
-            ..
-        } => {
-            payload.push(4);
-            payload.extend_from_slice(&daemon_epoch.as_bytes());
-            payload.extend_from_slice(&execution.as_bytes());
-        }
-        AttemptRuntimeState::CheckpointPublishing {
-            daemon_epoch,
-            execution,
-            checkpoint,
-            ..
-        } => {
-            payload.push(5);
-            payload.extend_from_slice(&daemon_epoch.as_bytes());
-            payload.extend_from_slice(&execution.as_bytes());
-            push_bytes(&mut payload, checkpoint.to_text().as_bytes());
-        }
-        AttemptRuntimeState::Paused {
-            daemon_epoch,
-            execution,
-            checkpoint,
-            promotion_basis,
-            ..
-        } => {
-            payload.push(6);
-            payload.extend_from_slice(&daemon_epoch.as_bytes());
-            payload.extend_from_slice(&execution.as_bytes());
-            push_bytes(&mut payload, checkpoint.to_text().as_bytes());
-            encode_checkpoint_promotion_basis(&mut payload, promotion_basis);
-        }
-        AttemptRuntimeState::CheckpointPromoting {
-            daemon_epoch,
-            execution,
-            source_checkpoint,
-            promoted_checkpoint,
-            promotion_basis,
-            ..
-        } => {
-            payload.push(7);
-            payload.extend_from_slice(&daemon_epoch.as_bytes());
-            payload.extend_from_slice(&execution.as_bytes());
-            push_bytes(&mut payload, source_checkpoint.to_text().as_bytes());
-            push_bytes(&mut payload, promoted_checkpoint.to_text().as_bytes());
-            encode_checkpoint_promotion_basis(&mut payload, promotion_basis);
-        }
-        AttemptRuntimeState::Completed {
-            daemon_epoch,
-            execution,
-            observation,
-            finding_candidate,
-            ..
-        } => {
-            payload.push(1);
-            payload.extend_from_slice(&daemon_epoch.as_bytes());
-            payload.extend_from_slice(&execution.as_bytes());
-            push_bytes(&mut payload, observation.to_text().as_bytes());
-            encode_optional_finding_candidate(&mut payload, finding_candidate.candidate());
-            payload.push(u8::from(finding_candidate.is_acknowledged()));
-        }
-        AttemptRuntimeState::Publishing {
-            daemon_epoch,
-            execution,
-            observation,
-            finding_candidate,
-            ..
-        } => {
-            payload.push(3);
-            payload.extend_from_slice(&daemon_epoch.as_bytes());
-            payload.extend_from_slice(&execution.as_bytes());
-            push_bytes(&mut payload, observation.to_text().as_bytes());
-            encode_optional_finding_candidate(&mut payload, finding_candidate);
-        }
-        AttemptRuntimeState::Canceled {
-            daemon_epoch,
-            execution,
-            ..
-        } => {
-            payload.push(2);
-            payload.extend_from_slice(&daemon_epoch.as_bytes());
-            payload.extend_from_slice(&execution.as_bytes());
-        }
-        AttemptRuntimeState::TerminalFailure {
-            daemon_epoch,
-            execution,
-            ..
-        } => {
-            payload.push(8);
-            payload.extend_from_slice(&daemon_epoch.as_bytes());
-            payload.extend_from_slice(&execution.as_bytes());
-        }
-    }
-    seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN)
-}
-
-fn decode_attempt_state(
-    bytes: &[u8],
-) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
-    let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
-        (payload, ATTEMPT_STATE_MAGIC)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11) {
-        (payload, ATTEMPT_STATE_MAGIC_V11)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V10) {
-        (payload, ATTEMPT_STATE_MAGIC_V10)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V9) {
-        (payload, ATTEMPT_STATE_MAGIC_V9)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V8) {
-        (payload, ATTEMPT_STATE_MAGIC_V8)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V7) {
-        (payload, ATTEMPT_STATE_MAGIC_V7)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V6) {
-        (payload, ATTEMPT_STATE_MAGIC_V6)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V5) {
-        (payload, ATTEMPT_STATE_MAGIC_V5)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V4) {
-        (payload, ATTEMPT_STATE_MAGIC_V4)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V3) {
-        (payload, ATTEMPT_STATE_MAGIC_V3)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V2) {
-        (payload, ATTEMPT_STATE_MAGIC_V2)
-    } else {
-        (
-            open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V1)?,
-            ATTEMPT_STATE_MAGIC_V1,
-        )
-    };
-    let mut cursor = RecordCursor::new(payload);
-    cursor.require(magic)?;
-    let lineage = parse_typed(cursor.bytes()?, CampaignLineageId::parse)?;
-    let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
-    let scope = if magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V11 {
-        AttemptExecutionScope::from_canonical_bytes(cursor.bytes()?)?
-    } else {
-        AttemptExecutionScope::Semantic
-    };
-    let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
-    let origin = if magic == ATTEMPT_STATE_MAGIC
-        || magic == ATTEMPT_STATE_MAGIC_V11
-        || magic == ATTEMPT_STATE_MAGIC_V10
-        || magic == ATTEMPT_STATE_MAGIC_V9
-        || magic == ATTEMPT_STATE_MAGIC_V8
-        || magic == ATTEMPT_STATE_MAGIC_V7
-        || magic == ATTEMPT_STATE_MAGIC_V6
-        || magic == ATTEMPT_STATE_MAGIC_V5
-        || magic == ATTEMPT_STATE_MAGIC_V4
-    {
-        decode_attempt_origin(&mut cursor, magic == ATTEMPT_STATE_MAGIC)?
-    } else {
-        AttemptExecutionOrigin::Initial
-    };
-    let tag = cursor.byte()?;
-    let daemon_epoch = DaemonEpoch::from_bytes(cursor.fixed()?)?;
-    let execution = ExecutionId::from_bytes(cursor.fixed()?)?;
-    let state = match tag {
-        0 => AttemptRuntimeState::Running {
-            execution_basis,
-            origin,
-            daemon_epoch,
-            execution,
-        },
-        1 => {
-            let observation = parse_typed(cursor.bytes()?, ObservationId::parse)?;
-            let finding_candidate = decode_optional_finding_candidate(&mut cursor, magic)?;
-            let finding_candidate_acknowledged = if magic == ATTEMPT_STATE_MAGIC
-                || magic == ATTEMPT_STATE_MAGIC_V11
-                || magic == ATTEMPT_STATE_MAGIC_V10
-                || magic == ATTEMPT_STATE_MAGIC_V9
-            {
-                match cursor.byte()? {
-                    0 => false,
-                    1 => true,
-                    _ => return Err(corrupt("attempt-state-finding-candidate-acknowledged-tag")),
-                }
-            } else {
-                false
-            };
-            let finding_candidate = match (finding_candidate, finding_candidate_acknowledged) {
-                (None, false) => CompletedFindingCandidate::None,
-                (Some(candidate), false) => CompletedFindingCandidate::Pending(candidate),
-                (Some(candidate), true) => CompletedFindingCandidate::Acknowledged(candidate),
-                (None, true) => {
-                    return Err(corrupt(
-                        "attempt-state-acknowledged-finding-candidate-missing",
-                    ));
-                }
-            };
-            AttemptRuntimeState::Completed {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                observation,
-                finding_candidate,
-            }
-        }
-        2 => AttemptRuntimeState::Canceled {
-            execution_basis,
-            origin,
-            daemon_epoch,
-            execution,
-        },
-        8 if magic == ATTEMPT_STATE_MAGIC
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7 =>
-        {
-            AttemptRuntimeState::TerminalFailure {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-            }
-        }
-        3 if magic == ATTEMPT_STATE_MAGIC
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3
-            || magic == ATTEMPT_STATE_MAGIC_V2 =>
-        {
-            AttemptRuntimeState::Publishing {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
-                finding_candidate: decode_optional_finding_candidate(&mut cursor, magic)?,
-            }
-        }
-        4 if magic == ATTEMPT_STATE_MAGIC
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3 =>
-        {
-            AttemptRuntimeState::CheckpointRequested {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-            }
-        }
-        5 if magic == ATTEMPT_STATE_MAGIC
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3 =>
-        {
-            AttemptRuntimeState::CheckpointPublishing {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-            }
-        }
-        6 if magic == ATTEMPT_STATE_MAGIC
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3 =>
-        {
-            AttemptRuntimeState::Paused {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promotion_basis: if matches!(
-                    magic,
-                    ATTEMPT_STATE_MAGIC
-                        | ATTEMPT_STATE_MAGIC_V11
-                        | ATTEMPT_STATE_MAGIC_V10
-                        | ATTEMPT_STATE_MAGIC_V9
-                        | ATTEMPT_STATE_MAGIC_V8
-                        | ATTEMPT_STATE_MAGIC_V7
-                        | ATTEMPT_STATE_MAGIC_V6
-                ) {
-                    decode_checkpoint_promotion_basis(
-                        &mut cursor,
-                        magic == ATTEMPT_STATE_MAGIC
-                            || magic == ATTEMPT_STATE_MAGIC_V11
-                            || magic == ATTEMPT_STATE_MAGIC_V10,
-                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V11,
-                        magic == ATTEMPT_STATE_MAGIC,
-                    )?
-                } else {
-                    None
-                },
-            }
-        }
-        7 if magic == ATTEMPT_STATE_MAGIC
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5 =>
-        {
-            AttemptRuntimeState::CheckpointPromoting {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                source_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promotion_basis: if matches!(
-                    magic,
-                    ATTEMPT_STATE_MAGIC
-                        | ATTEMPT_STATE_MAGIC_V11
-                        | ATTEMPT_STATE_MAGIC_V10
-                        | ATTEMPT_STATE_MAGIC_V9
-                        | ATTEMPT_STATE_MAGIC_V8
-                        | ATTEMPT_STATE_MAGIC_V7
-                        | ATTEMPT_STATE_MAGIC_V6
-                ) {
-                    decode_checkpoint_promotion_basis(
-                        &mut cursor,
-                        magic == ATTEMPT_STATE_MAGIC
-                            || magic == ATTEMPT_STATE_MAGIC_V11
-                            || magic == ATTEMPT_STATE_MAGIC_V10,
-                        magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V11,
-                        magic == ATTEMPT_STATE_MAGIC,
-                    )?
-                } else {
-                    None
-                },
-            }
-        }
-        _ => return Err(corrupt("attempt-state-unknown-tag")),
-    };
-    let promotion_basis = match state {
-        AttemptRuntimeState::Paused {
-            promotion_basis, ..
-        }
-        | AttemptRuntimeState::CheckpointPromoting {
-            promotion_basis, ..
-        } => promotion_basis,
-        AttemptRuntimeState::Running { .. }
-        | AttemptRuntimeState::CheckpointRequested { .. }
-        | AttemptRuntimeState::CheckpointPublishing { .. }
-        | AttemptRuntimeState::Publishing { .. }
-        | AttemptRuntimeState::Completed { .. }
-        | AttemptRuntimeState::Canceled { .. }
-        | AttemptRuntimeState::TerminalFailure { .. } => None,
-    };
-    if let Some(promotion_basis) = promotion_basis
-        && attempt_execution_basis_digest_for_start_mode(
-            lineage,
-            attempt,
-            promotion_basis.resources(),
-            promotion_basis.retention(),
-            promotion_basis.start_mode(),
-        ) != execution_basis
-    {
-        return Err(corrupt("checkpoint-promotion-execution-basis-mismatch"));
-    }
-    let key = AttemptExecutionKey::new_scoped(lineage, attempt, scope);
-    if !state.validates_for_key(key) {
-        return Err(corrupt("attempt-state-does-not-match-execution-scope"));
-    }
-    cursor.finish()?;
-    Ok((key, state))
-}
-
-fn encode_optional_finding_candidate(
-    payload: &mut Vec<u8>,
-    candidate: Option<FindingCandidateBundleId>,
-) {
-    match candidate {
-        Some(candidate) => {
-            payload.push(1);
-            push_bytes(payload, candidate.to_text().as_bytes());
-        }
-        None => payload.push(0),
-    }
-}
-
-fn decode_optional_finding_candidate(
-    cursor: &mut RecordCursor<'_>,
-    magic: &[u8],
-) -> Result<Option<FindingCandidateBundleId>, AssignmentLedgerError> {
-    if magic != ATTEMPT_STATE_MAGIC
-        && magic != ATTEMPT_STATE_MAGIC_V11
-        && magic != ATTEMPT_STATE_MAGIC_V10
-        && magic != ATTEMPT_STATE_MAGIC_V9
-        && magic != ATTEMPT_STATE_MAGIC_V8
-    {
-        return Ok(None);
-    }
-    match cursor.byte()? {
-        0 => Ok(None),
-        1 => parse_typed(cursor.bytes()?, FindingCandidateBundleId::parse).map(Some),
-        _ => Err(corrupt("attempt-state-finding-candidate-option-tag")),
-    }
-}
-
-fn encode_checkpoint_promotion_basis(
-    payload: &mut Vec<u8>,
-    basis: Option<CheckpointPromotionExecutionBasis>,
-) {
-    let Some(basis) = basis else {
-        payload.push(0);
-        return;
-    };
-    payload.push(1);
-    let resources = basis.resources();
-    payload.extend_from_slice(&resources.maximum_vcpus().to_be_bytes());
-    payload.extend_from_slice(&resources.maximum_resident_bytes().to_be_bytes());
-    payload.extend_from_slice(&resources.maximum_disk_bytes().to_be_bytes());
-    payload.extend_from_slice(&resources.maximum_execution_quanta().to_be_bytes());
-    payload.push(match basis.retention() {
-        ExecutionRetentionIntent::Discard => 0,
-        ExecutionRetentionIntent::RetainOnFailure => 1,
-        ExecutionRetentionIntent::RetainAlways => 2,
-    });
-    match basis.start_mode() {
-        AttemptStartMode::Execute => payload.push(0),
-        AttemptStartMode::CaptureMaterializedStart { configuration } => {
-            payload.push(1);
-            push_bytes(payload, configuration.to_text().as_bytes());
-        }
-        AttemptStartMode::SavepointCapture {
-            request,
-            configuration,
-        } => {
-            payload.push(2);
-            push_bytes(payload, request.to_text().as_bytes());
-            push_bytes(payload, configuration.to_text().as_bytes());
-        }
-        AttemptStartMode::SelectedSavepoint {
-            snapshot,
-            selection,
-            request,
-        } => {
-            payload.push(3);
-            push_bytes(payload, snapshot.to_text().as_bytes());
-            push_bytes(payload, selection.to_text().as_bytes());
-            push_bytes(payload, request.to_text().as_bytes());
-        }
-    }
-}
-
-fn decode_checkpoint_promotion_basis(
-    cursor: &mut RecordCursor<'_>,
-    has_start_mode: bool,
-    has_savepoint_capture: bool,
-    has_selected_savepoint: bool,
-) -> Result<Option<CheckpointPromotionExecutionBasis>, AssignmentLedgerError> {
-    match cursor.byte()? {
-        0 => Ok(None),
-        1 => {
-            let resources = AttemptResourceLimits::new(
-                u32::from_be_bytes(cursor.fixed()?),
-                u64::from_be_bytes(cursor.fixed()?),
-                u64::from_be_bytes(cursor.fixed()?),
-                u64::from_be_bytes(cursor.fixed()?),
-            )?;
-            let retention = match cursor.byte()? {
-                0 => ExecutionRetentionIntent::Discard,
-                1 => ExecutionRetentionIntent::RetainOnFailure,
-                2 => ExecutionRetentionIntent::RetainAlways,
-                _ => return Err(corrupt("checkpoint-promotion-retention-tag")),
-            };
-            let start_mode = if has_start_mode {
-                match cursor.byte()? {
-                    0 => AttemptStartMode::Execute,
-                    1 => AttemptStartMode::CaptureMaterializedStart {
-                        configuration: parse_typed(
-                            cursor.bytes()?,
-                            ConfigurationArtifactId::parse,
-                        )?,
-                    },
-                    2 if has_savepoint_capture => AttemptStartMode::SavepointCapture {
-                        request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
-                        configuration: parse_typed(
-                            cursor.bytes()?,
-                            ConfigurationArtifactId::parse,
-                        )?,
-                    },
-                    3 if has_selected_savepoint => AttemptStartMode::SelectedSavepoint {
-                        snapshot: parse_typed(cursor.bytes()?, CampaignSnapshotId::parse)?,
-                        selection: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
-                        request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
-                    },
-                    _ => return Err(corrupt("checkpoint-promotion-start-mode-tag")),
-                }
-            } else {
-                AttemptStartMode::Execute
-            };
-            Ok(Some(CheckpointPromotionExecutionBasis::new_for_start_mode(
-                resources, retention, start_mode,
-            )))
-        }
-        _ => Err(corrupt("checkpoint-promotion-basis-tag")),
-    }
-}
-
-fn encode_attempt_origin(payload: &mut Vec<u8>, origin: AttemptExecutionOrigin) {
-    match origin {
-        AttemptExecutionOrigin::Initial => payload.push(0),
-        AttemptExecutionOrigin::ExactCheckpoint {
-            assignment,
-            request_digest,
-            prior_execution,
-            checkpoint,
-        } => {
-            payload.push(1);
-            payload.extend_from_slice(&assignment.as_bytes());
-            payload.extend_from_slice(&request_digest.as_bytes());
-            payload.extend_from_slice(&prior_execution.as_bytes());
-            push_bytes(payload, checkpoint.to_text().as_bytes());
-        }
-        AttemptExecutionOrigin::SelectedSavepoint {
-            certificate,
-            request,
-            source_attempt,
-            source_execution,
-            source_checkpoint,
-            resume,
-        } => {
-            payload.push(2);
-            push_bytes(payload, certificate.to_text().as_bytes());
-            push_bytes(payload, request.to_text().as_bytes());
-            push_bytes(payload, source_attempt.to_text().as_bytes());
-            payload.extend_from_slice(&source_execution.as_bytes());
-            push_bytes(payload, source_checkpoint.to_text().as_bytes());
-            match resume {
-                Some(resume) => {
-                    payload.push(1);
-                    payload.extend_from_slice(&resume.assignment.as_bytes());
-                    payload.extend_from_slice(&resume.request_digest.as_bytes());
-                    payload.extend_from_slice(&resume.prior_execution.as_bytes());
-                    push_bytes(payload, resume.checkpoint.to_text().as_bytes());
-                }
-                None => payload.push(0),
-            }
-        }
-    }
-}
-
-fn decode_attempt_origin(
-    cursor: &mut RecordCursor<'_>,
-    has_selected_savepoint: bool,
-) -> Result<AttemptExecutionOrigin, AssignmentLedgerError> {
-    match cursor.byte()? {
-        0 => Ok(AttemptExecutionOrigin::Initial),
-        1 => Ok(AttemptExecutionOrigin::ExactCheckpoint {
-            assignment: AssignmentId::from_bytes(cursor.fixed()?)?,
-            request_digest: CampaignHash::from_bytes(cursor.fixed()?),
-            prior_execution: ExecutionId::from_bytes(cursor.fixed()?)?,
-            checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-        }),
-        2 if has_selected_savepoint => {
-            let certificate = parse_typed(cursor.bytes()?, CampaignFactId::parse)?;
-            let request = parse_typed(cursor.bytes()?, CampaignFactId::parse)?;
-            let source_attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
-            let source_execution = ExecutionId::from_bytes(cursor.fixed()?)?;
-            let source_checkpoint = parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?;
-            let resume = match cursor.byte()? {
-                0 => None,
-                1 => Some(ExactCheckpointResumeBasis {
-                    assignment: AssignmentId::from_bytes(cursor.fixed()?)?,
-                    request_digest: CampaignHash::from_bytes(cursor.fixed()?),
-                    prior_execution: ExecutionId::from_bytes(cursor.fixed()?)?,
-                    checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                }),
-                _ => return Err(corrupt("attempt-state-selected-resume-option-tag")),
-            };
-            Ok(AttemptExecutionOrigin::SelectedSavepoint {
-                certificate,
-                request,
-                source_attempt,
-                source_execution,
-                source_checkpoint,
-                resume,
-            })
-        }
-        _ => Err(corrupt("attempt-state-origin-unknown-tag")),
-    }
-}
-
-fn parse_typed<T>(
-    bytes: &[u8],
-    parse: impl FnOnce(&str) -> Result<T, CampaignCodecError>,
-) -> Result<T, AssignmentLedgerError> {
-    if bytes.len() > MAX_TYPED_ID_BYTES {
-        return Err(corrupt("typed-id-too-large"));
-    }
-    let text = std::str::from_utf8(bytes).map_err(|_| corrupt("typed-id-not-utf8"))?;
-    parse(text).map_err(Into::into)
-}
-
-fn load_or_create_retention_state(
-    root: &Path,
-) -> Result<AssignmentRetentionState, AssignmentLedgerError> {
-    let path = root.join(RETENTION_STATE_FILE);
-    if let Some(bytes) =
-        read_optional_with_limit(&path, MAX_RETENTION_STATE_BYTES, "retention-state-size")?
-    {
-        return decode_retention_state(&bytes);
-    }
-
-    let mut instance = [0_u8; 32];
-    let random_path = Path::new("/dev/urandom");
-    File::open(random_path)
-        .and_then(|mut source| source.read_exact(&mut instance))
-        .map_err(|source| io_error("read-retention-instance", random_path, source))?;
-    let state = AssignmentRetentionState {
-        instance,
-        generation: 1,
-    };
-    persist_retention_state(root, state)?;
-    Ok(state)
-}
-
-fn persist_retention_state(
-    root: &Path,
-    state: AssignmentRetentionState,
-) -> Result<(), AssignmentLedgerError> {
-    replace_mutable(
-        &root.join(RETENTION_STATE_FILE),
-        &encode_retention_state(state),
-    )
-}
-
-fn encode_retention_state(state: AssignmentRetentionState) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(RETENTION_STATE_MAGIC.len() + 32 + size_of::<u64>() + 32);
-    payload.extend_from_slice(RETENTION_STATE_MAGIC);
-    payload.extend_from_slice(&state.instance);
-    payload.extend_from_slice(&state.generation.to_le_bytes());
-    seal(payload, RETENTION_STATE_CHECKSUM_DOMAIN)
-}
-
-fn decode_retention_state(bytes: &[u8]) -> Result<AssignmentRetentionState, AssignmentLedgerError> {
-    if bytes.len() as u64 > MAX_RETENTION_STATE_BYTES {
-        return Err(corrupt("retention-state-size"));
-    }
-    let payload = open_sealed(bytes, RETENTION_STATE_CHECKSUM_DOMAIN)?;
-    let mut cursor = RecordCursor::new(payload);
-    cursor.require(RETENTION_STATE_MAGIC)?;
-    let instance = cursor.fixed()?;
-    let generation = u64::from_le_bytes(cursor.fixed()?);
-    cursor.finish()?;
-    if generation == 0 {
-        return Err(corrupt("retention-state-zero-generation"));
-    }
-    Ok(AssignmentRetentionState {
-        instance,
-        generation,
-    })
-}
-
-fn seal(mut payload: Vec<u8>, domain: &str) -> Vec<u8> {
-    let checksum = CampaignHash::derive(domain, &payload);
-    payload.extend_from_slice(&checksum.as_bytes());
-    payload
-}
-
-fn open_sealed<'a>(bytes: &'a [u8], domain: &str) -> Result<&'a [u8], AssignmentLedgerError> {
-    if bytes.len() < 32 || bytes.len() as u64 > MAX_LEDGER_RECORD_BYTES {
-        return Err(corrupt("record-size"));
-    }
-    let payload_length = bytes.len() - 32;
-    let (payload, checksum) = bytes.split_at(payload_length);
-    if checksum != CampaignHash::derive(domain, payload).as_bytes() {
-        return Err(corrupt("record-checksum"));
-    }
-    Ok(payload)
-}
-
-fn push_bytes(target: &mut Vec<u8>, value: &[u8]) {
-    let length = u32::try_from(value.len()).unwrap_or(u32::MAX);
-    target.extend_from_slice(&length.to_be_bytes());
-    target.extend_from_slice(value);
-}
-
-struct RecordCursor<'a> {
-    remaining: &'a [u8],
-}
-
-impl<'a> RecordCursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { remaining: bytes }
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], AssignmentLedgerError> {
-        if self.remaining.len() < length {
-            return Err(corrupt("record-truncated"));
-        }
-        let (value, remaining) = self.remaining.split_at(length);
-        self.remaining = remaining;
-        Ok(value)
-    }
-
-    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], AssignmentLedgerError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| corrupt("record-fixed-width"))
-    }
-
-    fn byte(&mut self) -> Result<u8, AssignmentLedgerError> {
-        Ok(self.fixed::<1>()?[0])
-    }
-
-    fn bytes(&mut self) -> Result<&'a [u8], AssignmentLedgerError> {
-        let length = u32::from_be_bytes(self.fixed()?) as usize;
-        self.take(length)
-    }
-
-    fn require(&mut self, expected: &[u8]) -> Result<(), AssignmentLedgerError> {
-        if self.take(expected.len())? == expected {
-            Ok(())
-        } else {
-            Err(corrupt("record-magic"))
-        }
-    }
-
-    fn finish(self) -> Result<(), AssignmentLedgerError> {
-        if self.remaining.is_empty() {
-            Ok(())
-        } else {
-            Err(corrupt("record-trailing-bytes"))
-        }
     }
 }
 

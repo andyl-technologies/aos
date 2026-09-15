@@ -12,7 +12,7 @@ mod parse;
 pub(crate) use parse::parse_hot_fork_template_state;
 
 use super::{
-    QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS, QmpHotForkBhTimerBarrierState,
+    QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS, QmpHotForkAsyncWorkerBarrierState,
     QmpHotForkBlockBarrierState, QmpHotForkPluginBarrierState, QmpHotForkProof,
     QmpHotForkRcuBarrierState,
 };
@@ -20,7 +20,7 @@ use super::{
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 25;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 26;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -274,7 +274,7 @@ pub struct QmpHotForkTemplateState {
     missing_proofs: u64,
     plugin_barrier: QmpHotForkPluginBarrierState,
     rcu_barrier: QmpHotForkRcuBarrierState,
-    bh_timer_barrier: QmpHotForkBhTimerBarrierState,
+    async_worker_barrier: QmpHotForkAsyncWorkerBarrierState,
     block_barrier: QmpHotForkBlockBarrierState,
     resource_stage: QmpHotForkTemplateResourceStageState,
     rollback_complete: bool,
@@ -295,8 +295,8 @@ impl QmpHotForkTemplateState {
             missing_proofs: QMP_HOT_FORK_PLUGIN_RING_PROOF,
             plugin_barrier,
             rcu_barrier: QmpHotForkRcuBarrierState::one_quiescent(request.rcu_barrier_generation()),
-            bh_timer_barrier: QmpHotForkBhTimerBarrierState::one_quiescent(
-                request.bh_timer_barrier_generation(),
+            async_worker_barrier: QmpHotForkAsyncWorkerBarrierState::one_quiescent(
+                request.async_worker_barrier_generation(),
             ),
             block_barrier: QmpHotForkBlockBarrierState::one_quiescent(
                 request.block_barrier_generation(),
@@ -320,8 +320,8 @@ impl QmpHotForkTemplateState {
             missing_proofs: 0,
             plugin_barrier,
             rcu_barrier: QmpHotForkRcuBarrierState::one_quiescent(request.rcu_barrier_generation()),
-            bh_timer_barrier: QmpHotForkBhTimerBarrierState::one_quiescent(
-                request.bh_timer_barrier_generation(),
+            async_worker_barrier: QmpHotForkAsyncWorkerBarrierState::one_quiescent(
+                request.async_worker_barrier_generation(),
             ),
             block_barrier: QmpHotForkBlockBarrierState::one_quiescent(
                 request.block_barrier_generation(),
@@ -418,10 +418,10 @@ impl QmpHotForkTemplateState {
         self.rcu_barrier
     }
 
-    /// Returns the retained asynchronous-source barrier state.
+    /// Returns the retained asynchronous-worker barrier state.
     #[must_use]
-    pub const fn bh_timer_barrier(&self) -> QmpHotForkBhTimerBarrierState {
-        self.bh_timer_barrier
+    pub const fn async_worker_barrier(&self) -> QmpHotForkAsyncWorkerBarrierState {
+        self.async_worker_barrier
     }
 
     /// Returns the retained block-graph writer and native drain state.

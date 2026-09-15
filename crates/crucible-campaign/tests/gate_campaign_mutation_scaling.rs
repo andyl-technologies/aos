@@ -14,9 +14,10 @@ use crucible_campaign::{
     CampaignPolicy, CampaignRepository, CampaignRepositoryError, CampaignSeed,
     CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CandidateSource, ChoiceClassContext,
     ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity, ChoicePolicy, ChoiceSource, ChoiceValue,
-    ConfigurationId, ControlRequest, ExplorerPolicy, FairnessPolicy, ProgressiveWideningPolicy,
-    PuctPolicy, RetentionPolicy, ScenarioDefId, SelectableDeclaration, StopCondition,
-    WeightedGenerator,
+    ConfigurationId, ControlRequest, ExplorerPolicy, FairnessPolicy,
+    ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION, ProgressiveWideningPolicy, PuctPolicy,
+    RetentionPolicy, STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, ScenarioDefId,
+    SelectableDeclaration, StopCondition, WeightedGenerator,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
@@ -436,20 +437,24 @@ fn fixture() -> (
     )
     .expect("widening");
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::<String, ChoicePolicy>::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::<String, ChoicePolicy>::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("policy");
 
@@ -462,15 +467,18 @@ fn publish_nested_policy(
 ) -> (CampaignPolicy, ContentId) {
     const GENERATOR_DEPTH: u32 = 128;
 
-    let leaf =
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("leaf generator");
+    let leaf = CandidateGeneratorSpec::new(
+        STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("leaf generator");
     let leaf_id = repository
         .publish_generator(&leaf)
         .expect("publish leaf generator");
     let mut generator = leaf_id;
-    for ordinal in 2..=GENERATOR_DEPTH {
+    for _ in 2..=GENERATOR_DEPTH {
         let parent = CandidateGeneratorSpec::new(
-            ordinal,
+            ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
             CandidateGeneratorAlgorithm::OrderedMixture {
                 components: vec![
                     WeightedGenerator::new(generator, 1).expect("generator component"),
@@ -484,23 +492,27 @@ fn publish_nested_policy(
     }
 
     let policy = CampaignPolicy::new(
-        lineage.scenario(),
-        CampaignSeed::from_bytes([9; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality: 64,
-        },
-        BTreeMap::from([(
-            "product.network.retry".to_owned(),
-            ChoicePolicy::new("product.network.retry", generator, true)
-                .expect("nested choice policy"),
-        )]),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            lineage.scenario(),
+            CampaignSeed::from_bytes([9; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 64,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::from([(
+                "product.network.retry".to_owned(),
+                ChoicePolicy::new("product.network.retry", generator, true)
+                    .expect("nested choice policy"),
+            )]),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("nested policy");
     repository
@@ -560,10 +572,12 @@ fn branch_request(
     ordinal: u64,
 ) -> BranchRequest {
     BranchRequest::new(
-        opportunity.branch_point_id(lineage.genesis()),
-        lineage.genesis_content(),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::finite(BTreeSet::from([
             ChoiceValue::Boolean(false),
             ChoiceValue::Boolean(true),

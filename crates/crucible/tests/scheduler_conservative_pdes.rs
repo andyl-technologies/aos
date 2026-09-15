@@ -77,11 +77,15 @@ fn conservative_pdes_dependencies_only_include_cross_node_backend_input() {
     let peer_event = backend_event(4, &consumer, &producer, 2, b"peer");
     let control_plane = scheduler_node("control-plane");
     let control_event = ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime { ticks: 2 },
-            consumer.clone(),
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime { ticks: 2 }).ticks,
+                },
+                node: consumer.clone(),
+                sequence: 3,
+            },
             control_plane.clone(),
-            3,
         ),
         payload: ScheduledEventPayload::Control(crucible::ControlOperation {
             sequence: 3,
@@ -246,13 +250,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),

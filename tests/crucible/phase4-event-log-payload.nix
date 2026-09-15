@@ -191,10 +191,6 @@
         needle = "payload.u64(\"retired_icount\"), None";
       }
       {
-        label = "fault typed accessor tested";
-        needle = "fault_payload.fault(\"fault\")";
-      }
-      {
         label = "level typed accessor tested";
         needle = "payload.level(\"severity\")";
       }
@@ -204,7 +200,7 @@
       }
       {
         label = "observational error-level diagnostic";
-        needle = "diagnostic_error.class(), EventClass::Observational";
+        needle = "diagnostic_error.class(),\n        SchedulerEventLogClass::Observational";
       }
     ]
     ++ failuresFor "crates/crucible/tests/formal_trace_export.rs" formalTraceTest [
@@ -214,7 +210,7 @@
       }
       {
         label = "diagnostic typed details asserted";
-        needle = "diagnostic.details=10";
+        needle = "diagnostic.details=9";
       }
       {
         label = "diagnostic strings hex encoded";

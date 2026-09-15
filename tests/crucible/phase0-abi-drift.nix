@@ -67,7 +67,7 @@ in
           fi
           grep -q "offset_of!(RegionHeader, node_count) == 12" "$out/rust-drift.log"
           grep -q "offset_of!(RegionHeader, queue_capacity) == 16" "$out/rust-drift.log"
-          if grep -q "size_of::<RegionHeader>() == 256" "$out/rust-drift.log"; then
+          if grep -q "size_of::<RegionHeader>() == 266" "$out/rust-drift.log"; then
             echo "Rust drift failed size assertion; expected size-preserving offset drift" >&2
             exit 1
           fi

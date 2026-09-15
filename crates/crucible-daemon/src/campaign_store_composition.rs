@@ -7,13 +7,15 @@
 pub use crucible_cas::content_store::{
     BackendCapabilities, ContentId, DirectoryBlobBackend, DirectoryRefBackend,
     DurabilityRequirement, ImmutableBlobBackend, MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES,
-    MAX_STORE_GRAPH_VERIFY_PLACEMENTS, ObjectKind, RefName, RetentionRole, S3RefBackend,
-    SensitivityClass, StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph,
-    StoreGraphAdmin, StoreGraphConfig, StoreGraphKeyring, StoreGraphNamespaceAuthorizers,
-    StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders, StoreGraphS3Clients,
-    StoreGraphVerificationLimits, StoreGraphVerificationLimitsError, StoreNamespaceAuthorizer,
-    StoreNamespaceId, StoreNamespaceOperation, StoreNodeId, StoreNodeKind, StoreNodeSpec,
-    StoreObjectProfilePolicyId, StorePhysicalQuotaPolicyId, StoreS3EndpointId,
-    StoreS3RefCapability,
+    MAX_STORE_GRAPH_VERIFY_PLACEMENTS, ObjectKind, PackedRepackPlan, PackedStorageAccounting,
+    RefInventorySummary, RefName, RefStoreAdmin, S3RefBackend, SensitivityClass,
+    StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph, StoreGraphAdmin,
+    StoreGraphConfig, StoreGraphConfigurationId, StoreGraphKeyring, StoreGraphNamespaceAuthorizers,
+    StoreGraphObjectProfilers, StoreGraphPackedRepackAdmin, StoreGraphPhysicalQuotaBinders,
+    StoreGraphS3Clients, StoreGraphVerificationLimits, StoreGraphVerificationLimitsError,
+    StoreNamespaceAuthorizer, StoreNamespaceId, StoreNamespaceOperation, StoreNodeId,
+    StoreNodeKind, StoreNodeSpec, StoreObjectProfilePolicyId, StorePhysicalQuotaPolicyId,
+    StorePhysicalRepairDisposition, StorePhysicalRepairReceipt, StoreS3EndpointId,
+    StoreS3RefCapability, StoreTierPolicy,
 };
 pub use crucible_s3_store::{AwsSdkS3Client, AwsSdkS3ClientConfig, AwsSdkS3StrongCasClient};

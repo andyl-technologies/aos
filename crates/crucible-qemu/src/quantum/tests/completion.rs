@@ -95,7 +95,7 @@ fn qemu_quantum_accepts_a_release_acknowledged_runtime_clamp() {
     if let Err(error) = slot.publish_scheduler_ceiling(clamp) {
         panic!("completed quantum clamp should publish: {error}");
     }
-    if let Err(error) = slot.request_control_boundary() {
+    if let Err(error) = slot.request_control_boundary(0, None) {
         panic!("runtime clamp should request a control boundary: {error}");
     }
     if let Err(error) = slot.publish_control_boundary(4, 4, 0) {
@@ -111,6 +111,59 @@ fn qemu_quantum_accepts_a_release_acknowledged_runtime_clamp() {
     assert_eq!(report.outcome, AdvanceOutcome::Paused { at: icount(4) });
     assert_eq!(report.final_state.current_icount, icount(4));
     assert_eq!(report.final_state.next_deadline, Some(icount(12)));
+}
+
+#[test]
+fn qemu_quantum_accepts_a_running_resume_at_the_exact_clamp() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+
+    let pending = match hot_path.start_quantum(horizon(10)) {
+        Ok(pending) => pending,
+        Err(error) => panic!("quantum start should publish ceiling: {error}"),
+    };
+    if let Err(error) = slot.publish_reached_icount(4, 0) {
+        panic!("plugin progress should publish through shared node slot: {error}");
+    }
+    let clamp = match authorize_advance_ceiling(4, 4, None) {
+        Ok(clamp) => clamp,
+        Err(error) => panic!("completed coordinate should authorize a clamp: {error}"),
+    };
+    if let Err(error) = slot.publish_scheduler_ceiling(clamp) {
+        panic!("completed quantum clamp should publish: {error}");
+    }
+    if let Err(error) = slot.request_control_boundary(0, None) {
+        panic!("runtime clamp should request a control boundary: {error}");
+    }
+    if let Err(error) = slot.publish_control_boundary(4, 4, 0) {
+        panic!("plugin should publish the requested control boundary: {error}");
+    }
+    slot.acknowledge_control_boundary();
+    slot.mark_running();
+
+    let snapshot = slot.snapshot();
+    assert_eq!(snapshot.current_icount, 4);
+    assert_eq!(snapshot.max_advance_icount, 4);
+    assert_eq!(snapshot.idle_wake_icount, 4);
+    assert_eq!(snapshot.status, STATUS_RUNNING);
+
+    let report = match hot_path.finish_quantum(pending) {
+        Ok(report) => report,
+        Err(error) => panic!("exact-clamped resume should finish: {error}"),
+    };
+    assert_eq!(report.outcome, AdvanceOutcome::Paused { at: icount(4) });
+    assert_eq!(report.final_state.current_icount, icount(4));
+    assert_eq!(report.final_state.next_deadline, None);
 }
 
 #[test]
@@ -144,7 +197,7 @@ fn qemu_quantum_rejects_an_unacknowledged_or_device_active_clamp() {
             panic!("completed quantum clamp should publish: {error}");
         }
         if device_active {
-            if let Err(error) = slot.request_control_boundary() {
+            if let Err(error) = slot.request_control_boundary(0, None) {
                 panic!("runtime clamp should request a control boundary: {error}");
             }
             if let Err(error) = slot.publish_control_boundary(4, 4, 0) {

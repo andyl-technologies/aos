@@ -2,9 +2,7 @@
 //!
 //! RFC-0020 defines gates beyond the original RFC-0010 determinism catalog.
 //! This registry records whether each campaign gate has an isolable automated
-//! target, a reviewable manual evidence contract, or no executable contract
-//! yet. Catalog-only entries remain explicit so traceability fails with the
-//! exact unsupported gate name instead of accepting a prose mention.
+//! target or a reviewable manual evidence contract.
 
 /// The executable contract attached to an RFC-0020 gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,15 +14,6 @@ pub enum CampaignGateContract {
         /// Nix check attribute that runs the gate.
         nix_attr: &'static str,
     },
-    /// Automated component evidence that does not complete the canonical gate.
-    ComponentAutomated {
-        /// Cargo targets that jointly implement the component evidence.
-        targets: &'static [CampaignGateTarget],
-        /// Nix check attribute that runs the component evidence.
-        nix_attr: &'static str,
-        /// Production or acceptance scope still required to complete the gate.
-        remaining_scope: &'static [&'static str],
-    },
     /// A manual evidence schema and Nix validator for retained artifacts.
     Manual {
         /// Repository-relative evidence-contract path.
@@ -32,8 +21,6 @@ pub enum CampaignGateContract {
         /// Nix check attribute that validates retained evidence.
         nix_attr: &'static str,
     },
-    /// No executable or manual artifact contract exists yet.
-    Unsupported,
 }
 
 /// How an automated campaign gate invokes one Cargo target.
@@ -44,20 +31,52 @@ pub enum CampaignGateTargetKind {
         /// Integration-test target name, without `.rs`.
         test_target: &'static str,
     },
+    /// Exact tests in an integration-test target, run by a Nix flight.
+    IntegrationExact {
+        /// Integration-test target name, without `.rs`.
+        test_target: &'static str,
+        /// Exact selectors and the Rust source files that define them.
+        selectors: &'static [ExactSelector],
+        /// Repository-relative Nix sources that select and run the target.
+        nix_sources: &'static [&'static str],
+        /// Installed test-binary name invoked by the flight.
+        runner: &'static str,
+        /// Evidence lines the flight must publish after the selector passes.
+        evidence: &'static [&'static str],
+        /// Whether the flight must opt into intentionally ignored tests.
+        ignored: bool,
+    },
     /// Exact tests in a package library, run by a Nix flight.
     LibExact {
         /// Exact selectors and the library source files that define them.
-        selectors: &'static [LibraryExactSelector],
+        selectors: &'static [ExactSelector],
         /// Repository-relative Nix source that runs every selector.
         nix_source: &'static str,
         /// Whether the flight must opt into intentionally ignored tests.
         ignored: bool,
     },
+    /// Exact library tests whose retained result is authenticated by another Nix gate.
+    LibExactAggregate {
+        /// Exact selectors executed by the producer flight.
+        selectors: &'static [ExactSelector],
+        /// Repository-relative Nix source that executes the selectors.
+        producer_nix_source: &'static str,
+        /// Producer check attribute used by that source.
+        producer_nix_attr: &'static str,
+        /// Gate identity emitted by the producer result.
+        producer_gate: &'static str,
+        /// Repository-relative Nix source that authenticates producer evidence.
+        aggregate_nix_source: &'static str,
+        /// Exact evidence lines required from the producer result.
+        evidence: &'static [&'static str],
+        /// Whether the producer flight must opt into intentionally ignored tests.
+        ignored: bool,
+    },
 }
 
-/// One exact library selector and its defining source file.
+/// One exact test selector and its defining source file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LibraryExactSelector {
+pub struct ExactSelector {
     /// Repository-relative Rust source containing the test function.
     pub source: &'static str,
     /// Full `cargo test --exact` selector.
@@ -107,32 +126,6 @@ const fn automated(
     }
 }
 
-const fn component_automated(
-    name: &'static str,
-    owner: &'static str,
-    targets: &'static [CampaignGateTarget],
-    nix_attr: &'static str,
-    remaining_scope: &'static [&'static str],
-) -> CampaignGateSpec {
-    CampaignGateSpec {
-        name,
-        owner,
-        contract: CampaignGateContract::ComponentAutomated {
-            targets,
-            nix_attr,
-            remaining_scope,
-        },
-    }
-}
-
-const fn unsupported(name: &'static str, owner: &'static str) -> CampaignGateSpec {
-    CampaignGateSpec {
-        name,
-        owner,
-        contract: CampaignGateContract::Unsupported,
-    }
-}
-
 const fn manual(
     name: &'static str,
     owner: &'static str,
@@ -149,77 +142,137 @@ const fn manual(
     }
 }
 
-const HOT_FORK_EQUIVALENCE_SELECTORS: &[LibraryExactSelector] = &[
-    LibraryExactSelector {
+const HOT_FORK_EQUIVALENCE_SELECTORS: &[ExactSelector] = &[
+    ExactSelector {
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates",
     },
-    LibraryExactSelector {
+    ExactSelector {
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_node_hot_fork_matches_thin_and_exact",
     },
-    LibraryExactSelector {
+    ExactSelector {
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template",
     },
 ];
 
-const LAZY_FRONTIER_MERKLE_SELECTORS: &[LibraryExactSelector] = &[LibraryExactSelector {
+const LAZY_FRONTIER_MERKLE_SELECTORS: &[ExactSelector] = &[ExactSelector {
     source: "crates/crucible-campaign/src/merkle/bulk.rs",
     name: "merkle::bulk::tests::million_dormant_continuations_use_bounded_production_frontier_pages",
 }];
 
-const CAMPAIGN_CONTROL_RESPONSIVENESS_SELECTORS: &[LibraryExactSelector] = &[
-    LibraryExactSelector {
-        source: "crates/crucible-daemon/src/executor_pool/tests.rs",
-        name: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
+const CAMPAIGN_CONTROL_RESPONSIVENESS_SELECTORS: &[ExactSelector] = &[ExactSelector {
+    source: "crates/crucible-daemon/src/executor_pool/tests.rs",
+    name: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
+}];
+
+const EXACT_CLOSURE_STREAMING_API_SELECTORS: &[ExactSelector] = &[
+    ExactSelector {
+        source: "crates/crucible-api/src/vm_lifecycle/checkpoint_store/tests.rs",
+        name: "vm_lifecycle::checkpoint_store::tests::portable_closure_inventory_streams_only_authenticated_manifest_objects",
+    },
+    ExactSelector {
+        source: "crates/crucible-api/src/vm_lifecycle/checkpoint_store/tests.rs",
+        name: "vm_lifecycle::checkpoint_store::tests::file_artifact_stream_authenticates_sparse_file_contents",
+    },
+    ExactSelector {
+        source: "crates/crucible-api/src/vm_lifecycle/checkpoint_store/tests.rs",
+        name: "vm_lifecycle::checkpoint_store::tests::chunked_artifact_stream_recreates_sparse_zero_extents",
     },
 ];
 
-const HOT_FORK_ISOLATION_SHMEM_SELECTORS: &[LibraryExactSelector] = &[LibraryExactSelector {
-    source: "crates/crucible-shmem/src/mapped_setup_region.rs",
-    name: "mapped_setup_region::tests::hot_fork_child_installs_private_mapping_at_exact_source_address",
+const EXACT_CLOSURE_STREAMING_CAMPAIGN_SELECTORS: &[ExactSelector] = &[
+    ExactSelector {
+        source: "crates/crucible-campaign/src/merkle.rs",
+        name: "merkle::tests::many_deterministic_permutations_produce_one_root_and_valid_closure",
+    },
+    ExactSelector {
+        source: "crates/crucible-campaign/src/merkle.rs",
+        name: "merkle::tests::incomplete_and_inconsistent_nodes_fail_closed",
+    },
+];
+
+const HOT_FORK_SCALING_SELECTORS: &[ExactSelector] = &[
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_semantic_template_depths",
+    },
+];
+
+const WORLD_FORK_ATOMICITY_SELECTORS: &[ExactSelector] = &[
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_fork_fails",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_adoption_fails",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_until_target_cleanup_retries",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_across_repository_publication_retry",
+    },
+];
+
+const TYPED_CHOICE_PRODUCT_CHECKPOINT_SELECTORS: &[ExactSelector] = &[ExactSelector {
+    source: "crates/crucible-cli/tests/support/campaign_packaged_process/guest_choice.rs",
+    name: "packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart",
 }];
 
-const HOT_FORK_ISOLATION_QEMU_SELECTORS: &[LibraryExactSelector] = &[LibraryExactSelector {
-    source: "crates/crucible-qemu/src/node/tests/hot_fork.rs",
-    name: "node::tests::hot_fork::gate_hot_fork_isolation_keeps_two_resource_generations_physically_private",
-}];
+const TYPED_CHOICE_PRODUCT_CHECKPOINT_NIX_SOURCES: &[&str] = &[
+    "tests/crucible/phase4-packaged-campaign-choice-vm.nix",
+    "tests/crucible/phase4-packaged-campaign-vm.nix",
+];
 
-const HOT_FORK_ISOLATION_DAEMON_SELECTORS: &[LibraryExactSelector] = &[LibraryExactSelector {
-    source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs",
-    name: "qemu_hot_fork_world_factory::tests::two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world",
-}];
+const CAMPAIGN_REPLAY_PRODUCTION_SELECTORS: &[ExactSelector] = &[
+    ExactSelector {
+        source: "crates/crucible-cli/tests/campaign_process.rs",
+        name: "campaign_run_production_qemu_exact_checkpoint_then_replay_matches",
+    },
+    ExactSelector {
+        source: "crates/crucible-cli/tests/campaign_process.rs",
+        name: "interactive_session_captures_and_replays_exact_live_artifact",
+    },
+];
 
-const WORLD_FORK_ATOMICITY_SELECTORS: &[LibraryExactSelector] = &[
-    LibraryExactSelector {
-        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
-        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_clean_rejection_is_atomic_at_every_launch_index",
+const CAMPAIGN_REPLAY_PRODUCTION_NIX_SOURCES: &[&str] =
+    &["tests/crucible/phase4-packaged-campaign-vm.nix"];
+
+const CAMPAIGN_OPERATIONAL_CONTINUITY_SELECTORS: &[ExactSelector] = &[
+    ExactSelector {
+        source: "crates/crucible-cli/tests/campaign_store_process.rs",
+        name: "public_campaign_debug_opens_authenticated_finding_at_fast_midpoint",
     },
-    LibraryExactSelector {
-        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
-        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_ambiguous_launch_is_fail_closed_at_every_index",
+    ExactSelector {
+        source: "crates/crucible-cli/tests/campaign_store_process.rs",
+        name: "public_composed_store_flight_evicts_cache_and_flushes_write_back",
     },
-    LibraryExactSelector {
-        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
-        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_adoption_failure_retains_the_complete_world",
+    ExactSelector {
+        source: "crates/crucible-cli/tests/campaign_store_process/archive_transfer.rs",
+        name: "archive_transfer::public_offline_archive_transfer_reports_and_authenticates_sensitive_closure",
     },
-    LibraryExactSelector {
-        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
-        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_aggregate_release_failure_blocks_source_restore",
+    ExactSelector {
+        source: "crates/crucible-cli/tests/campaign_store_process/archive_transfer.rs",
+        name: "archive_transfer::public_archive_transfer_is_backend_neutral_across_compressed_stores",
     },
-    LibraryExactSelector {
-        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
-        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_source_identity_drift_blocks_restore_after_complete_rollback",
-    },
-    LibraryExactSelector {
-        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
-        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::rollback_retains_every_unfinished_owner_on_termination_failure",
-    },
-    LibraryExactSelector {
-        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/world_fork_atomicity.rs",
-        name: "qemu_hot_fork_world_factory::tests::world_fork_atomicity::rollback_deadline_covers_reap_private_release_and_cancellation_progress",
-    },
+];
+
+const CAMPAIGN_OPERATIONAL_CONTINUITY_NIX_SOURCES: &[&str] = &[
+    "tests/crucible/phase4-packaged-campaign-vm.nix",
+    "tests/crucible/phase9-campaign-operational-continuity.nix",
 ];
 
 /// Canonical RFC-0020 campaign gate catalog.
@@ -275,7 +328,12 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-destructive-recovery-contract.toml",
         "checks.crucible.phase9.gates.campaignDestructiveRecoveryContract",
     ),
-    unsupported("gate:campaign-dogfood", "crucible-cli"),
+    manual(
+        "gate:campaign-dogfood",
+        "crucible-cli",
+        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-dogfood-contract.toml",
+        "checks.crucible.phase9.gates.campaignDogfoodContract",
+    ),
     automated(
         "gate:campaign-model",
         "crucible-campaign",
@@ -294,16 +352,57 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         )],
         "checks.crucible.phase4.gates.campaignMutationScaling",
     ),
-    unsupported("gate:campaign-operator-acceptance", "crucible-cli"),
-    component_automated(
+    automated(
+        "gate:campaign-operational-continuity",
+        "crucible-cli",
+        &[CampaignGateTarget {
+            package: "crucible-cli",
+            kind: CampaignGateTargetKind::IntegrationExact {
+                test_target: "campaign_store_process",
+                selectors: CAMPAIGN_OPERATIONAL_CONTINUITY_SELECTORS,
+                nix_sources: CAMPAIGN_OPERATIONAL_CONTINUITY_NIX_SOURCES,
+                runner: "campaign-store-process-flight",
+                evidence: &[
+                    "gate=gate:campaign-operational-continuity",
+                    "coordinator_executor_restart=true",
+                    "exact_pause=true",
+                    "backend_neutral_archival=true",
+                    "offline_maintenance_transfer=true",
+                    "fast_midpoint_debug=true",
+                ],
+                ignored: false,
+            },
+        }],
+        "checks.crucible.phase9.gates.campaignOperationalContinuity",
+    ),
+    manual(
+        "gate:campaign-operator-acceptance",
+        "crucible-cli",
+        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-operator-acceptance-contract.toml",
+        "checks.crucible.phase9.gates.campaignOperatorAcceptanceContract",
+    ),
+    automated(
         "gate:campaign-replay",
         "crucible-campaign",
         &[
             integration_target("crucible-campaign", "gate_campaign_replay"),
             integration_target("crucible", "gate_campaign_replay"),
+            CampaignGateTarget {
+                package: "crucible-cli",
+                kind: CampaignGateTargetKind::IntegrationExact {
+                    test_target: "campaign_process",
+                    selectors: CAMPAIGN_REPLAY_PRODUCTION_SELECTORS,
+                    nix_sources: CAMPAIGN_REPLAY_PRODUCTION_NIX_SOURCES,
+                    runner: "campaign-process-flight",
+                    evidence: &[
+                        "campaign_production_qemu_exact_checkpoint_replay=true",
+                        "interactive_packaged_capture_replay=true",
+                    ],
+                    ignored: true,
+                },
+            },
         ],
         "checks.crucible.phase4.gates.campaignReplay.rawGate",
-        &["production-qemu", "native"],
     ),
     automated(
         "gate:campaign-statistics",
@@ -351,8 +450,35 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         }],
         "checks.crucible.phase4.gates.controlResponsiveness",
     ),
-    unsupported("gate:e2e-determinism", "crucible-harness"),
-    unsupported("gate:exact-closure-streaming", "crucible-cas"),
+    manual(
+        "gate:e2e-determinism",
+        "crucible-harness",
+        "tests/crucible/e2e-determinism-evidence-contract.toml",
+        "checks.crucible.phase7.gates.e2eDeterminismEvidenceContract",
+    ),
+    automated(
+        "gate:exact-closure-streaming",
+        "crucible-api",
+        &[
+            CampaignGateTarget {
+                package: "crucible-api",
+                kind: CampaignGateTargetKind::LibExact {
+                    selectors: EXACT_CLOSURE_STREAMING_API_SELECTORS,
+                    nix_source: "tests/crucible/phase5-exact-closure-streaming.nix",
+                    ignored: false,
+                },
+            },
+            CampaignGateTarget {
+                package: "crucible-campaign",
+                kind: CampaignGateTargetKind::LibExact {
+                    selectors: EXACT_CLOSURE_STREAMING_CAMPAIGN_SELECTORS,
+                    nix_source: "tests/crucible/phase5-exact-closure-streaming.nix",
+                    ignored: false,
+                },
+            },
+        ],
+        "checks.crucible.phase5.gates.exactClosureStreaming",
+    ),
     automated(
         "gate:hot-fork-equivalence",
         "crucible-daemon",
@@ -366,48 +492,38 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         }],
         "checks.crucible.phase7.qemuHotForkEquivalenceVm",
     ),
-    component_automated(
+    automated(
         "gate:hot-fork-isolation",
         "crucible-daemon",
-        &[
-            CampaignGateTarget {
-                package: "crucible-shmem",
-                kind: CampaignGateTargetKind::LibExact {
-                    selectors: HOT_FORK_ISOLATION_SHMEM_SELECTORS,
-                    nix_source: "tests/crucible/phase7-crucible-hot-fork-isolation.nix",
-                    ignored: false,
-                },
+        &[CampaignGateTarget {
+            package: "crucible-daemon",
+            kind: CampaignGateTargetKind::LibExactAggregate {
+                selectors: WORLD_FORK_ATOMICITY_SELECTORS,
+                producer_nix_source: "tests/crucible/phase7-qemu-hot-fork-atomic-world-vm.nix",
+                producer_nix_attr: "checks.crucible.phase7.gates.worldForkAtomicity",
+                producer_gate: "gate:world-fork-atomicity",
+                aggregate_nix_source: "tests/crucible/phase7-crucible-hot-fork-isolation.nix",
+                evidence: &[
+                    "native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation",
+                ],
+                ignored: true,
             },
-            CampaignGateTarget {
-                package: "crucible-qemu",
-                kind: CampaignGateTargetKind::LibExact {
-                    selectors: HOT_FORK_ISOLATION_QEMU_SELECTORS,
-                    nix_source: "tests/crucible/phase7-crucible-hot-fork-isolation.nix",
-                    ignored: false,
-                },
-            },
-            CampaignGateTarget {
-                package: "crucible-daemon",
-                kind: CampaignGateTargetKind::LibExact {
-                    selectors: HOT_FORK_ISOLATION_DAEMON_SELECTORS,
-                    nix_source: "tests/crucible/phase7-crucible-hot-fork-isolation.nix",
-                    ignored: false,
-                },
-            },
-        ],
+        }],
         "checks.crucible.phase7.gates.hotForkIsolation.rawGate",
-        &[
-            "native-network-device",
-            "native-9p-device",
-            "writable-qcow2-root",
-            "serial",
-            "pidfile",
-            "export-socket",
-            "temp-files",
-            "native-running-sibling-mutation",
-        ],
     ),
-    unsupported("gate:hot-fork-scaling", "crucible-daemon"),
+    automated(
+        "gate:hot-fork-scaling",
+        "crucible-daemon",
+        &[CampaignGateTarget {
+            package: "crucible-daemon",
+            kind: CampaignGateTargetKind::LibExact {
+                selectors: HOT_FORK_SCALING_SELECTORS,
+                nix_source: "tests/crucible/phase7-qemu-hot-fork-scaling-vm.nix",
+                ignored: true,
+            },
+        }],
+        "checks.crucible.phase7.gates.hotForkScaling.rawGate",
+    ),
     automated(
         "gate:lazy-frontier",
         "crucible-campaign",
@@ -447,20 +563,37 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         &[integration_target("crucible-campaign", "gate_typed_choice")],
         "checks.crucible.phase2.gates.typedChoice",
     ),
-    unsupported("gate:typed-choice-product-checkpoint", "crucible-daemon"),
-    component_automated(
+    automated(
+        "gate:typed-choice-product-checkpoint",
+        "crucible-cli",
+        &[CampaignGateTarget {
+            package: "crucible-cli",
+            kind: CampaignGateTargetKind::IntegrationExact {
+                test_target: "campaign_store_process",
+                selectors: TYPED_CHOICE_PRODUCT_CHECKPOINT_SELECTORS,
+                nix_sources: TYPED_CHOICE_PRODUCT_CHECKPOINT_NIX_SOURCES,
+                runner: "campaign-process-flight",
+                evidence: &[
+                    "gate=gate:typed-choice-product-checkpoint",
+                    "proven=typed-guest-registration,fresh-qemu-restore",
+                ],
+                ignored: true,
+            },
+        }],
+        "checks.crucible.phase4.packagedCampaignChoiceVm",
+    ),
+    automated(
         "gate:world-fork-atomicity",
         "crucible-daemon",
         &[CampaignGateTarget {
             package: "crucible-daemon",
             kind: CampaignGateTargetKind::LibExact {
                 selectors: WORLD_FORK_ATOMICITY_SELECTORS,
-                nix_source: "tests/crucible/phase7-world-fork-atomicity.nix",
-                ignored: false,
+                nix_source: "tests/crucible/phase7-qemu-hot-fork-atomic-world-vm.nix",
+                ignored: true,
             },
         }],
-        "checks.crucible.phase7.gates.worldForkAtomicity.rawGate",
-        &["native-real-qemu-matrix", "T-CAM-7.4"],
+        "checks.crucible.phase7.gates.worldForkAtomicity",
     ),
 ];
 

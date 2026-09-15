@@ -2,9 +2,9 @@
 
 use super::decode::FallibleString;
 use crucible::{
-    AppRandomDecision, ChoiceTag, Decision, DeliveryOrderDecision, EventKey, OverrideDecision,
-    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, SchedulerNodeId,
-    SchedulingNodeKind, SchedulingPoint, SelectionDecision,
+    ChoiceTag, Decision, DeliveryOrderDecision, EventKey, OverrideDecision, PreemptionDecision,
+    PreemptionKind, RngDecision, RngStreamId, SchedulerNodeId, SchedulingNodeKind, SchedulingPoint,
+    SelectionDecision,
 };
 
 /// Wire-compatible decision shape with fallible text and sequence ownership.
@@ -18,8 +18,6 @@ pub(super) enum DecisionWire {
     Override(OverrideDecisionWire),
     /// A vCPU switch or interrupt-preemption decision.
     Preemption(PreemptionDecisionWire),
-    /// A served application-requested random value.
-    AppRandom(AppRandomDecisionWire),
     /// A structurally validated campaign selection.
     Selection(
         #[serde(deserialize_with = "super::decode::deserialize_selection_decision")]
@@ -92,16 +90,6 @@ pub(super) struct PreemptionDecisionWire {
     kind: PreemptionKind,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-/// Wire-owned application RNG decision.
-pub(super) struct AppRandomDecisionWire {
-    node: NodeIdWire,
-    stream: RngStreamIdWire,
-    request_id: u64,
-    width: u8,
-    value: u64,
-}
-
 impl From<&Decision> for DecisionWire {
     fn from(decision: &Decision) -> Self {
         match decision {
@@ -125,13 +113,6 @@ impl From<&Decision> for DecisionWire {
                 node: NodeIdWire::from(&decision.node),
                 at: decision.at,
                 kind: decision.kind.clone(),
-            }),
-            Decision::AppRandom(decision) => Self::AppRandom(AppRandomDecisionWire {
-                node: NodeIdWire::from(&decision.node),
-                stream: RngStreamIdWire::from(&decision.stream),
-                request_id: decision.request_id,
-                width: decision.width,
-                value: decision.value,
             }),
             Decision::Selection(decision) => Self::Selection(decision.clone()),
         }
@@ -166,13 +147,6 @@ impl DecisionWire {
                 node: decision.node.into_node_id(),
                 at: decision.at,
                 kind: decision.kind,
-            }),
-            Self::AppRandom(decision) => Decision::AppRandom(AppRandomDecision {
-                node: decision.node.into_node_id(),
-                stream: decision.stream.into_stream_id(),
-                request_id: decision.request_id,
-                width: decision.width,
-                value: decision.value,
             }),
             Self::Selection(decision) => Decision::Selection(decision),
         }
@@ -295,19 +269,12 @@ mod tests {
                 },
             }),
             Decision::Preemption(PreemptionDecision {
-                node: node.clone(),
+                node,
                 at: Icount { retired: 11 },
                 kind: PreemptionKind::InterruptAt {
                     target_vcpu: VcpuId { index: 1 },
                     irq: IrqVector { vector: 32 },
                 },
-            }),
-            Decision::AppRandom(AppRandomDecision {
-                node,
-                stream: RngStreamId::new("app", "stream"),
-                request_id: 13,
-                width: 32,
-                value: 17,
             }),
         ];
         let wire = DecisionVector(decisions.iter().map(DecisionWire::from).collect());

@@ -241,7 +241,7 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "fleet equivalence gate target implemented";
-        needle = "gate: \"gate:fleet-equivalence\",\n        package: \"crucible\",\n        test_target: \"gate_fleet_equivalence\",\n        required_features: &[\"test-double\"],\n        placeholder: false,";
+        needle = "gate: \"gate:fleet-equivalence\",\n        package: \"crucible\",\n        test_target: \"gate_fleet_equivalence\",\n        required_features: &[\"test-double\"],";
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/gate_target_mapping.rs" gateTargetMappingTest [
@@ -263,7 +263,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "phase1 target lint includes fleet equivalence";
-        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible\";\n      testTarget = \"gate_fleet_equivalence\";\n      requiredFeatures = [\"test-double\"];\n      placeholder = false;";
+        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible\";\n      testTarget = \"gate_fleet_equivalence\";\n      requiredFeatures = [\"test-double\"];";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-testing-standards.nix" phase1TestingStandards [

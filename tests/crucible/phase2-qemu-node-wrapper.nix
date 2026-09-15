@@ -132,7 +132,7 @@
       }
       {
         label = "QMP machine control trait";
-        needle = "pub trait QemuQmpMachineControlChannel";
+        needle = "pub(crate) trait QemuQmpMachineControlChannel";
       }
       {
         label = "backend implementation";
@@ -175,14 +175,6 @@
         needle = "self.deliver_frame(input).map_err(BackendError::from)";
       }
       {
-        label = "snapshot maps to QMP";
-        needle = "self.save_checkpoint().map_err(BackendError::from)";
-      }
-      {
-        label = "restore maps to QMP";
-        needle = "self.restore_checkpoint(checkpoint)";
-      }
-      {
         label = "shutdown maps to node shutdown";
         needle = "self.shutdown_child()";
       }
@@ -217,10 +209,6 @@
         needle = "pub const fn child(&self)";
       }
       {
-        label = "public child/channel decomposition escape hatch";
-        needle = "pub fn into_parts";
-      }
-      {
         label = "node child clone implementation";
         needle = "impl Clone for QemuNodeChild";
       }
@@ -249,10 +237,6 @@
       {
         label = "shmem failure test";
         needle = "qemu_node_reports_shmem_failures_as_backend_rejections";
-      }
-      {
-        label = "QMP failure test";
-        needle = "qemu_node_reports_qmp_failures_without_touching_hot_path";
       }
       {
         label = "plugin shutdown failure test";
@@ -373,7 +357,7 @@ in
             hot_path=shared-memory-only
             backend_interface=synchronous
             spawn_fd_passing=covered-by-T-QEMU-7
-            per_quantum_flow=deferred-to-T-QEMU-12
+            per_quantum_flow=shared-memory-start-poll-finish
             child_process_tool=coreutils-sleep
             RESULT
           '';

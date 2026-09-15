@@ -20,9 +20,7 @@ use thiserror::Error;
 use crucible_protocol::{
     DescriptorHandoverError, ReceivedSetup, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
     SetupCompletionError,
-    app_random_branch_plan::{
-        AppRandomBranchPlan, AppRandomBranchPlanError, MAX_APP_RANDOM_BRANCH_PLAN_BYTES,
-    },
+    app_random_branch_plan::AppRandomBranchPlan,
     plugin_send_setup_ack,
     plugin_setup_plan::{PLUGIN_SETUP_PLAN_MAX_BYTES, PluginSetupPlan, PluginSetupPlanError},
     recv_setup_with_descriptors,
@@ -104,16 +102,6 @@ impl ArmedWakeFd {
         } else {
             Err(WakeFdRegisterError::Rejected { status })
         }
-    }
-
-    /// Signals the registered QEMU main-loop handler during plugin teardown.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WakeFdSignalError`] when the eventfd counter cannot accept one
-    /// complete wake value.
-    pub fn signal_teardown(&self) -> Result<(), WakeFdSignalError> {
-        signal_teardown_wake_fd(self.fd.as_raw_fd())
     }
 }
 
@@ -400,14 +388,13 @@ where
         }
     };
 
-    let decoded_plans =
-        match read_plugin_setup_plan(plugin_setup_plan_fd, handshake.proto_version()) {
-            Ok(plans) => plans,
-            Err(source) => {
-                send_setup_failure_ack(writer, PluginSetupFailureStage::ValidatePluginSetupPlan)?;
-                return Err(PluginSetupError::ValidatePluginSetupPlan { source });
-            }
-        };
+    let decoded_plans = match read_plugin_setup_plan(plugin_setup_plan_fd) {
+        Ok(plans) => plans,
+        Err(source) => {
+            send_setup_failure_ack(writer, PluginSetupFailureStage::ValidatePluginSetupPlan)?;
+            return Err(PluginSetupError::ValidatePluginSetupPlan { source });
+        }
+    };
 
     // The mmap lifetime is carried by `MappedSetupRegion`; no raw pointer to
     // shmem escapes setup without that owner and the validated-region token.
@@ -488,7 +475,6 @@ struct DecodedPluginSetupPlans {
 #[cfg(target_os = "linux")]
 fn read_plugin_setup_plan(
     fd: OwnedFd,
-    protocol_version: u32,
 ) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
     let required_seals =
         libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
@@ -529,11 +515,7 @@ fn read_plugin_setup_plan(
     if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
         return Err(PluginSetupPlanDescriptorError::NotRegular);
     }
-    let maximum = if protocol_version >= 3 {
-        PLUGIN_SETUP_PLAN_MAX_BYTES
-    } else {
-        MAX_APP_RANDOM_BRANCH_PLAN_BYTES
-    };
+    let maximum = PLUGIN_SETUP_PLAN_MAX_BYTES;
     let length = usize::try_from(stat.st_size).map_err(|_error| {
         PluginSetupPlanDescriptorError::InvalidLength {
             bytes: usize::MAX,
@@ -585,28 +567,18 @@ fn read_plugin_setup_plan(
         }
         read += count;
     }
-    if protocol_version >= 3 {
-        let plan = PluginSetupPlan::decode(&bytes)
-            .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?;
-        let (app_random_branch_plan, selectable_catalog_plan) = plan.into_parts();
-        Ok(DecodedPluginSetupPlans {
-            app_random_branch_plan,
-            selectable_catalog_plan: Some(selectable_catalog_plan),
-        })
-    } else {
-        let app_random_branch_plan = AppRandomBranchPlan::decode(&bytes)
-            .map_err(|source| PluginSetupPlanDescriptorError::DecodeAppRandom { source })?;
-        Ok(DecodedPluginSetupPlans {
-            app_random_branch_plan,
-            selectable_catalog_plan: None,
-        })
-    }
+    let plan = PluginSetupPlan::decode(&bytes)
+        .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?;
+    let (app_random_branch_plan, selectable_catalog_plan) = plan.into_parts();
+    Ok(DecodedPluginSetupPlans {
+        app_random_branch_plan,
+        selectable_catalog_plan: Some(selectable_catalog_plan),
+    })
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn read_plugin_setup_plan(
     _fd: OwnedFd,
-    _protocol_version: u32,
 ) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
     Err(PluginSetupPlanDescriptorError::UnsupportedPlatform)
 }
@@ -841,11 +813,6 @@ pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
         .encode()
         .unwrap_or_else(|error| panic!("test plugin setup plan must encode: {error}"));
     test_sealed_setup_plan_fd(&bytes)
-}
-
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) fn test_legacy_plugin_setup_plan_fd() -> OwnedFd {
-    test_sealed_setup_plan_fd(&AppRandomBranchPlan::default().encode())
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -1099,12 +1066,6 @@ pub enum PluginSetupPlanDescriptorError {
         expected: usize,
         /// Bytes read before EOF.
         actual: usize,
-    },
-    /// The v2 descriptor body was not a canonical app-random plan.
-    #[error("v2 app-random branch-plan body is invalid: {source}")]
-    DecodeAppRandom {
-        /// Canonical app-random plan failure.
-        source: AppRandomBranchPlanError,
     },
     /// The v3 descriptor body was not a canonical composite plugin plan.
     #[error("v3 composite plugin setup-plan body is invalid: {source}")]

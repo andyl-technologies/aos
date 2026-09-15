@@ -22,13 +22,15 @@ use crate::{HotCheckpointFallbackRetentionAdmin, HotCheckpointFallbackRetentionE
 
 #[cfg(target_os = "linux")]
 use super::CampaignGcHotCheckpointRoots;
+#[cfg(test)]
+use super::CampaignGcRawPhysicalStore;
+use super::planner::CampaignGcInventoryTarget;
 use super::roots::{CampaignGcRootInventoryError, RootAccumulator, inventory_authoritative_refs};
 use super::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidateManifest, CampaignGcCandidateReason,
     CampaignGcJournalError, CampaignGcJournalPhase, CampaignGcManifestError,
-    CampaignGcPhysicalStore, CampaignGcPlanError, CampaignGcPlanVersion,
-    CampaignGcRetentionSources, CampaignGcRootManifest, DirectoryCampaignGcJournal,
-    MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
+    CampaignGcPhysicalStore, CampaignGcPlanError, CampaignGcRetentionSources,
+    CampaignGcRootManifest, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
 };
 
 /// Terminal disposition of one idempotent campaign GC apply request.
@@ -307,6 +309,56 @@ where
     L: AssignmentRetentionAdmin,
     L::Error: StdError + Send + Sync + 'static,
 {
+    apply_single_host_campaign_gc_with_physical_strategy(
+        journal,
+        sources,
+        store_graph,
+        physical,
+        authenticate_policy_sources,
+        apply_candidates,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn apply_single_host_campaign_gc_with_raw_physical<L>(
+    journal: &mut DirectoryCampaignGcJournal,
+    sources: CampaignGcApplySources<'_, '_, '_, '_, '_, L>,
+    store_graph: crucible_campaign::CampaignHash,
+    physical: &[CampaignGcRawPhysicalStore<'_>],
+) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
+where
+    L: AssignmentRetentionAdmin,
+    L::Error: StdError + Send + Sync + 'static,
+{
+    apply_single_host_campaign_gc_with_physical_strategy(
+        journal,
+        sources,
+        store_graph,
+        physical,
+        |_journal, _physical, _current_reachable| Ok(()),
+        apply_raw_candidates,
+    )
+}
+
+fn apply_single_host_campaign_gc_with_physical_strategy<'a, L, P, A, D>(
+    journal: &mut DirectoryCampaignGcJournal,
+    sources: CampaignGcApplySources<'_, '_, '_, '_, '_, L>,
+    store_graph: crucible_campaign::CampaignHash,
+    physical: &[P],
+    authenticate: A,
+    delete: D,
+) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
+where
+    L: AssignmentRetentionAdmin,
+    L::Error: StdError + Send + Sync + 'static,
+    P: CampaignGcInventoryTarget<'a>,
+    A: FnOnce(
+        &DirectoryCampaignGcJournal,
+        &[P],
+        &std::collections::BTreeSet<ContentId>,
+    ) -> Result<(), CampaignGcApplyError<L::Error>>,
+    D: FnOnce(&DirectoryCampaignGcJournal, &[P]) -> Result<(), CampaignGcApplyError<L::Error>>,
+{
     let CampaignGcApplySources {
         repository,
         refs,
@@ -450,15 +502,10 @@ where
         validate_physical_inventory(target, planned, journal.candidates(), fence.as_mut())?;
     }
 
-    if journal.plan().version() == CampaignGcPlanVersion::V2 {
-        authenticate_policy_sources(journal, physical, &current_reachable)?;
-    }
+    authenticate(journal, physical, &current_reachable)?;
 
     journal.begin_apply()?;
-    match journal.plan().version() {
-        CampaignGcPlanVersion::V1 => apply_v1_candidates(journal, physical)?,
-        CampaignGcPlanVersion::V2 => apply_v2_candidates(journal, physical)?,
-    }
+    delete(journal, physical)?;
     journal.mark_complete()?;
     Ok(apply_report(journal, CampaignGcApplyStatus::Applied))
 }
@@ -474,23 +521,6 @@ fn apply_report(
         reachable_cache_candidates: journal.candidates().reachable_cache_candidates(),
         logical_bytes: journal.plan().candidates().logical_bytes(),
     }
-}
-
-fn apply_v1_candidates<E>(
-    journal: &DirectoryCampaignGcJournal,
-    physical: &[CampaignGcPhysicalStore<'_>],
-) -> Result<(), CampaignGcApplyError<E>>
-where
-    E: StdError + 'static,
-{
-    for (target, planned) in physical.iter().zip(journal.plan().physical()) {
-        let mut fence = acquire_physical_fence(*target)?;
-        validate_physical_inventory(target, planned, journal.candidates(), fence.as_mut())?;
-        for candidate in journal.candidates().for_backend(target.backend()) {
-            delete_exact_candidate(*target, fence.as_mut(), candidate.id())?;
-        }
-    }
-    Ok(())
 }
 
 fn authenticate_policy_sources<E>(
@@ -511,12 +541,8 @@ where
         let cache_index = physical_index(physical, candidate.backend())?;
         let source_index = physical_index(physical, required_backend)?;
         let kind = candidate.id().kind();
-        let cache_role = physical[cache_index]
-            .graph()
-            .and_then(|graph| graph.retention(kind));
-        let source_role = physical[source_index]
-            .graph()
-            .and_then(|graph| graph.retention(kind));
+        let cache_role = physical[cache_index].graph().retention(kind);
+        let source_role = physical[source_index].graph().retention(kind);
         if !current_reachable.contains(&candidate.id())
             || candidate.backend() == required_backend
             || cache_role != Some(StoreGraphPhysicalRetention::ReadThroughCache)
@@ -552,9 +578,7 @@ where
         let expected = &journal.plan().physical()[source_index];
         validate_required_copy_fence(source, expected, candidate.id(), candidate.logical_length())?;
 
-        let graph = source
-            .graph()
-            .ok_or(CampaignGcApplyError::PhysicalInputsChanged)?;
+        let graph = source.graph();
         let handle =
             graph
                 .read(candidate.id())
@@ -582,7 +606,7 @@ where
     Ok(())
 }
 
-fn apply_v2_candidates<E>(
+fn apply_candidates<E>(
     journal: &DirectoryCampaignGcJournal,
     physical: &[CampaignGcPhysicalStore<'_>],
 ) -> Result<(), CampaignGcApplyError<E>>
@@ -636,14 +660,40 @@ where
     Ok(())
 }
 
-fn delete_v2_single<E>(
-    target: CampaignGcPhysicalStore<'_>,
+#[cfg(test)]
+fn apply_raw_candidates<E>(
+    journal: &DirectoryCampaignGcJournal,
+    physical: &[CampaignGcRawPhysicalStore<'_>],
+) -> Result<(), CampaignGcApplyError<E>>
+where
+    E: StdError + 'static,
+{
+    let mut rolling = journal.plan().physical().to_vec();
+    for candidate in journal.candidates().iter() {
+        if !matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable) {
+            return Err(CampaignGcApplyError::PhysicalInputsChanged);
+        }
+
+        let target_index = physical_index(physical, candidate.backend())?;
+        rolling[target_index] = delete_v2_single(
+            physical[target_index],
+            &rolling[target_index],
+            candidate.id(),
+            candidate.logical_length(),
+        )?;
+    }
+    Ok(())
+}
+
+fn delete_v2_single<'a, E, P>(
+    target: P,
     expected: &CampaignGcBlobInventoryBasis,
     id: ContentId,
     logical_length: u64,
 ) -> Result<CampaignGcBlobInventoryBasis, CampaignGcApplyError<E>>
 where
     E: StdError + 'static,
+    P: CampaignGcInventoryTarget<'a>,
 {
     let mut fence = acquire_physical_fence(target)?;
     validate_fenced_placement(target, expected, id, logical_length, fence.as_mut())?;
@@ -708,7 +758,7 @@ where
     E: StdError + 'static,
 {
     validate_fenced_placement(cache, cache_expected, id, logical_length, cache_fence)?;
-    validate_fenced_placement::<E>(source, source_expected, id, logical_length, source_fence)
+    validate_fenced_placement::<E, _>(source, source_expected, id, logical_length, source_fence)
         .map_err(|_| CampaignGcApplyError::RequiredCopyChanged {
             backend: source.backend().to_owned(),
             id,
@@ -727,7 +777,7 @@ where
     E: StdError + 'static,
 {
     let mut fence = acquire_physical_fence(source)?;
-    validate_fenced_placement::<E>(source, expected, id, logical_length, fence.as_mut()).map_err(
+    validate_fenced_placement::<E, _>(source, expected, id, logical_length, fence.as_mut()).map_err(
         |_| CampaignGcApplyError::RequiredCopyChanged {
             backend: source.backend().to_owned(),
             id,
@@ -735,8 +785,8 @@ where
     )
 }
 
-fn validate_fenced_placement<E>(
-    target: CampaignGcPhysicalStore<'_>,
+fn validate_fenced_placement<'a, E, P>(
+    target: P,
     expected: &CampaignGcBlobInventoryBasis,
     id: ContentId,
     logical_length: u64,
@@ -744,6 +794,7 @@ fn validate_fenced_placement<E>(
 ) -> Result<(), CampaignGcApplyError<E>>
 where
     E: StdError + 'static,
+    P: CampaignGcInventoryTarget<'a>,
 {
     let mut found = false;
     let summary = fence
@@ -757,7 +808,7 @@ where
             backend: target.backend().to_owned(),
             source,
         })?;
-    let current = CampaignGcBlobInventoryBasis::from_policy_aware_summary(&summary)?;
+    let current = CampaignGcBlobInventoryBasis::from_summary(&summary)?;
     if !found || current != *expected {
         return Err(CampaignGcApplyError::CandidateSetChanged {
             backend: target.backend().to_owned(),
@@ -766,8 +817,8 @@ where
     Ok(())
 }
 
-fn refreshed_basis_after_delete<E>(
-    target: CampaignGcPhysicalStore<'_>,
+fn refreshed_basis_after_delete<'a, E, P>(
+    target: P,
     prior: &CampaignGcBlobInventoryBasis,
     deleted: ContentId,
     logical_length: u64,
@@ -775,6 +826,7 @@ fn refreshed_basis_after_delete<E>(
 ) -> Result<CampaignGcBlobInventoryBasis, CampaignGcApplyError<E>>
 where
     E: StdError + 'static,
+    P: CampaignGcInventoryTarget<'a>,
 {
     let mut still_present = false;
     let summary = fence
@@ -786,7 +838,7 @@ where
             backend: target.backend().to_owned(),
             source,
         })?;
-    let current = CampaignGcBlobInventoryBasis::from_policy_aware_summary(&summary)?;
+    let current = CampaignGcBlobInventoryBasis::from_summary(&summary)?;
     let expected_objects = prior.objects().checked_sub(1);
     let expected_bytes = prior.logical_bytes().checked_sub(logical_length);
     if still_present
@@ -802,13 +854,14 @@ where
     Ok(current)
 }
 
-fn delete_exact_candidate<E>(
-    target: CampaignGcPhysicalStore<'_>,
+fn delete_exact_candidate<'a, E, P>(
+    target: P,
     fence: &mut dyn BlobInventoryFence,
     id: ContentId,
 ) -> Result<(), CampaignGcApplyError<E>>
 where
     E: StdError + 'static,
+    P: CampaignGcInventoryTarget<'a>,
 {
     match fence
         .delete_candidate(id)
@@ -823,11 +876,12 @@ where
     }
 }
 
-fn acquire_physical_fence<'a, E>(
-    target: CampaignGcPhysicalStore<'a>,
+fn acquire_physical_fence<'a, E, P>(
+    target: P,
 ) -> Result<Box<dyn BlobInventoryFence + 'a>, CampaignGcApplyError<E>>
 where
     E: StdError + 'static,
+    P: CampaignGcInventoryTarget<'a>,
 {
     target
         .admin()
@@ -838,12 +892,10 @@ where
         })
 }
 
-fn physical_index<E>(
-    physical: &[CampaignGcPhysicalStore<'_>],
-    backend: &str,
-) -> Result<usize, CampaignGcApplyError<E>>
+fn physical_index<'a, E, P>(physical: &[P], backend: &str) -> Result<usize, CampaignGcApplyError<E>>
 where
     E: StdError + 'static,
+    P: CampaignGcInventoryTarget<'a>,
 {
     physical
         .binary_search_by_key(&backend, |target| target.backend())
@@ -858,14 +910,12 @@ fn validate_unique_policy_identity<E>(
 where
     E: StdError + 'static,
 {
-    let identity = basis
-        .storage_identity()
-        .ok_or(CampaignGcApplyError::PhysicalInputsChanged)?;
+    let identity = basis.storage_identity();
     if journal
         .plan()
         .physical()
         .iter()
-        .filter(|candidate| candidate.storage_identity() == Some(identity))
+        .filter(|candidate| candidate.storage_identity() == identity)
         .count()
         != 1
     {
@@ -1046,12 +1096,13 @@ where
     }
 }
 
-fn validate_physical_basis<E>(
+fn validate_physical_basis<'a, E, P>(
     journal: &DirectoryCampaignGcJournal,
-    physical: &[CampaignGcPhysicalStore<'_>],
+    physical: &[P],
 ) -> Result<(), CampaignGcApplyError<E>>
 where
     E: StdError + 'static,
+    P: CampaignGcInventoryTarget<'a>,
 {
     if physical.is_empty()
         || physical.len() > MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES
@@ -1072,14 +1123,15 @@ where
     Ok(())
 }
 
-fn validate_physical_inventory<E>(
-    target: &CampaignGcPhysicalStore<'_>,
+fn validate_physical_inventory<'a, E, P>(
+    target: &P,
     planned: &CampaignGcBlobInventoryBasis,
     candidates: &CampaignGcCandidateManifest,
     fence: &mut dyn BlobInventoryFence,
 ) -> Result<(), CampaignGcApplyError<E>>
 where
     E: StdError + 'static,
+    P: CampaignGcInventoryTarget<'a>,
 {
     let expected_candidates = candidates.for_backend(target.backend());
     let mut observed_candidates = 0_usize;
@@ -1103,7 +1155,7 @@ where
             backend: target.backend().to_owned(),
             source,
         })?;
-    let current = basis_for_planned_summary(planned, &inventory)?;
+    let current = CampaignGcBlobInventoryBasis::from_summary(&inventory)?;
     if current != *planned {
         return Err(CampaignGcApplyError::PhysicalBasisChanged {
             backend: target.backend().to_owned(),
@@ -1115,15 +1167,4 @@ where
         });
     }
     Ok(())
-}
-
-fn basis_for_planned_summary(
-    planned: &CampaignGcBlobInventoryBasis,
-    summary: &crucible_cas::content_store::BlobInventorySummary,
-) -> Result<CampaignGcBlobInventoryBasis, CampaignGcPlanError> {
-    if planned.storage_identity().is_some() {
-        CampaignGcBlobInventoryBasis::from_policy_aware_summary(summary)
-    } else {
-        CampaignGcBlobInventoryBasis::from_summary(summary)
-    }
 }

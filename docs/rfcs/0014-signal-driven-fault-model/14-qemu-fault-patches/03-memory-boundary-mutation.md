@@ -1,4 +1,4 @@
-# Patch 0049 — `crucible-memory-boundary-mutate`
+# Capability task 0049 — `crucible-memory-boundary-mutate`
 
 ## Purpose
 
@@ -13,7 +13,8 @@ mutation, or debugger writes.
   `qemu.memory.mutate.x86_64.v1` or
   `qemu.memory.mutate.aarch64.v1`. The closed payload selects GPA or GVA;
   the GVA form additionally requires exact translation evidence.
-- Depends on 0047–0048 and existing raw-state/dirty-tracking facilities.
+- Requires the capabilities specified by capability tasks 0047–0048 and the
+  existing raw-state/dirty-tracking facilities.
 
 ## Command payload
 
@@ -58,10 +59,10 @@ entire all-or-nothing command before mutation.
 QEMU resolves every fragment, reads and hashes all before bytes, validates the
 precondition, constructs all after bytes, then writes fragments under the safe
 boundary. On any failure before commit, no byte changes. A failure during commit
-is an internal fatal error because the patch must prove its RAM writes cannot
+is an internal fatal error because the capability must prove its RAM writes cannot
 partially fail after validation.
 
-The patch uses QEMU's normal-RAM commit path to update dirty tracking and
+The atomic patch uses QEMU's normal-RAM commit path to update dirty tracking and
 migration state and to invalidate code/TB state. It does not claim device or
 IOMMU observer semantics because those targets are outside the closed version-1
 target set. Executable-page mutation invalidates affected translated blocks
@@ -83,7 +84,8 @@ icount, vCPU context, and node fingerprint.
 ## VMState
 
 Applied RAM changes flow through ordinary RAM/dirty snapshot state. Pending
-commands are serialized by patch 0067. No separate mutation shadow memory exists.
+commands use the VMState capability specified by capability task 0067. No
+separate mutation shadow memory exists.
 
 ## Live microtests
 
@@ -94,7 +96,8 @@ commands are serialized by patch 0067. No separate mutation shadow memory exists
 3. Apply overlapping commands in permuted submission order and verify canonical
    intermediate/final bytes.
 4. Save before/after mutation and prove restore/fingerprint equivalence.
-5. Revert patch and prove capability/mutation live gate fails.
+5. Run the capability/mutation gate against pristine QEMU and prove it fails
+   closed.
 6. Compare non-sim patched and unpatched QEMU.
 7. At one live signal boundary, mutate writable guest RAM without advancing
    icount and require the RAM component of the production execution fingerprint

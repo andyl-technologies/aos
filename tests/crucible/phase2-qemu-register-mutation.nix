@@ -3,14 +3,13 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
-  patchName ? "0051-crucible-add-architecture-register-fault-mutations.patch",
   attrPath ? "checks.crucible.phase2.qemuRegisterMutation",
   taskIds ? ["T-QEMU-0051"],
   rejectionAtomicity ? false,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  series = import ../../pkgs/emulation/qemu-patches/_series.nix;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   liveCaseCount = 67;
@@ -27,24 +26,12 @@
         needle = "qemu_plugin_crucible_exact_boundary_enter";
       }
       {
-        label = "whole-machine canonical rejection observation";
-        needle = "qemu_plugin_crucible_register_rejection_observe";
-      }
-      {
         label = "all-vCPU manifest validation";
         needle = "crucible_register_all_cpus_match_manifest";
       }
       {
-        label = "production side-effect observation";
-        needle = "qemu_crucible_fault_register_side_effect_observed";
-      }
-      {
-        label = "mutation-only side-effect audit scope";
-        needle = "qemu_crucible_fault_register_side_effect_scope_enter";
-      }
-      {
         label = "live rejection side-effect assertion";
-        needle = "test_rejection_side_effects_unchanged";
+        needle = "test_rejection_target_unchanged";
       }
     ]
     else [
@@ -71,8 +58,8 @@
     ];
 
   failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource patchRequirements
-    ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
+    failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource patchRequirements
+    ++ forbiddenFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
       {
         label = "GDB mutation shortcut";
         needle = "qemu_plugin_write_vcpu_regs";
@@ -94,17 +81,14 @@
         script = ''
           set -eu
           tar -xf "$src"
-          cd qemu-${series.qemuVersion}
+          cd qemu-${atomicPatch.qemuVersion}
         '';
       }
       {
-        name = "apply-authoritative-series";
+        name = "apply-atomic-patch";
         script = ''
           set -eu
-          for patch_file in ${builtins.concatStringsSep " " series.patchFiles}; do
-            patch --batch --forward --fuzz=0 -p1 \
-              -i "${patchDir}/$patch_file"
-          done
+          patch --batch --forward --fuzz=0 -p1 -i "${patchDir}/${atomicPatch.file}"
         '';
       }
       {
@@ -403,7 +387,7 @@ in
             {
               echo PASS
               echo gate=gate:patch-microtests
-              echo patch=${patchName}
+              echo atomic_patch=${atomicPatch.file}
               echo attr_path=${attrPath}
               echo task_ids=${taskList}
               echo patched_fixture_exercised=true

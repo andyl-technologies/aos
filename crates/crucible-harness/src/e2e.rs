@@ -225,8 +225,8 @@ pub struct E2eBuildIdentity {
     pub backend: String,
     /// Deterministic mock backend build id.
     pub backend_build_id: String,
-    /// Hash of the ordered QEMU patch series applied to the producer backend.
-    pub qemu_patch_series_hash: String,
+    /// Hash of the ordered QEMU atomic patch applied to the producer backend.
+    pub qemu_atomic_patch_hash: String,
     /// Shared-memory ABI version used by the producer backend.
     pub shmem_abi_version: String,
     /// Guest-host channel protocol version used by the producer backend.
@@ -544,13 +544,13 @@ pub fn canonical_mock_build_identity() -> E2eBuildIdentity {
         harness_abi: String::from("crucible-harness-e2e-v2"),
         backend: String::from("simdouble-mock"),
         backend_build_id: String::from("mock-backend-source-v1"),
-        qemu_patch_series_hash: String::from(
-            "crucible-hash:68444481cdcf0b86f376d0dafe6cfd40c39ba1fcecbab2a371a96d864fd3378c",
+        qemu_atomic_patch_hash: String::from(
+            "crucible-hash:bb8652e0f803e32916bc29fbfe5e57f49c3d7d392d326ddfcb9f4103609e832a",
         ),
         shmem_abi_version: CANONICAL_SHMEM_ABI_VERSION.to_string(),
         guest_host_protocol_version: CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string(),
-        rpc_abi_version: String::from("5.1.0"),
-        rpc_abi_build: String::from("crucible-rpc-abi-v5"),
+        rpc_abi_version: String::from("6.0.0"),
+        rpc_abi_build: String::from("crucible-rpc-abi-v6"),
         plugin_abi: String::from("simdouble-mock-plugin-abi"),
     }
 }
@@ -1119,7 +1119,7 @@ impl E2eReproductionArtifact {
                 CanonicalField::Str(&self.build_identity.harness_abi),
                 CanonicalField::Str(&self.build_identity.backend),
                 CanonicalField::Str(&self.build_identity.backend_build_id),
-                CanonicalField::Str(&self.build_identity.qemu_patch_series_hash),
+                CanonicalField::Str(&self.build_identity.qemu_atomic_patch_hash),
                 CanonicalField::Str(&self.build_identity.shmem_abi_version),
                 CanonicalField::Str(&self.build_identity.guest_host_protocol_version),
                 CanonicalField::Str(&self.build_identity.rpc_abi_version),

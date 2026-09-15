@@ -555,10 +555,12 @@ impl CampaignRepository {
             return Err(integrity("SMC request cause is not a planner"));
         };
         let expected = BranchRequest::new(
-            basis.opportunity().branch_point_id(basis.configuration()),
-            basis.parent(),
-            basis.opportunity().id()?,
-            basis.domain().id()?,
+            BranchRequest::identity(
+                basis.opportunity().branch_point_id(basis.configuration()),
+                basis.parent(),
+                basis.opportunity().id()?,
+                basis.domain().id()?,
+            ),
             CandidateSource::statistical_smc(
                 generation.id(),
                 particle.id(),

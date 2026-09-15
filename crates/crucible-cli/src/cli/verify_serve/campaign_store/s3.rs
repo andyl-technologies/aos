@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use aws_credential_types::Credentials;
 use aws_credential_types::provider::{ProvideCredentials, error::CredentialsError, future};
@@ -76,7 +76,6 @@ impl ResolvedS3RefBackend {
     pub(super) fn build(
         self,
         capabilities: &LoadedS3Capabilities,
-        observational: bool,
     ) -> Result<Arc<S3RefBackend>, CliError> {
         let strong = capabilities
             .strong
@@ -87,11 +86,7 @@ impl ResolvedS3RefBackend {
             })?;
         let capability = StoreS3RefCapability::new(self.endpoint, self.bucket, self.prefix, strong)
             .map_err(|error| campaign_store_error(format!("invalid S3 ref backend: {error}")))?;
-        Ok(Arc::new(if observational {
-            S3RefBackend::new_observational(capability)
-        } else {
-            S3RefBackend::new(capability)
-        }))
+        Ok(Arc::new(S3RefBackend::new(capability)))
     }
 }
 
@@ -402,17 +397,20 @@ impl AuthoredS3Credentials {
         if let Some(token) = self.session_token.as_deref() {
             validate_secret_field(token, MAX_S3_SESSION_TOKEN_BYTES, "session token")?;
         }
-        let expiry = self
-            .expires_at_unix_seconds
-            .map(|seconds| {
-                UNIX_EPOCH
-                    .checked_add(Duration::from_secs(seconds))
-                    .ok_or_else(|| campaign_store_error("S3 credential expiry is invalid"))
-            })
-            .transpose()?;
-        if expiry.is_some_and(|expiry| expiry <= operational_wall_clock_now()) {
-            return Err(campaign_store_error("S3 credential is expired"));
-        }
+        let expiry = if let Some(seconds) = self.expires_at_unix_seconds {
+            let expiry = crate::host_boundary::system_time_from_unix_seconds(seconds)
+                .ok_or_else(|| campaign_store_error("S3 credential expiry is invalid"))?;
+            let current_seconds =
+                crate::host_boundary::operational_wall_clock_seconds().map_err(|error| {
+                    campaign_store_error(format!("cannot read the host wall clock: {error}"))
+                })?;
+            if seconds <= current_seconds {
+                return Err(campaign_store_error("S3 credential is expired"));
+            }
+            Some(expiry)
+        } else {
+            None
+        };
         let mut builder = Credentials::builder()
             .access_key_id(self.access_key_id.clone())
             .secret_access_key(self.secret_access_key.clone())
@@ -425,15 +423,6 @@ impl AuthoredS3Credentials {
         }
         Ok(builder.build())
     }
-}
-
-// Credential expiry is an operational deployment-admission decision. The
-// observed wall clock never enters a campaign object, graph identity, or
-// deterministic execution result.
-// crucible-lint: allow clippy-disallowed-method -- host time rejects expired deployment credentials and never enters canonical state.
-#[allow(clippy::disallowed_methods)]
-fn operational_wall_clock_now() -> SystemTime {
-    SystemTime::now()
 }
 
 fn validate_secret_field(value: &str, maximum: usize, role: &str) -> Result<(), CliError> {

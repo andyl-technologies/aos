@@ -150,8 +150,8 @@
         needle = ".enqueue(self.view.outbound_entries";
       }
       {
-        label = "SPSC inbound dequeue";
-        needle = ".dequeue(self.view.inbound_entries)";
+        label = "SPSC outbound dequeue";
+        needle = ".dequeue(self.view.outbound_entries)";
       }
       {
         label = "stale report rejection";
@@ -182,12 +182,12 @@
         needle = "qemu_quantum_reports_idle_before_horizon";
       }
       {
-        label = "lookahead rejection test";
-        needle = "qemu_quantum_rejects_horizon_that_would_pass_possible_frame_delivery";
+        label = "lookahead horizon cap test";
+        needle = "qemu_quantum_caps_horizon_at_next_possible_frame_delivery";
       }
       {
-        label = "outbound frame test";
-        needle = "qemu_quantum_drains_plugin_emitted_frames_toward_router";
+        label = "outbound frame retention and drain test";
+        needle = "qemu_quantum_repoll_retains_and_drains_one_outbound_frame_once";
       }
       {
         label = "forbidden plane test";
@@ -294,7 +294,6 @@ in
             qmp_per_quantum=forbidden
             plugin_ipc_per_quantum=forbidden
             exact_injection_contract=qemu-level
-            bounded_async_wait_pending=T-QEMU-14
             rust_tests=crucible-qemu::quantum::tests
             RESULT
           '';

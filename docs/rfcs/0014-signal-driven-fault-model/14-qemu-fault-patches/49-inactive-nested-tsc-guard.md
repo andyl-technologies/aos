@@ -1,8 +1,8 @@
-# 0098 - Inactive nested TSC guard
+# Capability task 0098 — Inactive nested TSC guard
 
 ## Purpose
 
-Patch `0098` restores inactive-path parity for x86 SVM entry and exit. The
+Capability task 0098 provides inactive-path parity for x86 SVM entry and exit. The
 guest-clock discontinuity hook already returns immediately for an inactive TSC
 fault source, but C evaluates its `cpu_get_tsc()` arguments first. That virtual
 clock read can account the current virtualization instruction before QEMU
@@ -20,7 +20,7 @@ to preserve its modeled value across offset discontinuities.
 
 ## Files and license scope
 
-The patch modifies GPL-side `target/i386/tcg/system/svm_helper.c`. It changes no
+The atomic patch modifies GPL-side `target/i386/tcg/system/svm_helper.c`. It changes no
 shared-memory or control wire format and adds no QEMU file.
 
 ## Required gates

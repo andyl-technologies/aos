@@ -1,10 +1,11 @@
-//! Versioned text encoding for authenticated campaign Finding evidence.
+//! Canonical campaign-findings encoding for authenticated campaign evidence.
 //!
-//! V4 embeds each canonical request and authenticated response as lowercase
-//! hexadecimal while keeping finding and occurrence counts explicit:
+//! The campaign ledger embeds each canonical request and authenticated response
+//! as lowercase hexadecimal while keeping finding and occurrence counts explicit:
 //!
 //! ```text
 //! crucible.failure-triage.findings-ledger.v4
+//! ledger_kind=campaign
 //! finding_count=1
 //! finding.0.campaign=nightly-search
 //! finding.0.campaign_snapshot=crucible-campaign-snapshot:...
@@ -17,6 +18,62 @@
 
 use super::service::{authenticate_campaign_triage_finding, validate_campaign_triage_finding};
 use super::*;
+use crate::cli_triage_debug::ledger_format::{
+    ledger_hex, parse_reproduction_finding_evidence, parse_required_hash_field,
+    reproduction_findings_ledger_bytes, required_field,
+};
+
+const MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES: usize = 1024 * 1024 * 1024;
+
+struct BoundedCampaignLedger {
+    bytes: Vec<u8>,
+    encoded_bytes: usize,
+    exceeded_limit: bool,
+    maximum_bytes: usize,
+}
+
+impl BoundedCampaignLedger {
+    fn with_maximum_bytes(maximum_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            encoded_bytes: 0,
+            exceeded_limit: false,
+            maximum_bytes,
+        }
+    }
+
+    fn push(&mut self, line: String) {
+        if self.exceeded_limit {
+            return;
+        }
+        let Some(next_len) = self
+            .encoded_bytes
+            .checked_add(line.len())
+            .and_then(|length| length.checked_add(1))
+        else {
+            self.exceeded_limit = true;
+            return;
+        };
+        if next_len > self.maximum_bytes {
+            self.exceeded_limit = true;
+            return;
+        }
+
+        self.bytes.extend_from_slice(line.as_bytes());
+        self.bytes.push(b'\n');
+        self.encoded_bytes = next_len;
+    }
+
+    fn finish(self) -> Result<Vec<u8>, CliError> {
+        if self.exceeded_limit {
+            let maximum_bytes = self.maximum_bytes;
+            return Err(artifact_error(format!(
+                "campaign findings ledger exceeds {maximum_bytes} bytes"
+            )));
+        }
+        Ok(self.bytes)
+    }
+}
 
 fn parse_campaign_hex_bytes(index: usize, field: &str, value: &str) -> Result<Vec<u8>, CliError> {
     let maximum_hex_bytes = crucible_campaign::MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES
@@ -30,14 +87,20 @@ fn parse_campaign_hex_bytes(index: usize, field: &str, value: &str) -> Result<Ve
     super::parse_hex_bytes(index, field, value)
 }
 
-pub(crate) fn parse_failure_findings_ledger_v4_bytes(
+pub(crate) fn parse_campaign_findings_ledger_bytes(
     store: &crucible::LocalDagStore,
     bytes: &[u8],
     text: &str,
 ) -> Result<LoadedTriageFindings, CliError> {
+    if bytes.len() > MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES {
+        return Err(artifact_error(format!(
+            "campaign findings ledger exceeds {MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES} bytes"
+        )));
+    }
+
     let mut by_index = BTreeMap::<usize, BTreeMap<String, String>>::new();
     let mut finding_count = None;
-    for line in text.lines().skip(1) {
+    for line in text.lines().skip(2) {
         if line.trim().is_empty() {
             continue;
         }
@@ -46,29 +109,25 @@ pub(crate) fn parse_failure_findings_ledger_v4_bytes(
                 .replace(
                     value
                         .parse::<usize>()
-                        .map_err(|_| artifact_error("malformed v4 findings count"))?,
+                        .map_err(|_| artifact_error("malformed campaign findings count"))?,
                 )
                 .is_some()
             {
-                return Err(artifact_error("duplicate v4 findings count"));
+                return Err(artifact_error("duplicate campaign findings count"));
             }
             continue;
         }
         let Some(rest) = line.strip_prefix("finding.") else {
-            return Err(artifact_error("malformed v4 campaign findings ledger line"));
+            return Err(artifact_error("malformed campaign findings ledger line"));
         };
         let Some((index, field_value)) = rest.split_once('.') else {
-            return Err(artifact_error(
-                "malformed v4 campaign findings ledger field",
-            ));
+            return Err(artifact_error("malformed campaign findings ledger field"));
         };
         let index = index
             .parse::<usize>()
-            .map_err(|_| artifact_error("malformed v4 campaign findings ledger index"))?;
+            .map_err(|_| artifact_error("malformed campaign findings ledger index"))?;
         let Some((field, value)) = field_value.split_once('=') else {
-            return Err(artifact_error(
-                "malformed v4 campaign findings ledger value",
-            ));
+            return Err(artifact_error("malformed campaign findings ledger value"));
         };
         if by_index
             .entry(index)
@@ -76,16 +135,14 @@ pub(crate) fn parse_failure_findings_ledger_v4_bytes(
             .insert(field.to_owned(), value.to_owned())
             .is_some()
         {
-            return Err(artifact_error(
-                "duplicate v4 campaign findings ledger field",
-            ));
+            return Err(artifact_error("duplicate campaign findings ledger field"));
         }
     }
     let finding_count = finding_count
-        .ok_or_else(|| artifact_error("v4 campaign findings ledger is missing finding count"))?;
+        .ok_or_else(|| artifact_error("campaign findings ledger is missing finding count"))?;
     if by_index.len() != finding_count || by_index.keys().copied().ne(0..finding_count) {
         return Err(artifact_error(
-            "v4 campaign findings ledger count or indices are not canonical",
+            "campaign findings ledger count or indices are not canonical",
         ));
     }
 
@@ -94,14 +151,14 @@ pub(crate) fn parse_failure_findings_ledger_v4_bytes(
     let mut campaign_evidence = Vec::new();
     let mut previous_finding_id = None;
     for (index, fields) in by_index {
-        let item = parse_triage_v4_finding_evidence(store, index, &fields)?;
+        let item = parse_campaign_finding_evidence(store, index, &fields)?;
         let finding_id = item
             .finding
             .id()
             .map_err(|error| artifact_error(format!("finding {index} ID is invalid: {error}")))?;
         if previous_finding_id.is_some_and(|previous| previous >= finding_id) {
             return Err(artifact_error(
-                "v4 campaign findings are not in canonical finding-ID order",
+                "campaign findings are not in canonical finding-ID order",
             ));
         }
         previous_finding_id = Some(finding_id);
@@ -127,9 +184,9 @@ pub(crate) fn parse_failure_findings_ledger_v4_bytes(
             .iter()
             .all(|report| report.finding.artifact.id() != item.report.finding.artifact.id())
         {
-            // Schema-v1 candidate bundles do not contain native replay evidence.
-            // Preserve only the independently recorded representative instead
-            // of projecting its signature onto unrelated occurrences.
+            // A current occurrence may omit triage replay evidence. Preserve
+            // the independently authenticated representative instead of
+            // projecting its signature onto another occurrence.
             occurrence_reports.push(item.report.clone());
         }
         for report in occurrence_reports {
@@ -147,7 +204,7 @@ pub(crate) fn parse_failure_findings_ledger_v4_bytes(
                         == report.discovery_signature.report_material() => {}
                 Entry::Occupied(_) => {
                     return Err(artifact_error(
-                        "v4 campaign findings repeat a reproduction artifact with conflicting authenticated native signatures",
+                        "campaign findings repeat a reproduction artifact with conflicting authenticated native signatures",
                     ));
                 }
             }
@@ -155,7 +212,7 @@ pub(crate) fn parse_failure_findings_ledger_v4_bytes(
         campaign_evidence.push(item);
     }
     let ledger = crucible::FailureFindingsLedger::from_signed_findings(signed_findings)
-        .map_err(|_| artifact_error("v4 campaign findings contain conflicting signatures"))?;
+        .map_err(|_| artifact_error("campaign findings contain conflicting signatures"))?;
     Ok(LoadedTriageFindings {
         ledger,
         evidence: report_evidence,
@@ -164,7 +221,7 @@ pub(crate) fn parse_failure_findings_ledger_v4_bytes(
     })
 }
 
-fn parse_triage_v4_finding_evidence(
+fn parse_campaign_finding_evidence(
     store: &crucible::LocalDagStore,
     index: usize,
     fields: &BTreeMap<String, String>,
@@ -365,17 +422,34 @@ fn parse_triage_v4_finding_evidence(
     for page in 0..occurrence_page_count {
         report_fields.remove(&format!("campaign_occurrence.{page}.request_hex"));
         report_fields.remove(&format!("campaign_occurrence.{page}.response_hex"));
+        for object in ["observation", "reproduction", "minimized"] {
+            report_fields.remove(&format!("campaign_occurrence.{page}.{object}_request_hex"));
+            report_fields.remove(&format!("campaign_occurrence.{page}.{object}_response_hex"));
+        }
         for object in [
-            "observation",
-            "reproduction",
-            "minimized",
             "minimization_original_triage",
             "minimization_selected_triage",
             "verification_original_triage",
             "verification_selected_triage",
         ] {
-            report_fields.remove(&format!("campaign_occurrence.{page}.{object}_request_hex"));
-            report_fields.remove(&format!("campaign_occurrence.{page}.{object}_response_hex"));
+            let count_field = format!("campaign_occurrence.{page}.{object}_segment_count");
+            if let Some(count) = report_fields.remove(&count_field)
+                && count != "none"
+            {
+                let count = count.parse::<usize>().map_err(|_| {
+                    artifact_error(format!(
+                        "finding {index} occurrence {page} {object} segment count is invalid"
+                    ))
+                })?;
+                for segment in 0..count {
+                    report_fields.remove(&format!(
+                        "campaign_occurrence.{page}.{object}.segment.{segment}.request_hex"
+                    ));
+                    report_fields.remove(&format!(
+                        "campaign_occurrence.{page}.{object}.segment.{segment}.response_hex"
+                    ));
+                }
+            }
         }
     }
     let expected_model_artifact = parse_required_hash_field(&report_fields, "artifact")?;
@@ -385,7 +459,7 @@ fn parse_triage_v4_finding_evidence(
             "finding {index} campaign reproduction payload differs from its report artifact"
         )));
     }
-    let report = parse_triage_v3_finding_evidence(store, index, &report_fields)?;
+    let report = parse_reproduction_finding_evidence(store, index, &report_fields)?;
     let item = CampaignTriageFindingEvidence {
         campaign,
         snapshot,
@@ -490,22 +564,56 @@ fn parse_campaign_finding_occurrence_triage_proof(
         "verification_selected_triage",
     ]
     .map(|object| {
-        let request_field = format!("campaign_occurrence.{occurrence}.{object}_request_hex");
-        let response_field = format!("campaign_occurrence.{occurrence}.{object}_response_hex");
-        let request = fields.get(&request_field).ok_or_else(|| {
-            artifact_error(format!("finding {index} is missing `{request_field}`"))
+        let count_field = format!("campaign_occurrence.{occurrence}.{object}_segment_count");
+        let count = fields.get(&count_field).ok_or_else(|| {
+            artifact_error(format!("finding {index} is missing `{count_field}`"))
         })?;
-        let response = fields.get(&response_field).ok_or_else(|| {
-            artifact_error(format!("finding {index} is missing `{response_field}`"))
-        })?;
-        match (request.as_str(), response.as_str()) {
-            ("none", "none") => Ok(None),
-            ("none", _) | (_, "none") => Err(artifact_error(format!(
-                "finding {index} occurrence {occurrence} {object} proof is incomplete"
-            ))),
-            _ => parse_campaign_finding_occurrence_object_proof(index, occurrence, fields, object)
-                .map(Some),
+        if count == "none" {
+            return Ok(None);
         }
+        let count = count.parse::<usize>().map_err(|_| {
+            artifact_error(format!(
+                "finding {index} occurrence {occurrence} {object} segment count is invalid"
+            ))
+        })?;
+        if count == 0 || count > 8 {
+            return Err(artifact_error(format!(
+                "finding {index} occurrence {occurrence} {object} segment count exceeds its bound"
+            )));
+        }
+        let mut segments = Vec::with_capacity(count);
+        for segment in 0..count {
+            let request_field = format!(
+                "campaign_occurrence.{occurrence}.{object}.segment.{segment}.request_hex"
+            );
+            let response_field = format!(
+                "campaign_occurrence.{occurrence}.{object}.segment.{segment}.response_hex"
+            );
+            let request = fields.get(&request_field).ok_or_else(|| {
+                artifact_error(format!("finding {index} is missing `{request_field}`"))
+            })?;
+            let response = fields.get(&response_field).ok_or_else(|| {
+                artifact_error(format!("finding {index} is missing `{response_field}`"))
+            })?;
+            let request = crucible_campaign::GetCampaignFindingTriageReplaySegmentRequest::from_canonical_bytes(
+                &parse_campaign_hex_bytes(index, &request_field, request)?,
+            )
+            .map_err(|error| {
+                artifact_error(format!(
+                    "finding {index} occurrence {occurrence} {object} segment {segment} request is invalid: {error}"
+                ))
+            })?;
+            let response = crucible_campaign::GetCampaignFindingTriageReplaySegmentResponse::from_canonical_bytes(
+                &parse_campaign_hex_bytes(index, &response_field, response)?,
+            )
+            .map_err(|error| {
+                artifact_error(format!(
+                    "finding {index} occurrence {occurrence} {object} segment {segment} response is invalid: {error}"
+                ))
+            })?;
+            segments.push(CampaignFindingTriageReplaySegmentProof { request, response });
+        }
+        Ok(Some(CampaignFindingTriageReplayProof { segments }))
     });
     let [
         minimization_original,
@@ -545,10 +653,15 @@ fn parse_campaign_finding_occurrence_triage_proof(
     Ok(complete)
 }
 
-// crucible-lint: allow rust-allow -- the durable finding producer consumes this staged writer in the integration stack.
-#[allow(dead_code)]
-pub(super) fn failure_findings_ledger_v4_bytes(
+pub(super) fn campaign_findings_ledger_bytes(
     evidence: &[CampaignTriageFindingEvidence],
+) -> Result<Vec<u8>, CliError> {
+    campaign_findings_ledger_bytes_with_limit(evidence, MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES)
+}
+
+fn campaign_findings_ledger_bytes_with_limit(
+    evidence: &[CampaignTriageFindingEvidence],
+    maximum_bytes: usize,
 ) -> Result<Vec<u8>, CliError> {
     let mut canonical_evidence = BTreeMap::new();
     for item in evidence {
@@ -558,20 +671,25 @@ pub(super) fn failure_findings_ledger_v4_bytes(
             .map_err(|error| artifact_error(format!("campaign finding ID is invalid: {error}")))?;
         authenticate_campaign_triage_finding(0, finding_id, item)?;
         validate_campaign_triage_finding(0, finding_id, item)?;
-        if let Some(existing) = canonical_evidence.insert(finding_id, item)
+        let scope = (
+            item.campaign.as_str().to_owned(),
+            item.snapshot.to_text(),
+            finding_id.to_text(),
+        );
+        if let Some((_, existing)) = canonical_evidence.insert(scope, (finding_id, item))
             && existing != item
         {
             return Err(artifact_error(
-                "cannot write conflicting evidence for one campaign finding",
+                "cannot write conflicting evidence for one campaign snapshot finding",
             ));
         }
     }
 
-    let mut lines = vec![
-        String::from(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V4),
-        format!("finding_count={}", canonical_evidence.len()),
-    ];
-    for (index, (finding_id, item)) in canonical_evidence.into_iter().enumerate() {
+    let mut lines = BoundedCampaignLedger::with_maximum_bytes(maximum_bytes);
+    lines.push(String::from(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA));
+    lines.push(String::from("ledger_kind=campaign"));
+    lines.push(format!("finding_count={}", canonical_evidence.len()));
+    for (index, (_, (finding_id, item))) in canonical_evidence.into_iter().enumerate() {
         let prefix = format!("finding.{index}");
         lines.push(format!("{prefix}.campaign={}", item.campaign.as_str()));
         lines.push(format!(
@@ -678,19 +796,24 @@ pub(super) fn failure_findings_ledger_v4_bytes(
                 ),
             ];
             for (object, object_proof) in triage_objects {
-                let (request, response) =
-                    object_proof.map_or(("none".to_owned(), "none".to_owned()), |proof| {
-                        (
-                            ledger_hex(&proof.request.canonical_bytes()),
-                            ledger_hex(&proof.response.canonical_bytes()),
-                        )
-                    });
+                let count = object_proof
+                    .map(|proof| proof.segments.len().to_string())
+                    .unwrap_or_else(|| String::from("none"));
                 lines.push(format!(
-                    "{prefix}.campaign_occurrence.{page}.{object}_request_hex={request}"
+                    "{prefix}.campaign_occurrence.{page}.{object}_segment_count={count}"
                 ));
-                lines.push(format!(
-                    "{prefix}.campaign_occurrence.{page}.{object}_response_hex={response}"
-                ));
+                if let Some(proof) = object_proof {
+                    for (segment, proof) in proof.segments.iter().enumerate() {
+                        lines.push(format!(
+                            "{prefix}.campaign_occurrence.{page}.{object}.segment.{segment}.request_hex={}",
+                            ledger_hex(&proof.request.canonical_bytes())
+                        ));
+                        lines.push(format!(
+                            "{prefix}.campaign_occurrence.{page}.{object}.segment.{segment}.response_hex={}",
+                            ledger_hex(&proof.response.canonical_bytes())
+                        ));
+                    }
+                }
             }
         }
         lines.push(format!(
@@ -713,33 +836,31 @@ pub(super) fn failure_findings_ledger_v4_bytes(
             )
         ));
 
-        let projected = failure_findings_ledger_v3_bytes(std::slice::from_ref(&item.report))?;
-        let projected = std::str::from_utf8(&projected)
-            .map_err(|_| artifact_error("internal v3 findings projection is not UTF-8"))?;
-        for line in projected.lines().skip(2) {
+        let projected = reproduction_findings_ledger_bytes(std::slice::from_ref(&item.report))?;
+        let projected = std::str::from_utf8(&projected).map_err(|_| {
+            artifact_error("internal reproduction-findings projection is not UTF-8")
+        })?;
+        for line in projected.lines().skip(3) {
             let Some(suffix) = line.strip_prefix("finding.0") else {
                 if line.is_empty() {
                     continue;
                 }
                 return Err(artifact_error(
-                    "internal v3 findings projection is malformed",
+                    "internal reproduction-findings projection is malformed",
                 ));
             };
             lines.push(format!("{prefix}{suffix}"));
         }
     }
-    lines.push(String::new());
-    Ok(lines.join("\n").into_bytes())
+    lines.finish()
 }
 
-// crucible-lint: allow rust-allow -- the durable finding producer consumes this staged writer in the integration stack.
-#[allow(dead_code)]
-pub(crate) fn write_failure_findings_ledger_v4(
+pub(crate) fn write_campaign_findings_ledger(
     artifact_dir: &Path,
     findings_out: Option<&Path>,
     evidence: &[CampaignTriageFindingEvidence],
 ) -> Result<(PathBuf, crucible::ContentHash, Vec<u8>), CliError> {
-    let bytes = failure_findings_ledger_v4_bytes(evidence)?;
+    let bytes = campaign_findings_ledger_bytes(evidence)?;
     let digest = crucible::ContentHash::from_bytes(&bytes);
     let path = findings_out.map(Path::to_path_buf).unwrap_or_else(|| {
         artifact_dir
@@ -754,4 +875,23 @@ pub(crate) fn write_failure_findings_ledger_v4(
     }
     fs::write(&path, &bytes)?;
     Ok((path, digest, bytes))
+}
+
+#[cfg(test)]
+mod bounded_ledger_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_campaign_ledger_stops_before_aggregate_overflow() {
+        assert_eq!(MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES, 1024 * 1024 * 1024);
+
+        let mut ledger = BoundedCampaignLedger::with_maximum_bytes(8);
+        ledger.push(String::from("abc"));
+        ledger.push(String::from("def"));
+        assert_eq!(ledger.bytes, b"abc\ndef\n");
+
+        ledger.push(String::from("x"));
+        assert_eq!(ledger.bytes, b"abc\ndef\n");
+        assert!(ledger.finish().is_err());
+    }
 }

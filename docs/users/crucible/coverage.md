@@ -22,7 +22,7 @@ Complete user coverage requires all applicable columns below:
 | Admission | Cross-field validation and backend capability requirements. |
 | Execution | Sampling point, phase, state transitions, composition, and deterministic ordering. |
 | Evidence | Canonical events, adapter evidence, property observations, and terminal verdict behavior. |
-| Continuation | Checkpoint, resume, fork, search, and replay semantics. |
+| Continuation | Checkpoint, resume, campaign branch, search, and replay semantics. |
 | Example | A complete recipe or implementation-backed executable when the feature benefits from one. |
 
 The [canonical reference](reference.md) remains the exhaustive CLI and scenario
@@ -42,7 +42,6 @@ still have narrower daemon or backend behavior, which its guide must state.
 | `selftest` | Exercise the small packaged live-QEMU gate subset. | [Running Crucible](running.md#self-test) | Repository certification contains many gates that are not selectable here. |
 | `save` | Materialize an exact savepoint at an admitted boundary. | [Reproduction](reproduction.md#savepoints), [Reference](reference.md#save) | Requires a durable DAG store and a supported boundary. |
 | `resume` | Continue an exact retained world. | [Reproduction](reproduction.md#resume), [Reference](reference.md#resume) | Fails closed when the closure, scenario, scheduler identity, or backend identity differs. |
-| `fork` | Continue a retained prefix with an explicit branch choice. | [Reproduction](reproduction.md#fork), [Reference](reference.md#fork) | Branch points must be admitted choices; mutation creates a non-canonical descendant. |
 | `replay` | Reproduce an artifact and optionally compare or bisect evidence. | [Reproduction](reproduction.md#replay), [Reference](reference.md#replay) | Reproduction artifacts may carry authenticated signal objects and resolved-effect traces. |
 | `search` | Explore bounded alternate schedules and fault choices. | [Exploration](exploration.md#state-space-search), [Reference](reference.md#search) | Local search attaches `--store` for signal search material; budgets are mandatory for useful exploration. |
 | `fuzz` | Instantiate and explore a bounded scenario family. | [Exploration](exploration.md#coverage-guided-fuzzing), [Reference](reference.md#fuzz) | Packaged local campaigns exist; fleet campaign orchestration remains an API/certification surface. |
@@ -177,7 +176,7 @@ schema tests.
 | Surface | Preserved identity/state | Status |
 |---|---|---|
 | Thin checkpoint | Scenario and schedule position without a complete live execution closure. | Model/API surface; not sufficient for arbitrary production restore. |
-| Fat checkpoint | Whole-world QEMU state, adapter state, scheduler state, signal state, and authenticated dependencies. | Packaged save/resume/fork and public API. |
+| Exact checkpoint | Whole-world QEMU state, adapter state, scheduler state, signal state, and authenticated dependencies. | Packaged save/resume and public API. |
 | Reproduction artifact | Scenario, schedule, evidence, backend identity, critical payloads, and optional effect/signal material. | Packaged replay and triage. |
 | Search frontier | Stable alternate choices reachable from an execution prefix. | Packaged bounded search and public API. |
 | Scenario family/corpus | Deterministic campaign inputs, coverage, findings, and lineage. | Packaged local fuzzing; fleet orchestration is API/certification-only. |

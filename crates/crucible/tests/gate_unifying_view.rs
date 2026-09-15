@@ -10,13 +10,15 @@ use std::error::Error;
 use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict, BlackBoxHostOracle,
     Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, CoverageGuidedFuzzConfig,
-    Decision, EngineError, EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, FamilySpace,
-    FindingDiscoveryPath, FindingReproductionArtifact, GenesisCheckpoint, Icount, MarkerId,
-    MaterializationPolicy, MaterializationTrigger, MemoryDagStore, MinimizationConfig,
-    NodeTemplate, ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan, Predicate,
-    Properties, Property, ReadyPoint, RecordedAssertionLog, ScenarioDefForm, ScenarioFamily,
-    SchedulingPoint, SearchBudget, SearchFailureOracle, SearchFrontierChoices, SearchStrategy,
-    Seed, TemporalGraph, TopologyShape, TopologySizeRange, UnifiedGraphOperationEvidence,
+    CoverageGuidedFuzzingEvidence, Decision, EngineError, EventLogCoverageFeedback,
+    EventLogCoverageFeedbackConsumer, FamilySpace, FindingDiscoveryPath,
+    FindingReproductionArtifact, GenesisCheckpoint, Icount, MarkerId, MaterializationPolicy,
+    MaterializationTrigger, MemoryDagStore, MinimizationConfig, NodeTemplate, ObservableEvent,
+    OfflineAssertionChecker, OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint,
+    RecordedAssertionLog, ScenarioDefForm, ScenarioFamily, SchedulingPoint, SearchBudget,
+    SearchFailureOracle, SearchFrontierChoices, SearchStrategy, Seed, StateSpaceSearchEvidence,
+    TemporalGraph, TemporalGraphReplayEvidence, TemporalGraphResumeEvidence,
+    TemporalGraphSaveEvidence, TopologyShape, TopologySizeRange, UnifiedGraphOperationEvidence,
     UnifiedGraphOperationKind, UnifiedGraphOperationReport, VirtualTime, WhiteBoxPolicy, World,
     WorldNode, bake, reduce, try_step,
 };
@@ -36,11 +38,12 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
     let graph_id = graph.id;
 
     let resume_runtime = graph.resume(&root)?;
-    let resume_report =
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Resume {
+    let resume_report = graph.validate_unified_operation(
+        &UnifiedGraphOperationEvidence::Resume(Box::new(TemporalGraphResumeEvidence {
             configuration: root.clone(),
             runtime: resume_runtime.clone(),
-        })?;
+        })),
+    )?;
     assert_eq!(resume_runtime.runtime.id, resume_report.runtime_state);
     assert_unified_report(
         &resume_report,
@@ -50,8 +53,8 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
     )?;
 
     let fork = graph.fork(&root, vec![noise.clone(), critical.clone()])?;
-    let fork_report =
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Fork(fork.clone()))?;
+    let fork_report = graph
+        .validate_unified_operation(&UnifiedGraphOperationEvidence::Fork(Box::new(fork.clone())))?;
     assert_eq!(fork.base.configuration, root.id());
     assert_unified_report(
         &fork_report,
@@ -62,10 +65,12 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
 
     let store = MemoryDagStore::new();
     let save = graph.save(&store, &fork.branch)?;
-    let save_report = graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Save {
-        configuration: fork.branch.clone(),
-        save: save.clone(),
-    })?;
+    let save_report = graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Save(
+        Box::new(TemporalGraphSaveEvidence {
+            configuration: fork.branch.clone(),
+            save: save.clone(),
+        }),
+    ))?;
     assert_eq!(save.configuration, save_report.configuration);
     assert_eq!(save.checkpoint, save_report.checkpoint);
     assert_unified_report(
@@ -76,11 +81,12 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
     )?;
 
     let replay = graph.replay(&fork.branch)?;
-    let replay_report =
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Replay {
+    let replay_report = graph.validate_unified_operation(
+        &UnifiedGraphOperationEvidence::Replay(Box::new(TemporalGraphReplayEvidence {
             configuration: fork.branch.clone(),
             replay: replay.clone(),
-        })?;
+        })),
+    )?;
     assert_eq!(replay, replay_report.replay_oracle);
     assert_unified_report(
         &replay_report,
@@ -107,8 +113,8 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
         .discovered_failures
         .first()
         .ok_or("expected search to report the critical branch")?;
-    let search_report =
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::StateSpaceSearch {
+    let search_report = graph.validate_unified_operation(
+        &UnifiedGraphOperationEvidence::StateSpaceSearch(Box::new(StateSpaceSearchEvidence {
             graph: search_graph,
             scenario: scenario.clone(),
             root: root.clone(),
@@ -119,7 +125,8 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
             failure_oracle: failure_oracle.clone(),
             run: search.clone(),
             failure: search_failure.clone(),
-        })?;
+        })),
+    )?;
     assert_eq!(search_failure.configuration, critical_branch.id());
     assert_eq!(
         search_failure.reproduction_artifact().discovery_path,
@@ -135,7 +142,7 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
     let reproduction = search_failure.reproduction_artifact();
     let reproduction_config = configuration_from_finding(reproduction);
     let reproduction_report = graph.validate_unified_operation(
-        &UnifiedGraphOperationEvidence::ReproductionArtifact(reproduction.clone()),
+        &UnifiedGraphOperationEvidence::ReproductionArtifact(Box::new(reproduction.clone())),
     )?;
     assert_eq!(
         reproduction.configuration,
@@ -163,14 +170,15 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
         &fuzz_iteration.configuration.def,
         bake_for_scenario_form(fuzz_iteration.scenario.form())?,
     )?;
-    let fuzz_report = graph.validate_unified_operation(
-        &UnifiedGraphOperationEvidence::CoverageGuidedFuzzing {
-            family: family.clone(),
-            run: fuzz.clone(),
-            feedback_fingerprints: coverage_feedback_fingerprints(&fuzz_feedback),
-            iteration: fuzz_iteration.clone(),
-        },
-    )?;
+    let fuzz_report =
+        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::CoverageGuidedFuzzing(
+            Box::new(CoverageGuidedFuzzingEvidence {
+                family: family.clone(),
+                run: fuzz.clone(),
+                feedback_fingerprints: coverage_feedback_fingerprints(&fuzz_feedback),
+                iteration: fuzz_iteration.clone(),
+            }),
+        ))?;
     assert_eq!(fuzz_iteration.configuration_id(), fuzz_report.configuration);
     assert_unified_report(
         &fuzz_report,
@@ -182,7 +190,7 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
     let minimization_target = failure_fingerprint_for_schedule(&scenario, &fork.branch.schedule)?
         .ok_or("fork branch should violate the assertion")?;
     let original_finding = FindingReproductionArtifact::capture(
-        FindingDiscoveryPath::InteractiveFork,
+        FindingDiscoveryPath::CampaignFork,
         minimization_target,
         &scenario,
         &fork.branch,
@@ -193,7 +201,7 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
     )?;
     let minimized_config = configuration_from_finding(&minimized.minimized);
     let minimization_report = graph.validate_unified_operation(
-        &UnifiedGraphOperationEvidence::Minimization(minimized.clone()),
+        &UnifiedGraphOperationEvidence::Minimization(Box::new(minimized.clone())),
     )?;
     assert_eq!(
         minimized.minimized.replay.state,
@@ -252,10 +260,10 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
     let resume_runtime = graph.resume(&root)?;
     let branch = try_step(&root, critical.clone())?;
 
-    let mismatched = UnifiedGraphOperationEvidence::Resume {
+    let mismatched = UnifiedGraphOperationEvidence::Resume(Box::new(TemporalGraphResumeEvidence {
         configuration: branch,
         runtime: resume_runtime,
-    };
+    }));
 
     assert!(matches!(
         graph.validate_unified_operation(&mismatched),
@@ -264,10 +272,11 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
 
     let mut forged_runtime = graph.resume(&root)?;
     forged_runtime.runtime.id = finding_fingerprint("forged-runtime-state");
-    let forged_resume = UnifiedGraphOperationEvidence::Resume {
-        configuration: root.clone(),
-        runtime: forged_runtime,
-    };
+    let forged_resume =
+        UnifiedGraphOperationEvidence::Resume(Box::new(TemporalGraphResumeEvidence {
+            configuration: root.clone(),
+            runtime: forged_runtime,
+        }));
     assert!(matches!(
         graph.validate_unified_operation(&forged_resume),
         Err(EngineError::ReplayTargetMismatch { .. })
@@ -278,7 +287,9 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
     let mut forged_fork = fork.clone();
     forged_fork.base = graph.resume(&critical_branch)?;
     assert!(matches!(
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Fork(forged_fork)),
+        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Fork(Box::new(
+            forged_fork,
+        ))),
         Err(EngineError::ReplayTargetMismatch { .. })
     ));
 
@@ -290,10 +301,12 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
         finding_fingerprint("forged-store-key"),
     );
     assert!(matches!(
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Save {
-            configuration: fork.branch.clone(),
-            save: forged_save,
-        }),
+        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Save(Box::new(
+            TemporalGraphSaveEvidence {
+                configuration: fork.branch.clone(),
+                save: forged_save,
+            },
+        ))),
         Err(EngineError::UnifiedOperationEvidenceMismatch {
             operation: "save",
             reason: "save-store-keys",
@@ -303,10 +316,12 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
     let mut forged_replay = graph.replay(&fork.branch)?;
     forged_replay.thin_checkpoint = root.id();
     assert!(matches!(
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Replay {
-            configuration: fork.branch.clone(),
-            replay: forged_replay,
-        }),
+        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Replay(Box::new(
+            TemporalGraphReplayEvidence {
+                configuration: fork.branch.clone(),
+                replay: forged_replay,
+            },
+        ))),
         Err(EngineError::ReplayTargetMismatch { .. })
     ));
 
@@ -336,18 +351,20 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
         reproduction_artifact: forged_search_artifact,
     };
     assert!(matches!(
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::StateSpaceSearch {
-            graph: search_graph,
-            scenario: scenario.clone(),
-            root: root.clone(),
-            strategy: SearchStrategy::BreadthFirst,
-            budget: SearchBudget::new(1),
-            materialization_policy: MaterializationPolicy::thin_only(),
-            trigger: MaterializationTrigger::Cold,
-            failure_oracle: failure_oracle.clone(),
-            run: search,
-            failure: forged_search_failure,
-        }),
+        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::StateSpaceSearch(
+            Box::new(StateSpaceSearchEvidence {
+                graph: search_graph,
+                scenario: scenario.clone(),
+                root: root.clone(),
+                strategy: SearchStrategy::BreadthFirst,
+                budget: SearchBudget::new(1),
+                materialization_policy: MaterializationPolicy::thin_only(),
+                trigger: MaterializationTrigger::Cold,
+                failure_oracle: failure_oracle.clone(),
+                run: search,
+                failure: forged_search_failure,
+            }),
+        )),
         Err(EngineError::UnifiedOperationEvidenceMismatch {
             operation: "state-space-search",
             reason: "search-failure-output",
@@ -367,12 +384,14 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
         .clone();
     forged_fuzz_iteration.energy = forged_fuzz_iteration.energy.saturating_add(1);
     assert!(matches!(
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::CoverageGuidedFuzzing {
-            family,
-            run: fuzz,
-            feedback_fingerprints: coverage_feedback_fingerprints(&fuzz_feedback),
-            iteration: forged_fuzz_iteration,
-        }),
+        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::CoverageGuidedFuzzing(
+            Box::new(CoverageGuidedFuzzingEvidence {
+                family,
+                run: fuzz,
+                feedback_fingerprints: coverage_feedback_fingerprints(&fuzz_feedback),
+                iteration: forged_fuzz_iteration,
+            }),
+        )),
         Err(EngineError::UnifiedOperationEvidenceMismatch {
             operation: "coverage-guided-fuzzing",
             reason: "iteration-output",
@@ -382,7 +401,7 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
     let minimization_target = failure_fingerprint_for_schedule(&scenario, &fork.branch.schedule)?
         .ok_or("fork branch should violate the assertion")?;
     let original_finding = FindingReproductionArtifact::capture(
-        FindingDiscoveryPath::InteractiveFork,
+        FindingDiscoveryPath::CampaignFork,
         minimization_target,
         &scenario,
         &fork.branch,
@@ -393,9 +412,9 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
     )?;
     forged_minimization.minimized = forged_minimization.original.clone();
     assert!(matches!(
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Minimization(
+        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Minimization(Box::new(
             forged_minimization
-        )),
+        ))),
         Err(EngineError::UnifiedOperationEvidenceMismatch {
             operation: "minimization",
             reason: "minimized-candidate",

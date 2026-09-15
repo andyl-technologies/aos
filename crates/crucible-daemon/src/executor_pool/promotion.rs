@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Condvar, Mutex};
 use std::thread;
 
@@ -17,10 +17,10 @@ use crate::{
     CheckpointPromotionStageOutcome, ExactCheckpointStore, ExecutionCancellation,
     PausedCheckpointPromotionPreparationError, PausedCheckpointPromotionRecovery,
     PausedCheckpointPromotionRestartPreparationError, PausedCheckpointPromotionStageOutcome,
-    PrepareReplayOraclePromotionError, PreparedPausedCheckpointPromotion,
-    PreparedPausedCheckpointPromotionRestart, ProductionAttemptCheckpointRestoreError,
-    ProductionPausedCheckpointReplayFactory, PublishedPausedCheckpointPromotion,
-    StagedPausedCheckpointPromotion, prepare_production_paused_checkpoint_promotion_restart,
+    PreparedPausedCheckpointPromotion, PreparedPausedCheckpointPromotionRestart,
+    ProductionAttemptCheckpointRestoreError, ProductionPausedCheckpointReplayFactory,
+    PublishedPausedCheckpointPromotion, StagedPausedCheckpointPromotion,
+    prepare_production_paused_checkpoint_promotion_restart,
     publish_staged_paused_checkpoint_promotion, reconcile_published_paused_checkpoint_promotion,
     revert_recovered_paused_checkpoint_promotion, revert_staged_paused_checkpoint_promotion,
     stage_prepared_paused_checkpoint_promotion,
@@ -41,7 +41,7 @@ pub const MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS: usize = 256;
 pub const MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE: usize = 65_536;
 
 /// No-actor preparation boundary for one durable paused-root promotion phase.
-pub trait LocalCheckpointPromotionWorker {
+pub(crate) trait LocalCheckpointPromotionWorker {
     /// Operational or semantic preparation failure.
     type Error;
 
@@ -57,13 +57,27 @@ pub trait LocalCheckpointPromotionWorker {
     /// failure. Retryable failures are retried without dropping `work`.
     fn prepare(
         &mut self,
-        work: CheckpointPromotionRestartWork,
+        work: &mut CheckpointPromotionRestartWork,
         cancellation: ExecutionCancellation,
     ) -> Result<PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>>;
 }
 
+pub(super) struct DisabledCheckpointPromotionWorker;
+
+impl LocalCheckpointPromotionWorker for DisabledCheckpointPromotionWorker {
+    type Error = ();
+
+    fn prepare(
+        &mut self,
+        _work: &mut CheckpointPromotionRestartWork,
+        _cancellation: ExecutionCancellation,
+    ) -> Result<PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>> {
+        Err(AttemptWorkerFailure::Terminal(()))
+    }
+}
+
 /// Production restart worker around one guarded replay-oracle factory.
-pub struct ProductionCheckpointPromotionWorker<F> {
+pub(crate) struct ProductionCheckpointPromotionWorker<F> {
     store: crucible_campaign::CampaignExecutorStore,
     checkpoints: std::sync::Arc<ExactCheckpointStore>,
     run_state_root: PathBuf,
@@ -73,7 +87,7 @@ pub struct ProductionCheckpointPromotionWorker<F> {
 impl<F> ProductionCheckpointPromotionWorker<F> {
     /// Binds one fixed promotion worker to its immutable and process authorities.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         store: crucible_campaign::CampaignExecutorStore,
         checkpoints: std::sync::Arc<ExactCheckpointStore>,
         run_state_root: impl Into<PathBuf>,
@@ -86,18 +100,6 @@ impl<F> ProductionCheckpointPromotionWorker<F> {
             factory,
         }
     }
-
-    /// Returns the stable run-state root for guarded comparison sessions.
-    #[must_use]
-    pub fn run_state_root(&self) -> &Path {
-        &self.run_state_root
-    }
-
-    /// Returns the node-specific replay session factory.
-    #[must_use]
-    pub const fn factory(&self) -> &F {
-        &self.factory
-    }
 }
 
 impl<F> LocalCheckpointPromotionWorker for ProductionCheckpointPromotionWorker<F>
@@ -108,7 +110,7 @@ where
 
     fn prepare(
         &mut self,
-        work: CheckpointPromotionRestartWork,
+        work: &mut CheckpointPromotionRestartWork,
         cancellation: ExecutionCancellation,
     ) -> Result<PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>> {
         prepare_production_paused_checkpoint_promotion_restart(
@@ -200,18 +202,6 @@ fn classify_preparation_failure(
         PausedCheckpointPromotionPreparationError::Realization(error) => {
             classify_realization_failure(error)
         }
-        PausedCheckpointPromotionPreparationError::Preparation(error) => match error {
-            PrepareReplayOraclePromotionError::Checkpoint(error) if error.is_retryable() => {
-                PromotionFailureClass::Retryable
-            }
-            PrepareReplayOraclePromotionError::Checkpoint(
-                crate::ExactCheckpointStoreError::Canceled,
-            ) => PromotionFailureClass::Canceled,
-            PrepareReplayOraclePromotionError::ReplayOracle(error) => {
-                classify_realization_failure(error)
-            }
-            PrepareReplayOraclePromotionError::Checkpoint(_) => PromotionFailureClass::Terminal,
-        },
     }
 }
 
@@ -239,21 +229,14 @@ fn classify_restore_failure(
 
 fn classify_realization_failure(error: &QemuVmRealizationError) -> PromotionFailureClass {
     match error {
-        QemuVmRealizationError::StoreUnavailable { .. }
-        | QemuVmRealizationError::ExecutorUnavailable { .. } => PromotionFailureClass::Retryable,
+        QemuVmRealizationError::ExecutorUnavailable { .. } => PromotionFailureClass::Retryable,
         QemuVmRealizationError::Canceled { .. } => PromotionFailureClass::Canceled,
         QemuVmRealizationError::ReapQuarantined { .. }
         | QemuVmRealizationError::Store { .. }
         | QemuVmRealizationError::Executor { .. }
-        | QemuVmRealizationError::ForkPrefix(_)
-        | QemuVmRealizationError::ForkPrefixOutOfRange { .. }
-        | QemuVmRealizationError::AncestorPrefix(_)
         | QemuVmRealizationError::InvalidCheckpoint { .. }
         | QemuVmRealizationError::InvalidAncestor { .. }
-        | QemuVmRealizationError::RuntimeContentMismatch { .. }
-        | QemuVmRealizationError::SavevmPolicy { .. }
-        | QemuVmRealizationError::InvalidLoadvmAuthorization { .. }
-        | QemuVmRealizationError::ReadyPointPolicy { .. } => PromotionFailureClass::Terminal,
+        | QemuVmRealizationError::ReplayOracleMismatch { .. } => PromotionFailureClass::Terminal,
     }
 }
 
@@ -276,7 +259,7 @@ impl PromotionQueue {
         let mut pending = VecDeque::with_capacity(work.len());
         let mut indexed = BTreeSet::new();
         for work in work {
-            let key = work_key(work);
+            let key = work_key(&work);
             if indexed.insert(key) {
                 pending.push_back(work);
             }
@@ -314,7 +297,7 @@ impl PromotionQueue {
         L: AssignmentLedger,
         V: AttemptAdmissionValidator,
     {
-        let key = work_key(work);
+        let key = work_key(&work);
         let mut state = match self.state.lock() {
             Ok(state) => state,
             Err(poisoned) => {
@@ -368,7 +351,7 @@ impl PromotionQueue {
                 return None;
             }
             if let Some(work) = state.pending.pop_front() {
-                let key = work_key(work);
+                let key = work_key(&work);
                 state.indexed.remove(&key);
                 let cancellation = ExecutionCancellation::default();
                 state.active.insert(key, cancellation.clone());
@@ -389,8 +372,7 @@ impl PromotionQueue {
         }
     }
 
-    fn finish(&self, work: CheckpointPromotionRestartWork) {
-        let key = work_key(work);
+    fn finish(&self, key: AttemptExecutionKey) {
         let mut state = match self.state.lock() {
             Ok(state) => state,
             Err(poisoned) => poisoned.into_inner(),
@@ -421,13 +403,14 @@ pub(super) fn promotion_worker_loop<L, V, W>(
     W: LocalCheckpointPromotionWorker,
 {
     loop {
-        let Some((work, cancellation)) = shared.promotions.take(&shared) else {
+        let Some((mut work, cancellation)) = shared.promotions.take(&shared) else {
             return;
         };
+        let key = work_key(&work);
         let result = catch_unwind(AssertUnwindSafe(|| {
-            process_promotion_work(&shared, &mut worker, work, cancellation)
+            process_promotion_work(&shared, &mut worker, &mut work, cancellation)
         }));
-        shared.promotions.finish(work);
+        shared.promotions.finish(key);
         if result.is_err() {
             shared.poison();
             return;
@@ -438,7 +421,7 @@ pub(super) fn promotion_worker_loop<L, V, W>(
 fn process_promotion_work<L, V, W>(
     shared: &SharedExecutor<L, V>,
     worker: &mut W,
-    mut work: CheckpointPromotionRestartWork,
+    work: &mut CheckpointPromotionRestartWork,
     cancellation: ExecutionCancellation,
 ) where
     L: AssignmentLedger,
@@ -461,9 +444,9 @@ fn process_promotion_work<L, V, W>(
             Err(AttemptWorkerFailure::Canceled(_)) => return,
             Err(AttemptWorkerFailure::Terminal(_)) => {
                 if let CheckpointPromotionRestartWork::Staged(recovery) = work
-                    && let Some(raw) = revert_recovered(shared, recovery)
+                    && let Some(raw) = revert_recovered(shared, *recovery)
                 {
-                    work = CheckpointPromotionRestartWork::Paused(raw);
+                    *work = CheckpointPromotionRestartWork::Paused(raw);
                     continue;
                 }
                 increment(&shared.counters.promotion_failures);
@@ -471,62 +454,12 @@ fn process_promotion_work<L, V, W>(
             }
         };
         match prepared {
-            PreparedPausedCheckpointPromotionRestart::AlreadyValidated(authenticated) => {
-                reconcile_already_validated(shared, *authenticated);
-                return;
-            }
             PreparedPausedCheckpointPromotionRestart::Stage(prepared) => {
                 process_prepared(shared, *prepared, &cancellation);
                 return;
             }
             PreparedPausedCheckpointPromotionRestart::Reconcile(published) => {
                 reconcile_published(shared, *published);
-                return;
-            }
-        }
-    }
-}
-
-fn reconcile_already_validated<L, V>(
-    shared: &SharedExecutor<L, V>,
-    authenticated: crate::AuthenticatedPausedCheckpointPromotion,
-) where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    loop {
-        if shared.state.load(std::sync::atomic::Ordering::Acquire) != POOL_RUNNING {
-            return;
-        }
-        let mut executor = match shared.executor.lock() {
-            Ok(executor) => executor,
-            Err(poisoned) => {
-                drop(poisoned.into_inner());
-                shared.fail_closed();
-                return;
-            }
-        };
-        match executor
-            .supervisor_mut()
-            .complete_validated_checkpoint_promotion(authenticated.recovery())
-        {
-            Ok(CheckpointPromotionCompletionOutcome::Promoted)
-            | Ok(CheckpointPromotionCompletionOutcome::AlreadyPromoted) => {
-                increment(&shared.counters.promotions_reconciled);
-                return;
-            }
-            Ok(CheckpointPromotionCompletionOutcome::NotCurrent)
-            | Ok(CheckpointPromotionCompletionOutcome::Reverted) => {
-                increment(&shared.counters.promotions_discarded);
-                return;
-            }
-            Err(error) if supervisor_error_is_retryable(&error) => {
-                increment(&shared.counters.promotion_retries);
-                drop(executor);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(_) => {
-                increment(&shared.counters.promotion_failures);
                 return;
             }
         }
@@ -641,8 +574,11 @@ fn reconcile_published<L, V>(
         };
         let source = published.source();
         let promoted = published.promoted();
-        match reconcile_published_paused_checkpoint_promotion(executor.supervisor_mut(), published)
-        {
+        match reconcile_published_paused_checkpoint_promotion(
+            &shared.checkpoints,
+            executor.supervisor_mut(),
+            published,
+        ) {
             Ok(CheckpointPromotionCompletionOutcome::Promoted)
             | Ok(CheckpointPromotionCompletionOutcome::AlreadyPromoted) => {
                 drop(executor);
@@ -805,7 +741,7 @@ fn record_stage_outcome<L, V>(
     }
 }
 
-fn work_key(work: CheckpointPromotionRestartWork) -> AttemptExecutionKey {
+fn work_key(work: &CheckpointPromotionRestartWork) -> AttemptExecutionKey {
     match work {
         CheckpointPromotionRestartWork::Paused(recovery) => recovery.key(),
         CheckpointPromotionRestartWork::Staged(recovery) => recovery.key(),

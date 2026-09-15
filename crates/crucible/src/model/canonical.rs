@@ -121,14 +121,6 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
             write_icount(hasher, preemption.at);
             write_preemption_kind(hasher, &preemption.kind);
         }
-        Decision::AppRandom(random) => {
-            hasher.write_u64(4);
-            hasher.write_bytes(random.node.name.as_bytes());
-            write_rng_stream_id(hasher, &random.stream);
-            hasher.write_u64(random.request_id);
-            hasher.write_u64(u64::from(random.width));
-            hasher.write_u64(random.value);
-        }
         Decision::Selection(selection) => {
             hasher.write_u64(5);
             hasher.write_bytes(selection.canonical_bytes());
@@ -432,14 +424,11 @@ impl MaterialHasher {
     fn write_bytes(&mut self, bytes: &[u8]) {
         self.write_u64(bytes.len() as u64);
 
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
-            let mut word = [0; 8];
-            word.copy_from_slice(chunk);
-            self.mix_word(u64::from_le_bytes(word));
+        let (chunks, remainder) = bytes.as_chunks::<8>();
+        for chunk in chunks {
+            self.mix_word(u64::from_le_bytes(*chunk));
         }
 
-        let remainder = chunks.remainder();
         if !remainder.is_empty() {
             let mut word = [0; 8];
             for (index, byte) in remainder.iter().enumerate() {

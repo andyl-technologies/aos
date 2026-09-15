@@ -227,6 +227,7 @@ mod tests {
                 accounting: root,
                 coordination: root,
             },
+            crate::test_budget_ledger_id(),
         )
         .expect("snapshot body")
     }
@@ -262,8 +263,8 @@ mod tests {
                     .to_string(),
             ],
             [
-                String::from("75e8233c5ff25c4022d1dcbd00fcf5de9c4a41e45d095540e497212e59615a9a"),
-                String::from("bdbe07303ae7cb986ccaf9da6ba2a71b23861139de30c100fa8c70e501e0afe0"),
+                String::from("11d565f7c00633ce3fb72e5234ce9371218b8ed1a64b6da9511fd23cd509c0ec"),
+                String::from("406ba2e038f5fd3b1f16936deae246ea61aad6e736f93fd8e2114bceca4e195f"),
             ]
         );
 
@@ -283,6 +284,7 @@ mod tests {
                 graph: ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"other-root"),
                 ..body.roots()
             },
+            body.budget_ledger(),
         )
         .expect("forged body");
         assert!(forged.validate_for(&request).is_err());

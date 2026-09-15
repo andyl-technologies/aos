@@ -4,12 +4,21 @@
   attrPath ? "checks.crucible.phase1.layer1Injection",
   taskIds ? ["T-DET-14"],
   dependencies ? [],
+  campaignComposition ? null,
+  testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  icountStampedInjection = import ./phase1-icount-stamped-injection.nix {inherit pkgs lib;};
-  lookaheadGate = import ./phase1-lookahead-gate.nix {inherit pkgs lib;};
-  qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib;};
-  pluginTimeAdvance = import ./phase1-plugin-time-advance.nix {inherit pkgs lib;};
-  sameIcountTieBreak = import ./phase1-same-icount-tie-break.nix {inherit pkgs lib;};
+  icountStampedInjection = import ./phase1-icount-stamped-injection.nix {
+    inherit pkgs lib campaignComposition testing;
+  };
+  lookaheadGate = import ./phase1-lookahead-gate.nix {
+    inherit pkgs lib campaignComposition testing;
+  };
+  atomicPatchEvidence = import ./phase2-patch-microtests.nix {
+    inherit pkgs lib campaignComposition testing;
+  };
+  sameIcountTieBreak = import ./phase1-same-icount-tie-break.nix {
+    inherit pkgs lib campaignComposition testing;
+  };
 
   deviceManifest = builtins.readFile ../../crates/crucible-device/Cargo.toml;
   deviceGate = builtins.readFile ../../crates/crucible-device/tests/gate_layer1_injection.rs;
@@ -145,11 +154,11 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "crucible-device layer1 target implemented";
-        needle = "package: \"crucible-device\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "package: \"crucible-device\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
       }
       {
         label = "crucible-protocol layer1 target implemented";
-        needle = "package: \"crucible-protocol\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "package: \"crucible-protocol\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
@@ -165,10 +174,6 @@
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
-      {
-        label = "updated placeholder count";
-        needle = "placeholder_targets=0";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
     ]
@@ -192,78 +197,101 @@
         needle = "\"T-DET-14\"";
       }
     ];
+  dependencyResultName =
+    if campaignComposition == null
+    then "result"
+    else "raw-result";
+  runtimeInputs = [pkgs.coreutils pkgs.grep] ++ dependencies;
+  runtimeScript = ''
+    set -eu
+
+    require_line() {
+      result="$1"
+      line="$2"
+      grep -Fxq "$line" "$result" || {
+        echo "dependency missing evidence: $line" >&2
+        cat "$result" >&2
+        exit 1
+      }
+    }
+
+    icount_result="${icountStampedInjection}/${dependencyResultName}"
+    lookahead_result="${lookaheadGate}/${dependencyResultName}"
+    patch_result="${atomicPatchEvidence}/${dependencyResultName}"
+    tie_break_result="${sameIcountTieBreak}/${dependencyResultName}"
+    ${lib.optionalString (campaignComposition != null) ''
+      for result in \
+        "$icount_result" \
+        "$lookahead_result" \
+        "$patch_result" \
+        "$tie_break_result"; do
+        require_line "$result" "campaign_mode=${campaignComposition.mode}"
+        require_line "$result" \
+          "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"
+        require_line "$result" \
+          "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"
+      done
+    ''}
+    require_line "$icount_result" "in_band_delivery_icount=true"
+    require_line "$icount_result" "arrival_order_visible=false"
+    require_line "$lookahead_result" "late_delivery_policy=fail_loudly"
+    require_line "$lookahead_result" "ceiling_rule=max_advance_icount_lt_earliest_possible_delivery_icount"
+    require_line "$patch_result" "gate=gate:patch-microtests"
+    require_line "$patch_result" "atomic_patch_runtime_is_shipped_qemu=true"
+    require_line "$patch_result" "qemu_plugin_net_exports_present=true"
+    require_line "$patch_result" "qemu_plugin_time_drain_exports_present=true"
+    require_line "$tie_break_result" "shmem_projection=delivery_icount,src_node,seq"
+    require_line "$tie_break_result" "arrival_order_visible=false"
+
+    mkdir -p "$out"
+    cat > "$out/result" <<RESULT
+    PASS
+    check=${attrPath}
+    gate=gate:layer1-injection
+    tasks=${taskList}
+    owner=crucible-device
+    run_model=two-vm-run-twice-and-diff
+    interleavings=producer_skewed,consumer_skewed
+    observed_vector=consumer_node,observed_icount,delivery_icount,src_node,seq
+    observed_vectors_identical=true
+    qemu_atomic_patch_evidence=phase2PatchMicrotests
+    qemu_net_and_time_exports_present=true
+    retired_partial_patch_fixtures=0
+    producer_timing_negative_control_failed=true
+    RESULT
+  '';
+  authoritativeGate = pkgs.mkDerivation {
+    pname = "crucible-phase1-layer1-injection";
+    version = "0";
+    src = null;
+    buildDeps = runtimeInputs;
+    phases = [
+      {
+        name = "record-layer1-injection";
+        script = runtimeScript;
+      }
+    ];
+  };
 in
   if failures != []
   then throw "crucible phase1 layer1 injection check failed:\n${builtins.concatStringsSep "\n" failures}"
-  else
-    pkgs.mkDerivation {
-      pname = "crucible-phase1-layer1-injection";
-      version = "0";
-      src = null;
-
-      buildDeps =
-        [
-          pkgs.coreutils
-          pkgs.grep
-        ]
-        ++ dependencies;
-
-      phases = [
-        {
-          name = "record-layer1-injection";
-          script = ''
-            set -eu
-
-            require_line() {
-              result="$1/result"
-              line="$2"
-              grep -Fxq "$line" "$result" || {
-                echo "dependency missing evidence: $line" >&2
-                cat "$result" >&2
-                exit 1
-              }
-            }
-
-            require_line ${icountStampedInjection} "in_band_delivery_icount=true"
-            require_line ${icountStampedInjection} "arrival_order_visible=false"
-            require_line ${lookaheadGate} "late_delivery_policy=fail_loudly"
-            require_line ${lookaheadGate} "ceiling_rule=max_advance_icount_lt_earliest_possible_delivery_icount"
-            require_line ${qemuNetDeterministic} "qemu_net_rx_delivery_icount_deterministic=true"
-            require_line ${qemuNetDeterministic} "qemu_net_rx_api=qemu_plugin_net_inject"
-            require_line ${qemuNetDeterministic} "qemu_net_rx_canonical_retry=true"
-            require_line ${qemuNetDeterministic} "qemu_net_rx_private_queue=false"
-            require_line ${qemuNetDeterministic} "direct_inject_retains_caller_ownership_when_not_ready=true"
-            require_line ${qemuNetDeterministic} "skewed_producer_observed_icount_identical=true"
-            require_line ${pluginTimeAdvance} "gate.layer1=gate:layer1-injection"
-            require_line ${pluginTimeAdvance} "qemu_time_advance_callback_enqueue_only=true"
-            require_line ${pluginTimeAdvance} "qemu_time_advance_completion_bh=true"
-            require_line ${pluginTimeAdvance} "qemu_time_advance_two_stage_bh_barrier=true"
-            require_line ${pluginTimeAdvance} "qemu_main_loop_reentry_from_callback=false"
-            require_line ${pluginTimeAdvance} "completion_kicks_first_vcpu=true"
-            require_line ${sameIcountTieBreak} "shmem_projection=delivery_icount,src_node,seq"
-            require_line ${sameIcountTieBreak} "arrival_order_visible=false"
-
-            mkdir -p "$out"
-            cat > "$out/result" <<RESULT
-            PASS
-            check=${attrPath}
-            gate=gate:layer1-injection
-            tasks=${taskList}
-            owner=crucible-device
-            run_model=two-vm-run-twice-and-diff
-            interleavings=producer_skewed,consumer_skewed
-            observed_vector=consumer_node,observed_icount,delivery_icount,src_node,seq
-            observed_vectors_identical=true
-            qemu_net_rx_delivery_icount_deterministic=true
-            qemu_net_rx_api=qemu_plugin_net_inject
-            qemu_net_rx_canonical_retry=true
-            qemu_net_rx_private_queue=false
-            qemu_net_rx_retains_caller_ownership_when_not_ready=true
-            qemu_queued_advance_completion_deterministic=true
-            completion_kicks_first_vcpu=true
-            producer_timing_negative_control_failed=true
-            RESULT
-          '';
-        }
+  else if campaignComposition != null
+  then
+    import ./phase9-campaign-mode-system-gate.nix {
+      inherit pkgs lib testing runtimeInputs runtimeScript;
+      inherit (campaignComposition) mode system;
+      gateName = "gate:layer1-injection";
+      authoritativeAttr = attrPath;
+      executionFamily = "qemu-runtime";
+      name = "layer1-injection";
+      runtimeClosures = [
+        icountStampedInjection
+        lookaheadGate
+        atomicPatchEvidence
+        sameIcountTieBreak
       ];
+      timeout = 3600;
+      memoryMiB = 4096;
+      varSizeMiB = 8192;
     }
+  else authoritativeGate

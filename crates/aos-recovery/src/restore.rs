@@ -162,12 +162,6 @@ impl VerifiedBundle {
             ))),
         }
     }
-
-    fn component(&self, id: &str) -> Result<&Component, RestoreError> {
-        self.components
-            .get(id)
-            .ok_or_else(|| RestoreError::Manifest(format!("component {id} disappeared")))
-    }
 }
 
 /// Mounts and authenticates the fixed offline bundle for the opposite slot.

@@ -133,7 +133,7 @@
     ++ failuresFor "pkgs/emulation/qemu.nix" qemuPackageNix [
       {
         label = "QEMU plugin header installed";
-        needle = "install -m 644 include/qemu/qemu-plugin.h \"$out/include/qemu/qemu-plugin.h\"";
+        needle = "plugin_header=include/plugins/qemu-plugin.h";
       }
       {
         label = "QEMU output retains GPL-2.0-or-later text for its plugin header";

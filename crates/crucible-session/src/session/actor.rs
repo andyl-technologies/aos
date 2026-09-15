@@ -86,6 +86,24 @@ pub enum SessionError {
         /// Final boundary snapshot produced by replay.
         actual: Box<EngineSnapshot>,
     },
+    /// Replay was requested from a different initial configuration.
+    #[error(
+        "control replay initial configuration mismatch: expected={expected:?} actual={actual:?}"
+    )]
+    ControlReplayInitialConfigurationMismatch {
+        /// Initial configuration recorded in the replay artifact.
+        expected: ContentHash,
+        /// Initial configuration owned by the replay engine.
+        actual: ContentHash,
+    },
+    /// A replay control record is internally inconsistent.
+    #[error("control replay record {sequence} is invalid: {reason}")]
+    ControlReplayRecordInvalid {
+        /// Session-local sequence of the invalid record.
+        sequence: u64,
+        /// Stable validation failure detail.
+        reason: String,
+    },
     /// Breakpoint condition evaluation could not build a checked log prefix.
     #[error("breakpoint condition prefix is invalid: {reason}")]
     BreakpointConditionPrefix {
@@ -430,6 +448,35 @@ impl<L> SessionActor<L> {
     pub const fn with_terminal_command_keepalive(mut self, enabled: bool) -> Self {
         self.terminal_command_keepalive = enabled;
         self
+    }
+
+    /// Replays a complete boundary-control artifact before the actor is spawned.
+    ///
+    /// Replay publishes emitted events and exact control records through this
+    /// actor's observable logs. The replayed terminal actor stays alive for
+    /// queries until it receives an explicit shutdown request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] when the artifact does not match the engine's
+    /// initial state, contains an invalid boundary record, or replay diverges
+    /// from its recorded final snapshot.
+    pub fn with_control_replay_artifact(
+        mut self,
+        artifact: &SessionControlReplayArtifact,
+    ) -> Result<Self, SessionError>
+    where
+        L: QuantumLoop,
+    {
+        self.engine.replay_control_replay_artifact(artifact)?;
+
+        let entries = self.engine.drain_event_log_entries();
+        self.append_event_log_entries(&entries)?;
+        self.sync_reproduction_log();
+        self.terminal_command_keepalive = true;
+        self.publish_live_snapshot();
+
+        Ok(self)
     }
 
     /// Returns the actor-owned engine.
@@ -947,16 +994,26 @@ where
         command: SessionCommand,
     ) -> Result<(), SessionError> {
         let shutdown_requested = acknowledged_stop_command(&command);
+        let terminal_before_command = matches!(self.engine.state(), EngineState::Stopped { .. });
         let (command, acknowledgement) = split_acknowledged_command(command);
+        if shutdown_requested && terminal_before_command {
+            self.terminal_shutdown_requested = true;
+            complete_acknowledgement(acknowledgement, &Ok(()));
+            return Ok(());
+        }
         if matches!(command, SessionCommand::Fork { .. }) && self.fork_loop_factory.is_some() {
             let result = self.apply_spawned_fork_command(command).await;
-            self.record_terminal_shutdown_request(shutdown_requested, &result);
+            self.record_terminal_shutdown_request(
+                shutdown_requested,
+                terminal_before_command,
+                &result,
+            );
             complete_acknowledgement(acknowledgement, &result);
             return result;
         }
 
         let result = self.apply_command_without_spawning_forks(command).await;
-        self.record_terminal_shutdown_request(shutdown_requested, &result);
+        self.record_terminal_shutdown_request(shutdown_requested, terminal_before_command, &result);
         complete_acknowledgement(acknowledgement, &result);
         result
     }
@@ -964,9 +1021,11 @@ where
     fn record_terminal_shutdown_request(
         &mut self,
         shutdown_requested: bool,
+        terminal_before_command: bool,
         result: &Result<(), SessionError>,
     ) {
         if shutdown_requested
+            && terminal_before_command
             && result.is_ok()
             && matches!(self.engine.state(), EngineState::Stopped { .. })
         {

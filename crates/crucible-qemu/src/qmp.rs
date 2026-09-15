@@ -3,7 +3,7 @@
 //! RFC-0010 QEMU-19 limits QMP use to capability negotiation, typed VM
 //! status/topology, hot-fork-readiness observation, bounded QEMU-owned resource
 //! inventories, the reversible plugin callback barrier, and QEMU's retained
-//! template-preparation coordinator, plus VM snapshot save/load/delete,
+//! template-preparation coordinator, plus crate-owned snapshot maintenance,
 //! snapshot job polling, bounded standard `getfd`/`closefd` transfer plus
 //! QEMU-owned authenticated private-ring retention, and graceful quit. The
 //! client parses JSON-line QMP responses internally,
@@ -26,48 +26,50 @@ use thiserror::Error;
 
 use crucible_shmem::SetupRegionBackingIdentity;
 
-use crate::{QemuLoadvmCommandAuthorization, QemuNodeChannelError};
+use crate::QemuNodeChannelError;
 
 mod command;
+mod fingerprint_projection;
 mod hot_fork;
 mod hot_fork_coordinator;
 mod hot_fork_stages;
+mod ram_delta;
 use command::{
-    HotForkBhTimerBarrierAction, HotForkBlockBarrierAction, HotForkChildConsoleAction,
+    HotForkAsyncWorkerBarrierAction, HotForkBlockBarrierAction, HotForkChildConsoleAction,
     HotForkChildDiagnosticAction, HotForkChildQmpAction, HotForkPluginBarrierAction,
     HotForkPluginEndpointAction, HotForkPrivateRingAction, HotForkRcuBarrierAction,
     HotForkTemplateAction, QmpCommand,
 };
+use fingerprint_projection::{
+    QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND, parse_fingerprint_projection_manifest,
+};
+pub(crate) use fingerprint_projection::{
+    QmpFingerprintProjectionManifest, QmpFingerprintProjectionManifestRow,
+};
+#[cfg(all(test, target_os = "linux"))]
+mod checkpoint_delta_flight_tests;
 mod snapshot_tag;
 #[cfg(target_os = "linux")]
 mod unix_socket;
 mod vmstate_control;
 
+pub(crate) use hot_fork::QmpHotForkAsyncWorkerBarrierState;
 pub(crate) use hot_fork::source_mapping_extent;
 use hot_fork::{
     HotForkChildFilesAction, HotForkChildProcessAction, HotForkChildProcessContractAction,
-    parse_hot_fork_aio_handler_inventory, parse_hot_fork_aio_inventory,
-    parse_hot_fork_bh_timer_barrier_state, parse_hot_fork_block_backend_inventory,
-    parse_hot_fork_block_barrier_state, parse_hot_fork_bottom_half_inventory,
+    parse_hot_fork_async_worker_barrier_state, parse_hot_fork_block_barrier_state,
     parse_hot_fork_child_console_state, parse_hot_fork_child_diagnostic_state,
     parse_hot_fork_child_files_state, parse_hot_fork_child_process_contract_state,
     parse_hot_fork_child_process_state, parse_hot_fork_child_qmp_state,
-    parse_hot_fork_child_runtime_state, parse_hot_fork_monitor_inventory,
-    parse_hot_fork_mutex_inventory, parse_hot_fork_plugin_barrier_state,
+    parse_hot_fork_child_runtime_state, parse_hot_fork_plugin_barrier_state,
     parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
-    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state,
-    parse_hot_fork_rcu_inventory, parse_hot_fork_readiness, parse_hot_fork_state,
-    parse_hot_fork_template_state, parse_hot_fork_thread_inventory, parse_hot_fork_timer_inventory,
+    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state, parse_hot_fork_state,
+    parse_hot_fork_template_state,
 };
 pub use hot_fork::{
-    QMP_HOT_FORK_AIO_HANDLER_INVENTORY_MAX, QMP_HOT_FORK_AIO_HANDLER_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_AIO_INVENTORY_MAX, QMP_HOT_FORK_AIO_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND, QMP_HOT_FORK_BH_TIMER_BARRIER_SCHEMA_VERSION,
-    QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_MAX, QMP_HOT_FORK_BLOCK_BACKEND_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_BLOCK_BACKEND_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
-    QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES,
-    QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_MAX,
-    QMP_HOT_FORK_BOTTOM_HALF_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_BOTTOM_HALF_NAME_MAX_BYTES,
+    QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND, QMP_HOT_FORK_ASYNC_WORKER_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_BLOCK_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_CONSOLE_COMMAND, QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND, QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD, QMP_HOT_FORK_CHILD_FILES_COMMAND,
@@ -76,53 +78,43 @@ pub use hot_fork::{
     QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_QMP_COMMAND, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_COMMAND,
-    QMP_HOT_FORK_MONITOR_INVENTORY_MAX, QMP_HOT_FORK_MONITOR_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_MUTEX_INVENTORY_MAX, QMP_HOT_FORK_MUTEX_INVENTORY_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND, QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
     QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
     QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
-    QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_RCU_INVENTORY_MAX,
-    QMP_HOT_FORK_RCU_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_READINESS_SCHEMA_VERSION,
-    QMP_HOT_FORK_REQUIRED_PROOFS, QMP_HOT_FORK_SCHEMA_VERSION, QMP_HOT_FORK_TEMPLATE_COMMAND,
-    QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION,
-    QMP_HOT_FORK_THREAD_INVENTORY_MAX, QMP_HOT_FORK_THREAD_INVENTORY_SCHEMA_VERSION,
-    QMP_HOT_FORK_THREAD_NAME_MAX_BYTES, QMP_HOT_FORK_TIMER_INVENTORY_MAX,
-    QMP_HOT_FORK_TIMER_INVENTORY_SCHEMA_VERSION, QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
-    QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_READINESS_COMMAND, QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
-    QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND, QmpHotForkAioContext, QmpHotForkAioHandler,
-    QmpHotForkAioHandlerInventory, QmpHotForkAioInventory, QmpHotForkBhTimerBarrierState,
-    QmpHotForkBlockBackend, QmpHotForkBlockBackendInventory, QmpHotForkBlockBarrierState,
+    QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_SCHEMA_VERSION,
+    QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS,
+    QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
+    QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QmpHotForkBlockBarrierState,
     QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
-    QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof, QmpHotForkBottomHalf,
-    QmpHotForkBottomHalfInventory, QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState,
-    QmpHotForkChildFile, QmpHotForkChildFileRoot, QmpHotForkChildFilesState,
-    QmpHotForkChildProcessContractIdentity, QmpHotForkChildProcessContractNames,
-    QmpHotForkChildProcessContractState, QmpHotForkChildProcessPhase, QmpHotForkChildProcessState,
-    QmpHotForkChildQmpState, QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState,
-    QmpHotForkMonitorInventory, QmpHotForkMutex, QmpHotForkMutexInventory, QmpHotForkOutcome,
+    QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof, QmpHotForkChildConsoleState,
+    QmpHotForkChildDiagnosticState, QmpHotForkChildFile, QmpHotForkChildFileRoot,
+    QmpHotForkChildFilesState, QmpHotForkChildProcessContractIdentity,
+    QmpHotForkChildProcessContractNames, QmpHotForkChildProcessContractState,
+    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState, QmpHotForkChildQmpState,
+    QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkOutcome,
     QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
     QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
-    QmpHotForkRcuBarrierState, QmpHotForkRcuInventory, QmpHotForkRcuReader, QmpHotForkReadiness,
-    QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState, QmpHotForkTemplateOutcome,
-    QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState, QmpHotForkThread,
-    QmpHotForkThreadDisposition, QmpHotForkThreadInventory, QmpHotForkTimer, QmpHotForkTimerClock,
-    QmpHotForkTimerInventory,
+    QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState,
+    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
 };
-pub use snapshot_tag::QmpSnapshotTag;
+pub(crate) use ram_delta::{
+    QMP_CHECKPOINT_ABORT_COMMAND, QMP_CHECKPOINT_CAPTURE_COMMAND, QMP_CHECKPOINT_COMMIT_COMMAND,
+    QMP_CHECKPOINT_RESTORE_COMMAND, QMP_QUERY_CHECKPOINT_EPOCH_COMMAND,
+};
+pub(crate) use ram_delta::{
+    QmpCheckpointCapture, QmpCheckpointCaptureRequest, QmpCheckpointRestore,
+    QmpCheckpointRestoreLayer, QmpCheckpointRestoreRequest,
+};
+pub use ram_delta::{QmpCheckpointEpochState, QmpCheckpointIdentity, QmpCheckpointRamKind};
+pub(crate) use snapshot_tag::QmpSnapshotTag;
 pub use vmstate_control::QemuQmpVmStateControlChannel;
 
 /// QMP command name used for capability negotiation.
 pub const QMP_CAPABILITIES_COMMAND: &str = "qmp_capabilities";
 /// QMP command name used for saving the QEMU VMState half of a checkpoint.
 pub const QMP_SNAPSHOT_SAVE_COMMAND: &str = "snapshot-save";
-/// QMP command name used for loading the QEMU VMState half of a checkpoint.
-pub const QMP_SNAPSHOT_LOAD_COMMAND: &str = "snapshot-load";
 /// QMP command name used for deleting the QEMU VMState half of a checkpoint.
 pub const QMP_SNAPSHOT_DELETE_COMMAND: &str = "snapshot-delete";
 /// QMP command name used for polling snapshot job completion.
@@ -137,8 +129,6 @@ pub const QMP_STOP_COMMAND: &str = "stop";
 pub const QMP_CONT_COMMAND: &str = "cont";
 /// QMP command that authorizes one authenticated terminal lifecycle exit.
 pub const QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND: &str = "crucible-complete-terminal-lifecycle";
-/// QMP command name used for reading configured vCPU indexes.
-pub const QMP_QUERY_CPUS_FAST_COMMAND: &str = "query-cpus-fast";
 /// QMP command name used for graceful QEMU termination.
 pub const QMP_QUIT_COMMAND_NAME: &str = "quit";
 /// Standard QMP command used to import one Unix descriptor under a stable name.
@@ -273,20 +263,6 @@ where
         )
     }
 
-    /// Connects a client with an explicit snapshot-job polling policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QmpError`] when the greeting cannot be read or decoded, when the
-    /// greeting is not a QMP greeting, when the capabilities request cannot be
-    /// written, or when QMP reports an error response.
-    pub fn connect_with_job_poll_policy(
-        stream: S,
-        job_poll_policy: QmpJobPollPolicy,
-    ) -> Result<Self, QmpError> {
-        Self::connect_with_policies(stream, job_poll_policy, QmpIoTimeoutPolicy::default())
-    }
-
     /// Connects a client with explicit snapshot-job and stream timeout policies.
     ///
     /// # Errors
@@ -323,6 +299,13 @@ where
         self.greeting
     }
 
+    pub(crate) fn query_fingerprint_projection_manifest(
+        &mut self,
+    ) -> Result<QmpFingerprintProjectionManifest, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryFingerprintProjectionManifest)?;
+        parse_fingerprint_projection_manifest(&response.value)
+    }
+
     /// Returns a client whose launch already contains the fixed inert endpoint.
     #[must_use]
     pub const fn with_predeclared_debug_guest_endpoint(mut self) -> Self {
@@ -338,7 +321,7 @@ where
     /// cannot be read or decoded, when QMP returns an error response, or when
     /// the snapshot job reports failure or does not conclude within
     /// [`QMP_JOB_QUERY_LIMIT`] polls.
-    pub fn savevm(&mut self, tag: &QmpSnapshotTag) -> Result<QmpCommandComplete, QmpError> {
+    pub(crate) fn savevm(&mut self, tag: &QmpSnapshotTag) -> Result<QmpCommandComplete, QmpError> {
         let job_id = snapshot_job_id("save", tag);
         self.send_command(QmpCommand::SaveVm {
             tag,
@@ -347,49 +330,13 @@ where
         self.wait_for_job(QmpCommandKind::SaveVm, &job_id)
     }
 
-    /// Loads the VMState snapshot named by a checkpoint-derived tag.
-    ///
-    /// This only performs the low-level QMP command. Runtime admission remains a
-    /// separate replay-oracle-validated policy decision.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QmpError`] when the request cannot be written, when the response
-    /// cannot be read or decoded, when QMP returns an error response, or when
-    /// the snapshot job reports failure or does not conclude within
-    /// [`QMP_JOB_QUERY_LIMIT`] polls.
-    pub fn loadvm(
-        &mut self,
-        tag: &QmpSnapshotTag,
-        authorization: QemuLoadvmCommandAuthorization,
-    ) -> Result<QmpCommandComplete, QmpError> {
-        if authorization.purpose() != crate::QemuLoadvmCommandPurpose::ReplayOracleProbe {
-            return Err(QmpError::UnauthorizedLoadvmPurpose {
-                purpose: authorization.purpose(),
-            });
-        }
-        self.loadvm_authorized(tag)
-    }
-
-    pub(crate) fn loadvm_authorized(
-        &mut self,
-        tag: &QmpSnapshotTag,
-    ) -> Result<QmpCommandComplete, QmpError> {
-        let job_id = snapshot_job_id("load", tag);
-        self.send_command(QmpCommand::LoadVm {
-            tag,
-            job_id: &job_id,
-        })?;
-        self.wait_for_job(QmpCommandKind::LoadVm, &job_id)
-    }
-
     /// Deletes the VMState snapshot named by a checkpoint-derived tag.
     ///
     /// # Errors
     ///
     /// Returns [`QmpError`] when the request cannot be written, when the response
     /// cannot be decoded, or when the delete job fails or exceeds its poll bound.
-    pub fn delete_snapshot(
+    pub(crate) fn delete_snapshot(
         &mut self,
         tag: &QmpSnapshotTag,
     ) -> Result<QmpCommandComplete, QmpError> {
@@ -399,6 +346,87 @@ where
             job_id: &job_id,
         })?;
         self.wait_for_job(QmpCommandKind::DeleteSnapshot, &job_id)
+    }
+
+    /// Captures one bounded direct or parent-relative exact checkpoint candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or QEMU's response differs
+    /// from the requested identity, kind, schema, or output ceilings.
+    pub(crate) fn capture_checkpoint(
+        &mut self,
+        request: &QmpCheckpointCaptureRequest,
+    ) -> Result<QmpCheckpointCapture, QmpError> {
+        let response = self.send_command_return(QmpCommand::CheckpointCapture { request })?;
+        ram_delta::parse_checkpoint_capture(&response.value, request)
+    }
+
+    /// Restores one authenticated direct-plus-delta checkpoint chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or QEMU's response differs
+    /// from the requested identity, schema, layer count, or byte ceilings.
+    pub(crate) fn restore_checkpoint(
+        &mut self,
+        request: &QmpCheckpointRestoreRequest,
+    ) -> Result<QmpCheckpointRestore, QmpError> {
+        let response = self.send_command_return(QmpCommand::CheckpointRestore { request })?;
+        ram_delta::parse_checkpoint_restore(&response.value, request)
+    }
+
+    /// Commits the exact active checkpoint candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or QEMU returns malformed
+    /// epoch authority after committing `identity`.
+    pub(crate) fn commit_checkpoint(
+        &mut self,
+        identity: QmpCheckpointIdentity,
+    ) -> Result<QmpCheckpointEpochState, QmpError> {
+        let response = self.send_command_return(QmpCommand::CheckpointCommit { identity })?;
+        let state = ram_delta::parse_checkpoint_epoch_state(response.command, &response.value)?;
+        if state.committed() != Some(identity) || state.candidate().is_some() {
+            return Err(QmpError::MalformedTypedResponse {
+                command: response.command,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    /// Aborts the exact active checkpoint candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or QEMU returns malformed
+    /// retained parent authority after aborting `identity`.
+    pub(crate) fn abort_checkpoint(
+        &mut self,
+        identity: QmpCheckpointIdentity,
+    ) -> Result<QmpCheckpointEpochState, QmpError> {
+        let response = self.send_command_return(QmpCommand::CheckpointAbort { identity })?;
+        let state = ram_delta::parse_checkpoint_epoch_state(response.command, &response.value)?;
+        if state.candidate().is_some() {
+            return Err(QmpError::MalformedTypedResponse {
+                command: response.command,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    /// Queries QEMU's committed checkpoint and active candidate authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or the response violates
+    /// the exact epoch schema.
+    pub(crate) fn query_checkpoint_epoch(&mut self) -> Result<QmpCheckpointEpochState, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryCheckpointEpoch)?;
+        ram_delta::parse_checkpoint_epoch_state(response.command, &response.value)
     }
 
     /// Requests graceful QEMU termination over QMP.
@@ -472,7 +500,7 @@ where
     /// # Errors
     ///
     /// Returns [`QmpError`] when the request or response fails, when QEMU omits
-    /// a required field, reports an unknown QEMU 10.0 run state, or contradicts
+    /// a required field, reports an unknown QEMU run state, or contradicts
     /// the typed relationship between `running` and `status`.
     pub fn query_status(&mut self) -> Result<QmpRunState, QmpError> {
         let response = self.send_command_return(QmpCommand::QueryStatus)?;
@@ -572,44 +600,6 @@ where
         })
     }
 
-    /// Returns the exact sorted set of configured vCPU indexes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QmpError`] when the request or response fails, when QEMU does
-    /// not return an array, or when a CPU index is missing, negative, duplicate,
-    /// outside the unsigned 64-bit range, nonzero-start, or noncontiguous.
-    pub fn query_cpus_fast(&mut self) -> Result<QmpCpuTopology, QmpError> {
-        let response = self.send_command_return(QmpCommand::QueryCpusFast)?;
-        let Some(cpus) = response.value.as_array() else {
-            return Err(QmpError::MalformedTypedResponse {
-                command: QmpCommandKind::QueryCpusFast,
-                response: response.value.to_string(),
-            });
-        };
-        let mut cpu_indexes = cpus
-            .iter()
-            .map(|cpu| cpu.get("cpu-index").and_then(Value::as_u64))
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| QmpError::MalformedTypedResponse {
-                command: QmpCommandKind::QueryCpusFast,
-                response: response.value.to_string(),
-            })?;
-        cpu_indexes.sort_unstable();
-        if cpu_indexes.is_empty()
-            || cpu_indexes
-                .iter()
-                .enumerate()
-                .any(|(expected, actual)| *actual != expected as u64)
-        {
-            return Err(QmpError::MalformedTypedResponse {
-                command: QmpCommandKind::QueryCpusFast,
-                response: response.value.to_string(),
-            });
-        }
-        Ok(QmpCpuTopology { cpu_indexes })
-    }
-
     fn hot_fork_child_process(
         &mut self,
         action: HotForkChildProcessAction,
@@ -677,7 +667,7 @@ where
                 ) || (state.outcome() == QmpHotForkTemplateOutcome::Draining
                     && !state.plugin_barrier().held()
                     && !state.rcu_barrier().held()
-                    && !state.bh_timer_barrier().held())
+                    && !state.async_worker_barrier().held())
             }
         };
         if !postcondition_holds {
@@ -729,20 +719,21 @@ where
         Ok(state)
     }
 
-    fn hot_fork_bh_timer_barrier(
+    fn hot_fork_async_worker_barrier(
         &mut self,
-        action: HotForkBhTimerBarrierAction,
-    ) -> Result<QmpHotForkBhTimerBarrierState, QmpError> {
-        let response = self.send_command_return(QmpCommand::HotForkBhTimerBarrier { action })?;
-        let state = parse_hot_fork_bh_timer_barrier_state(&response.value)?;
+        action: HotForkAsyncWorkerBarrierAction,
+    ) -> Result<QmpHotForkAsyncWorkerBarrierState, QmpError> {
+        let response =
+            self.send_command_return(QmpCommand::HotForkAsyncWorkerBarrier { action })?;
+        let state = parse_hot_fork_async_worker_barrier_state(&response.value)?;
         let postcondition_holds = match action {
-            HotForkBhTimerBarrierAction::Hold => state.held(),
-            HotForkBhTimerBarrierAction::Query => true,
-            HotForkBhTimerBarrierAction::Release => !state.held(),
+            HotForkAsyncWorkerBarrierAction::Hold => state.held(),
+            HotForkAsyncWorkerBarrierAction::Query => true,
+            HotForkAsyncWorkerBarrierAction::Release => !state.held(),
         };
         if !postcondition_holds {
             return Err(QmpError::MalformedTypedResponse {
-                command: QmpCommandKind::HotForkBhTimerBarrier,
+                command: QmpCommandKind::HotForkAsyncWorkerBarrier,
                 response: response.value.to_string(),
             });
         }
@@ -1185,23 +1176,6 @@ impl QmpIoTimeoutPolicy {
         Self::new(command_timeout, command_timeout)
     }
 
-    /// Returns this policy with a custom QMP line-size bound.
-    #[must_use]
-    pub const fn with_max_line_bytes(mut self, max_line_bytes: usize) -> Self {
-        self.max_line_bytes = max_line_bytes;
-        self
-    }
-
-    /// Returns this policy with a custom asynchronous event bound.
-    #[must_use]
-    pub const fn with_max_async_events_per_command(
-        mut self,
-        max_async_events_per_command: usize,
-    ) -> Self {
-        self.max_async_events_per_command = max_async_events_per_command;
-        self
-    }
-
     /// Validates that all QMP stream operations have nonzero timeouts.
     ///
     /// # Errors
@@ -1261,7 +1235,7 @@ pub struct QmpRunState {
     pub status: QmpRunStateKind,
 }
 
-/// QEMU 10.0 run-state values admitted by typed `query-status`.
+/// QEMU run-state values admitted by typed `query-status`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QmpRunStateKind {
     /// Execution stopped for debugger control.
@@ -1322,25 +1296,6 @@ impl QmpRunStateKind {
     }
 }
 
-/// Exact contiguous `0..N` vCPU indexes returned by typed `query-cpus-fast`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QmpCpuTopology {
-    cpu_indexes: Vec<u64>,
-}
-
-impl QmpCpuTopology {
-    /// Returns the sorted configured vCPU indexes, exactly contiguous from zero.
-    #[must_use]
-    pub fn cpu_indexes(&self) -> &[u64] {
-        &self.cpu_indexes
-    }
-
-    #[cfg(all(test, target_os = "linux"))]
-    pub(crate) fn from_test_cpu_indexes(cpu_indexes: Vec<u64>) -> Self {
-        Self { cpu_indexes }
-    }
-}
-
 /// Supported QMP command kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QmpCommandKind {
@@ -1348,10 +1303,20 @@ pub enum QmpCommandKind {
     Capabilities,
     /// VMState snapshot save.
     SaveVm,
-    /// VMState snapshot load.
-    LoadVm,
     /// VMState snapshot deletion.
     DeleteSnapshot,
+    /// Exact direct or delta checkpoint capture.
+    CheckpointCapture,
+    /// Exact direct-plus-delta checkpoint restore.
+    CheckpointRestore,
+    /// Exact checkpoint candidate commit.
+    CheckpointCommit,
+    /// Exact checkpoint candidate abort.
+    CheckpointAbort,
+    /// Exact checkpoint epoch query.
+    QueryCheckpointEpoch,
+    /// Exact realized fingerprint projection manifest query.
+    QueryFingerprintProjectionManifest,
     /// Snapshot job status query.
     QueryJobs,
     /// Release a concluded snapshot job.
@@ -1364,20 +1329,6 @@ pub enum QmpCommandKind {
     Cont,
     /// Authenticated terminal lifecycle completion.
     CompleteTerminalLifecycle,
-    /// Configured vCPU topology query.
-    QueryCpusFast,
-    /// QEMU-owned hot-fork readiness query.
-    QueryHotForkReadiness,
-    /// QEMU-owned hot-fork active-thread inventory query.
-    QueryHotForkThreadInventory,
-    /// QEMU-owned hot-fork RCU-state inventory query.
-    QueryHotForkRcuInventory,
-    /// QEMU-owned hot-fork AioContext activity inventory query.
-    QueryHotForkAioInventory,
-    /// QEMU-owned hot-fork allocated-AIO-handler inventory query.
-    QueryHotForkAioHandlerInventory,
-    /// QEMU-owned hot-fork allocated-block-backend inventory query.
-    QueryHotForkBlockBackendInventory,
     /// QEMU-owned sealed plugin-resource inventory query.
     QueryHotForkPluginResourceInventory,
     /// QEMU-owned registered fork-child runtime query.
@@ -1386,8 +1337,8 @@ pub enum QmpCommandKind {
     HotForkPluginBarrier,
     /// QEMU-owned reversible RCU admission/drain-barrier operation.
     HotForkRcuBarrier,
-    /// QEMU-owned reversible asynchronous-source barrier operation.
-    HotForkBhTimerBarrier,
+    /// QEMU-owned reversible asynchronous-worker barrier operation.
+    HotForkAsyncWorkerBarrier,
     /// QEMU-owned reversible all-block drain-barrier operation.
     HotForkBlockBarrier,
     /// QEMU-owned retained hot-fork template coordinator operation.
@@ -1410,14 +1361,6 @@ pub enum QmpCommandKind {
     HotForkChildQmp,
     /// QEMU-owned branch-private child console retention operation.
     HotForkChildConsole,
-    /// QEMU-owned hot-fork allocated-bottom-half inventory query.
-    QueryHotForkBottomHalfInventory,
-    /// QEMU-owned hot-fork mutex ownership inventory query.
-    QueryHotForkMutexInventory,
-    /// QEMU-owned hot-fork live-timer inventory query.
-    QueryHotForkTimerInventory,
-    /// QEMU-owned hot-fork monitor/parser inventory query.
-    QueryHotForkMonitorInventory,
     /// Graceful QEMU quit.
     Quit,
     /// Import one Unix descriptor under a stable name.
@@ -1431,32 +1374,28 @@ impl QmpCommandKind {
         match self {
             Self::Capabilities => QMP_CAPABILITIES_COMMAND,
             Self::SaveVm => QMP_SNAPSHOT_SAVE_COMMAND,
-            Self::LoadVm => QMP_SNAPSHOT_LOAD_COMMAND,
             Self::DeleteSnapshot => QMP_SNAPSHOT_DELETE_COMMAND,
+            Self::CheckpointCapture => QMP_CHECKPOINT_CAPTURE_COMMAND,
+            Self::CheckpointRestore => QMP_CHECKPOINT_RESTORE_COMMAND,
+            Self::CheckpointCommit => QMP_CHECKPOINT_COMMIT_COMMAND,
+            Self::CheckpointAbort => QMP_CHECKPOINT_ABORT_COMMAND,
+            Self::QueryCheckpointEpoch => QMP_QUERY_CHECKPOINT_EPOCH_COMMAND,
+            Self::QueryFingerprintProjectionManifest => {
+                QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND
+            }
             Self::QueryJobs => QMP_QUERY_JOBS_COMMAND,
             Self::JobDismiss => QMP_JOB_DISMISS_COMMAND,
             Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
             Self::Stop => QMP_STOP_COMMAND,
             Self::Cont => QMP_CONT_COMMAND,
             Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
-            Self::QueryCpusFast => QMP_QUERY_CPUS_FAST_COMMAND,
-            Self::QueryHotForkReadiness => QMP_QUERY_HOT_FORK_READINESS_COMMAND,
-            Self::QueryHotForkThreadInventory => QMP_QUERY_HOT_FORK_THREAD_INVENTORY_COMMAND,
-            Self::QueryHotForkRcuInventory => QMP_QUERY_HOT_FORK_RCU_INVENTORY_COMMAND,
-            Self::QueryHotForkAioInventory => QMP_QUERY_HOT_FORK_AIO_INVENTORY_COMMAND,
-            Self::QueryHotForkAioHandlerInventory => {
-                QMP_QUERY_HOT_FORK_AIO_HANDLER_INVENTORY_COMMAND
-            }
-            Self::QueryHotForkBlockBackendInventory => {
-                QMP_QUERY_HOT_FORK_BLOCK_BACKEND_INVENTORY_COMMAND
-            }
             Self::QueryHotForkPluginResourceInventory => {
                 QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND
             }
             Self::QueryHotForkChildRuntime => QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
             Self::HotForkPluginBarrier => QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
             Self::HotForkRcuBarrier => QMP_HOT_FORK_RCU_BARRIER_COMMAND,
-            Self::HotForkBhTimerBarrier => QMP_HOT_FORK_BH_TIMER_BARRIER_COMMAND,
+            Self::HotForkAsyncWorkerBarrier => QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND,
             Self::HotForkBlockBarrier => QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
             Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
             Self::HotFork => QMP_HOT_FORK_COMMAND,
@@ -1468,12 +1407,6 @@ impl QmpCommandKind {
             Self::HotForkChildDiagnostics => QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
             Self::HotForkChildQmp => QMP_HOT_FORK_CHILD_QMP_COMMAND,
             Self::HotForkChildConsole => QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
-            Self::QueryHotForkBottomHalfInventory => {
-                QMP_QUERY_HOT_FORK_BOTTOM_HALF_INVENTORY_COMMAND
-            }
-            Self::QueryHotForkMutexInventory => QMP_QUERY_HOT_FORK_MUTEX_INVENTORY_COMMAND,
-            Self::QueryHotForkTimerInventory => QMP_QUERY_HOT_FORK_TIMER_INVENTORY_COMMAND,
-            Self::QueryHotForkMonitorInventory => QMP_QUERY_HOT_FORK_MONITOR_INVENTORY_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
             Self::GetFd => QMP_GETFD_COMMAND,
             Self::CloseFd => QMP_CLOSEFD_COMMAND,
@@ -1578,6 +1511,51 @@ mod tests {
         QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
     }
 
+    #[test]
+    fn command_response_rejects_excess_async_events() {
+        let mut client = QmpClient::connect_with_policies(
+            ScriptedStream::new(&[
+                r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+                r#"{"return":{}}"#,
+                r#"{"event":"STOP"}"#,
+                r#"{"event":"RESUME"}"#,
+                r#"{"return":{}}"#,
+            ]),
+            QmpJobPollPolicy::fast_test(1),
+            QmpIoTimeoutPolicy {
+                max_async_events_per_command: 1,
+                ..QmpIoTimeoutPolicy::new(Duration::from_millis(7), Duration::from_millis(11))
+            },
+        )
+        .expect("scripted QMP client should connect");
+
+        assert!(matches!(
+            client.quit(),
+            Err(QmpError::AsyncEventLimitExceeded {
+                command: QmpCommandKind::Quit,
+                limit: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn greeting_rejects_an_oversized_partial_line() {
+        assert!(matches!(
+            QmpClient::connect_with_policies(
+                ScriptedStream::new(&[r#"{"QMP":{"version":{},"capabilities":[]}}"#]),
+                QmpJobPollPolicy::fast_test(1),
+                QmpIoTimeoutPolicy {
+                    max_line_bytes: 8,
+                    ..QmpIoTimeoutPolicy::new(Duration::from_millis(7), Duration::from_millis(11))
+                },
+            ),
+            Err(QmpError::LineTooLong {
+                operation: "read QMP greeting",
+                max_bytes: 8,
+            })
+        ));
+    }
+
     fn hot_fork_response(qmp_generation: u64) -> String {
         json!({
             "return": {
@@ -1594,7 +1572,7 @@ mod tests {
                 "plugin-endpoint-generation": 7,
                 "plugin-barrier-generation": 8,
                 "rcu-barrier-generation": 9,
-                "bh-timer-barrier-generation": 10,
+                "async-worker-barrier-generation": 10,
                 "block-barrier-generation": 11,
                 "parent-process-generation": 12,
                 "child-process-generation": 13,
@@ -1613,7 +1591,7 @@ mod tests {
     ) -> String {
         json!({
             "return": {
-                "schema-version": 1,
+                "schema-version": QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
                 "generation": generation,
                 "child-pid": 321,
                 "phase": phase,
@@ -1649,7 +1627,7 @@ mod tests {
                     "plugin-endpoint-generation": 7,
                     "plugin-barrier-generation": 8,
                     "rcu-barrier-generation": 9,
-                    "bh-timer-barrier-generation": 10,
+                    "async-worker-barrier-generation": 10,
                     "block-barrier-generation": 11,
                     "parent-process-generation": 12,
                     "child-process-generation": 13,
@@ -1712,6 +1690,7 @@ mod tests {
                 "exec-oob": "crucible-hot-fork-child-process",
                 "arguments": {
                     "action": "query",
+                    "schema-version": QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
                     "generation": 12,
                 },
             })

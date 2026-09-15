@@ -12,7 +12,7 @@ const PRODUCTION_RUST_LINE_LIMIT: usize = 3_000;
 const TEST_RUST_LINE_LIMIT: usize = 4_000;
 // Existing cohesive modules above a supplemental ceiling are admitted only at
 // the line count recorded by their authoritative content-bound review.
-const REVIEWED_SOURCE_LINE_DEBT: &[&str] = &["crucible-cas/src/content_store/tests.rs"];
+const REVIEWED_SOURCE_LINE_DEBT: &[&str] = &[];
 
 #[test]
 fn crucible_rust_sources_stay_human_sized() -> Result<(), Box<dyn Error>> {

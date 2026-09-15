@@ -291,7 +291,7 @@ fn aggregate_identity_binds_network_adapter_bytes() {
 }
 
 #[test]
-fn aggregate_identity_preserves_legacy_hex_material_hash() {
+fn aggregate_identity_preserves_canonical_v9_hex_material_hash() {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let plan = FaultSignalPlan::empty();

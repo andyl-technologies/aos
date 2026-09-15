@@ -255,7 +255,7 @@
     ++ failuresFor "crates/crucible/tests/scheduler_resolve.rs" resolveTest [
       {
         label = "mixed due set total-order test";
-        needle = "resolve_quantum_processes_frame_io_and_fault_at_exact_delivery_icount_in_total_order";
+        needle = "resolve_quantum_processes_frame_and_io_at_exact_delivery_icount_in_total_order";
       }
       {
         label = "transport-order independence test";

@@ -41,11 +41,12 @@ fn control_replay_artifact_reproduces_interactive_scheduler_state() {
     }
 
     let artifact = interactive.control_replay_artifact(initial);
-    let replay = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
-        &artifact,
+    let mut replay_engine = Engine::new(
+        artifact.initial_configuration.clone(),
         graph_with_baked_genesis(&scenario),
         ControlSensitiveLoop::default(),
-    ) {
+    );
+    let replay = match replay_engine.replay_control_replay_artifact(&artifact) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             panic!("control replay artifact should reproduce scheduler state: {error}")

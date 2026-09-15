@@ -34,11 +34,14 @@
   ],
   openTaskIds ? [],
   dependencies ? [],
-  hostParallelism ? null,
-  fingerprintOffload ? null,
-  deviceWorkOverlap ? null,
-  translationPrefetch ? null,
-  segmentReplay ? null,
+  deviceWorkOverlap,
+  fingerprintDigestOffload,
+  hostParallelism,
+  restoreLatency,
+  segmentReplay,
+  translationPrefetchNeutrality,
+  campaignComposition ? null,
+  testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -73,6 +76,29 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
+  resultFor = dependency:
+    if campaignComposition == null
+    then "${dependency}/result"
+    else "${dependency}/raw-result";
+  deviceWorkResult = resultFor deviceWorkOverlap;
+  fingerprintResult = resultFor fingerprintDigestOffload;
+  hostParallelResult = resultFor hostParallelism;
+  restoreLatencyResult = resultFor restoreLatency;
+  segmentReplayResult = resultFor segmentReplay;
+  translationResult = resultFor translationPrefetchNeutrality;
+  modeDependencyAuthentication = lib.optionalString (campaignComposition != null) ''
+    for result in \
+      ${deviceWorkResult} \
+      ${fingerprintResult} \
+      ${hostParallelResult} \
+      ${restoreLatencyResult} \
+      ${segmentReplayResult} \
+      ${translationResult}; do
+      grep -Fxq ${lib.escapeShellArg "campaign_mode=${campaignComposition.mode}"} "$result"
+      grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"} "$result"
+      grep -Fxq ${lib.escapeShellArg "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"} "$result"
+    done
+  '';
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -106,12 +132,8 @@
     ]
     ++ failuresFor "tests/crucible/phase6-basic-block-coverage.nix" liveCoverageGate [
       {
-        label = "production coverage observation-only fingerprint proof";
-        needle = "loaded_qemu_fingerprint_equivalence=coverage-off-equals-coverage-on";
-      }
-      {
-        label = "production coverage observation-only canonical-log proof";
-        needle = "canonical_event_log_effect=none";
+        label = "coverage observation-only canonical fingerprint proof";
+        needle = "canonical_fingerprint_effect=none";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
@@ -349,7 +371,7 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "implemented perf-bench gate target";
-        needle = "gate: \"gate:perf-bench\",\n        package: \"crucible-harness\",\n        test_target: \"gate_perf_bench\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "gate: \"gate:perf-bench\",\n        package: \"crucible-harness\",\n        test_target: \"gate_perf_bench\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalog [
@@ -361,7 +383,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "perf-bench target in mapping lint";
-        needle = "gate = \"gate:perf-bench\";\n      package = \"crucible-harness\";\n      testTarget = \"gate_perf_bench\";\n      requiredFeatures = [];\n      placeholder = false;";
+        needle = "gate = \"gate:perf-bench\";\n      package = \"crucible-harness\";\n      testTarget = \"gate_perf_bench\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -404,18 +426,6 @@
         needle = "test \"$fleet_per_hour\" -ge \"$minimum_linear\"";
       }
       {
-        label = "thin replay restore source required";
-        needle = "restore_source=thin-replay-from-live-qemu-artifact";
-      }
-      {
-        label = "live loadvm restore latency required";
-        needle = "loadvm_boot_window_restore_ms=$loadvm_boot_ms";
-      }
-      {
-        label = "restore measurement covers loadvm and replay fallback";
-        needle = "metric_restore_latency=live-qmp-loadvm-plus-thin-replay-fallback [PERF-12]";
-      }
-      {
         label = "live coverage IPS check";
         needle = "metric_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]";
       }
@@ -426,9 +436,189 @@
         needle = "performance benchmark gate is intentionally pending";
       }
     ];
+  configureScript = ''
+    export CARGO_HOME="$TMPDIR/cargo"
+    if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+      cd source
+    fi
+    mkdir -p "$CARGO_HOME" .cargo
+    if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+      sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+        > .cargo/config.toml
+    else
+      printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+        > .cargo/config.toml
+    fi
+  '';
+  runPerfScript = ''
+    set -eu
+    if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+      cd source
+    fi
+    cd crates
+    cargo test \
+      --frozen \
+      --offline \
+      --target-dir "$TMPDIR/crucible-phase7-perf-bench-target" \
+      -p crucible-harness \
+      --test gate_perf_bench \
+      -- --test-threads=1
+  '';
+  writeResultScript = ''
+    set -eu
+    ${modeDependencyAuthentication}
+    grep -Fxq PASS ${deviceWorkResult}
+    grep -Fxq 'gate=gate:device-host-work-overlap' ${deviceWorkResult}
+    grep -Fxq 'synchronous_async_completion_icounts_identical=true' ${deviceWorkResult}
+    grep -Fxq 'synchronous_async_canonical_logs_identical=true' ${deviceWorkResult}
+    grep -Fxq 'host_wins_race_proven=true' ${deviceWorkResult}
+    grep -Fxq 'guest_wins_race_proven=true' ${deviceWorkResult}
+    grep -Fxq PASS ${hostParallelResult}
+    grep -Fxq 'gate=gate:qemu-host-parallel' ${hostParallelResult}
+    grep -Fxq 'scheduler_commit=after-all-fixed-runs-complete' \
+      ${hostParallelResult}
+    grep -Fxq 'realized_parallelism=2' ${hostParallelResult}
+    grep -Fxq 'state_identity=bit-identical' ${hostParallelResult}
+    grep -Fxq PASS ${fingerprintResult}
+    grep -Fxq 'authenticated_on_demand_requests_acknowledged=24' \
+      ${fingerprintResult}
+    grep -Fxq 'on_demand_boundary_stream_bit_identical=true' \
+      ${fingerprintResult}
+    grep -Fxq PASS ${restoreLatencyResult}
+    grep -Fxq \
+      'restore_latency_measurement=descriptor-restore-through-cont-ack' \
+      ${restoreLatencyResult}
+    grep -Eq '^direct_restore_to_runnable_us=[1-9][0-9]*$' \
+      ${restoreLatencyResult}
+    grep -Eq '^delta_restore_to_runnable_us=[1-9][0-9]*$' \
+      ${restoreLatencyResult}
+    grep -Fxq PASS ${segmentReplayResult}
+    grep -Fxq 'gate=gate:segment-parallel-replay' ${segmentReplayResult}
+    grep -Fxq PASS ${translationResult}
+    grep -Fxq 'translation_requests=positive-and-fully-completed' \
+      ${translationResult}
+    grep -Fxq 'on_demand_boundary_stream_bit_identical=true' \
+      ${translationResult}
+    mkdir -p "$out"
+    cat > "$out/result" <<'RESULT'
+    PASS
+    check=${attrPath}
+    gate=gate:perf-bench
+    tasks=${taskList}
+    open_tasks=${openTaskList}
+    status=complete
+    owner=crucible-harness
+    phase=phase7
+    gate_class=regression
+    cost_model=wall_clock=busy/(tcg_ips*P)+amortized_boot+sync_overhead
+    metric_tcg_ips=recorded
+    metric_idle_compression=flat
+    metric_parallelism_P=lookahead-bounded
+    metric_sync_overhead_pct=warn-5-fail-10
+    metric_per_tb=node-count-independent
+    metric_boot_amortization=one-per-vm-per-world
+    metric_restore_latency=recorded
+    metric_fuzz_throughput=baseline-ratchet
+    metric_coverage_on_off=cheap-on-free-off
+    metric_fork_cost=delta-bounded
+    metric_replay_cost=suffix-bounded
+    metric_peak_rss=state-bounded
+    fleet_throughput=near-linear-to-saturation
+    cumulative_coverage=monotone-non-decreasing
+    determinism_neutral=runs-after-determinism-gates
+    host_parallelism_admission_register=fail-closed
+    host_parallelism_classes=class-a-outside-observable-boundary,class-b-pinned-virtual-time-commit
+    admitted_host_parallel_mechanisms=scheduler-host-workers,fingerprint-digest-offload,device-host-work-overlap,translation-prefetch,segment-parallel-replay
+    unclassified_host_parallelism_policy=reject
+    missing_or_unknown_proving_gate_policy=blocking-failure
+    measurement_model=deterministic-cost-model-substrate-no-qemu
+    real_process_discharge=checks.fleet.crucible-perf
+    real_multi_vm_speedup=checks.fleet.crucible-perf [PERF-3]
+    real_restore_latency=checks.crucible.phase2.qemuCheckpointDeltaFlight [PERF-12]
+    real_throughput_baseline=checks.fleet.crucible-perf [PERF-13]
+    real_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]
+    real_coverage_observation=checks.crucible.phase6.basicBlockCoverage [PERF-15]
+    real_fleet_sweep=checks.fleet.crucible-perf [PERF-27]
+    real_guest_boot=checks.fleet.crucible-perf
+    host_profile=pinned
+    corpus_baseline=content-addressed
+    RESULT
+    sed -n \
+      -e 's/^admission_class=/metric_device_work_class=/p' \
+      -e 's/^dispatch=/metric_device_work_dispatch=/p' \
+      -e 's/^completion_coordinate=/metric_device_work_completion_coordinate=/p' \
+      -e 's/^canonical_log=/metric_device_work_canonical_log=/p' \
+      -e 's/^synchronous_async_completion_icounts_identical=/metric_device_work_completion_identity=/p' \
+      -e 's/^synchronous_async_canonical_logs_identical=/metric_device_work_log_identity=/p' \
+      -e 's/^completion_pinned_before_dispatch=/metric_device_work_completion_pinned=/p' \
+      -e 's/^host_wins_race_proven=/metric_device_work_host_wins=/p' \
+      -e 's/^guest_wins_race_proven=/metric_device_work_guest_wins=/p' \
+      ${deviceWorkResult} >> "$out/result"
+    sed -n \
+      -e 's/^realized_parallelism=/metric_scheduler_realized_parallelism=/p' \
+      -e 's/^canonical_commit_order=/metric_scheduler_commit_order=/p' \
+      -e 's/^state_identity=/metric_scheduler_state_identity=/p' \
+      -e 's/^time_identity=/metric_scheduler_time_identity=/p' \
+      -e 's/^canonical_log_identity=/metric_scheduler_log_identity=/p' \
+      ${hostParallelResult} >> "$out/result"
+    sed -n \
+      -e 's/^authenticated_on_demand_requests_acknowledged=/metric_fingerprint_requests_acknowledged=/p' \
+      -e 's/^on_demand_boundary_stream_bit_identical=/metric_fingerprint_boundary_identity=/p' \
+      ${fingerprintResult} >> "$out/result"
+    sed -n \
+      -e 's/^direct_restore_to_runnable_us=/metric_direct_restore_to_runnable_us=/p' \
+      -e 's/^delta_restore_to_runnable_us=/metric_delta_restore_to_runnable_us=/p' \
+      -e 's/^restore_latency_measurement=/metric_restore_latency_source=/p' \
+      ${restoreLatencyResult} >> "$out/result"
+    sed -n \
+      -e 's/^admission_class=/metric_segment_replay_class=/p' \
+      -e 's/^worker_model=/metric_segment_replay_worker_model=/p' \
+      -e 's/^tested_segment_counts=/metric_segment_replay_counts=/p' \
+      -e 's/^serial_parallel_final_state_identical=/metric_segment_replay_state_identity=/p' \
+      -e 's/^serial_parallel_canonical_log_identical=/metric_segment_replay_log_identity=/p' \
+      -e 's/^divergence_coordinate_segment_count_invariant=/metric_segment_replay_divergence_invariant=/p' \
+      ${segmentReplayResult} >> "$out/result"
+    sed -n \
+      -e 's/^translation_requests=/metric_translation_requests=/p' \
+      -e 's/^on_demand_boundary_stream_bit_identical=/metric_translation_boundary_identity=/p' \
+      ${translationResult} >> "$out/result"
+  '';
 in
   if failures != []
   then throw "crucible phase7 perf-bench check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else if campaignComposition != null
+  then
+    import ./phase9-campaign-mode-system-gate.nix {
+      inherit pkgs lib testing;
+      inherit (campaignComposition) mode system;
+      gateName = "gate:perf-bench";
+      authoritativeAttr = attrPath;
+      executionFamily = "qemu-runtime";
+      name = "perf-bench";
+      runtimeInputs =
+        [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed]
+        ++ dependencies
+        ++ [
+          deviceWorkOverlap
+          fingerprintDigestOffload
+          hostParallelism
+          restoreLatency
+          segmentReplay
+          translationPrefetchNeutrality
+        ];
+      runtimeClosures = [crucibleSrc cargoDeps];
+      runtimeScript = ''
+        cp -R ${crucibleSrc} source
+        chmod -R u+w source
+        cd source
+        ${configureScript}
+        ${runPerfScript}
+        ${writeResultScript}
+      '';
+      timeout = 3600;
+      memoryMiB = 4096;
+      varSizeMiB = 8192;
+    }
   else
     pkgs.mkDerivation {
       pname = "crucible-phase7-perf-bench";
@@ -442,9 +632,14 @@ in
           pkgs.sed
         ]
         ++ dependencies
-        ++ lib.optionals (hostParallelism != null) [hostParallelism]
-        ++ lib.optionals (fingerprintOffload != null) [fingerprintOffload]
-        ++ lib.optionals (deviceWorkOverlap != null) [deviceWorkOverlap];
+        ++ [
+          deviceWorkOverlap
+          fingerprintDigestOffload
+          hostParallelism
+          restoreLatency
+          segmentReplay
+          translationPrefetchNeutrality
+        ];
 
       phases = [
         {
@@ -457,183 +652,15 @@ in
         }
         {
           name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
+          script = configureScript;
         }
         {
           name = "run-perf-bench";
-          script = ''
-            set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-phase7-perf-bench-target" \
-              -p crucible-harness \
-              --test gate_perf_bench \
-              -- --test-threads=1
-          '';
+          script = runPerfScript;
         }
         {
           name = "write-result";
-          script = ''
-            set -eu
-            mkdir -p "$out"
-            cat > "$out/result" <<'RESULT'
-            PASS
-            check=${attrPath}
-            gate=gate:perf-bench
-            tasks=${taskList}
-            open_tasks=${openTaskList}
-            status=complete
-            owner=crucible-harness
-            phase=phase7
-            gate_class=regression
-            cost_model=wall_clock=busy/(tcg_ips*P)+amortized_boot+sync_overhead
-            metric_tcg_ips=recorded
-            metric_idle_compression=flat
-            metric_parallelism_P=lookahead-bounded
-            metric_sync_overhead_pct=warn-5-fail-10
-            metric_per_tb=node-count-independent
-            metric_boot_amortization=one-per-vm-per-world
-            metric_restore_latency=recorded
-            metric_fuzz_throughput=baseline-ratchet
-            metric_coverage_on_off=cheap-on-free-off
-            metric_fork_cost=delta-bounded
-            metric_replay_cost=suffix-bounded
-            metric_peak_rss=state-bounded
-            fleet_throughput=near-linear-to-saturation
-            cumulative_coverage=monotone-non-decreasing
-            determinism_neutral=runs-after-determinism-gates
-            host_parallelism_admission_register=fail-closed
-            host_parallelism_classes=class-a-outside-observable-boundary,class-b-pinned-virtual-time-commit
-            admitted_host_parallel_mechanisms=scheduler-host-worker-pool,fingerprint-digest-offload,device-host-work-overlap,translation-prefetch,segment-parallel-replay
-            unclassified_host_parallelism_policy=reject
-            missing_or_unknown_proving_gate_policy=blocking-failure
-            measurement_model=deterministic-cost-model-substrate-no-qemu
-            real_process_discharge=checks.fleet.crucible-perf
-            real_multi_vm_speedup=checks.fleet.crucible-perf [PERF-3]
-            real_restore_latency=checks.fleet.crucible-perf [PERF-12]
-            real_throughput_baseline=checks.fleet.crucible-perf [PERF-13]
-            real_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]
-            real_coverage_observation=checks.crucible.phase6.basicBlockCoverage [PERF-15]
-            real_fleet_sweep=checks.fleet.crucible-perf [PERF-27]
-            real_guest_boot=checks.fleet.crucible-perf
-            host_profile=pinned
-            corpus_baseline=content-addressed
-            RESULT
-            if [ -n "${
-              if hostParallelism == null
-              then ""
-              else builtins.toString hostParallelism
-            }" ]; then
-              sed -n \
-                -e 's/^parallel_realized_parallelism=/metric_parallelism_P_real_qemu=/p' \
-                -e 's/^parallel_dispatch_wall_us=/metric_parallel_dispatch_wall_us=/p' \
-                -e 's/^serial_dispatch_wall_us=/metric_serial_dispatch_wall_us=/p' \
-                -e 's/^serial_evidence_hash=/metric_parallelism_worker_neutral_hash=/p' \
-                "${
-              if hostParallelism == null
-              then "/dev/null"
-              else "${hostParallelism}/result"
-            }" \
-                >> "$out/result"
-            fi
-            if [ -n "${
-              if deviceWorkOverlap == null
-              then ""
-              else builtins.toString deviceWorkOverlap
-            }" ]; then
-              sed -n \
-                -e 's/^admission_class=/metric_device_work_class=/p' \
-                -e 's/^dispatch=/metric_device_work_dispatch=/p' \
-                -e 's/^completion_coordinate=/metric_device_work_completion_coordinate=/p' \
-                -e 's/^requester_behavior=/metric_device_work_requester_behavior=/p' \
-                -e 's/^host_wins_race_proven=/metric_device_work_host_wins=/p' \
-                -e 's/^guest_wins_race_proven=/metric_device_work_guest_wins=/p' \
-                -e 's/^synchronous_async_canonical_logs_identical=/metric_device_work_log_identity=/p' \
-                "${
-              if deviceWorkOverlap == null
-              then "/dev/null"
-              else "${deviceWorkOverlap}/result"
-            }" \
-                >> "$out/result"
-            fi
-            if [ -n "${
-              if fingerprintOffload == null
-              then ""
-              else builtins.toString fingerprintOffload
-            }" ]; then
-              sed -n \
-                -e 's/^admission_class=/metric_fingerprint_offload_class=/p' \
-                -e 's/^capture=/metric_fingerprint_capture=/p' \
-                -e 's/^digest_thread=/metric_fingerprint_digest_thread=/p' \
-                -e 's/^synchronous_corpus_identity=/metric_fingerprint_sync_identity=/p' \
-                -e 's/^cadence_unchanged=/metric_fingerprint_cadence_unchanged=/p' \
-                -e 's/^sample_coordinates_unchanged=/metric_fingerprint_coordinates_unchanged=/p' \
-                -e 's/^forced_event_boundaries_unchanged=/metric_fingerprint_forced_boundaries_unchanged=/p' \
-                "${
-              if fingerprintOffload == null
-              then "/dev/null"
-              else "${fingerprintOffload}/result"
-            }" \
-                >> "$out/result"
-            fi
-            if [ -n "${
-              if translationPrefetch == null
-              then ""
-              else builtins.toString translationPrefetch
-            }" ]; then
-              sed -n \
-                -e 's/^admission_class=/metric_translation_prefetch_class=/p' \
-                -e 's/^corpus=/metric_translation_prefetch_corpus=/p' \
-                -e 's/^mechanism=/metric_translation_prefetch_mechanism=/p' \
-                -e 's/^translation_requests=/metric_translation_prefetch_requests=/p' \
-                -e 's/^fingerprints_bit_identical=/metric_translation_prefetch_fingerprint_identity=/p' \
-                -e 's/^canonical_logs_bit_identical=/metric_translation_prefetch_log_identity=/p' \
-                -e 's/^divergence_policy=/metric_translation_prefetch_divergence_policy=/p' \
-                "${
-              if translationPrefetch == null
-              then "/dev/null"
-              else "${translationPrefetch}/result"
-            }" \
-                >> "$out/result"
-            fi
-            if [ -n "${
-              if segmentReplay == null
-              then ""
-              else builtins.toString segmentReplay
-            }" ]; then
-              sed -n \
-                -e 's/^admission_class=/metric_segment_replay_class=/p' \
-                -e 's/^worker_model=/metric_segment_replay_worker_model=/p' \
-                -e 's/^tested_segment_counts=/metric_segment_replay_counts=/p' \
-                -e 's/^serial_parallel_final_state_identical=/metric_segment_replay_state_identity=/p' \
-                -e 's/^serial_parallel_canonical_log_identical=/metric_segment_replay_log_identity=/p' \
-                -e 's/^divergence_coordinate_segment_count_invariant=/metric_segment_replay_divergence_invariant=/p' \
-                "${
-              if segmentReplay == null
-              then "/dev/null"
-              else "${segmentReplay}/result"
-            }" \
-                >> "$out/result"
-            fi
-          '';
+          script = writeResultScript;
         }
       ];
     }

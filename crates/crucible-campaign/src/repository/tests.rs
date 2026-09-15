@@ -19,13 +19,16 @@ use crate::{
     ChoiceClassContext, ChoiceCoordinate, ChoicePolicy, ChoiceSource, ChoiceValue, ConfigurationId,
     ContinuationState, DebugSessionId, DiscreteAlternative, DiscreteDomain, ExecutionId,
     ExecutionRetentionIntent, ExplainCampaignAttemptRequest, ExplorerPolicy, FairnessPolicy,
-    GetCampaignFindingObjectRequest, GetCampaignFrontierObjectRequest, GuidanceEvidence,
-    GuidanceWeight, InterventionLearningPolicy, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
-    MeasurementSeries, MetricValue, PlannerEngine, PlannerProposalDisposition, PlannerRequest,
-    PlannerResponse, PlannerState, PlannerStepProposal, PlannerSubmission, PlanningBudget,
-    PlanningUsage, PolicyArtifact, ProbabilityModelId, ProgressiveWideningPolicy, PropertyEvidence,
-    PuctPolicy, PurePlannerEngine, QueryCampaignFindingsRequest, QueryCampaignFrontierRequest,
-    RepositoryCampaignService, RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
+    FindingCandidateBundle, FindingCandidateCore, FindingExactPins, FindingExactRetention,
+    FindingExactRetentionDisposition, FindingExactRetentionIncomplete, FindingMinimizationEvidence,
+    FindingSignature, FindingSignatureMinimizationEvidence, GetCampaignFindingObjectRequest,
+    GetCampaignFrontierObjectRequest, GuidanceEvidence, GuidanceWeight, InterventionLearningPolicy,
+    MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS, ObservationId, PlannerEngine,
+    PlannerProposalDisposition, PlannerRequest, PlannerResponse, PlannerState, PlannerStepProposal,
+    PlannerSubmission, PlanningBudget, PlanningUsage, PolicyArtifact, ProbabilityModelId,
+    ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy, PurePlannerEngine,
+    QueryCampaignFindingsRequest, QueryCampaignFrontierRequest, RepositoryCampaignService,
+    ReproductionArtifactId, RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
 };
 
 struct AllowCampaignQueries;
@@ -110,6 +113,90 @@ impl CampaignRepository {
             ),
         )?;
         self.head(name)
+    }
+
+    fn publish_incomplete_test_finding(
+        &self,
+        name: &str,
+        expected_snapshot: CampaignSnapshotId,
+        signature: FindingSignature,
+        observation: ObservationId,
+        reproduction: ReproductionArtifactId,
+    ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
+        let head = self.read_snapshot(expected_snapshot.content_id())?;
+        if let Some(existing) = self.merkle.get(
+            head.snapshot.roots().findings,
+            finding_signature_key(signature.cluster_key()),
+        )? {
+            let finding = self.read_finding(existing)?;
+            if finding.signature() == &signature
+                && finding.observation() == observation
+                && finding.reproduction() == reproduction
+            {
+                return self.incorporate_finding_candidate_bundle(
+                    name,
+                    expected_snapshot,
+                    finding
+                        .latest_candidate_bundle()
+                        .ok_or_else(|| integrity("test-finding-candidate-bundle"))?,
+                );
+            }
+        }
+
+        let original = self.load_reproduction_artifact(reproduction)?;
+        let replayed_state = CampaignHash::derive(
+            "crucible.campaign.test-finding-replayed-state.v1",
+            original.payload(),
+        );
+        let minimization = FindingMinimizationEvidence::new(
+            reproduction,
+            3,
+            b"campaign test minimization policy".to_vec(),
+            Vec::new(),
+            replayed_state,
+        )?;
+        let minimized = self.publish_minimized_reproduction_artifact(
+            original.scenario(),
+            original.scenario_artifact(),
+            original.configuration(),
+            original.configuration_artifact(),
+            original.finding_fingerprint(),
+            original.payload_schema(),
+            original.payload().to_vec(),
+            minimization.clone(),
+        )?;
+        let signature_minimization = FindingSignatureMinimizationEvidence::new(
+            &signature,
+            &minimization,
+            vec![Some(signature.clone())],
+            vec![Some(signature.clone())],
+        )?;
+        let observation_value = self.read_observation(observation.content_id())?;
+        let retention_basis =
+            self.attempt_retention_policy_basis_at(expected_snapshot, observation_value.attempt())?;
+        let exact_retention = FindingExactRetention::new(
+            retention_basis.snapshot(),
+            retention_basis.policy(),
+            retention_basis.admission(),
+            0,
+            FindingExactRetentionDisposition::Incomplete(
+                FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+            ),
+        )?;
+        let bundle = FindingCandidateBundle::new_with_exact_retention(
+            FindingCandidateCore::new(
+                observation,
+                signature,
+                reproduction,
+                minimized,
+                signature_minimization,
+                FindingExactPins::default(),
+            ),
+            None,
+            exact_retention,
+        )?;
+        let bundle = self.publish_finding_candidate_bundle(&bundle)?;
+        self.incorporate_finding_candidate_bundle(name, expected_snapshot, bundle)
     }
 }
 
@@ -222,29 +309,7 @@ impl MutableRefBackend for ConflictAfterCreateRefBackend {
     }
 }
 
-/// Reconstructs the historical empty exploration root for fixed identity vectors.
-fn legacy_genesis_roots(
-    repository: &CampaignRepository,
-    mut roots: crate::CampaignRoots,
-) -> crate::CampaignRoots {
-    let empty = repository.merkle.empty().expect("empty").content_id();
-    let frontier = repository
-        .merkle
-        .insert(empty, frontier_index_anchor_key(), empty)
-        .expect("legacy frontier");
-    roots.exploration = repository
-        .merkle
-        .insert(
-            frontier.content_id(),
-            branch_request_index_anchor_key(),
-            empty,
-        )
-        .expect("legacy requests")
-        .content_id();
-    roots
-}
-
-fn fixture() -> (CampaignRepository, CampaignLineage, CampaignPolicy) {
+pub(super) fn fixture() -> (CampaignRepository, CampaignLineage, CampaignPolicy) {
     let (repository, lineage, policy, _) = counted_fixture();
     (repository, lineage, policy)
 }
@@ -344,17 +409,21 @@ fn initialize_fixture(
         puct: PuctPolicy::new(1_000_000, 1, 0),
     };
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        explorer,
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            explorer,
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("policy");
     (repository, lineage, policy)
@@ -386,22 +455,26 @@ fn exhaustive_policy_with_generator(
     maximum_cardinality: u64,
 ) -> CampaignPolicy {
     CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([9; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::Exhaustive {
-            maximum_cardinality,
-        },
-        BTreeMap::from([(
-            selectable.to_owned(),
-            ChoicePolicy::new(selectable, generator, true).expect("choice policy"),
-        )]),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([9; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::from([(
+                selectable.to_owned(),
+                ChoicePolicy::new(selectable, generator, true).expect("choice policy"),
+            )]),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("generator policy")
 }
@@ -450,10 +523,12 @@ fn branch_request(
         .expect("publish opportunity");
 
     BranchRequest::new(
-        opportunity.branch_point_id(parent_configuration),
-        parent,
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(parent_configuration),
+            parent,
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::finite(BTreeSet::from([
             ChoiceValue::Boolean(false),
             ChoiceValue::Boolean(true),
@@ -515,10 +590,12 @@ fn modeled_branch_request(
         .expect("publish modeled opportunity");
 
     BranchRequest::new(
-        opportunity.branch_point_id(parent_configuration),
-        parent,
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
+        BranchRequest::identity(
+            opportunity.branch_point_id(parent_configuration),
+            parent,
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
         CandidateSource::modeled_finite(model, prior_weights).expect("modeled finite source"),
         BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
             "test",
@@ -718,6 +795,7 @@ fn admitted_observation_fixture(
         ChoiceValue::Boolean(false),
         1,
     );
+    proposal.id().expect("observation proposal identity");
     let proposed = repository
         .issue_proposal(name, requested.new_snapshot, &proposal)
         .expect("issue observation proposal");
@@ -746,16 +824,8 @@ fn admitted_observation_fixture(
             format!("child:{name}").into_bytes(),
         )
         .expect("publish child artifact");
-    let measurements = MeasurementSet::new(BTreeMap::from([(
-        "latency".to_owned(),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(7)],
-            MetricValue::Unsigned(7),
-            BTreeSet::new(),
-        )
-        .expect("measurement series"),
-    )]))
-    .expect("measurement set");
+    let measurements =
+        MeasurementSet::test_evaluation(b"latency-7", BTreeSet::new()).expect("measurement set");
     let measurement_id = repository
         .publish_measurement_set(&measurements)
         .expect("publish measurements");
@@ -780,13 +850,15 @@ fn admitted_observation_fixture(
         .expect("publish coverage");
     let observation = Observation::new(
         admitted.attempt,
-        child,
-        child_content,
-        path.id().expect("path id"),
-        StopOutcome::Reached(StopCondition::NextChoice),
-        measurement_id,
-        property_id,
-        coverage_id,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id().expect("path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurement_id,
+            property_id,
+            coverage_id,
+        ),
         BTreeSet::from([request.opportunity()]),
     )
     .expect("observation");

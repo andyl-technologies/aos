@@ -12,17 +12,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use crucible::model::MeasurementTerminalState;
 use crucible::{
     Configuration, ContentHash, Decision, EventLog, ExecutionFingerprint, FingerprintSample,
     Icount, MarkerId, NodeId, ObservableEvent, ScenarioDefForm, ScenarioSelectableLimits,
-    ScenarioSelectables, SchedulerEventLogEntry, SchedulerQuiescence, SelectionDecision,
+    ScenarioSelectables, SchedulerEventLogEntry, SchedulerQuiescence, SelectionDecision, World,
+    WorldNodeDef,
 };
-use crucible_api::ProductionFaultEvidenceSnapshot;
 use crucible_api::vm_lifecycle::{
     hot_fork_adoption_count_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
-    prepared_multi_node_hot_fork_source_world_for_test, reset_hot_fork_adoption_count_for_test,
+    reset_hot_fork_adoption_count_for_test,
 };
+use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_campaign::{
     AlternativeId, AssignmentId, Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode,
     BooleanDomain, BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId,
@@ -32,9 +34,9 @@ use crucible_campaign::{
     DaemonEpoch, DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational,
     ExecutionId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExecutorService,
     ExplorerPolicy, FairnessPolicy, IntegerDomain, IntegerRepresentation, IntegerValue,
-    MeasurementSet, Observation, ObservationCandidate, ProgressiveWideningPolicy,
-    PropertyVerdictSet, PuctPolicy, RetentionPolicy, SelectableDeclaration, Selection,
-    SelectionOrigin, StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    Observation, ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy,
+    RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
@@ -63,18 +65,24 @@ use crate::qemu_campaign_lifecycle::{
 };
 use crate::{
     AttemptExecutionKey, AttemptExecutionRuntimeBasis, AttemptResultStageOutcome,
-    AttemptWorkerReconcileOutcome, CompletionOutcome, CrucibleExecutionModel,
-    CrucibleExecutionRunner, CrucibleMaterializationTier, ExactCheckpointStore,
-    ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity, LocalAttemptWorker,
-    LocalExecutorSupervisor, MemoryAssignmentLedger, PreparedAttemptWorkResult,
+    AttemptWorkerReconcileOutcome, AuthenticatedCanonicalQemuHotForkSource, CompletionOutcome,
+    CrucibleExecutionModel, CrucibleExecutionRunner, CrucibleMaterializationTier,
+    ExactCheckpointStore, ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity,
+    HotCheckpointFallback, HotCheckpointHotnessSignals, HotCheckpointLimits,
+    HotCheckpointPlannedDemotion, HotCheckpointPoolKey, HotCheckpointResourceProfile,
+    HotCheckpointSourceDemoter, HotCheckpointTemplateDemotionFailure,
+    HotCheckpointTemplateDemotionSink, LocalAttemptWorker, LocalExecutorSupervisor,
+    ManagedQemuHotForkSourceWorld, ManagedQemuHotForkSourceWorldPool, MemoryAssignmentLedger,
+    MemoryHotCheckpointFallbackRetentionStore, PreparedAttemptWorkResult,
     QemuAttemptExecutionRouter, QemuAttemptOperationalBoundary, QemuAttemptResourceGuard,
     QemuAttemptStartReplayProof, QemuAttemptStartVerifier, QemuFreshModeledDriver,
-    QemuHotFirstExecutionRouter, QemuOrdinaryResumeRunner, QemuSavepointReplayProof,
+    QemuHotFirstExecutionRouter, QemuHotForkSourceWorldDemoter,
+    QemuHotForkSourceWorldDemotionError, QemuOrdinaryResumeRunner, QemuSavepointReplayProof,
     QemuSelectedOriginResumeRunner, QemuSelectedOriginVerifier, RepositoryAttemptAdmission,
-    RepositoryAttemptWorker, decode_crucible_configuration_artifact_with_selections,
-    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
-    prepare_attempt_result, publish_prepared_attempt_result, reconcile_published_attempt_result,
-    stage_prepared_attempt_result,
+    RepositoryAttemptWorker, SharedManagedQemuHotForkSourceWorldPool,
+    decode_crucible_configuration_artifact_with_selections, encode_crucible_configuration_artifact,
+    encode_crucible_scenario_artifact, prepare_attempt_result, publish_prepared_attempt_result,
+    reconcile_published_attempt_result, stage_prepared_attempt_result,
 };
 
 #[path = "tests/native_acceptance.rs"]
@@ -97,10 +105,9 @@ const WORLD_FORK_ONE_VM_FAILURE_TRIGGER: &str =
 #[cfg(feature = "destructive-recovery-faults")]
 const CHILD_RESOURCE_ALIAS_TRIGGER: &str = "crucible.destructive-recovery.child-resource-alias";
 #[cfg(feature = "destructive-recovery-faults")]
-const WORLD_FORK_ONE_VM_FAILURE_TEST_NAME: &str =
-    "qemu_hot_fork_world_factory::tests::world_fork_one_vm_failure_quarantines_partial_world";
+const WORLD_FORK_ONE_VM_FAILURE_TEST_NAME: &str = "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_one_vm_failure_quarantines_partial_world";
 #[cfg(feature = "destructive-recovery-faults")]
-const CHILD_RESOURCE_ALIAS_TEST_NAME: &str = "qemu_hot_fork_world_factory::tests::child_resource_alias_rejects_before_fork_and_restores_source_world";
+const CHILD_RESOURCE_ALIAS_TEST_NAME: &str = "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::child_resource_alias_rejects_before_fork_and_restores_source_world";
 
 struct ScriptedWorldGuard {
     resources: AttemptResourceLimits,
@@ -113,6 +120,7 @@ struct ScriptedWorldGuard {
     quarantines: Arc<AtomicUsize>,
     prepared_run_directories: Arc<Mutex<Vec<PathBuf>>>,
     retained_child_processes: Arc<Mutex<Vec<u32>>>,
+    retained_child_requests: Arc<Mutex<Vec<crucible_qemu::QmpHotForkRequest>>>,
     _liveness: Arc<()>,
     terminal: bool,
 }
@@ -248,6 +256,15 @@ impl QemuHotForkChildProcessOwner for ScriptedWorldGuard {
                 )
             })?
             .push(basis.child_process_id());
+        self.retained_child_requests
+            .lock()
+            .map_err(|_error| {
+                QemuNodeChannelError::new(
+                    "record scripted child request",
+                    "scripted child request registry is poisoned",
+                )
+            })?
+            .push(basis.request());
         Ok(
             LinuxQemuHotForkChildProcessAuthority::from_unvalidated_test_parts(
                 basis, identity, descriptor,
@@ -268,6 +285,7 @@ struct ScriptedWorldObservations {
     quarantines: Arc<AtomicUsize>,
     prepared_run_directories: Arc<Mutex<Vec<PathBuf>>>,
     retained_child_processes: Arc<Mutex<Vec<u32>>>,
+    retained_child_requests: Arc<Mutex<Vec<crucible_qemu::QmpHotForkRequest>>>,
     guard_liveness: Arc<Mutex<Option<Weak<()>>>>,
 }
 
@@ -280,6 +298,7 @@ impl ScriptedWorldObservations {
             quarantines: Arc::new(AtomicUsize::new(0)),
             prepared_run_directories: Arc::new(Mutex::new(Vec::new())),
             retained_child_processes: Arc::new(Mutex::new(Vec::new())),
+            retained_child_requests: Arc::new(Mutex::new(Vec::new())),
             guard_liveness: Arc::new(Mutex::new(None)),
         }
     }
@@ -292,7 +311,9 @@ impl QemuAttemptResourceGuardFactory for ScriptedWorldGuardFactory {
         &mut self,
         resources: AttemptResourceLimits,
         cancellation: ExecutionCancellation,
-    ) -> Result<Self::Guard, QemuVmRealizationError> {
+        _selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
+    ) -> Result<Self::Guard, crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure>
+    {
         let cgroup = tempfile::tempdir().map_err(test_realization_error)?;
         let cgroup_directory: OwnedFd = File::open(cgroup.path())
             .map_err(test_realization_error)?
@@ -338,6 +359,7 @@ impl QemuAttemptResourceGuardFactory for ScriptedWorldGuardFactory {
             quarantines: Arc::clone(&self.observations.quarantines),
             prepared_run_directories: Arc::clone(&self.observations.prepared_run_directories),
             retained_child_processes: Arc::clone(&self.observations.retained_child_processes),
+            retained_child_requests: Arc::clone(&self.observations.retained_child_requests),
             _liveness: liveness,
             terminal: false,
         })
@@ -396,7 +418,7 @@ impl ImmutableBlobBackend for TestDurableCheckpointBackend {
 }
 
 struct ScriptedPublishedObservationDriver {
-    candidate: ObservationCandidate,
+    result: crate::PreparedSemanticAttemptResult,
     drives: Arc<AtomicUsize>,
     seals: Arc<AtomicUsize>,
 }
@@ -416,7 +438,9 @@ impl QemuFreshAttemptDriver for ScriptedPublishedObservationDriver {
             materialization.into_parts();
         assert!(events.is_empty());
         self.drives.fetch_add(1, Ordering::SeqCst);
-        Ok(QemuFreshDriveOutcome::Observation(self.candidate.clone()))
+        Ok(QemuFreshDriveOutcome::Observation(
+            self.result.observation().clone(),
+        ))
     }
 
     fn seal(
@@ -425,7 +449,10 @@ impl QemuFreshAttemptDriver for ScriptedPublishedObservationDriver {
         _final_events: Vec<crucible::SchedulerEventLogEntry>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         self.seals.fetch_add(1, Ordering::SeqCst);
-        Ok(AttemptExecutionProduct::observation(candidate))
+        assert_eq!(&candidate, self.result.observation());
+        Ok(AttemptExecutionProduct::prepared_semantic(
+            self.result.clone(),
+        ))
     }
 }
 
@@ -512,6 +539,17 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
         None
     }
 
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        _cause: crucible::CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "branch replay fixture cannot retain a terminal checkpoint cause",
+            ),
+        })
+    }
+
     fn exact_checkpoint_ready(&mut self) -> Result<bool, crucible::SchedulerError> {
         Ok(false)
     }
@@ -542,16 +580,24 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
         &mut self,
         _context: &AttemptExecutionContext,
     ) -> Result<crate::CapturedAttemptCheckpoint, crucible::SchedulerError> {
-        Err(crucible::SchedulerError::NotImplemented {
-            operation: "capture scripted branch replay checkpoint",
+        Err(crucible::SchedulerError::BoundaryViolation {
+            message: String::from("scripted branch replay has no checkpoint authority"),
+        })
+    }
+
+    fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("branch replay fixture has no replay launch profiles"),
         })
     }
 
     fn fault_evidence_snapshot(
         &self,
     ) -> Result<ProductionFaultEvidenceSnapshot, crucible::SchedulerError> {
-        Err(crucible::SchedulerError::NotImplemented {
-            operation: "capture scripted branch replay evidence",
+        Err(crucible::SchedulerError::BoundaryViolation {
+            message: String::from("scripted branch replay has no fault evidence"),
         })
     }
 
@@ -573,6 +619,10 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
             at: crucible::VirtualTime { ticks: 1 },
             fingerprint: ExecutionFingerprint { hash },
         })
+    }
+
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
     }
 
     fn shutdown(
@@ -599,10 +649,6 @@ impl QemuHotForkWorldLifecycleOwner for BranchReplayLifecycle {
         _disposition: AttemptExecutionDisposition,
     ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
         Ok(AttemptExecutionReconciliationStep::Complete)
-    }
-
-    fn quarantine(&mut self) {
-        self.observations.quarantines.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -661,8 +707,11 @@ impl QemuHotForkWorldLifecycleFactory for BranchReplayLifecycleFactory {
         Ok(())
     }
 
-    fn quarantine(&mut self, mut lifecycle: Self::Lifecycle) {
-        lifecycle.quarantine();
+    fn quarantine(&mut self, lifecycle: Self::Lifecycle) {
+        lifecycle
+            .observations
+            .quarantines
+            .fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -709,8 +758,8 @@ impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
         _request: crucible::QuantumRequest,
     ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
         self.observations.drives.fetch_add(1, Ordering::SeqCst);
-        Err(crucible::SchedulerError::NotImplemented {
-            operation: "drive past inherited absolute stop",
+        Err(crucible::SchedulerError::BoundaryViolation {
+            message: String::from("inherited absolute stop forbids another quantum"),
         })
     }
 
@@ -720,6 +769,17 @@ impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
 
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
         None
+    }
+
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        _cause: crucible::CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "inherited boundary fixture cannot retain a terminal checkpoint cause",
+            ),
+        })
     }
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, crucible::SchedulerError> {
@@ -747,16 +807,24 @@ impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
         &mut self,
         _context: &AttemptExecutionContext,
     ) -> Result<crate::CapturedAttemptCheckpoint, crucible::SchedulerError> {
-        Err(crucible::SchedulerError::NotImplemented {
-            operation: "capture inherited-boundary checkpoint",
+        Err(crucible::SchedulerError::BoundaryViolation {
+            message: String::from("inherited-boundary fixture has no checkpoint authority"),
+        })
+    }
+
+    fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("inherited-boundary fixture has no replay launch profiles"),
         })
     }
 
     fn fault_evidence_snapshot(
         &self,
     ) -> Result<ProductionFaultEvidenceSnapshot, crucible::SchedulerError> {
-        Err(crucible::SchedulerError::NotImplemented {
-            operation: "capture inherited-boundary evidence",
+        Err(crucible::SchedulerError::BoundaryViolation {
+            message: String::from("inherited-boundary fixture has no fault evidence"),
         })
     }
 
@@ -778,6 +846,10 @@ impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
             at: self.frontier,
             fingerprint: ExecutionFingerprint { hash },
         })
+    }
+
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
     }
 
     fn shutdown(
@@ -818,8 +890,6 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
     ) -> Result<AttemptExecutionReconciliationStep, crucible_api::LifecycleApiError> {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
-
-    fn quarantine(&mut self) {}
 }
 
 struct InheritedBoundaryLifecycleFactory {
@@ -856,13 +926,11 @@ impl QemuHotForkWorldLifecycleFactory for InheritedBoundaryLifecycleFactory {
         Ok(())
     }
 
-    fn quarantine(&mut self, mut lifecycle: Self::Lifecycle) {
-        lifecycle.quarantine();
-    }
+    fn quarantine(&mut self, _lifecycle: Self::Lifecycle) {}
 }
 
 struct BranchReplayDriver {
-    candidate: ObservationCandidate,
+    result: crate::PreparedSemanticAttemptResult,
     observations: BranchReplayObservations,
 }
 
@@ -891,7 +959,9 @@ impl QemuFreshAttemptDriver for BranchReplayDriver {
             .lock()
             .expect("branch driver starts")
             .push(selected.clone());
-        Ok(QemuFreshDriveOutcome::Observation(self.candidate.clone()))
+        Ok(QemuFreshDriveOutcome::Observation(
+            self.result.observation().clone(),
+        ))
     }
 
     fn seal(
@@ -900,9 +970,10 @@ impl QemuFreshAttemptDriver for BranchReplayDriver {
         final_events: Vec<crucible::SchedulerEventLogEntry>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         assert!(final_events.is_empty());
-        let result = crate::PreparedSemanticAttemptResult::new(candidate, None)
-            .expect("prepared branch replay result");
-        Ok(AttemptExecutionProduct::prepared_semantic(result))
+        assert_eq!(&candidate, self.result.observation());
+        Ok(AttemptExecutionProduct::prepared_semantic(
+            self.result.clone(),
+        ))
     }
 }
 
@@ -1005,12 +1076,12 @@ impl QemuHotForkSourceWorldProvider for RecordingUnavailableSourceWorldProvider 
     fn checkout(
         &mut self,
         _key: &QemuHotForkSourceWorldKey,
-    ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
+    ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
         self.checkouts.fetch_add(1, Ordering::SeqCst);
         Ok(None)
     }
 
-    fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
+    fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
         let _retained_for_process_lifetime = Box::leak(Box::new(source));
     }
 
@@ -1031,11 +1102,11 @@ impl QemuHotForkSourceWorldProvider for FailingSourceWorldProvider {
     fn checkout(
         &mut self,
         _key: &QemuHotForkSourceWorldKey,
-    ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
+    ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
         Err(ScriptedSourceProviderError)
     }
 
-    fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
+    fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
         let _retained_for_process_lifetime = Box::leak(Box::new(source));
     }
 
@@ -1046,6 +1117,31 @@ struct CleanupOrderedSourceWorldProvider {
     inner: QemuSingleHotForkSourceWorldProvider,
     finishes: Arc<AtomicUsize>,
     finish_count_at_restore: Arc<AtomicUsize>,
+}
+
+struct FactoryReapingDemotionSink;
+
+impl HotCheckpointTemplateDemotionSink<ManagedQemuHotForkSourceWorld>
+    for FactoryReapingDemotionSink
+{
+    type Error = QemuHotForkSourceWorldDemotionError;
+
+    fn validate_fallback(
+        &mut self,
+        _key: HotCheckpointPoolKey,
+        _fallback: HotCheckpointFallback,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn demote(
+        &mut self,
+        world: ManagedQemuHotForkSourceWorld,
+        plan: HotCheckpointPlannedDemotion,
+    ) -> Result<(), HotCheckpointTemplateDemotionFailure<ManagedQemuHotForkSourceWorld, Self::Error>>
+    {
+        QemuHotForkSourceWorldDemoter.demote_source(world, plan)
+    }
 }
 
 impl CleanupOrderedSourceWorldProvider {
@@ -1062,11 +1158,11 @@ impl QemuHotForkSourceWorldProvider for CleanupOrderedSourceWorldProvider {
     fn checkout(
         &mut self,
         key: &QemuHotForkSourceWorldKey,
-    ) -> Result<Option<ProductionVmHotForkSourceWorld>, Self::Error> {
+    ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
         self.inner.checkout(key)
     }
 
-    fn restore(&mut self, source: ProductionVmHotForkSourceWorld) {
+    fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
         self.finish_count_at_restore
             .store(self.finishes.load(Ordering::SeqCst), Ordering::SeqCst);
         self.inner.restore(source);
@@ -1105,7 +1201,7 @@ fn source_provider_failure_preserves_its_diagnostic_chain() {
 }
 
 struct RecordingFallbackRunner {
-    candidate: ObservationCandidate,
+    result: crate::PreparedSemanticAttemptResult,
     calls: Arc<AtomicUsize>,
     reconciliations: Arc<AtomicUsize>,
 }
@@ -1120,7 +1216,7 @@ impl CrucibleExecutionRunner for RecordingFallbackRunner {
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(CrucibleExecutionOutcome::new(
-            AttemptExecutionProduct::observation(self.candidate.clone()),
+            AttemptExecutionProduct::prepared_semantic(self.result.clone()),
             CrucibleMaterializationTier::ThinReplay,
         ))
     }
@@ -1142,9 +1238,7 @@ fn test_realization_error(error: impl std::fmt::Display) -> QemuVmRealizationErr
 }
 
 fn guest_selectable_scenario() -> ScenarioDefForm {
-    let scenario = crucible::crash_restart_scenario()
-        .expect("built-in scenario")
-        .scenario;
+    let scenario = test_execution_scenario();
     let declaration = guest_selectable_declaration();
     let selectables = ScenarioSelectables::new(
         scenario.world(),
@@ -1205,10 +1299,56 @@ fn pending_guest_selectable_plan() -> (SelectableCatalogPlan, SelectablePlanPend
 }
 
 fn execution_input() -> CrucibleAttemptExecution {
-    let scenario = crucible::crash_restart_scenario()
+    let scenario = test_execution_scenario();
+    execution_input_for_scenario_with_stop(scenario, StopCondition::Terminal)
+}
+
+fn test_execution_scenario() -> ScenarioDefForm {
+    let source = crucible::crash_restart_scenario()
         .expect("built-in scenario")
         .scenario;
-    execution_input_for_scenario_with_stop(scenario, StopCondition::Terminal)
+    let nodes = source
+        .world()
+        .vm_nodes()
+        .iter()
+        .cloned()
+        .map(|mut node| {
+            node.kernel = None;
+            node.root_image = None;
+            node.initrd = None;
+            WorldNodeDef::Vm(node)
+        })
+        .chain(source.world().io_nodes().cloned().map(WorldNodeDef::Io))
+        .collect();
+    let world = World::from_node_defs_and_links(nodes, source.world().links().to_vec())
+        .expect("test execution World")
+        .with_fault_topology(source.world().fault_topology().clone())
+        .expect("test execution fault topology");
+    ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
+        &world,
+        source.plan(),
+        source.properties(),
+        source.measurements(),
+        source.seed(),
+        source.app_random_draw_cap(),
+    )
+    .and_then(|scenario| scenario.with_selectables(source.selectables().clone()))
+    .expect("test execution scenario")
+}
+
+fn prepared_test_source_world(
+    source_nodes: Vec<crucible_qemu::QemuNode>,
+) -> Result<
+    (
+        Vec<(NodeId, crucible_api::ProductionVmNodeGeneration)>,
+        crucible_api::ProductionVmHotForkSourceWorld,
+    ),
+    crucible_api::LifecycleApiError,
+> {
+    prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
+        &test_execution_scenario(),
+        source_nodes,
+    )
 }
 
 fn execution_input_for_scenario(scenario: ScenarioDefForm) -> CrucibleAttemptExecution {
@@ -1305,6 +1445,7 @@ fn execution_context(
         ExecutionRetentionIntent::Discard,
         ExecutionCancellation::default(),
         ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .with_runtime_basis(execution_basis(input, execution_byte))
 }
@@ -1324,1758 +1465,7 @@ fn branch_replay_guest_pending(
     )
 }
 
-fn branch_execution_input(
-    source: ChoiceSource,
-    domain: ChoiceDomain,
-    default: ChoiceValue,
-    selected_value: ChoiceValue,
-    name: &str,
-) -> CrucibleAttemptExecution {
-    let base = if matches!(source, ChoiceSource::Guest { .. }) {
-        execution_input_for_scenario(guest_selectable_scenario())
-    } else {
-        execution_input()
-    };
-    let declaration = if matches!(source, ChoiceSource::Guest { .. }) {
-        guest_selectable_declaration()
-    } else {
-        SelectableDeclaration::new(
-            name,
-            source,
-            domain.clone(),
-            default,
-            ChoiceClassContext::new(BTreeSet::new()).expect("branch choice class"),
-            BTreeSet::new(),
-            true,
-        )
-        .expect("branch selectable declaration")
-    };
-    let repository = CampaignRepository::new(
-        Arc::new(MemoryBlobBackend::new(
-            "hot-world-branch-selection",
-            8 * 1024 * 1024,
-        )),
-        Arc::new(MemoryRefBackend::new()),
-    );
-    repository
-        .publish_choice_domain(&domain)
-        .expect("publish branch choice domain");
-    repository
-        .publish_selectable(&declaration)
-        .expect("publish branch selectable");
-    let opportunity = if matches!(declaration.source(), ChoiceSource::Guest { .. }) {
-        let pending = branch_replay_guest_pending(&declaration, "publication");
-        crate::guest_selectable::resolve_guest_selectable(
-            base.lineage().scenario(),
-            base.scenario(),
-            pending.node(),
-            pending.pending(),
-        )
-        .expect("resolve guest branch opportunity")
-        .opportunity()
-        .clone()
-    } else {
-        crucible_campaign::ChoiceOpportunity::new(
-            base.lineage().scenario(),
-            &declaration,
-            &domain,
-            ChoiceCoordinate {
-                scheduler: CampaignHash::derive("hot-world-branch-scheduler", name.as_bytes()),
-                producer: CampaignHash::derive("hot-world-branch-producer", name.as_bytes()),
-            },
-            name,
-            None,
-        )
-        .expect("branch choice opportunity")
-    };
-    repository
-        .publish_choice_opportunity(&opportunity)
-        .expect("publish branch choice opportunity");
-
-    let crate::CrucibleResolvedAttemptStart::Discover {
-        configuration: parent,
-    } = base.start()
-    else {
-        panic!("branch fixture base must begin at discovery")
-    };
-    let parent = parent.clone();
-    let parent_id = ConfigurationId::from_hash(CampaignHash::from_bytes(parent.id().bytes));
-    let branch_point = opportunity.branch_point_id(parent_id);
-    let selection =
-        Selection::new_campaign_branch(&opportunity, &domain, selected_value, branch_point)
-            .expect("campaign branch selection");
-    repository
-        .publish_selection(&selection)
-        .expect("publish campaign branch selection");
-    let resolved = repository
-        .resolve_selection(selection.id().expect("branch selection id"))
-        .expect("resolve campaign branch selection");
-    let SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
-        panic!("campaign branch selection has the wrong origin")
-    };
-    let selected = crucible::step(
-        &parent,
-        Decision::Selection(SelectionDecision::new(&selection)),
-    );
-    let path =
-        BranchPath::new(vec![BranchPathSegment::new(branch_point, edge)]).expect("branch path");
-    let attempt = Attempt::new(
-        AttemptStart::Branch {
-            edge,
-            parent: base.lineage().genesis_content(),
-            selection: selection.id().expect("branch selection id"),
-        },
-        path.id().expect("branch path id"),
-        StopCondition::Terminal,
-    )
-    .expect("branch attempt");
-
-    CrucibleAttemptExecution::from_test_parts(
-        base.lineage().clone(),
-        base.scenario().clone(),
-        attempt,
-        path,
-        crate::CrucibleResolvedAttemptStart::Branch {
-            parent,
-            selection: Box::new(resolved),
-            selected,
-        },
-    )
-}
-
-fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_guest_reply: bool) {
-    let (_repository, _store, _lineage, _attempt, candidate, _scenario) =
-        repository_execution_fixture();
-    let observations = BranchReplayObservations::new();
-    let factory = BranchReplayLifecycleFactory {
-        observations: observations.clone(),
-    };
-    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
-    let runner = QemuHotForkWorldExecutionRunner::new(
-        factory,
-        BranchReplayDriver {
-            candidate,
-            observations: observations.clone(),
-        },
-    );
-    let fallback_calls = Arc::new(AtomicUsize::new(0));
-    let runner = QemuHotFirstExecutionRouter::new(
-        runner,
-        NeverFallbackRunner {
-            calls: Arc::clone(&fallback_calls),
-        },
-    );
-    let runner = PackagedQemuInitialExecutionRunner::<_, NeverFallbackRunner>::HotFork(runner);
-    let runner = QemuAttemptExecutionRouter::new(runner, NeverResumeRunner);
-    let mut runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence.clone());
-    let context = execution_context(&input, 0x83);
-    let (parent, selected, selected_value) = match input.start() {
-        crate::CrucibleResolvedAttemptStart::Branch {
-            parent,
-            selection,
-            selected,
-        } => (
-            parent.clone(),
-            selected.clone(),
-            selection.selection().value().clone(),
-        ),
-        crate::CrucibleResolvedAttemptStart::Discover { .. } => {
-            panic!("branch runner fixture must contain a branch start")
-        }
-        crate::CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
-            panic!("branch runner fixture must not contain a continuation start")
-        }
-    };
-
-    let outcome = runner
-        .execute(&input, &context)
-        .expect("packaged hot-world route must execute the selected branch");
-    assert_eq!(
-        outcome.materialization(),
-        CrucibleMaterializationTier::HotFork
-    );
-    assert!(matches!(
-        outcome.product(),
-        AttemptExecutionProduct::PreparedSemantic(_)
-    ));
-    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        *observations
-            .replay_requests
-            .lock()
-            .expect("branch replay requests"),
-        [parent]
-    );
-    assert_eq!(
-        *observations
-            .driver_starts
-            .lock()
-            .expect("branch driver starts"),
-        [selected]
-    );
-    let replies = observations
-        .guest_replies
-        .lock()
-        .expect("branch replay guest replies");
-    assert_eq!(replies.len(), usize::from(expect_guest_reply));
-    if let Some(reply) = replies.first() {
-        assert_eq!(reply.sequence(), 7);
-        assert_eq!(
-            reply.selected_value(),
-            Some(selected_value.canonical_bytes().as_slice())
-        );
-    }
-    drop(replies);
-    assert_eq!(
-        observations
-            .terminal_fingerprint_prepares
-            .load(Ordering::SeqCst),
-        1
-    );
-    assert_eq!(observations.shutdowns.load(Ordering::SeqCst), 1);
-
-    let expected_nodes = input
-        .scenario()
-        .world()
-        .vm_nodes()
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<BTreeSet<_>>();
-    let terminal_fingerprints = evidence
-        .snapshot()
-        .expect("hot-fork evidence snapshot")
-        .terminal_fingerprints()
-        .expect("hot-fork terminal fingerprints")
-        .to_vec();
-    assert!(!terminal_fingerprints.is_empty());
-    assert_eq!(
-        terminal_fingerprints
-            .iter()
-            .map(|sample| sample.node.clone())
-            .collect::<BTreeSet<_>>(),
-        expected_nodes
-    );
-    assert!(terminal_fingerprints.iter().all(|sample| {
-        sample.at == crucible::VirtualTime { ticks: 1 }
-            && sample.fingerprint.hash == ContentHash::from_bytes(sample.node.name.as_bytes())
-    }));
-
-    assert_eq!(
-        runner
-            .reconcile_execution(AttemptExecutionDisposition::Canceled)
-            .expect("reconcile scripted hot-world branch"),
-        AttemptExecutionReconciliationStep::Complete
-    );
-    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
-    runner
-        .reconcile_execution(AttemptExecutionDisposition::Canceled)
-        .expect_err("a packaged route reconciles one successful execution exactly once");
-    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn hot_world_runner_honors_an_inherited_quantum_boundary_without_driving() {
-    let completed_quanta = 3;
-    let stop = StopCondition::ExecutionQuanta(completed_quanta);
-    let scenario = crucible::happy_path_scenario()
-        .expect("hot-fork terminal evidence scenario")
-        .scenario;
-    let input = execution_input_for_scenario_with_stop(scenario, stop.clone());
-    let crate::CrucibleResolvedAttemptStart::Discover { configuration } = input.start() else {
-        panic!("inherited-boundary fixture must begin at discovery")
-    };
-    assert_eq!(configuration.def, input.scenario().scenario_def());
-    let mut source_log = EventLog::new();
-    let prefix = source_log
-        .append_observable_events([ObservableEvent::coverage_marker(
-            Icount { retired: 9 },
-            NodeId {
-                name: String::from("node-a"),
-            },
-            MarkerId::from_name("world-runner-inherited-prefix"),
-        )])
-        .expect("inherited source prefix");
-    let expected_coverage = crucible::event_log_coverage_projection(&prefix.entries)
-        .entries()
-        .iter()
-        .map(|entry| CampaignHash::from_bytes(entry.observation.content_hash().bytes))
-        .collect::<BTreeSet<_>>();
-    let observations = InheritedBoundaryObservations::new();
-    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(
-        InheritedBoundaryLifecycleFactory {
-            start_events: prefix.entries,
-            completed_quanta,
-            frontier: crucible::VirtualTime { ticks: 9 },
-            observations: observations.clone(),
-        },
-    );
-    let runner = QemuHotForkWorldExecutionRunner::new(factory, QemuFreshModeledDriver::new());
-    let fallback_calls = Arc::new(AtomicUsize::new(0));
-    let runner = QemuHotFirstExecutionRouter::new(
-        runner,
-        NeverFallbackRunner {
-            calls: Arc::clone(&fallback_calls),
-        },
-    );
-    let mut runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence);
-    let context = execution_context(&input, 0x84);
-
-    let outcome = runner
-        .execute(&input, &context)
-        .expect("hot-world runner should stop at the inherited boundary");
-    let AttemptExecutionProduct::PreparedSemantic(result) = outcome.product() else {
-        panic!("inherited absolute stop must produce a prepared semantic result")
-    };
-    let candidate = result.observation();
-    let expected_nodes = input
-        .scenario()
-        .world()
-        .vm_nodes()
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<BTreeSet<_>>();
-    let terminal_nodes = result
-        .terminal_fingerprints()
-        .expect("prepared hot-fork terminal fingerprints")
-        .iter()
-        .map(|sample| sample.node.clone())
-        .collect::<BTreeSet<_>>();
-
-    assert_eq!(
-        outcome.materialization(),
-        CrucibleMaterializationTier::HotFork
-    );
-    assert!(!expected_nodes.is_empty());
-    assert_eq!(terminal_nodes, expected_nodes);
-    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(candidate.observation().stop(), &StopOutcome::Reached(stop));
-    assert_eq!(candidate.coverage().identities(), &expected_coverage);
-    assert_eq!(observations.drives.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        observations
-            .terminal_fingerprint_prepares
-            .load(Ordering::SeqCst),
-        1
-    );
-    assert_eq!(observations.shutdowns.load(Ordering::SeqCst), 1);
-
-    assert_eq!(
-        runner
-            .reconcile_execution(AttemptExecutionDisposition::Canceled)
-            .expect("reconcile inherited-boundary execution"),
-        AttemptExecutionReconciliationStep::Complete
-    );
-    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn hot_world_runner_materializes_a_discrete_typed_branch_from_its_parent() {
-    let keep = AlternativeId::from_hash(CampaignHash::derive("hot-world-discrete", b"keep"));
-    let replace = AlternativeId::from_hash(CampaignHash::derive("hot-world-discrete", b"replace"));
-    let domain = ChoiceDomain::Discrete(
-        DiscreteDomain::new(
-            1,
-            BTreeMap::from([
-                (
-                    keep,
-                    DiscreteAlternative::new(keep, "Keep route", None).expect("keep alternative"),
-                ),
-                (
-                    replace,
-                    DiscreteAlternative::new(replace, "Replace route", None)
-                        .expect("replace alternative"),
-                ),
-            ]),
-        )
-        .expect("discrete branch domain"),
-    );
-    let input = branch_execution_input(
-        ChoiceSource::Workload {
-            producer: String::from("route-controller"),
-        },
-        domain,
-        ChoiceValue::Discrete(keep),
-        ChoiceValue::Discrete(replace),
-        "product.route-strategy",
-    );
-
-    run_branch_through_hot_world_runner(input, false);
-}
-
-#[test]
-fn observed_hot_fork_factory_preserves_recovery_ownership_for_quarantine() {
-    let input = branch_execution_input(
-        ChoiceSource::Scheduler {
-            producer: String::from("observed-recovery"),
-        },
-        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("recovery branch domain")),
-        ChoiceValue::Boolean(false),
-        ChoiceValue::Boolean(true),
-        "scheduler.observed-recovery",
-    );
-    let (_repository, _store, _lineage, _attempt, candidate, _scenario) =
-        repository_execution_fixture();
-    let observations = BranchReplayObservations::new();
-    observations
-        .recovery_failures_remaining
-        .store(1, Ordering::SeqCst);
-    let factory = BranchReplayLifecycleFactory {
-        observations: observations.clone(),
-    };
-    let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
-    let mut runner = QemuHotForkWorldExecutionRunner::new(
-        factory,
-        BranchReplayDriver {
-            candidate,
-            observations: observations.clone(),
-        },
-    );
-
-    let executed = runner
-        .try_execute(&input, &execution_context(&input, 0x85))
-        .expect("observed hot-fork execution");
-    assert!(matches!(
-        executed,
-        QemuHotForkWorldExecutionAttempt::Executed(_)
-    ));
-
-    runner
-        .reconcile_execution(AttemptExecutionDisposition::Canceled)
-        .expect_err("failed source recovery must quarantine retained ownership");
-
-    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
-    assert!(
-        evidence
-            .snapshot()
-            .expect("recovery evidence snapshot")
-            .terminal_fingerprints()
-            .is_some()
-    );
-}
-
-#[test]
-fn packaged_route_quarantines_a_hot_world_when_terminal_result_preparation_fails() {
-    let input = branch_execution_input(
-        ChoiceSource::Scheduler {
-            producer: String::from("terminal-preparation"),
-        },
-        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("terminal preparation branch domain")),
-        ChoiceValue::Boolean(false),
-        ChoiceValue::Boolean(true),
-        "scheduler.terminal-preparation",
-    );
-    let (_repository, _store, _lineage, _attempt, candidate, _scenario) =
-        repository_execution_fixture();
-    let observations = BranchReplayObservations::new();
-    let factory = BranchReplayLifecycleFactory {
-        observations: observations.clone(),
-    };
-    let (factory, completed_evidence) =
-        QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
-    let hot = QemuHotForkWorldExecutionRunner::new(
-        factory,
-        BranchReplayDriver {
-            candidate,
-            observations: observations.clone(),
-        },
-    );
-    let fallback_calls = Arc::new(AtomicUsize::new(0));
-    let hot_first = QemuHotFirstExecutionRouter::new(
-        hot,
-        NeverFallbackRunner {
-            calls: Arc::clone(&fallback_calls),
-        },
-    );
-    let initial = PackagedQemuInitialExecutionRunner::<_, NeverFallbackRunner>::HotFork(hot_first);
-    let router = QemuAttemptExecutionRouter::new(initial, NeverResumeRunner);
-    let mut runner =
-        QemuTerminalEvidenceExecutionRunner::new(router, QemuAttemptExecutionEvidence::default());
-    let context = execution_context(&input, 0x86);
-
-    let failure = runner
-        .execute(&input, &context)
-        .expect_err("unrelated evidence must reject terminal result preparation");
-    assert!(matches!(
-        failure,
-        AttemptWorkerFailure::Terminal(
-            QemuTerminalEvidenceExecutionRunnerError::MissingTerminalFingerprints
-        )
-    ));
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
-    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 0);
-    runner.quarantine_pending_execution();
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
-
-    let (router, _unrelated_evidence) = runner.into_parts();
-    let mut runner = QemuTerminalEvidenceExecutionRunner::new(router, completed_evidence);
-    let outcome = runner
-        .execute(&input, &context)
-        .expect("a clean execution may follow quarantined result preparation");
-    let AttemptExecutionProduct::PreparedSemantic(result) = outcome.product() else {
-        panic!("clean packaged hot execution must produce a prepared result")
-    };
-    let observation = result
-        .observation()
-        .observation()
-        .id()
-        .expect("observation id");
-    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
-
-    assert_eq!(
-        runner
-            .reconcile_execution(AttemptExecutionDisposition::Observation(observation))
-            .expect("reconcile the clean packaged hot execution"),
-        AttemptExecutionReconciliationStep::Complete
-    );
-    assert_eq!(observations.recoveries.load(Ordering::SeqCst), 1);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn hot_world_runner_materializes_an_unsigned_64_bit_branch_from_its_parent() {
-    let domain = ChoiceDomain::Integer(
-        IntegerDomain::new(
-            1,
-            IntegerRepresentation::Unsigned64,
-            IntegerValue::Unsigned(0),
-            IntegerValue::Unsigned(u64::MAX),
-            1,
-            Some(String::from("nanoseconds")),
-            ExactRational::new(1, 1).expect("unsigned branch scale"),
-            vec![IntegerValue::Unsigned(0), IntegerValue::Unsigned(u64::MAX)],
-        )
-        .expect("unsigned branch domain"),
-    );
-    let input = branch_execution_input(
-        ChoiceSource::Workload {
-            producer: String::from("timeout-controller"),
-        },
-        domain,
-        ChoiceValue::Integer(IntegerValue::Unsigned(0)),
-        ChoiceValue::Integer(IntegerValue::Unsigned(u64::MAX)),
-        "product.timeout-nanoseconds",
-    );
-
-    run_branch_through_hot_world_runner(input, false);
-}
-
-#[test]
-fn hot_world_runner_materializes_a_scheduler_source_branch_from_its_parent() {
-    let input = branch_execution_input(
-        ChoiceSource::Scheduler {
-            producer: String::from("delivery-order"),
-        },
-        ChoiceDomain::Boolean(BooleanDomain::new(1).expect("scheduler branch domain")),
-        ChoiceValue::Boolean(false),
-        ChoiceValue::Boolean(true),
-        "scheduler.delivery-order",
-    );
-
-    run_branch_through_hot_world_runner(input, false);
-}
-
-#[test]
-fn hot_world_runner_materializes_a_guest_branch_and_enqueues_its_exact_reply() {
-    let declaration = guest_selectable_declaration();
-    let input = branch_execution_input(
-        declaration.source().clone(),
-        declaration.domain().clone(),
-        declaration.default().clone(),
-        ChoiceValue::Boolean(true),
-        declaration.name(),
-    );
-
-    run_branch_through_hot_world_runner(input, true);
-}
-
-fn factory(
-    source_world: ProductionVmHotForkSourceWorld,
-    lineage: &CampaignLineage,
-    run_state_root: PathBuf,
-    observations: ScriptedWorldObservations,
-) -> QemuProductionHotForkWorldLifecycleFactory<
-    QemuSingleHotForkSourceWorldProvider,
-    ScriptedWorldGuardFactory,
-> {
-    let key = QemuHotForkSourceWorldKey::new(
-        lineage.id().expect("lineage id"),
-        source_world.continuation().configuration().def.id(),
-        source_world.continuation().configuration().id(),
-        ExecutorCompatibilityProfile::from_lineage(lineage),
-    );
-    let mut shutdown_policy = QemuShutdownPolicy::fast_test();
-    shutdown_policy.sigterm_wait = Duration::from_secs(2);
-    shutdown_policy.sigkill_wait = Duration::from_secs(1);
-    shutdown_policy.reap_wait = Duration::from_secs(1);
-
-    QemuProductionHotForkWorldLifecycleFactory::new(
-        QemuSingleHotForkSourceWorldProvider::new(key, source_world),
-        ScriptedWorldGuardFactory { observations },
-        run_state_root,
-        shutdown_policy,
-        QemuAsyncDriverPolicy::fast_test(),
-    )
-}
-
-fn repository_execution_fixture() -> (
-    Arc<CampaignRepository>,
-    CampaignExecutorStore,
-    CampaignLineage,
-    crucible_campaign::AttemptId,
-    ObservationCandidate,
-    ScenarioDefForm,
-) {
-    let repository = Arc::new(CampaignRepository::new(
-        Arc::new(MemoryBlobBackend::new(
-            "hot-world-publication",
-            64 * 1024 * 1024,
-        )),
-        Arc::new(MemoryRefBackend::new()),
-    ));
-    let scenario = guest_selectable_scenario();
-    let scenario_artifact =
-        encode_crucible_scenario_artifact(&scenario).expect("encode scenario artifact");
-    let scenario_content = repository
-        .publish_scenario_artifact(
-            scenario_artifact.scenario(),
-            scenario_artifact.payload_schema(),
-            scenario_artifact.payload().to_vec(),
-        )
-        .expect("publish scenario artifact");
-    assert_eq!(
-        scenario_content,
-        scenario_artifact.id().expect("scenario artifact id")
-    );
-
-    let configuration = Configuration::genesis(scenario.scenario_def());
-    let configuration_artifact =
-        encode_crucible_configuration_artifact(&scenario_artifact, &configuration.schedule)
-            .expect("encode configuration artifact");
-    let configuration_content = repository
-        .publish_configuration_artifact(
-            configuration_artifact.scenario(),
-            configuration_artifact.scenario_artifact(),
-            configuration_artifact.configuration(),
-            configuration_artifact.payload_schema(),
-            configuration_artifact.payload().to_vec(),
-        )
-        .expect("publish configuration artifact");
-    assert_eq!(
-        configuration_content,
-        configuration_artifact
-            .id()
-            .expect("configuration artifact id")
-    );
-
-    let lineage = CampaignLineage::new(
-        scenario_artifact.scenario(),
-        scenario_content,
-        configuration_artifact.configuration(),
-        configuration_content,
-        "crucible-test",
-        "qemu-test",
-        BTreeMap::from([(String::from("control"), 1)]),
-        scenario_artifact.payload_schema(),
-        1,
-    )
-    .expect("campaign lineage");
-    let widening = ProgressiveWideningPolicy::new(
-        ExactRational::new(1, 1).expect("widening numerator"),
-        ExactRational::new(1, 2).expect("widening exponent"),
-        1,
-        100,
-        1,
-    )
-    .expect("widening policy");
-    let policy = CampaignPolicy::new(
-        scenario_artifact.scenario(),
-        CampaignSeed::from_bytes([0x71; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness policy"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
-    )
-    .expect("campaign policy");
-    let created = repository
-        .create("hot-world-publication", &lineage, &policy, &BTreeMap::new())
-        .expect("create campaign");
-    repository
-        .apply_control(
-            "hot-world-publication",
-            &ControlRequest {
-                command: CampaignCommandId::from_hash(CampaignHash::derive(
-                    "crucible.test.hot-world-publication.budget.v1",
-                    b"budget",
-                )),
-                expected_snapshot: created.snapshot_id(),
-                action: CampaignControlAction::GrantBudget(
-                    BudgetGrant::new(0, 1).expect("attempt budget"),
-                ),
-            },
-        )
-        .expect("fund campaign");
-    let funded = repository
-        .head("hot-world-publication")
-        .expect("funded head");
-    repository
-        .apply_control(
-            "hot-world-publication",
-            &ControlRequest {
-                command: CampaignCommandId::from_hash(CampaignHash::derive(
-                    "crucible.test.hot-world-publication.resume.v1",
-                    b"resume",
-                )),
-                expected_snapshot: funded.snapshot_id(),
-                action: CampaignControlAction::Resume,
-            },
-        )
-        .expect("resume campaign");
-    let attempt_id = repository
-        .admit_initial_discovery_if_ready("hot-world-publication")
-        .expect("admit discovery")
-        .expect("initial discovery attempt");
-    let attempt = repository.load_attempt(attempt_id).expect("load attempt");
-
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
-    let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
-    let coverage =
-        CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage projection");
-    let observation = Observation::new(
-        attempt_id,
-        configuration_artifact.configuration(),
-        configuration_content,
-        attempt.path(),
-        StopOutcome::TerminalSuccess,
-        measurements.id().expect("measurement set id"),
-        properties.id().expect("property verdict set id"),
-        coverage.id().expect("coverage projection id"),
-        BTreeSet::new(),
-    )
-    .expect("observation");
-    let candidate = ObservationCandidate::new(
-        configuration_artifact,
-        measurements,
-        properties,
-        coverage,
-        Vec::new(),
-        observation,
-    )
-    .expect("observation candidate");
-    let store = CampaignExecutorStore::new(Arc::clone(&repository));
-
-    (repository, store, lineage, attempt_id, candidate, scenario)
-}
-
-fn reconcile_canceled_world(
-    lifecycle: &mut QemuProductionHotForkWorldLifecycle<ScriptedWorldGuard>,
-) {
-    let mut reconciled = false;
-    for _ in 0..64 {
-        if lifecycle
-            .reconcile_execution_disposition(AttemptExecutionDisposition::Canceled)
-            .expect("reconcile world")
-            == AttemptExecutionReconciliationStep::Complete
-        {
-            reconciled = true;
-            break;
-        }
-    }
-    assert!(reconciled);
-}
-
-#[test]
-fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
-    let first =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
-    let second =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
-    let (nodes, source_world) =
-        prepared_multi_node_hot_fork_source_world_for_test(vec![first, second])
-            .expect("prepared source world");
-    assert_eq!(nodes.len(), 2);
-    assert!(source_world.continuation().nodes().iter().any(|boundary| {
-        boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
-            && boundary.process().is_none()
-    }));
-
-    let input = execution_input();
-    let context = execution_context(&input, 0x79);
-    let run_state = tempfile::tempdir().expect("run state");
-    let observations = ScriptedWorldObservations::new();
-    let mut factory = factory(
-        source_world,
-        input.lineage(),
-        run_state.path().to_path_buf(),
-        observations.clone(),
-    );
-
-    let mut lifecycle = match factory.try_start(&input, &context).expect("start world") {
-        QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
-        QemuHotForkWorldLifecycleStart::Declined => panic!("exact source world declined"),
-    };
-    assert!(!factory.sources().available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
-    assert!(lifecycle.start_materialization().is_ok());
-    let first_directories = observations
-        .prepared_run_directories
-        .lock()
-        .expect("first branch directory registry")
-        .clone();
-    let first_children = observations
-        .retained_child_processes
-        .lock()
-        .expect("first branch child registry")
-        .clone();
-    assert_eq!(first_directories.len(), 2);
-    assert_eq!(first_children.len(), 2);
-    assert_eq!(
-        first_directories.iter().collect::<BTreeSet<_>>().len(),
-        first_directories.len()
-    );
-    assert_eq!(
-        first_children
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>()
-            .len(),
-        first_children.len()
-    );
-    assert!(first_directories.iter().all(|directory| directory.is_dir()));
-    assert!(first_children.iter().all(|process| {
-        linux_process_identity(*process)
-            .expect("inspect first branch child")
-            .is_some()
-    }));
-    QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).expect("shutdown adopted world");
-    assert!(!factory.sources().available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
-    reconcile_canceled_world(&mut lifecycle);
-
-    let competing_source_owner = lifecycle.source_world_owner_for_test();
-    let lifecycle = factory
-        .recover(lifecycle)
-        .expect_err("a competing source owner must defer recovery");
-    drop(competing_source_owner);
-    assert!(factory.recover(lifecycle).is_ok());
-
-    assert!(factory.sources().available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
-
-    let second_context = execution_context(&input, 0x7a);
-    let mut second_lifecycle = match factory
-        .try_start(&input, &second_context)
-        .expect("reuse source world")
-    {
-        QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
-        QemuHotForkWorldLifecycleStart::Declined => panic!("reprepared source world declined"),
-    };
-    assert!(second_lifecycle.start_materialization().is_ok());
-    let all_directories = observations
-        .prepared_run_directories
-        .lock()
-        .expect("branch directory registry")
-        .clone();
-    let all_children = observations
-        .retained_child_processes
-        .lock()
-        .expect("branch child registry")
-        .clone();
-    assert_eq!(all_directories.len(), 4);
-    assert_eq!(all_children.len(), 4);
-    assert_eq!(
-        all_directories.iter().collect::<BTreeSet<_>>().len(),
-        all_directories.len()
-    );
-    assert_eq!(
-        all_children.iter().copied().collect::<BTreeSet<_>>().len(),
-        all_children.len()
-    );
-    assert!(
-        all_directories[2..]
-            .iter()
-            .all(|directory| directory.is_dir())
-    );
-    assert!(all_children[2..].iter().all(|process| {
-        linux_process_identity(*process)
-            .expect("inspect second branch child")
-            .is_some()
-    }));
-    assert!(
-        first_directories
-            .iter()
-            .all(|directory| !directory.exists())
-    );
-    assert!(first_children.iter().all(|process| {
-        linux_process_identity(*process)
-            .expect("inspect reconciled first branch child")
-            .is_none()
-    }));
-    QemuFreshAttemptLifecycleOwner::shutdown(&mut second_lifecycle)
-        .expect("shutdown second adopted world");
-    reconcile_canceled_world(&mut second_lifecycle);
-    assert!(factory.recover(second_lifecycle).is_ok());
-
-    assert!(factory.sources().available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 2);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
-    assert!(all_directories.iter().all(|directory| !directory.exists()));
-    assert!(all_children.iter().all(|process| {
-        linux_process_identity(*process)
-            .expect("inspect reconciled branch child")
-            .is_none()
-    }));
-}
-
-#[test]
-fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
-    let source =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::RejectedOnce).expect("source");
-    let source_process = source.process_id();
-    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_test(vec![source])
-        .expect("prepared source world");
-    let checkout_nodes = source_world.continuation().nodes().to_vec();
-    let input = execution_input();
-    let observations = ScriptedWorldObservations::new();
-    let source_key = QemuHotForkSourceWorldKey::new(
-        input.lineage().id().expect("lineage id"),
-        source_world.continuation().configuration().def.id(),
-        source_world.continuation().configuration().id(),
-        ExecutorCompatibilityProfile::from_lineage(input.lineage()),
-    );
-    let finish_count_at_restore = Arc::new(AtomicUsize::new(usize::MAX));
-    let provider = CleanupOrderedSourceWorldProvider {
-        inner: QemuSingleHotForkSourceWorldProvider::new(source_key, source_world),
-        finishes: Arc::clone(&observations.finishes),
-        finish_count_at_restore: Arc::clone(&finish_count_at_restore),
-    };
-    let run_state = tempfile::tempdir().expect("run state");
-    let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
-        provider,
-        ScriptedWorldGuardFactory {
-            observations: observations.clone(),
-        },
-        run_state.path(),
-        QemuShutdownPolicy::fast_test(),
-        QemuAsyncDriverPolicy::fast_test(),
-    );
-
-    let first_context = execution_context(&input, 0x79);
-    assert!(matches!(
-        factory.try_start(&input, &first_context),
-        Err(AttemptWorkerFailure::Retryable(
-            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
-        ))
-    ));
-    assert!(factory.sources().available());
-    assert_eq!(finish_count_at_restore.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        factory
-            .sources()
-            .inner
-            .source
-            .as_ref()
-            .expect("restored source world")
-            .continuation()
-            .nodes(),
-        checkout_nodes
-    );
-    assert!(linux_process_identity(source_process).is_ok_and(|identity| identity.is_some()));
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
-    let prepared_directories = observations
-        .prepared_run_directories
-        .lock()
-        .expect("prepared directory registry");
-    assert_eq!(prepared_directories.len(), 1);
-    assert!(!prepared_directories[0].exists());
-    drop(prepared_directories);
-    assert!(
-        observations
-            .retained_child_processes
-            .lock()
-            .expect("retained child registry")
-            .is_empty()
-    );
-
-    let second_context = execution_context(&input, 0x7a);
-    let mut lifecycle = match factory
-        .try_start(&input, &second_context)
-        .expect("retry exact source world")
-    {
-        QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
-        QemuHotForkWorldLifecycleStart::Declined => panic!("restored source world declined"),
-    };
-    QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).expect("shutdown retried world");
-    reconcile_canceled_world(&mut lifecycle);
-    assert!(factory.recover(lifecycle).is_ok());
-
-    assert!(factory.sources().available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 2);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn target_directory_rejection_restores_the_source_without_invoking_qemu() {
-    let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
-    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_test(vec![source])
-        .expect("prepared source world");
-    let input = execution_input();
-    let observations = ScriptedWorldObservations::new();
-    observations
-        .prepare_rejections_remaining
-        .store(1, Ordering::SeqCst);
-    let run_state = tempfile::tempdir().expect("run state");
-    let mut factory = factory(
-        source_world,
-        input.lineage(),
-        run_state.path().to_path_buf(),
-        observations.clone(),
-    );
-
-    assert!(matches!(
-        factory.try_start(&input, &execution_context(&input, 0x79)),
-        Err(AttemptWorkerFailure::Retryable(
-            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
-        ))
-    ));
-    assert!(factory.sources().available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
-    assert!(
-        observations
-            .prepared_run_directories
-            .lock()
-            .expect("prepared directory registry")
-            .is_empty()
-    );
-    assert!(
-        observations
-            .retained_child_processes
-            .lock()
-            .expect("retained child registry")
-            .is_empty()
-    );
-}
-
-#[test]
-fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailable() {
-    let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
-    let source_process = source.process_id();
-    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_test(vec![source])
-        .expect("prepared source world");
-    let input = execution_input();
-    let observations = ScriptedWorldObservations::new();
-    observations
-        .prepare_rejections_remaining
-        .store(1, Ordering::SeqCst);
-    observations
-        .finish_failures_remaining
-        .store(1, Ordering::SeqCst);
-    let run_state = tempfile::tempdir().expect("run state");
-    let mut factory = factory(
-        source_world,
-        input.lineage(),
-        run_state.path().to_path_buf(),
-        observations.clone(),
-    );
-
-    assert!(matches!(
-        factory.try_start(&input, &execution_context(&input, 0x79)),
-        Err(AttemptWorkerFailure::Retryable(
-            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
-        ))
-    ));
-    assert!(!factory.sources().available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
-    assert!(linux_process_identity(source_process).is_ok_and(|identity| identity.is_some()));
-    let guard = observations
-        .guard_liveness
-        .lock()
-        .expect("guard liveness registry")
-        .as_ref()
-        .and_then(Weak::upgrade);
-    assert!(guard.is_some());
-}
-
-#[test]
-fn second_child_indeterminate_failure_quarantines_first_child_and_complete_world() {
-    let first =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
-    let first_source_process = first.process_id();
-    let second = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Indeterminate)
-        .expect("second source");
-    let second_source_process = second.process_id();
-    let (_nodes, source_world) =
-        prepared_multi_node_hot_fork_source_world_for_test(vec![first, second])
-            .expect("prepared source world");
-    let input = execution_input();
-    let context = execution_context(&input, 0x79);
-    let run_state = tempfile::tempdir().expect("run state");
-    let observations = ScriptedWorldObservations::new();
-    let mut factory = factory(
-        source_world,
-        input.lineage(),
-        run_state.path().to_path_buf(),
-        observations.clone(),
-    );
-
-    assert!(matches!(
-        factory.try_start(&input, &context),
-        Err(AttemptWorkerFailure::Retryable(
-            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
-        ))
-    ));
-    assert!(!factory.sources().available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
-    assert!(linux_process_identity(first_source_process).is_ok_and(|identity| identity.is_some()));
-    assert!(linux_process_identity(second_source_process).is_ok_and(|identity| identity.is_some()));
-    let retained_children = observations
-        .retained_child_processes
-        .lock()
-        .expect("retained child registry");
-    assert_eq!(retained_children.len(), 1);
-    assert!(
-        PathBuf::from("/proc")
-            .join(retained_children[0].to_string())
-            .exists()
-    );
-    let guard = observations
-        .guard_liveness
-        .lock()
-        .expect("guard liveness registry")
-        .as_ref()
-        .and_then(Weak::upgrade);
-    assert!(guard.is_some());
-}
-
-#[cfg(feature = "destructive-recovery-faults")]
-#[test]
-fn child_resource_alias_rejects_before_fork_and_restores_source_world() {
-    if std::env::var_os(CHILD_RESOURCE_ALIAS_CHILD_ENVIRONMENT).is_none() {
-        let child =
-            std::process::Command::new(std::env::current_exe().expect("current test binary"))
-                .arg("--exact")
-                .arg(CHILD_RESOURCE_ALIAS_TEST_NAME)
-                .arg("--nocapture")
-                .env(CHILD_RESOURCE_ALIAS_CHILD_ENVIRONMENT, "1")
-                .env(
-                    DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
-                    CHILD_RESOURCE_ALIAS_TRIGGER,
-                )
-                .output()
-                .expect("run child-resource alias child");
-        assert!(
-            child.status.success(),
-            "child-resource alias child failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&child.stdout),
-            String::from_utf8_lossy(&child.stderr),
-        );
-        return;
-    }
-
-    let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
-    let source_process = source.process_id();
-    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_test(vec![source])
-        .expect("prepared source world");
-    let input = execution_input();
-    let context = execution_context(&input, 0x79);
-    let run_state = tempfile::tempdir().expect("run state");
-    let observations = ScriptedWorldObservations::new();
-    let mut factory = factory(
-        source_world,
-        input.lineage(),
-        run_state.path().to_path_buf(),
-        observations.clone(),
-    );
-
-    reset_hot_fork_adoption_count_for_test();
-    let failure = match factory.try_start(&input, &context) {
-        Err(failure) => failure,
-        Ok(_) => panic!("fault build must reject aliased child resources"),
-    };
-    let AttemptWorkerFailure::Retryable(QemuProductionHotForkWorldLifecycleFactoryError::Assembly(
-        message,
-    )) = failure
-    else {
-        panic!("child-resource alias must be a retryable assembly failure")
-    };
-    assert!(message.contains("child file destinations must name distinct roots and files"));
-    assert_eq!(hot_fork_adoption_count_for_test(), 0);
-    assert!(factory.sources().available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
-    assert!(linux_process_identity(source_process).is_ok_and(|identity| identity.is_some()));
-    let prepared_directories = observations
-        .prepared_run_directories
-        .lock()
-        .expect("prepared directory registry");
-    assert_eq!(prepared_directories.len(), 1);
-    assert!(!prepared_directories[0].exists());
-    drop(prepared_directories);
-    assert!(
-        observations
-            .retained_child_processes
-            .lock()
-            .expect("retained child registry")
-            .is_empty()
-    );
-    let guard = observations
-        .guard_liveness
-        .lock()
-        .expect("guard liveness registry")
-        .as_ref()
-        .and_then(Weak::upgrade);
-    assert!(guard.is_none());
-}
-
-#[cfg(feature = "destructive-recovery-faults")]
-#[test]
-fn world_fork_one_vm_failure_quarantines_partial_world() {
-    if std::env::var_os(WORLD_FORK_ONE_VM_FAILURE_CHILD_ENVIRONMENT).is_none() {
-        let child =
-            std::process::Command::new(std::env::current_exe().expect("current test binary"))
-                .arg("--exact")
-                .arg(WORLD_FORK_ONE_VM_FAILURE_TEST_NAME)
-                .arg("--nocapture")
-                .env(WORLD_FORK_ONE_VM_FAILURE_CHILD_ENVIRONMENT, "1")
-                .env(
-                    DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
-                    WORLD_FORK_ONE_VM_FAILURE_TRIGGER,
-                )
-                .output()
-                .expect("run world-fork one-VM failure child");
-        assert!(
-            child.status.success(),
-            "world-fork child failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&child.stdout),
-            String::from_utf8_lossy(&child.stderr),
-        );
-        return;
-    }
-
-    let first =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
-    let first_source_process = first.process_id();
-    let second =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
-    let second_source_process = second.process_id();
-    let (_nodes, source_world) =
-        prepared_multi_node_hot_fork_source_world_for_test(vec![first, second])
-            .expect("prepared source world");
-    let input = execution_input();
-    let context = execution_context(&input, 0x79);
-    let run_state = tempfile::tempdir().expect("run state");
-    let observations = ScriptedWorldObservations::new();
-    let mut factory = factory(
-        source_world,
-        input.lineage(),
-        run_state.path().to_path_buf(),
-        observations.clone(),
-    );
-
-    reset_hot_fork_adoption_count_for_test();
-    let failure = match factory.try_start(&input, &context) {
-        Err(failure) => failure,
-        Ok(_) => panic!("fault build must reject the second world VM"),
-    };
-    let AttemptWorkerFailure::Retryable(QemuProductionHotForkWorldLifecycleFactoryError::Assembly(
-        message,
-    )) = failure
-    else {
-        panic!("world-fork fault must be a retryable assembly failure")
-    };
-    assert!(message.contains("fault-injected failure while reserving the next hot-fork world VM"));
-    assert_eq!(hot_fork_adoption_count_for_test(), 0);
-    assert!(!factory.sources().available());
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
-    assert!(linux_process_identity(first_source_process).is_ok_and(|identity| identity.is_some()));
-    assert!(linux_process_identity(second_source_process).is_ok_and(|identity| identity.is_some()));
-    let prepared_directories = observations
-        .prepared_run_directories
-        .lock()
-        .expect("prepared directory registry");
-    assert_eq!(prepared_directories.len(), 1);
-    drop(prepared_directories);
-    let retained_children = observations
-        .retained_child_processes
-        .lock()
-        .expect("retained child registry");
-    assert_eq!(retained_children.len(), 1);
-    assert!(
-        PathBuf::from("/proc")
-            .join(retained_children[0].to_string())
-            .exists()
-    );
-    drop(retained_children);
-    let guard = observations
-        .guard_liveness
-        .lock()
-        .expect("guard liveness registry")
-        .as_ref()
-        .and_then(Weak::upgrade);
-    assert!(guard.is_some());
-}
-
-#[test]
-fn second_adoption_failure_retains_first_adoption_and_complete_world() {
-    let first =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
-    let first_source_process = first.process_id();
-    let second =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
-    let second_source_process = second.process_id();
-    let (nodes, mut source_world) =
-        prepared_multi_node_hot_fork_source_world_for_test(vec![first, second])
-            .expect("prepared source world");
-    source_world
-        .replace_immutable_root_for_test(&nodes[1].0, ContentHash::from_bytes(b"mismatched-root"))
-        .expect("replace second immutable root");
-    let input = execution_input();
-    let context = execution_context(&input, 0x79);
-    let run_state = tempfile::tempdir().expect("run state");
-    let observations = ScriptedWorldObservations::new();
-    let mut factory = factory(
-        source_world,
-        input.lineage(),
-        run_state.path().to_path_buf(),
-        observations.clone(),
-    );
-
-    reset_hot_fork_adoption_count_for_test();
-    assert!(matches!(
-        factory.try_start(&input, &context),
-        Err(AttemptWorkerFailure::Terminal(
-            QemuProductionHotForkWorldLifecycleFactoryError::Lifecycle(_)
-        ))
-    ));
-    assert_eq!(hot_fork_adoption_count_for_test(), 1);
-    assert!(!factory.sources().available());
-    assert!(linux_process_identity(first_source_process).is_ok_and(|identity| identity.is_some()));
-    assert!(linux_process_identity(second_source_process).is_ok_and(|identity| identity.is_some()));
-    let retained_children = observations
-        .retained_child_processes
-        .lock()
-        .expect("retained child registry");
-    assert_eq!(retained_children.len(), 2);
-    assert!(
-        retained_children
-            .iter()
-            .all(|process| PathBuf::from("/proc").join(process.to_string()).exists())
-    );
-    let guard = observations
-        .guard_liveness
-        .lock()
-        .expect("guard liveness registry")
-        .as_ref()
-        .and_then(Weak::upgrade);
-    assert!(guard.is_some());
-}
-
-#[test]
-fn poisoned_source_owner_cannot_be_recovered_on_retry() {
-    let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
-    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_test(vec![source])
-        .expect("prepared source world");
-    let input = execution_input();
-    let context = execution_context(&input, 0x79);
-    let run_state = tempfile::tempdir().expect("run state");
-    let observations = ScriptedWorldObservations::new();
-    let mut factory = factory(
-        source_world,
-        input.lineage(),
-        run_state.path().to_path_buf(),
-        observations,
-    );
-    let mut lifecycle = match factory.try_start(&input, &context).expect("start world") {
-        QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
-        QemuHotForkWorldLifecycleStart::Declined => panic!("exact source world declined"),
-    };
-    QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).expect("shutdown adopted world");
-    reconcile_canceled_world(&mut lifecycle);
-
-    let source_owner = lifecycle.source_world_owner_for_test();
-    let poisoner = std::thread::spawn(move || {
-        let _source = source_owner.lock().expect("lock source owner");
-        panic!("poison source owner");
-    });
-    assert!(poisoner.join().is_err());
-
-    let lifecycle = factory
-        .recover(lifecycle)
-        .expect_err("poisoned source owner must fail recovery");
-    let lifecycle = factory
-        .recover(lifecycle)
-        .expect_err("recovery retry must preserve source poison");
-    assert!(!factory.sources().available());
-    factory.quarantine(lifecycle);
-}
-
-#[test]
-fn published_observation_reconciliation_makes_the_exact_source_world_reusable() {
-    let (repository, store, lineage, attempt, _candidate, scenario) =
-        repository_execution_fixture();
-    let (selectable_plan, pending_request) = pending_guest_selectable_plan();
-    let expected_discovery = crate::guest_selectable::resolve_guest_selectable(
-        lineage.scenario(),
-        &scenario,
-        &crucible::NodeId {
-            name: String::from("db-0"),
-        },
-        &pending_request,
-    )
-    .expect("resolve expected typed guest opportunity");
-    let expected_opportunity = expected_discovery.opportunity().clone();
-    let first = scripted_hot_fork_source_with_state_for_test(
-        QemuTestHotForkOutcome::Forked,
-        Vec::new(),
-        Some((selectable_plan, pending_request)),
-    )
-    .expect("first source");
-    let second =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
-    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
-        &scenario,
-        vec![first, second],
-    )
-    .expect("prepared source world");
-    let run_state = tempfile::tempdir().expect("run state");
-    let observations = ScriptedWorldObservations::new();
-    let fallback_calls = Arc::new(AtomicUsize::new(0));
-    let hot_fork = QemuHotForkWorldExecutionRunner::new(
-        factory(
-            source_world,
-            &lineage,
-            run_state.path().to_path_buf(),
-            observations.clone(),
-        ),
-        QemuFreshModeledDriver::new(),
-    );
-    let router = QemuHotFirstExecutionRouter::new(
-        hot_fork,
-        NeverFallbackRunner {
-            calls: Arc::clone(&fallback_calls),
-        },
-    );
-    let model = CrucibleExecutionModel::new(store.clone(), router);
-    let mut worker = RepositoryAttemptWorker::new(store.clone(), model);
-
-    let profile = ExecutorCompatibilityProfile::new(
-        "crucible-test",
-        "qemu-test",
-        BTreeMap::from([(String::from("control"), 1)]),
-        lineage.scenario_schema(),
-        1,
-    )
-    .expect("compatibility profile");
-    let epoch = DaemonEpoch::from_bytes([0x72; 16]).expect("daemon epoch");
-    let resources = AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("attempt resources");
-    let request = SubmitAttemptRequest::new(
-        AssignmentId::from_bytes([0x73; 16]).expect("assignment"),
-        epoch,
-        lineage.id().expect("lineage id"),
-        attempt,
-        resources,
-        ExecutionRetentionIntent::Discard,
-    )
-    .expect("submit request");
-    let admission = RepositoryAttemptAdmission::new(Arc::clone(&repository), profile);
-    let mut supervisor = LocalExecutorSupervisor::new(
-        MemoryAssignmentLedger::default(),
-        admission,
-        epoch,
-        ExecutorCapacity::new(1, 8, 8 << 30, 8 << 30, 64).expect("executor capacity"),
-    );
-    let submitted =
-        ExecutorService::submit_attempt(&mut supervisor, &request).expect("submit exact discovery");
-    assert!(matches!(
-        submitted.disposition(),
-        SubmitAttemptDisposition::Accepted { .. }
-    ));
-    let queued = supervisor.next_queued().expect("queued execution");
-
-    let work = worker.execute(queued);
-    let checkpoints = ExactCheckpointStore::new(
-        Arc::new(TestDurableCheckpointBackend::new()),
-        8 * 1024 * 1024,
-    )
-    .expect("checkpoint store");
-    let prepared = prepare_attempt_result(&store, &checkpoints, work).expect("prepare result");
-    let PreparedAttemptWorkResult::Observation(prepared) = prepared else {
-        panic!("driver returned an unexpected checkpoint")
-    };
-    let observation = prepared.observation();
-
-    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        worker.model().last_materialization(),
-        Some(CrucibleMaterializationTier::HotFork)
-    );
-    assert!(
-        !worker
-            .model()
-            .runner()
-            .hot_fork()
-            .lifecycle_factory()
-            .sources()
-            .available()
-    );
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
-
-    let staged = stage_prepared_attempt_result(&mut supervisor, *prepared).expect("stage result");
-    let AttemptResultStageOutcome::Publish(staged) = staged else {
-        panic!("current execution must publish")
-    };
-    let published = publish_prepared_attempt_result(&store, staged).expect("publish result");
-    let published_observation = repository
-        .load_observation(observation)
-        .expect("published observation");
-    assert_eq!(
-        published_observation
-            .id()
-            .expect("published observation id"),
-        observation
-    );
-    let expected_opportunity_id = expected_opportunity.id().expect("expected opportunity id");
-    assert_eq!(
-        published_observation.discovered_choices(),
-        &BTreeSet::from([expected_opportunity_id])
-    );
-    assert_eq!(
-        repository
-            .load_choice_opportunity(expected_opportunity_id)
-            .expect("published typed opportunity"),
-        expected_opportunity
-    );
-    let child_artifact = repository
-        .load_configuration_artifact(published_observation.child_content())
-        .expect("published child configuration artifact");
-    let scenario_artifact = repository
-        .load_scenario_artifact(lineage.scenario_content())
-        .expect("published scenario artifact");
-    let child_configuration = decode_crucible_configuration_artifact_with_selections(
-        &scenario,
-        &scenario_artifact,
-        &child_artifact,
-        &store,
-    )
-    .expect("decode published child configuration");
-    assert_eq!(
-        ConfigurationId::from_hash(CampaignHash::from_bytes(child_configuration.id().bytes)),
-        published_observation.child()
-    );
-    assert_eq!(child_configuration.def.id(), scenario.scenario_def().id());
-    assert_eq!(expected_opportunity.instance(), "publication");
-    assert_eq!(
-        expected_opportunity.source(),
-        &ChoiceSource::Guest {
-            node: String::from("db-0"),
-            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
-        }
-    );
-    let reconciled = reconcile_published_attempt_result::<_, _, ()>(&mut supervisor, published)
-        .expect("reconcile published result");
-    assert_eq!(
-        reconciled,
-        AttemptWorkerReconcileOutcome::Reconciled {
-            observation,
-            completion: CompletionOutcome::Completed,
-        }
-    );
-
-    let mut cleanup_complete = false;
-    for _ in 0..64 {
-        if LocalAttemptWorker::reconcile_execution(
-            &mut worker,
-            AttemptExecutionDisposition::Observation(observation),
-        )
-        .expect("reconcile hot-fork execution")
-            == AttemptExecutionReconciliationStep::Complete
-        {
-            cleanup_complete = true;
-            break;
-        }
-    }
-    assert!(cleanup_complete);
-    assert!(
-        worker
-            .model()
-            .runner()
-            .hot_fork()
-            .lifecycle_factory()
-            .sources()
-            .available()
-    );
-    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
-    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn target_world_resource_preflight_rejects_before_source_checkout_or_guard_installation() {
-    let input = execution_input();
-    let first =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
-    let second =
-        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
-    let (_nodes, source_world) =
-        prepared_multi_node_hot_fork_source_world_for_test(vec![first, second])
-            .expect("prepared source world");
-    let observations = ScriptedWorldObservations::new();
-    let run_state = tempfile::tempdir().expect("run state");
-    let mut factory = factory(
-        source_world,
-        input.lineage(),
-        run_state.path().to_path_buf(),
-        observations.clone(),
-    );
-    let resources = AttemptResourceLimits::new(1, 64 << 20, 64 << 20, 64)
-        .expect("undersized attempt resources");
-    let context = AttemptExecutionContext::new(
-        resources,
-        ExecutionRetentionIntent::Discard,
-        ExecutionCancellation::default(),
-        ExecutionCheckpointRequest::default(),
-    )
-    .with_runtime_basis(execution_basis(&input, 0x80));
-
-    let failure = match factory.try_start(&input, &context) {
-        Err(failure) => failure,
-        Ok(_) => panic!("aggregate World baseline must exceed the attempt ceiling"),
-    };
-    assert!(matches!(
-        failure,
-        AttemptWorkerFailure::Terminal(
-            QemuProductionHotForkWorldLifecycleFactoryError::ScenarioResources(_)
-        )
-    ));
-    assert!(factory.sources().available());
-    assert!(
-        observations
-            .guard_liveness
-            .lock()
-            .expect("guard liveness")
-            .is_none()
-    );
-    assert!(
-        observations
-            .retained_child_processes
-            .lock()
-            .expect("child process observations")
-            .is_empty()
-    );
-}
-
-#[test]
-fn hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resume_and_capture() {
-    let (_repository, _store, _lineage, _attempt, candidate, _scenario) =
-        repository_execution_fixture();
-    let input = execution_input();
-    let checkouts = Arc::new(AtomicUsize::new(0));
-    let fallback_calls = Arc::new(AtomicUsize::new(0));
-    let reconciliations = Arc::new(AtomicUsize::new(0));
-    let observations = ScriptedWorldObservations::new();
-    let run_state = tempfile::tempdir().expect("run state");
-    let factory = QemuProductionHotForkWorldLifecycleFactory::new(
-        RecordingUnavailableSourceWorldProvider {
-            checkouts: Arc::clone(&checkouts),
-        },
-        ScriptedWorldGuardFactory { observations },
-        run_state.path(),
-        QemuShutdownPolicy::fast_test(),
-        QemuAsyncDriverPolicy::fast_test(),
-    );
-    let unused_driver_calls = Arc::new(AtomicUsize::new(0));
-    let unused_seals = Arc::new(AtomicUsize::new(0));
-    let hot_fork = QemuHotForkWorldExecutionRunner::new(
-        factory,
-        ScriptedPublishedObservationDriver {
-            candidate: candidate.clone(),
-            drives: Arc::clone(&unused_driver_calls),
-            seals: Arc::clone(&unused_seals),
-        },
-    );
-    let fallback = RecordingFallbackRunner {
-        candidate,
-        calls: Arc::clone(&fallback_calls),
-        reconciliations: Arc::clone(&reconciliations),
-    };
-    let mut router = QemuHotFirstExecutionRouter::new(hot_fork, fallback);
-
-    let fresh = router
-        .execute(&input, &execution_context(&input, 0x81))
-        .expect("declined hot fork falls back");
-    assert_eq!(
-        fresh.materialization(),
-        CrucibleMaterializationTier::ThinReplay
-    );
-    assert_eq!(checkouts.load(Ordering::SeqCst), 1);
-    assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(unused_driver_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(unused_seals.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        router
-            .reconcile_execution(AttemptExecutionDisposition::Canceled)
-            .expect("reconcile fallback"),
-        AttemptExecutionReconciliationStep::Complete
-    );
-
-    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
-        ObjectKind::ExactManifest,
-        4,
-        b"hot-first-resume",
-    ))
-    .expect("checkpoint id");
-    let resume_context = execution_context(&input, 0x82).with_resume_checkpoint(Some(checkpoint));
-    let resumed = router
-        .execute(&input, &resume_context)
-        .expect("resume uses fallback directly");
-    assert_eq!(
-        resumed.materialization(),
-        CrucibleMaterializationTier::ThinReplay
-    );
-    assert_eq!(checkouts.load(Ordering::SeqCst), 1);
-    assert_eq!(fallback_calls.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        router
-            .reconcile_execution(AttemptExecutionDisposition::ExactCheckpoint(checkpoint))
-            .expect("reconcile resumed fallback"),
-        AttemptExecutionReconciliationStep::Complete
-    );
-    assert_eq!(reconciliations.load(Ordering::SeqCst), 2);
-
-    let AttemptStart::Discover { configuration } = input.attempt().start() else {
-        panic!("router fixture must be a discovery attempt")
-    };
-    let capture_context = execution_context(&input, 0x83)
-        .with_start_mode(AttemptStartMode::CaptureMaterializedStart { configuration });
-    let captured = router
-        .execute(&input, &capture_context)
-        .expect("materialized-start capture uses fallback directly");
-    assert_eq!(
-        captured.materialization(),
-        CrucibleMaterializationTier::ThinReplay
-    );
-    assert_eq!(checkouts.load(Ordering::SeqCst), 1);
-    assert_eq!(fallback_calls.load(Ordering::SeqCst), 3);
-    assert_eq!(
-        router
-            .reconcile_execution(AttemptExecutionDisposition::Canceled)
-            .expect("reconcile capture fallback"),
-        AttemptExecutionReconciliationStep::Complete
-    );
-    assert_eq!(reconciliations.load(Ordering::SeqCst), 3);
-}
+#[path = "tests/branch_runner.rs"]
+mod branch_runner;
+#[path = "tests/reconciliation.rs"]
+mod reconciliation;

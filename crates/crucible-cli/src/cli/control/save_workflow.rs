@@ -18,9 +18,8 @@ where
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
-    let request =
-        CreateSessionRequest::inline_form(run_plan.scenario.scenario_form().clone(), seed)
-            .with_start_paused(true);
+    let request = CreateSessionRequest::inline(run_plan.scenario.scenario_form().clone(), seed)
+        .with_start_paused(true);
     let created = client
         .create_session(request)
         .await
@@ -217,6 +216,7 @@ where
             outcome: Some(OutcomeKind::Passed),
             terminal_savepoint: Some(oracle.fat_checkpoint),
             terminal_configuration: Some(snapshot.configuration.clone()),
+            final_snapshot: None,
             final_frontier_ticks: stopped
                 .as_ref()
                 .map(|summary| summary.frontier.ticks)
@@ -235,6 +235,7 @@ where
             execution_fingerprints: Vec::new(),
             resolved_effect_trace: None,
             acknowledged_commands,
+            reproduction_commands: Vec::new(),
             watch_statuses: Vec::new(),
         },
         oracle,

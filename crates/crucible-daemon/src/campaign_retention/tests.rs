@@ -205,20 +205,24 @@ fn semantic_and_operational_roots_share_one_terminal_inventory() {
     )
     .expect("widening");
     let policy = CampaignPolicy::new(
-        scenario,
-        CampaignSeed::from_bytes([7; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            widening: Some(widening),
-            puct: PuctPolicy::new(1_000_000, 1, 0),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(0, 0).expect("fairness"),
-        RetentionPolicy::new(true, 1, true, true),
-        true,
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
     )
     .expect("policy");
     let campaign = CampaignName::new("retention-inventory").expect("campaign name");
@@ -249,12 +253,12 @@ fn semantic_and_operational_roots_share_one_terminal_inventory() {
     ))
     .expect("observation root");
     let checkpoint_content =
-        ContentId::for_bytes(ObjectKind::ExactManifest, 2, b"retained-checkpoint");
+        ContentId::for_bytes(ObjectKind::ExactManifest, 4, b"retained-checkpoint");
     let checkpoint = ExactCheckpointId::parse(&format!(
         "crucible.executor.exact-checkpoint-root@{checkpoint_content}"
     ))
     .expect("checkpoint root");
-    let finding_content = ContentId::for_bytes(ObjectKind::Finding, 1, b"retained-finding");
+    let finding_content = ContentId::for_bytes(ObjectKind::Finding, 5, b"retained-finding");
     let finding_candidate = FindingCandidateBundleId::parse(&format!(
         "crucible.campaign.finding-candidate-bundle@{finding_content}"
     ))

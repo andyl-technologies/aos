@@ -6,9 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ptr::NonNull;
 
 use crucible_shmem::{
-    FaultCommandKind, FaultCommandSlotV1, FaultEventOutcomeV1, FaultEventSlotV1,
-    FaultPayloadArenaHeader, FaultResultSlotV1, NodeFaultFieldV1, NodeFaultOperationV1,
-    NodeFaultPayloadV1, NodeFaultTargetKindV1, RingHeader, node_fault_field,
+    FaultCommandHeaderV1, FaultCommandKind, FaultCommandSlotV1, FaultEventOutcomeV1,
+    FaultEventSlotV1, FaultPayloadArenaHeader, FaultResultSlotV1, NodeFaultFieldV1,
+    NodeFaultOperationV1, NodeFaultPayloadV1, NodeFaultTargetKindV1, RingHeader, node_fault_field,
 };
 
 use super::{
@@ -19,6 +19,8 @@ use super::{
 
 thread_local! {
     pub(super) static TEST_EVENT_PENDING: std::cell::RefCell<Option<(QemuFaultEvent, Vec<u8>)>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_DISPATCH_EVENT_PENDING: std::cell::RefCell<Option<(QemuFaultEvent, Vec<u8>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -226,4 +228,92 @@ pub(crate) fn stage_node_event(target_node_hash: [u8; 32]) -> (u64, Vec<u8>) {
 /// Reports whether the test QEMU ABI still owns its staged event.
 pub(crate) fn node_event_is_pending() -> bool {
     TEST_EVENT_PENDING.with(|pending| pending.borrow().is_some())
+}
+
+/// Moves one staged occurrence event into QEMU's synchronous-dispatch output.
+pub(super) fn activate_staged_dispatch_event() {
+    TEST_DISPATCH_EVENT_PENDING.with(|staged| {
+        if let Some(event) = staged.borrow_mut().take() {
+            TEST_EVENT_PENDING.with(|pending| {
+                *pending.borrow_mut() = Some(event);
+            });
+        }
+    });
+}
+
+/// Stages one occurrence event that becomes visible only during dispatch.
+pub(crate) fn stage_dispatch_event(target_node_hash: [u8; 32]) -> u64 {
+    let request = NodeFaultPayloadV1 {
+        command_kind: FaultCommandKind::CpuService,
+        operation: NodeFaultOperationV1::Upsert,
+        target_kind: NodeFaultTargetKindV1::Node,
+        model_phase: 10,
+        generation: 7,
+        action_hash: [3; 32],
+        target_hash: [4; 32],
+        schema_hash: [5; 32],
+        fields: vec![
+            NodeFaultFieldV1::bytes(node_fault_field::P1, b"CRUCJSN1[0]".to_vec()),
+            NodeFaultFieldV1::ratio(node_fault_field::P2, 1, 2),
+            NodeFaultFieldV1::u64(node_fault_field::P3, 100),
+            NodeFaultFieldV1::u32(node_fault_field::P4, 1),
+        ],
+    }
+    .encode()
+    .unwrap_or_else(|error| panic!("encode dispatch event request: {error}"));
+    let evidence = vec![9];
+    let event = QemuFaultEvent {
+        command_kind: FaultCommandKind::CpuService as u16,
+        outcome: FaultEventOutcomeV1::Applied as u16,
+        model_phase: 10,
+        target_kind: NodeFaultTargetKindV1::Node as u16,
+        evidence_length: evidence.len() as u32,
+        event_sequence: 101,
+        rule_command_sequence: 1,
+        observed_icount: 7,
+        generation: 7,
+        binding_hash: [2; 32],
+        opportunity_hash: [8; 32],
+        action_hash: [3; 32],
+        target_hash: [4; 32],
+        before_hash: [5; 32],
+        after_hash: [6; 32],
+    };
+    let envelope = encode_test_node_event_envelope(&request, &evidence, &event, target_node_hash);
+    TEST_DISPATCH_EVENT_PENDING.with(|pending| {
+        *pending.borrow_mut() = Some((event, envelope));
+    });
+    event.event_sequence
+}
+
+/// Stages one QEMU result and fingerprint mutation for synchronous dispatch.
+pub(crate) fn stage_dispatch_results(headers: &[FaultCommandHeaderV1], capture_seed: u8) {
+    let commands = headers
+        .iter()
+        .map(|header| QemuFaultCommand {
+            abi_major: header.abi_major,
+            abi_minor: header.abi_minor,
+            command_kind: header.command_kind as u16,
+            command_flags: header.command_flags,
+            phase: header.phase as u16,
+            reserved: 0,
+            semantic_version: header.semantic_version,
+            command_sequence: header.command_sequence,
+            target_node_hash: header.target_node_hash,
+            target_icount: header.target_icount,
+            authorization_ceiling_icount: header.authorization_ceiling_icount,
+            binding_hash: header.binding_hash,
+            opportunity_hash: header.opportunity_hash,
+            expected_precondition_hash: header.expected_precondition_hash,
+        })
+        .collect();
+    super::TEST_DISPATCH_RESULT_PENDING.with(|pending| {
+        *pending.borrow_mut() = Some((commands, capture_seed));
+    });
+}
+
+/// Reports whether synchronous dispatch still owns its staged result.
+pub(crate) fn dispatch_result_is_pending() -> bool {
+    super::TEST_DISPATCH_RESULT_PENDING.with(|pending| pending.borrow().is_some())
+        || super::TEST_DISPATCH_RESULTS.with(|results| !results.borrow().is_empty())
 }

@@ -128,13 +128,15 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
         "observation-stop-domain"
     );
     let branch = BranchRequest::new(
-        BranchPointId::from_hash(CampaignHash::derive(
-            "observation-stop-test",
-            b"branch point",
-        )),
-        configuration,
-        opportunity,
-        domain,
+        BranchRequest::identity(
+            BranchPointId::from_hash(CampaignHash::derive(
+                "observation-stop-test",
+                b"branch point",
+            )),
+            configuration,
+            opportunity,
+            domain,
+        ),
         CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
             .expect("finite source"),
         BranchRequestCause::Operator(CampaignCommandId::from_hash(CampaignHash::derive(
@@ -165,13 +167,15 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     assert!(!StopOutcome::Reached(stop.clone()).reaches(&stop));
     let observation = Observation::new(
         attempt.id().expect("attempt ID"),
-        child,
-        configuration,
-        path,
-        outcome,
-        measurements,
-        properties,
-        coverage,
+        Observation::outcome(
+            child,
+            configuration,
+            path,
+            outcome,
+            measurements,
+            properties,
+            coverage,
+        ),
         BTreeSet::new(),
     )
     .expect("observation-stop observation");
@@ -187,13 +191,15 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     assert!(
         Observation::new(
             attempt.id().expect("attempt ID"),
-            child,
-            configuration,
-            path,
-            StopOutcome::Reached(stop.clone()),
-            measurements,
-            properties,
-            coverage,
+            Observation::outcome(
+                child,
+                configuration,
+                path,
+                StopOutcome::Reached(stop.clone()),
+                measurements,
+                properties,
+                coverage,
+            ),
             BTreeSet::new(),
         )
         .is_err()
@@ -303,13 +309,15 @@ fn observation_stop_proofs_reject_wrong_witness_shapes_and_child_bindings() {
     assert!(
         Observation::new(
             attempt.id().expect("attempt ID"),
-            wrong_child,
-            configuration,
-            path,
-            StopOutcome::ObservationReached(Box::new(assertion_proof(child))),
-            measurements,
-            properties,
-            coverage,
+            Observation::outcome(
+                wrong_child,
+                configuration,
+                path,
+                StopOutcome::ObservationReached(Box::new(assertion_proof(child))),
+                measurements,
+                properties,
+                coverage,
+            ),
             BTreeSet::new(),
         )
         .is_err()

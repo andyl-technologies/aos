@@ -8,6 +8,97 @@
 use super::*;
 
 impl CampaignRepository {
+    /// Resolves the exact execution-basis admission and its canonical retention policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot accounting index, execution-basis
+    /// admission, policy closure, or lineage relationship is invalid.
+    pub fn attempt_retention_policy_basis_at(
+        &self,
+        snapshot: CampaignSnapshotId,
+        attempt: AttemptId,
+    ) -> Result<AttemptRetentionPolicyBasis, CampaignRepositoryError> {
+        let loaded = self.read_snapshot(snapshot.content_id())?;
+        let accounting = loaded.snapshot.roots().accounting;
+        if self.merkle.get(accounting, attempt_index_key(attempt))? != Some(attempt.content_id()) {
+            return Err(integrity(
+                "finding-retention-attempt-is-not-in-source-snapshot",
+            ));
+        }
+        let admission_content = self
+            .merkle
+            .get(accounting, attempt_execution_basis_key(attempt))?
+            .ok_or_else(|| integrity("finding-retention-attempt-admission-is-missing"))?;
+        let admission = self.read_attempt_admission(admission_content)?;
+        let admission_id = admission.id()?;
+        let policy = self.retention_policy_for_execution_admission(&admission)?;
+        let stored_policy = self.read_policy(policy.content_id())?;
+        let lineage = self.read_lineage(loaded.snapshot.lineage().content_id())?;
+        if stored_policy.scenario() != lineage.scenario() {
+            return Err(integrity(
+                "finding-retention-policy-lineage-scenario-mismatch",
+            ));
+        }
+        Ok(AttemptRetentionPolicyBasis::new(
+            snapshot,
+            admission_id,
+            policy,
+        ))
+    }
+
+    pub(in crate::repository) fn validate_attempt_retention_policy_basis(
+        &self,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        basis: AttemptRetentionPolicyBasis,
+    ) -> Result<(), CampaignRepositoryError> {
+        let loaded = self.read_snapshot(basis.snapshot().content_id())?;
+        if loaded.snapshot.lineage() != lineage {
+            return Err(integrity("finding-retention-policy-basis-lineage-mismatch"));
+        }
+        let accounting = loaded.snapshot.roots().accounting;
+        if self.merkle.get(accounting, attempt_index_key(attempt))? != Some(attempt.content_id()) {
+            return Err(integrity(
+                "finding-retention-policy-basis-attempt-is-not-in-source-snapshot",
+            ));
+        }
+        if self
+            .merkle
+            .get(accounting, attempt_execution_basis_key(attempt))?
+            != Some(basis.admission().content_id())
+        {
+            return Err(integrity(
+                "finding-retention-policy-basis-is-not-selected-by-source-snapshot",
+            ));
+        }
+        let admission = self.read_attempt_admission(basis.admission().content_id())?;
+        if admission.attempt() != attempt {
+            return Err(integrity("finding-retention-policy-basis-attempt-mismatch"));
+        }
+        let expected = self.retention_policy_for_execution_admission(&admission)?;
+        if expected != basis.policy() {
+            return Err(integrity(
+                "finding-retention-policy-basis-admission-mismatch",
+            ));
+        }
+        let policy = self.read_policy(expected.content_id())?;
+        let lineage = self.read_lineage(lineage.content_id())?;
+        if policy.scenario() != lineage.scenario() {
+            return Err(integrity(
+                "finding-retention-policy-basis-scenario-mismatch",
+            ));
+        }
+        Ok(())
+    }
+
+    fn retention_policy_for_execution_admission(
+        &self,
+        admission: &AttemptAdmission,
+    ) -> Result<CampaignPolicyId, CampaignRepositoryError> {
+        Ok(admission.retention_policy())
+    }
+
     /// Resolves the immutable capture attempt behind a selected-savepoint request.
     ///
     /// # Errors
@@ -293,6 +384,27 @@ impl CampaignRepository {
         profile: &ExecutorCompatibilityProfile,
     ) -> Result<(), CampaignRepositoryError> {
         self.validate_executor_completion_with_profile(request, observation, profile)?;
+        if let Some(candidate) = finding_candidate {
+            let crate::AttemptRetentionPolicyDisposition::Required(basis) =
+                request.retention_policy()
+            else {
+                return Err(integrity(
+                    "executor-completion-finding-retention-policy-disabled",
+                ));
+            };
+            // Reject an obsolete or foreign retention basis after decoding only
+            // the bounded candidate envelope, before walking its referenced closure.
+            let bundle = self.decode_finding_candidate_bundle(candidate.content_id())?;
+            let retention = bundle.exact_retention();
+            if retention.snapshot() != basis.snapshot()
+                || retention.admission() != basis.admission()
+                || retention.policy() != basis.policy()
+            {
+                return Err(integrity(
+                    "executor-completion-finding-retention-basis-mismatch",
+                ));
+            }
+        }
         self.validate_executor_finding_candidate(observation, finding_candidate)
     }
 

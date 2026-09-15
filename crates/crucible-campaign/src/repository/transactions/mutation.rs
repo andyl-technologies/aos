@@ -419,7 +419,6 @@ impl CampaignRepository {
                     return self.find_command_result(current_content, request, true);
                 }
                 CampaignFact::ControlRequested(_)
-                | CampaignFact::BranchRequestIssued(_)
                 | CampaignFact::BranchRequestAccepted { .. }
                 | CampaignFact::PinCommandAccepted(_)
                 | CampaignFact::DiscoveryRequested(_)
@@ -565,7 +564,6 @@ impl CampaignRepository {
                     return self.find_pin_result(current_content, request, true);
                 }
                 CampaignFact::ControlRequested(_)
-                | CampaignFact::BranchRequestIssued(_)
                 | CampaignFact::BranchRequestAccepted { .. }
                 | CampaignFact::PinCommandAccepted(_)
                 | CampaignFact::DiscoveryRequested(_)

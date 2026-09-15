@@ -74,6 +74,19 @@
 //! 112     8     logical_time_restore_target
 //! 120     4     logical_time_restore_request
 //! 124     4     logical_time_restore_ack
+//! 128     8     control_boundary_fault_command_frontier
+//! 136     4     control_boundary_capture_request
+//! 140     4     padding
+//! 144     8     timer_witness_generation
+//! 152     8     timer_witness_deadline_ns
+//! 160     8     timer_witness_deadline_icount
+//! 168     8     timer_witness_armed_raw_icount
+//! 176     8     timer_witness_fired_expire_ns
+//! 184     8     timer_witness_fired_virtual_ns
+//! 192     8     timer_witness_fired_raw_icount
+//! 200     4     timer_witness_completed
+//! 204     4     timer_witness_reserved
+//! 208     48    alignment padding
 //! ```
 //!
 //! SPSC ring header wire layout:
@@ -205,8 +218,13 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// producer admission. Version 20 assigns consumer cache-line padding to the
 /// matching reversible consumer admission barrier. Version 21 makes the
 /// logical-time restore acknowledgement commit an atomic coverage-generation
-/// reset before the restored guest can become authoritative.
-pub const ABI_VERSION: u32 = 21;
+/// reset before the restored guest can become authoritative. Version 23 binds
+/// each control request to its exact fault-command producer frontier and
+/// fingerprint request generation. Version 24 assigns 64 bytes of the node
+/// slot's trailing padding to an actual virtual-timer callback witness. Version 22 added
+/// the non-zero read-only device/volatile projection section count to each
+/// published fingerprint sample.
+pub const ABI_VERSION: u32 = 24;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

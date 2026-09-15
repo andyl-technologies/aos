@@ -1,8 +1,7 @@
-# Holds the QEMU patch-series license inventory to the series itself: every
-# source file a patch creates must have a ledger row with a recognized license
-# and a stated basis, a file a later patch deletes must not keep a row, and the
-# ledger must not carry rows for files the series never creates. The check
-# reads the patch files rather than the bundle so a ledger drift fails at
+# Holds the QEMU atomic-patch license inventory to the artifact itself: every
+# source file it creates must have a ledger row with a recognized license and
+# a stated basis, and the ledger must not carry rows for files the artifact
+# never creates. The check reads the patch rather than the bundle so drift fails at
 # evaluation, before any QEMU build.
 {
   pkgs,
@@ -11,16 +10,22 @@
   taskIds ? ["T-CAM-6.8"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  series = import (patchDir + "/_series.nix");
+  atomicPatch = import (patchDir + "/_atomic-patch.nix");
   ledger = builtins.readFile (patchDir + "/LICENSES.md");
 
-  recognizedLicenses = ["GPL-2.0-only" "GPL-2.0-or-later" "MIT OR Apache-2.0"];
+  recognizedLicenses = [
+    "GPL-2.0-only"
+    "GPL-2.0-or-later"
+    "LGPL-2.1-or-later"
+    "MIT"
+    "MIT OR Apache-2.0"
+  ];
 
-  # Walks one patch's diff headers. A `new file mode` line announces that the
+  # Walks the atomic patch's diff headers. A `new file mode` line announces that the
   # next `+++ b/` header names a created file; `deleted file mode` announces
   # that the next `--- a/` header names a removed one.
-  fileEventsOf = patch: let
-    lines = lib.splitString "\n" (builtins.readFile (patchDir + "/${patch.file}"));
+  atomicFileEvents = let
+    lines = lib.splitString "\n" (builtins.readFile (patchDir + "/${atomicPatch.file}"));
     step = state: line:
       if lib.hasPrefix "new file mode" line
       then state // {pending = "created";}
@@ -52,16 +57,10 @@
       lines;
   in {
     inherit (result) created deleted;
-    patch = patch.file;
   };
 
-  events = map fileEventsOf series.patches;
-
-  # A file created by one patch and deleted by a later one leaves the tree
-  # and must leave the ledger with it.
-  createdFiles = lib.unique (lib.concatMap (event: event.created) events);
-  deletedFiles = lib.unique (lib.concatMap (event: event.deleted) events);
-  presentFiles = builtins.filter (file: !(builtins.elem file deletedFiles)) createdFiles;
+  createdFiles = lib.unique atomicFileEvents.created;
+  deletedFiles = lib.unique atomicFileEvents.deleted;
 
   # Ledger rows look like ``| `path` | license | basis |``; the header and
   # separator rows carry no backticked path and are skipped.
@@ -89,15 +88,15 @@
           "LICENSES.md lacks a row for created file `${file}`"
         ]
     )
-    presentFiles;
+    createdFiles;
 
   staleRowFailures =
     lib.concatMap (
       row:
         if builtins.elem row.path deletedFiles
-        then ["LICENSES.md keeps a row for `${row.path}`, which the series deletes"]
+        then ["LICENSES.md keeps a row for `${row.path}`, which the atomic patch deletes"]
         else if !(builtins.elem row.path createdFiles)
-        then ["LICENSES.md lists `${row.path}`, which no patch creates"]
+        then ["LICENSES.md lists `${row.path}`, which the atomic patch does not create"]
         else []
     )
     ledgerRows;
@@ -118,10 +117,10 @@
     "LICENSES.md lists a file more than once"
   ];
 
-  # The scanner must see the created files the series is known to add; an
+  # The scanner must see the created files the atomic artifact is known to add; an
   # empty scan would pass every ledger row vacuously.
   scannerFailures = lib.optionals (createdFiles == []) [
-    "patch scanner found no created files across ${builtins.toString (builtins.length series.patches)} patches"
+    "atomic patch scanner found no created files"
   ];
 
   failures = scannerFailures ++ missingRowFailures ++ staleRowFailures ++ rowContentFailures ++ duplicateRowFailures;
@@ -147,7 +146,7 @@ in
             check=${attrPath}
             gate=gate:license-boundary
             tasks=${builtins.concatStringsSep "," taskIds}
-            patches=${builtins.toString (builtins.length series.patches)}
+            atomic_patch=${atomicPatch.file}
             created_files=${builtins.toString (builtins.length createdFiles)}
             deleted_files=${builtins.toString (builtins.length deletedFiles)}
             ledger_rows=${builtins.toString (builtins.length ledgerRows)}

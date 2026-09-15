@@ -78,110 +78,6 @@ impl SingleScheduler {
         Ok(scheduler)
     }
 
-    /// Builds a production scheduler resumed from materialized World-link state.
-    ///
-    /// The supplied state must contain exactly one cursor for every directed
-    /// link instantiated from `world`. In-flight payloads are resolved through
-    /// `store`, and both directions of a logical link must report the same
-    /// shared RNG cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerWorldInstantiationError`] when ordinary World
-    /// instantiation fails, the directed cursor set is incomplete or foreign,
-    /// the two directions disagree about their shared RNG cursor, an in-flight
-    /// payload is absent/corrupt, or a concrete link snapshot cannot be restored.
-    pub fn from_world_with_scheduler_state(
-        scenario: SchedulerLivenessScenario,
-        world: &World,
-        store: &dyn DagStore,
-        policy: WorldIoLayoutPolicy,
-        state: &SchedulerState,
-    ) -> Result<Self, SchedulerWorldInstantiationError> {
-        let mut scheduler = Self::from_world(scenario, world, store, policy)?;
-        let expected = scheduler
-            .world_network_links
-            .values()
-            .map(|runtime| runtime.fault_id.clone())
-            .collect::<BTreeSet<_>>();
-        let actual = state
-            .network_link_cursors
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        if actual != expected {
-            return Err(SchedulerWorldInstantiationError::NetworkStateMismatch {
-                reason: format!(
-                    "directed cursor keys differ (expected {expected:?}, found {actual:?})"
-                ),
-            });
-        }
-
-        scheduler.event_sequences = state.event_sequences.clone();
-        scheduler.world_network_decisions = state.pending_device_decisions.clone();
-        scheduler.effective_topology =
-            SchedulerLookaheadGraph::from_edges(state.effective_topology_edges.clone());
-        for node in &mut scheduler.nodes {
-            node.network_lookahead = scheduler.effective_topology.lookahead(&node.id);
-        }
-        scheduler.topology_changes = state.pending_topology_changes.clone();
-        scheduler.topology_epoch = state.topology_epoch;
-
-        let mut shared_positions = BTreeMap::new();
-        for runtime in scheduler.world_network_links.values_mut() {
-            let cursor = state
-                .network_link_cursors
-                .get(&runtime.fault_id)
-                .ok_or_else(|| SchedulerWorldInstantiationError::NetworkStateMismatch {
-                    reason: format!("missing directed cursor {:?}", runtime.fault_id.name),
-                })?;
-            if let Some(existing) = shared_positions.get(&runtime.canonical_id)
-                && *existing != cursor.rng_position
-            {
-                return Err(SchedulerWorldInstantiationError::NetworkStateMismatch {
-                    reason: format!(
-                        "logical link {:?} has divergent directional RNG cursors ({existing} and {})",
-                        runtime.canonical_id.name, cursor.rng_position
-                    ),
-                });
-            }
-            shared_positions.insert(runtime.canonical_id.clone(), cursor.rng_position);
-
-            let mut snapshot = runtime.link.snapshot();
-            snapshot.current_icount = cursor.current_icount;
-            snapshot.next_seq = cursor.next_sequence;
-            snapshot.rng_position = cursor.rng_position;
-            let src_node = snapshot.src_node;
-            snapshot.inflight = cursor
-                .inflight
-                .iter()
-                .map(|pending| {
-                    let payload = store.get(&pending.payload)?;
-                    Ok(crucible_device::PendingResponse::from_parts(
-                        pending.delivery_icount.retired,
-                        src_node,
-                        pending.sequence,
-                        crucible_device::Response::new(
-                            pending.frame_id,
-                            crucible_device::ResponseStatus::Ok,
-                            payload,
-                        ),
-                    ))
-                })
-                .collect::<Result<Vec<_>, crate::DagStoreError>>()?;
-            runtime.link = crucible_device::NetLink::restore(&snapshot).map_err(|source| {
-                SchedulerWorldInstantiationError::Network {
-                    link: runtime.canonical_id.clone(),
-                    direction: runtime.direction,
-                    source,
-                }
-            })?;
-        }
-        scheduler.world_network_rng_positions = shared_positions;
-        scheduler.refresh_device_horizons()?;
-        Ok(scheduler)
-    }
-
     /// Builds a scheduler whose event log writes segments into `store`.
     ///
     /// Use this constructor when the scheduler and temporal graph share one
@@ -198,28 +94,6 @@ impl SingleScheduler {
         store: Arc<dyn DagStore>,
     ) -> Result<Self, SchedulerError> {
         Self::new_with_event_log(scenario, EventLog::with_segment_store(store))
-    }
-
-    /// Builds a scheduler resumed from `event_log_offset` and backed by `store`.
-    ///
-    /// The next EMIT append starts at the recorded byte and event offsets, and
-    /// uses the reconstructed content prefix from `event_log_offset` as the
-    /// parent prefix for the new segment.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the fixed timeline shift cannot be
-    /// represented or when an initial node counter cannot be projected onto the
-    /// shared virtual timeline.
-    pub fn new_with_event_log_offset_and_segment_store(
-        scenario: SchedulerLivenessScenario,
-        event_log_offset: EventLogOffset,
-        store: Arc<dyn DagStore>,
-    ) -> Result<Self, SchedulerError> {
-        Self::new_with_event_log(
-            scenario,
-            EventLog::from_offset_with_segment_store(event_log_offset, store),
-        )
     }
 
     pub(super) fn new_with_event_log(
@@ -475,17 +349,6 @@ impl SingleScheduler {
             .or_default()
             .push(sub_node);
         self
-    }
-
-    /// Returns a mutable view of the I/O sub-nodes targeting `node`, if any.
-    ///
-    /// Used by a driver to submit device requests between quanta; the next horizon
-    /// refresh folds the device's in-flight head into the node's horizon.
-    pub fn device_sub_nodes_for_mut(
-        &mut self,
-        node: &NodeId,
-    ) -> Option<&mut Vec<crate::device_subnode::DeviceSchedulingSubNode>> {
-        self.device_sub_nodes.get_mut(node)
     }
 
     /// Projects a resolved World I/O delivery into host-observed trigger input.
@@ -915,10 +778,14 @@ impl SingleScheduler {
                     retired: stamp_icount,
                 },
             )?;
-            let virtual_time = VirtualTime {
-                ticks: instant.nanos,
-            };
-            let key = ScheduledEventKey::from_parts(virtual_time, consumer, producer, sequence);
+            let key = ScheduledEventKey::new(
+                SharedTimelineKey {
+                    virtual_time: instant,
+                    node: consumer,
+                    sequence,
+                },
+                producer,
+            );
             events.push(ScheduledEvent {
                 key,
                 payload: ScheduledEventPayload::IoCompletion(completion),
@@ -973,13 +840,13 @@ impl SingleScheduler {
                 sequence.saturating_add(1),
             );
             let instant = self.network_time_for_icount(delivery.delivery_icount())?;
-            let key = ScheduledEventKey::from_parts(
-                VirtualTime {
-                    ticks: instant.nanos,
+            let key = ScheduledEventKey::new(
+                SharedTimelineKey {
+                    virtual_time: instant,
+                    node: consumer,
+                    sequence,
                 },
-                consumer,
                 producer,
-                sequence,
             );
             events.push(ScheduledEvent {
                 key,
@@ -1083,22 +950,6 @@ impl SingleScheduler {
         }
     }
 
-    /// Captures scheduler state and persists every in-flight link payload.
-    ///
-    /// Use this form when the state may later be passed to
-    /// [`SingleScheduler::from_world_with_scheduler_state`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::DagStoreError`] when an in-flight payload cannot be
-    /// persisted in the supplied content-addressed store.
-    pub fn materialized_scheduler_state_with_store(
-        &self,
-        store: &dyn DagStore,
-    ) -> Result<SchedulerState, crate::DagStoreError> {
-        self.materialized_scheduler_state_with_payload_refs(|payload| store.put(payload))
-    }
-
     pub(super) fn materialized_scheduler_state_with_payload_refs<E>(
         &self,
         mut payload_ref: impl FnMut(&[u8]) -> Result<ContentHash, E>,
@@ -1188,14 +1039,6 @@ impl SingleScheduler {
         &self.world_scheduling_nodes
     }
 
-    /// Returns the number of concrete directed World network links owned by the scheduler.
-    ///
-    /// A logical symmetric [`LinkDef`] contributes two directed links.
-    #[must_use]
-    pub fn world_network_link_count(&self) -> usize {
-        self.world_network_links.len()
-    }
-
     /// Returns a scheduler-owned directed World network link.
     ///
     /// `link` must be the structured identity returned by
@@ -1210,75 +1053,6 @@ impl SingleScheduler {
             .values()
             .find(|candidate| candidate.matches(link, direction))
             .map(|candidate| &candidate.link)
-    }
-
-    /// Emits a frame through a scheduler-owned directed World network link.
-    ///
-    /// The scheduler selects the World-declared RNG stream, retains the raw and
-    /// derived fault decisions for the next EMIT/STEP boundary, and refreshes the
-    /// destination VM's exact network-delivery horizon. Callers cannot substitute
-    /// an identity-external RNG label.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when `link` is unknown or
-    /// ambiguous, or when the concrete link rejects the frame. Returns a time
-    /// conversion error when the emitted delivery cannot be projected onto the
-    /// destination VM's scheduler timeline.
-    pub fn emit_world_network_frame(
-        &mut self,
-        link: &LinkId,
-        direction: NetworkLinkDirection,
-        seed: Seed,
-        frame: &crucible_device::Frame,
-        policy: crucible_device::PastDeliveryPolicy,
-    ) -> Result<crate::LinkEmitDecisionRecord, SchedulerError> {
-        let runtime_key = self
-            .world_network_links
-            .iter()
-            .find_map(|(key, candidate)| candidate.matches(link, direction).then(|| key.clone()))
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "World network link is unknown or ambiguous: {:?} ({direction:?})",
-                    link.name
-                ),
-            })?;
-        let rng_position = self
-            .world_network_rng_positions
-            .get(&runtime_key.0)
-            .copied()
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "World network link {:?} has no logical RNG cursor",
-                    runtime_key.0.name
-                ),
-            })?;
-        let (record, next_rng_position) = {
-            let runtime = self
-                .world_network_links
-                .get_mut(&runtime_key)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "World network link disappeared during emission: {:?} ({direction:?})",
-                        runtime_key.0.name
-                    ),
-                })?;
-            let record = runtime
-                .emit_from_position(seed, rng_position, frame, policy)
-                .map_err(|source| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "World network link {:?} ({direction:?}) rejected a frame: {source}",
-                        runtime.canonical_id.name
-                    ),
-                })?;
-            (record, runtime.link.rng_position())
-        };
-        self.world_network_rng_positions
-            .insert(runtime_key.0, next_rng_position);
-        self.world_network_decisions
-            .extend(record.decisions.iter().cloned());
-        self.refresh_device_horizons()?;
-        Ok(record)
     }
 
     /// Appends black-box observable condition facts to the scheduler event log.
@@ -1306,33 +1080,6 @@ impl SingleScheduler {
         observations: impl IntoIterator<Item = crate::model::FaultObservation>,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         self.event_log.append_fault_observations(observations)
-    }
-
-    /// Appends assertion-proximity steering feedback to the scheduler event log.
-    ///
-    /// `report` remains a transient assertion-layer view. The persisted steering
-    /// facts are appended as typed observational `assertion_proximity` entries in
-    /// the unified log, so downstream projections read one log instead of a
-    /// parallel proximity record.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when assigning dense event-log sequences or
-    /// appending the event-log segment would overflow the scheduler offsets, or
-    /// when the resulting condition prefix is invalid.
-    pub fn append_assertion_proximity_events(
-        &mut self,
-        report: &HostAssertionReport,
-    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
-        self.append_observable_events(report.proximities().iter().map(|proximity| {
-            ObservableEvent::assertion_proximity(
-                proximity.at,
-                proximity.assertion.clone(),
-                proximity.quantifier,
-                proximity.distance,
-                None,
-            )
-        }))
     }
 
     /// Appends a deterministic trigger/assertion evaluation boundary.
@@ -1370,22 +1117,6 @@ impl SingleScheduler {
         )
         .with_timer_fires(self.trigger_actions.armed_timers.clone());
         pass.evaluate_event_graph(graph, state)
-    }
-
-    /// Appends deterministic trigger firings as causal event-log entries.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the firings were computed at a different
-    /// condition prefix than the scheduler's current prefix, or when appending the
-    /// event-log segment would overflow the event-log offsets.
-    pub fn append_trigger_firings(
-        &mut self,
-        firings: &EventFirings,
-    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
-        self.validate_trigger_firings(firings)?;
-        let entries = self.trigger_firing_entries(firings)?;
-        self.event_log.append_entries(entries)
     }
 
     /// Applies deterministic trigger firings and their action effects atomically.
@@ -1515,25 +1246,6 @@ impl SingleScheduler {
         &self.control_applications
     }
 
-    /// Returns the deterministic RUN set eligible for host-level concurrency.
-    ///
-    /// The set is bounded by both the scheduler's conservative horizon
-    /// computation and `max_host_workers`. RESOLVE and EMIT are not performed by
-    /// this read-only query.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] if `max_host_workers` is zero or if horizon
-    /// projection discovers inconsistent scheduler state.
-    pub fn concurrent_run_set(
-        &self,
-        max_host_workers: usize,
-    ) -> Result<SchedulerConcurrentRunSet, SchedulerError> {
-        self.validate_max_host_workers(max_host_workers)?;
-        let candidates = self.advance_candidates()?;
-        self.concurrent_run_set_from_candidates(max_host_workers, &candidates)
-    }
-
     /// Authorizes one cross-node frame emission under the current topology.
     ///
     /// Backends use this as the scheduler-side send freeze: when a topology
@@ -1590,34 +1302,6 @@ impl SingleScheduler {
             .iter()
             .map(|node| self.effective_clock_for_node(node))
             .collect()
-    }
-
-    /// Projects one VM node's current counter under active timing faults.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
-    /// VM scheduler node in this scheduler, or [`SchedulerError::TimeConversion`]
-    /// when the projection cannot be computed.
-    pub fn node_time_projection(
-        &self,
-        node: &NodeId,
-    ) -> Result<NodeTimeProjection, SchedulerError> {
-        let index = self.vm_node_index(node)?;
-        self.nodes[index]
-            .time_mapping
-            .project(self.nodes[index].counter, self.timeline.shift())
-            .map_err(SchedulerError::from)
-    }
-
-    /// Returns one VM node's guest-visible time under active clock skew.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the node cannot be found or its timing
-    /// projection cannot be computed.
-    pub fn logical_time_for_node(&self, node: &NodeId) -> Result<SimInstant, SchedulerError> {
-        Ok(self.node_time_projection(node)?.logical_time)
     }
 
     /// Computes terminal quiescence from authoritative scheduler state only.

@@ -81,7 +81,7 @@ rnix = "0.10"
 glob = "0.3"
 ignore = "0.4"
 hex = "0.4"
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.4", features = ["event", "fs"] }
 indicatif = "0.17"
 console = "0.15"
 humantime = "2"

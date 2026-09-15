@@ -1,6 +1,6 @@
-# Patch 0074 - `crucible-accelerator-result-opportunity`
+# Capability task 0074 — `crucible-accelerator-result-opportunity`
 
-Patch `0074` implements the one-shot lifecycle required by
+This capability implements the one-shot lifecycle required by
 `accelerator.result_transform`: an APPLY command arms a future matching device
 completion atomically, while evidence is emitted only when that real completion
 is mutated.
@@ -43,7 +43,7 @@ device reconnect preserve armed rules so the original selector determines the
 first eligible post-transition completion. A restored terminal state must have
 no armed entries.
 
-Patch `0074` also closes the typed-result contract for genuinely deferred node
+This capability also closes the typed-result contract for genuinely deferred node
 impulses: their eventual success or failure result carries the same canonical
 `NodeFaultEvidenceV1` payload and evidence digest as an immediate result.
 
@@ -61,12 +61,13 @@ impulses: their eventual success or failure result carries the same canonical
   occurrence.
 - A real deferred node mutation produces a canonical typed terminal result on
   both success and failure.
-- Removing patch `0074` makes the live accelerator and deferred-result gates
-  fail, while machines without the co-sim accelerator remain inert.
-- Patch regeneration verifies its commit, tree, sole DCO sign-off, catalog row,
-  and thin corresponding-source bundle.
+- The pristine-QEMU negative proves the capability is absent, while the live
+  accelerator and deferred-result gates require it and machines without the
+  co-sim accelerator remain inert.
+- Atomic-patch regeneration verifies the commit, tree, sole DCO sign-off,
+  catalog row, and corresponding-source bundle.
 
-The patch changes only QEMU/GPL-side code and the loaded GPL-side plugin. It
-uses the existing versioned command/result/event protocols and introduces no
+The atomic patch changes only QEMU/GPL-side code and the loaded GPL-side plugin.
+It uses the existing versioned command/result/event protocols and introduces no
 native layout, pointer, callback table, or QEMU-private object across the
 process boundary.

@@ -11,10 +11,6 @@ pub const PLUGIN_ARG_APP_RANDOM_SEED: &str = "app_random_seed";
 pub const PLUGIN_ARG_APP_RANDOM_CAP: &str = "app_random_cap";
 /// Optional canonical node name for the live app-random doorbell.
 pub const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
-/// Optional fork seed for requests after an exact node-local prefix.
-pub const PLUGIN_ARG_APP_RANDOM_BRANCH_SEED: &str = "app_random_branch_seed";
-/// Optional number of node-local prefix requests served before re-seeding.
-pub const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER: &str = "app_random_branch_after";
 /// Optional ordered fork seeds for requests after multiple exact prefixes.
 pub const PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS: &str = "app_random_branch_seeds";
 /// Optional ordered node-local prefix counts paired with multiple fork seeds.
@@ -66,24 +62,6 @@ impl PluginAppRandomConfig {
         &self.node_name
     }
 
-    /// Returns the decision-RNG root when exactly one re-seed is configured.
-    #[must_use]
-    pub const fn branch_seed(&self) -> Option<u64> {
-        match self.branch_reseeds.as_slice() {
-            [(seed, _)] => Some(*seed),
-            _ => None,
-        }
-    }
-
-    /// Returns the draw boundary when exactly one re-seed is configured.
-    #[must_use]
-    pub const fn branch_after_draws(&self) -> Option<u64> {
-        match self.branch_reseeds.as_slice() {
-            [(_, after)] => Some(*after),
-            _ => None,
-        }
-    }
-
     /// Returns ordered decision-RNG roots and node-local draw boundaries.
     #[must_use]
     pub fn branch_reseeds(&self) -> &[(u64, u64)] {
@@ -113,7 +91,7 @@ pub enum AppRandomArgsParseError {
     Incomplete,
     /// Only part of the optional branch group was supplied.
     #[error(
-        "live app-random branching requires both `app_random_branch_seed` and `app_random_branch_after`"
+        "live app-random branching requires both `app_random_branch_seeds` and `app_random_branch_afters`"
     )]
     IncompleteBranch,
     /// Multi-generation branch seed and boundary lists have different lengths.
@@ -192,8 +170,6 @@ pub(super) fn parse(
     let seed = parsed.value(PLUGIN_ARG_APP_RANDOM_SEED);
     let cap = parsed.value(PLUGIN_ARG_APP_RANDOM_CAP);
     let node = parsed.value(PLUGIN_ARG_APP_RANDOM_NODE);
-    let branch_seed = parsed.value(PLUGIN_ARG_APP_RANDOM_BRANCH_SEED);
-    let branch_after = parsed.value(PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER);
     let branch_seeds = parsed.value(PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS);
     let branch_afters = parsed.value(PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS);
     let draw_offset_arg = parsed.value(PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET);
@@ -206,13 +182,9 @@ pub(super) fn parse(
         .map(parse_stream_positions)
         .transpose()?
         .unwrap_or_default();
-    let branches = match (branch_seed, branch_after, branch_seeds, branch_afters) {
-        (None, None, None, None) => Vec::new(),
-        (Some(seed), Some(after), None, None) => vec![(
-            parse_u64(PLUGIN_ARG_APP_RANDOM_BRANCH_SEED, seed)?,
-            parse_u64(PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER, after)?,
-        )],
-        (None, None, Some(seeds), Some(afters)) => parse_branch_reseeds(seeds, afters)?,
+    let branches = match (branch_seeds, branch_afters) {
+        (None, None) => Vec::new(),
+        (Some(seeds), Some(afters)) => parse_branch_reseeds(seeds, afters)?,
         _ => return Err(AppRandomArgsParseError::IncompleteBranch.into()),
     };
     match (seed, cap, node) {
@@ -288,8 +260,6 @@ pub(super) fn is_key(key: &str) -> bool {
         PLUGIN_ARG_APP_RANDOM_SEED
             | PLUGIN_ARG_APP_RANDOM_CAP
             | PLUGIN_ARG_APP_RANDOM_NODE
-            | PLUGIN_ARG_APP_RANDOM_BRANCH_SEED
-            | PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER
             | PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS
             | PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS
             | PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET
@@ -359,7 +329,7 @@ fn decode_hex_name(value: &str) -> Option<String> {
         return None;
     }
     let mut decoded = Vec::with_capacity(value.len() / 2);
-    for pair in value.as_bytes().chunks_exact(2) {
+    for pair in value.as_bytes().as_chunks::<2>().0 {
         let high = hex_nibble(pair[0])?;
         let low = hex_nibble(pair[1])?;
         decoded.push((high << 4) | low);
@@ -403,8 +373,6 @@ mod tests {
         assert_eq!(config.root_seed(), 1_048_598);
         assert_eq!(config.draw_cap(), 2);
         assert_eq!(config.node_name(), "node-a");
-        assert_eq!(config.branch_seed(), None);
-        assert_eq!(config.branch_after_draws(), None);
         assert_eq!(config.draw_offset(), 0);
         assert!(config.stream_positions().is_empty());
     }
@@ -421,19 +389,6 @@ mod tests {
         assert_eq!(config.draw_offset(), 3);
         assert_eq!(config.stream_positions().get("alpha"), Some(&2));
         assert_eq!(config.stream_positions().get("beta"), Some(&1));
-    }
-
-    #[test]
-    fn complete_branch_group_parses() {
-        let args = PluginArgs::parse(
-            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=1048598,app_random_cap=9,app_random_node=node-a,app_random_branch_seed=77,app_random_branch_after=2",
-        )
-        .unwrap_or_else(|error| panic!("app-random branch args should parse: {error}"));
-        let config = args
-            .app_random()
-            .unwrap_or_else(|| panic!("app-random config should be present"));
-        assert_eq!(config.branch_seed(), Some(77));
-        assert_eq!(config.branch_after_draws(), Some(2));
     }
 
     #[test]
@@ -491,14 +446,6 @@ mod tests {
         );
         assert_eq!(
             PluginArgs::parse(
-                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=1,app_random_node=node-a,app_random_branch_seed=9"
-            ),
-            Err(PluginArgsParseError::AppRandom(
-                AppRandomArgsParseError::IncompleteBranch
-            ))
-        );
-        assert_eq!(
-            PluginArgs::parse(
                 "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_draw_offset=1"
             ),
             Err(PluginArgsParseError::AppRandom(
@@ -518,7 +465,7 @@ mod tests {
         ));
         assert!(matches!(
             PluginArgs::parse(
-                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=4,app_random_node=node-a,app_random_branch_seed=9,app_random_branch_after=1,app_random_draw_offset=2,app_random_positions=616c706861:2"
+                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=4,app_random_node=node-a,app_random_branch_seeds=9,app_random_branch_afters=1,app_random_draw_offset=2,app_random_positions=616c706861:2"
             ),
             Err(PluginArgsParseError::AppRandom(
                 AppRandomArgsParseError::BranchBeforeOffset {

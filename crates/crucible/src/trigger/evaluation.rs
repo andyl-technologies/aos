@@ -398,7 +398,6 @@ pub(super) fn push_observed_state_facts(
             Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)
-            | Decision::AppRandom(_)
             | Decision::Selection(_),
         )
         | SchedulerEventLogPayload::EvaluationBoundary(_)

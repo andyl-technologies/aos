@@ -12,495 +12,143 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  cliCampaignRun = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-cli/src/cli/campaign_run.rs;
+  };
+  daemonCampaignLifecycle = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-daemon/src/qemu_campaign_lifecycle.rs;
+  };
   portableArtifactConstants = builtins.readFile ../../crates/crucible-cli/src/portable_artifact_constants.rs;
-  sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  apiLifecycle = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible-api/src/lifecycle.rs;
-  };
-  apiClient = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible-api/src/client.rs;
-  };
-  apiServer = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible-api/src/server.rs;
-  };
-  apiStreaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
-  apiControlClientContracts = builtins.readFile ../../crates/crucible-api/tests/gate_control_client/contract_tests.rs;
-  apiControlClientConformance = builtins.readFile ../../crates/crucible-api/tests/gate_control_client/conformance.rs;
-  apiLifecycleUnary = builtins.readFile ../../crates/crucible-api/tests/gate_lifecycle_unary.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
+  campaignProcessTest = builtins.readFile ../../crates/crucible-cli/tests/campaign_process.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  saveWorkflowGate = builtins.readFile ./phase5-cli-save-workflow.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-9 partial-evidence note";
-        needle = "Completed under `checks.crucible.phase5.cliSaveWorkflow`";
+        label = "T-CLI-9 completion";
+        needle = "[x] **T-CLI-9** Implement `save` as a Campaign-owned semantic-stop";
       }
       {
-        label = "T-CLI-9 oracle validated save scope";
-        needle = "validates the returned materialized";
+        label = "portable handle identity";
+        needle = "current v5 and v6 handles bind the";
       }
       {
-        label = "T-CLI-9 process qemu save progress";
-        needle = "process-tests real-binary `save --backend qemu`";
+        label = "authenticated replay closure";
+        needle = "scenario, schedule, replay closure, exact frontier";
       }
       {
-        label = "T-CLI-9 remote selector source transfer progress";
-        needle = "transfers arbitrary scenario selector sources";
-      }
-      {
-        label = "T-CLI-9 backend-executed QEMU savepoint completion";
-        needle = "backend-executed patched-QEMU `snapshot-save`\n  smoke";
+        label = "no physical checkpoint in handle";
+        needle = "never
+  persists a physical QEMU checkpoint in the handle";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI save completion note";
+        label = "phase5 CLI save completion";
         needle = "`T-CLI-9` is completed through `checks.crucible.phase5.cliSaveWorkflow`";
       }
       {
-        label = "phase5 CLI remote save progress";
-        needle = "routes\n  remote-daemon quiescence and virtual-time saves over the RPC control API";
+        label = "Campaign exact checkpoint";
+        needle = "Campaign-owned semantic stops capture an authenticated exact checkpoint";
       }
       {
-        label = "phase5 CLI remote selector proof progress";
-        needle = "routes remote\n  selector proof queries over RPC breakpoint-firing payloads";
-      }
-      {
-        label = "phase5 CLI process qemu save progress";
-        needle = "process-tests real-binary\n  `save --backend qemu` JSONL output and handle export";
-      }
-      {
-        label = "phase5 CLI remote selector source transfer progress";
-        needle = "transfers arbitrary scenario\n  selector sources";
-      }
-      {
-        label = "phase5 CLI backend-executed QEMU savepoint completion";
-        needle = "backend-executed patched-QEMU\n  `snapshot-save` smoke";
+        label = "closed Campaign owner";
+        needle = "use the same fail-closed Campaign owner";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
-        label = "save dispatches the live QEMU workflow";
-        needle = "fn run_local_qemu_save_workflow";
-      }
-      {
         label = "save arguments";
         needle = "struct SaveArgs";
-      }
-      {
-        label = "save at enum";
-        needle = "enum SaveAtArg";
-      }
-      {
-        label = "save invocation plan";
-        needle = "struct SaveInvocationPlan";
-      }
-      {
-        label = "save output target";
-        needle = "enum SaveOutputTarget";
       }
       {
         label = "save planner";
         needle = "fn plan_save_invocation";
       }
       {
-        label = "virtual time coordinate";
-        needle = "max_virtual_time";
-      }
-      {
-        label = "property selector coordinate";
-        needle = "--property <assertion>";
-      }
-      {
-        label = "marker selector coordinate";
-        needle = "--marker <name>";
-      }
-      {
-        label = "save oracle proof";
-        needle = "struct SavepointOracleProof";
-      }
-      {
-        label = "save workflow runner";
-        needle = "fn run_control_client_save_workflow_async";
-      }
-      {
-        label = "save checkpoint oracle validation";
-        needle = "fn validate_savepoint_checkpoint";
-      }
-      {
-        label = "typed savepoint payload";
-        needle = "savepoint_info";
-      }
-      {
         label = "save handle exporter";
         needle = "fn export_savepoint_handle";
       }
       {
-        label = "save handle encoder";
-        needle = "fn savepoint_handle_bytes";
-      }
-      {
-        label = "remote save workflow runner";
-        needle = "fn run_remote_save_workflow";
-      }
-      {
-        label = "remote virtual-time save coverage";
-        needle = "remote-virtual-time-save";
-      }
-      {
-        label = "machine-readable handle path summary";
-        needle = "out={}";
-      }
-      {
-        label = "create-savepoint reply materialization marker";
-        needle = "\"materialization\", \"create-savepoint\", \"reply\"";
-      }
-      {
-        label = "oracle validation status";
-        needle = "fat==thin-passed";
-      }
-      {
-        label = "label-bearing create savepoint";
-        needle = "SessionCommand::CreateSavepoint";
-      }
-      {
-        label = "property breakpoint selector";
-        needle = "SaveAtSelector::PropertyViolation";
-      }
-      {
-        label = "marker breakpoint selector";
-        needle = "SaveAtSelector::Marker";
-      }
-      {
-        label = "selector breakpoint proof";
-        needle = "fn run_save_selector_to_boundary";
-      }
-      {
-        label = "selector firing validation";
-        needle = "fn validate_save_selector_firing";
-      }
-      {
-        label = "selector advancement wait";
-        needle = "fn wait_for_save_workflow_advanced_paused";
-      }
-      {
-        label = "scenario assertion evaluator source";
-        needle = "HostAssertionEvaluator::new";
-      }
-      {
-        label = "scenario marker source catalog";
-        needle = "SaveGuestMarkerSource";
-      }
-      {
-        label = "scenario marker cmdline source";
-        needle = "crucible-guest-marker=";
-      }
-      {
-        label = "wrong marker selector rejection";
-        needle = "wrong-marker-stop";
-      }
-      {
-        label = "marker selector predicate";
-        needle = "Predicate::guest_marker";
-      }
-      {
-        label = "marker selector event-log source";
-        needle = "guest_marker_observation";
-      }
-      {
-        label = "second declared property selector test";
-        needle = "split-property-stop";
-      }
-      {
-        label = "marker without source test";
-        needle = "no-source-marker-stop";
-      }
-      {
-        label = "non-fixed marker selector test";
-        needle = "phase-two-marker";
-      }
-      {
-        label = "marker without source helper";
-        needle = "write_marker_selector_without_source_scenario";
+        label = "authenticated replay closure field";
+        needle = "campaign-replay-closure";
       }
       {
         label = "selector proof rejection test";
         needle = "cli_save_selector_proof_rejects_invalid_breakpoint_evidence";
       }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/cli/campaign_run.rs" cliCampaignRun [
       {
-        label = "save planning test";
-        needle = "cli_save_workflow_plans_quiescence_and_virtual_time_savepoints";
+        label = "Campaign-owned QEMU save";
+        needle = "fn run_local_qemu_campaign_save_workflow";
       }
       {
-        label = "save export test";
-        needle = "cli_save_workflow_executes_local_double_and_exports_handle";
+        label = "exact savepoint validation";
+        needle = "fn validate_campaign_savepoint";
       }
       {
-        label = "qemu-selected save live checkpoint proof";
-        needle = "save-live-checkpoint";
+        label = "portable save report";
+        needle = "fn campaign_save_workflow_report";
       }
       {
-        label = "qemu-selected save test";
-        needle = "qemu-save";
+        label = "marker and observation proof";
+        needle = "fn campaign_save_boundary_proof";
       }
       {
-        label = "remote daemon save test";
-        needle = "cli_save_workflow_executes_remote_daemon_savepoint";
+        label = "authenticated replay closure export";
+        needle = ".replay_closure()";
       }
       {
-        label = "remote daemon dispatch save test";
-        needle = "remote-dispatch-save";
+        label = "transient exact-store cleanup";
+        needle = "fn complete_transient_checkpoint_workflow";
       }
       {
-        label = "remote daemon selector save test";
-        needle = "remote-selector-save";
+        label = "current exact save regressions";
+        needle = "campaign_virtual_time_save_exports_closure_for_resume_and_replay_readers";
+      }
+    ]
+    ++ failuresFor "crates/crucible-daemon/src/qemu_campaign_lifecycle.rs" daemonCampaignLifecycle [
+      {
+        label = "reached-stop exact capture";
+        needle = "pub fn with_reached_stop_savepoint_capture";
       }
       {
-        label = "remote inline scenario source transfer";
-        needle = "CreateSessionRequest::inline_form(run_plan.scenario.scenario_form().clone(), seed)";
+        label = "authenticated savepoint output";
+        needle = "pub const fn savepoint";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifactConstants [
       {
-        label = "save handle schema";
-        needle = "crucible.savepoint-handle.v3";
-      }
-    ]
-    ++ failuresFor "crates/crucible-api/src/streaming.rs" apiStreaming [
-      {
-        label = "property selector breakpoint id";
-        needle = "breakpoint_id";
-      }
-    ]
-    ++ failuresFor "crates/crucible-api/src/lifecycle.rs" apiLifecycle [
-      {
-        label = "lifecycle white-box policy hook";
-        needle = "with_white_box_policy_provider";
+        label = "current replay-closure handle schema";
+        needle = "crucible.savepoint-handle.v5";
       }
       {
-        label = "form-bearing inline create session constructor";
-        needle = "pub fn inline_form";
-      }
-      {
-        label = "inline scenario source field";
-        needle = "scenario_form: Option<ScenarioDefForm>";
-      }
-      {
-        label = "inline scenario identity validation";
-        needle = "InlineScenarioIdentityMismatch";
-      }
-      {
-        label = "inline scenario white-box policy derivation";
-        needle = "scenario_form_white_box_policies";
-      }
-      {
-        label = "request-aware white-box policy resolution";
-        needle = "white_box_policies_for_source";
-      }
-      {
-        label = "source-aware lifecycle loop factory";
-        needle = "new_with_source_factory";
-      }
-      {
-        label = "quiescent loop records schedule decision";
-        needle = "quiescent lifecycle loop could not record virtual-time decision";
-      }
-    ]
-    ++ failuresFor "crates/crucible-api/src/client.rs" apiClient [
-      {
-        label = "RPC snapshot query decoder";
-        needle = "QueryResult::Snapshot(Box::new(EngineSnapshot";
-      }
-      {
-        label = "RPC snapshot scenario identity";
-        needle = "query result snapshot scenario id";
-      }
-      {
-        label = "RPC savepoint request label payload";
-        needle = "\"savepoint-label\"";
-      }
-      {
-        label = "RPC duration step request payload";
-        needle = "\"step-duration-nanos\"";
-      }
-      {
-        label = "RPC breakpoint firing query decoder";
-        needle = "parse_breakpoint_firings_fields";
-      }
-      {
-        label = "RPC breakpoint firing result model";
-        needle = "QueryResult::BreakpointFirings(firings)";
-      }
-      {
-        label = "RPC breakpoint id response decoder";
-        needle = "parse_breakpoint_id_line";
-      }
-      {
-        label = "RPC breakpoint predicate request payload";
-        needle = "\"breakpoint-predicate\"";
-      }
-      {
-        label = "RPC breakpoint policy request payload";
-        needle = "\"breakpoint-policy\"";
-      }
-      {
-        label = "RPC inline scenario source payload encoder";
-        needle = "\"scenario-payload\"";
-      }
-      {
-        label = "RPC inline scenario source compact encoder";
-        needle = "scenario_form.to_compact_binary()";
-      }
-    ]
-    ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
-      {
-        label = "RPC snapshot query parser";
-        needle = "Ok(QueryKind::Snapshot)";
-      }
-      {
-        label = "RPC breakpoint firing query parser";
-        needle = "Ok(QueryKind::BreakpointFirings)";
-      }
-      {
-        label = "RPC snapshot result wire";
-        needle = "\"snapshot|{}|{}|{}|{}|{}|{}|{}|{}|{}\"";
-      }
-      {
-        label = "RPC breakpoint firing result wire";
-        needle = "breakpoint_firings_wire";
-      }
-      {
-        label = "RPC breakpoint firing result prefix";
-        needle = "\"breakpoint-firings|{}\"";
-      }
-      {
-        label = "RPC breakpoint id result wire";
-        needle = "breakpoint_id_wire";
-      }
-      {
-        label = "RPC breakpoint spec request parser";
-        needle = "parse_breakpoint_spec_lines";
-      }
-      {
-        label = "RPC savepoint result wire";
-        needle = "\"savepoint|{}|{}|{}\"";
-      }
-      {
-        label = "RPC savepoint request parser";
-        needle = "savepoint-label=";
-      }
-      {
-        label = "RPC duration step request parser";
-        needle = "step-duration-nanos=";
-      }
-      {
-        label = "RPC inline scenario source payload parser";
-        needle = "parse_scenario_form_line(Some(line), \"scenario-payload=\")";
-      }
-      {
-        label = "RPC inline scenario source identity validation";
-        needle = "scenario payload id";
-      }
-      {
-        label = "RPC inline scenario source constructor";
-        needle = "CreateSessionRequest::inline_form(scenario_form, seed)";
-      }
-    ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client/contract_tests.rs" apiControlClientContracts [
-      {
-        label = "RPC inline form wire snapshot";
-        needle = "create-session-inline-form-request";
-      }
-      {
-        label = "RPC inline form payload assertion";
-        needle = "form-bearing inline create-session must transfer source payload";
-      }
-      {
-        label = "RPC inline form typed request";
-        needle = "CreateSessionRequest::inline_form";
-      }
-    ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client/conformance.rs" apiControlClientConformance [
-      {
-        label = "RPC inline form conformance marker";
-        needle = "create-session-inline-form";
-      }
-      {
-        label = "RPC inline form typed request";
-        needle = "CreateSessionRequest::inline_form";
-      }
-    ]
-    ++ failuresFor "crates/crucible-api/tests/gate_lifecycle_unary.rs" apiLifecycleUnary [
-      {
-        label = "inline form identity mismatch regression";
-        needle = "create_session_rejects_inline_form_identity_mismatch_without_side_effects";
-      }
-      {
-        label = "inline source public request construction";
-        needle = "CreateSessionSource::Inline";
-      }
-      {
-        label = "inline source mismatch error assertion";
-        needle = "InlineScenarioIdentityMismatch";
-      }
-    ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
-      {
-        label = "breakpoint firing query plumbing";
-        needle = "BreakpointFirings";
-      }
-      {
-        label = "guest marker breakpoint policy coverage";
-        needle = "breakpoint_conditions_cover_guest_marker_white_box_leaves";
+        label = "current observation handle schema";
+        needle = "crucible.savepoint-handle.v6";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
-        label = "machine-readable save path test";
-        needle = "cli_save_machine_readable_jsonl_reports_handle_path";
+        label = "machine-readable session-owned save rejection";
+        needle = "cli_save_machine_readable_jsonl_rejects_session_owned_export";
       }
+    ]
+    ++ failuresFor "crates/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
       {
-        label = "machine-readable save export kind";
-        needle = "assert_machine_readable_jsonl(&stdout, &[\"save_export\"])?";
-      }
-      {
-        label = "machine-readable save output path";
-        needle = "out=";
-      }
-      {
-        label = "process qemu save live-asset admission regression";
-        needle = "cli_save_qemu_process_requires_packaged_live_guest_assets";
-      }
-      {
-        label = "process qemu save no-double assertion";
-        needle = "!stderr.contains(\"double fallback\")";
+        label = "packaged Campaign save and native resume regression";
+        needle = "campaign_virtual_time_save_feeds_native_resume";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase5 exposes CLI save workflow check";
         needle = "cliSaveWorkflow = import ./phase5-cli-save-workflow.nix";
-      }
-    ]
-    ++ failuresFor "tests/crucible/phase5-cli-save-workflow.nix" saveWorkflowGate [
-      {
-        label = "patched QEMU build dependency";
-        needle = "pkgs.qemu-crucible";
-      }
-      {
-        label = "QMP savepoint job polling";
-        needle = "wait_for_cli_save_qemu_job";
-      }
-      {
-        label = "backend-executed patched QEMU snapshot save";
-        needle = "snapshot-save=concluded";
       }
     ];
 in
@@ -514,11 +162,8 @@ in
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.jq
-        pkgs.qemu-crucible
         pkgs.rust
         pkgs.sed
-        pkgs.socat
       ];
 
       ATTR_PATH = attrPath;
@@ -567,27 +212,6 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
-              -p crucible-api \
-              rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
-              -p crucible-api \
-              control_client_trait_is_transport_agnostic_over_in_process_and_rpc \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
-              -p crucible-api \
-              create_session_rejects_inline_form_identity_mismatch_without_side_effects \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
               -p crucible-cli \
               cli_save \
               -- --test-threads=1
@@ -595,143 +219,9 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
-              -p crucible-session \
-              breakpoint_conditions_cover_guest_marker_white_box_leaves \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
               -p crucible-cli \
-              cli_save_qemu_process_requires_packaged_live_guest_assets \
+              cli_save_machine_readable_jsonl_rejects_session_owned_export \
               -- --test-threads=1
-
-            qemu_pid=""
-            qmp_socket="$TMPDIR/cli-save-qemu-qmp.sock"
-            vmstate="$TMPDIR/cli-save-qemu-vmstate.qcow2"
-            qemu_stderr="$TMPDIR/cli-save-qemu.stderr"
-            rm -f "$qmp_socket" "$vmstate" "$qemu_stderr"
-
-            cleanup_cli_save_qemu() {
-              if [ -n "$qemu_pid" ]; then
-                kill "$qemu_pid" 2>/dev/null || true
-                wait "$qemu_pid" 2>/dev/null || true
-                qemu_pid=""
-              fi
-            }
-
-            fail_cli_save_qemu() {
-              echo "FAIL: $*" >&2
-              if [ -s "$qemu_stderr" ]; then
-                cat "$qemu_stderr" >&2
-              fi
-              cleanup_cli_save_qemu
-              exit 1
-            }
-
-            trap cleanup_cli_save_qemu EXIT
-
-            wait_for_cli_save_qemu_socket() {
-              waited=0
-              while [ "$waited" -lt 600 ]; do
-                if [ -S "$qmp_socket" ]; then
-                  return 0
-                fi
-                sleep 0.1
-                waited=$((waited + 1))
-              done
-              return 1
-            }
-
-            qmp_cli_save_cmd() {
-              socket="$1"
-              request="$2"
-              response="$3"
-              response_err="$response.err"
-
-              {
-                printf '{"execute":"qmp_capabilities"}\r\n'
-                printf '%s\r\n' "$request"
-              } | socat -T 2 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
-
-              if [ ! -s "$response" ]; then
-                cat "$response_err" >&2 || true
-                return 1
-              fi
-
-              if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
-                cat "$response" >&2
-                return 1
-              fi
-              jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null
-            }
-
-            wait_for_cli_save_qemu_job() {
-              socket="$1"
-              job="$2"
-              waited=0
-              while [ "$waited" -lt 600 ]; do
-                if qmp_cli_save_cmd "$socket" '{"execute":"query-jobs"}' "$TMPDIR/qmp-cli-save-jobs.json"; then
-                  if jq -e -s --arg job "$job" '
-                    [.[] | select(has("return"))][-1].return[]
-                    | select(.id == $job)
-                    | has("error")
-                  ' "$TMPDIR/qmp-cli-save-jobs.json" >/dev/null; then
-                    cat "$TMPDIR/qmp-cli-save-jobs.json" >&2
-                    return 1
-                  fi
-                  if jq -e -s --arg job "$job" '
-                    [.[] | select(has("return"))][-1].return[]
-                    | select(.id == $job)
-                    | .status == "concluded"
-                  ' "$TMPDIR/qmp-cli-save-jobs.json" >/dev/null; then
-                    return 0
-                  fi
-                fi
-                sleep 0.25
-                waited=$((waited + 1))
-              done
-              return 1
-            }
-
-            "${pkgs.qemu-crucible}/bin/qemu-img" create -f qcow2 "$vmstate" 32M >/dev/null
-            timeout 120 "${pkgs.qemu-crucible}/bin/qemu-system-x86_64" \
-              -nodefaults \
-              -no-user-config \
-              -display none \
-              -monitor none \
-              -machine q35 \
-              -accel tcg,thread=single \
-              -cpu qemu64,-rdrand,-rdseed \
-              -m 256 \
-              -smp 1 \
-              -rtc base=2026-01-01T00:00:00,clock=vm \
-              -seed 0x0010c109 \
-              -qmp "unix:$qmp_socket,server=on,wait=off" \
-              -blockdev driver=file,filename="$vmstate",node-name=vmfile \
-              -blockdev driver=qcow2,file=vmfile,node-name=vmstate \
-              -S \
-              -no-shutdown \
-              -no-reboot \
-              2> "$qemu_stderr" &
-            qemu_pid="$!"
-
-            wait_for_cli_save_qemu_socket || fail_cli_save_qemu "patched QEMU QMP socket did not appear"
-            qmp_cli_save_cmd \
-              "$qmp_socket" \
-              '{"execute":"snapshot-save","arguments":{"job-id":"cli-save-qemu-save","tag":"cli-save-qemu-savepoint","vmstate":"vmstate","devices":["vmstate"]}}' \
-              "$TMPDIR/qmp-cli-save-snapshot-save.json" \
-              || fail_cli_save_qemu "patched QEMU snapshot-save command failed"
-            wait_for_cli_save_qemu_job "$qmp_socket" "cli-save-qemu-save" \
-              || fail_cli_save_qemu "patched QEMU snapshot-save job did not conclude"
-            qmp_cli_save_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-cli-save-quit.json" >/dev/null 2>&1 || true
-            wait "$qemu_pid" || fail_cli_save_qemu "patched QEMU exited unsuccessfully after snapshot-save"
-            qemu_pid=""
-
-            cat > "$TMPDIR/cli-save-qemu-snapshot.result" <<'RESULT'
-            snapshot-save=concluded
-            backend_executed_qemu_savepoint=patched-qemu-snapshot-save
-            RESULT
           '';
         }
         {
@@ -739,20 +229,16 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
-            grep -q '^snapshot-save=concluded$' "$TMPDIR/cli-save-qemu-snapshot.result"
-            cp "$TMPDIR/cli-save-qemu-snapshot.result" "$out/qemu-snapshot-save.result"
             cat > "$out/result" <<'RESULT'
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
             status=complete
-            evidence_scope=save-model-and-qmp-smoke
+            evidence_scope=campaign-exact-save-unit-and-process-admission
             component=crucible-cli
-            contract=save-workflow-progress
-            process_qemu_save=marker-resolved-jsonl-handle
-            remote_inline_scenario_transfer=form-bearing-rpc-payload
-            backend_executed_qemu_savepoint=patched-qemu-snapshot-save
+            contract=authenticated-campaign-save
+            process_qemu_save=packaged-live-asset-admission
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

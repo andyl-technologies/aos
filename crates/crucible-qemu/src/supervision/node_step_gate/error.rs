@@ -1,14 +1,12 @@
 //! Error taxonomy for the live node-step gate.
 
 use super::*;
+use crate::QemuAsyncDriverRuntimeError;
 use thiserror::Error;
 
 /// Error returned by the live [`QemuNode`] bounded-step gate.
 #[derive(Debug, Error)]
 pub enum QemuLiveNodeStepGateError {
-    /// The busy-window schedule had a zero step size or count.
-    #[error("live node-step schedule must have a nonzero step size and count")]
-    ZeroSchedule,
     /// A scheduled ceiling reached or exceeded the busy cap.
     #[error(
         "scheduled ceiling {ceiling_icount} reaches busy cap {busy_cap_icount}; the guest would idle and forfeit determinism"
@@ -27,28 +25,10 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
-    /// The bounded scheduler-preemption adversary could not run or clean up.
-    #[error("bounded scheduler-preemption adversary failed")]
-    SchedulerPreemption {
-        /// Underlying controller, signal, or watchdog error.
-        source: crate::BoundedSchedulerPreemptionError,
-    },
-    /// A crash-safe exact-snapshot artifact could not be copied.
-    #[error("copy exact-snapshot artifact from {source_path} to {destination_path} failed")]
-    SnapshotArtifactCopy {
-        /// Captured artifact path.
-        source_path: PathBuf,
-        /// Fresh restore artifact path.
-        destination_path: PathBuf,
-        /// Underlying copy error.
-        source: std::io::Error,
-    },
-    /// A canonical exact-snapshot envelope could not be persisted or reloaded.
-    #[error("durable exact-snapshot envelope I/O at {path} failed")]
-    SnapshotEnvelopeIo {
-        /// Canonical envelope path.
-        path: PathBuf,
-        /// Underlying durable file operation error.
+    /// A checkpoint-operation cancellation event could not be retained.
+    #[error("retain checkpoint-operation cancellation event failed")]
+    CheckpointCancellation {
+        /// Underlying eventfd creation error.
         source: std::io::Error,
     },
     /// The deterministic launch profile could not be derived.
@@ -101,9 +81,6 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying host-setup error.
         source: QemuHostPluginSetupError,
     },
-    /// The plugin setup acknowledgement did not permit scheduling.
-    #[error("plugin setup acknowledgement did not permit scheduling")]
-    SetupAckNotReady,
     /// The diagnostic path did not name the descriptor-pinned launch directory.
     #[error(
         "configured QEMU run directory {configured} does not match prepared directory {prepared}"
@@ -155,6 +132,12 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying host-I/O runtime error.
         source: QemuLiveHostIoRuntimeError,
     },
+    /// Setup-time callbacks did not settle before ordinary scheduling.
+    #[error("fence priming host-I/O handoff failed")]
+    PrimeHandoff {
+        /// Underlying control-boundary settlement error.
+        source: QemuAsyncDriverRuntimeError,
+    },
     /// The World-backed block servicer could not be constructed or configured.
     #[error("build live block-I/O servicer failed")]
     BlockServicer {
@@ -178,6 +161,18 @@ pub enum QemuLiveNodeStepGateError {
     QmpConnect {
         /// Underlying QMP error.
         source: QmpError,
+    },
+    /// QEMU could not resume after stopped-state control authentication.
+    #[error("start QEMU after stopped-state control authentication failed")]
+    QmpStart {
+        /// Underlying QMP error.
+        source: QemuNodeChannelError,
+    },
+    /// QEMU's realized fingerprint providers differ from the launch contract.
+    #[error("authenticate realized QEMU fingerprint projection manifest failed")]
+    FingerprintProjectionManifest {
+        /// Underlying typed QMP or manifest mismatch error.
+        source: QemuNodeChannelError,
     },
     /// The scheduler-facing node could not be assembled.
     #[error("assemble live QEMU node failed")]
@@ -234,12 +229,6 @@ pub enum QemuLiveNodeStepGateError {
     Shutdown {
         /// Underlying node error.
         source: QemuNodeError,
-    },
-    /// The second run diverged from the reference run.
-    #[error("second run diverged from the reference run: {reason}")]
-    SecondRunDiverged {
-        /// Human-readable divergence detail.
-        reason: String,
     },
 }
 

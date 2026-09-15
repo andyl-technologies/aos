@@ -43,22 +43,21 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:c2ddca802382d7cd`
+Checklist sync digest: `rfc0010-checklist-v1:ea6e459ee75f71c6`
 
-### Adversarial completion audit (2026-07-09)
+### Current completion audit
 
-The checklist state is authoritative. An adversarial source-and-gate audit
-reopened tasks whose checked evidence proved only a model, a structural source
-needle, an inert callback scaffold, or identity-labelled QEMU selection rather
-than the normative live behavior. In particular, the shipped plugin install
-path is still inert; the production CLI's QEMU routes do not yet execute the
-selected QEMU backend; scheduler RR/preemption and device sub-nodes are not
-connected to live nodes; ordinary replay reconstructs embedded evidence instead
-of re-executing it; and the Phase-7 e2e/performance/fleet checks explicitly run
-the in-process double or modeled metrics. A "Completed by" paragraph under an
-unchecked item records useful partial implementation and test coverage only; it
-does not discharge that task. Re-close an item only after its full task text is
-implemented and an adversarial review confirms the gate exercises that behavior.
+The checklist state is authoritative. The shipped plugin installs in the pinned
+QEMU 11.1.1 process, the production CLI and daemon use the selected QEMU
+backend, scheduler RR/preemption and device sub-nodes participate in live node
+execution, and exact replay enters through the authenticated atomic restore
+route. Registered Phase-7 flights exercise the production Rust lifecycle and
+loaded QEMU behavior for the task facts they certify. Unchecked items remain
+open only for the unmet behavior named in their current task text. A
+"Completed by" paragraph under an unchecked item records useful partial
+implementation and test coverage; it does not discharge that task. Close an
+item only after its full task text is implemented and a gate exercises that
+behavior.
 
 ## The phase ladder
 
@@ -69,7 +68,7 @@ implemented and an adversarial review confirms the gate exercises that behavior.
                             content-addressed store, the test double        gate:content-address, gate:campaign-model,
                                                                             gate:replay-oracle (sim),
                                                                             gate:single-vm-fingerprint (double), gate:divergence-bisect
-  Phase 2  Transport+QEMU   shmem ABI, protocol, patch series,       gate:abi-conformance, gate:layer1-injection,
+  Phase 2  Transport+QEMU   shmem ABI, protocol, atomic patch,       gate:abi-conformance, gate:layer1-injection,
                             host QEMU + plugin, single-VM determinism       gate:patch-microtests, gate:qemu-inert,
                                                                             gate:single-vm-fingerprint (real QEMU)
   Phase 3  Scheduling+I/O   scheduler, I/O sub-nodes, cross-VM        gate:layer1-injection, gate:scheduler-liveness,
@@ -83,6 +82,7 @@ implemented and an adversarial review confirms the gate exercises that behavior.
                                                                             gate:basic-block-coverage
   Phase 7  Package+perf+e2e AOS packaging, performance, acceptance   gate:perf-bench, gate:e2e-determinism (acceptance),
                                                                             gate:fleet-equivalence, gate:campaign-continuity,
+                                                                            gate:production-rust-plugin-flight,
                                                                             gate:signal-fault-system
 ```
 
@@ -107,13 +107,13 @@ boundary, and the gdbstub seam for time-travel debugging.
 S1 single-VM bit-identical execution under `-icount` + entropy elimination;
 S2 guest HLTs during blocking I/O (else fast-forward is perf-only);
 S4 producer→consumer shmem visibility is icount-not-wall-clock (Contract B);
-S3 `savevm`/`loadvm` completeness (else fat checkpoints fall back to thin/replay).
+S3 historically measured `savevm`/`loadvm` completeness and established that it
+was insufficient as runtime authority; the independent replay oracle and baked
+genesis now use the production version-nine descriptor protocol.
 **S11 (single-threaded RR-TCG + icount is bit-identical for multi-vCPU) is a
-blocker for the multi-vCPU goal G-10**; if it fails with no path, G-10 falls back
-to single-vCPU per VM.
+blocker for the multi-vCPU goal G-10** and its packaged four-vCPU proof passes.
 
-**Exit gate.** All Phase-0 blocker spikes report PASS (or a documented fallback
-adopted and the affected requirements amended). S1 failing with no path is a
+**Exit gate.** All Phase-0 blocker spikes report PASS. S1 failing is a
 stop-the-RFC event.
 
 ---
@@ -134,7 +134,8 @@ all land and are gated. Everything later is built on this.
   determinism tasks `T-DET-29 … T-DET-31`): `T-DET-1 … T-DET-31` ([`04`](04-determinism-contract.md)).
 - Time / icount model: `T-TIME-1 … T-TIME-9` ([`09`](09-virtual-time-icount.md)).
 - Execution model (Configuration/step/instantiate, decision RNG; the `Decision`
-  taxonomy extensions `T-EXEC-19` `Preemption` + `T-EXEC-20` `AppRandom`): `T-EXEC-1 … T-EXEC-20` ([`05`](05-execution-model.md)).
+  taxonomy extensions `T-EXEC-19` `Preemption` + `T-EXEC-20` authenticated
+  app-random `RngDraw` and `Selection`): `T-EXEC-1 … T-EXEC-20` ([`05`](05-execution-model.md)).
 - Temporal graph + content-addressed store (engine-independent parts): `T-TEMP-1 … T-TEMP-11` ([`07`](07-temporal-graph.md)).
 - Harness, gate catalog, in-process QEMU double, fingerprint, divergence bisector: `T-HARN-1 … T-HARN-29` ([`24`](24-determinism-harness-testing.md)).
 - Patterns tracked here: `T-PAT-1, T-PAT-4, T-PAT-5, T-PAT-6, T-PAT-9`;
@@ -150,7 +151,7 @@ all land and are gated. Everything later is built on this.
 ## Phase 2 — Transport ABI and per-VM QEMU determinism
 
 **Goal.** Stand up the co-simulation transport as a versioned ABI, the QEMU patch
-series (inert-by-default), and the host+plugin integration, and prove **Contract
+artifact (inert-by-default), and the host+plugin integration, and prove **Contract
 A** (one real VM, bit-identical) on real QEMU — including **deterministic
 multi-vCPU (RR-TCG)**, where a single-threaded round-robin TCG core under icount
 makes an N-vCPU guest bit-identical (G-10).
@@ -161,7 +162,7 @@ makes an N-vCPU guest bit-identical (G-10).
   `T-SHM-1 … T-SHM-20`
   ([`13`](13-shmem-abi.md)).
 - Protocol: `T-PROTO-1 … T-PROTO-11` ([`14`](14-protocol.md)).
-- QEMU patch series + rebase pipeline + inertness (incl. the RR-TCG/multi-vCPU
+- atomic QEMU patch + rebase pipeline + inertness (incl. the RR-TCG/multi-vCPU
   patches `T-PATCH-21 … T-PATCH-24`): `T-PATCH-1 … T-PATCH-24` ([`11`](11-qemu-patches.md)).
 - Host QEMU integration (incl. the multi-vCPU tasks `T-QEMU-15, T-QEMU-16`): `T-QEMU-1 … T-QEMU-16` ([`10`](10-qemu-integration.md)).
 - In-VM plugin (incl. the per-vCPU plugin tasks `T-PLUG-24 … T-PLUG-27`): `T-PLUG-1 … T-PLUG-27` ([`12`](12-qemu-plugin.md)).
@@ -212,7 +213,7 @@ guest↔host channel (black-box default + optional white-box).
 - Assertions / properties (incl. offline checker and assertion-proximity `T-ASRT-18`): `T-ASRT-1 … T-ASRT-18` ([`18`](18-assertions-properties.md)).
 - Unified event log (incl. the proximity projection `T-OBS-14`): `T-OBS-1 … T-OBS-14` ([`19`](19-observability-event-log.md)).
 - Guest↔host channel + optional agent (incl. the app-controlled randomness
-  channel `T-GHC-16, T-GHC-17` — the optional white-box `Decision::AppRandom`
+  channel `T-GHC-16, T-GHC-17` — the optional white-box `BackendRngEvidence`
   source): `T-GHC-1 … T-GHC-17` ([`16`](16-guest-host-channel.md)).
 - Workload / traffic-generation story (in-guest, seeded via the entropy boundary): `T-WL-1 … T-WL-6` ([`33`](33-examples-and-workloads.md)).
 - Patterns realized here: `T-PAT-4, T-PAT-7` ([`29`](29-patterns-and-sketches.md)).
@@ -395,8 +396,8 @@ long-held locks.
   to `SessionCommandKind::ALL` and actual `ControlClient` methods, treats
   CLI-held state only as daemon/content-addressed/artifact/savepoint handles, and
   rejects CLI-owned canonical state, scheduler logic, checkpoint materialization,
-  fork logic, or invented control capabilities. The production-path check also
-  requires resume/fork checkpoint and baked-genesis setup to delegate to
+  or invented control capabilities. The production-path check also
+  requires resume checkpoint and baked-genesis setup to delegate to
   `crucible_session::validation` and rejects direct checkpoint materialization
   in the CLI command modules.
   `T-CLI-3` is green through `checks.crucible.phase5.cliBackendSelection`, which
@@ -448,31 +449,33 @@ long-held locks.
   savepoint handles for `--save-on`, incremental stdin acknowledgements for
   interactive commands, and non-passing outcome exit propagation with a
   reproduction artifact.
-  `T-CLI-7` remains open. `checks.crucible.phase5.cliVerifyWorkflow` currently
-  covers fresh local-double, local-QEMU, and remote-daemon verify reductions,
+  `T-CLI-7` is completed through `checks.crucible.phase5.cliVerifyWorkflow`,
+  which covers fresh local-double, local-QEMU, and remote-daemon verify reductions,
   canonical-log byte comparison, execution-fingerprint stream comparison,
-  observer polling-order/yield/timeout profiles, divergence localization with
+  the full hostile scheduling/clock/core/I/O profile matrix, divergence localization with
   first decision/sample/byte reporting, both-side reproduction artifacts,
   `verify --compare <a> <b>`, exit 0/1 deterministic/divergent outcomes, and
   local-QEMU verify output pinned to the resolved QEMU/plugin build identity.
   Artifact comparison validates the two embedded producer identities against
   each other and does not substitute an auto-discovered local backend identity.
-  Each local-QEMU reduction also performs an independent production plugin boot
-  and rejects non-identical live reports. The remaining work is the real 24 §7
-  randomized-worker, wall-clock, varied-core, and host-I/O-stall matrix behind
-  `--adversarial`; observer perturbations alone do not satisfy it.
+  Each local-QEMU reduction also performs an independent production plugin boot,
+  selects a 1/2/4-worker production lifecycle ceiling, runs seeded scheduling
+  pressure and host deadline/I/O perturbations, requires authenticated bounded
+  scheduler-preemption evidence for non-baseline profiles, and rejects
+  non-identical live reports. Local-double and remote control reductions use
+  fresh profile-sized runtimes and the same control-side perturbations.
   `T-CLI-16` is green through `checks.crucible.phase5.cliCompletionsHelp`, which
   covers Bash, Elvish, Fish, PowerShell, and Zsh completion generation, exact
   long/short `--version`, normalized exact §6–§14 subcommand usage/help
   snapshots, Clap enforcement of every normative required input (including
-  conditional alternatives and `serve --listen`) and the fork seed/override
-  conflict,
+  conditional alternatives and `serve --listen`),
   process-level help/version/completion and missing-input coverage for the real
   binary, hidden gate-only flag exclusion from help, and rejection of future
   flags whose command behavior is not implemented yet.
   `T-CLI-8` is completed through `checks.crucible.phase5.cliSelftest`, which covers
   a process invocation of the packaged production
-  `crucible selftest --with-qemu` process, with three independent live
+  `crucible --campaign-deployment /tmp/executor.toml selftest` process inside a
+  disposable VM with delegated cgroup-v2 and project-quota roots, with three independent live
   QEMU/plugin boots against the unmodified stock Linux kernel and per-gate PASS
   rows carrying QEMU identity, terminal icount, and execution fingerprint.
   Supplemental feature-gated tests cover the fast test corpus, canonical
@@ -481,113 +484,26 @@ long-held locks.
   from the packaged binary. Self-test output now follows the shared format,
   trace, quiet, and terminal-outcome contract, including byte-identical JSONL
   stdout and explicit trace output.
-  `T-CLI-9` is completed through `checks.crucible.phase5.cliSaveWorkflow`, which
-  covers executable `save <SCENARIO> --at quiescence` and `--at virtual-time
-  --max-virtual-time <dur>` saves, parser/planner coverage for
-  `--at property --property <assertion>` and `--at marker --marker <name>`, and
-  typed in-process breakpoint-id plus breakpoint-firing-query plumbing for the
-  future selector proof path; creates a label-bearing savepoint at the paused
-  boundary, validates the returned materialized checkpoint through replay-oracle
-  `fat==thin` before exporting a `.crucible-savepoint` handle, supports default
-  `--artifact-dir` and explicit `--out` destinations, exercises local-double
-  property saves through host assertion evaluation of scenario-declared
-  properties, exercises marker saves through white-box scenario-declared guest
-  marker sources, proves both selector classes with suspending breakpoints plus
-  breakpoint-firing proof, rejects wrong-marker and no-source marker selectors,
-  routes explicitly selected local-QEMU saves through the same create-savepoint/
-  export/oracle workflow with resolved QEMU/plugin identity metadata, routes
-  remote-daemon quiescence and virtual-time saves over the RPC control API and
-  validates them with replay-oracle evidence, drives exact virtual-time saves
-  through individually acknowledged scheduler quanta with bounded tolerance for
-  zero-time boot quanta, rejects stagnation and overshoot, routes remote
-  selector proof queries over RPC breakpoint-firing payloads, transfers arbitrary scenario
-  selector sources to remote daemons as form-bearing inline `CreateSession` RPC
-  payloads, derives remote guest-marker white-box policy from the transferred
-  source form, and fails undeclared property selectors and marker selectors
-  without a white-box source. The same gate also process-tests real-binary
-  `save --backend qemu` JSONL output and handle export through marker-resolved
-  QEMU/plugin identity, then runs a backend-executed patched-QEMU
-  `snapshot-save` smoke over the same QMP savepoint primitive. The selected
-  local-QEMU route also requires a successful packaged-QEMU/plugin boot before
-  exporting the replay-oracle-validated handle.
-  `T-CLI-10` is completed through `checks.crucible.phase5.cliResumeWorkflow`, which
-  covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
-  decoding with compact scenario/schedule evidence, direct `blake3:<hash>`
-  checkpoint reference parsing and local DAG-store checkpoint closure loading,
-  virtual-time budget validation, malformed-handle artifact errors, and
-  runtime-only fat checkpoint support when deterministic execution advances the
-  frontier without appending a schedule decision, including exact-frontier thin
-  replay, bounded stagnation and overshoot rejection, genuine thin-checkpoint
-  coverage, and strict zero-time baked-genesis validation, and
-  executable handle- or store-backed local-double resume to quiescence,
-  virtual-time, interactive command driving, or a declared property violation
-  through the session checkpoint-resume API with breakpoint-firing proof for the
-  property stop and replay-oracle validation for terminal savepoints, plus
-  remote-daemon handle-backed virtual-time, quiescence, and property resume over
-  `ResumeSession` RPC, including bounded, source-bound campaign replay-closure
-  transfer, pre-allocation authentication for typed Selection schedules, and
-  campaign-owned v6 observation reproduction while preserving the
-  selection-free request encoding,
-  remote interactive command driving, `--watch` status streaming at observed
-  remote boundaries, terminal savepoint replay-oracle validation, and terminal
-  remote interactive finalization through stopped snapshot query, actor-owned
-  terminal savepoint validation, replay-oracle proof, and stopped-session
-  cleanup, plus explicitly selected local-QEMU resumes that run the same resumed
-  session workflow, invoke the `crucible-qemu` resume coordinator through an
-  API-owned adapter backed by a `SimBackend`-seeded
-  `QemuBackendRealizationExecutor`, and derive
-  branch/runtime proof fields from that coordinator result. The API bridge now
-  also accepts a caller-owned `QemuVmRealizationExecutor`, giving the CLI/API
-  boundary an explicit hook for selecting the Linux real-node executor once
-  launch artifacts are resolvable.
-  The `crucible-qemu` realization coordinator owns baked-genesis,
-  source-ancestor, and savevm policy branches, and now exposes a `Backend`-backed
-  realization executor that restores exact/baked snapshots through the
-  QMP-backed backend boundary and replays suffixes through backend horizon
-  advances, plus a Linux real-node realization executor that launches a
-  policy-authorized restored `QemuNode`, replays through shared memory, samples
-  live fingerprints and icounts, and keeps generic QMP snapshot/restore closed
-  after node assembly, while the CLI emits
-  `materialization=qemu-vm-realization`, `operation=resume`,
-  `executor=model-checkpoint`, branch, replay count, runtime/configuration
-  hashes, and resolved QEMU/plugin identity in stdout and the canonical log.
-  process-level `resume --backend qemu` JSONL output checks those
-  coordinator-derived proof fields from that model-checkpoint executor plus
-  replay-oracle validation through marker-resolved QEMU/plugin identity, then the gate runs a direct patched-QEMU
-  QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
-  `running` after `cont`. The selected local-QEMU path now also requires a
-  successful live packaged-QEMU/plugin boot before the replay-oracle-admitted
-  coordinator result is exposed.
-  `T-CLI-11` is completed through `checks.crucible.phase5.cliForkWorkflow`, which
-  covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
-  plumbing, repeatable `--override decision=value` validation, labels,
-  virtual-time budget validation, `.crucible-savepoint` handle decoding, direct
-  `blake3:<hash>` checkpoint references loaded from the local DAG-store
-  checkpoint closure index, malformed-handle artifact errors, seed/override
-  conflict usage errors, handle- and store-backed no-divergence local-double fork
-  execution through an independent child session, repeatable post-fork
-  `--override` decision application with fail-closed admission to the production
-  scheduler's live World-network point and choice taxonomy, exact-choice
-  consumption enforcement through the scheduler frontier query before cleanup
-  (so an unconsumed choice cannot wedge actor shutdown), and point/choice trace
-  evidence, explicit post-fork
-  `--seed` execution in
-  the local double by deriving the child's post-fork decision stream from the
-  explicit seed while preserving the requested savepoint prefix, distinct-seed
-  terminal-savepoint and exact virtual-time-boundary proof, interactive child
-  command driving, CLI-replayable child reproduction artifact writing whose
-  embedded seed remains the scenario-form seed plus fork-seed provenance output
-  and separate model artifact/replay-state evidence, and terminal savepoint
-  replay-oracle validation, plus explicitly selected local-QEMU forks through
-  the same child-session materialization with resolved QEMU/plugin identity
-  provenance in stdout and the canonical log, and process-level
-  `fork --backend qemu` JSONL output plus child artifact creation through
-  marker-resolved QEMU/plugin identity and requires an independent live
-  packaged-QEMU/plugin boot before the child workflow. Production-QEMU
-  `--seed` forks now re-seed scheduler, World-network, block, 9p, and
-  plugin-served app-random streams at the exact saved configuration; app-random
-  branch/relaunch cursors are explicit launch inputs, and the patched-QEMU
-  white-box gate proves cursor-zero branch-seed service to a real guest.
+  `T-CLI-9` is completed through `checks.crucible.phase5.cliSaveWorkflow`.
+  Campaign-owned semantic stops capture an authenticated exact checkpoint and
+  export current v5 or v6 portable handles binding the scenario, schedule,
+  replay closure, exact frontier, and marker or observation evidence. Export
+  rejects malformed or incomplete replay closures and never places physical
+  QEMU checkpoint data in the handle. Quiescence, virtual-time, property, and
+  guest-marker stops use the same fail-closed Campaign owner.
+  `T-CLI-10` is completed through `checks.crucible.phase5.cliResumeWorkflow`.
+  The CLI accepts only an authenticated portable Campaign savepoint, validates
+  its scenario, schedule, replay closure, frontier, and observation claim, then
+  replays the source attempt from scenario genesis. At the authenticated source
+  boundary it captures one workflow-local version-nine exact descriptor and
+  restores a fresh QEMU process as an `AfterAttempt` continuation through the
+  production exact-resume lifecycle. The transient checkpoint store is removed
+  on success and failure. Direct checkpoint identities and remote/session,
+  cached-parent, nearest-checkpoint, and model-only fallbacks are rejected.
+  `T-CLI-11` is completed by the authenticated `campaign branch` command. It
+  binds the expected Campaign head and branch-point coordinates, publishes a
+  bounded finite or generated request, preserves source lineage, and leaves
+  realization and portable replay to the Campaign owner.
   `T-CLI-12` is completed through `checks.crucible.phase5.cliReplayCheck`, which
   covers `replay --check <original-log>` parsing, pinned-identity validation
   before store access, content-addressed component payload resolution from the
@@ -609,17 +525,17 @@ long-held locks.
   coverage in the same gate for quiet single-core vs loaded many-core artifact
   reproduction. The pure `reduce(ScenarioDef, Schedule)` materialization is the
   mandatory replay preflight; T-CLI-21 removes the production model-only path.
-  V3 artifacts from every local-QEMU producer add a v2 live recipe plus exact
-  event bytes and an explicit fingerprint scope: full execution for
-  run/verify/fuzz, terminal all-node snapshot for search/fork. Fork recipes
-  preserve the retained base for unchanged, reseeded, and contiguous-override
-  children and force only post-base choices; search recipes preserve their
-  lifecycle ceilings. Interactive capture fails closed until exact timed command
-  replay exists; ordered non-interactive startup and initial recipes reproduce
-  the acknowledgement sequence compared by replay. Ordinary replay, `--check`,
-  and `--to` launch a fresh pinned
+  V4 artifacts from every local-QEMU producer carry the v4 live-QEMU replay
+  contract, exact event bytes, and an explicit fingerprint scope: full
+  execution for campaign-run/verify/fuzz, terminal all-node snapshot for
+  search. Campaign branch recipes preserve their authenticated replay closure;
+  search recipes preserve their lifecycle ceilings. Interactive capture retains
+  each acknowledged control at its exact event, scheduler-batch, virtual-time,
+  quanta, and command boundary; replay applies those controls at the recorded
+  boundaries and compares the acknowledgement sequence. Ordinary replay,
+  `--check`, and `--to` launch a fresh pinned
   QEMU/plugin pair, while `--bisect` launches both sides independently before
-  comparison. The same check covers the closed five-producer recipe matrix and
+  comparison. The same check covers the closed four-producer recipe matrix and
   creates and replays a real two-VM timeout artifact through ordinary,
   `--check`, `--to`, and identical-artifact `--bisect`, completing T-HARN-29.
   `T-CLI-13` is completed through `checks.crucible.phase5.cliSearchFuzzWorkflow`,
@@ -659,13 +575,13 @@ long-held locks.
   for retained after-quiescence, `sometimes`, `eventually`, and
   expected-reachable failures, terminal `sometimes` and required `reachable`
   guest assertion marker failures, and event-backed `always` false or
-  `unreachable` true guest marker failures; hidden local-double
-  `crucible.search-retained-evidence.v1` retained-evidence fixture loading for
+  `unreachable` true guest marker failures; public
+  `crucible.search-retained-evidence.v1` retained-evidence loading for
   guest-marker events, terminal quantum evaluation-boundary entries, and
   terminal-quiescence entries on root or explicitly hashed configurations,
   validation of retained guest-marker evidence against scenario nodes and
   white-box policy, rejection of blocked terminal quiescence until blocker
-  evidence is modeled, local-double CLI coverage for retained
+  evidence is modeled, CLI coverage for retained
   after-quiescence and terminal `sometimes` failures, trusted retained-log
   provider wiring through configuration-bound `SearchRetainedLogAssertionEvidence`,
   and retained evidence source digest/payload provenance in `search-run` output
@@ -700,8 +616,8 @@ long-held locks.
   clustering, representative election, signature-preserving minimization,
   deterministic report/result artifact storage, `--policy`, `--minimize`,
   `--report`, global `--format`, `--recompute-signatures`, and `--compare`,
-  and explicitly rejects CLI-local `finding.*` sidecars plus artifact-only
-  ledgers whose discovery-time signature evidence is not available.
+  and rejects directories and retired or malformed ledger schemas before triage
+  begins.
   `T-CLI-14` is completed under `checks.crucible.phase5.cliServeReadOnly`,
   `checks.crucible.phase5.cliServeMaxSessions`,
   `checks.crucible.phase5.cliServeMultiClient`, and
@@ -719,12 +635,12 @@ long-held locks.
   which covers the backend-routed output path appending a machine-readable
   final-outcome record to canonical `json`/`jsonl` traces, suppressing human
   summary/footer lines from machine-readable stdout, process-level local-double
-  `run`, `save`, `search`, `fuzz`, marker-resolved QEMU `save`, `resume`, and
-  `fork`, `replay --check` success/mismatch, and `replay --to <SAVEPOINT>`
+  `run`, `save`, `search`, `fuzz`, marker-resolved QEMU `save` and `resume`,
+  `replay --check` success/mismatch, and `replay --to <SAVEPOINT>`
   JSONL output with parsed command-specific canonical events plus
   `final_outcome`, and
   regression-testing the RFC §15 exit-code classes, including the live-QEMU
-  run/save/resume/fork/search/fuzz routes.
+  run/save/resume/search/fuzz routes.
 - Patterns realized here: `T-PAT-1`, `T-PAT-6`.
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a
@@ -844,8 +760,8 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   diffs for `--compare`, and a thin `crucible triage <findings>` runner that
   opens the local DagStore, loads stored/path ledgers, executes the
   cluster→minimize-representative→emit→store pipeline for representable
-  discovery-signature evidence, and rejects bare non-empty artifact-only ledgers
-  instead of fabricating signatures. `T-TRI-8` is green through
+  discovery-signature evidence, and rejects directories and retired or
+  malformed ledger schemas before triage. `T-TRI-8` is green through
   `checks.crucible.phase6.triageCliSurface`, which resolves the forward
   reference into 23 by keeping `triage` in the closed subcommand set, aligning
   the user-facing help copy for `--policy`, `--minimize`, `--report`, global
@@ -896,7 +812,9 @@ fault-injected scenario runs bit-identically across adversarial host conditions
 and reproduces from its self-contained artifact), `gate:fleet-equivalence` (a
 distributed campaign across workers reproduces a finding bit-identically off any
 worker), `gate:campaign-continuity` (a continuous campaign resumes from its
-persisted frontier without losing or re-deriving coverage), and
+persisted frontier without losing or re-deriving coverage),
+`gate:production-rust-plugin-flight` (the current Rust host and plugin drive the
+identity-bound packaged QEMU through exact timer and boundary evidence), and
 `gate:signal-fault-system` (the closed production network, storage/9p, and node
 fault system passes its per-kind, live-boundary, checkpoint, replay, search,
 documentation, and retired-path proofs). When this is green and the

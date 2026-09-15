@@ -18,6 +18,7 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 ciborium = { workspace = true }
 crucible = { path = "../crucible" }
+crucible-campaign = { path = "../crucible-campaign" }
 crucible-device = { path = "../crucible-device" }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }

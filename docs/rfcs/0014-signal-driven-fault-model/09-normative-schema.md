@@ -18,17 +18,12 @@ fault_model = "signal_bindings_v2"
 seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
 
-Version 6 adds the scenario-owned measurement-definition component specified
-by RFC-0020 §08.2-§08.3. Version 7 adds the scenario-owned selectable catalog
-and its declaration/request ceilings specified by RFC-0020 §02. Readers accept
-version 5 only as the exact legacy form with empty measurement and selectable
-components, and version 6 only with an empty selectable component. New writes
-use version 7. A version-5 document that attempts to carry `[[measurement]]`,
-or a version-5/version-6 document that attempts to carry `[[selectable]]`, is
-rejected. The compact scenario envelope follows the same
-`scenario-def-form.v5`/v6 legacy-read and v7-write rule; reproduction artifacts
-containing v7 scenarios write outer version 7 while outer versions 5 and 6
-remain readable for prior artifacts.
+Version 7 contains the scenario-owned measurement-definition component from
+RFC-0020 §08.2-§08.3 and the scenario-owned selectable catalog and ceilings
+from RFC-0020 §02. Current readers and writers accept only version 7. Version 5
+and version 6 TOML documents, compact scenario envelopes, and reproduction
+artifacts are rejected before they can enter the model; the normal runtime has
+no migration path for those retired schemas.
 
 The canonical v7 `[scenario]` table additionally carries the nonzero bounded
 `selectable_declarations_per_node`, `selectable_declarations_per_world`,
@@ -553,7 +548,7 @@ in schema order and arrays in canonical or semantic order as appropriate.
 
 ## 9.10 Network adapter checkpoint encoding
 
-Network adapter checkpoint semantic version 7 encodes the evaluation
+Network adapter checkpoint semantic version 8 encodes the evaluation
 coordinate, per-coordinate and journal sequences, observation journal, token
 buckets, queues, burst state, state machines, connection tables, shared-medium
 ledgers, backpressure, custody queues, contact-service reservations, and all
@@ -564,11 +559,11 @@ sequence joins, broken reservation references, and every exceeded bound. No
 earlier checkpoint version is accepted through a compatibility or legacy
 decoding path.
 
-The enclosing production fault-runtime checkpoint is version 3 and binds the
+The enclosing production fault-runtime checkpoint is version 4 and binds the
 network adapter bytes to the scheduler network checkpoint, committed scheduler
 frontier, pending routed frames, live QEMU node snapshots, and the canonical
 network-state digest. The QEMU node-continuation checkpoint is independently
-version 3. For each node it captures both shared-memory network rings, the next
+version 7. For each node it captures both shared-memory network rings, the next
 router-to-plugin producer sequence, the next host-consumer sequence for the
 plugin-to-router ring, and the next plugin-producer sequence after all live
 outbound frames. Restore requires the live outbound frames to form the exact

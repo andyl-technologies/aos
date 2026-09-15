@@ -67,7 +67,7 @@ pub mod coverage;
 pub mod deadline;
 pub mod device_io;
 pub mod fault_command;
-pub mod fingerprint_sampler;
+mod fingerprint_sampler;
 pub mod handshake;
 pub mod idle_loop;
 pub mod inbound;
@@ -77,7 +77,6 @@ pub mod network_rx;
 pub mod network_tx;
 pub mod ninep_io;
 pub mod preemption;
-pub mod raw_state_dump;
 pub mod registration;
 pub mod round_robin;
 #[cfg(unix)]
@@ -87,13 +86,13 @@ pub mod shmem_ordering;
 pub mod teardown;
 pub mod time_control;
 pub mod vcpu_introspection;
+mod virtual_timer_witness;
 pub mod whitebox_doorbell;
 
 pub(crate) use abi::QemuPluginTargetArchitecture;
 pub use abi::{
-    InertDeviceCallback, MIN_SUPPORTED_VCPU_COUNT, OWNED_DEVICE_CALLBACK_KINDS,
-    PluginDeviceCallbackKind, PluginLifecycleCore, PluginLifecyclePhase, PluginRuntimeApis,
-    PluginStatePartition, QEMU_PLUGIN_API_VERSION, QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL,
+    MIN_SUPPORTED_VCPU_COUNT, OWNED_DEVICE_CALLBACK_KINDS, PluginDeviceCallbackKind,
+    PluginRuntimeApis, QEMU_PLUGIN_API_VERSION, QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL,
     QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD, QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK,
     QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN, QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD,
     QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY, QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE,
@@ -101,74 +100,63 @@ pub use abi::{
     QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD, QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED,
     QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED,
     QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKERS_READY, QEMU_PLUGIN_HOT_FORK_CHILD_INITIALIZE,
-    QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_ACTIVE, QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_FAILED,
-    QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_INITIALIZING, QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_TEMPLATE,
-    QEMU_PLUGIN_HOT_FORK_CHILD_PHASE_WORKERS_HELD, QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION,
-    QEMU_PLUGIN_HOT_FORK_CHILD_QUERY, QEMU_PLUGIN_HOT_FORK_CHILD_RELEASE,
-    QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION, QEMU_PLUGIN_ICOUNT_RAW_SYMBOL,
-    QEMU_PLUGIN_INSTALL_ERROR, QEMU_PLUGIN_INSTALL_OK, QEMU_PLUGIN_INSTALL_SYMBOL,
+    QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION, QEMU_PLUGIN_HOT_FORK_CHILD_QUERY,
+    QEMU_PLUGIN_HOT_FORK_CHILD_RELEASE, QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION,
+    QEMU_PLUGIN_ICOUNT_RAW_SYMBOL, QEMU_PLUGIN_INSTALL_ERROR, QEMU_PLUGIN_INSTALL_OK,
     QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL, QEMU_PLUGIN_REGISTER_ACCELERATOR_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL, QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL, QEMU_PLUGIN_REGISTER_HOT_FORK_BARRIER_SYMBOL,
+    QEMU_PLUGIN_REGISTER_HOT_FORK_BARRIER_SYMBOL,
     QEMU_PLUGIN_REGISTER_HOT_FORK_CHILD_RUNTIME_SYMBOL,
     QEMU_PLUGIN_REGISTER_RESOURCE_MANIFEST_SYMBOL,
     QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL, QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL,
     QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL, QEMU_PLUGIN_SET_PROCESS_GENERATION_SYMBOL,
-    QEMU_PLUGIN_VERSION_SYMBOL, QemuAcceleratorCancelCbFn, QemuAcceleratorPollCbFn,
-    QemuAcceleratorRestoreAbortCbFn, QemuAcceleratorRestoreBeginCbFn, QemuAcceleratorRestoreCbFn,
-    QemuAcceleratorRestoreCommitCbFn, QemuAcceleratorSubmitCbFn, QemuAcceleratorWaitCbFn,
-    QemuBlkEventCommitCbFn, QemuBlkEventPollCbFn, QemuBlkPollCbFn, QemuBlkSubmitCbFn,
-    QemuBlkTransportRestoreCbFn, QemuBlkTransportSaveCbFn, QemuBlkWaitCbFn, QemuForceVcpuExitFn,
-    QemuIcountRawFn, QemuNinePBurstCbFn, QemuNinePPollCbFn, QemuNinePSubmitCbFn,
-    QemuPluginAbiError, QemuPluginExecutionModel, QemuPluginHotForkBarrierCbFn,
-    QemuPluginHotForkBarrierStatus, QemuPluginHotForkChildPlan, QemuPluginHotForkChildRuntimeCbFn,
-    QemuPluginHotForkChildStatus, QemuPluginId, QemuPluginInfo, QemuPluginResourceManifest,
-    QemuRegisterAcceleratorCbFn, QemuRegisterBlkCbFn, QemuRegisterBlkEventCbFn,
-    QemuRegisterBlkWaitCbFn, QemuRegisterControlBoundaryCbFn, QemuRegisterHotForkBarrierFn,
+    QemuAcceleratorCancelCbFn, QemuAcceleratorPollCbFn, QemuAcceleratorRestoreAbortCbFn,
+    QemuAcceleratorRestoreBeginCbFn, QemuAcceleratorRestoreCbFn, QemuAcceleratorRestoreCommitCbFn,
+    QemuAcceleratorSubmitCbFn, QemuAcceleratorWaitCbFn, QemuBlkEventCommitCbFn,
+    QemuBlkEventPollCbFn, QemuBlkPollCbFn, QemuBlkSubmitCbFn, QemuBlkTransportRestoreCbFn,
+    QemuBlkTransportSaveCbFn, QemuBlkWaitCbFn, QemuForceVcpuExitFn, QemuIcountRawFn,
+    QemuNinePBurstCbFn, QemuNinePPollCbFn, QemuNinePSubmitCbFn, QemuPluginAbiError,
+    QemuPluginExecutionModel, QemuPluginHotForkBarrierCbFn, QemuPluginHotForkBarrierStatus,
+    QemuPluginHotForkChildPlan, QemuPluginHotForkChildRuntimeCbFn, QemuPluginHotForkChildStatus,
+    QemuPluginId, QemuPluginInfo, QemuPluginResourceManifest, QemuRegisterAcceleratorCbFn,
+    QemuRegisterBlkCbFn, QemuRegisterBlkEventCbFn, QemuRegisterBlkWaitCbFn,
+    QemuRegisterControlBoundaryCbFn, QemuRegisterHotForkBarrierFn,
     QemuRegisterHotForkChildRuntimeFn, QemuRegisterNinePCbFn, QemuRegisterResourceManifestFn,
-    QemuRegisterSimShmemDispatchCbFn, QemuRegisterTcgExecCbFn, QemuRegisterVcpuIdleResumeCbFn,
-    QemuRegisterVcpuInitCbFn, QemuRegisterWakeFdFn, QemuRequestShutdownFn, QemuRequestVmstopFn,
-    QemuSetProcessGenerationFn, QemuSimShmemMaxAdvanceIcountCbFn, QemuSimShmemPublishIcountCbFn,
-    QemuTcgExecCbFn, QemuTcgThreading, QemuVcpuIdleResumeCbFn, QemuVcpuSimpleCbFn,
-    RegisteredDeviceCallbacks, execution_model_from_qemu_info, install_inert_scaffold,
-    install_inert_scaffold_from_qemu_info, install_required_deadline_scaffold,
-    install_required_deadline_scaffold_from_qemu_info, install_required_preemption_scaffold,
-    install_required_preemption_scaffold_from_qemu_info, install_required_runtime_api_scaffold,
-    install_required_runtime_api_scaffold_from_qemu_info,
-    install_required_time_capability_scaffold,
-    install_required_time_capability_scaffold_from_qemu_info,
-    install_required_vcpu_introspection_scaffold,
-    install_required_vcpu_introspection_scaffold_from_qemu_info, qemu_plugin_install,
-    qemu_plugin_version, resolve_qemu_advance_time_ns_symbol, resolve_qemu_clock_deadline_symbol,
-    resolve_qemu_force_vcpu_exit_symbol, resolve_qemu_icount_raw_symbol,
-    resolve_qemu_inject_preemption_symbol, resolve_qemu_read_vcpu_regs_symbol,
+    QemuRegisterSimShmemDispatchCbFn, QemuRegisterVcpuIdleResumeCbFn, QemuRegisterWakeFdFn,
+    QemuRequestShutdownFn, QemuRequestVmstopFn, QemuSetProcessGenerationFn,
+    QemuSimShmemMaxAdvanceIcountCbFn, QemuSimShmemPublishIcountCbFn, QemuTcgThreading,
+    QemuVcpuIdleResumeCbFn, qemu_plugin_install, qemu_plugin_version,
+    resolve_qemu_advance_time_ns_symbol, resolve_qemu_arm_virtual_timer_witness_symbol,
+    resolve_qemu_clock_deadline_symbol, resolve_qemu_force_vcpu_exit_symbol,
+    resolve_qemu_icount_raw_symbol, resolve_qemu_inject_preemption_symbol,
+    resolve_qemu_query_virtual_timer_witness_symbol, resolve_qemu_read_vcpu_regs_symbol,
     resolve_qemu_register_9p_cb_symbol, resolve_qemu_register_accelerator_cb_symbol,
     resolve_qemu_register_blk_cb_symbol, resolve_qemu_register_blk_event_cb_symbol,
     resolve_qemu_register_blk_wait_cb_symbol, resolve_qemu_register_control_boundary_cb_symbol,
     resolve_qemu_register_hot_fork_barrier_symbol,
     resolve_qemu_register_hot_fork_child_runtime_symbol,
     resolve_qemu_register_resource_manifest_symbol,
-    resolve_qemu_register_sim_shmem_dispatch_cb_symbol, resolve_qemu_register_tcg_exec_cb_symbol,
+    resolve_qemu_register_sim_shmem_dispatch_cb_symbol,
     resolve_qemu_register_time_advance_cb_symbol, resolve_qemu_register_vcpu_idle_resume_cb_symbol,
     resolve_qemu_register_vcpu_init_cb_symbol, resolve_qemu_register_wake_fd_symbol,
     resolve_qemu_request_shutdown_symbol, resolve_qemu_request_time_control_symbol,
     resolve_qemu_request_vmstop_symbol, resolve_qemu_rr_cursor_symbol,
     resolve_qemu_set_process_generation_symbol, validate_install_boundary,
 };
+pub(crate) use abi::{QemuRegisterVcpuInitCbFn, QemuVcpuSimpleCbFn};
 pub use args::{
     HARD_STORAGE_COMPLETED_HISTORY_EPOCHS, HARD_STORAGE_COMPLETED_HISTORY_GAPS,
     PLUGIN_ARG_APP_RANDOM_CAP, PLUGIN_ARG_APP_RANDOM_NODE, PLUGIN_ARG_APP_RANDOM_SEED,
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_FAULT_NODE_HASH, PLUGIN_ARG_FINGERPRINT,
-    PLUGIN_ARG_FINGERPRINT_MODE, PLUGIN_ARG_PROCESS_GENERATION, PLUGIN_ARG_SHMEMFD,
-    PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT, PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS,
-    PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS, PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX,
-    PLUGIN_ARG_WHITEBOX_SETUP, PluginAppRandomConfig, PluginArgs, PluginArgsParseError,
-    PluginFingerprintSamplingMode, PluginInheritedFds, PluginStateDumpConfig,
-    PluginStorageHistoryLimits, PluginSwitch, WHITEBOX_SETUP_AARCH64_HINT_INERT_V1,
-    WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1, WhiteboxSetupAttestation,
+    PLUGIN_ARG_PROCESS_GENERATION, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT,
+    PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS, PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS,
+    PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX, PLUGIN_ARG_WHITEBOX_SETUP, PluginAppRandomConfig,
+    PluginArgs, PluginArgsParseError, PluginInheritedFds, PluginStorageHistoryLimits, PluginSwitch,
+    WHITEBOX_SETUP_AARCH64_HINT_INERT_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
+    WhiteboxSetupAttestation,
 };
 pub use block_io::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,
@@ -183,47 +171,31 @@ pub use boot_barrier::{
     BOOT_BARRIER_FIRST_GUEST_ICOUNT, BootBarrierError, BootBarrierRelease, BootBarrierWait,
     PluginBootBarrier,
 };
+pub(crate) use coverage::QemuRegisterVcpuTbTransCbFn;
 pub use coverage::{
     CoverageBlockEvent, CoverageCallback, CoverageCapabilities, CoverageError, CoverageMap,
     CoverageObservation, CoverageRegistrationPlan, CoverageSink, CoverageSinkError,
     DEFAULT_COVERAGE_MAP_ENTRIES, PluginCoverage, QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL,
     QEMU_PLUGIN_INSN_SIZE_SYMBOL, QEMU_PLUGIN_NUM_VCPUS_SYMBOL,
-    QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_COND_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL,
-    QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL, QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL,
-    QEMU_PLUGIN_TB_GET_INSN_SYMBOL, QEMU_PLUGIN_TB_N_INSNS_SYMBOL, QEMU_PLUGIN_TB_VADDR_SYMBOL,
-    QEMU_PLUGIN_U64_SET_SYMBOL, QemuBasicBlockCoverageApis, QemuIcountAtTbEntryFn, QemuInsnSizeFn,
-    QemuPluginInsn, QemuPluginNumVcpusFn, QemuPluginScoreboard, QemuPluginScoreboardFreeFn,
-    QemuPluginScoreboardNewFn, QemuPluginSimpleCbFn, QemuPluginTb, QemuPluginU64,
-    QemuPluginU64SetFn, QemuRegisterFlushCbFn, QemuRegisterVcpuTbExecCondCbFn,
-    QemuRegisterVcpuTbTransCbFn, QemuTbGetInsnFn, QemuTbNInsnsFn, QemuTbVaddrFn,
-    QemuVcpuTbExecCbFn, QemuVcpuTbTransCbFn, fold_basic_block_pc, handle_coverage_exec_callback,
+    QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_COND_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL, QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL,
+    QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL, QEMU_PLUGIN_TB_GET_INSN_SYMBOL,
+    QEMU_PLUGIN_TB_N_INSNS_SYMBOL, QEMU_PLUGIN_TB_VADDR_SYMBOL, QEMU_PLUGIN_U64_SET_SYMBOL,
+    QemuBasicBlockCoverageApis, QemuIcountAtTbEntryFn, QemuInsnSizeFn, QemuPluginInsn,
+    QemuPluginNumVcpusFn, QemuPluginScoreboard, QemuPluginScoreboardFreeFn,
+    QemuPluginScoreboardNewFn, QemuPluginTb, QemuPluginU64, QemuPluginU64SetFn,
+    QemuRegisterFlushCbFn, QemuRegisterVcpuTbExecCondCbFn, QemuTbGetInsnFn, QemuTbNInsnsFn,
+    QemuTbVaddrFn, QemuVcpuTbExecCbFn, fold_basic_block_pc, handle_coverage_exec_callback,
 };
 pub use deadline::{
-    ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
-    ExactDeadlineReader, ExactDeadlineReport, PerVcpuDeadlineReport,
+    ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport, PerVcpuDeadlineReport,
     QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL, QemuClockDeadlineFn, aggregate_multi_vcpu_deadline,
 };
 pub use device_io::{
     DeviceIoBurstState, DeviceIoFreezeError, DeviceIoRequestOutcome, DeviceIoRequestRelease,
     DeviceIoRequestToken, PluginDeviceIoFreeze,
 };
-pub use fault_command::{
-    FaultCommandBridgeError, QEMU_PLUGIN_CRUCIBLE_FAULT_CANCEL_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_FAULT_CAPABILITIES_SYMBOL, QEMU_PLUGIN_CRUCIBLE_FAULT_PEEK_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_FAULT_POLL_SYMBOL, QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_BIND_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_FAULT_REGISTER_MANIFEST_SYMBOL, QEMU_PLUGIN_CRUCIBLE_FAULT_SUBMIT_SYMBOL,
-};
-pub use fingerprint_sampler::{
-    FINGERPRINT_FAILURE_DEVICE_STATE, FINGERPRINT_FAILURE_DEVICE_STATE_SCHEMA,
-    FINGERPRINT_FAILURE_RAM, FingerprintSamplerError, PluginFingerprintDigester,
-    PluginFingerprintSampling, QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SCHEMA_SHA256_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_DEVICE_STATE_SHA256_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_FINGERPRINT_CAPTURE_FREE_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_FINGERPRINT_CAPTURE_SYMBOL, QEMU_PLUGIN_CRUCIBLE_GUEST_RAM_SHA256_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_SHA256_BYTES_SYMBOL, QemuDigestFn, QemuFingerprintCaptureFn,
-    QemuFingerprintCaptureFreeFn, QemuSha256BytesFn, assemble_fingerprint_sample,
-};
+pub use fault_command::FaultCommandBridgeError;
 pub use handshake::{
     PluginControlHandshake, PluginHandshakeError, perform_plugin_handshake,
     plugin_handshake_config, validate_plugin_handshake,
@@ -266,7 +238,6 @@ pub use preemption::{
     QEMU_PREEMPTION_KIND_VCPU_SWITCH, QEMU_PREEMPTION_UNUSED_ARG, QemuInjectPreemptionFn,
     QemuPreemptionCommand, plan_deterministic_ipi_delivery,
 };
-pub use raw_state_dump::{PluginRawStateDump, PluginRawStateDumpError};
 pub use registration::{
     PluginCallbackCapabilities, PluginRegistrationFailure, PluginRegistrationReady,
     PluginRegistrationSequence, PluginRegistrationSequenceError,
@@ -277,9 +248,9 @@ pub use round_robin::{
 };
 #[cfg(unix)]
 pub use runtime::{
-    LiveDeviceCallbackError, LiveVcpuTimeCallbackError, OwnedCallbackRegistrationError,
-    PluginRuntimeInstallError, PluginRuntimeOwner, REQUIRED_OWNED_CALLBACK_FAMILIES,
-    RequiredOwnedCallbacksRegistered, active_runtime_is_published,
+    LiveDeviceCallbackError, OwnedCallbackRegistrationError, PluginRuntimeInstallError,
+    PluginRuntimeOwner, REQUIRED_OWNED_CALLBACK_FAMILIES, RequiredOwnedCallbacksRegistered,
+    active_runtime_is_published,
 };
 pub use setup::PluginReadySetupAck;
 #[cfg(unix)]
@@ -295,36 +266,38 @@ pub use teardown::{
     PluginShutdownRequested, PluginTeardown, PluginTeardownComplete, PluginTeardownError,
     PluginTeardownTrigger,
 };
+pub(crate) use time_control::QemuCrucibleWaitIdleWakeFn;
 pub use time_control::{
     CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, MAX_PLUGIN_ICOUNT_SHIFT, PendingIdleAdvance,
     PluginClockAdvance, PluginClockAdvanceSource, PluginClockError, PluginRegistrationStep,
     PluginTimeControlOwnership, PluginTimeControlRequestError, PluginVirtualClock,
-    QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL, QEMU_PLUGIN_HAS_TIME_CONTROL_SYMBOL,
+    QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL, QEMU_PLUGIN_CRUCIBLE_WAIT_IDLE_WAKE_SYMBOL,
     QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL, QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL,
-    QEMU_PLUGIN_UPDATE_NS_SYMBOL, QemuAdvanceTimeNsFn, QemuRegisterTimeAdvanceCbFn,
-    QemuRequestTimeControlFn, QemuTimeAdvanceCompletionCbFn, QueuedIdleAdvance,
-    QueuedIdleAdvanceError, SchedulerAuthorizedIdleJump, SchedulerCeiling, TimeAdvanceCompletion,
+    QemuAdvanceTimeNsFn, QemuRegisterTimeAdvanceCbFn, QemuRequestTimeControlFn,
+    QemuTimeAdvanceCompletionCbFn, QueuedIdleAdvance, QueuedIdleAdvanceError,
+    SchedulerAuthorizedIdleJump, SchedulerCeiling, TimeAdvanceCompletion,
     TimeControlRegistrationError, TimeControlRegistrationPlan,
 };
+pub(crate) use time_control::{QemuIdleWakeWait, QemuIdleWakeWaitStatus};
 pub use vcpu_introspection::{
     MAX_VCPU_REGISTER_FILE_BYTES, PLUGIN_REGISTER_DIGEST_BYTES, PluginNvcpuFingerprintInputs,
     PluginRoundRobinCursor, PluginVcpuIntrospector, PluginVcpuRegisterDigest,
-    QEMU_PLUGIN_CRUCIBLE_GET_VCPU_REGISTERS_SYMBOL, QEMU_PLUGIN_CRUCIBLE_READ_VCPU_REGISTER_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_RR_CURRENT_VCPU_SYMBOL, QEMU_PLUGIN_CRUCIBLE_RR_CURSOR_POSITION_SYMBOL,
-    QEMU_PLUGIN_CRUCIBLE_RR_SWITCH_QUANTUM_SYMBOL, QEMU_PLUGIN_READ_VCPU_REGS_SYMBOL,
-    QEMU_PLUGIN_RR_CURSOR_SYMBOL, QemuReadRrCursorFn, QemuReadVcpuRegsFn, QemuRoundRobinCursor,
-    VcpuIntrospectionError, digest_register_file,
+    QEMU_PLUGIN_READ_VCPU_REGS_SYMBOL, QEMU_PLUGIN_RR_CURSOR_SYMBOL, QemuReadRrCursorFn,
+    QemuReadVcpuRegsFn, QemuRoundRobinCursor, VcpuIntrospectionError, digest_register_file,
+};
+pub(crate) use virtual_timer_witness::{ArmedVirtualTimerWitness, QemuVirtualTimerWitness};
+pub use virtual_timer_witness::{
+    QEMU_PLUGIN_CRUCIBLE_ARM_VIRTUAL_TIMER_WITNESS_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_QUERY_VIRTUAL_TIMER_WITNESS_SYMBOL, QemuArmVirtualTimerWitnessFn,
+    QemuQueryVirtualTimerWitnessFn, QemuVirtualTimerWitnessRecord, VirtualTimerWitnessError,
 };
 pub use whitebox_doorbell::{
-    AppRandomDecisionError, AppRandomDecisionRecord, AppRandomDecisionSource,
-    AppRandomDecodeDiagnostic, AppRandomDecodeDiagnosticKind, AppRandomDoorbellError,
-    AppRandomDoorbellOutcome, AppRandomDoorbellRequest, AppRandomDoorbellService,
+    AppRandomDecodeDiagnostic, AppRandomDecodeDiagnosticKind, AppRandomDoorbellRequest,
     CatalogedSelectableService, GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS,
     GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, GuestMemoryAddressSpace, GuestMemoryRange,
     GuestMemoryReadError, GuestMemoryReader, PluginWhiteboxDoorbell,
-    QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL, QEMU_PLUGIN_DOORBELL_TRANSLATION_SYMBOL,
-    QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL, QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL,
-    QEMU_PLUGIN_READ_REGISTER_SYMBOL, QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
+    QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL, QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL,
+    QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL, QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
     SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS, SELECTABLE_CATALOG_HARD_MAX_REQUESTS,
     SelectableCallbackCoordinate, SelectableCatalog, SelectableCatalogError,
     SelectableCatalogExpectation, SelectableCatalogFreeze, SelectableCatalogLimits,
@@ -368,7 +341,10 @@ pub use whitebox_doorbell::{
     WhiteboxSemanticMarkerDetail, decode_whitebox_marker_payload, encode_aarch64_hint_instruction,
     encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body, encode_x86_64_out_imm8_al_instruction,
-    handle_whitebox_app_random_callback, handle_whitebox_doorbell_callback,
-    handle_whitebox_guest_input_callback, handle_whitebox_selectable_callback,
-    whitebox_doorbell_abi_for_architecture,
+    handle_whitebox_doorbell_callback, handle_whitebox_guest_input_callback,
+    handle_whitebox_selectable_callback, whitebox_doorbell_abi_for_architecture,
+};
+pub(crate) use whitebox_doorbell::{
+    AppRandomDoorbellOutcome, BackendRngEvidenceError, BackendRngEvidenceRecord,
+    BackendRngEvidenceSource, handle_whitebox_app_random_callback,
 };

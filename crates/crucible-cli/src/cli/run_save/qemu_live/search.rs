@@ -99,14 +99,7 @@ impl GuardedCampaignFindingOracle for QemuSearchSupplementalOracle {
     ) -> Result<Option<GuardedCampaignFindingOracleEvaluation>, GuardedCampaignFindingOracleError>
     {
         self.assertion_finding(configuration)
-            .map(|finding| {
-                finding.map(|finding| {
-                    GuardedCampaignFindingOracleEvaluation::new(
-                        finding.violation().assertion.name.clone(),
-                        crucible_campaign::CampaignHash::from_bytes(finding.fingerprint().bytes),
-                    )
-                })
-            })
+            .map(|finding| finding.map(GuardedCampaignFindingOracleEvaluation::new))
             .map_err(|error| GuardedCampaignFindingOracleError::new(error.to_string()))
     }
 }
@@ -154,12 +147,22 @@ fn search_finding_reproduction_artifact_bytes(
         LiveQemuArtifactEvidence {
             contract: LiveQemuReplayContract {
                 producer: String::from("campaign-search"),
+                execution_owner: RunExecutionOwner::Campaign,
+                execution_mode: RunExecutionMode::ToCompletion,
+                initial_configuration: format_content_hash_ref(
+                    crucible::Configuration::genesis(model.artifact.scenario_def()).id(),
+                ),
+                initial_scenario: scenario.to_compact_binary(),
+                initial_schedule: crucible::Schedule::empty().to_compact_binary(),
                 terminal_condition: String::from("stopped"),
                 terminal_status: status.label().to_string(),
                 terminal_outcome: terminal_outcome_label(Some(finding.outcome)).to_string(),
                 terminal_configuration: format_content_hash_ref(finding.failure.configuration),
                 final_frontier_ticks: finding.frontier.ticks,
                 final_quanta: finding.quanta,
+                final_event_log_len: u64::try_from(finding.event_frames.len()).unwrap_or(u64::MAX),
+                final_schedule: model.artifact.schedule().to_compact_binary(),
+                terminal_savepoint: None,
                 budget_timed_out: finding.outcome == OutcomeKind::Timeout,
                 max_virtual_time_ticks: None,
                 max_quanta: None,
@@ -172,6 +175,7 @@ fn search_finding_reproduction_artifact_bytes(
                 startup_controls: Vec::new(),
                 initial_controls: Vec::new(),
                 controls: Vec::new(),
+                reproduction_commands: Vec::new(),
             },
             event_stream: canonical_verify_log_stream_bytes(&[], &finding.event_frames),
             fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprints),
@@ -302,20 +306,19 @@ fn run_local_qemu_search_scenario(
             ));
         }
     };
-    let coverage = if plan.engine_strategy == crucible::SearchStrategy::CoverageGuided {
-        production_api::ProductionPluginSwitch::On
-    } else {
-        production_api::ProductionPluginSwitch::Off
-    };
+    let coverage = plan.engine_strategy == crucible::SearchStrategy::CoverageGuided;
     let lifecycle_artifacts =
         std::sync::Arc::new(crucible::LocalDagStore::new(plan.store_root.clone()));
-    let lifecycle = production_qemu_lifecycle_config(backend)?
-        .with_run_ceiling_icount(LIVE_EXPLORATION_RUN_CEILING_ICOUNT)
-        .with_quantum_budget(LIVE_EXPLORATION_QUANTUM_LIMIT)
-        .with_coverage(coverage)
-        .with_world_artifacts(lifecycle_artifacts.clone())
-        .with_signal_artifacts(lifecycle_artifacts);
+    let lifecycle = crucible_daemon::with_production_qemu_coverage(
+        production_qemu_lifecycle_config(backend)?,
+        coverage,
+    )
+    .with_run_ceiling_icount(LIVE_EXPLORATION_RUN_CEILING_ICOUNT)
+    .with_quantum_budget(LIVE_EXPLORATION_QUANTUM_LIMIT)
+    .with_world_artifacts(lifecycle_artifacts.clone())
+    .with_signal_artifacts(lifecycle_artifacts);
     let deployment = load_guarded_campaign_deployment(plan.campaign_deployment.as_deref())?;
+    let verify_determinism_findings = deployment.verify_determinism_findings;
     if deployment.resources.maximum_execution_quanta() < LIVE_EXPLORATION_QUANTUM_LIMIT {
         return Err(backend_error(format!(
             "campaign deployment admits {} execution quanta, below the search requirement of {}",
@@ -354,6 +357,7 @@ fn run_local_qemu_search_scenario(
     )
     .with_exploration(exploration)
     .with_watch_frames();
+    request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
     if let Some(oracle) = QemuSearchSupplementalOracle::from_plan(plan)? {
         request = request.with_supplemental_finding_oracle(Box::new(oracle));
     }
@@ -846,9 +850,7 @@ fn accepted_observation_outcome(accepted: &GuardedDefaultCampaignObservation) ->
         StopOutcome::Reached(_) | StopOutcome::TerminalSuccess => OutcomeKind::Passed,
         StopOutcome::ObservationReached(proof) => match proof.satisfaction() {
             ObservationStopSatisfaction::SchedulerQuiescent => OutcomeKind::Passed,
-            ObservationStopSatisfaction::AssertionViolationTransition => {
-                OutcomeKind::Failed
-            }
+            ObservationStopSatisfaction::AssertionViolationTransition => OutcomeKind::Failed,
             ObservationStopSatisfaction::ExecutionQuanta => OutcomeKind::Timeout,
         },
     }
@@ -874,7 +876,8 @@ fn accepted_failure_material(
         }
         StopOutcome::ModeledTimeout(_) => {}
         StopOutcome::ObservationReached(proof)
-            if proof.satisfaction() == ObservationStopSatisfaction::AssertionViolationTransition =>
+            if proof.satisfaction()
+                == ObservationStopSatisfaction::AssertionViolationTransition =>
         {
             if let Some(witness) = proof.assertion_witness() {
                 violations.push(witness.assertion().to_owned());

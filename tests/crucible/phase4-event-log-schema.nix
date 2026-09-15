@@ -59,8 +59,8 @@
         needle = "pub enum EventLevel";
       }
       {
-        label = "event class compatibility alias";
-        needle = "pub type EventClass = SchedulerEventLogClass";
+        label = "canonical event class";
+        needle = "pub enum SchedulerEventLogClass";
       }
       {
         label = "entry stores full time";
@@ -100,7 +100,7 @@
       }
       {
         label = "control decision command id";
-        needle = "command_id: control.sequence";
+        needle = "command_id: operation.sequence";
       }
       {
         label = "entry hash material includes source level class";

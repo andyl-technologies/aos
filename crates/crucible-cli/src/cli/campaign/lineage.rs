@@ -171,12 +171,12 @@ scenario_content = "{scenario_content}"
 genesis = "{genesis}"
 genesis_content = "{genesis_content}"
 crucible_version = "crucible-0.1.0"
-qemu_build = "qemu-10.0-crucible"
+qemu_build = "qemu-11.1.1-crucible"
 scenario_schema = 3
 exact_closure_schema = 4
 
 [protocol_versions]
-control = 2
+control = 3
 shared-memory = 5
 "#
         )
@@ -198,7 +198,7 @@ shared-memory = 5
             lineage.id().expect("lineage ID").to_string()
         );
         assert_eq!(report.encoded_bytes, bytes.len());
-        assert_eq!(lineage.protocol_versions().get("control"), Some(&2));
+        assert_eq!(lineage.protocol_versions().get("control"), Some(&3));
         assert_eq!(lineage.exact_closure_schema(), 4);
     }
 
@@ -207,7 +207,7 @@ shared-memory = 5
         let temporary = tempdir().expect("temporary directory");
         let input = temporary.path().join("lineage.toml");
         let output = temporary.path().join("lineage.bin");
-        std::fs::write(&input, manifest().replace("control = 2", "control = 0"))
+        std::fs::write(&input, manifest().replace("control = 3", "control = 0"))
             .expect("write invalid manifest");
 
         assert!(compile_campaign_lineage(&input, &output).is_err());

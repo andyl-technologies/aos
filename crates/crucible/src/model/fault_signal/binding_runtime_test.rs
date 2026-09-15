@@ -610,17 +610,57 @@ fn finite_binding_search_choices_replay_once_and_reject_unused_overrides() {
     assert_eq!(choice.candidate_count, 2);
     assert_eq!(choice.selected_index, Some(1));
     assert!(!choice.overridden);
+    assert_eq!(
+        choice.candidate_semantics,
+        BindingSearchCandidateSemantics::Parameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            candidates: [10_u64, 20]
+                .into_iter()
+                .map(|duration| {
+                    ContentHash::from_canonical_material(
+                        "crucible.search-parameter-candidate.v1",
+                        &format!("parameter=duration-nanos;value=duration_nanos:{duration}"),
+                    )
+                })
+                .collect(),
+        }
+    );
 
     let overrides: BTreeMap<SearchChoiceId, SearchOverride> = [(
         choice.id,
         SearchOverride {
             candidate_index: 0,
             candidates_digest: choice.candidates_digest,
+            candidate: choice
+                .candidate_semantics
+                .candidate(0)
+                .unwrap_or_else(|| panic!("fixture candidate must exist")),
             parent_branch: Some(ContentHash::from_bytes(b"search-parent")),
         },
     )]
     .into_iter()
     .collect();
+
+    let mut wrong_semantics = overrides.clone();
+    wrong_semantics
+        .get_mut(&choice.id)
+        .unwrap_or_else(|| panic!("fixture override must exist"))
+        .candidate = BindingSearchCandidate::Transition(ContentHash::from_bytes(b"wrong-kind"));
+    let mut rejected = FaultBindingRuntime::new_with_search_overrides(
+        &program,
+        vec![binding.clone()],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        FaultResourceLimits::default(),
+        wrong_semantics,
+    )
+    .unwrap_or_else(|error| panic!("invalid mismatch runtime: {error}"));
+    assert!(matches!(
+        rejected.evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default()),
+        Err(BindingRuntimeError::SearchChoice)
+    ));
+
     let mut replay = FaultBindingRuntime::new_with_search_overrides(
         &program,
         vec![binding.clone()],
@@ -1446,47 +1486,5 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
     assert_eq!(restored.active(), uninterrupted.active());
 }
 
-#[test]
-fn service_profile_identity_includes_named_physical_input_contracts() {
-    let value = SignalValue::U64(42);
-    let distance = ResolvedMappingOutput::ServiceProfile {
-        service_profile: object_id("physical-input-profile"),
-        input_contracts: vec![ServiceProfileInput {
-            role: object_id("distance"),
-            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Millimetres, 0)
-                .unwrap_or_else(|error| panic!("distance shape: {error}")),
-        }],
-        inputs: vec![value.clone()],
-    };
-    let count = ResolvedMappingOutput::ServiceProfile {
-        service_profile: object_id("physical-input-profile"),
-        input_contracts: vec![ServiceProfileInput {
-            role: object_id("count"),
-            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
-                .unwrap_or_else(|error| panic!("count shape: {error}")),
-        }],
-        inputs: vec![value],
-    };
-    let range = ResolvedMappingOutput::ServiceProfile {
-        service_profile: object_id("physical-input-profile"),
-        input_contracts: vec![ServiceProfileInput {
-            role: object_id("range"),
-            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Millimetres, 0)
-                .unwrap_or_else(|error| panic!("range shape: {error}")),
-        }],
-        inputs: vec![SignalValue::U64(42)],
-    };
-
-    let distance_digest = resolved_mapping_output_digest(&distance, FaultResourceLimits::default())
-        .unwrap_or_else(|error| panic!("distance digest: {error}"));
-    assert_ne!(
-        distance_digest,
-        resolved_mapping_output_digest(&count, FaultResourceLimits::default())
-            .unwrap_or_else(|error| panic!("count digest: {error}")),
-    );
-    assert_ne!(
-        distance_digest,
-        resolved_mapping_output_digest(&range, FaultResourceLimits::default())
-            .unwrap_or_else(|error| panic!("range digest: {error}")),
-    );
-}
+#[path = "binding_runtime/service_profile.rs"]
+mod service_profile;

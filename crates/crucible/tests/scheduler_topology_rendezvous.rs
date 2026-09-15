@@ -205,10 +205,12 @@ fn ready_timed_change_keeps_sequence_order_with_immediate_change() {
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
 
     drive_one_quantum(&mut scheduler);
-    scheduler.queue_topology_change(SchedulerTopologyChange::heal(
-        2,
-        vec![edge(&producer, &consumer, 6)],
-    ));
+    scheduler
+        .schedule_topology_change(SchedulerTopologyChange::heal(
+            2,
+            vec![edge(&producer, &consumer, 6)],
+        ))
+        .expect("future topology change should enqueue");
 
     drive_one_quantum(&mut scheduler);
 

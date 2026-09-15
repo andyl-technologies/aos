@@ -105,7 +105,7 @@ signature, and two findings of different defects produce different signatures.
 
 The signature is computed from the **recorded run alone** — the immutable
 `ScenarioDef` (06), the recorded `Schedule` (05 §3), and the **causal
-subsequence** of the event log (19 §19.5, the `EventClass::Causal` projection
+subsequence** of the event log (19 §19.5, the `SchedulerEventLogClass::Causal` projection
 renumbered past observational interleaving). It is **never** a function of
 wall-clock time, host map-iteration order, the discovering campaign, or any
 observational entry (19 §19.3), so it is offline-recomputable and host-independent.
@@ -685,9 +685,10 @@ Triage's input is a **findings ledger**: a signed, canonical evidence envelope
 for the discovered findings. Each entry binds a self-contained reproduction
 artifact (22 §22.8.1, 24 §12) to the exact discovery-time event frames, coverage
 fingerprint, typed property-violation or timeout record, and failure-signature
-bytes. The v3 envelope is content-addressed and stored in the `DagStore` (07 §7);
-the binding makes offline recomputation detect tampering or discovery/triage
-drift. Readers retain compatibility with legacy v1/v2 property-only ledgers.
+bytes. The V4 envelope declares whether its entries carry reproduction or
+campaign evidence, is content-addressed, and is stored in the `DagStore` (07
+§7). The binding makes offline recomputation detect tampering or
+discovery/triage drift.
 
 Because the ledger is content-addressed, a finding appearing in two campaigns is
 **one entry** (dedup, [INV-6]), and a finding's identity is its reproduction
@@ -839,7 +840,7 @@ CLI (§34.6): `crucible triage <findings>` — thin driver, no run state; flags
   Result is a content-addressed DagStore artifact (dedup; --compare = content diff,
   [TRI-16]); fully offline + self-checking via --recompute-signatures ([TRI-17]).
 
-LEDGER (§34.7): signed v3 evidence envelope in the DagStore, binding each
+LEDGER (§34.7): signed V4 evidence envelope in the DagStore, binding each
   reproduction artifact to exact event frames, coverage, typed finding evidence,
   and discovery signature; finding identity = artifact content hash ([TRI-18]).
 

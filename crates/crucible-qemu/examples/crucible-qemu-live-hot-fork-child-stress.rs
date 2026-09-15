@@ -1,7 +1,7 @@
 //! Runs many hot-fork child lifecycles against one retained template.
 //!
 //! ```text
-//! crucible-qemu-live-hot-fork-child-stress QEMU PLUGIN KERNEL FIRMWARE CGROUP_ROOT RUN_ROOT LIFECYCLES
+//! crucible-qemu-live-hot-fork-child-stress QEMU PLUGIN KERNEL FIRMWARE CGROUP_ROOT RUN_ROOT LIFECYCLES [RAM_MIB]
 //! ```
 //!
 //! Firmware executes bounded busy windows; the kernel argument supplies launch
@@ -33,6 +33,62 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     use crucible_qemu::{QemuLiveNodeStepGateConfig, run_qemu_live_hot_fork_child_stress_gate};
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let (required, ram_mib) = match args.as_slice() {
+        [
+            qemu,
+            plugin,
+            kernel,
+            firmware,
+            cgroup_root,
+            run_root,
+            lifecycles,
+        ] => (
+            [
+                qemu,
+                plugin,
+                kernel,
+                firmware,
+                cgroup_root,
+                run_root,
+                lifecycles,
+            ],
+            128,
+        ),
+        [
+            qemu,
+            plugin,
+            kernel,
+            firmware,
+            cgroup_root,
+            run_root,
+            lifecycles,
+            ram_mib,
+        ] => {
+            let ram_mib = ram_mib
+                .to_str()
+                .ok_or("RAM_MIB must be UTF-8")?
+                .parse()
+                .map_err(|error| format!("RAM_MIB must be a positive integer: {error}"))?;
+            (
+                [
+                    qemu,
+                    plugin,
+                    kernel,
+                    firmware,
+                    cgroup_root,
+                    run_root,
+                    lifecycles,
+                ],
+                ram_mib,
+            )
+        }
+        _ => {
+            return Err(
+                "expected QEMU PLUGIN KERNEL FIRMWARE CGROUP_ROOT RUN_ROOT LIFECYCLES [RAM_MIB]"
+                    .into(),
+            );
+        }
+    };
     let [
         qemu,
         plugin,
@@ -41,20 +97,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         cgroup_root,
         run_root,
         lifecycles,
-    ] = args.as_slice()
-    else {
-        return Err("expected QEMU PLUGIN KERNEL FIRMWARE CGROUP_ROOT RUN_ROOT LIFECYCLES".into());
-    };
+    ] = required;
     let lifecycles: u32 = lifecycles
         .to_str()
         .ok_or("LIFECYCLES must be UTF-8")?
         .parse()
         .map_err(|error| format!("LIFECYCLES must be a positive integer: {error}"))?;
+    if ram_mib == 0 {
+        return Err("RAM_MIB must be positive".into());
+    }
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
         .with_firmware_boot()
         // The child console stage requires the connected crucible-console frontend.
         .with_console_capture()
-        .with_vm_shape(128, 1, 0)
+        .with_vm_shape(ram_mib, 1, 0)
         .with_completion_timeout(Duration::from_secs(60));
     let report = run_qemu_live_hot_fork_child_stress_gate(
         &config,
@@ -66,10 +122,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("gate=gate:qemu-hot-fork-child-lifecycle-stress");
     println!("template_generation={}", report.template_generation);
     println!("lifecycles={}", report.lifecycles);
+    println!("guest_ram_mib={ram_mib}");
     println!(
         "last_child_files_generation={}",
         report.last_child_files_generation
     );
+    println!("source_vmstate_bytes={}", report.source_vmstate_bytes);
+    println!("source_allocated_bytes={}", report.source_allocated_bytes);
     println!("source_threads={}", report.source_threads);
     println!("source_descriptors={}", report.source_descriptors);
     println!("source_threads_leaked={}", report.source_threads_leaked);
@@ -91,6 +150,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("max_fork_ms={}", report.max_fork_ms);
     println!("max_ready_ms={}", report.max_ready_ms);
+    println!(
+        "fork_latency_ms={}",
+        joined_samples(&report.fork_latency_ms)
+    );
+    println!(
+        "ready_latency_ms={}",
+        joined_samples(&report.ready_latency_ms)
+    );
+    println!("max_child_rss_anon_kib={}", report.max_child_rss_anon_kib);
+    println!(
+        "max_child_private_dirty_kib={}",
+        report.max_child_private_dirty_kib
+    );
+    println!(
+        "max_child_private_rss_kib={}",
+        report.max_child_private_rss_kib
+    );
+    println!(
+        "max_child_allocated_bytes={}",
+        report.max_child_allocated_bytes
+    );
     println!("total_ms={}", report.total_ms);
     println!("run_root_entries={}", report.run_root_entries);
     let samples: Vec<String> = report
@@ -100,6 +180,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     println!("private_dirty_samples={}", samples.join(","));
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn joined_samples(samples: &[u64]) -> String {
+    samples
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[cfg(not(target_os = "linux"))]

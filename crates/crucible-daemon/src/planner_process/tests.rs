@@ -143,32 +143,36 @@ fn canonical_request_for(byte: u8, use_puct: bool) -> PlannerRequest {
     )
     .expect("policy artifact");
     let policy = CampaignPolicy::new(
-        ScenarioDefId::from_hash(CampaignHash::derive(
-            "crucible.test.planner-process-scenario.v1",
-            &[byte],
-        )),
-        CampaignSeed::from_bytes([byte; 32]),
-        CampaignMode::Strict,
-        ExplorerPolicy::TreeSearch {
-            puct: PuctPolicy::new(1_000_000, 0, 0),
-            widening: Some(
-                ProgressiveWideningPolicy::new(
-                    crucible_campaign::ExactRational::new(1, 1).expect("k"),
-                    crucible_campaign::ExactRational::new(1, 2).expect("alpha"),
-                    1,
-                    4,
-                    1,
-                )
-                .expect("widening"),
-            ),
-        },
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeMap::new(),
-        BTreeSet::new(),
-        FairnessPolicy::new(1, 1).expect("fairness"),
-        RetentionPolicy::new(false, 1, false, false),
-        false,
+        CampaignPolicy::identity(
+            ScenarioDefId::from_hash(CampaignHash::derive(
+                "crucible.test.planner-process-scenario.v1",
+                &[byte],
+            )),
+            CampaignSeed::from_bytes([byte; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                puct: PuctPolicy::new(1_000_000, 0, 0),
+                widening: Some(
+                    ProgressiveWideningPolicy::new(
+                        crucible_campaign::ExactRational::new(1, 1).expect("k"),
+                        crucible_campaign::ExactRational::new(1, 2).expect("alpha"),
+                        1,
+                        4,
+                        1,
+                    )
+                    .expect("widening"),
+                ),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(1, 1).expect("fairness"),
+            RetentionPolicy::new(false, 1, false, false),
+            false,
+        ),
     )
     .expect("policy");
     let state = if use_puct {
@@ -215,7 +219,7 @@ fn canonical_request_for(byte: u8, use_puct: bool) -> PlannerRequest {
 
 fn content(kind: ObjectKind, byte: u8) -> ContentId {
     let schema_version = if kind == ObjectKind::CampaignSnapshot {
-        2
+        3
     } else {
         1
     };

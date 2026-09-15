@@ -142,11 +142,13 @@ impl CampaignRepository {
         bytes: Vec<u8>,
     ) -> Result<ReproductionArtifactId, CampaignRepositoryError> {
         let artifact = ReproductionArtifact::new(
-            scenario,
-            scenario_artifact,
-            configuration,
-            configuration_artifact,
-            finding_fingerprint,
+            crate::ReproductionArtifactBasis::new(
+                scenario,
+                scenario_artifact,
+                configuration,
+                configuration_artifact,
+                finding_fingerprint,
+            ),
             payload_schema,
             bytes,
         )?;
@@ -192,11 +194,13 @@ impl CampaignRepository {
         minimization: FindingMinimizationEvidence,
     ) -> Result<ReproductionArtifactId, CampaignRepositoryError> {
         let artifact = ReproductionArtifact::new_minimized(
-            scenario,
-            scenario_artifact,
-            configuration,
-            configuration_artifact,
-            finding_fingerprint,
+            crate::ReproductionArtifactBasis::new(
+                scenario,
+                scenario_artifact,
+                configuration,
+                configuration_artifact,
+                finding_fingerprint,
+            ),
             payload_schema,
             bytes,
             minimization,

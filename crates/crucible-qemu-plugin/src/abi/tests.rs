@@ -184,13 +184,6 @@ fn abi_install_entrypoint_validates_raw_boundary_and_builds_inert_model() {
         call_qemu_plugin_install_with_valid_args(&valid_info),
         QEMU_PLUGIN_INSTALL_ERROR
     );
-    assert!(
-        install_inert_scaffold_from_qemu_info(
-            &valid_info,
-            QemuTcgThreading::SingleThreadedRoundRobin
-        )
-        .is_ok()
-    );
     assert_eq!(
         call_qemu_plugin_install(std::ptr::null(), 0, std::ptr::null_mut()),
         QEMU_PLUGIN_INSTALL_ERROR
@@ -238,7 +231,7 @@ fn abi_install_trampoline_contains_panics_and_blocks_second_install_attempt() {
 }
 
 #[test]
-fn abi_qemu_install_path_validates_execution_model_before_success() {
+fn abi_execution_model_validation_accepts_supported_qemu_info() {
     let single_vcpu = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
     let multi_vcpu = qemu_info_fixture(4, 1, QEMU_PLUGIN_API_VERSION);
     let no_vcpu = qemu_info_fixture(0, 1, QEMU_PLUGIN_API_VERSION);
@@ -246,37 +239,24 @@ fn abi_qemu_install_path_validates_execution_model_before_success() {
         qemu_info_fixture(1, QEMU_PLUGIN_API_VERSION + 1, QEMU_PLUGIN_API_VERSION + 1);
 
     assert_eq!(
-        install_required_deadline_scaffold_from_qemu_info(
-            &single_vcpu,
-            QemuTcgThreading::SingleThreadedRoundRobin,
-            Some(abi_test_deadline),
-        )
-        .map(|state| state.exact_deadline_reader().is_some()),
-        Ok(true)
+        execution_model_from_qemu_info(&single_vcpu, QemuTcgThreading::SingleThreadedRoundRobin,)
+            .map(|model| model.smp_vcpus()),
+        Ok(1)
     );
     assert_eq!(
-        install_required_deadline_scaffold_from_qemu_info(
-            &multi_vcpu,
-            QemuTcgThreading::SingleThreadedRoundRobin,
-            Some(abi_test_deadline),
-        )
-        .map(|state| state.lifecycle_core().execution_model().smp_vcpus()),
+        execution_model_from_qemu_info(&multi_vcpu, QemuTcgThreading::SingleThreadedRoundRobin,)
+            .map(|model| model.smp_vcpus()),
         Ok(4)
     );
     assert_eq!(
-        install_required_deadline_scaffold_from_qemu_info(
-            &no_vcpu,
-            QemuTcgThreading::SingleThreadedRoundRobin,
-            Some(abi_test_deadline),
-        )
-        .map(|_state| ()),
+        execution_model_from_qemu_info(&no_vcpu, QemuTcgThreading::SingleThreadedRoundRobin)
+            .map(|_state| ()),
         Err(QemuPluginAbiError::NoVcpus)
     );
     assert_eq!(
-        install_required_deadline_scaffold_from_qemu_info(
+        execution_model_from_qemu_info(
             &unsupported_api,
             QemuTcgThreading::SingleThreadedRoundRobin,
-            Some(abi_test_deadline),
         )
         .map(|_state| ()),
         Err(QemuPluginAbiError::UnsupportedPluginApi {
@@ -358,74 +338,6 @@ fn abi_execution_model_requires_single_threaded_tcg_not_single_vcpu_only() {
     );
 }
 
-#[test]
-fn abi_safe_scaffold_shim_rejects_invalid_models() {
-    let single_vcpu = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
-    let multi_vcpu = qemu_info_fixture(4, 1, QEMU_PLUGIN_API_VERSION);
-    let no_vcpu = qemu_info_fixture(0, 1, QEMU_PLUGIN_API_VERSION);
-    let negative_vcpu = qemu_info_fixture(-1, 1, QEMU_PLUGIN_API_VERSION);
-
-    assert!(
-        install_inert_scaffold_from_qemu_info(
-            &single_vcpu,
-            QemuTcgThreading::SingleThreadedRoundRobin
-        )
-        .is_ok()
-    );
-    assert!(
-        install_inert_scaffold_from_qemu_info(
-            &multi_vcpu,
-            QemuTcgThreading::SingleThreadedRoundRobin
-        )
-        .is_ok()
-    );
-    assert_eq!(
-        install_inert_scaffold_from_qemu_info(&no_vcpu, QemuTcgThreading::SingleThreadedRoundRobin)
-            .map(|_state| ()),
-        Err(QemuPluginAbiError::NoVcpus)
-    );
-    assert_eq!(
-        install_inert_scaffold_from_qemu_info(
-            &negative_vcpu,
-            QemuTcgThreading::SingleThreadedRoundRobin
-        )
-        .map(|_state| ()),
-        Err(QemuPluginAbiError::NoVcpus)
-    );
-    assert_eq!(
-        install_inert_scaffold_from_qemu_info(&single_vcpu, QemuTcgThreading::MultiThreadedTcg)
-            .map(|_state| ()),
-        Err(QemuPluginAbiError::MultiThreadedTcg)
-    );
-}
-
-#[test]
-fn abi_state_partition_keeps_device_callbacks_immutable_and_reentrant_safe() {
-    let model =
-        match QemuPluginExecutionModel::validate(1, QemuTcgThreading::SingleThreadedRoundRobin) {
-            Ok(model) => model,
-            Err(error) => panic!("test execution model should validate: {error}"),
-        };
-    let state = match install_inert_scaffold(model) {
-        Ok(state) => state,
-        Err(error) => panic!("inert scaffold should install: {error}"),
-    };
-
-    assert_eq!(
-        state.lifecycle_core().phase(),
-        PluginLifecyclePhase::InstalledInert
-    );
-    assert_eq!(state.lifecycle_core().execution_model(), model);
-    assert!(state.exact_deadline_reader().is_none());
-    assert!(state.queued_idle_advance().is_none());
-    assert!(state.preemption_injector().is_none());
-    assert!(state.vcpu_introspector().is_none());
-    for kind in OWNED_DEVICE_CALLBACK_KINDS {
-        let callback = state.device_callbacks().callback_for(kind);
-        callback(7, std::ptr::null_mut());
-    }
-}
-
 extern "C" fn abi_test_deadline() -> i64 {
     4096
 }
@@ -478,27 +390,28 @@ extern "C" fn abi_test_icount_raw() -> u64 {
 
 extern "C" fn abi_test_force_vcpu_exit() {}
 
+extern "C" fn abi_test_wait_idle_wake(
+    _vcpu_index: u32,
+    _wake_signal: *mut u32,
+    _expected: u32,
+) -> std::os::raw::c_int {
+    1
+}
+
 extern "C" fn abi_test_register_wake_fd(_fd: c_int) -> c_int {
     0
 }
 
-extern "C" fn abi_test_register_tcg_exec_cb(
-    _callback: Option<QemuTcgExecCbFn>,
-    _userdata: *mut c_void,
-) {
-}
-
-struct TestClockDeadlineSymbolGuard;
-
-impl TestClockDeadlineSymbolGuard {
-    fn install(symbol: QemuClockDeadlineFn) -> Self {
-        set_test_clock_deadline_symbol(Some(symbol));
-        Self
-    }
-}
-
-impl Drop for TestClockDeadlineSymbolGuard {
-    fn drop(&mut self) {
-        set_test_clock_deadline_symbol(None);
+fn required_runtime_api_symbols() -> RequiredRuntimeApiSymbols {
+    RequiredRuntimeApiSymbols {
+        clock_deadline_ns: Some(abi_test_deadline),
+        advance_time_ns: Some(abi_test_direct_advance),
+        inject_preemption: Some(abi_test_inject_preemption),
+        read_vcpu_regs: Some(abi_test_read_vcpu_regs),
+        read_rr_cursor: Some(abi_test_rr_cursor),
+        icount_raw: Some(abi_test_icount_raw),
+        force_vcpu_exit: Some(abi_test_force_vcpu_exit),
+        wait_idle_wake: Some(abi_test_wait_idle_wake),
+        register_wake_fd: Some(abi_test_register_wake_fd),
     }
 }

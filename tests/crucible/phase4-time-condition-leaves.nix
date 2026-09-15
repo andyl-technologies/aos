@@ -104,10 +104,6 @@
     ]
     ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
       {
-        label = "EventId compatibility re-export";
-        needle = "pub use crate::model::EventId";
-      }
-      {
         label = "At evaluated from virtual time";
         needle = "Condition::At { at } => evaluator.evaluation_point().at() == *at";
       }

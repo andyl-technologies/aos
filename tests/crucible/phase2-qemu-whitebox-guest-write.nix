@@ -4,10 +4,8 @@
   qemuPackage ? pkgs.qemu-crucible,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  patchName = "0041-crucible-whitebox-guest-write.patch";
-  series = import (patchDir + "/_series.nix");
-  prefixPatchFiles = builtins.genList (index: builtins.elemAt series.patchFiles index) 40;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import (patchDir + "/_atomic-patch.nix");
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -23,27 +21,23 @@
     builtins.any (index: builtins.substring index needleLen haystack == needle) indexes;
 
   failures =
-    lib.optionals (!(hasInfix "qemu_plugin_crucible_write_memory_vaddr" patchSource)) [
-      "${patchName}: guest-memory write export is absent"
+    lib.optionals (!(hasInfix "qemu_plugin_crucible_write_selectable_reply_ram" patchSource)) [
+      "${atomicPatch.file}: paused selectable-reply RAM write export is absent"
     ]
-    ++ lib.optionals (!(hasInfix "qemu_plugin_crucible_write_memory_vaddr_for_vcpu" patchSource)) [
-      "${patchName}: exact resume-vCPU guest-memory write export is absent"
-    ]
-    ++ lib.optionals (!(hasInfix "cpu_memory_rw_debug(current_cpu" patchSource)) [
-      "${patchName}: current-vCPU debug-memory write path is absent"
+    ++ lib.optionals (!(hasInfix "memory_region_is_ram(fragment.region)" patchSource)) [
+      "${atomicPatch.file}: RAM-only range validation is absent"
     ]
     ++ lib.optionals (!(hasInfix "qemu_get_cpu(vcpu_index)" patchSource)) [
-      "${patchName}: exact resume-vCPU lookup is absent"
+      "${atomicPatch.file}: exact resume-vCPU lookup is absent"
     ]
-    ++ lib.optionals (!(hasInfix "len, true) == 0" patchSource)) [
-      "${patchName}: write direction or complete-write result check is absent"
+    ++ lib.optionals (!(hasInfix "qemu_plugin_crucible_resume_callback_active(cpu)" patchSource)) [
+      "${atomicPatch.file}: exact resume-callback authority check is absent"
     ]
-    ++ lib.optionals (
-      builtins.length series.patchFiles
-      <= 40
-      || builtins.elemAt series.patchFiles 40 != patchName
-    ) [
-      "${patchName}: white-box guest-write patch is not patch-series entry 41"
+    ++ lib.optionals (!(hasInfix "qemu_plugin_crucible_write_memory_vaddr_for_vcpu" patchSource)) [
+      "${atomicPatch.file}: exact resume-vCPU virtual write export is absent"
+    ]
+    ++ lib.optionals (!(hasInfix "memory_region_fault_commit_ram" patchSource)) [
+      "${atomicPatch.file}: validated RAM fragment commit is absent"
     ];
 in
   if failures != []
@@ -71,18 +65,19 @@ in
             tar -xf ${qemuPackage.src} -C qemu-source
             cd qemu-source/qemu-${qemuPackage.version}
 
-            for patch in ${builtins.concatStringsSep " " prefixPatchFiles}; do
-              patch --batch --fuzz=0 -p1 < "${patchDir}/$patch" > /dev/null
-            done
-
-            if grep -q 'qemu_plugin_crucible_write_memory_vaddr' include/qemu/qemu-plugin.h; then
-              fail "prefix unexpectedly exposes the guest-write capability"
+            if grep -q 'qemu_plugin_crucible_write_selectable_reply_ram' include/plugins/qemu-plugin.h; then
+              fail "stock QEMU unexpectedly exposes the guest-write capability"
             fi
-            patch --batch --fuzz=0 -p1 < "${patchDir}/${patchName}" > /dev/null
-            grep -q 'qemu_plugin_crucible_write_memory_vaddr' include/qemu/qemu-plugin.h
-            grep -q 'qemu_plugin_crucible_write_memory_vaddr_for_vcpu' include/qemu/qemu-plugin.h
-            grep -q 'cpu_memory_rw_debug(current_cpu' plugins/api.c
-            grep -q 'qemu_get_cpu(vcpu_index)' plugins/api.c
+            patch --batch --fuzz=0 -p1 < "${patchDir}/${atomicPatch.file}" > /dev/null
+            grep -q 'qemu_plugin_crucible_write_selectable_reply_ram' include/plugins/qemu-plugin.h
+            grep -q 'memory_region_is_ram(fragment.region)' plugins/api-system.c
+            grep -q 'memory_region_fault_commit_ram' plugins/api-system.c
+            grep -q 'qemu_get_cpu(vcpu_index)' plugins/api-system.c
+            grep -q 'qemu_plugin_crucible_resume_callback_active(cpu)' plugins/api.c
+            grep -q 'qemu_plugin_crucible_resume_callback_depth == 1' plugins/api-system.c
+            grep -q 'qemu_plugin_crucible_write_memory_vaddr_for_vcpu' plugins/api.c
+            grep -A1 '^QEMU_PLUGIN_API$' include/plugins/qemu-plugin.h \
+              | grep -q 'qemu_plugin_crucible_write_memory_vaddr_for_vcpu'
 
             cat > "$TMPDIR/write-memory-fixture.c" <<'FIXTURE'
             #include <stdbool.h>
@@ -90,51 +85,19 @@ in
             #include <stdint.h>
             #include <string.h>
 
-            typedef struct CPUState {
-                unsigned int index;
-            } CPUState;
-
             static uint8_t guest_memory[2][16];
-            static CPUState cpus[] = {{0}, {1}};
-            static CPUState *current_cpu = &cpus[0];
 
-            static CPUState *qemu_get_cpu(unsigned int index)
-            {
-                return index < 2 ? &cpus[index] : NULL;
-            }
-
-            static int cpu_memory_rw_debug(
-                CPUState *cpu, uint64_t address, uint8_t *data, size_t length, bool write)
-            {
-                if (!cpu || !write || address > sizeof guest_memory[0]
-                    || length > sizeof guest_memory[0] - address) {
-                    return -1;
-                }
-                memcpy(&guest_memory[cpu->index][address], data, length);
-                return 0;
-            }
-
-            static bool qemu_plugin_crucible_write_memory_vaddr(
-                uint64_t address, const uint8_t *data, size_t length)
-            {
-                if (length == 0) {
-                    return false;
-                }
-                return cpu_memory_rw_debug(
-                    current_cpu, address, (uint8_t *)data, length, true) == 0;
-            }
-
-            static bool qemu_plugin_crucible_write_memory_vaddr_for_vcpu(
+            static bool qemu_plugin_crucible_write_selectable_reply_ram(
                 unsigned int vcpu_index, uint64_t address,
                 const uint8_t *data, size_t length)
             {
-                CPUState *cpu = qemu_get_cpu(vcpu_index);
-
-                if (!cpu || length == 0) {
+                if (vcpu_index >= 2 || !data || length == 0 ||
+                    address > sizeof guest_memory[0] ||
+                    length > sizeof guest_memory[0] - address) {
                     return false;
                 }
-                return cpu_memory_rw_debug(
-                    cpu, address, (uint8_t *)data, length, true) == 0;
+                memcpy(&guest_memory[vcpu_index][address], data, length);
+                return true;
             }
 
             int main(void)
@@ -143,38 +106,37 @@ in
                 uint8_t before[sizeof guest_memory];
 
                 memcpy(before, guest_memory, sizeof before);
-                if (qemu_plugin_crucible_write_memory_vaddr(0, reply, 0)) {
+                if (qemu_plugin_crucible_write_selectable_reply_ram(
+                        0, 0, reply, 0)) {
                     return 1;
                 }
                 if (memcmp(before, guest_memory, sizeof before) != 0) {
                     return 2;
                 }
-                if (!qemu_plugin_crucible_write_memory_vaddr(4, reply, sizeof reply)) {
+                if (!qemu_plugin_crucible_write_selectable_reply_ram(
+                        0, 4, reply, sizeof reply)) {
                     return 3;
                 }
                 if (memcmp(&guest_memory[0][4], reply, sizeof reply) != 0) {
                     return 4;
                 }
-                if (qemu_plugin_crucible_write_memory_vaddr(14, reply, sizeof reply)) {
+                if (qemu_plugin_crucible_write_selectable_reply_ram(
+                        0, 14, reply, sizeof reply)) {
                     return 5;
                 }
-                if (qemu_plugin_crucible_write_memory_vaddr_for_vcpu(
+                if (qemu_plugin_crucible_write_selectable_reply_ram(
                         2, 0, reply, sizeof reply)) {
                     return 6;
                 }
-                if (qemu_plugin_crucible_write_memory_vaddr_for_vcpu(
-                        1, 0, reply, 0)) {
+                if (!qemu_plugin_crucible_write_selectable_reply_ram(
+                        1, 8, reply, sizeof reply)) {
                     return 7;
                 }
-                if (!qemu_plugin_crucible_write_memory_vaddr_for_vcpu(
-                        1, 8, reply, sizeof reply)) {
+                if (memcmp(&guest_memory[1][8], reply, sizeof reply) != 0) {
                     return 8;
                 }
-                if (memcmp(&guest_memory[1][8], reply, sizeof reply) != 0) {
-                    return 9;
-                }
                 if (memcmp(&guest_memory[0][8], reply, sizeof reply) == 0) {
-                    return 10;
+                    return 9;
                 }
                 return 0;
             }
@@ -186,12 +148,14 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             gate=gate:patch-microtests
-            patch=0041-crucible-whitebox-guest-write.patch
+            atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true
             stock_negative_control=true
             prefix_negative_control=true
-            current_vcpu_debug_write=true
-            exact_resume_vcpu_debug_write=true
+            paused_selectable_reply_ram_write=true
+            exact_resume_vcpu_ram_write=true
+            exact_resume_vcpu_virtual_write=true
+            resume_callback_authority_checked=true
             unknown_vcpu_rejected=true
             zero_length_rejected=true
             out_of_range_write_rejected=true

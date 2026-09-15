@@ -7,10 +7,9 @@
 //! digests for the current icount and publishes them into its node's slot under
 //! a generation seqlock; the host reads the slot after the quantum boundary.
 //!
-//! The slot is the wire authority for the Rust-plugin single-VM fingerprint
-//! stream (`crucible.qemu.rust-plugin-fingerprint.v1`). It mirrors the material
-//! the canonical `SingleVmFingerprintStream` compares, so the host consumer maps
-//! one slot snapshot to one fingerprint sample without a schema translation.
+//! The slot is the wire authority for the Rust plugin's production fingerprint
+//! boundary stream. The host maps each slot snapshot directly to one
+//! [`FingerprintSample`] without a schema translation.
 //!
 //! Fingerprint-sample slot wire layout:
 //!
@@ -23,7 +22,8 @@
 //!
 //! The payload words pack, in order: `sample_icount`, `vcpu_count`,
 //! `rr_current_vcpu`, `rr_position_in_quantum`, `rr_switch_quantum`,
-//! `component_failures`, `ram_bytes`, `device_state_bytes`, the 32-byte
+//! `component_failures`, `ram_bytes`, `device_state_bytes`,
+//! `device_state_sections`, the 32-byte
 //! `ram_digest`, `device_state_digest`, and `device_state_schema_digest` (four
 //! words each), then one 6-word block per tracked vCPU carrying the 32-byte
 //! register digest, `register_file_bytes`, and `retired_instruction_count`.
@@ -36,16 +36,15 @@ pub const FINGERPRINT_DIGEST_BYTES: usize = 32;
 pub const FINGERPRINT_DIGEST_WORDS: usize = FINGERPRINT_DIGEST_BYTES / 8;
 /// Maximum number of vCPUs one fingerprint sample slot can carry.
 ///
-/// The single-VM fingerprint scenario pins two vCPUs and the N-vCPU (M3)
-/// expansion runs `-smp 4`; eight leaves deterministic headroom without
-/// inflating the slot. This is the slot's shared tracked-vCPU bound: M3's
-/// per-vCPU fingerprint wiring lands on top of this same slot, so the constant
-/// mirrors the C trace plugin's tracked-vCPU limit rather than a per-gate value.
+/// The production fingerprint flight runs `-smp 4`; eight leaves deterministic
+/// headroom without inflating the slot. This is the slot's shared tracked-vCPU
+/// bound, so the constant mirrors the plugin's tracked-vCPU limit rather than a
+/// per-gate value.
 pub const FINGERPRINT_SAMPLE_MAX_VCPUS: usize = 8;
 /// Number of payload words describing one tracked vCPU.
 const FINGERPRINT_SAMPLE_VCPU_WORDS: usize = FINGERPRINT_DIGEST_WORDS + 2;
 /// Number of fixed payload words that precede the per-vCPU blocks.
-const FINGERPRINT_SAMPLE_HEADER_WORDS: usize = 6 + FINGERPRINT_DIGEST_WORDS * 3 + 2;
+const FINGERPRINT_SAMPLE_HEADER_WORDS: usize = 6 + FINGERPRINT_DIGEST_WORDS * 3 + 3;
 /// Total number of little-endian payload words in one slot.
 pub const FINGERPRINT_SAMPLE_WORDS: usize =
     FINGERPRINT_SAMPLE_HEADER_WORDS + FINGERPRINT_SAMPLE_MAX_VCPUS * FINGERPRINT_SAMPLE_VCPU_WORDS;
@@ -59,7 +58,8 @@ const WORD_RR_QUANTUM: usize = 4;
 const WORD_COMPONENT_FAILURES: usize = 5;
 const WORD_RAM_BYTES: usize = 6;
 const WORD_DEVICE_STATE_BYTES: usize = 7;
-const WORD_RAM_DIGEST: usize = 8;
+const WORD_DEVICE_STATE_SECTIONS: usize = 8;
+const WORD_RAM_DIGEST: usize = 9;
 const WORD_DEVICE_STATE_DIGEST: usize = WORD_RAM_DIGEST + FINGERPRINT_DIGEST_WORDS;
 const WORD_DEVICE_STATE_SCHEMA_DIGEST: usize = WORD_DEVICE_STATE_DIGEST + FINGERPRINT_DIGEST_WORDS;
 const WORD_VCPU_BASE: usize = WORD_DEVICE_STATE_SCHEMA_DIGEST + FINGERPRINT_DIGEST_WORDS;
@@ -79,7 +79,7 @@ pub struct FingerprintSampleVcpu {
     /// Single-threaded RR icount keeps one global instruction counter (the node
     /// clock), so QEMU exposes no per-vCPU retirement; the introspection export
     /// sets this to zero deliberately (see the `out_retired_instruction_count = 0`
-    /// stamp in `0029-crucible-vcpu-introspect.patch`). A reader must not treat a
+    /// stamp in `crucible-qemu-11.1.1.patch`). A reader must not treat a
     /// zero here as a broken counter: per-vCPU progress lives in the round-robin
     /// cursor (`current_vcpu`, `position_in_quantum`), and the node clock is the
     /// aggregate icount stamped on the sample.
@@ -107,9 +107,11 @@ pub struct FingerprintSample {
     pub ram_digest: [u8; FINGERPRINT_DIGEST_BYTES],
     /// Byte count covered by [`Self::device_state_digest`].
     pub device_state_bytes: u64,
-    /// Content digest of the serialized current non-RAM device VMState.
+    /// Number of admitted read-only device/volatile sections covered by the schema.
+    pub device_state_sections: u64,
+    /// Content digest of the canonical read-only device/volatile projection.
     pub device_state_digest: [u8; FINGERPRINT_DIGEST_BYTES],
-    /// Content digest of the registered non-RAM VMState section schema.
+    /// Content digest of the admitted read-only projection schema.
     pub device_state_schema_digest: [u8; FINGERPRINT_DIGEST_BYTES],
     /// Per-vCPU material; only the first [`Self::vcpu_count`] entries are valid.
     pub vcpus: [FingerprintSampleVcpu; FINGERPRINT_SAMPLE_MAX_VCPUS],
@@ -127,6 +129,7 @@ impl Default for FingerprintSample {
             ram_bytes: 0,
             ram_digest: [0; FINGERPRINT_DIGEST_BYTES],
             device_state_bytes: 0,
+            device_state_sections: 0,
             device_state_digest: [0; FINGERPRINT_DIGEST_BYTES],
             device_state_schema_digest: [0; FINGERPRINT_DIGEST_BYTES],
             vcpus: [FingerprintSampleVcpu {
@@ -192,9 +195,6 @@ pub const FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET: usize =
 /// Byte offset of [`FingerprintSampleSlot`]'s v1 capture request/acknowledgement word.
 pub const FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET: usize =
     core::mem::offset_of!(FingerprintSampleSlot, capture_request);
-/// Compatibility alias for the offset formerly documented as reserved.
-pub const FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET: usize =
-    FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET;
 /// Byte offset of [`FingerprintSampleSlot`]'s payload words.
 pub const FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET: usize =
     core::mem::offset_of!(FingerprintSampleSlot, words);
@@ -336,17 +336,15 @@ impl FingerprintSampleSlot {
 }
 
 fn digest_to_words(digest: &[u8; FINGERPRINT_DIGEST_BYTES], out: &mut [u64]) {
-    for (word, chunk) in out.iter_mut().zip(digest.chunks_exact(8)) {
-        let mut bytes = [0_u8; 8];
-        bytes.copy_from_slice(chunk);
-        *word = u64::from_le_bytes(bytes);
+    for (word, chunk) in out.iter_mut().zip(digest.as_chunks::<8>().0) {
+        *word = u64::from_le_bytes(*chunk);
     }
 }
 
 fn words_to_digest(words: &[u64]) -> [u8; FINGERPRINT_DIGEST_BYTES] {
     let mut digest = [0_u8; FINGERPRINT_DIGEST_BYTES];
-    for (chunk, word) in digest.chunks_exact_mut(8).zip(words) {
-        chunk.copy_from_slice(&word.to_le_bytes());
+    for (chunk, word) in digest.as_chunks_mut::<8>().0.iter_mut().zip(words) {
+        *chunk = word.to_le_bytes();
     }
     digest
 }
@@ -360,6 +358,7 @@ fn pack_sample(sample: &FingerprintSample, words: &mut [u64; FINGERPRINT_SAMPLE_
     words[WORD_COMPONENT_FAILURES] = u64::from(sample.component_failures);
     words[WORD_RAM_BYTES] = sample.ram_bytes;
     words[WORD_DEVICE_STATE_BYTES] = sample.device_state_bytes;
+    words[WORD_DEVICE_STATE_SECTIONS] = sample.device_state_sections;
     digest_to_words(
         &sample.ram_digest,
         &mut words[WORD_RAM_DIGEST..WORD_RAM_DIGEST + FINGERPRINT_DIGEST_WORDS],
@@ -394,6 +393,7 @@ fn unpack_sample(words: &[u64; FINGERPRINT_SAMPLE_WORDS]) -> FingerprintSample {
         component_failures: words[WORD_COMPONENT_FAILURES] as u32,
         ram_bytes: words[WORD_RAM_BYTES],
         device_state_bytes: words[WORD_DEVICE_STATE_BYTES],
+        device_state_sections: words[WORD_DEVICE_STATE_SECTIONS],
         ram_digest: words_to_digest(
             &words[WORD_RAM_DIGEST..WORD_RAM_DIGEST + FINGERPRINT_DIGEST_WORDS],
         ),
@@ -438,6 +438,7 @@ mod tests {
             ram_bytes: 64 * 1024 * 1024,
             ram_digest: digest(0x10),
             device_state_bytes: 4096,
+            device_state_sections: 17,
             device_state_digest: digest(0x20),
             device_state_schema_digest: digest(0x30),
             vcpus: [FingerprintSampleVcpu::default(); FINGERPRINT_SAMPLE_MAX_VCPUS],

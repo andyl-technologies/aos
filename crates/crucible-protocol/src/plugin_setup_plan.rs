@@ -39,9 +39,6 @@ pub const PLUGIN_SETUP_PLAN_MAX_BYTES: usize = PLUGIN_SETUP_PLAN_HEADER_BYTES
     + MAX_APP_RANDOM_BRANCH_PLAN_BYTES
     + SELECTABLE_CATALOG_PLAN_MAX_BYTES;
 
-const LEGACY_PLUGIN_SETUP_PLAN_MAGIC: [u8; 8] = *b"CRUCSUP1";
-const LEGACY_PLUGIN_SETUP_PLAN_VERSION: u32 = 1;
-
 /// One complete immutable process-neutral plugin setup plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginSetupPlan {
@@ -141,17 +138,10 @@ impl PluginSetupPlan {
             return Err(PluginSetupPlanError::Truncated);
         }
         let version = read_u32(bytes, 8)?;
-        let supported = (bytes[..8] == PLUGIN_SETUP_PLAN_MAGIC
-            && version == PLUGIN_SETUP_PLAN_VERSION)
-            || (bytes[..8] == LEGACY_PLUGIN_SETUP_PLAN_MAGIC
-                && version == LEGACY_PLUGIN_SETUP_PLAN_VERSION);
-        if !supported
-            && bytes[..8] != PLUGIN_SETUP_PLAN_MAGIC
-            && bytes[..8] != LEGACY_PLUGIN_SETUP_PLAN_MAGIC
-        {
+        if bytes[..8] != PLUGIN_SETUP_PLAN_MAGIC {
             return Err(PluginSetupPlanError::InvalidMagic);
         }
-        if !supported {
+        if version != PLUGIN_SETUP_PLAN_VERSION {
             return Err(PluginSetupPlanError::UnsupportedVersion { version });
         }
         let header_len = usize::try_from(read_u32(bytes, 12)?)
@@ -324,32 +314,6 @@ mod tests {
         assert_eq!(&bytes[20..24], &[0, 0, 0, 16]);
         assert_eq!(&bytes[24..28], &[0, 0, 0, 104]);
         assert_eq!(PluginSetupPlan::decode(&bytes), Ok(plan));
-    }
-
-    #[test]
-    fn selection_free_v1_composite_remains_readable() {
-        let plan = empty_plan();
-        let app_random = AppRandomBranchPlan::default().encode();
-        let mut selectable = vec![0_u8; 96];
-        selectable[..8].copy_from_slice(b"CRUCSCP1");
-        selectable[8..12].copy_from_slice(&1_u32.to_be_bytes());
-        selectable[12..16].copy_from_slice(&96_u32.to_be_bytes());
-        selectable[16..20].copy_from_slice(&96_u32.to_be_bytes());
-        selectable[24..28].copy_from_slice(&1_u32.to_be_bytes());
-        selectable[40..48].copy_from_slice(&1_u64.to_be_bytes());
-        selectable[48..56].copy_from_slice(&1_u64.to_be_bytes());
-        let total_len = PLUGIN_SETUP_PLAN_HEADER_BYTES + app_random.len() + selectable.len();
-        let mut legacy = Vec::with_capacity(total_len);
-        legacy.extend_from_slice(b"CRUCSUP1");
-        legacy.extend_from_slice(&1_u32.to_be_bytes());
-        legacy.extend_from_slice(&(PLUGIN_SETUP_PLAN_HEADER_BYTES as u32).to_be_bytes());
-        legacy.extend_from_slice(&(total_len as u32).to_be_bytes());
-        legacy.extend_from_slice(&(app_random.len() as u32).to_be_bytes());
-        legacy.extend_from_slice(&(selectable.len() as u32).to_be_bytes());
-        legacy.extend_from_slice(&app_random);
-        legacy.extend_from_slice(&selectable);
-
-        assert_eq!(PluginSetupPlan::decode(&legacy), Ok(plan));
     }
 
     #[test]

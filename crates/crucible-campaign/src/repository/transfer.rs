@@ -150,16 +150,17 @@ impl CampaignRepository {
         let (omitted_pages, omitted_envelopes) =
             archive_pages(ArchiveInventoryDisposition::Omitted, &omitted)?;
         page_envelopes.extend(omitted_envelopes);
-        let manifest = CampaignArchiveManifest::new(
-            snapshot,
-            policy,
-            checkpoint_selections.into_iter().collect(),
-            retained_roots.into_iter().collect(),
-            selected_pages,
-            omitted_pages,
-            &selected,
-            &omitted,
-        )?;
+        let manifest =
+            CampaignArchiveManifest::new(crate::archive::CampaignArchiveManifestBasis {
+                source_snapshot: snapshot,
+                policy,
+                checkpoint_selections: checkpoint_selections.into_iter().collect(),
+                retained_roots: retained_roots.into_iter().collect(),
+                selected_pages,
+                omitted_pages,
+                selected: &selected,
+                omitted: &omitted,
+            })?;
         let manifest_envelope = ObjectEnvelope::for_archive_manifest(&manifest)?;
         let manifest_id =
             CampaignArchiveManifestId::from_content_id(manifest_envelope.content_id())?;
@@ -399,7 +400,7 @@ impl CampaignRepository {
             }
             .into());
         }
-        let mut report = CampaignArchiveTransferReport::default();
+        let mut report = CampaignArchiveTransferReport::new();
         for entry in &plan.selected {
             transfer_one(
                 self,
@@ -800,6 +801,7 @@ fn transfer_one(
         }
         .into());
     }
+    report.observe_durable_placements(observed_durable_placements)?;
     let persisted = destination.blobs.read(id, None)?;
     if persisted.logical_length() != logical_length {
         return Err(StoreError::Corrupt { id }.into());

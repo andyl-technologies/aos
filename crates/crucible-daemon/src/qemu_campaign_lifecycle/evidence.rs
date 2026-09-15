@@ -2,7 +2,7 @@
 //!
 //! This observer decorates a resource-owned lifecycle without acquiring any
 //! launch or shutdown authority of its own. It retains exact event,
-//! fingerprint, frontier, and resolved-effect material for compatibility
+//! fingerprint, frontier, and resolved-effect material for replay
 //! callers that need to build a reproduction artifact after the campaign
 //! repository accepts the observation.
 //!
@@ -533,8 +533,7 @@ fn map_terminal_evidence_snapshot_failure<E>(
 ) -> AttemptWorkerFailure<QemuTerminalEvidenceExecutionRunnerError<E>> {
     let class = match &error {
         SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::NotImplemented { .. }
-        | SchedulerError::Backend(_)
+        SchedulerError::Backend(_)
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)

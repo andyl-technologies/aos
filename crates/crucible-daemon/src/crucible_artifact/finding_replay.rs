@@ -7,21 +7,115 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    CrucibleArtifactError, MAX_CONFIGURATION_BRANCH_PREFIX_BYTES,
+    CrucibleArtifactError, FindingReplayPass, MAX_CONFIGURATION_BRANCH_PREFIX_BYTES,
     MAX_CONFIGURATION_SELECTION_DECISIONS, MAX_CRUCIBLE_FINDING_REPLAY_BYTES,
     MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
     campaign_configuration_id, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact,
 };
-use crucible::{Configuration, Decision, FindingReproductionArtifact, SignalFaultSelectable};
+use crucible::{
+    Configuration, Decision, FailureTriageReplayEvidence, FindingReproductionArtifact,
+    SignalFaultSelectable,
+};
 use crucible_campaign::{
     CampaignCodecError, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ChoiceOpportunityId,
     ConfigurationArtifact, ConfigurationArtifactId, CoverageProjection, CoverageProjectionId,
     FindingKind, FindingSignature, FindingTarget, MeasurementSet, MeasurementSetId,
-    PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, SelectableDeclaration, Selection,
-    SelectionId, SelectionOrigin,
+    PropertyVerdict, PropertyVerdictSet, PropertyVerdictSetId, ResolvedSelection,
+    SelectableDeclaration, Selection, SelectionId, SelectionOrigin,
 };
 use crucible_cas::content_store::ContentId;
+
+mod accumulator;
+use accumulator::ReplayRecordAccumulator;
+pub(crate) use accumulator::validate_recorded_replay_configuration;
+#[cfg(test)]
+use accumulator::validate_replay_configuration;
+
+/// Stable reason that an exact minimization candidate could not be materialized.
+///
+/// These outcomes are deterministic properties of the candidate and its
+/// authenticated replay prefix. Operational launch, cancellation, and resource
+/// failures remain execution errors and never enter this enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindingReplayIncompatibility {
+    /// Prefix replay diverged before reaching the candidate boundary.
+    PrefixDiverged,
+    /// Prefix replay reached a modeled terminal state before the boundary.
+    PrefixTerminated,
+    /// A replayed selection did not match the candidate's choice closure.
+    SelectionMismatch,
+}
+
+/// Actual result of privately replaying one exact minimization candidate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AutomaticFindingReplayOutcome {
+    /// The candidate boundary was reached and evaluated with real model evidence.
+    Observed {
+        /// Typed semantic evidence evaluated at the exact candidate boundary.
+        evidence: Box<CrucibleFindingReplayEvidence>,
+        /// Raw measurement leaves needed to reauthenticate `evidence`.
+        measurement_replay_evidence: Vec<crate::CrucibleMeasurementReplayEvidence>,
+        /// Native full-signature evidence retained from this exact replay.
+        triage_evidence: Option<Box<FailureTriageReplayEvidence>>,
+    },
+    /// The exact candidate was deterministically incompatible with its replay prefix.
+    DeterministicallyIncompatible {
+        /// The exact candidate configuration that could not be materialized.
+        configuration: ConfigurationArtifact,
+        /// Closed deterministic incompatibility reason.
+        reason: FindingReplayIncompatibility,
+    },
+}
+
+impl AutomaticFindingReplayOutcome {
+    /// Wraps one observed replay and its raw measurement leaves.
+    #[must_use]
+    pub fn observed(
+        evidence: CrucibleFindingReplayEvidence,
+        measurement_replay_evidence: Vec<crate::CrucibleMeasurementReplayEvidence>,
+    ) -> Self {
+        Self::Observed {
+            evidence: Box::new(evidence),
+            measurement_replay_evidence,
+            triage_evidence: None,
+        }
+    }
+
+    /// Wraps one observed replay with independently reconstructed triage evidence.
+    #[must_use]
+    pub fn observed_with_triage(
+        evidence: CrucibleFindingReplayEvidence,
+        measurement_replay_evidence: Vec<crate::CrucibleMeasurementReplayEvidence>,
+        triage_evidence: FailureTriageReplayEvidence,
+    ) -> Self {
+        Self::Observed {
+            evidence: Box::new(evidence),
+            measurement_replay_evidence,
+            triage_evidence: Some(Box::new(triage_evidence)),
+        }
+    }
+
+    /// Returns native full-signature evidence when this replay produced it.
+    #[must_use]
+    pub fn triage_evidence(&self) -> Option<&FailureTriageReplayEvidence> {
+        match self {
+            Self::Observed {
+                triage_evidence, ..
+            } => triage_evidence.as_deref(),
+            Self::DeterministicallyIncompatible { .. } => None,
+        }
+    }
+
+    /// Returns the independently observed signature, when a boundary was reached.
+    #[must_use]
+    pub const fn signature(&self) -> Option<&FindingSignature> {
+        match self {
+            Self::Observed { evidence, .. } => evidence.signature(),
+            Self::DeterministicallyIncompatible { .. } => None,
+        }
+    }
+}
 
 /// Actual model evidence produced by one internal finding replay.
 ///
@@ -138,6 +232,151 @@ impl CrucibleFindingReplayEvidence {
     #[must_use]
     pub const fn configuration(&self) -> &ConfigurationArtifact {
         &self.configuration
+    }
+
+    /// Returns the independently evaluated property verdict set.
+    #[must_use]
+    pub const fn properties(&self) -> &PropertyVerdictSet {
+        &self.properties
+    }
+
+    /// Returns the independently projected coverage set.
+    #[must_use]
+    pub const fn coverage(&self) -> &CoverageProjection {
+        &self.coverage
+    }
+
+    /// Returns retained replay choice opportunities in test builds.
+    #[cfg(test)]
+    pub(crate) fn opportunities(&self) -> &[ChoiceOpportunity] {
+        &self.opportunities
+    }
+
+    /// Returns retained replay selections in test builds.
+    #[cfg(test)]
+    pub(crate) fn selections(&self) -> &[Selection] {
+        &self.selections
+    }
+
+    /// Binds an independently derived finding signature to this replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] if a signature is already present or
+    /// the supplied target, property, or causal evidence is not owned by this
+    /// exact replay.
+    pub(crate) fn with_signature(
+        mut self,
+        signature: FindingSignature,
+    ) -> Result<Self, CrucibleArtifactError> {
+        if self.signature.is_some() {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "finding replay duplicate signature",
+            });
+        }
+        self.signature = Some(signature);
+        self.validate_signature_ownership()?;
+        Ok(self)
+    }
+
+    /// Adds repository-authenticated selections used to reconstruct the candidate prefix.
+    ///
+    /// Raw replay evidence contains choices discovered while the fresh process
+    /// is running. Candidate schedules can also name choices resolved before
+    /// launch, including scheduler, application-random, signal-fault, and
+    /// environment selections. This merge retains both sources and requires
+    /// byte-identical records wherever they overlap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when an existing replay choice cannot
+    /// be reconstructed or a starting record conflicts with replay evidence.
+    pub(crate) fn with_resolved_starting_selections(
+        self,
+        starting: &[ResolvedSelection],
+    ) -> Result<Self, CrucibleArtifactError> {
+        let declarations = self
+            .declarations
+            .iter()
+            .map(|declaration| declaration.id().map(|id| (id, declaration)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let domains = self
+            .domains
+            .iter()
+            .map(|domain| domain.id().map(|id| (id, domain)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let mut discoveries = BTreeMap::new();
+        for opportunity in &self.opportunities {
+            let declaration = declarations.get(&opportunity.declaration()).ok_or(
+                CrucibleArtifactError::SemanticIdentityMismatch {
+                    artifact: "finding replay choice declaration closure",
+                },
+            )?;
+            let domain = domains.get(&opportunity.domain()).ok_or(
+                CrucibleArtifactError::SemanticIdentityMismatch {
+                    artifact: "finding replay choice domain closure",
+                },
+            )?;
+            let discovery = ChoiceDiscovery::new(
+                (*declaration).clone(),
+                (*domain).clone(),
+                opportunity.clone(),
+            )?;
+            discoveries.insert(opportunity.id()?, discovery);
+        }
+        let mut selections = self
+            .selections
+            .iter()
+            .map(|selection| selection.id().map(|id| (id, selection.clone())))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+        for resolved in starting {
+            resolved
+                .selection()
+                .validate_resolved_references(resolved.opportunity(), resolved.domain())?;
+            let discovery = ChoiceDiscovery::new(
+                resolved.declaration().clone(),
+                resolved.domain().clone(),
+                resolved.opportunity().clone(),
+            )?;
+            let opportunity = discovery.opportunity().id()?;
+            match discoveries.entry(opportunity) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(discovery);
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if entry.get() == &discovery => {}
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                        artifact: "finding replay starting choice conflict",
+                    });
+                }
+            }
+
+            let selection = resolved.selection().clone();
+            match selections.entry(selection.id()?) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(selection);
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if entry.get() == &selection => {}
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                        artifact: "finding replay starting selection conflict",
+                    });
+                }
+            }
+        }
+
+        Self::new(
+            self.signature,
+            self.configuration,
+            self.measurements,
+            self.properties,
+            self.coverage,
+            discoveries.into_values().collect(),
+            selections.into_values().collect(),
+        )
     }
 
     fn validate_signature_ownership(&self) -> Result<(), CrucibleArtifactError> {
@@ -295,15 +534,72 @@ pub(super) struct PreparedFindingReplayRecords {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct RecordedFindingReplay {
-    pub(super) signature: Option<FindingSignature>,
-    pub(super) configuration: ConfigurationArtifactId,
-    pub(super) measurements: MeasurementSetId,
-    pub(super) properties: PropertyVerdictSetId,
-    pub(super) coverage: CoverageProjectionId,
-    pub(super) opportunities: Vec<ChoiceOpportunityId>,
-    pub(super) selections: Vec<SelectionId>,
+pub(super) enum RecordedFindingReplay {
+    Observed {
+        signature: Option<Box<FindingSignature>>,
+        configuration: ConfigurationArtifactId,
+        measurements: MeasurementSetId,
+        properties: PropertyVerdictSetId,
+        coverage: CoverageProjectionId,
+        opportunities: Vec<ChoiceOpportunityId>,
+        selections: Vec<SelectionId>,
+    },
+    DeterministicallyIncompatible {
+        configuration: ConfigurationArtifactId,
+        reason: FindingReplayIncompatibility,
+    },
 }
+
+impl RecordedFindingReplay {
+    pub(super) fn signature(&self) -> Option<&FindingSignature> {
+        match self {
+            Self::Observed { signature, .. } => signature.as_deref(),
+            Self::DeterministicallyIncompatible { .. } => None,
+        }
+    }
+
+    pub(super) const fn configuration(&self) -> ConfigurationArtifactId {
+        match self {
+            Self::Observed { configuration, .. }
+            | Self::DeterministicallyIncompatible { configuration, .. } => *configuration,
+        }
+    }
+
+    pub(super) fn observed_components(&self) -> Option<RecordedFindingReplayComponents<'_>> {
+        match self {
+            Self::Observed {
+                measurements,
+                properties,
+                coverage,
+                opportunities,
+                selections,
+                ..
+            } => Some((
+                *measurements,
+                *properties,
+                *coverage,
+                opportunities,
+                selections,
+            )),
+            Self::DeterministicallyIncompatible { .. } => None,
+        }
+    }
+
+    pub(super) const fn incompatibility(&self) -> Option<FindingReplayIncompatibility> {
+        match self {
+            Self::Observed { .. } => None,
+            Self::DeterministicallyIncompatible { reason, .. } => Some(*reason),
+        }
+    }
+}
+
+type RecordedFindingReplayComponents<'a> = (
+    MeasurementSetId,
+    PropertyVerdictSetId,
+    CoverageProjectionId,
+    &'a [ChoiceOpportunityId],
+    &'a [SelectionId],
+);
 
 /// Incrementally bounded raw oracle transcript for both minimization passes.
 ///
@@ -315,6 +611,7 @@ pub struct CrucibleFindingReplayTranscript {
     pub(super) minimization_pass: Vec<RecordedFindingReplay>,
     pub(super) verification_pass: Vec<RecordedFindingReplay>,
     pub(super) records: ReplayRecordAccumulator,
+    pub(super) triage: RetainedFindingTriageEvidence,
 }
 
 impl CrucibleFindingReplayTranscript {
@@ -325,6 +622,7 @@ impl CrucibleFindingReplayTranscript {
             minimization_pass: Vec::new(),
             verification_pass: Vec::new(),
             records: ReplayRecordAccumulator::new(),
+            triage: RetainedFindingTriageEvidence::new(),
         }
     }
 
@@ -339,28 +637,57 @@ impl CrucibleFindingReplayTranscript {
         candidate: &FindingReproductionArtifact,
         replay: CrucibleFindingReplayEvidence,
     ) -> Result<(), CrucibleArtifactError> {
+        self.record_minimization_outcome(
+            candidate,
+            AutomaticFindingReplayOutcome::observed(replay, Vec::new()),
+        )
+    }
+
+    /// Records one typed oracle outcome in the minimization pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when the outcome does not name the
+    /// exact candidate or the cumulative retained-record limit is exceeded.
+    pub fn record_minimization_outcome(
+        &mut self,
+        candidate: &FindingReproductionArtifact,
+        replay: AutomaticFindingReplayOutcome,
+    ) -> Result<(), CrucibleArtifactError> {
+        let preserves_signature = replay.signature().is_some();
+        self.record_minimization_outcome_with_acceptance(candidate, replay, preserves_signature)
+    }
+
+    pub(super) fn record_minimization_outcome_with_acceptance(
+        &mut self,
+        candidate: &FindingReproductionArtifact,
+        replay: AutomaticFindingReplayOutcome,
+        preserves_signature: bool,
+    ) -> Result<(), CrucibleArtifactError> {
         if self.minimization_pass.len() == MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS {
             return Err(CampaignCodecError::LimitExceeded {
                 limit: "finding-minimization-replay-count",
             }
             .into());
         }
-        validate_replay_configuration(candidate, &replay)?;
-        let recorded = self.records.record(replay)?;
+        self.triage.record(
+            FindingReplayPass::Minimization,
+            self.minimization_pass.is_empty(),
+            preserves_signature,
+            candidate,
+            replay.triage_evidence().cloned(),
+            replay.signature().cloned(),
+        )?;
+        let recorded = self.records.record_outcome(candidate, replay)?;
         self.minimization_pass.push(recorded);
         Ok(())
     }
 
-    /// Records one oracle result in the independent verification pass.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CrucibleArtifactError`] when typed identities fail or the
-    /// cumulative retained-record limit is exceeded.
-    pub fn record_verification(
+    pub(crate) fn record_verification_outcome_with_acceptance(
         &mut self,
         candidate: &FindingReproductionArtifact,
-        replay: CrucibleFindingReplayEvidence,
+        replay: AutomaticFindingReplayOutcome,
+        preserves_signature: bool,
     ) -> Result<(), CrucibleArtifactError> {
         if self.verification_pass.len() == MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS {
             return Err(CampaignCodecError::LimitExceeded {
@@ -368,403 +695,137 @@ impl CrucibleFindingReplayTranscript {
             }
             .into());
         }
-        validate_replay_configuration(candidate, &replay)?;
-        let recorded = self.records.record(replay)?;
+        self.triage.record(
+            FindingReplayPass::Verification,
+            self.verification_pass.is_empty(),
+            preserves_signature,
+            candidate,
+            replay.triage_evidence().cloned(),
+            replay.signature().cloned(),
+        )?;
+        let recorded = self.records.record_outcome(candidate, replay)?;
         self.verification_pass.push(recorded);
         Ok(())
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct ReplayRecordAccumulator {
-    ids: BTreeSet<crucible_cas::content_store::ContentId>,
-    configurations: Vec<ConfigurationArtifact>,
-    measurements: Vec<MeasurementSet>,
-    properties: Vec<PropertyVerdictSet>,
-    coverage: Vec<CoverageProjection>,
-    declarations: Vec<SelectableDeclaration>,
-    domains: Vec<ChoiceDomain>,
-    opportunities: Vec<ChoiceOpportunity>,
-    selections: Vec<Selection>,
-    canonical_bytes: usize,
+pub(super) struct RetainedFindingTriageEvidence {
+    minimization_original: Option<Box<RetainedFindingTriageReplay>>,
+    minimization_selected: Option<Box<RetainedFindingTriageReplay>>,
+    verification_original: Option<Box<RetainedFindingTriageReplay>>,
+    verification_selected: Option<Box<RetainedFindingTriageReplay>>,
+    has_rich_evidence: bool,
 }
 
-impl ReplayRecordAccumulator {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RetainedFindingTriageReplay {
+    pub(super) evidence: FailureTriageReplayEvidence,
+    pub(super) observed_signature: FindingSignature,
+}
+
+impl RetainedFindingTriageEvidence {
     const fn new() -> Self {
         Self {
-            ids: BTreeSet::new(),
-            configurations: Vec::new(),
-            measurements: Vec::new(),
-            properties: Vec::new(),
-            coverage: Vec::new(),
-            declarations: Vec::new(),
-            domains: Vec::new(),
-            opportunities: Vec::new(),
-            selections: Vec::new(),
-            canonical_bytes: 0,
+            minimization_original: None,
+            minimization_selected: None,
+            verification_original: None,
+            verification_selected: None,
+            has_rich_evidence: false,
         }
     }
 
     fn record(
         &mut self,
-        replay: CrucibleFindingReplayEvidence,
-    ) -> Result<RecordedFindingReplay, CrucibleArtifactError> {
-        replay.validate_signature_ownership()?;
-        let configuration = replay.configuration.id()?;
-        let measurements = replay.measurements.id()?;
-        let properties = replay.properties.id()?;
-        let coverage = replay.coverage.id()?;
-        let opportunities = replay
-            .opportunities
-            .iter()
-            .map(ChoiceOpportunity::id)
-            .collect::<Result<Vec<_>, _>>()?;
-        let selections = replay
-            .selections
-            .iter()
-            .map(Selection::id)
-            .collect::<Result<Vec<_>, _>>()?;
-        let next_canonical_bytes = self.preflight(&replay)?;
-        let recorded = RecordedFindingReplay {
-            signature: replay.signature,
-            configuration,
-            measurements,
-            properties,
-            coverage,
-            opportunities,
-            selections,
-        };
-
-        if self.ids.insert(configuration.content_id()) {
-            self.configurations.push(replay.configuration);
-        }
-        if self.ids.insert(replay.measurements.id()?.content_id()) {
-            self.measurements.push(replay.measurements);
-        }
-        if self.ids.insert(replay.properties.id()?.content_id()) {
-            self.properties.push(replay.properties);
-        }
-        if self.ids.insert(replay.coverage.id()?.content_id()) {
-            self.coverage.push(replay.coverage);
-        }
-        for declaration in replay.declarations {
-            if self.ids.insert(declaration.id()?.content_id()) {
-                self.declarations.push(declaration);
-            }
-        }
-        for domain in replay.domains {
-            if self.ids.insert(domain.id()?.content_id()) {
-                self.domains.push(domain);
-            }
-        }
-        for opportunity in replay.opportunities {
-            if self.ids.insert(opportunity.id()?.content_id()) {
-                self.opportunities.push(opportunity);
-            }
-        }
-        for selection in replay.selections {
-            if self.ids.insert(selection.id()?.content_id()) {
-                self.selections.push(selection);
-            }
-        }
-        self.canonical_bytes = next_canonical_bytes;
-        Ok(recorded)
-    }
-
-    fn preflight(
-        &self,
-        replay: &CrucibleFindingReplayEvidence,
-    ) -> Result<usize, CrucibleArtifactError> {
-        let mut candidate_records = BTreeMap::from([
-            (
-                replay.configuration.id()?.content_id(),
-                replay.configuration.canonical_bytes().len(),
-            ),
-            (
-                replay.measurements.id()?.content_id(),
-                replay.measurements.canonical_bytes().len(),
-            ),
-            (
-                replay.properties.id()?.content_id(),
-                replay.properties.canonical_bytes().len(),
-            ),
-            (
-                replay.coverage.id()?.content_id(),
-                replay.coverage.canonical_bytes().len(),
-            ),
-        ]);
-        for declaration in &replay.declarations {
-            candidate_records.insert(
-                declaration.id()?.content_id(),
-                declaration.canonical_bytes().len(),
-            );
-        }
-        for domain in &replay.domains {
-            candidate_records.insert(domain.id()?.content_id(), domain.canonical_bytes().len());
-        }
-        for opportunity in &replay.opportunities {
-            candidate_records.insert(
-                opportunity.id()?.content_id(),
-                opportunity.canonical_bytes().len(),
-            );
-        }
-        for selection in &replay.selections {
-            candidate_records.insert(
-                selection.id()?.content_id(),
-                selection.canonical_bytes().len(),
-            );
-        }
-
-        let new_records = candidate_records
-            .keys()
-            .filter(|id| !self.ids.contains(id))
-            .count();
-        if self
-            .ids
-            .len()
-            .checked_add(new_records)
-            .is_none_or(|count| count > MAX_CRUCIBLE_FINDING_REPLAY_RECORDS)
-        {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finding-replay-retained-record-count",
-            }
-            .into());
-        }
-        let record_bytes = candidate_records
-            .iter()
-            .filter(|(id, _)| !self.ids.contains(id))
-            .try_fold(0usize, |total, (_, bytes)| total.checked_add(*bytes))
-            .ok_or(CampaignCodecError::LimitExceeded {
-                limit: "finding-replay-retained-record-bytes",
-            })?;
-        let signature_bytes = replay
-            .signature
+        pass: FindingReplayPass,
+        original: bool,
+        preserves_signature: bool,
+        candidate: &FindingReproductionArtifact,
+        evidence: Option<FailureTriageReplayEvidence>,
+        observed_signature: Option<FindingSignature>,
+    ) -> Result<(), CrucibleArtifactError> {
+        if evidence
             .as_ref()
-            .map_or(0, |signature| signature.canonical_bytes().len());
-        let next_bytes = self
-            .canonical_bytes
-            .checked_add(record_bytes)
-            .and_then(|bytes| bytes.checked_add(signature_bytes))
-            .ok_or(CampaignCodecError::LimitExceeded {
-                limit: "finding-replay-retained-record-bytes",
-            })?;
-        if next_bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finding-replay-retained-record-bytes",
-            }
-            .into());
-        }
-        Ok(next_bytes)
-    }
-
-    pub(super) fn finish(self) -> PreparedFindingReplayRecords {
-        PreparedFindingReplayRecords {
-            configurations: self.configurations,
-            measurements: self.measurements,
-            properties: self.properties,
-            coverage: self.coverage,
-            declarations: self.declarations,
-            domains: self.domains,
-            opportunities: self.opportunities,
-            selections: self.selections,
-            record_count: self.ids.len(),
-            canonical_bytes: self.canonical_bytes,
-        }
-    }
-}
-
-pub(super) fn validate_replay_configuration(
-    candidate: &FindingReproductionArtifact,
-    replay: &CrucibleFindingReplayEvidence,
-) -> Result<(), CrucibleArtifactError> {
-    let scenario = candidate.artifact.scenario_form();
-    let scenario_artifact = encode_crucible_scenario_artifact(scenario)?;
-    let expected =
-        encode_crucible_configuration_artifact(&scenario_artifact, candidate.artifact.schedule())?;
-    if replay.configuration != expected {
-        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-            artifact: "finding replay candidate configuration",
-        });
-    }
-    validate_owned_replay_selections(candidate, replay)?;
-    replay.validate_signature_ownership()
-}
-
-fn validate_owned_replay_selections(
-    candidate: &FindingReproductionArtifact,
-    replay: &CrucibleFindingReplayEvidence,
-) -> Result<(), CrucibleArtifactError> {
-    let declarations = replay
-        .declarations
-        .iter()
-        .map(|value| value.id().map(|id| (id, value)))
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let domains = replay
-        .domains
-        .iter()
-        .map(|value| value.id().map(|id| (id, value)))
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let mut choices = BTreeMap::new();
-    for opportunity in &replay.opportunities {
-        let declaration = declarations.get(&opportunity.declaration()).ok_or(
-            CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "finding replay choice declaration",
-            },
-        )?;
-        let domain = domains.get(&opportunity.domain()).ok_or(
-            CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "finding replay choice domain",
-            },
-        )?;
-        opportunity.validate_references(declaration, domain)?;
-        if opportunity.scenario() != replay.configuration.scenario() {
+            .is_some_and(|evidence| evidence.finding() != candidate)
+        {
             return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "finding replay choice scenario",
+                artifact: "finding triage replay candidate",
             });
         }
-        choices.insert(opportunity.id()?, (opportunity, declaration, domain));
-    }
-
-    let selections = replay
-        .selections
-        .iter()
-        .map(|selection| selection.id().map(|id| (id, selection)))
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let mut embedded = BTreeSet::new();
-    let mut covered_signal_fault_overrides = BTreeSet::new();
-    let configuration = Configuration {
-        def: candidate.artifact.scenario_def().clone(),
-        schedule: candidate.artifact.schedule().clone(),
-    };
-    let selection_count = configuration
-        .schedule
-        .decisions()
-        .iter()
-        .filter(|decision| matches!(decision, Decision::Selection(_)))
-        .count();
-    if selection_count > MAX_CONFIGURATION_SELECTION_DECISIONS {
-        return Err(CrucibleArtifactError::SelectionResolutionLimit);
-    }
-    let campaign_branch_count = replay
-        .selections
-        .iter()
-        .filter(|selection| matches!(selection.origin(), SelectionOrigin::CampaignBranch { .. }))
-        .count();
-    if replay
-        .configuration
-        .payload()
-        .len()
-        .checked_mul(campaign_branch_count)
-        .is_none_or(|bytes| bytes > MAX_CONFIGURATION_BRANCH_PREFIX_BYTES)
-    {
-        return Err(CrucibleArtifactError::SelectionResolutionLimit);
-    }
-    for (index, decision) in configuration.schedule.decisions().iter().enumerate() {
-        let Decision::Selection(decision) = decision else {
-            continue;
+        self.has_rich_evidence |= evidence.is_some();
+        let evidence = match (evidence, observed_signature) {
+            (Some(evidence), Some(observed_signature)) => {
+                Some(Box::new(RetainedFindingTriageReplay {
+                    evidence,
+                    observed_signature,
+                }))
+            }
+            (Some(_), None) => {
+                return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                    artifact: "finding triage replay signature",
+                });
+            }
+            (None, _) => None,
         };
-        let decoded = decision.selection()?;
-        let id = decoded.id()?;
-        let selection =
-            selections
-                .get(&id)
-                .ok_or(CrucibleArtifactError::SemanticIdentityMismatch {
-                    artifact: "finding replay embedded selection",
-                })?;
-        if **selection != decoded || !embedded.insert(id) {
-            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "finding replay embedded selection",
-            });
-        }
-        let (opportunity, declaration, domain) = choices.get(&selection.opportunity()).ok_or(
-            CrucibleArtifactError::SemanticIdentityMismatch {
-                artifact: "finding replay selection opportunity",
-            },
-        )?;
-        match selection.origin() {
-            SelectionOrigin::Default | SelectionOrigin::LockedReplay => {
-                selection.validate_replay(opportunity, domain)?;
-            }
-            SelectionOrigin::CampaignBranch { .. } => {
-                let parent = Configuration {
-                    def: configuration.def.clone(),
-                    schedule: configuration.schedule.prefix(index)?,
-                };
-                selection.validate_branch_replay(
-                    opportunity,
-                    domain,
-                    opportunity.branch_point_id(campaign_configuration_id(parent.id())),
-                )?;
-                if matches!(
-                    opportunity.source(),
-                    crucible_campaign::ChoiceSource::Environment { adapter, .. }
-                        if adapter == crucible::SIGNAL_FAULT_CAMPAIGN_ADAPTER
-                ) {
-                    let selectable = SignalFaultSelectable::from_records(
-                        &parent,
-                        declaration,
-                        opportunity,
-                        domain,
-                    )?;
-                    let branch = selectable.resolve_branch(selection)?;
-                    let end = index
-                        .checked_add(branch.decisions().len())
-                        .ok_or(CrucibleArtifactError::SelectionResolutionLimit)?;
-                    if end > configuration.schedule.len()
-                        || configuration.schedule.decisions()[index..end] != *branch.decisions()
-                    {
-                        return Err(CrucibleArtifactError::SignalFaultScheduleMismatch);
-                    }
-                    if branch.decisions().len() == 2 {
-                        covered_signal_fault_overrides.insert(index + 1);
-                    }
+
+        match pass {
+            FindingReplayPass::Minimization => {
+                if original {
+                    self.minimization_original = evidence.clone();
+                }
+                if preserves_signature {
+                    self.minimization_selected = evidence;
                 }
             }
-            SelectionOrigin::ModelSample(_) => {
-                crucible::validate_app_random_model_selection(
-                    selection,
-                    declaration,
-                    opportunity,
-                    domain,
-                )
-                .map_err(|_| CrucibleArtifactError::UnverifiedModelSelection)?;
+            FindingReplayPass::Verification => {
+                if original {
+                    self.verification_original = evidence.clone();
+                }
+                if preserves_signature {
+                    self.verification_selected = evidence;
+                }
             }
         }
+        Ok(())
     }
-    if embedded.len() != selections.len() {
-        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-            artifact: "finding replay selection set",
-        });
-    }
-    if configuration
-        .schedule
-        .decisions()
-        .iter()
-        .enumerate()
-        .any(|(index, decision)| {
-            matches!(decision, Decision::Override(override_decision)
-                if override_decision.point.key.starts_with("signal-fault/")
-                    && !covered_signal_fault_overrides.contains(&index))
-        })
-    {
-        return Err(CrucibleArtifactError::UnboundSignalFaultOverride);
-    }
-    Ok(())
-}
 
-pub(super) fn validate_recorded_replay_configuration(
-    candidate: &FindingReproductionArtifact,
-    replay: &RecordedFindingReplay,
-) -> Result<(), CrucibleArtifactError> {
-    let scenario = encode_crucible_scenario_artifact(candidate.artifact.scenario_form())?;
-    let expected =
-        encode_crucible_configuration_artifact(&scenario, candidate.artifact.schedule())?;
-    if replay.configuration != expected.id()? {
-        return Err(CrucibleArtifactError::SemanticIdentityMismatch {
-            artifact: "finding replay candidate configuration",
-        });
+    pub(super) fn into_parts(
+        self,
+    ) -> Result<
+        Option<(
+            RetainedFindingTriageReplay,
+            RetainedFindingTriageReplay,
+            RetainedFindingTriageReplay,
+            RetainedFindingTriageReplay,
+        )>,
+        CrucibleArtifactError,
+    > {
+        if !self.has_rich_evidence {
+            return Ok(None);
+        }
+        let (
+            Some(minimization_original),
+            Some(minimization_selected),
+            Some(verification_original),
+            Some(verification_selected),
+        ) = (
+            self.minimization_original,
+            self.minimization_selected,
+            self.verification_original,
+            self.verification_selected,
+        )
+        else {
+            return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "incomplete finding triage replay evidence",
+            });
+        };
+        Ok(Some((
+            *minimization_original,
+            *minimization_selected,
+            *verification_original,
+            *verification_selected,
+        )))
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -772,11 +833,19 @@ pub(super) fn validate_recorded_replay_configuration(
 #[allow(clippy::expect_used)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
 
+    use crucible::model::{BindingSearchChoice, SearchChoiceId};
     use crucible::{
-        Configuration, ContentHash, FindingDiscoveryPath, FindingReproductionArtifact, Schedule,
+        AppRandomSelectable, Configuration, ContentHash, Decision, FindingDiscoveryPath,
+        FindingReproductionArtifact, NodeId, RngStreamId, Schedule, SearchFrontierChoices,
+        SearchRuntimeFrontier, SelectionDecision, SignalFaultSelectable, VirtualTime,
     };
-    use crucible_campaign::{FindingKind, MeasurementSet, PropertyVerdictSet};
+    use crucible_campaign::{
+        CampaignExecutorStore, CampaignRepository, ChoiceDiscovery, FindingKind,
+        PropertyVerdictSet, ResolvedSelection,
+    };
+    use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
     use super::*;
 
@@ -818,7 +887,7 @@ mod tests {
         let replay = CrucibleFindingReplayEvidence::new(
             Some(signature),
             configuration_record,
-            MeasurementSet::new(BTreeMap::new()).expect("measurements"),
+            crate::crucible_measurement::empty_test_measurement_set(),
             PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
             CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
             Vec::new(),
@@ -828,15 +897,80 @@ mod tests {
         (finding, replay, signature_bytes)
     }
 
+    fn resolved_selection(
+        label: &str,
+        discovery: &ChoiceDiscovery,
+        selection: &Selection,
+    ) -> ResolvedSelection {
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new(label, u64::MAX)),
+            Arc::new(MemoryRefBackend::new()),
+        ));
+        repository
+            .publish_choice_domain(discovery.domain())
+            .expect("publish choice domain");
+        repository
+            .publish_selectable(discovery.declaration())
+            .expect("publish selectable declaration");
+        repository
+            .publish_choice_opportunity(discovery.opportunity())
+            .expect("publish choice opportunity");
+        repository
+            .publish_selection(selection)
+            .expect("publish selection");
+        let id = selection.id().expect("selection ID");
+        CampaignExecutorStore::new(repository)
+            .resolve_selections(&[id])
+            .expect("resolve selection closure")
+            .pop()
+            .expect("one resolved selection")
+    }
+
+    fn unsigned_replay(
+        scenario: &crucible::ScenarioDefForm,
+        configuration: &Configuration,
+    ) -> CrucibleFindingReplayEvidence {
+        let scenario_record = encode_crucible_scenario_artifact(scenario).expect("scenario record");
+        let configuration_record =
+            encode_crucible_configuration_artifact(&scenario_record, &configuration.schedule)
+                .expect("configuration record");
+        CrucibleFindingReplayEvidence::new(
+            None,
+            configuration_record,
+            crate::crucible_measurement::empty_test_measurement_set(),
+            PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
+            CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("unsigned replay")
+    }
+
+    fn reproduction(
+        scenario: &crucible::ScenarioDefForm,
+        configuration: &Configuration,
+        fingerprint: &[u8],
+    ) -> FindingReproductionArtifact {
+        FindingReproductionArtifact::capture(
+            FindingDiscoveryPath::StateSpaceSearch,
+            ContentHash::from_bytes(fingerprint),
+            scenario,
+            configuration,
+        )
+        .expect("finding reproduction")
+    }
+
     #[test]
     fn duplicate_replays_charge_each_raw_signature_but_deduplicate_records() {
         let (_finding, replay, signature_bytes) = replay_fixture();
         let mut records = ReplayRecordAccumulator::new();
 
-        records.record(replay.clone()).expect("first replay");
+        records
+            .record_observed(replay.clone())
+            .expect("first replay");
         let first_count = records.ids.len();
         let first_bytes = records.canonical_bytes;
-        records.record(replay).expect("duplicate replay");
+        records.record_observed(replay).expect("duplicate replay");
 
         assert_eq!(records.ids.len(), first_count);
         assert_eq!(records.canonical_bytes, first_bytes + signature_bytes);
@@ -850,7 +984,7 @@ mod tests {
         let before = records.clone();
 
         assert!(matches!(
-            records.record(replay.clone()),
+            records.record_observed(replay.clone()),
             Err(CrucibleArtifactError::Campaign(
                 CampaignCodecError::LimitExceeded {
                     limit: "finding-replay-retained-record-bytes"
@@ -860,7 +994,9 @@ mod tests {
         assert_eq!(records, before);
 
         records.canonical_bytes = 0;
-        records.record(replay).expect("retry admitted replay");
+        records
+            .record_observed(replay)
+            .expect("retry admitted replay");
         assert_eq!(records.ids.len(), 4);
     }
 
@@ -888,5 +1024,91 @@ mod tests {
             transcript.minimization_pass.len(),
             MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS
         );
+    }
+
+    #[test]
+    fn starting_app_random_selection_is_retained_in_exact_replay_closure() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let selectable = AppRandomSelectable::new(
+            &scenario.scenario_def(),
+            NodeId {
+                name: String::from("node-a"),
+            },
+            RngStreamId::for_node("finding-replay-app-random"),
+            11,
+            16,
+        )
+        .expect("app-random selectable");
+        let selection = selectable
+            .sampled_selection(0x1234_5678_9abc_def0)
+            .expect("sampled selection");
+        let discovery = selectable.into_discovery().expect("app-random discovery");
+        let configuration = Configuration {
+            def: scenario.scenario_def(),
+            schedule: Schedule::empty()
+                .appended(Decision::Selection(SelectionDecision::new(&selection))),
+        };
+        let finding = reproduction(&scenario, &configuration, b"app-random-replay-closure");
+        let resolved = resolved_selection("app-random-replay-closure", &discovery, &selection);
+
+        let replay = unsigned_replay(&scenario, &configuration)
+            .with_resolved_starting_selections(&[resolved])
+            .expect("merge app-random closure");
+
+        validate_replay_configuration(&finding, &replay)
+            .expect("app-random selection remains independently verifiable");
+        assert_eq!(replay.opportunities, vec![discovery.opportunity().clone()]);
+        assert_eq!(replay.selections, vec![selection]);
+    }
+
+    #[test]
+    fn starting_signal_fault_selection_is_retained_in_exact_replay_closure() {
+        let scenario = crucible::happy_path_scenario()
+            .expect("happy-path scenario")
+            .scenario;
+        let parent = Configuration::genesis(scenario.scenario_def());
+        let choice = BindingSearchChoice {
+            id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(
+                b"finding-replay-signal-choice",
+            )),
+            candidates_digest: ContentHash::from_bytes(b"finding-replay-signal-candidates"),
+            candidate_count: 2,
+            candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
+            selected_index: None,
+            overridden: false,
+        };
+        let frontier = SearchRuntimeFrontier {
+            configuration: parent.clone(),
+            at: VirtualTime { ticks: 17 },
+            choices: SearchFrontierChoices::from_decisions(
+                choice
+                    .override_decisions(parent.id())
+                    .into_iter()
+                    .map(Decision::Override),
+            ),
+        };
+        let selectable =
+            SignalFaultSelectable::from_frontier(&frontier).expect("signal-fault selectable");
+        let selection = selectable
+            .branch_selection(&parent, 1)
+            .expect("signal-fault selection");
+        let discovery = selectable.discovery().expect("signal-fault discovery");
+        let branch = selectable
+            .resolve_branch(&selection)
+            .expect("signal-fault branch");
+        let configuration = branch.selected().clone();
+        let finding = reproduction(&scenario, &configuration, b"signal-fault-replay-closure");
+        let resolved = resolved_selection("signal-fault-replay-closure", &discovery, &selection);
+
+        let replay = unsigned_replay(&scenario, &configuration)
+            .with_resolved_starting_selections(&[resolved])
+            .expect("merge signal-fault closure");
+
+        validate_replay_configuration(&finding, &replay)
+            .expect("signal-fault selection remains independently verifiable");
+        assert_eq!(replay.opportunities, vec![discovery.opportunity().clone()]);
+        assert_eq!(replay.selections, vec![selection]);
     }
 }

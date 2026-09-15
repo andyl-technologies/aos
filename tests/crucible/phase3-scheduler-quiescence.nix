@@ -111,8 +111,8 @@
         needle = "scheduler_quiescence_fast_forwards_idle_pending_delivery_without_deadlock";
       }
       {
-        label = "I/O and fault blocker test";
-        needle = "scheduler_quiescence_blocks_future_io_and_fault_events";
+        label = "future I/O blocker test";
+        needle = "scheduler_quiescence_blocks_future_io_events";
       }
       {
         label = "idle peer non-constraint test";

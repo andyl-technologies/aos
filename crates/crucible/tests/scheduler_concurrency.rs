@@ -7,13 +7,13 @@
 use crucible::{
     BackendInput, ConcurrentQuantumLoop, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId,
     QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
-    SchedulerConcurrentRunCandidate, SchedulerError, SchedulerLivenessScenario,
-    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    SchedulerConcurrentRunCandidate, SchedulerLivenessScenario, SchedulerLookaheadEdge,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Shift,
+    SimDuration, SimInstant, SingleScheduler, VirtualTime,
 };
 
 #[test]
-fn concurrent_run_set_is_bounded_by_workers_and_horizons() {
+fn concurrent_run_set_is_fixed_by_scheduler_horizons() {
     let producer = scheduler_node("producer");
     let alpha = scheduler_node("alpha");
     let beta = scheduler_node("beta");
@@ -35,15 +35,15 @@ fn concurrent_run_set_is_bounded_by_workers_and_horizons() {
     let scheduler = SingleScheduler::new(scenario).expect("scenario should build");
 
     let run_set = scheduler
-        .concurrent_run_set(2)
+        .concurrent_run_set()
         .expect("run set should be available");
 
-    assert_eq!(run_set.max_host_workers, 2);
     assert_eq!(
         run_set.candidates,
         vec![
             concurrent_candidate(&alpha, 0, 8, 8),
             concurrent_candidate(&beta, 0, 8, 8),
+            concurrent_candidate(&gamma, 0, 8, 8),
         ]
     );
 }
@@ -65,30 +65,13 @@ fn concurrent_run_set_excludes_skewed_peers_from_same_round() {
     let scheduler = SingleScheduler::new(scenario).expect("scenario should build");
 
     let run_set = scheduler
-        .concurrent_run_set(2)
+        .concurrent_run_set()
         .expect("run set should be available");
 
     assert_eq!(
         run_set.candidates,
         vec![concurrent_candidate(&alpha, 0, 5, 5)]
     );
-}
-
-#[test]
-fn concurrent_run_set_rejects_zero_workers() {
-    let scenario = base_scenario(
-        "concurrent-run-set-zero-workers",
-        vec![scenario_node("alpha", 0, SchedulerNodeActivity::Runnable)],
-        Vec::new(),
-    );
-    let scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-
-    let error = scheduler
-        .concurrent_run_set(0)
-        .expect_err("zero workers must be rejected");
-
-    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
-    assert!(error.to_string().contains("max_host_workers"));
 }
 
 #[test]
@@ -204,13 +187,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    nanos: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),

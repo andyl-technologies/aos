@@ -92,10 +92,23 @@ pub(super) struct CampaignFindingOccurrenceProof {
 /// Four independently replayed native signatures retained by a rich candidate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CampaignFindingOccurrenceTriageProof {
-    pub(super) minimization_original: CampaignFindingOccurrenceObjectProof,
-    pub(super) minimization_selected: CampaignFindingOccurrenceObjectProof,
-    pub(super) verification_original: CampaignFindingOccurrenceObjectProof,
-    pub(super) verification_selected: CampaignFindingOccurrenceObjectProof,
+    pub(super) minimization_original: CampaignFindingTriageReplayProof,
+    pub(super) minimization_selected: CampaignFindingTriageReplayProof,
+    pub(super) verification_original: CampaignFindingTriageReplayProof,
+    pub(super) verification_selected: CampaignFindingTriageReplayProof,
+}
+
+/// Complete ordered segment transcript for one candidate triage replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingTriageReplayProof {
+    pub(super) segments: Vec<CampaignFindingTriageReplaySegmentProof>,
+}
+
+/// One exact checked exchange resolving a stored replay-envelope segment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingTriageReplaySegmentProof {
+    pub(super) request: crucible_campaign::GetCampaignFindingTriageReplaySegmentRequest,
+    pub(super) response: crucible_campaign::GetCampaignFindingTriageReplaySegmentResponse,
 }
 
 /// Exact checked service exchange resolving one candidate-owned dependency.

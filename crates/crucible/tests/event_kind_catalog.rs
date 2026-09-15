@@ -7,13 +7,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible::{
-    ContentHash, EVENT_KIND_CATALOG_VERSION, EventClass, event_kind_catalog,
+    ContentHash, EVENT_KIND_CATALOG_VERSION, SchedulerEventLogClass, event_kind_catalog,
     event_kind_catalog_canonical_bytes, event_kind_catalog_canonical_material,
     event_kind_catalog_class, event_kind_catalog_dependency_map, event_kind_catalog_entry,
 };
 
 const EXPECTED_CATALOG_HASH: &str =
-    "ea64dd51eab1e49435c28fd9eeb6d94dafd6d4cd2089f4cba509035ec81facde";
+    "50c440576c24fb6b5a10359c231fb551e7b63e7b7f26ae231fd9f421db0aa139";
 
 #[test]
 fn event_kind_catalog_is_versioned_sorted_and_single_source_for_classes() {
@@ -39,45 +39,54 @@ fn event_kind_catalog_is_versioned_sorted_and_single_source_for_classes() {
 #[test]
 fn event_kind_catalog_contains_rfc_19_7_required_kinds() {
     for (kind, class) in [
-        ("state_transition", EventClass::Causal),
-        ("signal_transition", EventClass::Causal),
-        ("signal_sample", EventClass::Causal),
-        ("signal_state_transition", EventClass::Causal),
-        ("binding_activation", EventClass::Causal),
-        ("binding_deactivation", EventClass::Causal),
-        ("campaign_selection", EventClass::Causal),
-        ("fault_opportunity", EventClass::Causal),
-        ("effect_choice", EventClass::Causal),
-        ("effect_combined", EventClass::Causal),
-        ("effect_applied", EventClass::Causal),
-        ("effect_committed", EventClass::Causal),
-        ("effect_rejected", EventClass::Causal),
-        ("network_profile", EventClass::Causal),
-        ("association_transition", EventClass::Causal),
-        ("trace_alignment", EventClass::Causal),
-        ("event_activated", EventClass::Causal),
-        ("trigger_fired", EventClass::Causal),
-        ("node_started", EventClass::Causal),
-        ("node_crashed", EventClass::Causal),
-        ("node_completed", EventClass::Causal),
-        ("timer_armed", EventClass::Causal),
-        ("timer_fired", EventClass::Causal),
-        ("timer_cancelled", EventClass::Causal),
-        ("message_delivered", EventClass::Causal),
-        ("message_dropped", EventClass::Causal),
-        ("assertion_evaluated", EventClass::Causal),
-        ("assertion_state_changed", EventClass::Causal),
-        ("savepoint", EventClass::Causal),
-        ("fork", EventClass::Causal),
-        ("tick", EventClass::Causal),
-        ("diagnostic", EventClass::Observational),
-        ("coverage", EventClass::Observational),
-        ("assertion_proximity", EventClass::Observational),
-        ("guest_marker", EventClass::Observational),
-        ("guest_measurement_begin", EventClass::Observational),
-        ("guest_measurement_end", EventClass::Observational),
-        ("guest_metric_sample", EventClass::Observational),
-        ("guest_semantic_marker", EventClass::Observational),
+        ("state_transition", SchedulerEventLogClass::Causal),
+        ("signal_transition", SchedulerEventLogClass::Causal),
+        ("signal_sample", SchedulerEventLogClass::Causal),
+        ("signal_state_transition", SchedulerEventLogClass::Causal),
+        ("binding_activation", SchedulerEventLogClass::Causal),
+        ("binding_deactivation", SchedulerEventLogClass::Causal),
+        ("campaign_selection", SchedulerEventLogClass::Causal),
+        ("fault_opportunity", SchedulerEventLogClass::Causal),
+        ("effect_choice", SchedulerEventLogClass::Causal),
+        ("effect_combined", SchedulerEventLogClass::Causal),
+        ("effect_applied", SchedulerEventLogClass::Causal),
+        ("effect_committed", SchedulerEventLogClass::Causal),
+        ("effect_rejected", SchedulerEventLogClass::Causal),
+        ("network_profile", SchedulerEventLogClass::Causal),
+        ("association_transition", SchedulerEventLogClass::Causal),
+        ("trace_alignment", SchedulerEventLogClass::Causal),
+        ("event_activated", SchedulerEventLogClass::Causal),
+        ("trigger_fired", SchedulerEventLogClass::Causal),
+        ("node_started", SchedulerEventLogClass::Causal),
+        ("node_crashed", SchedulerEventLogClass::Causal),
+        ("node_completed", SchedulerEventLogClass::Causal),
+        ("timer_armed", SchedulerEventLogClass::Causal),
+        ("timer_fired", SchedulerEventLogClass::Causal),
+        ("timer_cancelled", SchedulerEventLogClass::Causal),
+        ("message_delivered", SchedulerEventLogClass::Causal),
+        ("message_dropped", SchedulerEventLogClass::Causal),
+        ("assertion_evaluated", SchedulerEventLogClass::Causal),
+        ("assertion_state_changed", SchedulerEventLogClass::Causal),
+        ("savepoint", SchedulerEventLogClass::Causal),
+        ("fork", SchedulerEventLogClass::Causal),
+        ("tick", SchedulerEventLogClass::Causal),
+        ("diagnostic", SchedulerEventLogClass::Observational),
+        ("coverage", SchedulerEventLogClass::Observational),
+        ("assertion_proximity", SchedulerEventLogClass::Observational),
+        ("guest_marker", SchedulerEventLogClass::Observational),
+        (
+            "guest_measurement_begin",
+            SchedulerEventLogClass::Observational,
+        ),
+        (
+            "guest_measurement_end",
+            SchedulerEventLogClass::Observational,
+        ),
+        ("guest_metric_sample", SchedulerEventLogClass::Observational),
+        (
+            "guest_semantic_marker",
+            SchedulerEventLogClass::Observational,
+        ),
     ] {
         let entry = event_kind_catalog_entry(kind)
             .unwrap_or_else(|| panic!("catalog should contain RFC kind {kind}"));
@@ -203,7 +212,7 @@ fn assert_sorted_unique(values: &[&str]) {
 fn causal_kinds() -> Vec<&'static str> {
     event_kind_catalog()
         .iter()
-        .filter(|entry| entry.class() == EventClass::Causal)
+        .filter(|entry| entry.class() == SchedulerEventLogClass::Causal)
         .map(|entry| entry.kind())
         .collect()
 }

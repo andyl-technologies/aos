@@ -15,16 +15,12 @@ impl CampaignRepository {
         &self,
         ledger: CampaignBudgetLedger,
         request: BranchRequestId,
-    ) -> Result<Option<u64>, CampaignRepositoryError> {
-        let Some(root) = ledger.request_spending() else {
-            return Ok(None);
-        };
+    ) -> Result<u64, CampaignRepositoryError> {
+        let root = ledger.request_spending();
         let Some(request_root) = self.merkle.get(root, request_spending_key(request))? else {
-            return Ok(Some(0));
+            return Ok(0);
         };
-        Ok(Some(
-            self.merkle.inspect_shallow(request_root)?.entry_count(),
-        ))
+        Ok(self.merkle.inspect_shallow(request_root)?.entry_count())
     }
 
     pub(super) fn request_execution_bases_at(
@@ -32,15 +28,10 @@ impl CampaignRepository {
         snapshot: &LoadedSnapshot,
         request: BranchRequestId,
     ) -> Result<u64, CampaignRepositoryError> {
-        if let Some(count) =
-            self.indexed_request_execution_bases(self.parent_budget_ledger(snapshot)?, request)?
-        {
-            return Ok(count);
-        }
-        self.count_request_execution_bases(snapshot.snapshot.roots().accounting, request)
+        self.indexed_request_execution_bases(self.parent_budget_ledger(snapshot)?, request)
     }
 
-    /// Recomputes only new dense global admissions, or rebuilds a legacy index once.
+    /// Adds newly dense global admissions to the authenticated request index.
     pub(super) fn request_spending_root_after(
         &self,
         ledger: CampaignBudgetLedger,
@@ -55,15 +46,11 @@ impl CampaignRepository {
             return Err(integrity("request-budget-admission-index-limit"));
         }
         let empty = MerkleMap::empty_content_id()?;
-        let prior = ledger.request_spending().unwrap_or(empty);
-        let first = if ledger.request_spending().is_some() {
-            ledger
-                .spent_attempts()
-                .checked_add(1)
-                .ok_or_else(|| integrity("request-budget-admission-ordinal-overflow"))?
-        } else {
-            1
-        };
+        let prior = ledger.request_spending();
+        let first = ledger
+            .spent_attempts()
+            .checked_add(1)
+            .ok_or_else(|| integrity("request-budget-admission-ordinal-overflow"))?;
         let mut requests = BTreeMap::<BranchRequestId, BTreeMap<CampaignHash, ContentId>>::new();
         for ordinal in first..=final_ordinal {
             let content = self
@@ -143,15 +130,10 @@ impl CampaignRepository {
     ) -> Result<usize, CampaignRepositoryError> {
         let prior = self.parent_budget_ledger(parent)?;
         let next = self.parent_budget_ledger(child)?;
-        let indexed = if next.request_spending().is_none() {
-            0
-        } else if prior.request_spending().is_none() {
-            next.spent_attempts()
-        } else {
-            next.spent_attempts()
-                .checked_sub(prior.spent_attempts())
-                .ok_or_else(|| integrity("request-budget-spending-regressed"))?
-        };
+        let indexed = next
+            .spent_attempts()
+            .checked_sub(prior.spent_attempts())
+            .ok_or_else(|| integrity("request-budget-spending-regressed"))?;
         usize::try_from(indexed)
             .ok()
             .and_then(|count| count.checked_mul(2 * MERKLE_UPDATE_NODE_UPPER))

@@ -16,7 +16,7 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  patchSeriesCheck = builtins.readFile ./phase2-qemu-patch-series.nix;
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   phase0S2 = import ./phase0-s2.nix {inherit pkgs lib;};
   phase0S5 = import ./phase0-s5.nix {inherit pkgs lib;};
   qemuPluginWhiteboxDoorbell = import ./phase2-plugin-whitebox-doorbell.nix {inherit pkgs lib;};
@@ -123,10 +123,6 @@
         label = "translation callback surface";
         needle = "qemu_plugin_register_vcpu_tb_trans_cb";
       }
-      {
-        label = "register read surface";
-        needle = "qemu_plugin_read_register";
-      }
     ]
     ++ failuresFor "tests/crucible/phase0-s5.nix" phase0S5Check [
       {
@@ -191,16 +187,6 @@
         label = "phase1 exposes QEMU doorbell no-patch check";
         needle = "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix";
       }
-    ]
-    ++ failuresFor "tests/crucible/phase2-qemu-patch-series.nix" patchSeriesCheck [
-      {
-        label = "T-PATCH-15 no-patch decision recorded";
-        needle = "noPatchDecisions";
-      }
-      {
-        label = "doorbell no-patch evidence check";
-        needle = "checks.crucible.phase1.qemuDoorbellNoPatch";
-      }
     ];
 in
   if failures != []
@@ -234,14 +220,13 @@ in
             source_dir="$TMPDIR/qemu-source"
             mkdir -p "$source_dir"
             tar -xf ${qemuPackage.src} -C "$source_dir"
-            header="$source_dir/qemu-${qemuPackage.version}/include/qemu/qemu-plugin.h"
+            header="$source_dir/qemu-${qemuPackage.version}/include/plugins/qemu-plugin.h"
             [ -f "$header" ] || fail "missing QEMU plugin header: $header"
 
             for declaration in \
               'qemu_plugin_register_vcpu_tb_trans_cb(' \
               'qemu_plugin_register_vcpu_insn_exec_cb(' \
-              'qemu_plugin_read_memory_vaddr(' \
-              'qemu_plugin_read_register('
+              'qemu_plugin_read_memory_vaddr('
             do
               grep -q "$declaration" "$header" || fail "QEMU plugin header missing upstream doorbell surface: $declaration"
             done
@@ -282,7 +267,7 @@ in
             phase0_s5_virtual_read_validated=true
             phase0_s2_io_trap_surface_validated=true
             whitebox_mode_off_installs_no_trap_validated=true
-            carried_patch_count=${toString (builtins.length patchFiles)}
+            atomic_patch=${atomicPatch.file}
             RESULT
           '';
         }

@@ -39,6 +39,93 @@ use crate::{
     stage_prepared_attempt_result,
 };
 
+fn minimize_signature_preserving_finding<F>(
+    finding: &FindingReproductionArtifact,
+    signature: &FindingSignature,
+    seed: crucible::Seed,
+    pass: FindingReplayPass,
+    transcript: &mut CrucibleFindingReplayTranscript,
+    mut signature_oracle: F,
+) -> Result<MinimizationRun, CrucibleArtifactError>
+where
+    F: FnMut(&FindingReproductionArtifact) -> Result<CrucibleFindingReplayEvidence, EngineError>,
+{
+    minimize_signature_preserving_finding_with_outcomes(
+        finding,
+        signature,
+        seed,
+        pass,
+        transcript,
+        |candidate| {
+            signature_oracle(candidate)
+                .map(|evidence| AutomaticFindingReplayOutcome::observed(evidence, Vec::new()))
+        },
+    )
+}
+
+fn prepare_signature_preserving_minimized_finding_candidate(
+    signature: FindingSignature,
+    observation: ObservationId,
+    finding: &FindingReproductionArtifact,
+    exact_pins: FindingExactPins,
+    seed: crucible::Seed,
+    transcript: CrucibleFindingReplayTranscript,
+) -> Result<PreparedCrucibleFindingCandidate, CrucibleArtifactError> {
+    prepare_signature_preserving_minimized_finding_candidate_with_retention(
+        signature,
+        observation,
+        finding,
+        exact_pins,
+        test_disabled_finding_exact_retention()?,
+        seed,
+        transcript,
+    )
+}
+
+impl CrucibleCampaignArtifactStore {
+    fn publish_signature_preserving_minimized_finding_candidate<F>(
+        &self,
+        signature: FindingSignature,
+        observation: ObservationId,
+        finding: &FindingReproductionArtifact,
+        exact_pins: FindingExactPins,
+        seed: crucible::Seed,
+        mut signature_oracle: F,
+    ) -> Result<FindingCandidateBundleId, CrucibleArtifactError>
+    where
+        F: FnMut(
+            &FindingReproductionArtifact,
+        ) -> Result<CrucibleFindingReplayEvidence, EngineError>,
+    {
+        let mut transcript = CrucibleFindingReplayTranscript::new();
+        minimize_signature_preserving_finding(
+            finding,
+            &signature,
+            seed,
+            FindingReplayPass::Minimization,
+            &mut transcript,
+            &mut signature_oracle,
+        )?;
+        minimize_signature_preserving_finding(
+            finding,
+            &signature,
+            seed,
+            FindingReplayPass::Verification,
+            &mut transcript,
+            &mut signature_oracle,
+        )?;
+        let prepared = prepare_signature_preserving_minimized_finding_candidate(
+            signature,
+            observation,
+            finding,
+            exact_pins,
+            seed,
+            transcript,
+        )?;
+        prepared.publish(self)
+    }
+}
+
 fn empty_measurement_publication(
     scenario: ScenarioDefId,
     configuration: ConfigurationId,
@@ -67,13 +154,15 @@ fn observation_with_measurements(
     assert!(retained.produced_selections().is_empty());
     let observation = Observation::new(
         retained.attempt(),
-        retained.child(),
-        retained.child_content(),
-        retained.path(),
-        retained.stop().clone(),
-        measurements.id().expect("replacement measurement ID"),
-        retained.properties(),
-        retained.coverage(),
+        Observation::outcome(
+            retained.child(),
+            retained.child_content(),
+            retained.path(),
+            retained.stop().clone(),
+            measurements.id().expect("replacement measurement ID"),
+            retained.properties(),
+            retained.coverage(),
+        ),
         retained.discovered_choices().clone(),
     )
     .expect("observation with replacement measurements");
@@ -93,7 +182,7 @@ fn measurement_with_evidence(
     evidence: &CrucibleMeasurementReplayEvidence,
     definitions: CampaignHash,
 ) -> MeasurementSet {
-    let retained = template.evaluation().expect("measurement evaluation");
+    let retained = template.evaluation();
     MeasurementSet::from_evaluation(
         definitions,
         retained.payload_schema(),
@@ -155,6 +244,7 @@ fn signal_fault_selectable(
                 .collect::<String>(),
         ),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };
@@ -202,7 +292,20 @@ fn replay_evidence(
     CrucibleFindingReplayEvidence::new(
         Some(signature),
         configuration,
-        MeasurementSet::new(BTreeMap::new()).expect("empty replay measurements"),
+        MeasurementSet::from_evaluation(
+            crucible_campaign::CampaignHash::derive(
+                "crucible.test.measurement-definitions.v1",
+                b"finding replay",
+            ),
+            1,
+            crucible_campaign::CampaignHash::derive(
+                "crucible.test.measurement-evaluation.v1",
+                b"finding replay",
+            ),
+            b"finding replay".to_vec(),
+            BTreeSet::new(),
+        )
+        .expect("empty replay measurements"),
         PropertyVerdictSet::new(BTreeMap::new()).expect("empty replay properties"),
         CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("empty replay coverage"),
         Vec::new(),

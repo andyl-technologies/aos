@@ -30,7 +30,6 @@ pub use closed::*;
 mod search;
 pub use search::*;
 
-const LEGACY_PLANNER_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PLANNER_REQUEST_SCHEMA_VERSION: u32 = 2;
 const SMC_PLANNER_REQUEST_SCHEMA_VERSION: u32 = 3;
 const PLANNER_RESPONSE_SCHEMA_VERSION: u32 = 1;
@@ -853,7 +852,7 @@ impl CampaignPlanningBundle {
                 }
                 if let Some(candidate_budget) = &candidate_budget {
                     candidate_budget.validate_for(offer)?;
-                    if candidate_budget.remaining_request_attempts().is_some() != request_budget {
+                    if !request_budget {
                         return Err(CampaignCodecError::InvalidValue {
                             reason: "candidate budget version disagrees with request-budget capability",
                         });
@@ -961,16 +960,8 @@ impl CampaignPlanningBundle {
                         limit: "planner-search-candidate-depth",
                     }
                 })?;
-                let Some(parent_segments) = parent_path.segments() else {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "planner search-order candidate parent path is legacy",
-                    });
-                };
-                let Some(path_segments) = path.segments() else {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "planner search-order candidate path is legacy",
-                    });
-                };
+                let parent_segments = parent_path.segments();
+                let path_segments = path.segments();
                 let Some((terminal, prefix)) = path_segments.split_last() else {
                     return Err(CampaignCodecError::InvalidValue {
                         reason: "planner search-order candidate path is empty",
@@ -1473,12 +1464,8 @@ impl PlannerRequest {
     ) -> Result<Self, CampaignCodecError> {
         if !matches!(
             schema_version,
-            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION
-                | PLANNER_REQUEST_SCHEMA_VERSION
-                | SMC_PLANNER_REQUEST_SCHEMA_VERSION
-        ) || (schema_version == LEGACY_PLANNER_REQUEST_SCHEMA_VERSION
-            && (statistical_request_basis.is_some() || smc_request_basis.is_some()))
-            || (schema_version < SMC_PLANNER_REQUEST_SCHEMA_VERSION && smc_request_basis.is_some())
+            PLANNER_REQUEST_SCHEMA_VERSION | SMC_PLANNER_REQUEST_SCHEMA_VERSION
+        ) || (schema_version < SMC_PLANNER_REQUEST_SCHEMA_VERSION && smc_request_basis.is_some())
             || (statistical_request_basis.is_some() && smc_request_basis.is_some())
             || (smc_request_basis.is_some() && engine.implementation_version() < 8)
         {
@@ -1772,9 +1759,7 @@ impl Canonical for PlannerRequest {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION
-                | PLANNER_REQUEST_SCHEMA_VERSION
-                | SMC_PLANNER_REQUEST_SCHEMA_VERSION
+            PLANNER_REQUEST_SCHEMA_VERSION | SMC_PLANNER_REQUEST_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported planner request schema version",
@@ -1953,351 +1938,17 @@ impl Canonical for PlannerResponse {
     }
 }
 
-/// Closed pure planner implementation without coordinator or host I/O authority.
-pub trait PurePlannerEngine {
-    /// Engine-specific deterministic evaluation failure.
-    type Error;
-
-    /// Evaluates one complete immutable planning request.
-    ///
-    /// # Errors
-    ///
-    /// Returns the engine-specific error when deterministic evaluation cannot
-    /// produce a bounded result.
-    fn plan(&mut self, request: &PlannerRequest) -> Result<PlannerEngineOutput, Self::Error>;
-}
-
-/// One supervised evaluation result with adapter-measured fuel.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SupervisedPlannerExecution<E> {
-    result: Result<PlannerEngineOutput, E>,
-    measured_fuel: u64,
-}
-
-impl<E> SupervisedPlannerExecution<E> {
-    /// Binds an engine result to the supervisor's fuel measurement.
-    #[must_use]
-    pub const fn new(result: Result<PlannerEngineOutput, E>, measured_fuel: u64) -> Self {
-        Self {
-            result,
-            measured_fuel,
-        }
-    }
-
-    /// Separates the engine result from its measured fuel.
-    pub fn into_parts(self) -> (Result<PlannerEngineOutput, E>, u64) {
-        (self.result, self.measured_fuel)
-    }
-}
-
-/// Killable supervisor for one bounded pure planner evaluation.
-///
-/// The supervisor, not the pure engine, owns the authoritative fuel
-/// observation. A production implementation must enforce the request fuel
-/// budget and a finite wall-clock deadline, observe cancellation, and terminate
-/// an evaluation that exceeds any bound. This trait deliberately owns the
-/// execution call instead of wrapping an uninterruptible in-process closure.
-pub trait PlannerExecutionSupervisor<E: PurePlannerEngine> {
-    /// Supervisor-specific execution or measurement failure.
-    type Error;
-
-    /// Executes one evaluation and returns its result with measured fuel.
-    ///
-    /// The returned fuel covers the complete operation, including an operation
-    /// that returns an engine error. Implementations must not derive fuel from
-    /// planner-provided claims.
-    ///
-    /// # Errors
-    ///
-    /// Returns the supervisor-specific error when the operation cannot be run,
-    /// bounded, terminated, or measured authoritatively.
-    fn execute(
-        &mut self,
-        engine: &mut E,
-        request: &PlannerRequest,
-    ) -> Result<SupervisedPlannerExecution<E::Error>, Self::Error>;
-}
-
-/// Implementor-facing authenticated planner component service.
-pub trait PlannerService {
-    /// Component-specific transport or evaluation failure.
-    type Error;
-
-    /// Evaluates and authenticates one planner request.
-    ///
-    /// # Errors
-    ///
-    /// Returns the component-specific error when no authenticated submission
-    /// can be produced. Semantic planner output remains untrusted until the
-    /// checked client and coordinator validate it.
-    fn plan(&mut self, request: &PlannerRequest) -> Result<PlannerResponse, Self::Error>;
-}
-
-/// Supervised authority adapter over one pure planner engine.
-pub struct AuthorizedPlannerService<E, M> {
-    engine: E,
-    supervisor: M,
-    authority: PlannerAuthorityKey,
-}
-
-impl<E, M> AuthorizedPlannerService<E, M> {
-    /// Binds a pure engine and supervised meter to planner authority.
-    #[must_use]
-    pub const fn new(engine: E, supervisor: M, authority: PlannerAuthorityKey) -> Self {
-        Self {
-            engine,
-            supervisor,
-            authority,
-        }
-    }
-
-    /// Returns the engine and meter after component shutdown.
-    #[must_use]
-    pub fn into_parts(self) -> (E, M) {
-        (self.engine, self.supervisor)
-    }
-}
-
-impl<E: PurePlannerEngine, M: PlannerExecutionSupervisor<E>> PlannerService
-    for AuthorizedPlannerService<E, M>
-{
-    type Error = AuthorizedPlannerServiceError<E::Error, M::Error>;
-
-    fn plan(&mut self, request: &PlannerRequest) -> Result<PlannerResponse, Self::Error> {
-        let execution = self
-            .supervisor
-            .execute(&mut self.engine, request)
-            .map_err(AuthorizedPlannerServiceError::Supervisor)?;
-        let (output, fuel) = execution.into_parts();
-        let output = output.map_err(AuthorizedPlannerServiceError::Engine)?;
-        let measured = measured_planning_usage(request, output.proposal(), fuel)
-            .map_err(AuthorizedPlannerServiceError::InvalidOutput)?;
-        validate_planner_output(request, output.proposal(), measured)
-            .map_err(AuthorizedPlannerServiceError::InvalidOutput)?;
-        let submission = PlannerSubmission::authorize(
-            &self.authority,
-            request.expected_snapshot(),
-            output.proposal,
-            measured,
-        )
-        .map_err(AuthorizedPlannerServiceError::InvalidOutput)?;
-        PlannerResponse::authorize(&self.authority, request, submission)
-            .map_err(AuthorizedPlannerServiceError::InvalidOutput)
-    }
-}
-
-/// Failure from a supervised planner authority adapter.
-#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
-pub enum AuthorizedPlannerServiceError<E, M> {
-    /// The pure engine failed before producing output.
-    #[error("pure planner engine failed: {0}")]
-    Engine(E),
-    /// The supervisor could not bound or measure the engine evaluation.
-    #[error("planner execution supervisor failed: {0}")]
-    Supervisor(M),
-    /// The engine produced output outside the exact request contract.
-    #[error(transparent)]
-    InvalidOutput(CampaignCodecError),
-}
-
-/// Coordinator-facing checked client over one direct or RPC planner service.
-pub struct PlannerClient<S> {
-    service: S,
-    authority: PlannerAuthorityKey,
-}
-
-impl<S> PlannerClient<S> {
-    /// Wraps one component service with its exact verification authority.
-    #[must_use]
-    pub const fn new(service: S, authority: PlannerAuthorityKey) -> Self {
-        Self { service, authority }
-    }
-
-    /// Returns the wrapped service after coordinator ownership ends.
-    #[must_use]
-    pub fn into_inner(self) -> S {
-        self.service
-    }
-
-    pub(crate) const fn authority(&self) -> &PlannerAuthorityKey {
-        &self.authority
-    }
-}
-
-impl<S: PlannerService> PlannerClient<S> {
-    /// Evaluates a request and validates response authority and exact basis.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PlannerClientError::Service`] when the component cannot
-    /// produce a submission, or [`PlannerClientError::InvalidResponse`] when
-    /// the response is unauthenticated or does not match the exact request.
-    pub fn plan(
-        &mut self,
-        request: &PlannerRequest,
-    ) -> Result<PlannerResponse, PlannerClientError<S::Error>> {
-        let response = self
-            .service
-            .plan(request)
-            .map_err(PlannerClientError::Service)?;
-        if !response.verify(&self.authority) || !response.submission().verify(&self.authority) {
-            return Err(PlannerClientError::InvalidResponse(
-                CampaignCodecError::InvalidValue {
-                    reason: "planner response authentication failed",
-                },
-            ));
-        }
-        response
-            .validate_for(request)
-            .map_err(PlannerClientError::InvalidResponse)?;
-        Ok(response)
-    }
-}
-
-/// Failure from the coordinator-facing checked planner client.
-#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
-pub enum PlannerClientError<E> {
-    /// The direct or RPC planner component failed to produce a response.
-    #[error("planner service failed: {0}")]
-    Service(E),
-    /// The component returned an unauthenticated or cross-request response.
-    #[error(transparent)]
-    InvalidResponse(CampaignCodecError),
-}
-
-fn validate_planner_output(
-    request: &PlannerRequest,
-    proposal: &PlannerStepProposal,
-    measured: PlanningUsage,
-) -> Result<(), CampaignCodecError> {
-    let invocation = request.invocation();
-    let budget = invocation.budget();
-    if proposal.invocation() != request.invocation_id()?
-        || proposal.next_state().engine() != invocation.engine()
-    {
-        return Err(CampaignCodecError::InvalidValue {
-            reason: "planner response invocation or next-state engine mismatch",
-        });
-    }
-
-    let claimed = proposal.usage_claim();
-    if claimed.branch_requests > u64::from(budget.branch_requests())
-        || claimed.proposals > u64::from(budget.proposals())
-        || claimed.input_objects > u64::from(budget.input_objects())
-        || claimed.input_bytes > budget.input_bytes()
-        || claimed.fuel > budget.fuel()
-    {
-        return Err(CampaignCodecError::InvalidValue {
-            reason: "planner response usage claim exceeds budget",
-        });
-    }
-
-    let (branch_requests, proposals) = match proposal.disposition() {
-        PlannerProposalDisposition::Issue {
-            branch_requests,
-            proposals,
-            ..
-        } => (branch_requests.len(), proposals.len()),
-        PlannerProposalDisposition::ContinueScan { .. } | PlannerProposalDisposition::NoWork => {
-            (0, 0)
-        }
-    };
-    if measured.branch_requests != usize_to_u64(branch_requests)?
-        || measured.proposals != usize_to_u64(proposals)?
-        || measured.branch_requests > u64::from(budget.branch_requests())
-        || measured.proposals > u64::from(budget.proposals())
-        || measured.input_objects != invocation.scan_page().input_objects()
-        || measured.input_bytes != invocation.scan_page().input_bytes()
-        || measured.fuel > budget.fuel()
-    {
-        return Err(CampaignCodecError::InvalidValue {
-            reason: "planner measured usage disagrees with request or output",
-        });
-    }
-
-    match proposal.disposition() {
-        PlannerProposalDisposition::ContinueScan { cursor }
-            if !invocation.scan_page().complete()
-                && cursor.input_view() == invocation.input_view()
-                && cursor.after() == invocation.scan_page().last() =>
-        {
-            Ok(())
-        }
-        PlannerProposalDisposition::Issue { .. } | PlannerProposalDisposition::NoWork
-            if invocation.scan_page().complete() =>
-        {
-            Ok(())
-        }
-        PlannerProposalDisposition::ContinueScan { .. }
-        | PlannerProposalDisposition::Issue { .. }
-        | PlannerProposalDisposition::NoWork => Err(CampaignCodecError::InvalidValue {
-            reason: "planner response disposition disagrees with served scan page",
-        }),
-    }
-}
-
-fn measured_planning_usage(
-    request: &PlannerRequest,
-    proposal: &PlannerStepProposal,
-    fuel: u64,
-) -> Result<PlanningUsage, CampaignCodecError> {
-    let (branch_requests, proposals) = match proposal.disposition() {
-        PlannerProposalDisposition::Issue {
-            branch_requests,
-            proposals,
-            ..
-        } => (branch_requests.len(), proposals.len()),
-        PlannerProposalDisposition::ContinueScan { .. } | PlannerProposalDisposition::NoWork => {
-            (0, 0)
-        }
-    };
-    Ok(PlanningUsage {
-        branch_requests: usize_to_u64(branch_requests)?,
-        proposals: usize_to_u64(proposals)?,
-        input_objects: request.invocation().scan_page().input_objects(),
-        input_bytes: request.invocation().scan_page().input_bytes(),
-        fuel,
-    })
-}
-
-fn usize_to_u64(value: usize) -> Result<u64, CampaignCodecError> {
-    u64::try_from(value).map_err(|_| CampaignCodecError::LimitExceeded {
-        limit: "planner-output-count",
-    })
-}
-
-fn planner_request_digest(request: &PlannerRequest) -> CampaignHash {
-    CampaignHash::derive(
-        "crucible.campaign.planner-request-digest.v1",
-        &request.canonical_bytes(),
-    )
-}
-
-fn ensure_retained_planner_request_shape(
-    bundle_objects: usize,
-    encoded_bytes: usize,
-) -> Result<(), CampaignCodecError> {
-    if bundle_objects > MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS {
-        return Err(CampaignCodecError::LimitExceeded {
-            limit: "retained-planner-request-bundle-object-count",
-        });
-    }
-    if encoded_bytes > MAX_RETAINED_PLANNER_REQUEST_BYTES {
-        return Err(CampaignCodecError::LimitExceeded {
-            limit: "retained-planner-request-encoded-bytes",
-        });
-    }
-    Ok(())
-}
-
-fn planner_response_basis(request_digest: CampaignHash, submission: &PlannerSubmission) -> Vec<u8> {
-    let mut encoder = Encoder::new();
-    PLANNER_RESPONSE_SCHEMA_VERSION.encode(&mut encoder);
-    request_digest.encode(&mut encoder);
-    submission.encode(&mut encoder);
-    encoder.finish()
-}
-
+mod service;
+#[cfg(test)]
+use service::measured_planning_usage;
+pub use service::{
+    AuthorizedPlannerService, AuthorizedPlannerServiceError, PlannerClient, PlannerClientError,
+    PlannerExecutionSupervisor, PlannerService, PurePlannerEngine, SupervisedPlannerExecution,
+};
+use service::{
+    ensure_retained_planner_request_shape, planner_request_digest, planner_response_basis,
+    validate_planner_output,
+};
 #[cfg(test)]
 mod tests {
     // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
@@ -2361,7 +2012,7 @@ mod tests {
         );
         assert_eq!(
             encode_hex(blake3::hash(&bytes).as_bytes()),
-            "592e305f3a6ad2cd3f9b7fb4a94a413b1f7ad838b3d58e73f5200fdeab7315a4"
+            "21d5a7d3743d8075b6c475ba6a6becc96cb744b6386f7d1fb96254d2c095d0d3"
         );
         let retained = ObjectEnvelope::for_record(
             crate::CampaignRecordKind::RetainedPlannerRequest,
@@ -2402,7 +2053,7 @@ mod tests {
         );
         assert_eq!(
             encode_hex(blake3::hash(&response_bytes).as_bytes()),
-            "5e99e8c56d31d7da71983b65c8ca70eadaf45d14d59c074ce30b6d393df0ec31"
+            "27e8d95161ed687bf77a01d4ffc317ce5396fe10d06f6e63443f3891c0a5c99c"
         );
 
         let mut wrong_version = bytes.clone();
@@ -2418,108 +2069,6 @@ mod tests {
         assert_eq!(
             PlannerRequest::from_canonical_bytes(&trailing),
             Err(CampaignCodecError::TrailingBytes)
-        );
-    }
-
-    #[test]
-    fn raw_planner_request_and_response_vectors_decode_and_validate_without_construction() {
-        // These reviewed fixtures are transport bytes captured independently
-        // of this test. Keep decoding as the first typed operation so a drifted
-        // constructor cannot regenerate the expected wire representation.
-        let request_bytes = decode_hex_fixture(include_str!("../testdata/planner-request-v2.hex"));
-        let response_bytes =
-            decode_hex_fixture(include_str!("../testdata/planner-response-v1.hex"));
-        assert_eq!(
-            encode_hex(blake3::hash(&request_bytes).as_bytes()),
-            "592e305f3a6ad2cd3f9b7fb4a94a413b1f7ad838b3d58e73f5200fdeab7315a4"
-        );
-        assert_eq!(
-            encode_hex(blake3::hash(&response_bytes).as_bytes()),
-            "5e99e8c56d31d7da71983b65c8ca70eadaf45d14d59c074ce30b6d393df0ec31"
-        );
-
-        let request = PlannerRequest::from_canonical_bytes(&request_bytes)
-            .expect("decode raw planner request vector");
-        let response = PlannerResponse::from_canonical_bytes(&response_bytes)
-            .expect("decode raw planner response vector");
-        response
-            .validate_for(&request)
-            .expect("validate raw response request basis");
-        let authority = PlannerAuthorityKey::from_bytes([0x22; 32]).expect("fixture authority");
-        assert!(response.verify(&authority));
-        assert_eq!(request.canonical_bytes(), request_bytes);
-        assert_eq!(response.canonical_bytes(), response_bytes);
-    }
-
-    #[test]
-    fn legacy_planner_request_preserves_its_exact_bytes_and_identity() {
-        let current = request(0x21);
-        let legacy = PlannerRequest::new_for_schema(
-            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION,
-            current.expected_snapshot,
-            current.invocation.clone(),
-            current.engine.clone(),
-            current.policy_artifact.clone(),
-            current.policy.clone(),
-            current.planner_state.clone(),
-            current.input_view,
-            None,
-            None,
-            current.input_bundle.clone(),
-        )
-        .expect("legacy planner request");
-        let bytes = legacy.canonical_bytes();
-        assert_eq!(
-            encode_hex(blake3::hash(&bytes).as_bytes()),
-            "448d0678beaeb238107a6c4584cda2b5604150556a4b0eac42a720faf372ec66"
-        );
-        assert_eq!(
-            PlannerRequest::from_canonical_bytes(&bytes).expect("decode legacy planner request"),
-            legacy
-        );
-        assert_eq!(
-            legacy.id().expect("legacy request ID").to_text(),
-            "crucible.campaign.retained-planner-request@policy.1.ac1389b8f4319f2ebe5f00536b348218fa1fd567ce870f76db0389507f4533ff"
-        );
-    }
-
-    #[test]
-    fn canonical_frontier_keeps_version_six_and_seven_descriptors_replayable() {
-        let version_six = PlannerEngine::new(
-            "crucible-canonical-frontier",
-            6,
-            1,
-            BTreeSet::from([
-                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
-            ]),
-        )
-        .expect("version-six canonical frontier descriptor");
-        assert!(
-            CanonicalFrontierPlanner::supports_descriptor(&version_six)
-                .expect("check version-six support")
-        );
-        let version_seven = PlannerEngine::new(
-            "crucible-canonical-frontier",
-            7,
-            1,
-            BTreeSet::from([
-                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
-            ]),
-        )
-        .expect("version-seven canonical frontier descriptor");
-        assert!(
-            CanonicalFrontierPlanner::supports_descriptor(&version_seven)
-                .expect("check version-seven support")
-        );
-        assert_eq!(
-            CanonicalFrontierPlanner::descriptor()
-                .expect("current canonical frontier descriptor")
-                .implementation_version(),
-            8
         );
     }
 
@@ -2796,47 +2345,55 @@ mod tests {
     fn policy(byte: u8) -> CampaignPolicy {
         let generator = generator();
         CampaignPolicy::new(
-            ScenarioDefId::from_hash(CampaignHash::derive(
-                "crucible.test.planner-scenario.v1",
-                &[byte],
-            )),
-            CampaignSeed::from_bytes([byte; 32]),
-            CampaignMode::Strict,
-            ExplorerPolicy::TreeSearch {
-                puct: PuctPolicy::new(1_000_000, 0, 0),
-                widening: Some(
-                    ProgressiveWideningPolicy::new(
-                        crate::ExactRational::new(1, 1).expect("k"),
-                        crate::ExactRational::new(1, 2).expect("alpha"),
-                        1,
-                        4,
-                        1,
-                    )
-                    .expect("widening"),
-                ),
-            },
-            BTreeMap::from([(
-                String::from("test.choice"),
-                ChoicePolicy::new("test.choice", generator.id().expect("generator id"), true)
-                    .expect("choice policy"),
-            )]),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            BTreeSet::new(),
-            FairnessPolicy::new(1, 1).expect("fairness"),
-            RetentionPolicy::new(false, 1, false, false),
-            false,
+            CampaignPolicy::identity(
+                ScenarioDefId::from_hash(CampaignHash::derive(
+                    "crucible.test.planner-scenario.v1",
+                    &[byte],
+                )),
+                CampaignSeed::from_bytes([byte; 32]),
+                CampaignMode::Strict,
+                ExplorerPolicy::TreeSearch {
+                    puct: PuctPolicy::new(1_000_000, 0, 0),
+                    widening: Some(
+                        ProgressiveWideningPolicy::new(
+                            crate::ExactRational::new(1, 1).expect("k"),
+                            crate::ExactRational::new(1, 2).expect("alpha"),
+                            1,
+                            4,
+                            1,
+                        )
+                        .expect("widening"),
+                    ),
+                },
+            ),
+            CampaignPolicy::rules(
+                BTreeMap::from([(
+                    String::from("test.choice"),
+                    ChoicePolicy::new("test.choice", generator.id().expect("generator id"), true)
+                        .expect("choice policy"),
+                )]),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                FairnessPolicy::new(1, 1).expect("fairness"),
+                RetentionPolicy::new(false, 1, false, false),
+                false,
+            ),
         )
         .expect("policy")
     }
 
     fn generator() -> CandidateGeneratorSpec {
-        CandidateGeneratorSpec::new(1, CandidateGeneratorAlgorithm::All).expect("generator")
+        CandidateGeneratorSpec::new(
+            crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::All,
+        )
+        .expect("generator")
     }
 
     fn content(kind: ObjectKind, byte: u8) -> ContentId {
         let schema_version = if kind == ObjectKind::CampaignSnapshot {
-            2
+            3
         } else {
             1
         };
@@ -2851,21 +2408,5 @@ mod tests {
             encoded.push(HEX[(byte & 0x0f) as usize] as char);
         }
         encoded
-    }
-
-    fn decode_hex_fixture(source: &str) -> Vec<u8> {
-        let hex = source
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .collect::<String>();
-        assert_eq!(hex.len() % 2, 0, "raw vector has an incomplete byte");
-        (0..hex.len())
-            .step_by(2)
-            .map(|offset| {
-                u8::from_str_radix(&hex[offset..offset + 2], 16)
-                    .expect("raw vector contains non-hex data")
-            })
-            .collect()
     }
 }

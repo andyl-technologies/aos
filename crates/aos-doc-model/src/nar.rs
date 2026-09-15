@@ -123,7 +123,7 @@ mod tests {
     fn push_string(output: &mut Vec<u8>, value: &[u8]) {
         output.extend_from_slice(&(value.len() as u64).to_le_bytes());
         output.extend_from_slice(value);
-        while output.len() % 8 != 0 {
+        while !output.len().is_multiple_of(8) {
             output.push(0);
         }
     }

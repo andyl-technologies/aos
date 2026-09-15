@@ -265,68 +265,6 @@ pub(super) fn validate_lifecycle_evidence(
     }
 }
 
-/// Validates the lifecycle evidence emitted by the real-QEMU negative gate.
-///
-/// This is the same production decoder used during normal event admission; the
-/// gate wrapper fixes only the authored effect whose real output it requested.
-pub(crate) fn validate_live_gate_lifecycle_event(event: &DequeuedFaultEvent) -> bool {
-    validate_lifecycle_evidence(
-        event,
-        &NodeEffectSpecification::Lifecycle {
-            transition: NodeLifecycleTransition::Crash,
-            downtime_nanos: 1,
-            boot_policy: NodeBootPolicy::Immediate,
-            volatile_state_policy: NodeStatePolicy::Preserve,
-            device_state_policy: NodeStatePolicy::Clear,
-        },
-    )
-}
-
-/// Summarizes the independent lifecycle-evidence predicates used by the live gate.
-pub(crate) fn live_gate_lifecycle_event_diagnostic(event: &DequeuedFaultEvent) -> String {
-    let bytes = event.payload.as_slice();
-    let transition = read_u16(bytes, 10);
-    let volatile_policy = read_u32(bytes, 12);
-    let device_policy = read_u32(bytes, 16);
-    let effective_transition = read_u32(bytes, 288);
-    let terminal_cause = read_u32(bytes, 292);
-    let terminal_flags = read_u32(bytes, 296);
-    let terminal_shape = transition
-        .zip(effective_transition)
-        .zip(terminal_cause)
-        .zip(terminal_flags)
-        .is_some_and(|(((requested, effective), cause), flags)| {
-            validate_lifecycle_terminal_shape(event, bytes, requested, effective, cause, flags)
-        });
-    let boot_valid = validate_boot_evidence(bytes, &NodeBootPolicy::Immediate);
-    let terminal_policy =
-        effective_transition
-            .zip(terminal_cause)
-            .is_some_and(|(effective, cause)| {
-                validate_lifecycle_terminal_policy(&NodeBootPolicy::Immediate, effective, cause)
-            });
-
-    format!(
-        "len={} magic={} version={:?} outcome={:?} observed={} binding={} payload_before={} payload_after={} transition={transition:?} volatile={volatile_policy:?} device={device_policy:?} preserved={:?} virtual_before={:?} downtime={:?} virtual_after={:?} ram_before={:?} device_before={:?} ram_after={:?} device_after={:?} effective={effective_transition:?} cause={terminal_cause:?} flags={terminal_flags:?} terminal_shape={terminal_shape} boot={boot_valid} terminal_policy={terminal_policy}",
-        bytes.len(),
-        bytes.get(0..8) == Some(b"CRUCLIF1"),
-        read_u16(bytes, 8),
-        event.header.outcome,
-        read_u64(bytes, 24) == Some(event.header.observed_icount),
-        bytes.get(64..96) == Some(event.header.binding_hash.as_slice()),
-        bytes.get(128..160) == Some(event.header.before_hash.as_slice()),
-        bytes.get(160..192) == Some(event.header.after_hash.as_slice()),
-        read_u32(bytes, 20),
-        read_u64(bytes, 32),
-        read_u64(bytes, 40),
-        read_u64(bytes, 96),
-        read_u64(bytes, 48),
-        read_u64(bytes, 56),
-        read_u64(bytes, 112),
-        read_u64(bytes, 120),
-    )
-}
-
 pub(super) fn validate_lifecycle_terminal_shape(
     event: &DequeuedFaultEvent,
     bytes: &[u8],

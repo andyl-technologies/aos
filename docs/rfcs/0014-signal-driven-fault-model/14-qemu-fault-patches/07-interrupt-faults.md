@@ -1,4 +1,4 @@
-# Patch 0053 — `crucible-interrupt-faults`
+# Capability task 0053 — `crucible-interrupt-faults`
 
 ## Purpose
 
@@ -11,7 +11,8 @@ host signal timing.
 
 - Provides `qemu.interrupt.control.x86_64.v1` and
   `qemu.interrupt.control.aarch64.v1`.
-- Depends on 0047–0048, existing deterministic IPI/preemption injection, and
+- Requires the capabilities specified by capability tasks 0047–0048, the
+  existing deterministic IPI/preemption injection, and
   architecture interrupt-controller state.
 
 ## Interrupt manifest
@@ -22,7 +23,8 @@ QEMU reports supported interrupt families and phases for the realized machine:
   MSI/MSI-X, NMI, and architecture timer interrupts. SMI is rejected unless a
   later explicit manifest row proves complete SMM semantics.
 - AArch64: GIC SGI/PPI/SPI/LPI classes present in the realized GIC version,
-  virtual/physical timer interrupts, and architecture SError only through 0054.
+  virtual/physical timer interrupts, and architecture SError only through
+  capability task 0054.
 
 Each manifest row gives stable controller/source type, numeric ranges, trigger
 mode (`edge`/`level`), polarity where relevant, routable target set, phases,
@@ -52,11 +54,12 @@ The complete family set is:
 IPI, MSI, MSI-X, NMI, SGI, and LPI rows are edge-triggered. Edge rows use
 `delivery_drop=consume_edge`; level rows use
 `delivery_drop=repend_asserted_level`. SMI has no family row. SError belongs to
-the typed exception contract in patch 0054. `controller_version` is the exact
+the typed exception contract specified by capability task 0054.
+`controller_version` is the exact
 printable realized implementation identity exported by QEMU, not a user-chosen
 label.
 
-Patch 0053 constructs this manifest from devices that actually realized. Family
+This capability constructs the manifest from devices that actually realized. Family
 registration is accepted only before the manifest is first read; a device that
 tries to appear later is rejected instead of silently widening an authenticated
 run. The host then binds SHA-256 identities for every row and seals the complete
@@ -155,11 +158,13 @@ events tie by controller priority, source ID, event ID, then duplicate ordinal.
 Evidence records manifest/controller version, event ID, all original fields,
 matched rules/decisions, original/final phase state, queued release coordinate,
 controller pending/active digests, target vCPU/RR cursor, guest exception entry,
-and fingerprint. Patch 0067 serializes rules, delayed/storm queues, source
+and fingerprint. The VMState capability specified by capability task 0067
+serializes rules, delayed/storm queues, source
 sequences, controller-associated fault state, and partial acknowledgements.
 
-Patch 0053 already places controller-resident provenance in the corresponding
-APIC, PIC, GICv2, and GICv3 VMState descriptions. Patch 0067 owns the complete
+This capability places controller-resident provenance in the corresponding APIC,
+PIC, GICv2, and GICv3 VMState descriptions. The VMState capability specified by
+the capability specified by capability task 0067 owns the complete
 cross-component migration transaction for the sparse LPI/deferred provenance
 table, source/routing counters, pending command/impulse commit, delayed timers,
 storm progress and target lists, and queued deterministic IPI provenance. Until
@@ -177,7 +182,8 @@ state live.
 4. Save/restore with delayed, active level, and storm events pending.
 5. Verify unknown controller/vector/target, impossible trigger policy, past
    release, and limit failures leave state valid.
-6. Revert patch and fail live gate; prove non-sim inertness.
+6. Run the live gate against pristine QEMU and require capability absence;
+   prove non-sim inertness with the atomic patch installed.
 
 ## Licensing checklist
 

@@ -15,8 +15,9 @@
 //! the journal fence while treating every recorded object as a direct root.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -39,6 +40,14 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
+
+mod journal_io;
+#[cfg(test)]
+use journal_io::fail_next_directory_sync;
+use journal_io::{
+    cleanup_staging, create_child_directory, create_journal_directory, encode_content_id,
+    hash_field, io_error, read_bounded_file, sync_directory, write_atomic,
+};
 
 const JOURNAL_MAGIC: &[u8; 32] = b"CRUCIBLE-CAMPAIGN-TRANSFER-V1!!!";
 const JOURNAL_VERSION: u32 = 1;
@@ -105,6 +114,41 @@ impl CampaignTransferOperationId {
             encoded.push(HEX[(byte & 0x0f) as usize] as char);
         }
         encoded
+    }
+}
+
+/// Terminal authenticated durability receipt for one archive publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignArchiveDurabilityReceipt {
+    operation: CampaignTransferOperationId,
+    manifest: CampaignArchiveManifestId,
+    requirement: DurabilityRequirement,
+    transfer: CampaignArchiveTransferReport,
+}
+
+impl CampaignArchiveDurabilityReceipt {
+    /// Returns the destination- and publication-bound transfer identity.
+    #[must_use]
+    pub const fn operation(self) -> CampaignTransferOperationId {
+        self.operation
+    }
+
+    /// Returns the authenticated archive manifest published by the transfer.
+    #[must_use]
+    pub const fn manifest(self) -> CampaignArchiveManifestId {
+        self.manifest
+    }
+
+    /// Returns the exact destination durability requirement.
+    #[must_use]
+    pub const fn requirement(self) -> DurabilityRequirement {
+        self.requirement
+    }
+
+    /// Returns the verified missing-object transfer counters and placement floor.
+    #[must_use]
+    pub const fn transfer(self) -> CampaignArchiveTransferReport {
+        self.transfer
     }
 }
 
@@ -221,12 +265,18 @@ enum TransferJournalRole {
 }
 
 /// Restart-safe single-writer transfer-root journal namespace.
+#[derive(Clone)]
 pub struct DirectoryCampaignTransferJournal {
-    root: PathBuf,
-    writer_lock: File,
+    inner: Arc<DirectoryCampaignTransferJournalInner>,
 }
 
-impl Drop for DirectoryCampaignTransferJournal {
+struct DirectoryCampaignTransferJournalInner {
+    root: PathBuf,
+    writer_lock: File,
+    lifecycle: RwLock<()>,
+}
+
+impl Drop for DirectoryCampaignTransferJournalInner {
     fn drop(&mut self) {
         let _ = flock(&self.writer_lock, FlockOperation::Unlock);
     }
@@ -255,18 +305,29 @@ impl DirectoryCampaignTransferJournal {
         flock(&writer_lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
             io_error("lock-transfer-journal", &lock_path, io::Error::from(source))
         })?;
-        let journal = Self { root, writer_lock };
-        cleanup_staging(&journal.root.join(STAGING_DIRECTORY))?;
+        let journal = Self {
+            inner: Arc::new(DirectoryCampaignTransferJournalInner {
+                root,
+                writer_lock,
+                lifecycle: RwLock::new(()),
+            }),
+        };
+        cleanup_staging(&journal.inner.root.join(STAGING_DIRECTORY))?;
         journal.visit_records(&mut |_, _| Ok(()))?;
         Ok(journal)
     }
 
     fn begin(
-        &mut self,
+        &self,
         operation: CampaignTransferOperationId,
         role: TransferJournalRole,
         plan: &CampaignArchivePlan,
     ) -> Result<(), CampaignTransferJournalError> {
+        let _lifecycle = self
+            .inner
+            .lifecycle
+            .write()
+            .map_err(|_| CampaignTransferJournalError::Poisoned)?;
         let objects = plan.transfer_objects();
         if objects.is_empty() || objects.len() > MAX_TRANSFER_OBJECTS {
             return Err(CampaignTransferJournalError::ObjectLimit);
@@ -276,7 +337,7 @@ impl DirectoryCampaignTransferJournal {
         let path = self.record_path(operation);
         match read_bounded_file(&path) {
             Ok(existing) if existing == bytes => {
-                return sync_directory(&self.root.join(RECORDS_DIRECTORY));
+                return sync_directory(&self.inner.root.join(RECORDS_DIRECTORY));
             }
             Ok(_) => return Err(CampaignTransferJournalError::RecordMismatch),
             Err(CampaignTransferJournalError::Io { source, .. })
@@ -298,6 +359,11 @@ impl DirectoryCampaignTransferJournal {
         &self,
         operation: CampaignTransferOperationId,
     ) -> Result<bool, CampaignTransferJournalError> {
+        let _lifecycle = self
+            .inner
+            .lifecycle
+            .read()
+            .map_err(|_| CampaignTransferJournalError::Poisoned)?;
         let path = self.record_path(operation);
         match read_bounded_file(&path) {
             Ok(bytes) => {
@@ -320,34 +386,40 @@ impl DirectoryCampaignTransferJournal {
     /// Returns [`CampaignTransferJournalError`] when an existing record is
     /// corrupt or durable removal cannot complete.
     pub fn complete(
-        &mut self,
+        &self,
         operation: CampaignTransferOperationId,
     ) -> Result<(), CampaignTransferJournalError> {
+        let _lifecycle = self
+            .inner
+            .lifecycle
+            .write()
+            .map_err(|_| CampaignTransferJournalError::Poisoned)?;
         let path = self.record_path(operation);
         match read_bounded_file(&path) {
             Ok(bytes) => {
                 TransferRecord::from_canonical_bytes(&bytes, operation)?;
                 fs::remove_file(&path)
                     .map_err(|source| io_error("remove-transfer-record", &path, source))?;
-                sync_directory(&self.root.join(RECORDS_DIRECTORY))
+                sync_directory(&self.inner.root.join(RECORDS_DIRECTORY))
             }
             Err(CampaignTransferJournalError::Io { source, .. })
                 if source.kind() == io::ErrorKind::NotFound =>
             {
-                sync_directory(&self.root.join(RECORDS_DIRECTORY))
+                sync_directory(&self.inner.root.join(RECORDS_DIRECTORY))
             }
             Err(source) => Err(source),
         }
     }
 
     fn record_path(&self, operation: CampaignTransferOperationId) -> PathBuf {
-        self.root
+        self.inner
+            .root
             .join(RECORDS_DIRECTORY)
             .join(format!("{}.transfer", operation.to_hex()))
     }
 
     fn record_paths(&self) -> Result<Vec<(String, PathBuf)>, CampaignTransferJournalError> {
-        let records = self.root.join(RECORDS_DIRECTORY);
+        let records = self.inner.root.join(RECORDS_DIRECTORY);
         let mut result = Vec::new();
         for entry in fs::read_dir(&records)
             .map_err(|source| io_error("read-transfer-records", &records, source))?
@@ -397,13 +469,22 @@ impl CampaignTransferRetentionAdmin for DirectoryCampaignTransferJournal {
     fn acquire_campaign_transfer_retention_fence(
         &self,
     ) -> Result<Box<dyn CampaignTransferRetentionFence + '_>, CampaignTransferJournalError> {
+        let lifecycle = self
+            .inner
+            .lifecycle
+            .read()
+            .map_err(|_| CampaignTransferJournalError::Poisoned)?;
         self.visit_records(&mut |_, _| Ok(()))?;
-        Ok(Box::new(DirectoryTransferRetentionFence { journal: self }))
+        Ok(Box::new(DirectoryTransferRetentionFence {
+            journal: self,
+            _lifecycle: lifecycle,
+        }))
     }
 }
 
 struct DirectoryTransferRetentionFence<'a> {
     journal: &'a DirectoryCampaignTransferJournal,
+    _lifecycle: RwLockReadGuard<'a, ()>,
 }
 
 impl CampaignTransferRetentionFence for DirectoryTransferRetentionFence<'_> {
@@ -475,23 +556,6 @@ impl<'a> CampaignArchiveTransferEndpoint<'a> {
             identity,
             writable,
             checkpoints: None,
-            exact_pins: None,
-        }
-    }
-
-    pub(crate) fn new_with_checkpoints(
-        repository: &'a CampaignRepository,
-        journal: &'a mut DirectoryCampaignTransferJournal,
-        identity: &'a str,
-        writable: bool,
-        checkpoints: &'a ExactCheckpointStore,
-    ) -> Self {
-        Self {
-            repository,
-            journal,
-            identity,
-            writable,
-            checkpoints: Some(checkpoints),
             exact_pins: None,
         }
     }
@@ -715,7 +779,7 @@ pub fn transfer_campaign_archive_durably(
     archive_name: &str,
     campaign_name: Option<&str>,
     destination_durability: DurabilityRequirement,
-) -> Result<CampaignArchiveTransferReport, CampaignArchiveTransferError> {
+) -> Result<CampaignArchiveDurabilityReceipt, CampaignArchiveTransferError> {
     if !source.writable {
         return Err(CampaignArchiveTransferError::SourceReadOnly);
     }
@@ -793,7 +857,7 @@ pub fn transfer_campaign_archive_durably(
                     .map_err(map_archive_exact_pin_error)?,
                 );
             } else {
-                authenticate_archive_checkpoint(
+                let claim = authenticate_archive_checkpoint(
                     destination.repository,
                     checkpoints,
                     plan.manifest().source_snapshot(),
@@ -802,6 +866,10 @@ pub fn transfer_campaign_archive_durably(
                     selection.checkpoint(),
                 )
                 .map_err(map_archive_exact_pin_error)?;
+                claim
+                    .commit()
+                    .map_err(ExactPinRetentionError::Checkpoint)
+                    .map_err(map_archive_exact_pin_error)?;
             }
         }
         if !prepared.is_empty() && destination.exact_pins.is_none() {
@@ -825,7 +893,12 @@ pub fn transfer_campaign_archive_durably(
     }
     destination.journal.complete(operation)?;
     source.journal.complete(operation)?;
-    Ok(report)
+    Ok(CampaignArchiveDurabilityReceipt {
+        operation,
+        manifest: plan.manifest_id(),
+        requirement: destination_durability,
+        transfer: report,
+    })
 }
 
 fn map_archive_exact_pin_error(error: ExactPinRetentionError) -> CampaignArchiveTransferError {
@@ -912,6 +985,9 @@ pub enum CampaignTransferJournalError {
     /// A GC retention visitor rejected one root.
     #[error("campaign transfer retention visitor failed")]
     Visitor(#[source] StoreError),
+    /// The shared in-process journal lifecycle lock was poisoned.
+    #[error("campaign transfer journal lifecycle lock is poisoned")]
+    Poisoned,
 }
 
 struct Cursor<'a> {
@@ -964,171 +1040,5 @@ impl<'a> Cursor<'a> {
 
     const fn is_eof(&self) -> bool {
         self.offset == self.bytes.len()
-    }
-}
-
-fn encode_content_id(
-    id: ContentId,
-    bytes: &mut Vec<u8>,
-) -> Result<(), CampaignTransferJournalError> {
-    let encoded = id.encode();
-    let length = u32::try_from(encoded.len()).map_err(|_| CampaignTransferJournalError::Corrupt)?;
-    bytes.extend_from_slice(&length.to_be_bytes());
-    bytes.extend_from_slice(encoded.as_bytes());
-    Ok(())
-}
-
-fn read_bounded_file(path: &Path) -> Result<Vec<u8>, CampaignTransferJournalError> {
-    let file = File::open(path).map_err(|source| io_error("open-transfer-record", path, source))?;
-    let length = file
-        .metadata()
-        .map_err(|source| io_error("stat-transfer-record", path, source))?
-        .len();
-    if length > MAX_TRANSFER_RECORD_BYTES {
-        return Err(CampaignTransferJournalError::ObjectLimit);
-    }
-    let read_limit = MAX_TRANSFER_RECORD_BYTES
-        .checked_add(1)
-        .ok_or(CampaignTransferJournalError::ObjectLimit)?;
-    let capacity = usize::try_from(length.min(read_limit))
-        .map_err(|_| CampaignTransferJournalError::ObjectLimit)?;
-    let mut bytes = Vec::with_capacity(capacity);
-    file.take(read_limit)
-        .read_to_end(&mut bytes)
-        .map_err(|source| io_error("read-transfer-record", path, source))?;
-    if bytes.len() as u64 > MAX_TRANSFER_RECORD_BYTES {
-        return Err(CampaignTransferJournalError::ObjectLimit);
-    }
-    Ok(bytes)
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CampaignTransferJournalError> {
-    let root = path
-        .parent()
-        .and_then(Path::parent)
-        .ok_or(CampaignTransferJournalError::Corrupt)?;
-    let stem = path
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .ok_or(CampaignTransferJournalError::Corrupt)?;
-    let temporary = root.join(STAGING_DIRECTORY).join(format!("{stem}.staging"));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|source| io_error("create-transfer-staging", &temporary, source))?;
-    if let Err(source) = file.write_all(bytes).and_then(|()| file.sync_all()) {
-        let _ = fs::remove_file(&temporary);
-        return Err(io_error("write-transfer-staging", &temporary, source));
-    }
-    fs::rename(&temporary, path)
-        .map_err(|source| io_error("rename-transfer-record", path, source))?;
-    sync_directory(path.parent().ok_or(CampaignTransferJournalError::Corrupt)?)?;
-    sync_directory(&root.join(STAGING_DIRECTORY))
-}
-
-fn create_journal_directory(path: &Path) -> Result<(), CampaignTransferJournalError> {
-    match fs::create_dir(path) {
-        Ok(()) => {}
-        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-            if !fs::metadata(path)
-                .map_err(|source| io_error("stat-transfer-journal", path, source))?
-                .is_dir()
-            {
-                return Err(CampaignTransferJournalError::UnexpectedEntry);
-            }
-        }
-        Err(source) => return Err(io_error("create-transfer-journal", path, source)),
-    }
-    let parent = path.parent().ok_or(CampaignTransferJournalError::Corrupt)?;
-    sync_directory(parent)
-}
-
-fn create_child_directory(root: &Path, name: &str) -> Result<(), CampaignTransferJournalError> {
-    let path = root.join(name);
-    match fs::create_dir(&path) {
-        Ok(()) => {}
-        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-            if !fs::metadata(&path)
-                .map_err(|source| io_error("stat-transfer-directory", &path, source))?
-                .is_dir()
-            {
-                return Err(CampaignTransferJournalError::UnexpectedEntry);
-            }
-        }
-        Err(source) => return Err(io_error("create-transfer-directory", &path, source)),
-    }
-    sync_directory(root)
-}
-
-fn cleanup_staging(path: &Path) -> Result<(), CampaignTransferJournalError> {
-    let mut entries = 0_usize;
-    for entry in
-        fs::read_dir(path).map_err(|source| io_error("read-transfer-staging", path, source))?
-    {
-        entries = entries
-            .checked_add(1)
-            .ok_or(CampaignTransferJournalError::RecordLimit)?;
-        if entries > MAX_TRANSFER_RECORDS {
-            return Err(CampaignTransferJournalError::RecordLimit);
-        }
-        let entry = entry.map_err(|source| io_error("read-transfer-staging", path, source))?;
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| CampaignTransferJournalError::UnexpectedEntry)?;
-        let valid_name = name.strip_suffix(".staging").is_some_and(|stem| {
-            stem.len() == 64 && stem.bytes().all(|byte| byte.is_ascii_hexdigit())
-        });
-        if !valid_name
-            || !entry
-                .file_type()
-                .map_err(|source| io_error("stat-transfer-staging", &entry.path(), source))?
-                .is_file()
-        {
-            return Err(CampaignTransferJournalError::UnexpectedEntry);
-        }
-        fs::remove_file(entry.path())
-            .map_err(|source| io_error("remove-transfer-staging", path, source))?;
-    }
-    if entries != 0 {
-        sync_directory(path)?;
-    }
-    Ok(())
-}
-
-fn hash_field(hasher: &mut blake3::Hasher, bytes: &[u8]) {
-    hasher.update(&(bytes.len() as u64).to_be_bytes());
-    hasher.update(bytes);
-}
-
-fn sync_directory(path: &Path) -> Result<(), CampaignTransferJournalError> {
-    #[cfg(test)]
-    if FAIL_NEXT_DIRECTORY_SYNC.with(|fail| fail.replace(false)) {
-        return Err(io_error(
-            "sync-transfer-directory",
-            path,
-            io::Error::other("injected directory sync failure"),
-        ));
-    }
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|source| io_error("sync-transfer-directory", path, source))
-}
-
-#[cfg(test)]
-fn fail_next_directory_sync() {
-    FAIL_NEXT_DIRECTORY_SYNC.with(|fail| fail.set(true));
-}
-
-fn io_error(
-    operation: &'static str,
-    path: &Path,
-    source: io::Error,
-) -> CampaignTransferJournalError {
-    CampaignTransferJournalError::Io {
-        operation,
-        path: path.to_path_buf(),
-        source,
     }
 }

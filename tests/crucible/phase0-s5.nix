@@ -278,6 +278,58 @@ in
 
           trap cleanup_qemu EXIT
 
+          report_trace_mismatch() {
+            label="$1"
+            jq -c '
+              select(.event == "doorbell")
+              | ([
+                  {kind: 1, name: "resident", len: 64},
+                  {kind: 2, name: "page_spanning", len: 96},
+                  {kind: 3, name: "paged_mmap", len: 128}
+                ][.marker_index - 1]) as $expected
+              | {
+                  marker_index,
+                  marker_icount,
+                  actual: {
+                    vcpu,
+                    kind,
+                    name,
+                    addr,
+                    len,
+                    register_read_ok,
+                    read_enabled,
+                    read_attempted,
+                    read_success,
+                    bytes_match,
+                    payload_hash,
+                    expected_hash
+                  },
+                  expected: $expected
+                }
+            ' "$TMPDIR/trace-$label.jsonl" >&2
+            jq -c '
+              select(.final == true and .pause_sample == true)
+              | {
+                  markers,
+                  read_enabled,
+                  read_attempts,
+                  read_successes,
+                  read_failures,
+                  bytes_mismatches,
+                  sample_register_failures,
+                  sample_capture_failures,
+                  register_read_failures,
+                  capture_status,
+                  digest_status,
+                  ram_bytes,
+                  ram_material_length,
+                  device_bytes,
+                  device_material_length,
+                  register_counts
+                }
+            ' "$TMPDIR/trace-$label.jsonl" >&2
+          }
+
           vmlinuz=$(ls "$KERNEL"/boot/vmlinuz-* | head -1)
           if [ -z "$vmlinuz" ]; then
             fail "no vmlinuz under $KERNEL/boot"
@@ -355,14 +407,22 @@ in
                 and .read_failures == 0
                 and .bytes_mismatches == 0
                 and .sample_register_failures == 0
+                and .sample_capture_failures == 0
                 and .register_read_failures == 0
+                and .capture_status == 0
+                and .digest_status == 0
                 and .ram_bytes > 0
+                and .ram_material_length > .ram_bytes
+                and .device_bytes > 0
+                and .device_material_length > .device_bytes
                 and (.register_counts | type == "array")
                 and (.register_counts | length) == 1
                 and .register_counts[0] > 0
               ))
-            ' "$TMPDIR/trace-$label.jsonl" >/dev/null \
-              || fail "invalid S5 read trace for $label"
+            ' "$TMPDIR/trace-$label.jsonl" >/dev/null || {
+              report_trace_mismatch "$label"
+              fail "invalid S5 read trace for $label"
+            }
           }
 
           assert_control_trace() {
@@ -386,11 +446,19 @@ in
                 and .read_failures == 0
                 and .bytes_mismatches == 0
                 and .sample_register_failures == 0
+                and .sample_capture_failures == 0
                 and .register_read_failures == 0
+                and .capture_status == 0
+                and .digest_status == 0
                 and .ram_bytes > 0
+                and .ram_material_length > .ram_bytes
+                and .device_bytes > 0
+                and .device_material_length > .device_bytes
               ))
-            ' "$TMPDIR/trace-$label.jsonl" >/dev/null \
-              || fail "invalid S5 control trace for $label"
+            ' "$TMPDIR/trace-$label.jsonl" >/dev/null || {
+              report_trace_mismatch "$label"
+              fail "invalid S5 control trace for $label"
+            }
           }
 
           normalize_events() {

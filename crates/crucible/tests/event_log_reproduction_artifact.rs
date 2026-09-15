@@ -4,6 +4,13 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -13,7 +20,7 @@ use crucible::{
     EventDiagnosticPayload, EventLevel, EventLog, MaterializedState, MemoryDagStore, Plan,
     Properties, ReproductionArtifact, ReproductionReplay, RngDecision, RngStreamId,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload, Seed,
-    TemporalGraph, VirtualTime, World, bake, event_log_causal_projection, step,
+    TemporalGraph, VirtualTime, World, bake, event_log_causal_projection,
 };
 
 fn world(_tag: &str) -> World {
@@ -173,7 +180,7 @@ fn dag_reproduction_artifact_references_shared_event_log_segments_by_content_key
     let world = world("shared-store-segment");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let child = step(&genesis, replay_decision(31));
+    let child = accepted_step!(&genesis, replay_decision(31));
     let shared = Arc::new(MemoryDagStore::new());
     let store: Arc<dyn DagStore> = shared.clone();
     let mut log = EventLog::with_segment_store(store);

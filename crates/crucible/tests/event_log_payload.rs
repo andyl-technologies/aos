@@ -7,9 +7,9 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    Decision, EventAttributeValue, EventClass, EventDiagnosticPayload, EventLevel, EventLog,
-    Icount, MarkerId, NodeId, ObservableEvent, RngDecision, RngStreamId, SchedulerEventLogPayload,
-    VirtualTime,
+    Decision, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLog, Icount, MarkerId,
+    NodeId, ObservableEvent, RngDecision, RngStreamId, SchedulerEventLogClass,
+    SchedulerEventLogPayload, VirtualTime,
 };
 
 #[test]
@@ -83,7 +83,7 @@ fn diagnostic_payload_is_typed_observational_escape_hatch() {
     assert_eq!(payload.string("executor"), Some("session"));
     assert_eq!(payload.level("severity"), Some(EventLevel::Warn));
     assert_eq!(entry.level(), EventLevel::Warn);
-    assert_eq!(entry.class(), EventClass::Observational);
+    assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
     assert!(entry.has_valid_content_hash());
 
     let mut log = EventLog::new();
@@ -119,7 +119,10 @@ fn level_is_orthogonal_to_event_class() {
     );
 
     assert_eq!(causal_trace.level(), EventLevel::Trace);
-    assert_eq!(causal_trace.class(), EventClass::Causal);
+    assert_eq!(causal_trace.class(), SchedulerEventLogClass::Causal);
     assert_eq!(diagnostic_error.level(), EventLevel::Error);
-    assert_eq!(diagnostic_error.class(), EventClass::Observational);
+    assert_eq!(
+        diagnostic_error.class(),
+        SchedulerEventLogClass::Observational
+    );
 }

@@ -295,7 +295,7 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "campaign-continuity gate target implemented";
-        needle = "gate: \"gate:campaign-continuity\",\n        package: \"crucible-cas\",\n        test_target: \"gate_campaign_continuity\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "gate: \"gate:campaign-continuity\",\n        package: \"crucible-cas\",\n        test_target: \"gate_campaign_continuity\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/gate_target_mapping.rs" gateTargetMappingTest [
@@ -327,7 +327,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "phase1 target lint includes campaign continuity";
-        needle = "gate = \"gate:campaign-continuity\";\n      package = \"crucible-cas\";\n      testTarget = \"gate_campaign_continuity\";\n      requiredFeatures = [];\n      placeholder = false;";
+        needle = "gate = \"gate:campaign-continuity\";\n      package = \"crucible-cas\";\n      testTarget = \"gate_campaign_continuity\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-testing-standards.nix" phase1TestingStandards [

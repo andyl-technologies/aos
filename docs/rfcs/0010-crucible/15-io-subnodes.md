@@ -1009,7 +1009,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Summary: block and 9p request/response lifecycles now use real shmem rings
   while preserving COMPUTE-then-DELIVER visibility, exact next-event ordering,
   deterministic full-ring backpressure, and producer/consumer wakes.
-  `checks.crucible.phase2.qemuLiveBlockIo` supplies the final real-backend
+  `checks.crucible.phase2.qemuLiveBlockRealization` supplies the final real-backend
   discharge: a Linux guest's explicit sector write is computed by the host
   servicer, remains invisible until its future delivery icount, then crosses
   `SLOT_BLK_IO` and releases the guest. Delaying response publication by 100 ms

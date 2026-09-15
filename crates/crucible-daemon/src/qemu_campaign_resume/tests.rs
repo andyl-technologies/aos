@@ -3,14 +3,23 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts.
 #![allow(clippy::expect_used)]
 
+fn accepted_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    match crucible::try_step(configuration, decision) {
+        Ok(configuration) => configuration,
+        Err(error) => panic!("test configuration step should be accepted: {error}"),
+    }
+}
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, ExecutionFingerprint,
-    FingerprintSample, NodeId, ScenarioDef, SchedulerEventLogEntry, SchedulerQuiescence,
-    SelectionDecision, VirtualTime,
+    Configuration, ContentHash, Decision, ExecutionFingerprint, FingerprintSample, NodeId,
+    SchedulerEventLogEntry, SchedulerQuiescence, SelectionDecision, VirtualTime,
 };
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleResumeState};
 use crucible_campaign::{
@@ -22,10 +31,9 @@ use crucible_campaign::{
     SelectionOrigin, StopCondition,
 };
 use crucible_cas::content_store::{
-    BlobHandle, ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend,
-    MemoryRefBackend, ObjectKind,
+    ContentId, DirectoryBlobBackend, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
+    ObjectKind,
 };
-use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
 
 use super::*;
 use crate::qemu_campaign_lifecycle::QemuTerminalEvidenceExecutionRunner;
@@ -78,6 +86,15 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
         None
     }
 
+    fn prepare_terminal_checkpoint(
+        &mut self,
+        _cause: crucible::CheckpointTerminalCause,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("resume fixture cannot retain a terminal checkpoint cause"),
+        })
+    }
+
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         Ok(true)
     }
@@ -110,6 +127,14 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
         })
     }
 
+    fn replay_launch_profiles(
+        &self,
+    ) -> Result<Vec<crucible_api::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("resume fixture has no replay launch profiles"),
+        })
+    }
+
     fn fault_evidence_snapshot(&self) -> Result<ProductionFaultEvidenceSnapshot, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("resume test has no production fault evidence"),
@@ -134,6 +159,10 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
             at: self.state.scheduler_frontier(),
             fingerprint: ExecutionFingerprint { hash },
         })
+    }
+
+    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -162,10 +191,7 @@ impl QemuProductionExactResumeLifecycleFactory for FakeResumeFactory {
         &mut self,
         _checkpoints: &ExactCheckpointStore,
         _checkpoint: ExactCheckpointId,
-        _scenario: &ScenarioDef,
-        _source: &ScenarioDefForm,
-        _initial: &Configuration,
-        _post_selection: Option<&Configuration>,
+        _basis: QemuExactResumeBasis<'_>,
         _context: &AttemptExecutionContext,
     ) -> Result<
         Option<crate::qemu_campaign_driver::QemuSelectedResumeBoundary>,
@@ -180,10 +206,7 @@ impl QemuProductionExactResumeLifecycleFactory for FakeResumeFactory {
         &mut self,
         _checkpoints: &ExactCheckpointStore,
         _checkpoint: ExactCheckpointId,
-        _scenario: &ScenarioDef,
-        _source: &ScenarioDefForm,
-        _initial: &Configuration,
-        _post_selection: Option<&Configuration>,
+        _basis: QemuExactResumeBasis<'_>,
         _context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         self.calls.starts.fetch_add(1, Ordering::SeqCst);
@@ -256,38 +279,8 @@ impl QemuFreshAttemptDriver for FakeResumeDriver {
     }
 }
 
-#[test]
-fn resume_runner_rejects_missing_root_before_factory_invocation() {
-    let calls = Arc::new(ResumeCalls::default());
-    let observed = Arc::new(Mutex::new(None));
-    let mut runner = resume_runner(
-        Arc::clone(&calls),
-        Arc::clone(&observed),
-        ProductionVmLifecycleResumeState::new(
-            test_configuration(),
-            Vec::new(),
-            0,
-            0,
-            VirtualTime::default(),
-            SchedulerQuiescence::default(),
-            None,
-        ),
-        Vec::new(),
-    );
-
-    let error = runner
-        .execute(&test_input(), &test_context(None))
-        .expect_err("resume-only runner must require an exact root");
-
-    assert!(matches!(
-        error,
-        AttemptWorkerFailure::Terminal(
-            QemuProductionExactResumeExecutionRunnerError::MissingCheckpoint
-        )
-    ));
-    assert_eq!(calls.starts.load(Ordering::SeqCst), 0);
-    assert_eq!(calls.shutdowns.load(Ordering::SeqCst), 0);
-}
+#[path = "tests/admission.rs"]
+mod admission;
 
 #[test]
 fn event_count_resume_rejects_a_missing_start_proof_before_factory_invocation() {
@@ -328,7 +321,7 @@ fn event_count_resume_rejects_a_missing_start_proof_before_factory_invocation() 
 fn cold_fallback_distinguishes_an_absent_selected_root_from_a_missing_child() {
     let checkpoint = checkpoint_id("selected-source-root");
     let context = selected_source_context(checkpoint);
-    let absent_root = crate::QemuAttemptProductionVmLifecycleError::CheckpointRestore(
+    let absent_root = crate::QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(
         crate::ProductionAttemptCheckpointRestoreError::Checkpoint(
             crate::ExactCheckpointStoreError::Store(
                 crucible_cas::content_store::StoreError::NotFound {
@@ -336,8 +329,8 @@ fn cold_fallback_distinguishes_an_absent_selected_root_from_a_missing_child() {
                 },
             ),
         ),
-    );
-    let missing_child = crate::QemuAttemptProductionVmLifecycleError::CheckpointRestore(
+    ));
+    let missing_child = crate::QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(
         crate::ProductionAttemptCheckpointRestoreError::Checkpoint(
             crate::ExactCheckpointStoreError::Store(
                 crucible_cas::content_store::StoreError::NotFound {
@@ -345,7 +338,7 @@ fn cold_fallback_distinguishes_an_absent_selected_root_from_a_missing_child() {
                 },
             ),
         ),
-    );
+    ));
 
     assert!(initial_selected_source_is_absent(
         &absent_root,
@@ -767,6 +760,7 @@ fn test_context(checkpoint: Option<ExactCheckpointId>) -> AttemptExecutionContex
         ExecutionRetentionIntent::Discard,
         ExecutionCancellation::default(),
         ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     )
     .with_resume_checkpoint(checkpoint)
 }
@@ -981,7 +975,7 @@ fn test_branch_input(stop: StopCondition) -> CrucibleAttemptExecution {
     let SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
         panic!("branch selection has the wrong origin")
     };
-    let selected = crucible::step(
+    let selected = accepted_step(
         &parent,
         Decision::Selection(SelectionDecision::new(&selection)),
     );
@@ -1018,23 +1012,13 @@ fn test_branch_input(stop: StopCondition) -> CrucibleAttemptExecution {
 }
 
 fn test_checkpoint_product() -> AttemptExecutionProduct {
-    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
-        "crucible.test.resume-campaign-runner",
-        "sealed-product",
-    ));
-    let checkpoint = Checkpoint::from_recorded_configuration(
-        &configuration,
-        None,
-        VirtualTime::default(),
-        BTreeMap::new(),
-        CheckpointKind::Fat,
-        BTreeMap::new(),
-    )
-    .expect("resume runner checkpoint boundary");
-    let snapshot = QemuVmSnapshot::diskless(checkpoint, QemuReplayOracleValidation::NotRun)
-        .expect("resume runner QEMU snapshot");
-    AttemptExecutionProduct::exact_checkpoint(crate::CapturedExactCheckpoint::new(
-        snapshot,
-        BlobHandle::from_bytes(vec![0x5a; 512]),
+    let directory = tempfile::tempdir()
+        .expect("resume production checkpoint directory")
+        .keep();
+    let fixture = crucible_api::build_exact_ram_production_checkpoint_codec_fixture(&directory)
+        .expect("build resume production checkpoint");
+
+    AttemptExecutionProduct::exact_checkpoint(CapturedAttemptCheckpoint::from_production_closure(
+        fixture.closure().clone(),
     ))
 }
