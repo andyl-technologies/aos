@@ -40,7 +40,6 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use aos_core::nar::cache::normalize_sha256_nix32;
 use aos_core::output::Printer;
@@ -55,7 +54,7 @@ use crate::download::{
 use crate::registry::store::NarBytes;
 use crate::registry::store_path_hash;
 use crate::store::filter_missing;
-use crate::types::{CredentialMeta, validate_credential_name, validate_package_name};
+use crate::types::validate_package_name;
 use crate::verify::verify_download_hash;
 
 /// Default root under which the per-package completion markers live.
@@ -64,9 +63,6 @@ pub const MARKER_ROOT: &str = "/run/aos";
 /// Default staging root `render-one` writes artifacts into, consumed later by
 /// `aos-activate`.
 pub const STAGING_ROOT: &str = "/run/aos/staging";
-
-/// Config-validation exit code for `render-one` (build-spec §4.2).
-pub const EXIT_CONFIG_ERROR: i32 = 2;
 
 // ---------------------------------------------------------------------------
 // Marker paths (pure)
@@ -206,74 +202,6 @@ pub(crate) fn read_staged_package(directory: &Path) -> Result<StagedPackage> {
             "parsing staged package index beneath {}",
             directory.display()
         )
-    })
-}
-
-/// Extract the per-package desired config block from `manifest.config[pkg]`,
-/// converted into the [`render_package_config`](crate::render_package_config)
-/// input shape (`artifact → field → value`).
-fn desired_config_for(
-    manifest: &ConfigManifest,
-    pkg: &str,
-) -> Result<Option<BTreeMap<String, BTreeMap<String, toml::Value>>>> {
-    let Some(value) = manifest.config.get(pkg) else {
-        return Ok(None);
-    };
-    let block = value
-        .as_object()
-        .with_context(|| format!("desired config for package {pkg:?} must be an object"))?;
-    let mut artifacts = BTreeMap::new();
-    for (artifact, fields) in block {
-        let fields_obj = fields.as_object().with_context(|| {
-            format!("desired config artifact {pkg}.{artifact} must be an object")
-        })?;
-        let mut converted = BTreeMap::new();
-        for (field, value) in fields_obj {
-            converted.insert(
-                field.clone(),
-                json_to_toml(value).with_context(|| {
-                    format!("converting desired config field {pkg}.{artifact}.{field}")
-                })?,
-            );
-        }
-        artifacts.insert(artifact.clone(), converted);
-    }
-    Ok(Some(artifacts))
-}
-
-/// Convert a JSON value into the equivalent `toml::Value`.
-///
-/// `null` has no TOML representation and is rejected. Integers prefer
-/// `toml::Value::Integer`; other numbers become `Float`.
-fn json_to_toml(v: &Value) -> Result<toml::Value> {
-    Ok(match v {
-        Value::Null => bail!("null has no TOML representation"),
-        Value::Bool(b) => toml::Value::Boolean(*b),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                toml::Value::Integer(i)
-            } else {
-                toml::Value::Float(
-                    n.as_f64()
-                        .context("JSON number has no finite TOML float representation")?,
-                )
-            }
-        }
-        Value::String(s) => toml::Value::String(s.clone()),
-        Value::Array(items) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(json_to_toml(item)?);
-            }
-            toml::Value::Array(out)
-        }
-        Value::Object(map) => {
-            let mut table = toml::value::Table::new();
-            for (key, value) in map {
-                table.insert(key.clone(), json_to_toml(value)?);
-            }
-            toml::Value::Table(table)
-        }
     })
 }
 
@@ -580,24 +508,11 @@ pub async fn run_render_one(
             );
             0
         }
-        Err(RenderError::Config(err)) => {
-            emit_err(json_out, "render-one", package, &err);
-            EXIT_CONFIG_ERROR
-        }
-        Err(RenderError::Other(err)) => {
+        Err(err) => {
             emit_err(json_out, "render-one", package, &err);
             1
         }
     }
-}
-
-/// `render-one`'s two failure classes: a permanent config-validation error
-/// (exit `2`) versus any other operational error (exit `1`).
-enum RenderError {
-    /// Desired config failed validation against the signed schema.
-    Config(anyhow::Error),
-    /// Missing fetch marker, staging I/O, or profile read failure.
-    Other(anyhow::Error),
 }
 
 /// The fallible body of `render-one`.
@@ -607,29 +522,24 @@ fn render_inner(
     manifest_path: &Path,
     marker_root: &Path,
     staging_root: &Path,
-) -> std::result::Result<Vec<String>, RenderError> {
-    validate_package_name(package)
-        .context("invalid package argument")
-        .map_err(RenderError::Other)?;
+) -> Result<Vec<String>> {
+    validate_package_name(package).context("invalid package argument")?;
 
-    let manifest = read_manifest(manifest_path).map_err(RenderError::Other)?;
+    let manifest = read_manifest(manifest_path)?;
     if !manifest_has_package(&manifest, package) {
-        return Err(RenderError::Other(anyhow::anyhow!(
-            "package '{package}' is not in {}",
-            manifest_path.display()
-        )));
+        bail!("package '{package}' is not in {}", manifest_path.display());
     }
-    ensure_published_transaction(&manifest, marker_root).map_err(RenderError::Other)?;
+    ensure_published_transaction(&manifest, marker_root)?;
     clear_marker(&render_marker(marker_root, package));
 
     // Mere marker existence is insufficient: success from an older manifest
     // or a different package closure pin must never satisfy this transaction.
-    let expected_marker = marker_identity(&manifest, package).map_err(RenderError::Other)?;
+    let expected_marker = marker_identity(&manifest, package)?;
     let actual_marker = std::fs::read_to_string(fetch_marker(marker_root, package)).ok();
     if actual_marker.as_deref().map(str::trim_end) != Some(expected_marker.as_str()) {
-        return Err(RenderError::Other(anyhow::anyhow!(
+        bail!(
             "current fetch marker for '{package}' is absent; run the package runtime fetch first"
-        )));
+        );
     }
 
     let credential_handles = manifest
@@ -637,56 +547,25 @@ fn render_inner(
         .get(package)
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let rendered: Vec<(String, Vec<u8>)> = Vec::new();
     let units = BTreeMap::new();
 
-    // Stage rendered bytes under opaque, content-derived payload names. The
-    // separately validated index is what binds those bytes to final paths;
-    // no package-controlled path is ever joined directly onto the filesystem.
-    let pkg_dir =
-        staging_package_dir(staging_root, &manifest, package).map_err(RenderError::Other)?;
-    let mut written = Vec::new();
-    let mut staged = Vec::new();
-    for (artifact_path, bytes) in rendered {
-        let path = etc_relative_artifact_path(&artifact_path).map_err(RenderError::Other)?;
-        let sha256 = format!("sha256:{:x}", Sha256::digest(&bytes));
-        let payload = format!("payload/{}", sha256.trim_start_matches("sha256:"));
-        crate::config_eval::materialize::write_bytes_beneath(&pkg_dir, &payload, &bytes, "0644")
-            .with_context(|| format!("staging {artifact_path}"))
-            .map_err(RenderError::Other)?;
-        staged.push(StagedArtifact {
-            path,
-            payload,
-            mode: "0644".to_string(),
-            sha256,
-        });
-        written.push(artifact_path);
-    }
-    staged.sort_by(|left, right| left.path.cmp(&right.path));
-    if staged.windows(2).any(|pair| pair[0].path == pair[1].path) {
-        return Err(RenderError::Other(anyhow::anyhow!(
-            "signed config metadata declares a duplicate target path"
-        )));
-    }
-    let transaction = super::graph_transaction(&manifest).map_err(RenderError::Other)?;
+    let pkg_dir = staging_package_dir(staging_root, &manifest, package)?;
+    let transaction = super::graph_transaction(&manifest)?;
     let package_pin = transaction
         .packages
         .get(package)
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("graph transaction omitted package {package:?}"))
-        .map_err(RenderError::Other)?;
+        .with_context(|| format!("graph transaction omitted package {package:?}"))?;
     let index = StagedPackage {
         schema: "aos.render-stage/v1".to_string(),
         manifest: transaction.manifest,
         package_pin,
         package: package.to_string(),
-        artifacts: staged,
+        artifacts: Vec::new(),
         credentials: credential_handles,
         units,
     };
-    let index_bytes = serde_json::to_vec(&index)
-        .context("serializing staged package index")
-        .map_err(RenderError::Other)?;
+    let index_bytes = serde_json::to_vec(&index).context("serializing staged package index")?;
     crate::config_eval::materialize::write_bytes_beneath(
         &pkg_dir,
         "stage.json",
@@ -698,12 +577,10 @@ fn render_inner(
             "publishing staged package index beneath {}",
             pkg_dir.display()
         )
-    })
-    .map_err(RenderError::Other)?;
+    })?;
 
-    write_marker(&render_marker(marker_root, package), &manifest, package)
-        .map_err(RenderError::Other)?;
-    Ok(written)
+    write_marker(&render_marker(marker_root, package), &manifest, package)?;
+    Ok(Vec::new())
 }
 
 /// Stages a retained package through the same signed renderer used by the
@@ -720,151 +597,7 @@ pub(crate) fn stage_retained_package(
     marker_root: &Path,
     staging_root: &Path,
 ) -> Result<()> {
-    render_inner(config, package, manifest_path, marker_root, staging_root)
-        .map(|_| ())
-        .map_err(|error| match error {
-            RenderError::Config(error) | RenderError::Other(error) => error,
-        })
-}
-
-pub(crate) fn canonicalize_credential_handles(
-    package: &str,
-    handles: Option<&Value>,
-    signed: &[CredentialMeta],
-) -> Result<Value> {
-    let Some(handles) = handles else {
-        return Ok(json!({}));
-    };
-    let handles = handles
-        .as_object()
-        .with_context(|| format!("credential handles for package '{package}' must be an object"))?;
-    let signed = signed
-        .iter()
-        .map(|credential| (credential.name.as_str(), credential))
-        .collect::<BTreeMap<_, _>>();
-    let mut normalized = serde_json::Map::new();
-    for (name, handle) in handles {
-        validate_credential_name(name)
-            .with_context(|| format!("invalid credential handle '{package}.{name}'"))?;
-        let declaration = signed.get(name.as_str()).with_context(|| {
-            format!("credential handle '{package}.{name}' has no signed expose.config declaration")
-        })?;
-        let fields = handle.as_object().with_context(|| {
-            format!("credential handle '{package}.{name}' must contain only references")
-        })?;
-        if let Some(system_credential) = fields.get("system-credential") {
-            if fields.len() != 1 {
-                bail!("system credential handle '{package}.{name}' contains unsupported fields");
-            }
-            let system_credential = system_credential.as_str().with_context(|| {
-                format!("system credential handle '{package}.{name}' must name a credential")
-            })?;
-            validate_credential_name(system_credential).with_context(|| {
-                format!("invalid source system credential for '{package}.{name}'")
-            })?;
-            if declaration.source.is_none() {
-                bail!("system credential handle '{package}.{name}' has no signed credstore target");
-            }
-            let mut reference = serde_json::Map::new();
-            reference.insert("name".into(), Value::String(name.clone()));
-            if let Some(source) = &declaration.source {
-                reference.insert("source".into(), Value::String(source.clone()));
-            }
-            reference.insert("encrypted".into(), Value::Bool(declaration.encrypted));
-            reference.insert("units".into(), json!(declaration.units));
-            reference.insert(
-                "ref".into(),
-                Value::String(format!("system-credential:{system_credential}")),
-            );
-            normalized.insert(name.clone(), Value::Object(reference));
-            continue;
-        }
-
-        const ALLOWED: &[&str] = &["name", "source", "encrypted", "units", "ref", "ciphertext"];
-        if let Some(field) = fields
-            .keys()
-            .find(|field| !ALLOWED.contains(&field.as_str()))
-        {
-            bail!("credential handle '{package}.{name}' contains forbidden field {field:?}");
-        }
-        if fields.get("name").and_then(Value::as_str).unwrap_or(name) != name {
-            bail!("credential handle '{package}.{name}' changes its signed name");
-        }
-        if fields.get("source").is_some()
-            && fields.get("source").and_then(Value::as_str) != declaration.source.as_deref()
-        {
-            bail!("credential handle '{package}.{name}' changes its signed source");
-        }
-        if fields.get("encrypted").is_some()
-            && fields.get("encrypted").and_then(Value::as_bool) != Some(declaration.encrypted)
-        {
-            bail!("credential handle '{package}.{name}' changes its signed encryption policy");
-        }
-        if let Some(ciphertext) = fields.get("ciphertext").and_then(Value::as_str)
-            && declaration.ciphertext.as_deref() != Some(ciphertext)
-        {
-            bail!("credential handle '{package}.{name}' changes signed ciphertext");
-        }
-        if let Some(units) = fields.get("units") {
-            let units: Vec<&str> = units
-                .as_array()
-                .with_context(|| {
-                    format!("credential handle '{package}.{name}' units must be an array")
-                })?
-                .iter()
-                .map(|unit| {
-                    unit.as_str().with_context(|| {
-                        format!("credential handle '{package}.{name}' has a non-string unit")
-                    })
-                })
-                .collect::<Result<_>>()?;
-            if units
-                != declaration
-                    .units
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-            {
-                bail!("credential handle '{package}.{name}' changes its signed unit set");
-            }
-        }
-        let reference = fields
-            .get("ref")
-            .and_then(Value::as_str)
-            .with_context(|| format!("credential handle '{package}.{name}' must declare ref"))?;
-        let mut canonical = serde_json::Map::new();
-        canonical.insert("name".into(), Value::String(name.clone()));
-        if let Some(source) = &declaration.source {
-            canonical.insert("source".into(), Value::String(source.clone()));
-        }
-        canonical.insert("encrypted".into(), Value::Bool(declaration.encrypted));
-        canonical.insert("units".into(), json!(declaration.units));
-        canonical.insert("ref".into(), Value::String(reference.to_string()));
-        if let Some(ciphertext) = &declaration.ciphertext {
-            canonical.insert("ciphertext".into(), Value::String(ciphertext.clone()));
-        }
-        let secret_ref: crate::secret_ref::SecretRef =
-            serde_json::from_value(Value::Object(canonical.clone())).with_context(|| {
-                format!("credential handle '{package}.{name}' is not an opaque secretRef")
-            })?;
-        secret_ref.validate_reference()?;
-        normalized.insert(name.clone(), Value::Object(canonical));
-    }
-    Ok(Value::Object(normalized))
-}
-
-fn etc_relative_artifact_path(path: &str) -> Result<String> {
-    let relative = path
-        .strip_prefix("/etc/")
-        .filter(|relative| !relative.is_empty())
-        .with_context(|| format!("config artifact path must be strictly beneath /etc: {path}"))?;
-    if relative
-        .split('/')
-        .any(|component| component.is_empty() || component == "." || component == "..")
-    {
-        bail!("config artifact path has an unsafe component: {path}");
-    }
-    Ok(relative.to_string())
+    render_inner(config, package, manifest_path, marker_root, staging_root).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
