@@ -1,5 +1,9 @@
 ##! Native provider declaration for typed configuration materialization.
-{lib, ...}: let
+{
+  config,
+  lib,
+  ...
+}: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interface = serviceManagement.interfaces.managedConfiguration;
   abilityTypes = lib.abilities.types;
@@ -10,6 +14,28 @@
       path = serviceManagement.types.executionPath;
     };
   };
+  terminalMethods = declaration:
+    builtins.mapAttrs
+    (_: method:
+      method
+      // {
+        description = "Executes one checked lower-level ${declaration.name} operation.";
+      })
+    declaration.methods;
+  configurationTerminalDeclaration = lib.abilities.declareInterface {
+    name = "aos.configuration.materialization-terminal";
+    description = "Executes configuration effects selected by a pure materialization controller.";
+    abi = 1;
+    requestType = interface.requestType;
+    outputs = {};
+    methods = terminalMethods interface.declaration;
+    inherit (interface.declaration) lifecycle aggregation;
+    guarantees = [];
+  };
+  configurationTerminalDocument =
+    lib.abilities.interfaceDocumentFromDeclaration configurationTerminalDeclaration;
+  configurationTerminalIdentity =
+    lib.abilities.interfaceIdentity configurationTerminalDocument;
   rolloutRequest = abilityTypes.record {
     fields = {
       candidate = imageIdentity;
@@ -73,7 +99,10 @@
   rolloutMethod = name: {
     description = "Executes the ${name} step of a checked single-host A/B rollout.";
     semantics = {
-      requiredTargetAccess = "exclusive-write";
+      requiredTargetAccess =
+        if builtins.elem name ["observe-boot" "observe-health"]
+        then "read"
+        else "exclusive-write";
       stopsProvider = false;
     };
     parameters = rolloutRequest;
@@ -133,20 +162,56 @@
   rolloutRealizationType = abilityTypes.record {
     fields.schema = abilityTypes.enum ["aos.image-rollout.realization/v1"];
   };
+  rolloutTerminalDeclaration = lib.abilities.declareInterface {
+    name = "aos.apm.ab-image-rollout-terminal";
+    description = "Executes A/B image effects selected by the pure rollout controller.";
+    abi = 1;
+    requestType = rolloutRequest;
+    outputs = {};
+    methods = terminalMethods rolloutDeclaration;
+    inherit (rolloutDeclaration) lifecycle aggregation;
+    guarantees = [];
+  };
+  rolloutTerminalDocument =
+    lib.abilities.interfaceDocumentFromDeclaration rolloutTerminalDeclaration;
+  rolloutTerminalIdentity = lib.abilities.interfaceIdentity rolloutTerminalDocument;
+  terminalRequirement = description: identity: methods: {
+    inherit description methods;
+    alias = "terminal";
+    accepted_interfaces = [identity];
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
 in {
   config.aos.abilities = {
-    interfaces.configuration-materialization = interface.declaration;
+    interfaces.configuration-materialization-terminal = configurationTerminalDeclaration;
     interfaces.image-rollout-effects = rolloutDeclaration;
+    interfaces.image-rollout-terminal = rolloutTerminalDeclaration;
     implementations.configuration-materialization = {
       description = "Materializes typed configuration through the AOS configuration provider.";
       interface = "configuration-materialization";
       artifact = runtimeArtifact;
       inherit (interface) methods;
       guarantees = [];
+      requirements.terminal =
+        terminalRequirement
+        "Selects the exact package-owned configuration effect handler."
+        configurationTerminalIdentity
+        interface.methods;
       providerModule = {
         artifact = runtimeArtifact;
         path = "share/aos/providers/configuration-materialization.nix";
       };
+      desiredType = realizationType;
+      requiredFeatures = [];
+    };
+    implementations.configuration-materialization-terminal = {
+      description = "Executes checked configuration effects for the pure materialization controller.";
+      interface = "configuration-materialization-terminal";
+      artifact = runtimeArtifact;
+      methods = interface.methods;
+      guarantees = [];
       handlerDescriptor = {
         artifact = runtimeArtifact;
         entryPoint = "libexec/aos-configuration-provider";
@@ -162,10 +227,24 @@ in {
       artifact = runtimeArtifact;
       methods = builtins.attrNames rolloutMethods;
       guarantees = [];
+      requirements.terminal =
+        terminalRequirement
+        "Selects the exact package-owned A/B image effect handler."
+        rolloutTerminalIdentity
+        (builtins.attrNames rolloutMethods);
       providerModule = {
         artifact = runtimeArtifact;
         path = "share/aos/providers/configuration-materialization.nix";
       };
+      desiredType = rolloutRealizationType;
+      requiredFeatures = [];
+    };
+    implementations.image-rollout-terminal = {
+      description = "Executes checked A/B image effects for the pure rollout controller.";
+      interface = "image-rollout-terminal";
+      artifact = runtimeArtifact;
+      methods = builtins.attrNames rolloutMethods;
+      guarantees = [];
       handlerDescriptor = {
         artifact = runtimeArtifact;
         entryPoint = "libexec/aos-image-rollout-provider";
@@ -174,6 +253,13 @@ in {
       };
       desiredType = rolloutRealizationType;
       requiredFeatures = [];
+    };
+
+    instances = lib.mkIf (config.aos.abilities.environment != null) {
+      configuration-materialization.implementation = "configuration-materialization";
+      configuration-materialization-terminal.implementation = "configuration-materialization-terminal";
+      image-rollout-effects.implementation = "image-rollout-effects";
+      image-rollout-terminal.implementation = "image-rollout-terminal";
     };
   };
 }

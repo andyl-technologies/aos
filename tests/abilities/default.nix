@@ -486,6 +486,9 @@
   filesystemEntryProvider = import ./filesystem-entry-provider.nix {
     inherit lib pkgs;
   };
+  aosControllerTerminal = import ./aos-controller-terminal.nix {
+    inherit lib pkgs;
+  };
   zram = import ./zram.nix {
     inherit lib pkgs;
   };
@@ -972,6 +975,7 @@ in
   assert securityWrappers;
   assert releaseCoordinatorService;
   assert filesystemEntryProvider;
+  assert aosControllerTerminal;
   assert networkPolicyCore;
   assert kernelTunables;
   assert packageQualification;

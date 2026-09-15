@@ -32,7 +32,7 @@ use thiserror::Error;
 
 use crate::structured::{DocumentNode, StructuredFormat, encode_structured_document};
 
-const INTERFACE_NAME: &str = "aos.configuration.materialization";
+const INTERFACE_NAME: &str = "aos.configuration.materialization-terminal";
 const OBSERVATION_SCHEMA: &str = "aos.ability.configuration-materialization-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.configuration.materializer-context/v1";
 const REALIZATION_SCHEMA: &str = "aos.configuration.materializer-realization/v1";
