@@ -469,16 +469,16 @@
     inherit pkgs lib;
   };
   kernelModules = import ./kernel-modules.nix {
-    inherit lib;
+    inherit lib pkgs;
   };
   bootPreparationCore = import ./boot-preparation-core.nix {
     inherit lib;
   };
   nixStoreDatabase = import ./nix-store-database.nix {
-    inherit lib;
+    inherit lib pkgs;
   };
   bootPreparationProvider = import ./boot-preparation-provider.nix {
-    inherit lib;
+    inherit lib pkgs;
   };
   stagedEnvironment = import ./staged-environment.nix {
     inherit lib mkSystem;
@@ -496,10 +496,10 @@
     inherit lib;
   };
   kernelTunables = import ./kernel-tunables.nix {
-    inherit lib;
+    inherit lib pkgs;
   };
   blockStorage = import ./block-storage.nix {
-    inherit lib;
+    inherit lib pkgs;
   };
   baseFilesystemsNative = import ./base-filesystems-native.nix {
     inherit lib pkgs;

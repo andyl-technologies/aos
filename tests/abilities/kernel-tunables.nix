@@ -1,5 +1,13 @@
 ##! Checks the provider-owned kernel-tunable implementation through the fixed point.
-{lib}: let
+{
+  lib,
+  pkgs,
+}: let
+  selectedProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.aos-kernel-tunable-provider;
+    implementation = "kernel-tunables";
+  };
   childRequestKey = lib.abilities.compositionRequestKey {
     implementation = "aos-kernel-tunable-provider:kernel-tunables";
     providerInstance = "aos-kernel-tunable-provider:manager";
@@ -16,6 +24,7 @@
             key = "kernel-tunables";
             stage = "host";
           };
+          instances."aos-kernel-tunable-provider:manager" = {};
           bindings."test:kernel-tunables" = {
             request = "consumer:network-forwarding";
             implementation = "aos-kernel-tunable-provider:kernel-tunables";
@@ -34,11 +43,8 @@
     packageModules = [
       {
         name = "aos-kernel-tunable-provider";
-        module.imports = [
-          ../../pkgs/tools/_aos-kernel-tunable-provider-module.nix
-          ../../pkgs/tools/_kernel-tunable-provider.nix
-          {config.aos.abilities.instances.manager = {};}
-        ];
+        inherit (pkgs.aos-kernel-tunable-provider) version;
+        module = pkgs.aos-kernel-tunable-provider.module + "/module.nix";
       }
       {
         name = "consumer";
@@ -65,6 +71,7 @@
         ];
       }
     ];
+    selectedProviderModules = [selectedProvider];
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);

@@ -1,5 +1,13 @@
 ##! Checks the kmod-owned kernel-module provider through the standard fixed point.
-{lib}: let
+{
+  lib,
+  pkgs,
+}: let
+  selectedProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.kmod;
+    implementation = "kernel-modules";
+  };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   kernelModules = serviceManagement.interfaces.kernelModules;
   request = serviceManagement.forProducer {
@@ -27,6 +35,7 @@
             key = "kernel-modules";
             stage = "host";
           };
+          instances."kmod:manager" = {};
           bindings."test:kernel-modules" = {
             request = "consumer:required-modules";
             implementation = "kmod:kernel-modules";
@@ -45,11 +54,8 @@
     packageModules = [
       {
         name = "kmod";
-        module.imports = [
-          ../../pkgs/system/_kmod-abilities.nix
-          ../../pkgs/system/_kmod-provider.nix
-          {config.aos.abilities.instances.manager = {};}
-        ];
+        inherit (pkgs.kmod) version;
+        module = pkgs.kmod.module + "/module.nix";
       }
       {
         name = "consumer";
@@ -59,6 +65,7 @@
         ];
       }
     ];
+    selectedProviderModules = [selectedProvider];
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);

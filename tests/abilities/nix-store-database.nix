@@ -1,5 +1,13 @@
 ##! Checks the store-database provider package through the standard fixed point.
-{lib}: let
+{
+  lib,
+  pkgs,
+}: let
+  selectedProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.aos-nix-store-provider;
+    implementation = "nix-store-database";
+  };
   childRequestKey = lib.abilities.compositionRequestKey {
     implementation = "aos-nix-store-provider:nix-store-database";
     providerInstance = "aos-nix-store-provider:manager";
@@ -39,6 +47,7 @@
             key = "nix-store-database";
             stage = "host";
           };
+          instances."aos-nix-store-provider:manager" = {};
           bindings."test:nix-store-database" = {
             request = "consumer:database";
             implementation = "aos-nix-store-provider:nix-store-database";
@@ -57,17 +66,15 @@
     packageModules = [
       {
         name = "aos-nix-store-provider";
-        module.imports = [
-          ../../pkgs/tools/_aos-nix-store-provider-module.nix
-          ../../pkgs/tools/_nix-store-provider.nix
-          {config.aos.abilities.instances.manager = {};}
-        ];
+        inherit (pkgs.aos-nix-store-provider) version;
+        module = pkgs.aos-nix-store-provider.module + "/module.nix";
       }
       {
         name = "consumer";
         module = consumer;
       }
     ];
+    selectedProviderModules = [selectedProvider];
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);

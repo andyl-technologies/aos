@@ -1,5 +1,17 @@
 ##! Checks encrypted mapping and storage-format providers through the fixed point.
-{lib}: let
+{
+  lib,
+  pkgs,
+}: let
+  selectedProvider = package: implementation:
+    import ./_selected-package-provider.nix {
+      inherit lib package implementation;
+    };
+  selectedCryptsetupProvider = selectedProvider pkgs.aos-cryptsetup-provider "encrypted-block-mapping";
+  selectedFormatProvider = selectedProvider pkgs.aos-storage-format-provider "storage-format";
+  selectedPoolProvider = selectedProvider pkgs.aos-zfs-provider "storage-pool";
+  selectedDatasetProvider = selectedProvider pkgs.aos-zfs-provider "storage-dataset";
+  selectedProvisioningProvider = selectedProvider pkgs.aos-storage-provisioning-provider "storage-provisioning";
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   storageInterfaces = lib.abilities.interfaces.blockStorage.interfaces;
   storageTypes = lib.abilities.interfaces.blockStorage.types;
@@ -22,6 +34,12 @@
             authority = "test";
             key = "block-storage";
             stage = "host";
+          };
+          instances = {
+            "aos-cryptsetup-provider:manager" = {};
+            "aos-storage-format-provider:manager" = {};
+            "aos-storage-provisioning-provider:manager" = {};
+            "aos-zfs-provider:manager" = {};
           };
           bindings = {
             "test:mapping" = {
@@ -91,19 +109,13 @@
     packageModules = [
       {
         name = "aos-cryptsetup-provider";
-        module.imports = [
-          ../../pkgs/security/_aos-cryptsetup-provider-module.nix
-          ../../pkgs/security/_encrypted-block-mapping-provider.nix
-          {config.aos.abilities.instances.manager = {};}
-        ];
+        inherit (pkgs.aos-cryptsetup-provider) version;
+        module = pkgs.aos-cryptsetup-provider.module + "/module.nix";
       }
       {
         name = "aos-storage-format-provider";
-        module.imports = [
-          ../../pkgs/tools/_aos-storage-format-provider-module.nix
-          ../../pkgs/tools/_storage-format-provider.nix
-          {config.aos.abilities.instances.manager = {};}
-        ];
+        inherit (pkgs.aos-storage-format-provider) version;
+        module = pkgs.aos-storage-format-provider.module + "/module.nix";
       }
       {
         name = "consumer";
@@ -189,21 +201,21 @@
       }
       {
         name = "aos-zfs-provider";
-        module.imports = [
-          ../../pkgs/filesystem/_aos-zfs-provider/module.nix
-          ../../pkgs/filesystem/_aos-zfs-provider/pool-provider.nix
-          ../../pkgs/filesystem/_aos-zfs-provider/dataset-provider.nix
-          {config.aos.abilities.instances.manager = {};}
-        ];
+        inherit (pkgs.aos-zfs-provider) version;
+        module = pkgs.aos-zfs-provider.module + "/module.nix";
       }
       {
         name = "aos-storage-provisioning-provider";
-        module.imports = [
-          ../../pkgs/system/_aos-storage-provisioning-provider/module.nix
-          ../../pkgs/system/_aos-storage-provisioning-provider/provider.nix
-          {config.aos.abilities.instances.manager = {};}
-        ];
+        inherit (pkgs.aos-storage-provisioning-provider) version;
+        module = pkgs.aos-storage-provisioning-provider.module + "/module.nix";
       }
+    ];
+    selectedProviderModules = [
+      selectedCryptsetupProvider
+      selectedFormatProvider
+      selectedPoolProvider
+      selectedDatasetProvider
+      selectedProvisioningProvider
     ];
   };
   abilities = evaluated.config.aos.abilities;
