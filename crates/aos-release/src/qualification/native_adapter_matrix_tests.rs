@@ -14,10 +14,11 @@ use crate::qualification_evidence::{
     NativeAdapterCellObservation, NativeAdapterClaimHandler, NativeAdapterImplementationClaim,
     NativeAdapterMatrixComponentIdentity, NativeAdapterMatrixEnvironment,
     NativeAdapterMatrixEnvironmentStatus, NativeAdapterMatrixObservation,
-    NativeAdapterPostconditionProbe, NativeAdapterProviderContract, NativeAdapterSurfaceAdapter,
-    NativeAdapterSurfaceLimits, NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario,
-    NativeAdapterSurfaceSpec, QualificationCase, QualificationObservation,
-    QualificationPredecessor, native_adapter_inapplicable_reason, native_adapter_matrix_check,
+    NativeAdapterPostconditionPolicy, NativeAdapterPostconditionProbe,
+    NativeAdapterProviderContract, NativeAdapterSurfaceAdapter, NativeAdapterSurfaceLimits,
+    NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario, NativeAdapterSurfaceSpec,
+    QualificationCase, QualificationObservation, QualificationPredecessor,
+    native_adapter_inapplicable_reason, native_adapter_matrix_check,
     native_adapter_matrix_spec_from_surface, validate_matrix_for_case,
     validate_native_adapter_matrix_observation, validate_native_adapter_matrix_spec,
 };
@@ -86,13 +87,29 @@ pub(crate) fn fixture_surface() -> NativeAdapterSurfaceSpec {
             scope: "host-resource".into(),
         }
     };
-    let scenario = |id: &str, boundary: &str, failure: &str| NativeAdapterSurfaceScenario {
-        boundary: boundary.into(),
-        candidate: "same".into(),
-        failure: failure.into(),
-        family: "durability-recovery".into(),
-        id: id.into(),
-        predecessor: "same".into(),
+    let scenario = |id: &str, boundary: &str, failure: &str| {
+        let postconditions = [
+            "durable-attempt-state-classified",
+            "at-most-one-resource-owner",
+            "foreign-resources-unchanged",
+            "dependent-effects-not-executed",
+        ]
+        .into_iter()
+        .map(|name| NativeAdapterPostconditionPolicy {
+            evidence_kind: probe_kind(name).into(),
+            name: name.into(),
+        })
+        .collect();
+
+        NativeAdapterSurfaceScenario {
+            boundary: boundary.into(),
+            candidate: "same".into(),
+            failure: failure.into(),
+            family: "durability-recovery".into(),
+            id: id.into(),
+            postconditions,
+            predecessor: "same".into(),
+        }
     };
 
     NativeAdapterSurfaceSpec {

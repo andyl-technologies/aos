@@ -267,8 +267,20 @@ pub struct NativeAdapterSurfaceScenario {
     pub family: String,
     /// Stable scenario identity used as the final cell-id component.
     pub id: String,
+    /// Ordered acceptance conditions and their evidence record kinds.
+    pub postconditions: Vec<NativeAdapterPostconditionPolicy>,
     /// Required predecessor state.
     pub predecessor: String,
+}
+
+/// One provider-neutral acceptance condition selected by scenario policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterPostconditionPolicy {
+    /// Evidence record kind expected from an executable qualification cohort.
+    pub evidence_kind: String,
+    /// Stable acceptance-condition name exposed in matrix observations.
+    pub name: String,
 }
 
 /// Complete typed preimage from which a native adapter matrix is expanded.
@@ -337,6 +349,8 @@ pub struct NativeAdapterCellSpec {
     pub candidate: String,
     /// Ordered acceptance conditions that determine the cell result.
     pub postconditions: Vec<String>,
+    /// Maps each acceptance condition to its policy-selected evidence kind.
+    pub postcondition_kinds: BTreeMap<String, String>,
     /// Exact identity changes that invalidate this observation.
     pub invalidated_by: Vec<String>,
 }
@@ -1784,6 +1798,13 @@ fn expand_native_adapter_surface(
             || !surface.families.contains(&scenario.family)
             || !matrix_token(&scenario.predecessor)
             || !matrix_token(&scenario.candidate)
+            || scenario.postconditions.is_empty()
+            || !unique_by(&scenario.postconditions, |postcondition| {
+                postcondition.name.clone()
+            })
+            || scenario.postconditions.iter().any(|postcondition| {
+                !matrix_token(&postcondition.name) || !matrix_token(&postcondition.evidence_kind)
+            })
             || ![
                 "after-acquisition",
                 "after-durable-intent",
@@ -1950,58 +1971,25 @@ fn expand_native_adapter_cell(
         failure: scenario.failure.clone(),
         predecessor: scenario.predecessor.clone(),
         candidate: scenario.candidate.clone(),
-        postconditions: native_adapter_postconditions(scenario),
+        postconditions: scenario
+            .postconditions
+            .iter()
+            .map(|postcondition| postcondition.name.clone())
+            .collect(),
+        postcondition_kinds: scenario
+            .postconditions
+            .iter()
+            .map(|postcondition| {
+                (
+                    postcondition.name.clone(),
+                    postcondition.evidence_kind.clone(),
+                )
+            })
+            .collect(),
         invalidated_by: ["subject", "policy", "executor", "environment"]
             .map(str::to_owned)
             .to_vec(),
     }
-}
-
-fn native_adapter_postconditions(scenario: &NativeAdapterSurfaceScenario) -> Vec<String> {
-    let mut postconditions = [
-        "durable-attempt-state-classified",
-        "at-most-one-resource-owner",
-        "foreign-resources-unchanged",
-    ]
-    .map(str::to_owned)
-    .to_vec();
-    if scenario.failure != "none" {
-        postconditions.push("dependent-effects-not-executed".into());
-    }
-    match scenario.id.as_str() {
-        "adopt-compatible-state" => postconditions.extend(
-            [
-                "fresh-receiving-authority",
-                "compatible-state-adopted",
-                "exactly-one-resource-owner",
-            ]
-            .map(str::to_owned),
-        ),
-        "reject-unsupported-transfer" => postconditions.extend(
-            [
-                "fresh-receiving-authority",
-                "transfer-rejected-before-candidate-effect",
-                "predecessor-remains-sole-owner",
-            ]
-            .map(str::to_owned),
-        ),
-        "activate-retained-target" => postconditions.extend(
-            [
-                "current-grants-reauthorized",
-                "retained-target-identity-preserved",
-                "exactly-one-resource-owner",
-            ]
-            .map(str::to_owned),
-        ),
-        "block-dependent-effect" => {
-            postconditions.push("prerequisite-failure-recorded".into());
-        }
-        "reject-foreign-resource-mutation" => {
-            postconditions.push("foreign-attempt-rejected-before-mutation".into());
-        }
-        _ => {}
-    }
-    postconditions
 }
 
 fn matrix_token(value: &str) -> bool {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import pathlib
 import sys
 
@@ -35,6 +36,8 @@ def main() -> None:
 
     cohort = load("matrix_cohort", pathlib.Path(sys.argv[1]))
     evidence = load("effect_evidence", pathlib.Path(sys.argv[2]))
+    scenario_policy = json.loads(pathlib.Path(sys.argv[3]).read_text())
+    policy_kinds = scenario_policy["postcondition_kinds"]
     digest = lambda byte: "sha256:" + byte * 64
     interface = {"name": "aos.test-effects", "abi": 1, "descriptor": digest("1")}
     binding = {"environment": "fixture", "key": "terminal"}
@@ -135,13 +138,19 @@ def main() -> None:
         "test-adapter/aos.test-effects/abi-1/apply/"
         "interrupt-after-durable-intent"
     )
+    postconditions = scenario_policy["baseline_postconditions"] + [
+        scenario_policy["failure_postcondition"]
+    ]
     cell = {
         "id": cell_id,
         "adapter": "test-adapter",
         "effect_class": "mutation",
         "interface": interface,
         "method": "apply",
-        "postconditions": list(cohort.POSTCONDITION_KINDS)[:4],
+        "postconditions": postconditions,
+        "postcondition_kinds": {
+            name: policy_kinds[name] for name in postconditions
+        },
     }
     observation = evidence.EffectBoundaryObservation(
         transaction="effect-flight",

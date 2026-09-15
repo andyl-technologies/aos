@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import pathlib
 import sys
 
@@ -28,6 +29,14 @@ def rejected(action) -> None:
     except RuntimeError:
         return
     raise AssertionError("mutated cancellation evidence was accepted")
+
+
+def fixture_postconditions(policy):
+    """Returns one bounded postcondition projection for synthetic cells."""
+
+    names = policy["baseline_postconditions"] + [policy["failure_postcondition"]]
+    kinds = policy["postcondition_kinds"]
+    return names, {name: kinds[name] for name in names}
 
 
 def package_routes(cell, subject):
@@ -104,7 +113,9 @@ def synthetic_matrix(cell, dispatch, entry_point, cancellation_oracle):
     }
 
 
-def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
+def validate_image_rollout_case(
+    cohort, effect, cancellation, digest, scenario_policy
+) -> None:
     """Checks the image route, physical oracle, digests, and probe uniqueness."""
 
     interface = {
@@ -205,6 +216,7 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
         "image-rollout/aos.ab-image-rollout-effects/abi-1/"
         "drain/cancel-unsettled-attempt"
     )
+    postconditions, postcondition_kinds = fixture_postconditions(scenario_policy)
     cell = {
         "id": cell_id,
         "adapter": "image-rollout",
@@ -215,7 +227,8 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
         "failure": "process-termination",
         "candidate": "new",
         "predecessor": "same",
-        "postconditions": list(cohort.POSTCONDITION_KINDS)[:4],
+        "postconditions": postconditions,
+        "postcondition_kinds": postcondition_kinds,
     }
     matrix_spec = synthetic_matrix(
         cell,
@@ -384,6 +397,7 @@ def main() -> None:
     cohort = load("matrix_cohort", pathlib.Path(sys.argv[1]))
     effect = load("effect_evidence", pathlib.Path(sys.argv[2]))
     cancellation = load("cancellation_evidence", pathlib.Path(sys.argv[3]))
+    scenario_policy = json.loads(pathlib.Path(sys.argv[4]).read_text())
     cancellation.EFFECT_EVIDENCE = effect
 
     digest = lambda byte: "sha256:" + byte * 64
@@ -488,13 +502,15 @@ def main() -> None:
         "managed-configuration/aos.managed-configuration-effects/abi-1/"
         "publish/cancel-unsettled-attempt"
     )
+    postconditions, postcondition_kinds = fixture_postconditions(scenario_policy)
     cell = {
         "id": cell_id,
         "adapter": "managed-configuration",
         "effect_class": "mutation",
         "interface": interface,
         "method": "publish",
-        "postconditions": list(cohort.POSTCONDITION_KINDS)[:4],
+        "postconditions": postconditions,
+        "postcondition_kinds": postcondition_kinds,
     }
     matrix_spec = synthetic_matrix(
         cell,
@@ -614,7 +630,7 @@ def main() -> None:
         )
     )
 
-    validate_image_rollout_case(cohort, effect, cancellation, digest)
+    validate_image_rollout_case(cohort, effect, cancellation, digest, scenario_policy)
 
 
 if __name__ == "__main__":

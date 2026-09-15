@@ -21,21 +21,6 @@ import native_adapter_evidence as provider_evidence
 
 PROBE_SCHEMA = "aos.release.native-adapter-postcondition-probe/v1"
 CELL_SUBJECT_SCHEMA = "aos.release.native-adapter-cell-cohort-subject/v1"
-POSTCONDITION_KINDS = {
-    "durable-attempt-state-classified": "journal-timeline",
-    "at-most-one-resource-owner": "ownership-inventory",
-    "foreign-resources-unchanged": "foreign-resource-snapshot",
-    "dependent-effects-not-executed": "dependency-barrier",
-    "fresh-receiving-authority": "authority-incarnation",
-    "compatible-state-adopted": "state-adoption",
-    "exactly-one-resource-owner": "exact-ownership-inventory",
-    "transfer-rejected-before-candidate-effect": "transfer-rejection",
-    "predecessor-remains-sole-owner": "predecessor-ownership",
-    "current-grants-reauthorized": "authority-grants",
-    "retained-target-identity-preserved": "target-identity",
-    "prerequisite-failure-recorded": "prerequisite-failure",
-    "foreign-attempt-rejected-before-mutation": "foreign-attempt-rejection",
-}
 TOKEN = re.compile(r"[a-z0-9.-]{1,96}").fullmatch
 LOCAL_KEY = re.compile(r"[A-Za-z0-9._-]{1,128}").fullmatch
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}").fullmatch
@@ -77,6 +62,22 @@ MATRIX_APPLICABILITY_SCHEMA = (
     "aos.qualification.native-adapter-matrix-applicability/v1"
 )
 RESOURCE_LIFETIMES = {"attempt", "transaction", "instance", "persistent"}
+
+
+def _postcondition_kind(cell: dict[str, Any], name: str) -> str:
+    """Returns the evidence kind projected from the scenario policy."""
+
+    postconditions = cell.get("postconditions")
+    kinds = cell.get("postcondition_kinds")
+    if (
+        not isinstance(postconditions, list)
+        or not isinstance(kinds, dict)
+        or set(kinds) != set(postconditions)
+        or not isinstance(kinds.get(name), str)
+        or not kinds[name]
+    ):
+        raise RuntimeError("matrix cell postcondition policy is malformed")
+    return kinds[name]
 
 
 def _adapter_claim(spec: dict[str, Any], adapter_name: str) -> dict[str, Any]:
@@ -852,7 +853,7 @@ def _validated_interruption_cell(
         }
         probes[name] = {
             "schema_version": PROBE_SCHEMA,
-            "kind": POSTCONDITION_KINDS[name],
+            "kind": _postcondition_kind(cell, name),
             "cell_id": cell["id"],
             "cell_digest": cell_digest,
             "disposition": "rejected-before-acquisition",
@@ -941,7 +942,7 @@ def _validated_provider_negative_cell(
             "subject-schema": PROVIDER_NEGATIVE_SUBJECT_SCHEMA,
             "plan-schema": PROVIDER_NEGATIVE_PLAN_SCHEMA,
             "probe-schema": PROBE_SCHEMA,
-            "postcondition-kinds": POSTCONDITION_KINDS,
+            "postcondition-kinds": cell["postcondition_kinds"],
             "disposition": SCENARIO_DISPOSITIONS[_cell_scenario(cell)],
         },
     )
@@ -1257,7 +1258,7 @@ def _validated_provider_negative_cell(
         }
         probes[name] = {
             "schema": PROBE_SCHEMA,
-            "kind": POSTCONDITION_KINDS[name],
+            "kind": _postcondition_kind(cell, name),
             "disposition": SCENARIO_DISPOSITIONS[scenario],
             "observation_digest": observation_digest,
             "cohort_subject_digest": cohort_subject_digest,
@@ -1424,7 +1425,7 @@ def _validated_authority_cell(
         }
         probes[name] = {
             "schema_version": PROBE_SCHEMA,
-            "kind": POSTCONDITION_KINDS[name],
+            "kind": _postcondition_kind(cell, name),
             "cell_id": cell["id"],
             "cell_digest": cell_digest,
             "disposition": "rejected-before-effect",
@@ -1630,7 +1631,7 @@ def _validated_replacement_cell(
         postconditions[name] = {"passed": True, "detail": detail}
         probes[name] = {
             "schema_version": PROBE_SCHEMA,
-            "kind": POSTCONDITION_KINDS[name],
+            "kind": _postcondition_kind(cell, name),
             "cell_id": cell["id"],
             "cell_digest": cell_digest,
             "disposition": "rejected-before-effect",
@@ -1877,7 +1878,7 @@ def _validated_failure_control_cell(
         }
         probes[name] = {
             "schema_version": PROBE_SCHEMA,
-            "kind": POSTCONDITION_KINDS[name],
+            "kind": _postcondition_kind(cell, name),
             "cell_id": cell["id"],
             "cell_digest": cell_digest,
             "disposition": disposition,
@@ -1913,7 +1914,7 @@ def _validated_probes(
         record = submitted[name]
         if set(record) != {"kind", "detail", "disposition", "observations"}:
             raise RuntimeError("postcondition probe has unknown or missing fields")
-        expected_kind = POSTCONDITION_KINDS.get(name)
+        expected_kind = _postcondition_kind(cell, name)
         observations = record["observations"]
         if (
             record["kind"] != expected_kind

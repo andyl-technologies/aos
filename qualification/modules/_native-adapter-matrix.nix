@@ -23,8 +23,10 @@
   expectedProviderContractKeys = ["resource_lifetime" "state_format"];
   expectedProviderImplementationKeys = ["contract" "implementation" "observer"];
   expectedHandlerKeys = ["arguments" "artifact" "entry_point" "result"];
-  expectedScenarioKeys = ["boundary" "candidate" "failure" "family" "id" "predecessor"];
-  expectedScenarioPolicyKeys = ["matrix_schema" "scenarios" "subject_schema"];
+  expectedScenarioKeys = ["boundary" "candidate" "failure" "family" "id" "postconditions" "predecessor"];
+  expectedPolicyScenarioKeys = ["additional_postconditions" "boundary" "candidate" "failure" "family" "id" "predecessor"];
+  expectedPostconditionKeys = ["evidence_kind" "name"];
+  expectedScenarioPolicyKeys = ["baseline_postconditions" "failure_postcondition" "matrix_schema" "postcondition_kinds" "scenarios" "subject_schema"];
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
   allowedRegressions = [
     "checks.fleet.ability-native-activation"
@@ -51,6 +53,18 @@
   scenarioFamilies = builtins.sort builtins.lessThan (
     lib.unique (map (scenario: scenario.family) scenarioPolicy.scenarios)
   );
+  postconditionsFor = scenario:
+    scenarioPolicy.baseline_postconditions
+    ++ lib.optional (scenario.failure != "none") scenarioPolicy.failure_postcondition
+    ++ scenario.additional_postconditions;
+  scenarioFor = scenario:
+    builtins.removeAttrs scenario ["additional_postconditions"]
+    // {
+      postconditions = map (name: {
+        evidence_kind = scenarioPolicy.postcondition_kinds.${name};
+        inherit name;
+      }) (postconditionsFor scenario);
+    };
   selectedPackages =
     if packages == null
     then []
@@ -167,7 +181,7 @@
       (left: right: builtins.lessThan left.adapter right.adapter)
       (map adapterFor selectedImplementations);
     families = scenarioFamilies;
-    scenarios = scenarioPolicy.scenarios;
+    scenarios = map scenarioFor scenarioPolicy.scenarios;
     limits = {
       max_adapters = builtins.length selectedImplementations;
       max_methods = builtins.length (builtins.concatMap (entry: entry.implementation.methods) selectedImplementations);
@@ -197,30 +211,6 @@
     if subject == null
     then canonicalSubject
     else subject;
-  postconditionsFor = scenario:
-    [
-      "durable-attempt-state-classified"
-      "at-most-one-resource-owner"
-      "foreign-resources-unchanged"
-    ]
-    ++ lib.optional (scenario.failure != "none") "dependent-effects-not-executed"
-    ++ lib.optionals (scenario.id == "adopt-compatible-state") [
-      "fresh-receiving-authority"
-      "compatible-state-adopted"
-      "exactly-one-resource-owner"
-    ]
-    ++ lib.optionals (scenario.id == "reject-unsupported-transfer") [
-      "fresh-receiving-authority"
-      "transfer-rejected-before-candidate-effect"
-      "predecessor-remains-sole-owner"
-    ]
-    ++ lib.optionals (scenario.id == "activate-retained-target") [
-      "current-grants-reauthorized"
-      "retained-target-identity-preserved"
-      "exactly-one-resource-owner"
-    ]
-    ++ lib.optional (scenario.id == "block-dependent-effect") "prerequisite-failure-recorded"
-    ++ lib.optional (scenario.id == "reject-foreign-resource-mutation") "foreign-attempt-rejected-before-mutation";
   cellFor = pair: scenario: {
     id = "${pair.adapter.adapter}/${pair.adapter.interface_name}/abi-${toString pair.adapter.interface_abi}/${pair.method.method}/${scenario.id}";
     matrix_schema = selectedSurface.matrix_schema;
@@ -237,7 +227,12 @@
     failure = scenario.failure;
     predecessor = scenario.predecessor;
     candidate = scenario.candidate;
-    postconditions = postconditionsFor scenario;
+    postconditions = map (postcondition: postcondition.name) scenario.postconditions;
+    postcondition_kinds = builtins.listToAttrs (map (postcondition: {
+        name = postcondition.name;
+        value = postcondition.evidence_kind;
+      })
+      scenario.postconditions);
     invalidated_by = requiredInvalidation;
   };
   expectedCells = builtins.sort (left: right: builtins.lessThan left.id right.id) (
@@ -360,6 +355,14 @@
     builtins.attrNames scenario
     == expectedScenarioKeys
     && builtins.all token [scenario.boundary scenario.candidate scenario.failure scenario.family scenario.id scenario.predecessor]
+    && scenario.postconditions != []
+    && unique (map (postcondition: postcondition.name) scenario.postconditions)
+    && builtins.all (postcondition:
+      builtins.attrNames postcondition
+      == expectedPostconditionKeys
+      && token postcondition.name
+      && token postcondition.evidence_kind)
+    scenario.postconditions
     && builtins.elem scenario.family selectedSurface.families
     && builtins.elem scenario.boundary [
       "after-acquisition"
@@ -404,6 +407,19 @@
 in
   assert surface != null || packages != null;
   assert builtins.attrNames scenarioPolicy == expectedScenarioPolicyKeys;
+  assert scenarioPolicy.baseline_postconditions != [];
+  assert unique scenarioPolicy.baseline_postconditions;
+  assert builtins.all token scenarioPolicy.baseline_postconditions;
+  assert token scenarioPolicy.failure_postcondition;
+  assert builtins.all token (builtins.attrNames scenarioPolicy.postcondition_kinds);
+  assert builtins.all token (builtins.attrValues scenarioPolicy.postcondition_kinds);
+  assert builtins.all (scenario:
+    builtins.attrNames scenario
+    == expectedPolicyScenarioKeys
+    && unique scenario.additional_postconditions
+    && builtins.all token scenario.additional_postconditions
+    && builtins.all (name: builtins.hasAttr name scenarioPolicy.postcondition_kinds) (postconditionsFor scenario))
+  scenarioPolicy.scenarios;
   assert validSurface;
   assert selectedSubject == canonicalSubject;
   assert invalidatedBy == requiredInvalidation;
