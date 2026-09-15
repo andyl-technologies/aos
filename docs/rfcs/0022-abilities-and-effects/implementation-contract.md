@@ -269,6 +269,10 @@ instance enablement is explicit desired state. Removing an instance stops its
 owned workload and releases ephemeral resources after its consumers detach;
 persistent data follows an explicit retention/deletion policy and is retained
 by default. Deleting persistent data is a separately authorized operation.
+An interface that promises release on disable exposes an exact release or
+remove method, and its selected implementation observes completion or absence
+for the same logical resource. A lifecycle flag without an executable,
+observable release path is invalid.
 
 Provider replacement preserves a logical resource only when an explicit
 handoff/adoption contract verifies ownership, state format, and current

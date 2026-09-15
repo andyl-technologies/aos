@@ -119,6 +119,15 @@ document. Facts that can be determined from a method's schemas, references,
 visibility, or retained bindings are derived rather than authored as additional
 flags. Configured instances and requests refer to those declarations by typed
 identity instead of copying their contents.
+
+Option reference annotations are fields of the same `mkOption` declaration.
+Visibility, contribution policy, activation behavior, deprecation and
+replacement information, and declaration provenance are projected with the
+option's path, type, description, default, and example. Publication signs that
+complete projection. Documentation and registry clients consume the signed
+projection directly; they do not re-evaluate the module or join it with a
+separate documentation manifest.
+
 Bindings refer to requests and implementations; desired resources refer to
 the selected definitions. Module type checking rejects unknown fields,
 malformed values, invalid merges, and missing required values during the final
@@ -230,6 +239,12 @@ instance references its package-owned template; it does not restate the
 interface, schema, methods, or guarantees. A provider instance likewise
 references its package-owned implementation declaration. This preserves
 static discovery without introducing a second declaration.
+
+Static interface declarations, implementation declarations, and requirement
+templates are unconditional module definitions. Disabling a package feature
+must not erase the package's potential provided or consumed abilities from its
+signed projection. Enable conditions apply only to concrete instances,
+requests, desired resources, and effects in the final system fixed point.
 
 The package carrier derives collision-free final keys from the package identity
 and each package-local alias. Package authors may therefore use ordinary local
