@@ -450,6 +450,9 @@
   bootPreparationCore = import ./boot-preparation-core.nix {
     inherit lib;
   };
+  nixStoreDatabase = import ./nix-store-database.nix {
+    inherit lib;
+  };
   postgresqlService = import ./postgresql-service.nix {
     inherit lib pkgs;
   };
@@ -898,6 +901,7 @@ in
   assert containerdStaticProjection;
   assert kernelModules;
   assert bootPreparationCore;
+  assert nixStoreDatabase;
   assert postgresqlService;
   assert securityWrappers;
   assert networkPolicyCore;
