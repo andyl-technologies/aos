@@ -1073,6 +1073,9 @@ impl VersionedDocument for PackageDocument {
             Literal {
                 text: &'a str,
             },
+            ArtifactRoot {
+                artifact: crate::ArtifactIdentity,
+            },
             ArtifactPath {
                 artifact: crate::ArtifactIdentity,
                 path: &'a RelativePath,
@@ -1204,6 +1207,11 @@ impl VersionedDocument for PackageDocument {
                     .map(|fragment| match fragment {
                         crate::PackageProbeTemplateFragment::Literal { text } => {
                             SemanticPackageProbeTemplateFragment::Literal { text }
+                        }
+                        crate::PackageProbeTemplateFragment::ArtifactRoot { artifact } => {
+                            SemanticPackageProbeTemplateFragment::ArtifactRoot {
+                                artifact: artifact.identity(),
+                            }
                         }
                         crate::PackageProbeTemplateFragment::ArtifactPath { artifact, path } => {
                             SemanticPackageProbeTemplateFragment::ArtifactPath {
@@ -1470,7 +1478,8 @@ fn validate_package_probe(
                         });
                     }
                 }
-                crate::PackageProbeTemplateFragment::ArtifactPath { artifact, .. } => {
+                crate::PackageProbeTemplateFragment::ArtifactRoot { artifact }
+                | crate::PackageProbeTemplateFragment::ArtifactPath { artifact, .. } => {
                     if !retained_artifacts.contains(artifact) {
                         return Err(DocumentError::Decode {
                             label: PackageDocument::SCHEMA.to_string(),

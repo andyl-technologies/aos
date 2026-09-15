@@ -75,6 +75,13 @@
       artifact = requireSelector "${context}.artifact" checked.artifact;
       path = requireRelativePath "${context}.path" checked.path;
     }
+    else if kind == "artifact-root"
+    then let
+      checked = requireAttrs context ["artifact" "kind"] [] value;
+    in {
+      inherit (checked) kind;
+      artifact = requireSelector "${context}.artifact" checked.artifact;
+    }
     else if kind == "work-path"
     then let
       checked = requireAttrs context ["kind" "path"] [] value;
@@ -89,7 +96,7 @@
       if builtins.elem checked.tool ["bash" "c-compiler" "cxx-compiler" "python"]
       then {inherit (checked) kind tool;}
       else fail "${context}.tool names an unsupported qualification harness"
-    else fail "${context}.kind must select literal, artifact-path, work-path, or harness";
+    else fail "${context}.kind must select literal, artifact-root, artifact-path, work-path, or harness";
 
   normalizeStep = context: value: let
     checked = requireAttrs context ["argv" "exit_code"] ["observes_rejection" "stderr" "stdin" "stdout" "timeout_seconds"] value;
@@ -195,7 +202,7 @@
 
   projectTemplate = owner: template: let
     projected = map (fragment:
-      if fragment.kind != "artifact-path"
+      if !(builtins.elem fragment.kind ["artifact-path" "artifact-root"])
       then {value = fragment; selectors = [];}
       else let
         normalized = abilities.normalizePackageOutputSelectors {
@@ -247,6 +254,8 @@
   };
 in rec {
   literal = text: normalizeFragment "literal fragment" {kind = "literal"; inherit text;};
+  artifactRoot = {artifact ? abilities.packageOutput {}}:
+    normalizeFragment "artifact-root fragment" {kind = "artifact-root"; inherit artifact;};
   artifactPath = {
     artifact ? abilities.packageOutput {},
     path,
@@ -265,6 +274,68 @@ in rec {
     badInput,
   }:
     normalizePackageProbe {inherit primary; bad_input = badInput;};
+
+  commandProbe = {primary, badInput}: let
+    tokenPattern = "(@out@/[A-Za-z0-9._+/-]+|@output:[A-Za-z0-9._+-]+@/[A-Za-z0-9._+/-]+|@work@/[A-Za-z0-9._+/-]+|@python@|@bash@|@cc@|@cxx@|@out@)";
+    harnesses = {
+      "@bash@" = "bash";
+      "@cc@" = "c-compiler";
+      "@cxx@" = "cxx-compiler";
+      "@python@" = "python";
+    };
+    fragmentFor = value:
+      if builtins.isList value
+      then fragmentFor (builtins.head value)
+      else if builtins.hasAttr value harnesses
+      then harness harnesses.${value}
+      else if value == "@out@"
+      then artifactRoot {}
+      else let
+        namedOutput = builtins.match "@output:([A-Za-z0-9._+-]+)@/(.+)" value;
+        outputPath = builtins.match "@out@/(.+)" value;
+        work = builtins.match "@work@/(.+)" value;
+      in
+        if namedOutput != null
+        then artifactPath {
+          artifact = abilities.packageOutput {output = builtins.elemAt namedOutput 0;};
+          path = builtins.elemAt namedOutput 1;
+        }
+        else if outputPath != null
+        then artifactPath {path = builtins.head outputPath;}
+        else if work != null
+        then workPath (builtins.head work)
+        else literal value;
+    stringTemplate = value:
+      template (map fragmentFor (builtins.filter (part: part != "") (builtins.split tokenPattern value)));
+    optionalExact = step: field:
+      if !(builtins.hasAttr field step)
+      then null
+      else stringTemplate step.${field}.exact;
+    commandStep = step:
+      normalizeStep "command probe step" {
+        argv = map stringTemplate step.argv;
+        stdin =
+          if step ? stdin
+          then stringTemplate step.stdin
+          else null;
+        stdout = optionalExact step "stdout";
+        stderr = optionalExact step "stderr";
+        inherit (step) exit_code;
+        timeout_seconds = step.timeout_seconds or null;
+        observes_rejection = step.observes_rejection or false;
+      };
+    commandOperation = operation:
+      normalizeOperation "command probe operation" {
+        inherit (operation) input operation expected;
+        files = builtins.mapAttrs (_: stringTemplate) operation.files;
+        steps = map commandStep operation.steps;
+        artifacts = map textArtifact operation.artifacts;
+      };
+  in
+    packageProbe {
+      primary = commandOperation primary;
+      badInput = commandOperation badInput;
+    };
 
   inherit normalizePackageProbe;
 

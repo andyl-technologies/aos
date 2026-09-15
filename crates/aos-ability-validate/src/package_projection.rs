@@ -381,6 +381,11 @@ pub enum PackageProbeTemplateFragmentProjection {
         /// Supplies the literal text.
         text: String,
     },
+    /// Emits the root of one symbolically selected package artifact.
+    ArtifactRoot {
+        /// Selects the package artifact.
+        artifact: PackageOutputSelector,
+    },
     /// Emits a path beneath one symbolic package output.
     ArtifactPath {
         /// Selects the package output.
@@ -483,6 +488,11 @@ where
         .map(|fragment| match fragment {
             PackageProbeTemplateFragmentProjection::Literal { text } => {
                 Ok(PackageProbeTemplateFragment::Literal { text })
+            }
+            PackageProbeTemplateFragmentProjection::ArtifactRoot { artifact } => {
+                Ok(PackageProbeTemplateFragment::ArtifactRoot {
+                    artifact: resolver.select(&artifact)?,
+                })
             }
             PackageProbeTemplateFragmentProjection::ArtifactPath { artifact, path } => {
                 Ok(PackageProbeTemplateFragment::ArtifactPath {

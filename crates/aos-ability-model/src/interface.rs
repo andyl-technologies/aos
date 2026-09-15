@@ -749,6 +749,11 @@ pub enum PackageProbeTemplateFragment {
         /// Supplies the literal text.
         text: String,
     },
+    /// Emits the root of one exact authenticated package artifact.
+    ArtifactRoot {
+        /// Identifies the exact package artifact.
+        artifact: ArtifactReference,
+    },
     /// Emits a path beneath one exact authenticated package artifact.
     ArtifactPath {
         /// Identifies the exact package artifact.
