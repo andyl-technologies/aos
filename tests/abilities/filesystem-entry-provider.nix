@@ -3,6 +3,11 @@
   lib,
   pkgs,
 }: let
+  selectedProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.aos-filesystem-provider;
+    implementation = "filesystem-entry";
+  };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   filesystemEntry = serviceManagement.interfaces.filesystemEntry;
   baseBindings = {
@@ -17,59 +22,55 @@
     lib.evalModules {
       inherit lib;
       modules = [
-      lib.abilities.module
-      {
-        config.aos.abilities = {
-          environment = {
-            authority = "test";
-            key = "filesystem-entry";
-            stage = "host";
+        lib.abilities.module
+        {
+          config.aos.abilities = {
+            environment = {
+              authority = "test";
+              key = "filesystem-entry";
+              stage = "host";
+            };
+            instances."aos-filesystem-provider:filesystem" = {};
+            inherit bindings;
           };
-          inherit bindings;
-        };
-      }
+        }
       ];
       packageModules = [
-      {
-        name = "aos-filesystem-provider";
-        module = {
-          imports = [
-            ../../pkgs/filesystem/_aos-filesystem-provider/module.nix
-            ../../pkgs/filesystem/_aos-filesystem-provider/provider.nix
-          ];
-          config.aos.abilities.instances.filesystem = {};
-        };
-      }
-      {
-        name = "consumer";
-        module.config.aos.abilities = {
-          instances.application = {};
-          requirementTemplates.entry = {
-            interface = filesystemEntry.identity.name;
-            inherit (filesystemEntry.identity) abi descriptor;
-            methods = ["materialize" "observe" "release"];
-            guarantees = [];
-            strength = "required";
-            fallback = null;
-          };
-          requests.entry = {
-            requirement = "entry";
-            consumer = "application";
-            scope = ["filesystem"];
-            parameters = {
-              name = "runtime-root";
-              entry.kind = "directory";
-              destination = "/run/example";
-              mode = "0750";
-              prerequisites = [];
+        {
+          name = "aos-filesystem-provider";
+          inherit (pkgs.aos-filesystem-provider) version;
+          module = pkgs.aos-filesystem-provider.module + "/module.nix";
+        }
+        {
+          name = "consumer";
+          module.config.aos.abilities = {
+            instances.application = {};
+            requirementTemplates.entry = {
+              interface = filesystemEntry.identity.name;
+              inherit (filesystemEntry.identity) abi descriptor;
+              methods = ["materialize" "observe" "release"];
+              guarantees = [];
+              strength = "required";
+              fallback = null;
+            };
+            requests.entry = {
+              requirement = "entry";
+              consumer = "application";
+              scope = ["filesystem"];
+              parameters = {
+                name = "runtime-root";
+                entry.kind = "directory";
+                destination = "/run/example";
+                mode = "0750";
+                prerequisites = [];
+              };
             };
           };
-        };
-      }
+        }
       ];
+      selectedProviderModules = [selectedProvider];
       specialArgs = {
         inherit pkgs;
-        packageName = "aos-filesystem-provider";
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
@@ -104,5 +105,4 @@ in
   assert resource.value.destination == "/run/example";
   assert resource.realization.path == "/run/example";
   assert abilities.implementations."aos-filesystem-provider:filesystem-entry".handlerDescriptor == null;
-  assert abilities.implementations."aos-filesystem-provider:filesystem-entry-effects".providerModule == null;
-  true
+  assert abilities.implementations."aos-filesystem-provider:filesystem-entry-effects".providerModule == null; true

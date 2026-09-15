@@ -15,9 +15,13 @@
     controllerAlias,
     controllerInstance,
     terminalAlias,
-    providerModule,
     slot,
   }: let
+    selectedProvider = import ./_selected-package-provider.nix {
+      inherit lib;
+      package = pkgs.k3s-combined;
+      implementation = controllerAlias;
+    };
     childRequestKey = lib.abilities.compositionRequestKey {
       implementation = "k3s-combined:${controllerAlias}";
       providerInstance = "k3s-combined:${controllerInstance}";
@@ -34,6 +38,7 @@
               key = "k3s-controller-terminal";
               stage = "host";
             };
+            instances."k3s-combined:${controllerInstance}" = {};
             bindings."test:controller" = {
               request = "consumer:${requestKey}";
               implementation = "k3s-combined:${controllerAlias}";
@@ -53,11 +58,7 @@
         {
           name = "k3s-combined";
           version = pkgs.k3s-combined.version;
-          module.imports = [
-            ../../pkgs/kubernetes/_k3s-config/module.nix
-            providerModule
-            {config.aos.abilities.instances.${controllerInstance} = {};}
-          ];
+          module = pkgs.k3s-combined.module + "/module.nix";
         }
         {
           name = "consumer";
@@ -87,6 +88,7 @@
           };
         }
       ];
+      selectedProviderModules = [selectedProvider];
     };
   in {
     inherit childRequestKey;
@@ -104,7 +106,6 @@
     controllerAlias = objectControllerAlias;
     controllerInstance = "object-controller";
     terminalAlias = "kubernetes-object-effects";
-    providerModule = ../../pkgs/kubernetes/_k3s-config/object-provider.nix;
     slot = "objects";
   };
   configuration = evaluateController {
@@ -124,7 +125,6 @@
     controllerAlias = configurationControllerAlias;
     controllerInstance = "configuration-controller";
     terminalAlias = "k3s-configuration-effects";
-    providerModule = ../../pkgs/kubernetes/_k3s-config/configuration-provider.nix;
     slot = "configuration";
   };
 
