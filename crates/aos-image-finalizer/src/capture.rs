@@ -22,13 +22,12 @@ use sha2::{Digest as _, Sha256};
 use crate::assembly::{
     AssemblyFileKind, AssemblyFileV1, AssemblyToolV1, ImageBudgetsV1, ImageCommandLinesV1,
     ImageLayoutV1, ImageSignerRolesV1, UNSIGNED_IMAGE_ASSEMBLY_V2, UNSIGNED_IMAGE_ASSEMBLY_V3,
-    UNSIGNED_IMAGE_ASSEMBLY_V4, UnsignedImageAssemblyV1,
+    UnsignedImageAssemblyV1,
 };
 use crate::initrd_contract::{ArtifactExecutionStage, InitrdStageContractV1};
 
 const RECIPE_SCHEMA_V2: &str = "aos.image.assembly-recipe/v2";
 const RECIPE_SCHEMA_V3: &str = "aos.image.assembly-recipe/v3";
-const RECIPE_SCHEMA_V4: &str = "aos.image.assembly-recipe/v4";
 const MAX_RECIPE_BYTES: u64 = 1024 * 1024;
 const MAX_STATIC_ABILITY_CONTRACT_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -95,15 +94,11 @@ pub fn capture_unsigned_assembly(
     let recipe: AssemblyRecipeV1 = canonical::from_slice(&recipe_bytes, "image assembly recipe")?;
     if !matches!(
         recipe.schema_version.as_str(),
-        RECIPE_SCHEMA_V2 | RECIPE_SCHEMA_V3 | RECIPE_SCHEMA_V4
+        RECIPE_SCHEMA_V2 | RECIPE_SCHEMA_V3
     ) {
         bail!("unsupported image assembly recipe schema");
     }
-    let has_initrd_contract = matches!(
-        recipe.schema_version.as_str(),
-        RECIPE_SCHEMA_V3 | RECIPE_SCHEMA_V4
-    );
-    let has_static_ability_contracts = recipe.schema_version == RECIPE_SCHEMA_V4;
+    let has_final_contracts = recipe.schema_version == RECIPE_SCHEMA_V3;
     if [
         recipe.command_lines.slot_a.as_str(),
         recipe.command_lines.slot_b.as_str(),
@@ -207,7 +202,7 @@ pub fn capture_unsigned_assembly(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let initrd_contract = if has_initrd_contract {
+    let initrd_contract = if has_final_contracts {
         let relative = "inputs/initrd-stage-contract.json";
         let contract_bytes = capture_control_file(&root.join(relative), "initrd stage contract")?;
         canonical::require_canonical(&contract_bytes, "initrd stage contract")?;
@@ -224,7 +219,7 @@ pub fn capture_unsigned_assembly(
     } else {
         None
     };
-    if has_static_ability_contracts {
+    if has_final_contracts {
         files.push(capture_static_ability_contract(
             root,
             "initrd-ability-contract",
@@ -259,9 +254,7 @@ pub fn capture_unsigned_assembly(
         })
         .collect::<Result<Vec<_>>>()?;
     let assembly = UnsignedImageAssemblyV1 {
-        schema_version: if has_static_ability_contracts {
-            UNSIGNED_IMAGE_ASSEMBLY_V4.to_owned()
-        } else if has_initrd_contract {
+        schema_version: if has_final_contracts {
             UNSIGNED_IMAGE_ASSEMBLY_V3.to_owned()
         } else {
             UNSIGNED_IMAGE_ASSEMBLY_V2.to_owned()
@@ -474,10 +467,8 @@ mod tests {
             temporary.path().join("assembly-recipe.json"),
             canonical::to_vec(&recipe)?,
         )?;
-        if matches!(schema_version, RECIPE_SCHEMA_V3 | RECIPE_SCHEMA_V4) {
+        if schema_version == RECIPE_SCHEMA_V3 {
             write_initrd_contract(&temporary, "initrd")?;
-        }
-        if schema_version == RECIPE_SCHEMA_V4 {
             write_static_ability_contract(&temporary, "initrd")?;
             write_static_ability_contract(&temporary, "host")?;
         }
@@ -584,7 +575,7 @@ mod tests {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })?;
         assert_eq!(assembly.schema_version, UNSIGNED_IMAGE_ASSEMBLY_V3);
-        assert_eq!(assembly.files.len(), 18);
+        assert_eq!(assembly.files.len(), 20);
         assert!(assembly.initrd_contract.is_some());
 
         fs::write(
@@ -603,11 +594,11 @@ mod tests {
 
     #[test]
     fn captures_stage_specific_static_ability_contracts() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V4)?;
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
         let assembly = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })?;
-        assert_eq!(assembly.schema_version, UNSIGNED_IMAGE_ASSEMBLY_V4);
+        assert_eq!(assembly.schema_version, UNSIGNED_IMAGE_ASSEMBLY_V3);
         assert_eq!(assembly.files.len(), 20);
 
         write_static_ability_contract(&temporary, "host")?;
@@ -632,8 +623,24 @@ mod tests {
     }
 
     #[test]
+    fn final_recipe_requires_both_static_ability_contracts() -> Result<()> {
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        fs::remove_file(
+            temporary
+                .path()
+                .join("inputs/host-static-ability-contract.json"),
+        )?;
+
+        capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
+            Ok(format!("sha256:{}", "a".repeat(64)))
+        })
+        .expect_err("the final recipe cannot omit a static ability contract");
+        Ok(())
+    }
+
+    #[test]
     fn rejects_untyped_static_ability_records() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V4)?;
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
         let path = temporary
             .path()
             .join("inputs/host-static-ability-contract.json");

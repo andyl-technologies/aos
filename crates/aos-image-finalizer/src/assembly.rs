@@ -1,9 +1,9 @@
 //! Closed unsigned-image assembly manifest.
 //!
-//! Current v4 assemblies include the resolved kernel configuration, exact
+//! Current v3 assemblies include the resolved kernel configuration, exact
 //! initrd contract, and stage-labelled static ability contracts as captured
-//! inputs. Historical schemas retain their original file contracts without
-//! acquiring newer guarantees.
+//! inputs. Historical v1 and v2 schemas retain their original file contracts
+//! without acquiring newer guarantees.
 //!
 //! ```json
 //! {"schema_version":"aos.image.unsigned-assembly/v1",
@@ -29,11 +29,8 @@ pub const UNSIGNED_IMAGE_ASSEMBLY_V1: &str = "aos.image.unsigned-assembly/v1";
 /// Assembly schema requiring the resolved kernel configuration for qualification.
 pub const UNSIGNED_IMAGE_ASSEMBLY_V2: &str = "aos.image.unsigned-assembly/v2";
 
-/// Assembly schema requiring an exact checked initrd stage contract.
+/// Assembly schema requiring the checked initrd and static ability contracts.
 pub const UNSIGNED_IMAGE_ASSEMBLY_V3: &str = "aos.image.unsigned-assembly/v3";
-
-/// Assembly schema binding host and initrd static ability contracts.
-pub const UNSIGNED_IMAGE_ASSEMBLY_V4: &str = "aos.image.unsigned-assembly/v4";
 
 /// Required deterministic input or public trust artifact.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -299,10 +296,7 @@ impl UnsignedImageAssemblyV1 {
     pub fn validate(&self) -> Result<()> {
         if !matches!(
             self.schema_version.as_str(),
-            UNSIGNED_IMAGE_ASSEMBLY_V1
-                | UNSIGNED_IMAGE_ASSEMBLY_V2
-                | UNSIGNED_IMAGE_ASSEMBLY_V3
-                | UNSIGNED_IMAGE_ASSEMBLY_V4
+            UNSIGNED_IMAGE_ASSEMBLY_V1 | UNSIGNED_IMAGE_ASSEMBLY_V2 | UNSIGNED_IMAGE_ASSEMBLY_V3
         ) || !self.platform.supports_images()
         {
             bail!("unsigned image assembly requires a supported schema and a Linux platform");
@@ -385,7 +379,7 @@ impl UnsignedImageAssemblyV1 {
         }
         let has_resolved_kernel_config = self.schema_version != UNSIGNED_IMAGE_ASSEMBLY_V1;
         if kinds.contains(&AssemblyFileKind::KernelConfig) != has_resolved_kernel_config {
-            bail!("resolved kernel configuration requires a v2, v3, or v4 assembly schema");
+            bail!("resolved kernel configuration requires the v2 or v3 assembly schema");
         }
         self.validate_initrd_contract(&kinds)?;
         self.validate_static_ability_contracts(&kinds)?;
@@ -420,14 +414,11 @@ impl UnsignedImageAssemblyV1 {
     }
 
     fn validate_initrd_contract(&self, kinds: &BTreeSet<AssemblyFileKind>) -> Result<()> {
-        let requires_contract = matches!(
-            self.schema_version.as_str(),
-            UNSIGNED_IMAGE_ASSEMBLY_V3 | UNSIGNED_IMAGE_ASSEMBLY_V4
-        );
+        let requires_contract = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3;
         if kinds.contains(&AssemblyFileKind::InitrdContract) != requires_contract
             || self.initrd_contract.is_some() != requires_contract
         {
-            bail!("initrd stage contract requires the v3 or v4 assembly schema");
+            bail!("initrd stage contract requires the v3 assembly schema");
         }
         let Some(contract) = &self.initrd_contract else {
             return Ok(());
@@ -463,13 +454,13 @@ impl UnsignedImageAssemblyV1 {
     }
 
     fn validate_static_ability_contracts(&self, kinds: &BTreeSet<AssemblyFileKind>) -> Result<()> {
-        let requires_contracts = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V4;
+        let requires_contracts = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3;
         for kind in [
             AssemblyFileKind::InitrdStaticAbilityContract,
             AssemblyFileKind::HostStaticAbilityContract,
         ] {
             if kinds.contains(&kind) != requires_contracts {
-                bail!("static ability contracts require the v4 assembly schema");
+                bail!("static ability contracts require the v3 assembly schema");
             }
         }
         Ok(())

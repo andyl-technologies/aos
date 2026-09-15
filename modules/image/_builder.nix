@@ -543,7 +543,7 @@
           }
 
           ${pkgs.jq}/bin/jq -cS -n \
-            --arg schema aos.image.assembly-recipe/v4 \
+            --arg schema aos.image.assembly-recipe/v3 \
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg lib.system} \
             --arg variant ${lib.escapeShellArg name} \
