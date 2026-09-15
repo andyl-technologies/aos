@@ -32,14 +32,12 @@ use thiserror::Error;
 
 use crate::structured::{DocumentNode, StructuredFormat, encode_structured_document};
 
-const INTERFACE_NAME: &str = "aos.configuration.materialization-terminal";
 const OBSERVATION_SCHEMA: &str = "aos.ability.configuration-materialization-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.configuration.materializer-context/v1";
 const REALIZATION_SCHEMA: &str = "aos.configuration.materializer-realization/v1";
 const MARKER_SCHEMA: &str = "aos.configuration.materializer-state/v1";
 const MATERIALIZER_VERSION: &str = "aos-configuration-provider/1";
 const CONFIGURATION_ROOT: &str = "/run/aos/configurations";
-const QUALIFICATION_INTERFACE: &str = "aos.configuration.materialization";
 const QUALIFICATION_ADAPTER: &str = "configuration-materialization";
 const QUALIFICATION_OBSERVATION_KIND: &str = "filesystem";
 const QUALIFICATION_SCOPE: &str = "host-resource";
@@ -286,7 +284,6 @@ fn validate_qualification_request(
 ) -> Result<(), ConfigurationProviderError> {
     if request.adapter.as_str() != QUALIFICATION_ADAPTER
         || request.scope.as_str() != QUALIFICATION_SCOPE
-        || request.operation.interface.name.as_str() != QUALIFICATION_INTERFACE
         || request.operation.target.interface != request.operation.interface
     {
         return Err(invalid(
@@ -385,11 +382,7 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, ConfigurationProv
         return Err(invalid("admission schema differs from the selected ABI"));
     }
     validate_admission_resource(&request).map_err(|error| invalid(error.to_string()))?;
-    validate_method(
-        request.method.interface.name.as_str(),
-        request.method.method.as_str(),
-        &request.semantics,
-    )?;
+    validate_method(request.method.method.as_str(), &request.semantics)?;
     validate_resource_contexts(&request.resources).map_err(|error| invalid(error.to_string()))?;
 
     let desired: ConfigurationRequest = decode_value(&request.resource_spec.value)?;
@@ -482,11 +475,7 @@ fn invoke(
             "resource contexts differ from their authenticated set digest",
         ));
     }
-    validate_method(
-        invocation.method.interface.name.as_str(),
-        invocation.method.method.as_str(),
-        &invocation.semantics,
-    )?;
+    validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
     let desired: ConfigurationRequest = decode_value(&invocation.request.inputs)?;
     validate_request(&desired)?;
     if invocation.control.cancelled {
@@ -606,11 +595,10 @@ fn invoke(
 }
 
 fn validate_method(
-    interface: &str,
     method: &str,
     semantics: &MethodSemantics,
 ) -> Result<(), ConfigurationProviderError> {
-    if interface != INTERFACE_NAME || !matches!(method, "materialize" | "observe" | "release") {
+    if !matches!(method, "materialize" | "observe" | "release") {
         return Err(invalid(
             "method does not belong to configuration materialization",
         ));
