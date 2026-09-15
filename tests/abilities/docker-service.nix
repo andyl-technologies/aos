@@ -64,6 +64,29 @@ in
   ];
   assert requests."system:docker-data-storage".parameters.requested_path == "/srv/docker";
   assert requests."system:docker-runtime-storage".parameters.requested_path == "/run/docker";
+  assert requests."system:docker-storage".parameters.mounts
+  == [
+    {
+      name = "data";
+      source = {
+        _type = "aos-request-output-reference";
+        request = "system:docker-data-storage";
+        output = "planned-path";
+      };
+      access = "read-write";
+      ownership = "provider";
+    }
+    {
+      name = "runtime";
+      source = {
+        _type = "aos-request-output-reference";
+        request = "system:docker-runtime-storage";
+        output = "planned-path";
+      };
+      access = "read-write";
+      ownership = "provider";
+    }
+  ];
   assert start.artifact == lib.abilities.packageOutput {package = "docker-engine";};
   assert start.arguments
   == [
