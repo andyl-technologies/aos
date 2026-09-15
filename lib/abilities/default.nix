@@ -62,6 +62,11 @@
     then value
     else fail "${context} must be a namespace-qualified name";
 
+  requireDeclarationKey = context: value:
+    if abilityTypes.declarationKey.check value
+    then value
+    else fail "${context} must be a qualified declaration key";
+
   requireDigest = context: value:
     if abilityTypes.digest.check value
     then value
@@ -1536,6 +1541,23 @@ in rec {
     request = requireLocalKey "result request" request;
     output = requireLocalKey "result output" output;
   };
+
+  compositionRequirementKey = args: let
+    checked = requireAttrs "composition requirement identity" ["implementation" "alias"] args;
+  in "composition:requirement-${builtins.hashString "sha256" (builtins.toJSON {
+    schema = "aos.ability.composition-requirement-key/v1";
+    implementation = requireDeclarationKey "composition implementation" checked.implementation;
+    alias = requireLocalKey "composition requirement alias" checked.alias;
+  })}";
+
+  compositionRequestKey = args: let
+    checked = requireAttrs "composition request identity" ["implementation" "providerInstance" "key"] args;
+  in "composition:request-${builtins.hashString "sha256" (builtins.toJSON {
+    schema = "aos.ability.composition-request-key/v1";
+    implementation = requireDeclarationKey "composition implementation" checked.implementation;
+    provider_instance = requireDeclarationKey "composition provider instance" checked.providerInstance;
+    key = requireLocalKey "composition request key" checked.key;
+  })}";
 
   packageOutput = args: let
     checked = requireAttrs "package output selector" ["package" "output"] args;

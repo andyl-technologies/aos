@@ -963,6 +963,20 @@
     visibility = mkOption {type = moduleTypes.enum ["public" "protected"];};
     lifetime = mkOption {type = lifetimeType;};
   };
+  compositionRequirementType = strictSubmodule {
+    implementation = mkOption {type = declarationKeyType;};
+    alias = mkOption {type = localKeyType;};
+    requirement = mkOption {type = projectedRequirementType;};
+  };
+  compositionPendingRequestType = strictSubmodule {
+    originGroup = mkOption {type = moduleTypes.str;};
+    localRequestKey = mkOption {type = localKeyType;};
+    implementation = mkOption {type = declarationKeyType;};
+    providerInstance = mkOption {type = declarationKeyType;};
+    requirement = mkOption {type = localKeyType;};
+    request = mkOption {type = declarationKeyType;};
+    declaration = mkOption {type = requestBaseType;};
+  };
   compositionPendingRequirementType = strictSubmodule {
     implementation = mkOption {
       type = declarationKeyType;
@@ -1060,8 +1074,22 @@ in {
       internal = true;
       description = "Typed provider outputs derived for exact bound requests.";
     };
-    compositionPendingRequests = mkOption {
+    compositionRequests = mkOption {
       type = moduleTypes.attrsOf requestBaseType;
+      default = {};
+      readOnly = true;
+      internal = true;
+      description = "Exact provider child requests derived inside the module fixed point.";
+    };
+    compositionRequirements = mkOption {
+      type = moduleTypes.attrsOf compositionRequirementType;
+      default = {};
+      readOnly = true;
+      internal = true;
+      description = "Exact nested implementation requirements derived for provider child requests.";
+    };
+    compositionPendingRequests = mkOption {
+      type = moduleTypes.attrsOf compositionPendingRequestType;
       default = {};
       readOnly = true;
       internal = true;
