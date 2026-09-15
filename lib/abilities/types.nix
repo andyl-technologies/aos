@@ -662,19 +662,19 @@ in rec {
   in
     decorate "executable reference" schema authored;
 
-  artifactFileReference = let
+  artifactPathReference = let
     path = relativePath;
     schema = schemas.record {
       fields = {
         artifact = schemas.artifactReference;
-        path = schemaOf "artifact file path" path;
+        path = schemaOf "artifact path" path;
       };
       optional = [];
     };
-    authored = strictRecordType "<lib.abilities.types.artifact-file-reference>" {
+    authored = strictRecordType "<lib.abilities.types.artifact-path-reference>" {
       artifact = artifactSelector;
       inherit path;
     };
   in
-    decorate "artifact file reference" schema authored;
+    decorate "artifact path reference" schema authored;
 }

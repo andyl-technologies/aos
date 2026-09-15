@@ -211,6 +211,9 @@ in
       tlsRequests = tls.config.aos.abilities.requests;
       configuration = requests."openldap:server-configuration".parameters;
       fragmentKinds = builtins.map (fragment: fragment.kind) configuration.source.fragments;
+      modulePathFragments = builtins.filter
+        (fragment: fragment.kind == "artifact-directory-path")
+        configuration.source.fragments;
       contractHolds =
         assertionsHold valid
         && assertionsHold tls
@@ -220,7 +223,9 @@ in
         && builtins.hasAttr "openldap:main-lifecycle" requests
         && !(builtins.hasAttr "openldap:main-credentials" requests)
         && builtins.hasAttr "openldap:main-credentials" tlsRequests
-        && builtins.elem "artifact-path" fragmentKinds
+        && builtins.elem "artifact-file-path" fragmentKinds
+        && builtins.length modulePathFragments == 1
+        && (builtins.head modulePathFragments).reference.path == "libexec/openldap"
         && builtins.elem "credential-content" fragmentKinds
         && configuration.mode == "0600"
         && !(lib.hasInfix "/nix/store/" (builtins.toJSON configuration));
@@ -228,6 +233,7 @@ in
         include ${self}/etc/openldap/schema/core.schema
         include ${self}/etc/openldap/schema/cosine.schema
         include ${self}/etc/openldap/schema/inetorgperson.schema
+        modulepath ${self}/libexec/openldap
         pidfile /tmp/openldap-test/slapd.pid
         argsfile /tmp/openldap-test/slapd.args
         database mdb

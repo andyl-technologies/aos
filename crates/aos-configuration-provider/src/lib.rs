@@ -27,7 +27,6 @@ use aos_provider_protocol::{
     SupportedPurposes, native_context_digest, resource_set_digest,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::structured::{DocumentNode, StructuredFormat, encode_structured_document};
@@ -70,7 +69,7 @@ struct ConfigurationRequest {
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum ConfigurationSource {
     ArtifactFile {
-        reference: ArtifactFileReference,
+        reference: ArtifactPathReference,
     },
     InlineText {
         content: String,
@@ -87,7 +86,7 @@ enum ConfigurationSource {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ArtifactFileReference {
+struct ArtifactPathReference {
     artifact: ArtifactReference,
     path: String,
 }
@@ -98,8 +97,11 @@ enum InterpolatedFragment {
     Literal {
         text: String,
     },
-    ArtifactPath {
-        reference: ArtifactFileReference,
+    ArtifactFilePath {
+        reference: ArtifactPathReference,
+    },
+    ArtifactDirectoryPath {
+        reference: ArtifactPathReference,
     },
     ExecutionPath {
         value: String,
@@ -184,7 +186,7 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, ConfigurationProv
     let desired: ConfigurationRequest = decode_value(&request.resource_spec.value)?;
     let realization: ConfigurationRealization = decode_value(&request.resource_spec.realization)?;
     validate_request(&desired)?;
-    validate_realization(&request.resource_spec.resource, &realization)?;
+    validate_realization(&realization)?;
 
     let marker = read_marker(&marker_path(Path::new(&realization.path)))?;
     let expected_digest = input_digest(&desired)?;
@@ -268,7 +270,8 @@ fn invoke(
         );
     }
 
-    let output_path = materialized_path(&invocation.request.target.resource)?;
+    let realization = target_realization(&invocation)?;
+    let output_path = PathBuf::from(&realization.path);
     match invocation.purpose {
         InvocationPurpose::Effect if invocation.method.method.as_str() == "materialize" => {
             let (content, resource_revisions) = render(&desired, &invocation.request.resources)?;
@@ -394,17 +397,44 @@ fn validate_request(request: &ConfigurationRequest) -> Result<(), ConfigurationP
 }
 
 fn validate_realization(
-    resource: &ResourceId,
     realization: &ConfigurationRealization,
 ) -> Result<(), ConfigurationProviderError> {
+    let path = Path::new(&realization.path);
     if realization.schema != REALIZATION_SCHEMA
-        || realization.path != path_text(&materialized_path(resource)?)?
+        || path.parent() != Some(Path::new(CONFIGURATION_ROOT))
+        || path.file_name().is_none()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
     {
         return Err(invalid(
-            "provider realization differs from the resource identity",
+            "provider realization is not a direct configuration-root child",
         ));
     }
     Ok(())
+}
+
+fn target_realization(
+    invocation: &Invocation,
+) -> Result<ConfigurationRealization, ConfigurationProviderError> {
+    let context = invocation
+        .request
+        .resources
+        .iter()
+        .find(|context| context.reference.resource == invocation.request.target.resource)
+        .ok_or_else(|| invalid("target resource has no exact runtime context"))?;
+    let native: aos_provider_protocol::BoundNativeContext = decode_value(&context.native_context)?;
+    if native.schema != aos_provider_protocol::RESOURCE_CONTEXT_SCHEMA
+        || native.resource_spec.resource != invocation.request.target.resource
+        || native.resource_spec.value != invocation.request.inputs
+    {
+        return Err(invalid(
+            "target context differs from the durable checked request",
+        ));
+    }
+    let realization = decode_value(&native.resource_spec.realization)?;
+    validate_realization(&realization)?;
+    Ok(realization)
 }
 
 fn render(
@@ -443,8 +473,16 @@ fn render_fragments(
             InterpolatedFragment::Literal { text } => {
                 append_bounded(&mut output, text.as_bytes(), maximum_size_bytes)?;
             }
-            InterpolatedFragment::ArtifactPath { reference } => {
-                let path = validated_artifact_file_path(reference)?;
+            InterpolatedFragment::ArtifactFilePath { reference } => {
+                let path = validated_artifact_path(reference, ArtifactPathKind::RegularFile)?;
+                append_bounded(
+                    &mut output,
+                    path_text(&path)?.as_bytes(),
+                    maximum_size_bytes,
+                )?;
+            }
+            InterpolatedFragment::ArtifactDirectoryPath { reference } => {
+                let path = validated_artifact_path(reference, ArtifactPathKind::Directory)?;
                 append_bounded(
                     &mut output,
                     path_text(&path)?.as_bytes(),
@@ -506,14 +544,21 @@ fn append_bounded(
 }
 
 fn read_artifact_file(
-    reference: &ArtifactFileReference,
+    reference: &ArtifactPathReference,
 ) -> Result<Vec<u8>, ConfigurationProviderError> {
-    let path = validated_artifact_file_path(reference)?;
+    let path = validated_artifact_path(reference, ArtifactPathKind::RegularFile)?;
     read_bounded(&path, ABILITY_LIMITS_V1.max_document_bytes)
 }
 
-fn validated_artifact_file_path(
-    reference: &ArtifactFileReference,
+#[derive(Clone, Copy)]
+enum ArtifactPathKind {
+    Directory,
+    RegularFile,
+}
+
+fn validated_artifact_path(
+    reference: &ArtifactPathReference,
+    expected_kind: ArtifactPathKind,
 ) -> Result<PathBuf, ConfigurationProviderError> {
     let relative = Path::new(&reference.path);
     if relative.is_absolute()
@@ -525,8 +570,15 @@ fn validated_artifact_file_path(
     }
     let root = fs::canonicalize(&reference.artifact.store_path)?;
     let path = fs::canonicalize(root.join(relative))?;
-    if !path.starts_with(&root) || !fs::symlink_metadata(&path)?.file_type().is_file() {
-        return Err(invalid("artifact file escapes its authenticated artifact"));
+    let file_type = fs::symlink_metadata(&path)?.file_type();
+    let kind_matches = match expected_kind {
+        ArtifactPathKind::Directory => file_type.is_dir(),
+        ArtifactPathKind::RegularFile => file_type.is_file(),
+    };
+    if !path.starts_with(&root) || !kind_matches {
+        return Err(invalid(
+            "artifact path escapes its authenticated artifact or has the wrong kind",
+        ));
     }
     Ok(path)
 }
@@ -657,16 +709,6 @@ fn read_marker(path: &Path) -> Result<Option<MaterializationMarker>, Configurati
         Err(error) => return Err(error),
     };
     Ok(Some(serde_json::from_slice(&bytes)?))
-}
-
-fn materialized_path(resource: &ResourceId) -> Result<PathBuf, ConfigurationProviderError> {
-    let encoded =
-        aos_contract::canonical::to_vec(resource).map_err(|error| invalid(error.to_string()))?;
-    let digest = Sha256::digest(encoded)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    Ok(Path::new(CONFIGURATION_ROOT).join(format!("{}-{digest}", resource.key)))
 }
 
 fn marker_path(path: &Path) -> PathBuf {
@@ -852,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_path_fragment_emits_only_a_contained_regular_file() {
+    fn artifact_file_path_fragment_emits_only_a_contained_regular_file() {
         let directory = tempfile::tempdir().expect("temporary directory is created");
         let schemas = directory.path().join("schemas");
         fs::create_dir(&schemas).expect("schema directory is created");
@@ -864,8 +906,8 @@ mod tests {
             nar_hash: digest('5'),
             closure: digest('6'),
         };
-        let fragments = vec![InterpolatedFragment::ArtifactPath {
-            reference: ArtifactFileReference {
+        let fragments = vec![InterpolatedFragment::ArtifactFilePath {
+            reference: ArtifactPathReference {
                 artifact: reference.clone(),
                 path: "schemas/core.schema".into(),
             },
@@ -881,13 +923,52 @@ mod tests {
                 .as_encoded_bytes()
         );
 
-        let escaping = vec![InterpolatedFragment::ArtifactPath {
-            reference: ArtifactFileReference {
+        let escaping = vec![InterpolatedFragment::ArtifactFilePath {
+            reference: ArtifactPathReference {
                 artifact: reference,
                 path: "../outside".into(),
             },
         }];
         assert!(render_fragments(&escaping, 4096, &[], &mut BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn artifact_directory_fragment_emits_only_a_contained_directory() {
+        let directory = tempfile::tempdir().expect("temporary directory is created");
+        let modules = directory.path().join("libexec/openldap");
+        fs::create_dir_all(&modules).expect("module directory is created");
+        let reference = ArtifactReference {
+            content: digest('4'),
+            store_path: path_text(directory.path()).expect("artifact path is UTF-8"),
+            nar_hash: digest('5'),
+            closure: digest('6'),
+        };
+        let fragments = vec![InterpolatedFragment::ArtifactDirectoryPath {
+            reference: ArtifactPathReference {
+                artifact: reference.clone(),
+                path: "libexec/openldap".into(),
+            },
+        }];
+
+        let rendered = render_fragments(&fragments, 4096, &[], &mut BTreeMap::new())
+            .expect("contained artifact directory path renders");
+        assert_eq!(
+            rendered,
+            fs::canonicalize(&modules)
+                .expect("module directory canonicalizes")
+                .as_os_str()
+                .as_encoded_bytes()
+        );
+
+        let file = directory.path().join("not-a-directory");
+        fs::write(&file, b"content").expect("regular file is written");
+        let wrong_kind = vec![InterpolatedFragment::ArtifactDirectoryPath {
+            reference: ArtifactPathReference {
+                artifact: reference,
+                path: "not-a-directory".into(),
+            },
+        }];
+        assert!(render_fragments(&wrong_kind, 4096, &[], &mut BTreeMap::new()).is_err());
     }
 
     #[test]
