@@ -276,7 +276,7 @@ in rec {
     normalizePackageProbe {inherit primary; bad_input = badInput;};
 
   commandProbe = {primary, badInput}: let
-    tokenPattern = "(@out@/[A-Za-z0-9._+/-]+|@output:[A-Za-z0-9._+-]+@/[A-Za-z0-9._+/-]+|@work@/[A-Za-z0-9._+/-]+|@python@|@bash@|@cc@|@cxx@|@out@)";
+    tokenPattern = "(@out@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@output:[A-Za-z0-9._+-]+@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@work@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@python@|@bash@|@cc@|@cxx@|@out@)";
     harnesses = {
       "@bash@" = "bash";
       "@cc@" = "c-compiler";
@@ -306,7 +306,9 @@ in rec {
         then workPath (builtins.head work)
         else literal value;
     stringTemplate = value:
-      template (map fragmentFor (builtins.filter (part: part != "") (builtins.split tokenPattern value)));
+      if value == ""
+      then text ""
+      else template (map fragmentFor (builtins.filter (part: part != "") (builtins.split tokenPattern value)));
     optionalExact = step: field:
       if !(builtins.hasAttr field step)
       then null
