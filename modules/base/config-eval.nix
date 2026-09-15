@@ -230,6 +230,19 @@ in {
   config = {
     system.build.checks.image-rollout-state = rolloutStateCheck;
 
+    aos.packageRuntime.configurationEvaluation = {
+      enable = true;
+      hostNix = cfg.hostNix;
+      baseLib =
+        if cfg.baseLib == null
+        then "/aos-toplevel/base-lib"
+        else toString cfg.baseLib;
+      moduleAbi = cfg.moduleAbi;
+      desired = cfg.desired;
+      manifest = cfg.manifest;
+      evalRoot = "/run/aos-eval";
+    };
+
     assertions = [
       {
         assertion = cfg.baseLib != null;
@@ -619,182 +632,6 @@ in {
         ${pkgs.coreutils}/bin/sync "$state.new"
         mv "$state.new" "$state"
         ${pkgs.coreutils}/bin/sync "$(dirname "$state")"
-      '';
-    };
-
-    systemd.services.aos-eval = {
-      description = "Evaluate host configuration to a converged manifest";
-      environment.XDG_CACHE_HOME = "/var/cache/aos/nix-eval";
-      wantedBy = ["multi-user.target"];
-      # Quote generations only after systemd has advanced PCR 11 to its stable
-      # runtime (`ready`) phase. On non-UKI or non-TPM boots the phase unit's
-      # conditions make this a clean no-op.
-      # A refresh failure must remain visible without suppressing host policy
-      # that does not need registry data (SSH keys, networking, storage, and
-      # similar base options). Package-name resolution still fails closed in
-      # the evaluator when no authenticated snapshot can satisfy it.
-      wants = [
-        "network-online.target"
-        "aos-registry-sync.service"
-      ];
-      requires =
-        [
-          "aos-credential-recovery.service"
-          "aos-host-config-restore.service"
-          "aos-firstboot-reeval.service"
-          "aos-nix-db.service"
-        ]
-        ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "systemd-pcrphase.service"
-        ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service";
-      after =
-        [
-          "network-online.target"
-          "systemd-pcrphase.service"
-          "nix-overlay-setup.service"
-          "aos-config-seed.service"
-          "aos-credential-recovery.service"
-          "aos-seed-profiles.service"
-          "aos-host-config-restore.service"
-          "aos-nix-db.service"
-          "aos-registry-sync.service"
-        ]
-        ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service";
-      before = [
-        "aos-graph-compile.service"
-        "multi-user.target"
-      ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        # Per-eval hardened resource budget. A runaway is OOM- or
-        # timeout-killed by the cgroup.
-        # A cold stock-Nix fixpoint performs at least two strict evaluations.
-        # On production-sized base libraries, a constrained two-vCPU guest can
-        # legitimately spend more than two minutes in those passes even while
-        # remaining well below the memory and task budgets below. Keep a hard
-        # wall-clock bound, but leave enough room for the complete fixpoint.
-        TimeoutStartSec = "5min";
-        MemoryMax = "2G";
-        MemoryHigh = "1536M";
-        TasksMax = 4096;
-        CacheDirectory = "aos/nix-eval";
-        CacheDirectoryMode = "0700";
-        # These paths must exist before systemd constructs the service's mount
-        # namespace for ReadWritePaths. They are runtime state, not image
-        # contents, so create them for every boot.
-        RuntimeDirectory = ["aos" "aos-eval"];
-        # Hardened scope: inputs read-only, only /run/aos* writable.
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        NoNewPrivileges = true;
-        # The service's resolver must import newly fetched config outputs and
-        # content-address the accepted host/facts inputs in the local store.
-        # Keep the store mount writable for those Nix operations, while
-        # bind-remounting the evaluator's pre-existing authority inputs read-only.
-        # Prefix the optional operator input with `-`: systemd still mounts it
-        # read-only when present, but a no-input boot reaches the image-default
-        # fallback rather than failing namespace setup.
-        ReadOnlyPaths = ["-${cfg.hostNix}"] ++ lib.optional (cfg.baseLib != null) (toString cfg.baseLib);
-        ReadWritePaths = ["/nix" "/run/aos" "/run/aos-eval" "/var/cache/aos/nix-eval"];
-        SystemCallArchitectures = "native";
-        SystemCallFilter = [
-          "@system-service"
-          "~@clock @cpu-emulation @debug @keyring @mount @obsolete @privileged @raw-io @reboot @resources @swap"
-        ];
-        SystemCallErrorNumber = "EPERM";
-        # A failed eval is visible as a failed unit. The boot remains reachable
-        # because multi-user.target Wants (rather than Requires) this service;
-        # downstream ConditionPathExists guards prevent any configuration swap.
-      };
-      script = ''
-                set -u
-                mkdir -p /run/aos-eval /run/aos
-                # Invalidate every prior attempt's runtime evidence before any
-                # operation which can fail.  `After=`/`Wants=` intentionally keeps a
-                # failed evaluation non-fatal to boot, so downstream path conditions
-                # must never be satisfiable by a same-boot stale manifest or graph.
-                rm -f "${cfg.manifest}" /run/aos/graph.json
-                config_state=/var/lib/profiles/system/state.json
-                if [ -e /run/aos/image-reeval-required ] \
-                  && ${pkgs.jq}/bin/jq -e \
-                    '(.current > 0) and (.current as $current | any(.generations[]; .number == $current))' \
-                    "$config_state" >/dev/null; then
-                  # Rebind the exact active configuration intent to the image that
-                  # actually booted. Persistent platform metadata may still contain
-                  # the machine's original provisioning input, so it cannot be used as
-                  # the authority for an image transition after runtime config changes.
-                  # Generation zero has no retained input and follows the normal
-                  # provisioning path below on an image's initial seed boot.
-                  ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __eval-retained \
-                    --out "${cfg.manifest}" \
-                    --eval-root /run/aos-eval || exit 1
-                  exit 0
-                fi
-                # Confirm delivered bytes against the initrd authorization result. If
-                # neither metadata nor the durable last-known-good cache supplied an
-                # operator module, use a narrowly marked image-authored empty module.
-                # That no-input arm still evaluates and activates, binding a fresh
-                # config generation to the running image before boot assessment.
-                image_default_arg=""
-                if [ -e "${cfg.hostNix}" ]; then
-                  ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime verify-binding
-                  cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
-                else
-                  printf '{}\n' > /run/aos-eval/host.nix
-                  image_default_arg="--image-default-host"
-                fi
-                # Prefer the immutable running image's os-release. `/etc/os-release`
-                # is a configuration overlay and can still belong to the prior image
-                # during the first boot after an A/B transition.
-                module_abi="${toString cfg.moduleAbi}"
-                if [ -r /aos-toplevel/os-release ]; then
-                  # shellcheck disable=SC1091
-                  . /aos-toplevel/os-release
-                  if [ -n "''${AOS_MODULE_ABI:-}" ]; then
-                    module_abi="$AOS_MODULE_ABI"
-                  fi
-                fi
-
-                desired_arg=""
-                if [ -r "${cfg.desired}" ]; then
-                  desired_arg="--desired ${cfg.desired}"
-                fi
-
-                runtime_args=""
-                active_manifest=/var/lib/profiles/system/current/manifest.json
-                if [ -r "$active_manifest" ] \
-                  && ${pkgs.jq}/bin/jq -e '.schema == "aos.config-manifest/v2" and (.inputs.runtime_modules != null)' "$active_manifest" >/dev/null; then
-                  runtime_root=$(${pkgs.jq}/bin/jq -er '.inputs.runtime_modules.store_path' "$active_manifest")
-                  expected_generation=$(${pkgs.jq}/bin/jq -er '.current' "$config_state")
-                  runtime_args="--runtime-module-root $runtime_root --expected-current-generation $expected_generation"
-                  if ${pkgs.jq}/bin/jq -e '.inputs.runtime_modules.entrypoints | length > 0' "$active_manifest" >/dev/null; then
-                    while IFS= read -r entry; do
-                      case "$entry" in
-                        /*|*[!A-Za-z0-9_./-]*)
-                          echo "aos-eval: unsafe retained runtime module entrypoint: $entry" >&2
-                          exit 1
-                          ;;
-                      esac
-                      runtime_args="$runtime_args --runtime-module $runtime_root/$entry"
-                    done <<EOF
-        $(${pkgs.jq}/bin/jq -r '.inputs.runtime_modules.entrypoints[]' "$active_manifest")
-        EOF
-                  fi
-                fi
-
-                # Failure-safe: on any error the runtime evaluator writes no manifest and exits
-                # non-zero. Wants ordering keeps the boot reachable; downstream
-                # manifest guards make the attempted switch a no-op.
-                ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __eval \
-                  --host-nix /run/aos-eval/host.nix \
-                  --base-lib "${cfg.baseLib}" \
-                  --module-abi "$module_abi" \
-                  --out "${cfg.manifest}" \
-                  --eval-root /run/aos-eval \
-                  $image_default_arg \
-                  $runtime_args \
-                  $desired_arg || exit 1
       '';
     };
 
