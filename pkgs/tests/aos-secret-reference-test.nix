@@ -12,8 +12,9 @@
       #!${bash}/bin/bash
       set -euo pipefail
 
-      credential="$CREDENTIALS_DIRECTORY/join-token"
-      state_dir=/var/lib/aos-pkg-aos-secret-reference-test
+      credential=$1
+      state_dir=$2
+      ${coreutils}/bin/mkdir -p "$state_dir"
       attempts=0
       if [ -s "$state_dir/attempt-count" ]; then
         attempts=$(${coreutils}/bin/cat "$state_dir/attempt-count")
@@ -50,25 +51,7 @@ in
       }
     ];
 
-    expose = {
-      units."aos-secret-reference-test.service" = {
-        description = "System credential consumer";
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = "${consumer}/bin/aos-secret-reference-test-consumer";
-        };
-      };
-
-      config.credentials = [
-        {
-          name = "join-token";
-          source = "/run/credstore/secret-reference-test/join-token";
-          encrypted = false;
-          units = ["aos-secret-reference-test.service"];
-        }
-      ];
-    };
+    abilities = ./_aos-secret-reference-test/module.nix;
 
     meta = {
       description = "Fleet fixture for secretRef activation";
