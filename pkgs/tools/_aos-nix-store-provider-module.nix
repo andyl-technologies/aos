@@ -2,6 +2,8 @@
 {lib, ...}: let
   inherit (lib.abilities) declareInterface interfaceDocumentFromDeclaration interfaceIdentity types;
 
+  contentObject = lib.abilities.interfaces.contentAddressedArtifacts;
+
   interfaceName = "aos.nix.store-database";
   interfaceAlias = "nix-store-database";
   effectsName = "aos.nix.store-database-effects";
@@ -164,6 +166,22 @@ in {
         result = observationType;
       };
       desiredType = null;
+      requiredFeatures = [];
+    };
+
+    implementations.content-addressed-object = {
+      description = "Commits runtime-owned blobs into the local Nix store with resource-owned persistent roots.";
+      interface = contentObject.identity;
+      artifact = providerArtifact;
+      methods = contentObject.methods;
+      guarantees = [];
+      handlerDescriptor = {
+        artifact = providerArtifact;
+        entryPoint = "bin/aos-nix-store-provider";
+        arguments = contentObject.methodParameters;
+        result = contentObject.observationType;
+      };
+      desiredType = contentObject.realizationType;
       requiredFeatures = [];
     };
 

@@ -1614,6 +1614,10 @@ in rec {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
     };
+    contentAddressedArtifacts = import ./content-addressed-artifacts.nix {
+      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
+      types = abilityTypes;
+    };
   };
   module = {config, ...}:
     import ./module.nix {
@@ -1636,7 +1640,8 @@ in rec {
         // interfaces.networkPolicy.declarations
         // interfaces.bootPreparation.declarations
         // interfaces.kernelTunables.declarations
-        // interfaces.blockStorage.declarations;
+        // interfaces.blockStorage.declarations
+        // interfaces.contentAddressedArtifacts.declarations;
       moduleTypes = moduleOptionTypes;
     };
 

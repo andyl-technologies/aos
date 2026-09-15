@@ -1,4 +1,4 @@
-//! Native command-handler implementation for the local Nix store database.
+//! Command dispatch and local Nix store database realization.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -23,6 +23,7 @@ use aos_provider_protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::artifact::{ContentArtifactProvider, INTERFACE_NAME as ARTIFACT_INTERFACE_NAME};
 use crate::process::ProcessStoreCommands;
 #[cfg(test)]
 use crate::process::argument_batches;
@@ -35,8 +36,9 @@ const DATABASE_PATH: &str = "/nix/var/nix/db/db.sqlite";
 const MAX_REGISTRATION_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_REGISTRATION_RECORDS: usize = 1_000_000;
 
-/// Handles the package-owned local Nix store database ability.
+/// Handles package-owned local Nix store abilities.
 pub struct NixStoreProvider {
+    artifacts: ContentArtifactProvider,
     database_path: PathBuf,
     commands: Box<dyn StoreCommands>,
     validate_executable_file: bool,
@@ -47,6 +49,7 @@ impl NixStoreProvider {
     #[must_use]
     pub fn production() -> Self {
         Self {
+            artifacts: ContentArtifactProvider::production(),
             database_path: DATABASE_PATH.into(),
             commands: Box::new(ProcessStoreCommands),
             validate_executable_file: true,
@@ -72,7 +75,11 @@ impl NixStoreProvider {
                     request.schema == ADMISSION_REQUEST_SCHEMA,
                     "unsupported admission schema"
                 );
-                serde_json::to_value(self.admit(request)?)?
+                if request.method.interface.name.as_str() == ARTIFACT_INTERFACE_NAME {
+                    serde_json::to_value(self.artifacts.admit(request)?)?
+                } else {
+                    serde_json::to_value(self.admit(request)?)?
+                }
             }
             "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
                 let invocation: Invocation =
@@ -86,7 +93,11 @@ impl NixStoreProvider {
                     purpose == purpose_name(invocation.purpose),
                     "invocation purpose differs from argv"
                 );
-                serde_json::to_value(self.invoke(invocation)?)?
+                if invocation.method.interface.name.as_str() == ARTIFACT_INTERFACE_NAME {
+                    serde_json::to_value(self.artifacts.invoke(invocation)?)?
+                } else {
+                    serde_json::to_value(self.invoke(invocation)?)?
+                }
             }
             _ => bail!("unsupported command-handler purpose {purpose:?}"),
         };
@@ -390,6 +401,7 @@ impl NixStoreProvider {
     #[cfg(test)]
     fn test(database_path: PathBuf, commands: Box<dyn StoreCommands>) -> Self {
         Self {
+            artifacts: ContentArtifactProvider::production(),
             database_path,
             commands,
             validate_executable_file: false,
@@ -811,15 +823,15 @@ pub(super) fn monotonic_now() -> Instant {
     Instant::now()
 }
 
-fn ability_value(value: serde_json::Value) -> Result<AbilityValue> {
+pub(super) fn ability_value(value: serde_json::Value) -> Result<AbilityValue> {
     AbilityValue::new(value).context("constructing canonical ability value")
 }
 
-fn decode_value<T: for<'de> Deserialize<'de>>(value: &AbilityValue) -> Result<T> {
+pub(super) fn decode_value<T: for<'de> Deserialize<'de>>(value: &AbilityValue) -> Result<T> {
     serde_json::from_value(value.as_json().clone()).context("decoding checked ability value")
 }
 
-const fn purpose_name(purpose: InvocationPurpose) -> &'static str {
+pub(super) const fn purpose_name(purpose: InvocationPurpose) -> &'static str {
     match purpose {
         InvocationPurpose::Effect => "effect",
         InvocationPurpose::Reconcile => "reconcile",

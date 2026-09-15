@@ -1,4 +1,4 @@
-//! Process entry point for the package-owned Nix store database provider.
+//! Process entry point for package-owned Nix store resources.
 
 use std::io::{self, Read as _, Write as _};
 
