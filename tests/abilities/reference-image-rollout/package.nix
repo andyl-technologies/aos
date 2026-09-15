@@ -9,7 +9,7 @@
   stateFormatOverride ? null,
   qualificationObserver ? null,
 }: let
-  inherit (lib.abilities) types;
+  inherit (lib.abilities) resourceRevision types;
 
   providerArtifact =
     if qualificationCell
@@ -194,7 +194,9 @@
   };
   rolloutEffectsDocument = lib.abilities.interfaceDocumentFromDeclaration rolloutEffectsDeclaration;
   rolloutEffects = lib.abilities.interfaceIdentity rolloutEffectsDocument;
-  rolloutProvider = import (providerArtifact + "/default.nix") {inherit rolloutEffects;};
+  rolloutProvider = import (providerArtifact + "/default.nix") {
+    inherit resourceRevision rolloutEffects;
+  };
   rolloutRuntimeSelector = lib.abilities.packageOutput {
     package = "aos";
     output = "packageRuntime";
