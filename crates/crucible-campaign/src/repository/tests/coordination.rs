@@ -173,54 +173,6 @@ fn policy_with_mode(policy: &CampaignPolicy, mode: CampaignMode) -> CampaignPoli
     .expect("policy with changed mode")
 }
 
-fn admit_distinct_attempt(
-    repository: &CampaignRepository,
-    lineage: &CampaignLineage,
-    policy: &CampaignPolicy,
-    campaign: &str,
-    label: &str,
-) -> (AttemptAdmissionResult, BranchRequest, BranchPath) {
-    let request = branch_request(
-        repository,
-        lineage,
-        lineage.genesis_content(),
-        lineage.genesis(),
-        label,
-    );
-    let requested = repository
-        .submit_known_branch_request(
-            campaign,
-            repository
-                .head(campaign)
-                .expect("attempt request head")
-                .snapshot_id(),
-            &request,
-        )
-        .expect("submit attempt request");
-    let proposal = finite_proposal(
-        &request,
-        policy,
-        &repository.head(campaign).expect("proposal basis head"),
-        ChoiceValue::Boolean(false),
-        1,
-    );
-    let proposed = repository
-        .issue_proposal(campaign, requested.new_snapshot, &proposal)
-        .expect("issue attempt proposal");
-    let (selection, path, attempt) = branch_attempt(repository, &request, &proposal);
-    let admitted = repository
-        .admit_proposal(
-            campaign,
-            proposed.new_snapshot,
-            proposed.proposal,
-            &selection,
-            &path,
-            &attempt,
-        )
-        .expect("admit distinct attempt");
-    (admitted, request, path)
-}
-
 #[test]
 fn campaign_service_creation_replays_the_exact_genesis_after_later_mutation() {
     let (repository, lineage, policy) = fixture();
@@ -625,286 +577,60 @@ fn derivation_is_atomic_historical_and_replays_after_later_mutations() {
 }
 
 #[test]
-fn streaming_to_strict_derivation_reconstructs_inherited_completion_holes() {
+fn derivation_rejects_every_campaign_mode_change_without_publication() {
     let (repository, lineage, strict_policy) = fixture();
-    let streaming_policy = policy_with_mode(&strict_policy, CampaignMode::Streaming);
-    let (_, first, first_observation) =
-        admitted_observation_fixture(&repository, &lineage, &streaming_policy, "mode-source");
-    let (second, _, _) = admit_distinct_attempt(
-        &repository,
-        &lineage,
-        &streaming_policy,
-        "mode-source",
-        "mode-source-second",
-    );
-    let (third, third_request, third_path) = admit_distinct_attempt(
-        &repository,
-        &lineage,
-        &streaming_policy,
-        "mode-source",
-        "mode-source-third",
-    );
-    let third_observation = Observation::new(
-        third.attempt,
-        Observation::outcome(
-            first_observation.child(),
-            first_observation.child_content(),
-            third_path.id().expect("third path ID"),
-            StopOutcome::Reached(StopCondition::NextChoice),
-            first_observation.measurements(),
-            first_observation.properties(),
-            first_observation.coverage(),
-        ),
-        BTreeSet::from([third_request.opportunity()]),
-    )
-    .expect("third observation");
+    let source = repository
+        .create("mode-source", &lineage, &strict_policy, &BTreeMap::new())
+        .expect("create strict source");
+    let source_snapshot = source.snapshot_id();
 
-    let third_completed = repository
-        .publish_observation("mode-source", third.new_snapshot, &third_observation)
-        .expect("streaming mode accepts ordinal three first");
-    let second_completed = repository
-        .close_attempt_non_modeled(
-            "mode-source",
-            third_completed.new_snapshot,
-            second.attempt,
-            NonModeledAttemptDisposition::OperatorCancelled,
-        )
-        .expect("streaming mode accepts ordinal two after ordinal three");
-    let historical_source = second_completed.new_snapshot;
-    let source_later = repository
-        .publish_observation("mode-source", historical_source, &first_observation)
-        .expect("source later completes ordinal one");
+    for (target, mode) in [
+        ("streaming-mode-target", CampaignMode::Streaming),
+        ("statistical-mode-target", CampaignMode::Statistical),
+    ] {
+        let policy = policy_with_mode(&strict_policy, mode);
+        assert!(matches!(
+            repository.derive_campaign("mode-source", source_snapshot, target, Some(&policy),),
+            Err(CampaignRepositoryError::InvalidRequest {
+                reason: "derived policy is incompatible with the source campaign"
+            })
+        ));
+        assert!(matches!(
+            repository.head(target),
+            Err(CampaignRepositoryError::NotFound)
+        ));
+    }
 
-    let derived = repository
-        .derive_campaign(
-            "mode-source",
-            historical_source,
-            "mode-strict-target",
-            Some(&strict_policy),
-        )
-        .expect("derive strict campaign from historical streaming state");
     assert_eq!(
         repository
             .head("mode-source")
-            .expect("unchanged source head")
+            .expect("source remains unchanged")
             .snapshot_id(),
-        source_later.new_snapshot
+        source_snapshot
     );
-    assert_eq!(
-        repository
-            .head("mode-strict-target")
-            .expect("derived target head")
-            .snapshot()
-            .parent(),
-        Some(historical_source)
-    );
-
-    repository
-        .validated_heads
-        .lock()
-        .expect("validation checkpoints")
-        .clear();
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    assert_eq!(
-        restarted
-            .head("mode-strict-target")
-            .expect("cold-authenticated migration head")
-            .snapshot_id(),
-        derived.new_snapshot
-    );
-
-    let (fourth, _, _) = admit_distinct_attempt(
-        &restarted,
-        &lineage,
-        &strict_policy,
-        "mode-strict-target",
-        "mode-strict-target-fourth",
-    );
-    assert!(matches!(
-        restarted.close_attempt_non_modeled(
-            "mode-strict-target",
-            fourth.new_snapshot,
-            fourth.attempt,
-            NonModeledAttemptDisposition::OperatorCancelled,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "strict-completion-order-gap"
-        })
-    ));
-    let first_completed = restarted
-        .close_attempt_non_modeled(
-            "mode-strict-target",
-            fourth.new_snapshot,
-            first.attempt,
-            NonModeledAttemptDisposition::OperatorCancelled,
-        )
-        .expect("strict target closes inherited ordinal one");
-    let fourth_completed = restarted
-        .close_attempt_non_modeled(
-            "mode-strict-target",
-            first_completed.new_snapshot,
-            fourth.attempt,
-            NonModeledAttemptDisposition::OperatorCancelled,
-        )
-        .expect("strict target skips inherited completed ordinals two and three");
-    assert_eq!(fourth_completed.ordinal, AdmissionOrdinal::new(4));
-
-    let replay = restarted
-        .derive_campaign(
-            "mode-source",
-            historical_source,
-            "mode-strict-target",
-            Some(&strict_policy),
-        )
-        .expect("replay historical mode migration after target mutations");
-    assert!(replay.replayed);
-    assert_eq!(replay.new_snapshot, derived.new_snapshot);
-
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    assert_eq!(
-        cold.head("mode-strict-target")
-            .expect("restart validates reconstructed strict sequence")
-            .snapshot_id(),
-        fourth_completed.new_snapshot
-    );
-}
-
-#[test]
-fn strict_streaming_round_trip_advances_a_retained_nonzero_sequence_anchor() {
-    let (repository, lineage, strict_policy) = fixture();
-    let (_, first, _) =
-        admitted_observation_fixture(&repository, &lineage, &strict_policy, "strict-mode-source");
-    let (second, _, _) = admit_distinct_attempt(
-        &repository,
-        &lineage,
-        &strict_policy,
-        "strict-mode-source",
-        "strict-mode-source-second",
-    );
-    let (third, _, _) = admit_distinct_attempt(
-        &repository,
-        &lineage,
-        &strict_policy,
-        "strict-mode-source",
-        "strict-mode-source-third",
-    );
-    let first_completed = repository
-        .close_attempt_non_modeled(
-            "strict-mode-source",
-            third.new_snapshot,
-            first.attempt,
-            NonModeledAttemptDisposition::OperatorCancelled,
-        )
-        .expect("strict source establishes ordinal-one sequence anchor");
-    assert!(matches!(
-        repository.close_attempt_non_modeled(
-            "strict-mode-source",
-            first_completed.new_snapshot,
-            third.attempt,
-            NonModeledAttemptDisposition::OperatorCancelled,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "strict-completion-order-gap"
-        })
-    ));
 
     let streaming_policy = policy_with_mode(&strict_policy, CampaignMode::Streaming);
-    let derived = repository
-        .derive_campaign(
-            "strict-mode-source",
-            first_completed.new_snapshot,
-            "streaming-mode-target",
-            Some(&streaming_policy),
+    let streaming_source = repository
+        .create(
+            "streaming-source",
+            &lineage,
+            &streaming_policy,
+            &BTreeMap::new(),
         )
-        .expect("derive streaming campaign");
-    let third_completed = repository
-        .close_attempt_non_modeled(
-            "streaming-mode-target",
-            derived.new_snapshot,
-            third.attempt,
-            NonModeledAttemptDisposition::OperatorCancelled,
-        )
-        .expect("streaming target closes ordinal three while ordinal two is open");
-    let strict_round_trip = repository
-        .derive_campaign(
-            "streaming-mode-target",
-            third_completed.new_snapshot,
-            "strict-round-trip-target",
-            Some(&strict_policy),
-        )
-        .expect("derive strict campaign from retained nonzero anchor");
-
-    repository
-        .validated_heads
-        .lock()
-        .expect("validation checkpoints")
-        .clear();
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    assert_eq!(
-        restarted
-            .head("strict-round-trip-target")
-            .expect("cold-authenticated round-trip migration")
-            .snapshot_id(),
-        strict_round_trip.new_snapshot
-    );
-    let (fourth, _, _) = admit_distinct_attempt(
-        &restarted,
-        &lineage,
-        &strict_policy,
-        "strict-round-trip-target",
-        "strict-round-trip-fourth",
-    );
-    assert!(matches!(
-        restarted.close_attempt_non_modeled(
-            "strict-round-trip-target",
-            fourth.new_snapshot,
-            fourth.attempt,
-            NonModeledAttemptDisposition::OperatorCancelled,
-        ),
-        Err(CampaignRepositoryError::Integrity {
-            reason: "strict-completion-order-gap"
-        })
-    ));
-    let second_completed = restarted
-        .close_attempt_non_modeled(
-            "strict-round-trip-target",
-            fourth.new_snapshot,
-            second.attempt,
-            NonModeledAttemptDisposition::OperatorCancelled,
-        )
-        .expect("round-trip target closes inherited ordinal two");
-    let fourth_completed = restarted
-        .close_attempt_non_modeled(
-            "strict-round-trip-target",
-            second_completed.new_snapshot,
-            fourth.attempt,
-            NonModeledAttemptDisposition::OperatorCancelled,
-        )
-        .expect("round-trip target skips inherited completed ordinal three");
-    assert_eq!(fourth_completed.ordinal, AdmissionOrdinal::new(4));
-
-    assert_eq!(
-        repository
-            .head("strict-mode-source")
-            .expect("unchanged strict source")
-            .snapshot_id(),
-        first_completed.new_snapshot
-    );
-
-    let statistical_policy = policy_with_mode(&strict_policy, CampaignMode::Statistical);
+        .expect("create streaming source");
     assert!(matches!(
         repository.derive_campaign(
-            "strict-mode-source",
-            first_completed.new_snapshot,
-            "statistical-mode-target",
-            Some(&statistical_policy),
+            "streaming-source",
+            streaming_source.snapshot_id(),
+            "strict-mode-target",
+            Some(&strict_policy),
         ),
         Err(CampaignRepositoryError::InvalidRequest {
             reason: "derived policy is incompatible with the source campaign"
         })
     ));
     assert!(matches!(
-        repository.head("statistical-mode-target"),
+        repository.head("strict-mode-target"),
         Err(CampaignRepositoryError::NotFound)
     ));
 }
@@ -1906,8 +1632,8 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
             &debugger_bytes,
         )
         .to_hex(),
-        // Version-3 snapshots now bind the version-2 indexed budget ledger.
-        "e8c0e26f0d8ca317b9c15a0b48aaca58b955f43dc01ec6b285a024b9ba48215a",
+        // Current snapshots bind the indexed budget ledger and current identities.
+        "e48d664c4be78a532e827e7e66c14ad7e975d0364ababfa5d32547ad801eb0e9",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
@@ -2019,8 +1745,8 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
     assert_eq!(
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
             .to_hex(),
-        // Version-3 snapshots bind the version-2 indexed budget ledger.
-        "dd196823708be6c68bbb314183a01eec963c098061c9cf8ea2fa128c6ccf0da5",
+        // Current snapshots bind the indexed budget ledger and current identities.
+        "ed9befed91b2f4ee383f164a86a3d11d8fdd7dc4f2a21aa4cffd08e6fd905c1f",
     );
     let decoded_planner =
         PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");

@@ -445,71 +445,10 @@ impl ExecutorResumeService for LoopbackExecutorService {
     }
 }
 
-/// Serves one strict executor request/response exchange on a Unix stream.
-///
-/// A long-lived daemon calls this once per request on the same connection, or
-/// closes the connection after any error. Service failures are not converted
-/// into a misleading protocol rejection.
-///
-/// # Errors
-///
-/// Returns [`LoopbackExecutorServerError::Protocol`] for malformed framing,
-/// canonical bytes, cross-request responses, or socket I/O. Returns
-/// [`LoopbackExecutorServerError::Service`] when the executor cannot produce a
-/// protocol response.
-pub fn serve_loopback_executor_once<S: ExecutorService>(
-    stream: &mut UnixStream,
-    service: &mut S,
-) -> Result<(), LoopbackExecutorServerError<S::Error>> {
-    serve_loopback_executor_once_with_timeouts(stream, service, LoopbackExecutorTimeouts::default())
-}
-
-/// Serves one exchange with explicit finite read/write deadlines.
-///
-/// The stream is shut down in both directions before any error is returned, so
-/// a peer never remains blocked waiting for a response the service abandoned.
-///
-/// # Errors
-///
-/// Returns the same failures as [`serve_loopback_executor_once`].
-pub fn serve_loopback_executor_once_with_timeouts<S: ExecutorService>(
-    stream: &mut UnixStream,
-    service: &mut S,
-    timeouts: LoopbackExecutorTimeouts,
-) -> Result<(), LoopbackExecutorServerError<S::Error>> {
-    let result = serve_loopback_executor_inner(stream, service, timeouts);
-    if result.is_err() {
-        let _ = stream.shutdown(Shutdown::Both);
-    }
-    result
-}
-
-fn serve_loopback_executor_inner<S: ExecutorService>(
-    stream: &mut UnixStream,
-    service: &mut S,
-    timeouts: LoopbackExecutorTimeouts,
-) -> Result<(), LoopbackExecutorServerError<S::Error>> {
-    configure_stream(stream, timeouts)?;
-    let request = read_frame(stream, SUBMIT_ATTEMPT_REQUEST_KIND, timeouts.read)?;
-    let request = SubmitAttemptRequest::from_canonical_bytes(&request)?;
-    let response = service
-        .submit_attempt(&request)
-        .map_err(LoopbackExecutorServerError::Service)?;
-    response.validate_for(&request)?;
-    write_frame(
-        stream,
-        SUBMIT_ATTEMPT_RESPONSE_KIND,
-        &response.canonical_bytes(),
-        timeouts.write,
-    )?;
-    Ok(())
-}
-
 /// Serves one submit, description, or capacity exchange on a Unix stream.
 ///
 /// This is the general executor component dispatcher used after capability
-/// negotiation is enabled. The submit-only entry point remains available for
-/// narrow conformance tests.
+/// negotiation is enabled.
 ///
 /// # Errors
 ///

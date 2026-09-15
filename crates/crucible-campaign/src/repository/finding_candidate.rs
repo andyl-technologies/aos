@@ -47,7 +47,7 @@ impl CampaignRepository {
 
     /// Publishes one candidate after typed whole-inventory authentication.
     ///
-    /// Complete V5 retention is a daemon attestation: the trusted executor
+    /// Current V6 retention is a daemon attestation: the trusted executor
     /// enumerates candidates while holding its operational inventory fences,
     /// and this method authenticates every listed root before storing the
     /// immutable attestation. Later cold loads validate the attested selection
@@ -416,38 +416,28 @@ impl CampaignRepository {
     ) -> Result<FindingTriageReplayEvidence, CampaignRepositoryError> {
         let envelope =
             self.require_record_kind(id, crate::CampaignRecordKind::FindingTriageReplayEvidence)?;
-        let evidence = match envelope.schema_version() {
-            1 => FindingTriageReplayEvidence::from_canonical_bytes(envelope.body())?,
-            2 => {
-                let manifest =
-                    FindingTriageReplayEvidence::manifest_from_canonical_bytes(envelope.body())?;
-                let payload_bytes = manifest.payload_bytes()?;
-                let mut payload = Vec::new();
-                payload.try_reserve_exact(payload_bytes).map_err(|_| {
-                    CampaignCodecError::LimitExceeded {
-                        limit: "finding-triage-replay-payload-allocation",
-                    }
-                })?;
-                for descriptor in manifest.chunks().iter().copied() {
-                    let chunk = self.require_record_kind(
-                        descriptor.content(),
-                        crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
-                    )?;
-                    let bytes =
-                        FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
-                    if bytes.len() != descriptor.logical_bytes() as usize {
-                        return Err(integrity(
-                            "finding-triage-replay-evidence-chunk-length-mismatch",
-                        ));
-                    }
-                    payload.extend_from_slice(&bytes);
-                }
-                manifest.into_evidence(payload)?
+        let manifest = FindingTriageReplayEvidence::manifest_from_canonical_bytes(envelope.body())?;
+        let payload_bytes = manifest.payload_bytes()?;
+        let mut payload = Vec::new();
+        payload.try_reserve_exact(payload_bytes).map_err(|_| {
+            CampaignCodecError::LimitExceeded {
+                limit: "finding-triage-replay-payload-allocation",
             }
-            _ => {
-                return Err(integrity("finding-triage-replay-evidence-envelope-version"));
+        })?;
+        for descriptor in manifest.chunks().iter().copied() {
+            let chunk = self.require_record_kind(
+                descriptor.content(),
+                crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
+            )?;
+            let bytes = FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
+            if bytes.len() != descriptor.logical_bytes() as usize {
+                return Err(integrity(
+                    "finding-triage-replay-evidence-chunk-length-mismatch",
+                ));
             }
-        };
+            payload.extend_from_slice(&bytes);
+        }
+        let evidence = manifest.into_evidence(payload)?;
         if evidence.id()?.content_id() != id {
             return Err(integrity("finding-triage-replay-evidence-envelope-shape"));
         }

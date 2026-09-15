@@ -655,12 +655,12 @@
     ]
     ++ failuresFor "tests/crucible/phase7-crucible-fleet-equivalence.nix" phase7FleetEquivalence [
       {
-        label = "phase7 fleet equivalence gate records SimDouble fleet coverage";
-        needle = "simdouble_fleet=host-profile-matrix";
+        label = "phase7 fleet equivalence gate records work-stealing fleet coverage";
+        needle = "work_stealing_fleet=host-profile-matrix";
       }
       {
         label = "phase7 fleet equivalence gate records adversarial host conditions";
-        needle = "adversarial_host_conditions=canonical-host-adversary-matrix-simdouble-fleet";
+        needle = "adversarial_host_conditions=canonical-host-adversary-matrix-work-stealing-fleet";
       }
       {
         label = "phase7 fleet equivalence gate records real-QEMU slice source";

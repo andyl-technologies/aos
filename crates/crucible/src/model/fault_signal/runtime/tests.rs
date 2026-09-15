@@ -10,7 +10,7 @@ fn object_id(value: &str) -> FaultObjectId {
 }
 
 #[test]
-fn resolved_effect_trace_rejects_unversioned_and_future_envelopes() {
+fn resolved_effect_trace_rejects_a_noncurrent_envelope() {
     let trace = ResolvedEffectTrace {
         mode: FaultReplayMode::LockedEffect,
         work_items: Vec::new(),
@@ -25,19 +25,11 @@ fn resolved_effect_trace_rejects_unversioned_and_future_envelopes() {
         Ok(trace.clone())
     );
 
-    let mut unversioned = Vec::new();
-    ciborium::ser::into_writer(&trace, &mut unversioned)
-        .unwrap_or_else(|error| panic!("legacy trace fixture should encode: {error}"));
-    assert_eq!(
-        ResolvedEffectTrace::from_canonical_bytes(&unversioned, FaultResourceLimits::default()),
-        Err(FaultRuntimeError::VersionOrIdentityMismatch)
-    );
-
-    let mut future = bytes;
-    future[..RESOLVED_EFFECT_TRACE_MAGIC.len()]
+    let mut noncurrent = bytes;
+    noncurrent[..RESOLVED_EFFECT_TRACE_MAGIC.len()]
         .copy_from_slice(b"crucible.resolved-effect-trace.v2\0");
     assert_eq!(
-        ResolvedEffectTrace::from_canonical_bytes(&future, FaultResourceLimits::default()),
+        ResolvedEffectTrace::from_canonical_bytes(&noncurrent, FaultResourceLimits::default()),
         Err(FaultRuntimeError::VersionOrIdentityMismatch)
     );
 }

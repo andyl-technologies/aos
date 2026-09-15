@@ -261,7 +261,7 @@ ListCampaignsResponseV1 = version | request_digest |
 
 GetCampaignSnapshotRequestV1 = version | principal | campaign | snapshot
 GetCampaignSnapshotResponseV1 = version | request_digest | snapshot |
-                                CampaignSnapshotV2OrV3
+                                CampaignSnapshotV3
 
 WatchCampaignRequestV1 = version | principal | campaign |
                          optional after_snapshot
@@ -274,35 +274,35 @@ MerkleScanProofV1 = node_count:u64 |
 QueryCampaignGraphRequestV1 = version | principal | campaign | snapshot |
                               optional after_key | limit
 QueryCampaignGraphResponseV1 = version | request_digest | snapshot |
-                               CampaignSnapshotV2OrV3 |
+                               CampaignSnapshotV3 |
                                entries[CampaignGraphEntryV1] |
                                optional next_after | MerkleScanProofV1
 
 QueryCampaignFindingsRequestV1 = version | principal | campaign | snapshot |
                                  optional after_signature_key | limit
 QueryCampaignFindingsResponseV1 = version | request_digest |
-                                  CampaignSnapshotV2OrV3 |
+                                  CampaignSnapshotV3 |
                                   findings[FindingV4] |
                                   optional next_after_signature_key |
                                   MerkleScanProofV1
 GetCampaignFindingObjectRequestV1 = version | principal | campaign | snapshot |
                                     finding_id | object_kind
 GetCampaignFindingObjectResponseV1 = version | request_digest |
-                                     CampaignSnapshotV2OrV3 | FindingV4 |
+                                     CampaignSnapshotV3 | FindingV4 |
                                      FindingObjectV1 | MerkleLookupProofV1
-FindingObjectV1 = 0 ObservationV1-through-V8 |
-                  1 latest ObservationV1-through-V8 |
+FindingObjectV1 = 0 ObservationV12 |
+                  1 latest ObservationV12 |
                   2 ReproductionArtifactV2 |
                   3 minimized ReproductionArtifactV2
 
 ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
 ExplainCampaignAttemptResponseV2 = version | request_digest |
-                                   CampaignSnapshotV2OrV3 | AttemptV1-or-V2 |
-                                   AttemptAdmissionV1-or-V2 | BranchPathV2 |
+                                   CampaignSnapshotV3 | AttemptV8 |
+                                   AttemptAdmissionV3 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV2 |
                                    optional PlannerStepV4 |
-                                   optional ObservationV1-through-V8 |
+                                   optional ObservationV12 |
                                    MerkleLookupProofV1 attempt_proof |
                                    MerkleLookupProofV1 admission_proof |
                                    optional MerkleLookupProofV1 proposal_proof |
@@ -312,7 +312,7 @@ ExplainCampaignAttemptResponseV2 = version | request_digest |
 GetCampaignPlannerRankingsRequestV1 = version | principal | campaign |
                                       snapshot | PlannerStepId
 GetCampaignPlannerRankingsResponseV1 = version | request_digest |
-                                       CampaignSnapshotV2OrV3 | PlannerStepV4 |
+                                       CampaignSnapshotV3 | PlannerStepV4 |
                                        RetainedPlannerRequestV1 |
                                        MerkleLookupProofV1
 
@@ -330,7 +330,7 @@ MerkleLookupProofV1 = node_count:u64 |
 GetCampaignGraphObjectRequestV1 = version | principal | campaign | snapshot |
                                   graph_key
 GetCampaignGraphObjectResponseV1 = version | request_digest |
-                                   CampaignSnapshotV2OrV3 |
+                                   CampaignSnapshotV3 |
                                    canonical ObjectEnvelopeV1 bytes |
                                    MerkleLookupProofV1
 
@@ -338,7 +338,7 @@ CampaignChoiceEntryV1 = ChoiceOpportunityId
 QueryCampaignChoicesRequestV1 = version | principal | campaign | snapshot |
                                 optional after_opportunity | limit
 QueryCampaignChoicesResponseV1 = version | request_digest |
-                                 CampaignSnapshotV2OrV3 |
+                                 CampaignSnapshotV3 |
                                  entries[CampaignChoiceEntryV1] |
                                  optional next_after |
                                  MerkleLookupProofV1 |
@@ -353,7 +353,7 @@ ContinuationProjectionV1 = version | BranchRequestId | BranchPointId |
 QueryCampaignFrontierRequestV1 = version | principal | campaign | snapshot |
                                  optional after_request | limit
 QueryCampaignFrontierResponseV1 = version | request_digest |
-                                  CampaignSnapshotV2OrV3 |
+                                  CampaignSnapshotV3 |
                                   projections[ContinuationProjectionV1] |
                                   optional next_after |
                                   MerkleLookupProofV1 |
@@ -361,7 +361,7 @@ QueryCampaignFrontierResponseV1 = version | request_digest |
 GetCampaignFrontierObjectRequestV1 = version | principal | campaign |
                                      snapshot | BranchRequestId
 GetCampaignFrontierObjectResponseV1 = version | request_digest |
-                                      CampaignSnapshotV2OrV3 |
+                                      CampaignSnapshotV3 |
                                       ContinuationProjectionV1 |
                                      BranchRequestV9 |
                                       MerkleLookupProofV1 |
@@ -372,7 +372,7 @@ CampaignChoiceObjectV1 = kind | SelectableDeclarationV1-or-ChoiceDomainV1
 GetCampaignChoiceObjectRequestV1 = version | principal | campaign | snapshot |
                                    opportunity | CampaignChoiceObjectKindV1
 GetCampaignChoiceObjectResponseV1 = version | request_digest |
-                                    CampaignSnapshotV2OrV3 | ChoiceOpportunityV1 |
+                                    CampaignSnapshotV3 | ChoiceOpportunityV1 |
                                     CampaignChoiceObjectV1 |
                                     MerkleLookupProofV1
 
@@ -385,16 +385,16 @@ PinCampaignRequestV1 = version | principal | campaign | PinRequestV1
 PinCampaignResponseV1 = version | request_digest | prior_snapshot |
                         new_snapshot | replayed
 
-DiscoveryRequestV1 = command | expected_snapshot | configuration_artifact |
-                     StopConditionV1-or-V2
-SubmitCampaignDiscoveryRequestV1-or-V2 = version | principal | campaign |
-                                         DiscoveryRequestV1
+DiscoveryRequestV3 = command | expected_snapshot | configuration_artifact |
+                     StopConditionV3
+SubmitCampaignDiscoveryRequestV3 = version | principal | campaign |
+                                   DiscoveryRequestV3
 SubmitCampaignDiscoveryResponseV1 = version | request_digest | prior_snapshot |
                                     new_snapshot | attempt | admission | replayed
 
 SubmitCampaignBranchRequestV1 = version | principal | campaign |
                                 expected_snapshot | BranchRequestV9
-SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
+SubmitCampaignBranchResponseV2 = version | request_digest | prior_snapshot |
                                  new_snapshot | branch_request | replayed
 
 CampaignServiceErrorResponseV1 = version | request_digest | failure
@@ -530,7 +530,7 @@ pin_request_digest =
   H("crucible.campaign-service.pin-campaign.v1", PinCampaignRequestV1)
 discovery_request_digest =
   H("crucible.campaign-service.submit-campaign-discovery.v1",
-    SubmitCampaignDiscoveryRequestV1-or-V2)
+    SubmitCampaignDiscoveryRequestV3)
 branch_request_digest =
   H("crucible.campaign-service.submit-branch-request.v1",
     SubmitCampaignBranchRequestV1)
@@ -720,10 +720,10 @@ does not grant evidence bodies, checkpoint bytes, or any other child closure.
 
 `ExplainCampaignAttempt` is the separately authorized provenance view for one
 exact attempt in the current authenticated snapshot. Two minimal accounting
-lookup proofs bind the complete `AttemptV1-or-V2` body and its unique execution-basis
-`AttemptAdmissionV1-or-V2`; a third proof binds the execution-basis `ProposalV2` in
+lookup proofs bind the complete `AttemptV8` body and its unique execution-basis
+`AttemptAdmissionV3`; a third proof binds the execution-basis `ProposalV2` in
 the exploration root for branch attempts, and an observations-root proof binds
-either the canonical `ObservationV1-through-V8` or authenticated absence. The response
+either the canonical `ObservationV12` or authenticated absence. The response
 also carries the exact content-addressed `BranchPathV2` and, for a branch,
 `SelectionV2`. A checked reader reconstructs every typed ID, requires the
 attempt path and optional observation path to agree, requires the admission to
@@ -757,9 +757,8 @@ kind.
 genesis snapshots anchor one canonical empty choice-index Merkle root; every
 explicit or observation-driven discovery updates that root in the same
 snapshot transition as the authoritative and branch-point-scoped graph keys.
-Current snapshots require this index. An imported snapshot without it must pass
-an explicit complete repository migration before runtime admission. The
-exclusive cursor is a
+Current snapshots require this index. An imported snapshot without it is
+rejected before runtime admission. The exclusive cursor is a
 `ChoiceOpportunityId`, `limit` is in
 `1..=8`, and the result contains IDs only. The separately authorized
 `GetGraphObject` call uses `CampaignChoiceEntryV1`'s deterministic graph key to
@@ -856,9 +855,9 @@ variant uses schema v9; older branch-request bodies and envelopes are rejected.
 
 Stop-condition tags 5 and 6 encode a nonzero absolute scheduler-quantum
 coordinate and a flat nonzero virtual-time-or-scheduler-quantum pair. They use
-`AttemptV2`, `BranchRequestV9`, `ObservationV5-through-V8`, version-9
-`DiscoveryRequested`, and `SubmitCampaignDiscoveryRequestV2`. Every enclosing
-decoder requires the exact old-or-new version pairing. The scheduler coordinate
+`AttemptV8`, `BranchRequestV9`, `ObservationV12`, version-14
+`DiscoveryRequested`, and `SubmitCampaignDiscoveryRequestV3`. Every enclosing
+decoder requires that exact current schema. The scheduler coordinate
 comes from `SingleSchedulerCheckpointV2.quanta`; discovery-only calls that make
 no scheduler progress do not consume it. Exact resume evaluates the restored
 coordinate before driving and charges only the remaining suffix. Terminal and
@@ -961,15 +960,14 @@ kind = 1 (GetCampaignRequestV1) |
       41 (AttachCampaignRuntimeResponseV1) |
       42 (GetCampaignStatusRequestV1) |
       43 (GetCampaignStatusResponseV1) |
-      44 (SubmitCampaignDiscoveryRequestV1-or-V2) |
+      44 (SubmitCampaignDiscoveryRequestV3) |
       45 (SubmitCampaignDiscoveryResponseV1)
 ```
 
-An accepted explicit discovery request is a version-8 or version-9 `CampaignFact` whose
+An accepted explicit discovery request is a version-14 `CampaignFact` whose
 canonical payload contains the command, exact parent snapshot, exact
-campaign-owned configuration artifact, and stop condition. Version 9 is used
-only for either execution-quanta stop tag; all established stops remain version
-8. The repository admits it only while the
+campaign-owned configuration artifact, and stop condition. Any other fact or
+request schema is rejected. The repository admits it only while the
 campaign is `Running`, the frontier and admission sequence are empty, the
 active policy permits a named boundary, and campaign attempt budget remains.
 It publishes the empty branch path, semantic attempt, admission, command index,
@@ -1278,12 +1276,6 @@ The initial strict component messages refine the illustrative request above by
 carrying every direct invocation object by value:
 
 ```text
-PlannerRequestV1 = version | expected_snapshot | invocation | engine |
-                   policy_artifact | policy | planner_state | input_view |
-                   input_bundle
-PlannerRequestV2 = version | expected_snapshot | invocation | engine |
-                   policy_artifact | policy | planner_state | input_view |
-                   optional_statistical_request_basis | input_bundle
 PlannerRequestV3 = version | expected_snapshot | invocation | engine |
                    policy_artifact | policy | planner_state | input_view |
                    optional_statistical_request_basis |
@@ -1310,20 +1302,16 @@ equal `PlanningScanPage.input_bytes`. Direct engine dependencies reachable from
 the by-value engine, artifact, policy, state, view, or served requests may be
 included once.
 
-Schema v2 adds the owner-derived coordinate and parent basis needed to author a
-version-three finite statistical draw after its predeclared parent completes.
-Schema v3 adds the complete SMC generation, particle, parent, selected
-opportunity, and domain basis. Only canonical frontier implementation version 8
+Planner-request schema v3 contains the owner-derived coordinate and parent basis
+for finite statistical draws plus the complete SMC generation, particle,
+parent, selected opportunity, and domain basis. Only canonical frontier implementation version 8
 may receive a nonempty SMC basis, and the pure planner validates it against the
 version-four policy before emitting a schema-v9 branch request.
 
-Planner engines advertising `canonical-frontier-offers-v1` additionally
-require, for every served position, the exact `ContinuationProjectionV1`
-envelope authenticated by the expected snapshot's nested frontier index. For an
-engine that advertises neither `canonical-frontier-puct-v1` nor
-`canonical-frontier-budget-v1`, the least
-Ready position on the page has exactly one `ProposalV2` candidate-offer
-envelope and every other position has none. An offer names the served request,
+The current planner engines require, for every served position, the exact
+`ContinuationProjectionV1` envelope authenticated by the expected snapshot's
+nested frontier index. Every Ready position has exactly one `ProposalV2`
+candidate-offer envelope and every other position has none. An offer names the served request,
 branch point, domain, active policy, exact invocation, input view, and next
 one-based ordinal, and contains the owner-computed next legal value. Extra,
 missing, duplicate, cross-invocation, or non-Ready offers fail closed. The
@@ -1334,10 +1322,10 @@ request children before publishing the request. Rejection therefore remains
 zero-write, while accepted requests remain closure-complete and restart-
 auditable.
 
-The built-in `crucible-canonical-frontier` implementation version 1 is a closed
+The built-in `crucible-canonical-frontier` implementation version 8 is a closed
 pure engine for this capability. It considers only `Ready` offers, chooses the
 least `PlanningScanPosition`, and carries that small exact position/domain/
-value/ordinal tuple in `canonical-frontier-planner` state version 1 across
+value/ordinal tuple in `canonical-frontier-planner` state version 3 across
 pages. It returns `ContinueScan` before EOF, `Issue` at EOF when an offer
 exists, and `NoWork` at EOF otherwise. When issuing a carried offer, it
 reconstructs the proposal under the final invocation; the coordinator
@@ -1348,7 +1336,8 @@ state, and local acceptance plus imported/restart validation rerun this built-in
 pure transition and compare its complete next state, usage claim, evidence, and
 disposition.
 
-The same engine name at implementation version 2 additionally advertises
+The current PUCT variant under the same engine name uses implementation version
+6 and advertises
 `canonical-frontier-puct-v1`. Every Ready position has one exact offer and one
 `PlannerCandidateGuidanceV2`; non-Ready positions have neither. The guidance
 body is bounded to 64 KiB and encodes, in order:
@@ -1378,25 +1367,24 @@ configured closed finding weights times occurrence counts. Completed edges
 reuse exact authenticated statistics and their earliest execution-basis source
 weights. An unseen offered edge is the sole prospective addition to the
 completed set, with zero visits/reward/novelty/objective/findings, exact RFC 03
-normalization over completed weights plus its BranchRequest-v2 explicit weight
-or implicit weight one, and fairness reserved. Schema-v1 bodies omit
-`objective_reward_micros`, remain canonical
-with neutral objective reward, and are accepted through identity-preserving
-historical recomputation; new request construction emits v2.
+normalization over completed weights plus its current BranchRequest explicit
+weight or implicit weight one, and fairness reserved. Guidance schema v2 always
+includes `objective_reward_micros`; any other schema is rejected rather than
+assigned an implicit neutral reward.
 
 The owner computes one batch per page. Aggregate credited observations and
 credit/path bodies retain the RFC 03 65,536-record/128-MiB limits; the canonical
 observation and finding roots are each scanned at most once; unique decoded
 choice-domain bodies are capped at 128 MiB; and distinct prospective raw
-weights charge at most 1,000,000 completed-edge normalization visits. Version
-2 ranks higher exact total
+weights charge at most 1,000,000 completed-edge normalization visits. Guidance
+schema v2 ranks higher exact total
 first, then lower `BranchEdgeId`, then lower `PlanningScanPosition`, carries the
-winner across pages in `canonical-frontier-puct-planner` state version 1, and
+winner across pages in `canonical-frontier-puct-planner` state version 2, and
 issues only at EOF. Acceptance publishes guidance envelopes with offers only
 after complete zero-write preflight and recomputes/reruns the exact transition
-on restart and import. Version 1 remains canonically replayable.
+on restart and import. Any other guidance schema is rejected.
 
-Implementation versions 3 (canonical order) and 4 (PUCT) additionally advertise
+Canonical engine version 8 and PUCT engine version 6 advertise
 `canonical-frontier-budget-v1`. Every Ready position has an exact offer and one
 `PlannerCandidateBudgetV1`, including positions that cannot currently afford
 issuance. Non-Ready positions have neither. This preserves request-local
@@ -1430,8 +1418,7 @@ page. A complete scan with no affordable offer and a retained blocker yields a
 waitable driver outcome without committing `NoWork` as settled. Repeating the
 unchanged blocked head does not reinvoke the engine. A grant changes the
 accounting planning-view root and restarts selection with fresh eligibility.
-Implementation versions 5 (canonical order) and 6 (PUCT) additionally require
-`canonical-frontier-request-budget-v1`. Their candidate budget schema is version
+Both current engines require `canonical-frontier-request-budget-v1`. Their candidate budget schema is version
 2: the same fields and children above, followed by the exact big-endian `u64`
 `remaining_request_attempts`. Owner validation recomputes this allowance from
 the authenticated request-spending ledger index and the served request's cap.
@@ -1454,10 +1441,9 @@ lookahead; current-head authentication supplies trusted roots for reused
 invocation dependencies. Basis objects require closure authentication, and the global closure bound is
 preserved. Roots lacking the scan index fail closed.
 
-Bounded
-model-resolved finite masses are retained in branch-request schema v3 and
-exact-checked against the opportunity's model ID. Schema v4 additionally
-retains an exact model ID and generator ID for modeled generated sources. The
+Bounded model-resolved finite masses and modeled generated sources are retained
+in the sole current branch-request schema v9. Their model and generator IDs are
+exact-checked against the opportunity. The
 first closed adapter maps standardized uniform app-random integer models to
 permuted-integer implementation version 17, supports power-of-two cardinality
 through `2^64`, caps emitted candidates by the request's `u64` proposal budget,
@@ -1468,7 +1454,7 @@ implementation-plan gate. Explicit finite weights and uniform defaults are
 owner-derived here.
 
 The initial coordinator retention profile is deliberately narrower than the
-version-1 wire format: an accepted request body is at most 32 MiB and its bundle
+current planner-request v3 wire format: an accepted request body is at most 32 MiB and its bundle
 contains at most 65,529 objects. Seven fixed retained-envelope children name
 the expected snapshot, invocation, engine, policy artifact, policy, planner
 state, and input view; every bundle object is one additional child. A valid
@@ -1599,7 +1585,7 @@ identity, dependency lock, planner ABI, engine version, arguments, and any
 source or compiled artifact required to reproduce it. `PlannerState` is bounded
 portable data. It is never a language stack, closure, heap, actor/process,
 native trait object, or runtime continuation. Repeating one complete
-`PlannerRequestV1` must return byte-identical canonical output; disagreement is
+`PlannerRequestV3` must return byte-identical canonical output; disagreement is
 a planner-determinism failure.
 
 A globally ordered frontier need not fit in one bundle. The coordinator serves
@@ -1717,9 +1703,9 @@ CancelAttemptExecutionResponseV4 = version | daemon_epoch | attempt_id |
 ```
 
 The request and response decoders reject every noncurrent wire version. The
-executor records a non-retryable worker failure in attempt-state record v7,
-and the coordinator closes its admitted ordinal with
-`AttemptClosed(TerminalWorkerFailure)` in campaign fact v10. This operational
+executor records a non-retryable worker failure in the current attempt-state
+record v15, and the coordinator closes its admitted ordinal with
+`AttemptClosed(TerminalWorkerFailure)` in campaign fact v14. This operational
 classification does not synthesize a guest observation or modeled stop
 outcome.
 
@@ -2059,7 +2045,7 @@ limits and retention intent, but excludes assignment and daemon-epoch
 identities. Restart therefore reads only requested and active IDs; it does not
 load assignment history into memory. The in-memory ledger implements the
 identical trait only for fake components and tests.
-The attempt-state reader accepts only version 10. It binds the exact resource,
+The attempt-state reader accepts only version 15. It binds the exact resource,
 retention, pending or acknowledged finding-candidate, and start-mode state into
 checkpoint promotion. The
 terminal-worker-failure state retains its exact execution basis and prevents
@@ -2149,7 +2135,7 @@ language-neutral guest opportunity coordinates from RFC 02. A `NextChoice`
 attempt retains the complete declaration/domain/opportunity discovery without
 replying. Other discovery execution records and returns the declared default.
 Those executor-produced selections are published with the observation candidate
-and bound as schema-v3 or schema-v4 observation children. Candidate validation
+and bound as schema-v12 observation children. Candidate validation
 requires each selection to resolve against one exact opportunity discovered by
 the same attempt, rejects repeated opportunity selection, and enforces the
 existing aggregate choice-record byte bound before publication. This makes the
@@ -2191,8 +2177,8 @@ closure schema. The repository exposes that exact immutable request validator
 separately from
 response validation, and the supervisor accepts it through a narrow admission
 trait rather than receiving campaign mutable-ref authority.
-`AllowAllAttemptAdmission` exists only for already-authenticated compositions
-and component tests; it is not a production trust boundary. The production
+Component tests use a crate-private permissive validator to isolate supervisor
+behavior. Production compositions always bind an authenticating validator. The
 repository adapter maps missing, temporarily unavailable, or poisoned input to
 `unavailable-input`, preserves backend authorization failure as `unauthorized`,
 and maps corrupt or semantically incompatible closure data to `incompatible`.

@@ -1,11 +1,11 @@
 //! Durable replay inputs for reconstructing one observed finding signature.
 //!
-//! Small values retain the original inline record and its exact identity.
-//! Values whose complete inline envelope would exceed the content-envelope
-//! bound use a manifest over deterministic childless payload chunks.
+//! Every value uses a manifest over deterministic childless payload chunks.
+//! The logical payload has its own canonical form inside that current storage
+//! layout; it is never published as a root object.
 //!
 //! ```text
-//! inline body v1:
+//! logical payload v1:
 //!   u32 schema-version = 1
 //!   ReproductionArtifactId reproduction
 //!   FindingSignature observed-signature
@@ -25,7 +25,6 @@
 //!   bytes payload
 //! ```
 
-use crucible_cas::content_envelope::ContentEnvelopeError;
 use crucible_cas::content_store::{ByteRange, ContentId, ObjectKind};
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
@@ -34,7 +33,7 @@ use crate::{
     ObjectEnvelope, ReproductionArtifactId,
 };
 
-const INLINE_SCHEMA_VERSION: u32 = 1;
+const LOGICAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 const MANIFEST_SCHEMA_VERSION: u32 = 2;
 const CHUNK_SCHEMA_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: usize = 84 * 1024 * 1024;
@@ -52,8 +51,8 @@ pub const MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Authenticated physical layout of one logical replay-evidence record.
 ///
-/// Schema-1 evidence has only a root object. Schema-2 evidence has a manifest
-/// root followed by one to three payload chunks in logical payload order.
+/// The manifest root is followed by one to three payload chunks in logical
+/// payload order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FindingTriageReplayStorageDescription {
     evidence: FindingTriageReplayEvidenceId,
@@ -162,9 +161,8 @@ impl FindingTriageReplayStorageDescription {
 
     /// Authenticates the root envelope and its complete storage layout.
     ///
-    /// For an inline root, this verifies the logical payload length and final
-    /// evidence identity. For a manifest root, this verifies every described
-    /// chunk identity and logical length before a caller requests chunk bytes.
+    /// This verifies every described chunk identity and logical length before
+    /// a caller requests chunk bytes.
     ///
     /// # Errors
     ///
@@ -177,7 +175,7 @@ impl FindingTriageReplayStorageDescription {
     fn authenticated_root(
         &self,
         bytes: &[u8],
-    ) -> Result<AuthenticatedFindingTriageReplayRoot, CampaignCodecError> {
+    ) -> Result<FindingTriageReplayManifest, CampaignCodecError> {
         self.validate()?;
         let root = authenticated_storage_envelope(&self.objects[0], bytes)?;
         if root.record_kind() != CampaignRecordKind::FindingTriageReplayEvidence
@@ -188,27 +186,14 @@ impl FindingTriageReplayStorageDescription {
             });
         }
 
-        match root.schema_version() {
-            INLINE_SCHEMA_VERSION => {
-                let evidence = FindingTriageReplayEvidence::from_canonical_bytes(root.body())?;
-                if evidence.payload.len() as u64 != self.logical_payload_bytes
-                    || evidence.id()? != self.evidence
-                {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "finding triage replay inline storage description is invalid",
-                    });
-                }
-                Ok(AuthenticatedFindingTriageReplayRoot::Inline(evidence))
-            }
-            MANIFEST_SCHEMA_VERSION => {
-                let manifest = FindingTriageReplayManifest::from_canonical_bytes(root.body())?;
-                self.validate_manifest_description(&manifest)?;
-                Ok(AuthenticatedFindingTriageReplayRoot::Manifest(manifest))
-            }
-            _ => Err(CampaignCodecError::InvalidValue {
+        if root.schema_version() != MANIFEST_SCHEMA_VERSION {
+            return Err(CampaignCodecError::InvalidValue {
                 reason: "finding triage replay storage root schema is invalid",
-            }),
+            });
         }
+        let manifest = FindingTriageReplayManifest::from_canonical_bytes(root.body())?;
+        self.validate_manifest_description(&manifest)?;
+        Ok(manifest)
     }
 
     fn validate_manifest_description(
@@ -274,13 +259,12 @@ impl FindingTriageReplayStorageDescription {
             });
         }
 
-        match self.storage_schema_version {
-            INLINE_SCHEMA_VERSION if self.objects.len() == 1 => Ok(()),
-            MANIFEST_SCHEMA_VERSION if self.objects.len() > 1 => self.validate_chunk_objects(),
-            _ => Err(CampaignCodecError::InvalidValue {
+        if self.storage_schema_version != MANIFEST_SCHEMA_VERSION || self.objects.len() <= 1 {
+            return Err(CampaignCodecError::InvalidValue {
                 reason: "finding triage replay storage description schema is invalid",
-            }),
+            });
         }
+        self.validate_chunk_objects()
     }
 
     fn validate_chunk_objects(&self) -> Result<(), CampaignCodecError> {
@@ -433,7 +417,7 @@ impl Canonical for FindingTriageReplayStorageObject {
 /// Semantic position of one stored replay-evidence envelope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FindingTriageReplayStorageObjectRole {
-    /// Inline evidence or a chunk manifest at ordinal zero.
+    /// Current chunk manifest at ordinal zero.
     Root,
     /// One manifest payload chunk in logical payload order.
     PayloadChunk {
@@ -477,7 +461,6 @@ impl Canonical for FindingTriageReplayStorageObjectRole {
 /// One exact replay and the complete campaign signature it observed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FindingTriageReplayEvidence {
-    schema_version: u32,
     reproduction: ReproductionArtifactId,
     observed_signature: FindingSignature,
     payload_schema: u32,
@@ -509,7 +492,6 @@ impl FindingTriageReplayEvidence {
             });
         }
         let value = Self {
-            schema_version: INLINE_SCHEMA_VERSION,
             reproduction,
             observed_signature,
             payload_schema,
@@ -545,8 +527,8 @@ impl FindingTriageReplayEvidence {
 
     /// Returns strict canonical logical record bytes.
     ///
-    /// These are the original inline bytes. Repository storage may instead use
-    /// a schema-2 manifest when the complete schema-1 envelope cannot fit.
+    /// These are the logical payload bytes reconstructed from the current
+    /// manifest and its authenticated chunks.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
@@ -588,46 +570,43 @@ impl FindingTriageReplayEvidence {
         }
         let root = description.authenticated_root(&envelopes[0])?;
 
-        let evidence = match root {
-            AuthenticatedFindingTriageReplayRoot::Inline(evidence) => evidence,
-            AuthenticatedFindingTriageReplayRoot::Manifest(manifest) => {
-                let payload_bytes = manifest.payload_bytes()?;
-                let mut payload = Vec::new();
-                payload.try_reserve_exact(payload_bytes).map_err(|_| {
-                    CampaignCodecError::LimitExceeded {
-                        limit: "finding-triage-replay-payload-allocation",
-                    }
-                })?;
-                for (index, _) in manifest.chunks().iter().enumerate() {
-                    let object = &description.objects[index + 1];
-                    let FindingTriageReplayStorageObjectRole::PayloadChunk {
-                        logical_payload_bytes,
-                        ..
-                    } = object.role
-                    else {
-                        return Err(CampaignCodecError::InvalidValue {
-                            reason: "finding triage replay storage chunk role is invalid",
-                        });
-                    };
-                    let chunk = authenticated_storage_envelope(object, &envelopes[index + 1])?;
-                    if chunk.record_kind() != CampaignRecordKind::FindingTriageReplayEvidenceChunk
-                        || chunk.schema_version() != CHUNK_SCHEMA_VERSION
-                    {
-                        return Err(CampaignCodecError::InvalidValue {
-                            reason: "finding triage replay storage chunk envelope is invalid",
-                        });
-                    }
-                    let bytes =
-                        FindingTriageReplayChunk::from_canonical_bytes(chunk.body())?.payload;
-                    if bytes.len() != logical_payload_bytes as usize {
-                        return Err(CampaignCodecError::InvalidValue {
-                            reason: "finding triage replay storage chunk length is invalid",
-                        });
-                    }
-                    payload.extend_from_slice(&bytes);
+        let evidence = {
+            let manifest = root;
+            let payload_bytes = manifest.payload_bytes()?;
+            let mut payload = Vec::new();
+            payload.try_reserve_exact(payload_bytes).map_err(|_| {
+                CampaignCodecError::LimitExceeded {
+                    limit: "finding-triage-replay-payload-allocation",
                 }
-                manifest.into_evidence(payload)?
+            })?;
+            for (index, _) in manifest.chunks().iter().enumerate() {
+                let object = &description.objects[index + 1];
+                let FindingTriageReplayStorageObjectRole::PayloadChunk {
+                    logical_payload_bytes,
+                    ..
+                } = object.role
+                else {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "finding triage replay storage chunk role is invalid",
+                    });
+                };
+                let chunk = authenticated_storage_envelope(object, &envelopes[index + 1])?;
+                if chunk.record_kind() != CampaignRecordKind::FindingTriageReplayEvidenceChunk
+                    || chunk.schema_version() != CHUNK_SCHEMA_VERSION
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "finding triage replay storage chunk envelope is invalid",
+                    });
+                }
+                let bytes = FindingTriageReplayChunk::from_canonical_bytes(chunk.body())?.payload;
+                if bytes.len() != logical_payload_bytes as usize {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "finding triage replay storage chunk length is invalid",
+                    });
+                }
+                payload.extend_from_slice(&bytes);
             }
+            manifest.into_evidence(payload)?
         };
         if evidence.payload.len() as u64 != description.logical_payload_bytes
             || evidence.id()?.content_id() != description.evidence.content_id()
@@ -641,9 +620,6 @@ impl FindingTriageReplayEvidence {
 
     /// Returns the exact stored replay-evidence identity.
     ///
-    /// Values whose complete inline envelope fits retain their schema-1
-    /// identity. Larger values use the deterministic schema-2 manifest identity.
-    ///
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
@@ -654,24 +630,6 @@ impl FindingTriageReplayEvidence {
     pub(crate) fn storage_plan(
         &self,
     ) -> Result<FindingTriageReplayStoragePlan, CampaignCodecError> {
-        // A payload at least as large as the generic canonical ceiling cannot
-        // fit after inline metadata and envelope framing are added. Skip an
-        // otherwise wasted full-payload copy for that chunked case.
-        if self.payload.len() < codec::MAX_CANONICAL_BYTES {
-            match self.inline_envelope() {
-                Ok(root) => {
-                    return Ok(FindingTriageReplayStoragePlan {
-                        root,
-                        chunks: Vec::new(),
-                    });
-                }
-                Err(CampaignCodecError::Envelope(ContentEnvelopeError::LimitExceeded {
-                    limit: "encoded-byte-count",
-                })) => {}
-                Err(error) => return Err(error),
-            }
-        }
-
         self.chunked_storage_plan()
     }
 
@@ -709,16 +667,7 @@ impl FindingTriageReplayEvidence {
     pub(crate) fn storage_content_children(
         body: &[u8],
     ) -> Result<Vec<(String, ContentId)>, CampaignCodecError> {
-        match encoded_schema_version(body)? {
-            INLINE_SCHEMA_VERSION => {
-                Self::from_canonical_bytes(body).map(|value| value.content_children())
-            }
-            MANIFEST_SCHEMA_VERSION => FindingTriageReplayManifest::from_canonical_bytes(body)
-                .map(|manifest| manifest.children()),
-            _ => Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported finding triage replay evidence schema version",
-            }),
-        }
+        FindingTriageReplayManifest::from_canonical_bytes(body).map(|manifest| manifest.children())
     }
 
     pub(crate) fn manifest_from_canonical_bytes(
@@ -731,18 +680,9 @@ impl FindingTriageReplayEvidence {
         FindingTriageReplayChunk::from_canonical_bytes(bytes).map(|chunk| chunk.payload)
     }
 
-    fn inline_envelope(&self) -> Result<ObjectEnvelope, CampaignCodecError> {
-        ObjectEnvelope::for_record_versioned(
-            CampaignRecordKind::FindingTriageReplayEvidence,
-            INLINE_SCHEMA_VERSION,
-            crate::object::content_children(self.content_children())?,
-            self.canonical_bytes(),
-        )
-    }
-
     fn validate_encoded_size(&self) -> Result<(), CampaignCodecError> {
         let mut metadata = Encoder::new();
-        self.schema_version.encode(&mut metadata);
+        LOGICAL_PAYLOAD_SCHEMA_VERSION.encode(&mut metadata);
         self.reproduction.encode(&mut metadata);
         self.observed_signature.encode(&mut metadata);
         self.payload_schema.encode(&mut metadata);
@@ -794,6 +734,7 @@ impl FindingTriageReplayEvidence {
         Ok(FindingTriageReplayStoragePlan { root, chunks })
     }
 
+    #[cfg(test)]
     pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
         evidence_children(self.reproduction, &self.observed_signature)
     }
@@ -801,7 +742,7 @@ impl FindingTriageReplayEvidence {
 
 impl Canonical for FindingTriageReplayEvidence {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
+        LOGICAL_PAYLOAD_SCHEMA_VERSION.encode(encoder);
         self.reproduction.encode(encoder);
         self.observed_signature.encode(encoder);
         self.payload_schema.encode(encoder);
@@ -809,7 +750,7 @@ impl Canonical for FindingTriageReplayEvidence {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        if u32::decode(decoder)? != INLINE_SCHEMA_VERSION {
+        if u32::decode(decoder)? != LOGICAL_PAYLOAD_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported finding triage replay evidence schema version",
             });
@@ -834,10 +775,9 @@ pub(crate) struct FindingTriageReplayStoragePlan {
 
 mod storage;
 
-use storage::{
-    AuthenticatedFindingTriageReplayRoot, FindingTriageReplayChunk, authenticated_storage_envelope,
-    encoded_schema_version, evidence_children,
-};
+#[cfg(test)]
+use storage::evidence_children;
+use storage::{FindingTriageReplayChunk, authenticated_storage_envelope};
 pub(crate) use storage::{
     FindingTriageReplayChunkDescriptor, FindingTriageReplayManifest,
     validate_finding_triage_replay_chunk_body,
@@ -892,83 +832,6 @@ mod tests {
         assert_eq!(decoded.payload_schema(), 7);
         assert_eq!(decoded.payload(), b"versioned native replay payload");
         assert_eq!(decoded.content_children().len(), 1);
-    }
-
-    #[test]
-    fn fitting_replay_evidence_preserves_the_inline_storage_identity() {
-        let (reproduction, signature) = fixture();
-        let evidence = FindingTriageReplayEvidence::new(
-            reproduction,
-            signature,
-            7,
-            b"inline identity".to_vec(),
-        )
-        .expect("triage replay evidence");
-        let inline = ObjectEnvelope::for_record_versioned(
-            CampaignRecordKind::FindingTriageReplayEvidence,
-            INLINE_SCHEMA_VERSION,
-            crate::object::content_children(evidence.content_children())
-                .expect("inline content children"),
-            evidence.canonical_bytes(),
-        )
-        .expect("inline envelope");
-        assert_eq!(
-            inline.content_id().to_string(),
-            "finding.1.5e8da71e02b2e4392466dea5b684b5ae1e991a566650f7f96b253c8bd9d6a8a2"
-        );
-
-        assert_eq!(
-            evidence.id().expect("storage identity").content_id(),
-            inline.content_id()
-        );
-        assert!(
-            evidence
-                .storage_plan()
-                .expect("inline storage plan")
-                .chunks
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn replay_evidence_chunks_only_after_the_complete_inline_envelope_overflows() {
-        const MAX_ENVELOPE_BYTES: usize = 64 * 1024 * 1024;
-
-        let (reproduction, signature) = fixture();
-        let sample = FindingTriageReplayEvidence::new(reproduction, signature.clone(), 1, vec![0])
-            .expect("sample evidence");
-        let fixed_envelope_bytes = sample
-            .inline_envelope()
-            .expect("sample inline envelope")
-            .canonical_bytes()
-            .len()
-            - sample.payload().len();
-        let exact_payload_bytes = MAX_ENVELOPE_BYTES - fixed_envelope_bytes;
-
-        let exact = FindingTriageReplayEvidence::new(
-            reproduction,
-            signature.clone(),
-            1,
-            vec![b'e'; exact_payload_bytes],
-        )
-        .expect("exact-fitting evidence");
-        let exact_plan = exact.storage_plan().expect("exact-fitting storage plan");
-        assert!(exact_plan.chunks.is_empty());
-        assert_eq!(exact_plan.root.schema_version(), INLINE_SCHEMA_VERSION);
-        assert_eq!(exact_plan.root.canonical_bytes().len(), MAX_ENVELOPE_BYTES);
-        drop(exact_plan);
-        drop(exact);
-
-        let overflow = FindingTriageReplayEvidence::new(
-            reproduction,
-            signature,
-            1,
-            vec![b'o'; exact_payload_bytes + 1],
-        )
-        .expect("overflowing evidence");
-        let overflow_plan = overflow.storage_plan().expect("chunked storage plan");
-        assert_eq!(overflow_plan.root.schema_version(), MANIFEST_SCHEMA_VERSION);
-        assert_eq!(overflow_plan.chunks.len(), 2);
     }
 
     #[test]

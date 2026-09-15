@@ -1,15 +1,16 @@
 //! Lifecycle commands and immutable causal campaign facts.
 //!
-//! Savepoint capture facts use these closed canonical layouts:
+//! Campaign facts use one closed canonical schema. Savepoint and discovery
+//! facts use these tags within schema v14:
 //!
 //! ```text
-//! v11 = 11:u32be | 18:u8 | command | expected-snapshot | attempt |
-//!       configuration-artifact | semantic-configuration | stop | reason
-//! v12 = 12:u32be | 19:u8 | command | expected-snapshot | request-fact | outcome
-//! v13 = 13:u32be | 20:u8 | command | expected-snapshot | request-fact |
-//!       ready-resolution-fact | continuation-attempt
-//! v14 = 14:u32be | 17:u8 | command | expected-snapshot |
-//!       configuration-artifact | observation-stop
+//! 14:u32be | 17:u8 | command | expected-snapshot |
+//!            configuration-artifact | observation-stop
+//! 14:u32be | 18:u8 | command | expected-snapshot | attempt |
+//!            configuration-artifact | semantic-configuration | stop | reason
+//! 14:u32be | 19:u8 | command | expected-snapshot | request-fact | outcome
+//! 14:u32be | 20:u8 | command | expected-snapshot | request-fact |
+//!            ready-resolution-fact | continuation-attempt
 //! ```
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
@@ -22,35 +23,7 @@ use crate::{
 
 use super::AdmissionOrdinal;
 
-const BASE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 2;
-const DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 3;
-const CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 4;
-const PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 5;
-const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 6;
-const BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 7;
-const DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 8;
-const EXTENDED_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 9;
-const TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 10;
-const SAVEPOINT_CAPTURE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 11;
-const SAVEPOINT_CAPTURE_RESOLUTION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 12;
-const SAVEPOINT_CONTINUATION_SELECTION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 13;
-const OBSERVATION_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 14;
-
-#[derive(Clone, Copy)]
-enum CampaignFactDecodeExtension {
-    None,
-    Derivation,
-    CreditedObservation,
-    PinCommand,
-    ObjectiveEvaluation,
-    BranchAcceptance,
-    DiscoveryRequest,
-    TerminalWorkerFailure,
-    SavepointCapture,
-    SavepointCaptureResolution,
-    SavepointContinuationSelection,
-    All,
-}
+const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 14;
 
 /// Durable user intent projected from campaign accounting facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -812,14 +785,6 @@ impl DiscoveryRequest {
             &codec::encode(self),
         )
     }
-
-    pub(crate) const fn uses_extended_stop_schema(&self) -> bool {
-        self.stop.uses_extended_wire_schema()
-    }
-
-    pub(crate) const fn uses_observation_stop_schema(&self) -> bool {
-        self.stop.uses_observation_wire_schema()
-    }
 }
 
 impl Canonical for DiscoveryRequest {
@@ -949,32 +914,7 @@ pub enum CampaignFact {
 
 impl CampaignFact {
     pub(crate) const fn schema_version(&self) -> u32 {
-        match self {
-            Self::CampaignDerived(_) => DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION,
-            Self::ObservationCredited(_) => CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION,
-            Self::PinCommandAccepted(_) => PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION,
-            Self::ObjectiveEvaluationPublished(_) => CAMPAIGN_FACT_SCHEMA_VERSION,
-            Self::BranchRequestAccepted { .. } => BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION,
-            Self::DiscoveryRequested(request) if request.uses_observation_stop_schema() => {
-                OBSERVATION_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION
-            }
-            Self::DiscoveryRequested(request) if request.uses_extended_stop_schema() => {
-                EXTENDED_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION
-            }
-            Self::DiscoveryRequested(_) => DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION,
-            Self::AttemptClosed {
-                disposition: NonModeledAttemptDisposition::TerminalWorkerFailure,
-                ..
-            } => TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION,
-            Self::SavepointCaptureRequested(_) => SAVEPOINT_CAPTURE_CAMPAIGN_FACT_SCHEMA_VERSION,
-            Self::SavepointCaptureResolved(_) => {
-                SAVEPOINT_CAPTURE_RESOLUTION_CAMPAIGN_FACT_SCHEMA_VERSION
-            }
-            Self::SavepointContinuationSelected(_) => {
-                SAVEPOINT_CONTINUATION_SELECTION_CAMPAIGN_FACT_SCHEMA_VERSION
-            }
-            _ => BASE_CAMPAIGN_FACT_SCHEMA_VERSION,
-        }
+        CAMPAIGN_FACT_SCHEMA_VERSION
     }
 
     /// Returns strict canonical fact bytes including the schema version.
@@ -994,195 +934,25 @@ impl CampaignFact {
     /// or unknown-version input.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
         #[derive(Clone, Debug, PartialEq, Eq)]
-        struct VersionedFact {
-            version: u32,
-            fact: CampaignFact,
-        }
+        struct CurrentFact(CampaignFact);
 
-        impl Canonical for VersionedFact {
+        impl Canonical for CurrentFact {
             fn encode(&self, encoder: &mut Encoder) {
-                self.version.encode(encoder);
-                self.fact.encode(encoder);
+                CAMPAIGN_FACT_SCHEMA_VERSION.encode(encoder);
+                self.0.encode(encoder);
             }
 
             fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-                let version = u32::decode(decoder)?;
-                match version {
-                    BASE_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        CampaignFact::decode_versioned(decoder, CampaignFactDecodeExtension::None)
-                            .map(|fact| Self { version, fact })
-                    }
-                    DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::Derivation,
-                        )?;
-                        if !matches!(fact, CampaignFact::CampaignDerived(_)) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::CreditedObservation,
-                        )?;
-                        if !matches!(fact, CampaignFact::ObservationCredited(_)) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::PinCommand,
-                        )?;
-                        if !matches!(fact, CampaignFact::PinCommandAccepted(_)) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::ObjectiveEvaluation,
-                        )?;
-                        if !matches!(fact, CampaignFact::ObjectiveEvaluationPublished(_)) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    BRANCH_ACCEPTANCE_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::BranchAcceptance,
-                        )?;
-                        if !matches!(fact, CampaignFact::BranchRequestAccepted { .. }) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::DiscoveryRequest,
-                        )?;
-                        if !matches!(
-                            fact,
-                            CampaignFact::DiscoveryRequested(ref request)
-                                if !request.uses_extended_stop_schema()
-                                    && !request.uses_observation_stop_schema()
-                        ) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    EXTENDED_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::DiscoveryRequest,
-                        )?;
-                        if !matches!(
-                            fact,
-                            CampaignFact::DiscoveryRequested(ref request)
-                                if request.uses_extended_stop_schema()
-                        ) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    TERMINAL_WORKER_FAILURE_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::TerminalWorkerFailure,
-                        )?;
-                        if !matches!(
-                            fact,
-                            CampaignFact::AttemptClosed {
-                                disposition: NonModeledAttemptDisposition::TerminalWorkerFailure,
-                                ..
-                            }
-                        ) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    SAVEPOINT_CAPTURE_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::SavepointCapture,
-                        )?;
-                        if !matches!(fact, CampaignFact::SavepointCaptureRequested(_)) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    SAVEPOINT_CAPTURE_RESOLUTION_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::SavepointCaptureResolution,
-                        )?;
-                        if !matches!(fact, CampaignFact::SavepointCaptureResolved(_)) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    SAVEPOINT_CONTINUATION_SELECTION_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::SavepointContinuationSelection,
-                        )?;
-                        if !matches!(fact, CampaignFact::SavepointContinuationSelected(_)) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    OBSERVATION_STOP_DISCOVERY_REQUEST_CAMPAIGN_FACT_SCHEMA_VERSION => {
-                        let fact = CampaignFact::decode_versioned(
-                            decoder,
-                            CampaignFactDecodeExtension::DiscoveryRequest,
-                        )?;
-                        if !matches!(
-                            fact,
-                            CampaignFact::DiscoveryRequested(ref request)
-                                if request.uses_observation_stop_schema()
-                        ) {
-                            return Err(CampaignCodecError::InvalidValue {
-                                reason: "campaign fact variant requires its original schema version",
-                            });
-                        }
-                        Ok(Self { version, fact })
-                    }
-                    _ => Err(CampaignCodecError::InvalidValue {
+                if u32::decode(decoder)? != CAMPAIGN_FACT_SCHEMA_VERSION {
+                    return Err(CampaignCodecError::InvalidValue {
                         reason: "unsupported campaign object schema version",
-                    }),
+                    });
                 }
+                CampaignFact::decode_current(decoder).map(Self)
             }
         }
 
-        codec::decode::<VersionedFact>(bytes).map(|versioned| versioned.fact)
+        codec::decode::<CurrentFact>(bytes).map(|current| current.0)
     }
 
     /// Returns the domain-separated immutable fact identity.
@@ -1291,7 +1061,7 @@ impl Canonical for CampaignFact {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Self::decode_versioned(decoder, CampaignFactDecodeExtension::All)
+        Self::decode_current(decoder)
     }
 }
 

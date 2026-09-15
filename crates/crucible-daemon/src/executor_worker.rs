@@ -16,7 +16,6 @@ use crucible_campaign::{
     ObservationCandidate, ObservationId, ResolvedSelection, ScenarioArtifact, StopOutcome,
     SubmitAttemptRequest,
 };
-use std::path::Path;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
@@ -39,8 +38,9 @@ use crate::{
     ExecutionCancellation, ExecutionCheckpointRequest, LocalExecutorError, LocalExecutorSupervisor,
     PreparedAttemptCheckpoint, PreparedCrucibleFindingCandidate,
     PreparedResultJournalCreateDisposition, PreparedResultJournalError,
-    PreparedSemanticAttemptResult, PreparedSemanticResultCodecError,
-    ProductionExactCheckpointPublication, QueuedAttempt, TerminalFailureOutcome,
+    PreparedResultJournalNamespace, PreparedSemanticAttemptResult,
+    PreparedSemanticResultCodecError, ProductionExactCheckpointPublication, QueuedAttempt,
+    TerminalFailureOutcome,
 };
 
 mod result;

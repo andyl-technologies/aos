@@ -819,12 +819,6 @@ fn decoder_rejects_truncation_trailing_bytes_and_wrong_schema() {
         CampaignGcPlan::from_canonical_bytes(&wrong_schema),
         Err(CampaignGcPlanError::UnsupportedSchema)
     );
-
-    let retired_v1 = b"crucible.campaign.gc-plan.v1\0";
-    assert_eq!(
-        CampaignGcPlan::from_canonical_bytes(retired_v1),
-        Err(CampaignGcPlanError::UnsupportedSchema)
-    );
 }
 
 #[test]
@@ -1090,7 +1084,7 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
     assert_eq!(candidate.backend(), cache.as_str());
     assert!(matches!(
         candidate.reason(),
-        CampaignGcCandidateReason::ReachableReadThroughCache { required_backend }
+        CampaignGcCandidateReason::ReachableCache { required_backend }
             if required_backend == source.as_str()
     ));
 
@@ -1123,7 +1117,7 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
     ));
 
     let forged_candidates = CampaignGcCandidateManifest::new(vec![
-        CampaignGcCandidate::new_reachable_read_through_cache(
+        CampaignGcCandidate::new_reachable_cache(
             source.as_str(),
             live_id,
             live_bytes.len() as u64,
@@ -2232,6 +2226,215 @@ fn direct_transfer_root_promoted_to_hot_root_revalidates_its_closure() {
 }
 
 #[test]
+fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion() {
+    let temp = tempfile::TempDir::new().expect("temporary write-back GC root");
+    let staging_root = temp.path().join("staging");
+    let destination_root = temp.path().join("destination");
+    let graph_root = StoreNodeId::new("write-back").expect("root node");
+    let staging = StoreNodeId::new("staging").expect("staging node");
+    let destination = StoreNodeId::new("destination").expect("destination node");
+    let config = StoreGraphConfig {
+        root: graph_root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::ExactManifest, ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                graph_root,
+                StoreNodeSpec::WriteBack {
+                    staging: staging.clone(),
+                    destination: destination.clone(),
+                    journal_root: temp.path().join("write-back-journal"),
+                    maximum_pending_objects: 8,
+                    maximum_pending_bytes: 1024 * 1024,
+                },
+            ),
+            (
+                staging.clone(),
+                StoreNodeSpec::Directory {
+                    root: staging_root.clone(),
+                },
+            ),
+            (
+                destination.clone(),
+                StoreNodeSpec::Directory {
+                    root: destination_root.clone(),
+                },
+            ),
+        ]),
+    };
+    let (graph, admin) = StoreGraph::build_with_admin(config.clone()).expect("write-back graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live_bytes = b"reachable write-back staging object".to_vec();
+    let live_id = ContentId::for_bytes(ObjectKind::Trace, 1, &live_bytes);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("stage live object");
+    let parent = ContentEnvelope::new(
+        "crucible.test.gc-write-back-parent",
+        1,
+        BTreeSet::from([ContentChild::new("trace", live_id).expect("write-back child reference")]),
+        b"reachable write-back parent".to_vec(),
+    )
+    .expect("write-back parent envelope");
+    let parent_bytes = parent.canonical_bytes();
+    let parent_id = parent.content_id(ObjectKind::ExactManifest);
+    graph
+        .put_if_absent(parent_id, &BlobHandle::from_bytes(parent_bytes.clone()))
+        .expect("stage retained parent");
+    refs.compare_exchange(
+        &RefName::new("retained/write-back-live").expect("retained ref"),
+        None,
+        parent_id,
+    )
+    .expect("publish retained root");
+
+    // Simulate a crash after destination publication but before the pending
+    // journal entry is durably completed.
+    let destination_store = DirectoryBlobBackend::new("destination-check", &destination_root);
+    destination_store
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("publish child destination before journal completion");
+    destination_store
+        .put_if_absent(parent_id, &BlobHandle::from_bytes(parent_bytes))
+        .expect("publish parent destination before journal completion");
+    assert_eq!(
+        destination_store
+            .read(live_id, None)
+            .expect("read published destination")
+            .read_all(1024)
+            .expect("authenticate published destination"),
+        live_bytes
+    );
+    drop(repository);
+    drop(graph);
+    drop(admin);
+
+    let (graph, admin) = StoreGraph::build_with_admin(config).expect("restart write-back graph");
+    let graph = Arc::new(graph);
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let before_transfer = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("plan recovered pending transfer with destination present");
+    assert_eq!(before_transfer.reachable_cache_candidates(), 0);
+    assert!(before_transfer.candidates().is_empty());
+
+    let flush = graph
+        .flush_write_back(2)
+        .expect("complete destination transfer");
+    assert_eq!(flush.completed(), 2);
+    assert_eq!(flush.pending(), 0);
+
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("plan completed staging eviction");
+    assert_eq!(prepared.reachable_cache_candidates(), 2);
+    let candidate = prepared
+        .candidates()
+        .iter()
+        .find(|candidate| candidate.id() == live_id)
+        .expect("staging child candidate");
+    assert_eq!(candidate.backend(), staging.as_str());
+    assert!(matches!(
+        candidate.reason(),
+        CampaignGcCandidateReason::ReachableCache { required_backend }
+            if required_backend == destination.as_str()
+    ));
+
+    let journal_root = temp.path().join("gc-journal");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(journal_root, &prepared).expect("create GC journal");
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("reintroduce pending ownership after planning");
+    let error = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect_err("reject cache eviction while write-back is pending again");
+    assert!(matches!(
+        error,
+        CampaignGcApplyError::CandidateBecameWriteBackPending { backend, id }
+            if backend == staging.as_str() && id == live_id
+    ));
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Planned);
+    let staging_store = DirectoryBlobBackend::new("staging-check", &staging_root);
+    assert!(
+        staging_store
+            .contains(live_id)
+            .expect("pending staging retained")
+    );
+
+    let flush = graph
+        .flush_write_back(1)
+        .expect("complete reintroduced destination transfer");
+    assert_eq!(flush.completed(), 1);
+    assert_eq!(flush.pending(), 0);
+    drop(journal);
+
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("replan after durable journal completion");
+    assert_eq!(prepared.reachable_cache_candidates(), 2);
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(
+        temp.path().join("gc-journal-after-completion"),
+        &prepared,
+    )
+    .expect("create post-completion GC journal");
+    let report = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("apply staging eviction");
+    assert_eq!(report.reachable_cache_candidates(), 2);
+
+    assert!(!staging_store.contains(live_id).expect("staging absence"));
+    assert!(
+        destination_store
+            .contains(live_id)
+            .expect("destination presence")
+    );
+    assert_eq!(
+        graph
+            .read(live_id, None)
+            .expect("read retained destination")
+            .read_all(1024)
+            .expect("authenticate retained destination"),
+        live_bytes
+    );
+}
+
+#[test]
 fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
     let temp = tempfile::TempDir::new().expect("temporary write-back GC root");
     let staging_root = temp.path().join("staging");
@@ -2616,12 +2819,37 @@ fn external_journal_reopens_exact_plan_and_durable_phase() {
 }
 
 #[test]
-fn candidate_decoder_rejects_retired_v1_schema() {
-    let retired_v1 = b"crucible.campaign.gc-candidate-manifest.v1\0";
+fn external_journal_cancellation_is_durable_idempotent_and_terminal() {
+    let prepared = journal_plan_fixture(0x43);
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let root = temp.path().join("gc-journal");
 
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(&root, &prepared).expect("create journal");
+    assert_eq!(
+        journal.cancel().expect("cancel planned journal"),
+        CampaignGcJournalTransition::Advanced
+    );
+    assert_eq!(
+        journal.cancel().expect("repeat cancellation"),
+        CampaignGcJournalTransition::Existing
+    );
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Cancelled);
     assert!(matches!(
-        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(retired_v1)),
-        Err(CampaignGcManifestError::UnsupportedSchema)
+        journal.begin_apply(),
+        Err(CampaignGcJournalError::InvalidTransition)
+    ));
+    drop(journal);
+
+    let mut reopened = DirectoryCampaignGcJournal::open(&root).expect("reopen cancelled journal");
+    assert_eq!(reopened.phase(), CampaignGcJournalPhase::Cancelled);
+    assert_eq!(
+        reopened.cancel().expect("replay durable cancellation"),
+        CampaignGcJournalTransition::Existing
+    );
+    assert!(matches!(
+        reopened.mark_complete(),
+        Err(CampaignGcJournalError::InvalidTransition)
     ));
 }
 

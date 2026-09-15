@@ -325,9 +325,7 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
     }
 
     let schema = schema.ok_or_else(|| missing_line("schema"))?;
-    if schema != REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA
-        && schema != CAMPAIGN_OBSERVATION_REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA
-    {
+    if schema != REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA {
         return Err(artifact_error(format!(
             "unsupported savepoint handle schema `{schema}`"
         )));
@@ -531,8 +529,7 @@ fn validate_savepoint_boundary_proof(
             SaveAtArg::Marker,
             SavepointBoundaryProof::CampaignMarkerEvent { .. }
         )
-    ) || (schema
-        == CAMPAIGN_OBSERVATION_REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA
+    ) || (schema == REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA
         && campaign_observation_shape_is_valid);
     if !shape_is_valid {
         return Err(artifact_error(format!(

@@ -17,7 +17,7 @@ confinement	crates/crucible-daemon/src/campaign_endpoint.rs	public export from n
 confinement	crates/crucible-daemon/src/executor_loopback.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	6
 confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	const		4
 confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	enum		2
-confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	fn		9
+confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	fn		7
 confinement	crates/crucible-daemon/src/executor_loopback.rs	public export from nondeterministic boundary source	struct		2
 confinement	crates/crucible-daemon/src/planner_loopback.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	6
 confinement	crates/crucible-daemon/src/planner_loopback.rs	public export from nondeterministic boundary source	const		2

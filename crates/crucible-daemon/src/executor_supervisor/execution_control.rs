@@ -266,6 +266,7 @@ impl ExecutionCancellationObserver {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn hold_observation_for_test(&self) -> MutexGuard<'_, bool> {
         match self.state.observed.lock() {
             Ok(observed) => observed,
@@ -273,6 +274,7 @@ impl ExecutionCancellationObserver {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn poison_observation_for_test(&self) {
         let _observed = match self.state.observed.lock() {
             Ok(observed) => observed,

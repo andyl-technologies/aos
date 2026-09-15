@@ -1,19 +1,19 @@
 //! Ordered, authenticated planner positions independent of exploration history.
 //!
-//! New campaign genesis owns an empty index. Request transitions extend it;
-//! proposals, admissions, and coordination steps preserve it. Imported histories
-//! without the anchor retain their original scan semantics.
+//! Campaign genesis owns an empty index. Request transitions extend it;
+//! proposals, admissions, and coordination steps preserve it. Normal repository
+//! admission rejects a snapshot without the current anchor.
 //! ```text
-//! exploration[planner-scan-index.v1]
-//!   -> branch_point_hash -> request_schema_version -> request_digest -> request
+//! exploration[planner-scan-index.v2]
+//!   -> branch_point_hash -> request_digest -> request
 //! ```
-//! The schema level preserves `BranchRequestId` ordering across retained wire
-//! versions; sorting only request digests would silently change planner replay.
+//! [`BranchRequestId`] admits only the current exact wire schema, so its digest
+//! is the complete stable ordering key within one branch point.
 
 use super::*;
 
 pub(super) fn planner_scan_index_anchor_key() -> CampaignHash {
-    CampaignHash::derive("crucible.campaign.planner-scan-index.v1", b"root")
+    CampaignHash::derive("crucible.campaign.planner-scan-index.v2", b"root")
 }
 
 impl CampaignRepository {
@@ -22,16 +22,12 @@ impl CampaignRepository {
         child: &LoadedSnapshot,
         fact: &CampaignFact,
     ) -> Result<usize, CampaignRepositoryError> {
-        if self
-            .merkle
+        self.merkle
             .get(
                 child.snapshot.roots().exploration,
                 planner_scan_index_anchor_key(),
             )?
-            .is_none()
-        {
-            return Ok(0);
-        }
+            .ok_or_else(|| integrity("current-campaign-planner-scan-index-is-missing"))?;
         let requests = match fact {
             CampaignFact::BranchRequestAccepted { .. } => 1,
             CampaignFact::PlannerAdvanced(step) => {
@@ -49,7 +45,7 @@ impl CampaignRepository {
             return Ok(0);
         }
         requests
-            .checked_mul(3 * MERKLE_UPDATE_NODE_UPPER)
+            .checked_mul(2 * MERKLE_UPDATE_NODE_UPPER)
             .and_then(|nodes| nodes.checked_add(MERKLE_UPDATE_NODE_UPPER))
             .ok_or_else(|| integrity("campaign-closure-object-limit"))
     }
@@ -59,24 +55,18 @@ impl CampaignRepository {
         exploration: ContentId,
         requests: &[(BranchRequestId, crate::BranchPointId)],
         publish: bool,
-    ) -> Result<Option<ContentId>, CampaignRepositoryError> {
-        let Some(index) = self
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        let index = self
             .merkle
             .get(exploration, planner_scan_index_anchor_key())?
-        else {
-            return Ok(None);
-        };
+            .ok_or_else(|| integrity("current-campaign-planner-scan-index-is-missing"))?;
         let empty = MerkleMap::empty_content_id()?;
-        let mut grouped = BTreeMap::<
-            crate::BranchPointId,
-            BTreeMap<u32, BTreeMap<CampaignHash, ContentId>>,
-        >::new();
+        let mut grouped =
+            BTreeMap::<crate::BranchPointId, BTreeMap<CampaignHash, ContentId>>::new();
         for (request, branch) in requests {
             let content = request.content_id();
             if grouped
                 .entry(*branch)
-                .or_default()
-                .entry(content.schema_version())
                 .or_default()
                 .insert(CampaignHash::from_bytes(content.digest()), content)
                 .is_some()
@@ -85,30 +75,20 @@ impl CampaignRepository {
             }
         }
         let mut branches = BTreeMap::new();
-        for (branch, schemas) in grouped {
+        for (branch, requests) in grouped {
             let key = branch.as_hash();
-            let branch_root = self.merkle.get(index, key)?.unwrap_or(empty);
-            let mut versions = BTreeMap::new();
-            for (schema, requests) in schemas {
-                let key = schema_key(schema);
-                let request_root = self.merkle.get(branch_root, key)?.unwrap_or(empty);
-                for request in requests.keys() {
-                    if self.merkle.get(request_root, *request)?.is_some() {
-                        return Err(integrity("planner-scan-index-reused-request"));
-                    }
+            let request_root = self.merkle.get(index, key)?.unwrap_or(empty);
+            for request in requests.keys() {
+                if self.merkle.get(request_root, *request)?.is_some() {
+                    return Err(integrity("planner-scan-index-reused-request"));
                 }
-                versions.insert(
-                    key,
-                    self.update_planner_scan_index(request_root, &requests, publish)?,
-                );
             }
             branches.insert(
                 key,
-                self.update_planner_scan_index(branch_root, &versions, publish)?,
+                self.update_planner_scan_index(request_root, &requests, publish)?,
             );
         }
         self.update_planner_scan_index(index, &branches, publish)
-            .map(Some)
     }
 
     fn update_planner_scan_index(
@@ -127,7 +107,7 @@ impl CampaignRepository {
         Ok(root)
     }
 
-    /// Reads at most `limit` positions in exact semantic/schema/digest order.
+    /// Reads at most `limit` positions in exact semantic/digest order.
     pub(super) fn indexed_planner_scan_positions(
         &self,
         exploration: ContentId,
@@ -185,57 +165,36 @@ impl CampaignRepository {
         limit: usize,
         positions: &mut BTreeMap<PlanningScanPosition, u64>,
     ) -> Result<(), CampaignRepositoryError> {
-        let versions = self.merkle.scan(root, None, 1)?;
-        if versions.entries().is_empty() || versions.next_after().is_some() {
-            return Err(integrity("planner-scan-index-schema-set"));
+        if self.merkle.inspect_shallow(root)?.entry_count() == 0 {
+            return Err(integrity("planner-scan-index-empty-branch"));
         }
-        for (key, requests) in versions.entries() {
-            let schema = schema_from_key(*key)?;
-            let cursor = match after {
-                Some(after) if schema < after.content_id().schema_version() => continue,
-                Some(after) if schema == after.content_id().schema_version() => {
-                    Some(CampaignHash::from_bytes(after.content_id().digest()))
-                }
-                _ => None,
-            };
-            if positions.len() == limit {
-                break;
+        let cursor = after.map(|request| CampaignHash::from_bytes(request.content_id().digest()));
+        if let Some(after) = after {
+            let content = after.content_id();
+            let cursor_key = CampaignHash::from_bytes(content.digest());
+            if self.merkle.get(root, cursor_key)? != Some(content) {
+                return Err(integrity("planner-scan-index-cursor-request-missing"));
             }
-            let page = self
-                .merkle
-                .scan(*requests, cursor, limit - positions.len())?;
-            if self.merkle.inspect_shallow(*requests)?.entry_count() == 0 {
-                return Err(integrity("planner-scan-index-empty-schema"));
+            let request = self.read_branch_request(content)?;
+            if request.branch_point() != branch || request.id()? != after {
+                return Err(integrity("planner-scan-index-cursor-request-mismatch"));
             }
-            for (key, content) in page.entries() {
-                let request = self.read_branch_request(*content)?;
-                if content.schema_version() != schema
-                    || *key != CampaignHash::from_bytes(content.digest())
-                    || request.branch_point() != branch
-                    || request.id()?.content_id() != *content
-                {
-                    return Err(integrity("planner-scan-index-position-mismatch"));
-                }
-                let position = PlanningScanPosition::new(branch, request.id()?);
-                let bytes = u64::try_from(request.canonical_bytes().len())
-                    .map_err(|_| integrity("planner-scan-page-input-byte-overflow"))?;
-                positions.insert(position, bytes);
+        }
+
+        let page = self.merkle.scan(root, cursor, limit - positions.len())?;
+        for (key, content) in page.entries() {
+            let request = self.read_branch_request(*content)?;
+            if *key != CampaignHash::from_bytes(content.digest())
+                || request.branch_point() != branch
+                || request.id()?.content_id() != *content
+            {
+                return Err(integrity("planner-scan-index-position-mismatch"));
             }
+            let position = PlanningScanPosition::new(branch, request.id()?);
+            let bytes = u64::try_from(request.canonical_bytes().len())
+                .map_err(|_| integrity("planner-scan-page-input-byte-overflow"))?;
+            positions.insert(position, bytes);
         }
         Ok(())
-    }
-}
-
-fn schema_key(version: u32) -> CampaignHash {
-    let mut key = [0; 32];
-    key[..4].copy_from_slice(&version.to_be_bytes());
-    CampaignHash::from_bytes(key)
-}
-
-fn schema_from_key(key: CampaignHash) -> Result<u32, CampaignRepositoryError> {
-    if key == schema_key(crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION) {
-        Ok(crate::exploration::BRANCH_REQUEST_SCHEMA_VERSION)
-    } else {
-        Err(integrity("planner-scan-index-unknown-request-schema"))
     }
 }

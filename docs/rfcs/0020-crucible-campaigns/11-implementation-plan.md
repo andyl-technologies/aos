@@ -97,8 +97,7 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
   `ChoiceClassId`, `BranchPoint`, `ChoiceValue`, `Selection`, and canonical
   schedule encoding with branch-point identity separated from materialization.
 - [ ] **T-CAM-2.3** Normalize genuine explorable decisions through the selection
-  envelope and provide an explicit offline migration/rejection policy for older
-  schedule artifacts.
+  envelope and reject every noncurrent schedule artifact before interpretation.
 - [x] **T-CAM-2.4** Implement versioned register/request/reply guest messages and
   typed Rust guest helpers with complete negative decode and allocation tests.
 - [x] **T-CAM-2.5** Freeze guest selectable catalogs at setup, validate scenario
@@ -230,7 +229,7 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   The pure scenario-owned v1 definition component now provides bounded static
   boundary selectors, validated node cohorts, typed metric sources and values,
   exact aggregation declarations, deterministic ordering, and scenario-v6
-  identity/serialization with measurement-free v5 read compatibility. The pure
+  identity/serialization under its sole current schema. The pure
   bounded v1 replay evaluator now authenticates dense scheduler entries,
   resolves compound/cohort boundaries and modeled timeouts, retains canonical
   satisfying evidence, and recomputes exact integer, rational, histogram, and
@@ -533,14 +532,13 @@ invocation output by available allowance, return a waitable budget-blocked
 outcome, and avoid reinvoking on an unchanged blocked head. A later grant
 permits a fresh invocation.
 
-Canonical engine version 3 and PUCT engine version 4 advertise the versioned
+Canonical engine version 8 and PUCT engine version 6 advertise the versioned
 `canonical-frontier-budget-v1` capability. Every Ready offer retains its exact
 owner-computed aggregate allowances and semantic new-attempt cost, including
 unaffordable offers. Both engines scan through EOF and choose only affordable
-candidates; a convergent cause can therefore pass an earlier canonical or
-higher-ranked PUCT candidate that needs an unfunded attempt. Version-2 portable
-state retains blockers across pages and empty EOF, while the exact version-one
-engine descriptors continue to replay their original transitions.
+candidates; a convergent cause can therefore pass a canonical or higher-ranked
+PUCT candidate that needs an unfunded attempt. Current portable state retains
+blockers across pages and empty EOF.
 Acceptance and cold validation recompute eligibility before trusting it;
 missing records, inflated allowances, and forged deduplication costs fail
 closed before publication.
@@ -564,7 +562,7 @@ test. Strict affected-crate Clippy and the source-size guard pass. All six
 packaged campaign VM cases also pass with the budget-aware planner build;
 their execution scope remains the six flights described above.
 
-Canonical engine version 5 and PUCT engine version 6 additionally consume
+Canonical engine version 8 and PUCT engine version 6 consume
 owner-authenticated request-local attempt allowances. They pass capped new
 attempts, settle a frontier blocked only by local caps, and retain eligibility
 for a convergent cause without charging another attempt. An aggregate grant
@@ -594,9 +592,9 @@ transitions, convergent budget spending, and 2,500 distinct capped requests.
 The distinct-request flight checks at most 66 backend reads for each indexed
 cap lookup, at most 16,384 reads per 64-position invocation page, exact
 aggregate and request-local accounting, complete frontier settlement, and final
-cold validation. A separate mixed-schema regression compares indexed pages
-against retired-format canonical ordering at widths 1, 3, and 7 and rejects a forged
-index without validation writes. Request-local regressions cover both engines,
+cold validation. A separate current-schema regression compares indexed pages
+at widths 1, 3, and 7 and rejects noncurrent keys and a forged index without
+validation writes. Request-local regressions cover both engines,
 single-position/wide pages, restart, local-cap settlement, grant behavior,
 convergent causes, and forged eligibility. API, CLI, and daemon suites pass
 255, 269, and 459 tests respectively, with one existing ignored daemon test;
@@ -631,9 +629,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 - [x] **T-CAM-4.3** Implement progressive-widening exact rational rules,
   interval refinement, deterministic PUCT, coverage/rarity/assertion/objective
   guidance, and path backpropagation. New branch paths now retain exact
-  branch-point/edge segments under schema version 2, while identity-preserving
-  v1 reads remain available. Canonical schema-v1 observation/branch-point
-  credits now survive replay and restart and drive exact completed-visit counts;
+  branch-point/edge segments under schema version 2. Current observation and
+  branch-point credits survive replay and restart and drive exact completed-visit counts;
   schema-v4 observation transitions additionally retain every cumulative path
   under its exact child configuration, and direct non-genesis admission
   authenticates its prefix against that nested index after restart/import.
@@ -655,7 +652,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   finding-root/occurrence/body bounds, folds exact owner-published objective
   evaluations through a 65,536-record/128-MiB shared batch, and
   derives the active policy's exact edge scores with restart equality. Canonical
-  frontier engine version 2 now consumes those completed/prospective explicit,
+  PUCT engine version 6 consumes those completed/prospective explicit,
   modeled-finite, or uniform-prior, novelty, finding-reward, and fairness terms
   from exact owner-built guidance for every Ready offer. It carries the best score across pages,
   publishes guidance only after zero-write preflight, and reruns identically on
@@ -664,22 +661,23 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   128 MiB of credit/path bodies, 65,536 unique objective evaluations and 128
   MiB of their deduplicated evaluation/observation/property basis bodies, 128
   MiB of unique choice-domain bodies, and unique prior-provenance records within
-  the existing visit-projection byte cap. Branch-request schema v2 adds bounded
-  positive explicit finite weights, while v3 adds bounded finite masses bound
-  to the exact model named by the opportunity; the owner selects the earliest
+  the existing visit-projection byte cap. Branch-request schema v9 contains
+  bounded positive explicit finite weights and finite masses bound to the exact
+  model named by the opportunity; the owner selects the earliest
   credited execution basis per semantic edge and normalizes completed plus one
   prospective offer with exact edge-ordered remainder distribution. Uniform
-  and generated sources remain weight one. Schema-v2 request identities are
-  the current encoding for those uniform, explicit, and generated sources.
+  and generated sources remain weight one. Schema-v9 request identities are
+  the sole current encoding for every supported source form.
   Prospective bases are shared by branch point/raw weight and
   capped at 1,000,000 completed-edge visits per planner page.
-  Progressive-integer implementation version 11 now retains version 9's exact
-  prefix and visit gates while ranking remaining intervals by owner-derived
-  endpoint PUCT-score difference, interval size, and lower offset. It uses the
-  exact active policy and planning view, batches branch-point projections under
-  the established guidance bounds, preserves the already-proposed value set,
-  and revalidates identically after restart/import. Branch-request schema v4
-  and generator implementation version 17 now resolve standardized uniform
+  Progressive-integer implementation version 16 uses the exact prefix and visit
+  gates while ranking remaining intervals by inverse-frequency rarity, finding
+  reward, unique coverage, objective reward, landmarks, endpoint PUCT-score
+  difference, interval size, and lower offset. It uses the exact active policy
+  and planning view, batches branch-point projections under the established
+  guidance bounds, preserves the already-proposed value set, and revalidates
+  identically after restart/import. Branch-request schema v9 and generator
+  implementation version 17 resolve standardized uniform
   app-random models into a request-keyed, budget-bounded power-of-two integer
   permutation. Exact model/generator/domain validation, zero-write mismatch
   rejection, `2^64` closed-versus-exhausted semantics, and restart replay are
@@ -687,26 +685,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   application randomness is the only currently registered non-finite model
   family. A future opaque family requires its own concrete adapter and
   versioned portable generator contract, but does not leave this task open.
-  Implementation version 12 adds the
-  producer-landmark term: it prioritizes landmark count before version 11's
-  endpoint PUCT difference, interval size, and lower offset, then emits the
-  winning interval's landmark nearest its lower midpoint. Implementation
-  version 13 now compares the exact rational difference between owner-verified
-  endpoint mean objective rewards before those version-12 terms. Versions 11
-  and 12 remain measurement-neutral, and local issue plus restart/import replay
-  reject a substituted value before writes. Implementation version 14 now
-  compares exact endpoint mean globally unique coverage-identity discontinuity
-  before version 13's terms, while versions 11 through 13 retain their prior
-  order; local issue and restart/import replay reject an objective-only
-  substitution before writes. Implementation version 15 now compares exact
-  endpoint mean active-policy-weighted verified finding-reward discontinuity
-  before version 14's terms, while versions 11 through 14 retain their prior
-  order; local issue and restart/import replay reject a coverage-only
-  substitution before writes. Implementation version 16 now compares exact
-  endpoint mean inverse-frequency coverage-rarity discontinuity before version
-  15's terms, while versions 11 through 15 retain their prior order; local issue
-  and restart/import replay reject a unique-coverage-only substitution before
-  writes.
+  Local issue and restart/import replay reject any substituted value or
+  noncurrent implementation version before writes.
 - [x] **T-CAM-4.4** Replace checkpoint-once frontier authority with branch-point
   source continuations, an attempt-level rebuildable queue, and volatile
   daemon-epoch reservations.
@@ -728,19 +708,14 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   implementation-version 4 `stratified_integer` adds a checked constant-space
   ordinal mapping capped at 4,096 strata. Implementation-version 5
   `log_integer` adds an at-most-65-value exact rounded-power ordering for
-  strictly positive domains. Implementation-version 6 `permuted_integer` adds a
-  four-round request-keyed bijection over up to `2^64 - 1` legal values without
-  materialization. Implementation-version 7 `weighted_categorical` adds exact
+  strictly positive domains. Implementation-version 7 `weighted_categorical` adds exact
   request-keyed integer-weight sampling without replacement over at most 256
   discrete alternatives, including bounded rejection sampling and restart
   replay. Implementation-version 8 `ordered_mixture` recursively schedules
   executable finite children by exact weighted virtual finish time, suppresses
   duplicate values while advancing their provenance, and enforces 512-value,
-  8,192-work-unit, and 64-level bounds. Implementation-version 9
-  `progressive_integer` adds the exact stratified prefix, largest-gap/lower-
-  midpoint refinement order, checked visit thresholds, 4,096-strata/proposal
-  bounds, and observation-driven frontier wakeups through a branch-point
-  request index. Implementation-version 10 `mutate_near_corpus` derives exact
+  8,192-work-unit, and 64-level bounds. Implementation-version 10
+  `mutate_near_corpus` derives exact
   retained completed integer selections at the request's branch point, emits
   canonical lower-then-upper legal-step neighbors, and uses the immutable
   request's exact previously proposed value set as its portable continuation so
@@ -749,30 +724,20 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   body, and existing 4,096-ID/128-MiB selection-resolution bounds during local
   acceptance, import, and restart. It waits for another completed credit when
   the current retained corpus has no unproposed mutation and closes only at its
-  proposal budget. Implementation-version 11 `progressive_integer` retains the
-  version-9 prefix, threshold, and midpoint rules but selects the next interval
-  by absolute exact endpoint PUCT-score difference, then interval size and lower
-  offset. Planner input construction batches those snapshot-bound projections,
-  and owner validation rejects a largest-gap substitution before writes and
-  replays the selected value after restart. Implementation-version 12 retains
-  that exact feedback basis while adding authenticated producer-landmark count
-  as the primary interval term and nearest-lower-midpoint landmark selection;
-  version 11 histories continue to ignore landmarks. Implementation-version 13
-  adds exact owner-verified endpoint mean objective-reward discontinuity before
-  version 12's terms, while versions 11 and 12 retain their prior order.
-  Implementation-version 14 adds exact globally unique coverage-identity mean
-  discontinuity before version 13's terms, while versions 11 through 13 retain
-  their prior order. Implementation-version 15 adds exact
-  active-policy-weighted finding-reward mean discontinuity before version 14's
-  terms, while versions 11 through 14 retain their prior order.
-  Implementation-version 16 adds exact inverse-frequency coverage-rarity mean
-  discontinuity before version 15's terms, while versions 11 through 15 retain
-  their prior order. Static continuation projection remains valid after modeled
+  proposal budget. Implementation-version 16 `progressive_integer` uses the
+  exact stratified prefix, checked visit thresholds, 4,096-strata/proposal
+  bounds, and observation-driven frontier wakeups through a branch-point
+  request index. It ranks intervals by inverse-frequency rarity, finding reward,
+  unique coverage, objective reward, landmarks, endpoint PUCT-score difference,
+  interval size, and lower offset. Planner input construction batches those snapshot-bound
+  projections, and owner validation rejects a substituted value or noncurrent
+  implementation before writes and replays the selected value after restart.
+  Static continuation projection remains valid after modeled
   observations exist: it
   binds the exact observation root and projects exact completed visits from
   canonical branch-point credit sets. The independent exact PUCT arithmetic and
-  guidance projection are consumed only by canonical frontier engine version 2;
-  version 1 retains its original least-position ordering. Other generated
+  guidance projection are consumed only by the current canonical frontier
+  engine. Other generated
   requests remain conservatively `Open` and fail closed when proposal or
   expansion semantics are requested. Retired-format snapshots remain unindexed and
   queries fail closed rather than constructing a partial index.
@@ -1066,7 +1031,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   whose schedules contain only deterministic producer decisions and the
   standardized app-random model/branch selection. Before launch it derives a
   bounded per-node producer plan from the repository-resolved target and sends
-  it through the version-negotiated sealed third `Setup` descriptor. Lifecycle
+  it through the current-version sealed third `Setup` descriptor. Lifecycle
   construction first requires the plugin-plan and scheduler-selection identity
   sets to match exactly and rejects plans for missing or white-box-disabled
   nodes. The plugin
@@ -1318,17 +1283,13 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   finite absolute deadlines, close-on-error behavior, and direct/loopback
   equivalence. The coordinator now supplies capability-gated, snapshot-owner-
   recomputed continuation projections for every served source. Built-in
-  `crucible-canonical-frontier` version 1 receives one exact next-candidate
-  offer for the least Ready position on each page and consumes that
-  bundle without repository authority, carries the least Ready offer across
-  pages in bounded portable state, and deterministically returns Continue,
-  Issue, or NoWork only at the valid scan boundary. Accepted offer envelopes
-  become retained-request children after zero-write semantic preflight, and
-  import/restart recompute the same source ordinal and value. Version 2 receives
-  an offer and exact bounded PUCT guidance for every Ready source, ranks the
-  owner-derived score across pages, and is now the packaged daemon default;
-  version 1 remains replay-compatible. Both run behind a versioned one-request
-  process protocol:
+  current `crucible-canonical-frontier` implementation receives an offer and
+  exact bounded PUCT guidance for every Ready source, ranks the owner-derived
+  score across pages, and is the packaged daemon default. Accepted offer
+  envelopes become retained-request children after zero-write semantic
+  preflight, and import/restart recompute the same source ordinal and value.
+  Any other implementation version is rejected. The planner runs behind a
+  versioned one-request process protocol:
   a parent-owned supervisor measures deterministic page fuel, enforces a
   finite exchange deadline and sticky cancellation, and multiplexes bounded
   nonblocking pipes through EOF. Cleanup signals the dedicated process group
@@ -1439,9 +1400,8 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   A nested choice index is anchored in the graph root and updated atomically by
   explicit and observation-driven discovery. `QueryChoices` pages at most eight
   opportunity IDs with one exact anchor proof and one exact range/EOF proof;
-  retired-format heads without the optional index fail closed until a future explicit
-  complete migration and ordinary mutations never create a partial index.
-  A separate current-or-historical choice-object read authenticates the
+  noncurrent heads fail closed and ordinary mutations never create a partial
+  index. A separate current choice-object read authenticates the
   opportunity's authoritative graph membership at one exact named-history
   snapshot and returns only its exact declaration or effective domain;
   arbitrary non-graph reads remain unavailable.
@@ -3183,8 +3143,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   budget, steer, semantic `branch`, campaign `derive`, status, and watch. The
   checked local client now exposes canonical create/derive inputs and exact
   finite or already-imported generated operator branch requests in addition to
-  lifecycle control. Exhaustive `--all` authenticates the exact current or
-  historical opportunity domain, derives the canonical version-2 generator and
+  lifecycle control. Exhaustive `--all` authenticates the exact current
+  opportunity domain, derives the canonical version-2 generator and
   cardinality budget, and is owner-checked against the active exhaustive policy
   before publication. The initial repeatable daemon-startup import manifest now
   admits dependency-ordered compact scenario/schedule pairs and canonical
@@ -3209,7 +3169,7 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   semantic keys before output, and durably creates one non-overwriting binary
   policy record while reporting its exact content identity. The adjacent strict
   lineage compiler binds semantic scenario/genesis identities to their exact
-  imported artifacts and every execution-compatibility version through the
+  imported artifacts and current execution-compatibility identity through the
   same bounded non-overwriting path. Canonical scenario authoring now consumes
   the engine's complete strict current-schema TOML, derives an empty genesis
   schedule plus both semantic and verifier-backed artifact identities, and
@@ -3339,24 +3299,24 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   that campaign owner, replay the accepted attempt once through scoped exact
   capture, authenticate the Ready request/resolution, source attempt, stop,
   configuration, physical closure, and scheduler evidence, and remove the
-  temporary physical closure before returning. They export the version-5
+  temporary physical closure before returning. They export the version-6
   handle and version-3 logical DAG closure index described below, so current
   resume and fork readers consume the result without native exact-resume
   acceleration. Campaign-backed
   marker saves now use the same exact-capture owner with a named-boundary stop.
-  They export a version-5 handle with a campaign-marker-event proof containing
+  They export a version-6 handle with a campaign-marker-event proof containing
   the retained, canonically recomputable scheduler event and a required,
   digest-bound campaign replay closure. Campaign virtual-time saves use the same
-  v5 closure contract. Export authenticates the canonical closure against the
+  v6 closure contract. Export authenticates the canonical closure against the
   exact schedule before durable writes, stores it as a content-addressed object,
   and retains it through the opaque reference in local checkpoint closure-index
-  v3. Readers accept only the current version-5 and version-6 campaign handles
-  and closure-index v3. Earlier handle or closure-index schemas, typed schedules
+  v3. Readers accept only the current version-6 campaign handle and
+  closure-index v3. Any other handle or closure-index schema, typed schedules
   missing a closure, retired session-run producers, tampered closure bytes, and
   missing referenced objects fail before execution.
 
   Standard non-interactive local-QEMU resume now uses the campaign owner for
-  version-5 and version-6 handles and bare checkpoint hashes backed by
+  version-6 handles and bare checkpoint hashes backed by
   closure-index v3. Delivery-order, random-draw, preemption, and typed
   guest Selection schedules authenticate the logical source and replay closure,
   capture and restore the exact source, continue to quiescence, virtual-time, or

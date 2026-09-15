@@ -287,7 +287,8 @@ impl CampaignRepository {
         let prior_accounting = snapshot.snapshot.roots().accounting;
         let frontier_index = self
             .merkle
-            .get(prior_exploration, frontier_index_anchor_key())?;
+            .get(prior_exploration, frontier_index_anchor_key())?
+            .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
         let mut exploration_upserts = BTreeMap::new();
         let mut generator_validation = IssueGeneratorValidation::new();
         let mut branch_request_ids = Vec::with_capacity(branch_requests.len());
@@ -345,11 +346,10 @@ impl CampaignRepository {
                     "SMC request coordinate is already published",
                 )?;
             }
-            if let Some(frontier_index) = frontier_index
-                && self
-                    .merkle
-                    .get(frontier_index, frontier_index_order_key(request_id))?
-                    .is_some()
+            if self
+                .merkle
+                .get(frontier_index, frontier_index_order_key(request_id))?
+                .is_some()
             {
                 return Err(integrity("planner-issue-reused-frontier-slot"));
             }
@@ -358,27 +358,22 @@ impl CampaignRepository {
                 .candidate_source_profile(request, &domain)?
                 .is_some_and(super::projection::CandidateSourceProfile::requires_feedback_index)
             {
-                if frontier_index.is_none() {
-                    return Err(integrity("progressive-generator-requires-frontier-index"));
-                }
                 indexed_requests.push((request_id, request.branch_point()));
             }
             branch_request_ids.push(request_id);
             scan_requests.push((request_id, request.branch_point()));
         }
-        if !scan_requests.is_empty()
-            && let Some(index) =
-                self.planner_scan_index_after(prior_exploration, &scan_requests, mode.publishes())?
-        {
+        if !scan_requests.is_empty() {
+            let index =
+                self.planner_scan_index_after(prior_exploration, &scan_requests, mode.publishes())?;
             exploration_upserts.insert(planner_scan_index_anchor_key(), index);
         }
-        if !indexed_requests.is_empty()
-            && let Some(next_index) = self.branch_request_index_after(
+        if !indexed_requests.is_empty() {
+            let next_index = self.branch_request_index_after(
                 prior_exploration,
                 &indexed_requests,
                 mode.publishes(),
-            )?
-        {
+            )?;
             exploration_upserts.insert(branch_request_index_anchor_key(), next_index);
         }
 
@@ -562,99 +557,96 @@ impl CampaignRepository {
             }
         }
 
-        if let Some(frontier_index) = frontier_index {
-            let mut frontier_states = BTreeMap::new();
-            for (request, request_id) in branch_requests.iter().zip(branch_request_ids.iter()) {
-                frontier_states.insert(
-                    *request_id,
-                    (
-                        request.branch_point(),
-                        self.initial_continuation_state_at(
-                            request,
-                            super::projection::CandidateViewRoots::from_roots(
-                                snapshot.snapshot.roots(),
-                            ),
-                        )?,
+        let mut frontier_states = BTreeMap::new();
+        for (request, request_id) in branch_requests.iter().zip(branch_request_ids.iter()) {
+            frontier_states.insert(
+                *request_id,
+                (
+                    request.branch_point(),
+                    self.initial_continuation_state_at(
+                        request,
+                        super::projection::CandidateViewRoots::from_roots(
+                            snapshot.snapshot.roots(),
+                        ),
+                    )?,
+                ),
+            );
+        }
+        if let Some(last_proposal) = proposals.last() {
+            if !frontier_states.contains_key(&selected.source()) {
+                let prior_state = self.continuation_state(
+                    super::projection::CandidateViewRoots::new(
+                        prior_exploration,
+                        snapshot.snapshot.roots().observations,
+                        snapshot.snapshot.roots().corpus,
+                        prior_accounting,
                     ),
-                );
+                    selected.source(),
+                    &selected_request,
+                )?;
+                self.validate_frontier_projection(
+                    frontier_index,
+                    selected.source(),
+                    selected.branch_point(),
+                    prior_state,
+                )?;
             }
-            if let Some(last_proposal) = proposals.last() {
-                if !frontier_states.contains_key(&selected.source()) {
-                    let prior_state = self.continuation_state(
+            let proposed = last_proposal.ordinal();
+            let profile = self
+                .candidate_source_profile(&selected_request, &selected_domain)?
+                .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
+            let completed_visits = self.branch_completed_visits(
+                snapshot.snapshot.roots().observations,
+                selected_request.branch_point(),
+            )?;
+            let has_next_candidate = if profile
+                == super::projection::CandidateSourceProfile::CorpusMutation
+                && proposed < selected_request.budget().maximum_proposals()
+            {
+                self.expected_candidate_at_view(
+                    &selected_request,
+                    &selected_domain,
+                    proposed
+                        .checked_add(1)
+                        .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
+                    super::projection::CandidateEnumerationBasis::new(
                         super::projection::CandidateViewRoots::new(
                             prior_exploration,
                             snapshot.snapshot.roots().observations,
                             snapshot.snapshot.roots().corpus,
                             prior_accounting,
                         ),
-                        selected.source(),
-                        &selected_request,
-                    )?;
-                    self.validate_frontier_projection(
-                        frontier_index,
-                        selected.source(),
-                        selected.branch_point(),
-                        prior_state,
-                    )?;
-                }
-                let proposed = last_proposal.ordinal();
-                let profile = self
-                    .candidate_source_profile(&selected_request, &selected_domain)?
-                    .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
-                let completed_visits = self.branch_completed_visits(
-                    snapshot.snapshot.roots().observations,
-                    selected_request.branch_point(),
-                )?;
-                let has_next_candidate = if profile
-                    == super::projection::CandidateSourceProfile::CorpusMutation
-                    && proposed < selected_request.budget().maximum_proposals()
-                {
-                    self.expected_candidate_at_view(
-                        &selected_request,
-                        &selected_domain,
-                        proposed
-                            .checked_add(1)
-                            .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
-                        super::projection::CandidateEnumerationBasis::new(
-                            super::projection::CandidateViewRoots::new(
-                                prior_exploration,
-                                snapshot.snapshot.roots().observations,
-                                snapshot.snapshot.roots().corpus,
-                                prior_accounting,
-                            ),
-                            completed_visits,
+                        completed_visits,
+                    )
+                    .with_additional_previous(proposals)
+                    .with_feedback(feedback_projection.as_ref().map(|projection| {
+                        super::projection::CandidateFeedbackProjection::new(
+                            snapshot.snapshot.active_policy(),
+                            projection,
                         )
-                        .with_additional_previous(proposals)
-                        .with_feedback(feedback_projection.as_ref().map(|projection| {
-                            super::projection::CandidateFeedbackProjection::new(
-                                snapshot.snapshot.active_policy(),
-                                projection,
-                            )
-                        })),
-                    )?
-                    .is_some()
-                } else {
-                    false
-                };
-                let state = super::projection::continuation_state_after_progress(
-                    profile,
-                    proposed,
-                    false,
-                    has_next_candidate,
-                    selected_request.budget().maximum_proposals(),
-                    completed_visits,
-                )?;
-                frontier_states.insert(selected.source(), (selected.branch_point(), state));
-            }
-            let projections = frontier_states
-                .into_iter()
-                .map(|(request, (branch_point, state))| (request, branch_point, state))
-                .collect::<Vec<_>>();
-            let next_frontier = self
-                .frontier_index_after(prior_exploration, &projections, mode.publishes())?
-                .ok_or_else(|| integrity("planner-issue-frontier-index-disappeared"))?;
-            exploration_upserts.insert(frontier_index_anchor_key(), next_frontier);
+                    })),
+                )?
+                .is_some()
+            } else {
+                false
+            };
+            let state = super::projection::continuation_state_after_progress(
+                profile,
+                proposed,
+                false,
+                has_next_candidate,
+                selected_request.budget().maximum_proposals(),
+                completed_visits,
+            )?;
+            frontier_states.insert(selected.source(), (selected.branch_point(), state));
         }
+        let projections = frontier_states
+            .into_iter()
+            .map(|(request, (branch_point, state))| (request, branch_point, state))
+            .collect::<Vec<_>>();
+        let next_frontier =
+            self.frontier_index_after(prior_exploration, &projections, mode.publishes())?;
+        exploration_upserts.insert(frontier_index_anchor_key(), next_frontier);
 
         let exploration =
             self.finish_issue_root(prior_exploration, &exploration_upserts, mode, true)?;

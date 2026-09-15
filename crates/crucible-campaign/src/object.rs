@@ -261,7 +261,7 @@ impl CampaignRecordKind {
             Self::ObjectiveEvaluation | Self::RankingExplanation => 2,
             Self::ReproductionArtifact => 2,
             Self::Finding => 4,
-            Self::FindingCandidateBundle => 5,
+            Self::FindingCandidateBundle => 6,
             Self::FindingTriageReplayEvidence => 2,
             Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,
@@ -752,26 +752,7 @@ impl ObjectEnvelope {
                 reason: "unknown campaign record schema name",
             },
         )?;
-        let version_supported = envelope.schema_version() == record_kind.schema_version()
-            || record_kind == CampaignRecordKind::Policy
-                && matches!(envelope.schema_version(), 1..=3)
-            || record_kind == CampaignRecordKind::Fact
-                && matches!(envelope.schema_version(), 2..=13)
-            || record_kind == CampaignRecordKind::Attempt
-                && matches!(envelope.schema_version(), 1..=4 | 7..=8)
-            || record_kind == CampaignRecordKind::Observation
-                && matches!(envelope.schema_version(), 1..=11)
-            || record_kind == CampaignRecordKind::PlannerBeamCandidate
-                && envelope.schema_version() == 1
-            || matches!(
-                record_kind,
-                CampaignRecordKind::ObjectiveEvaluation | CampaignRecordKind::RankingExplanation
-            ) && matches!(envelope.schema_version(), 1..=2)
-            || record_kind == CampaignRecordKind::FindingTriageReplayEvidence
-                && matches!(envelope.schema_version(), 1..=2)
-            || record_kind == CampaignRecordKind::FindingTriageReplayEvidenceChunk
-                && envelope.schema_version() == 1;
-        if !version_supported {
+        if envelope.schema_version() != record_kind.schema_version() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign record schema version",
             });

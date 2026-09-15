@@ -1,4 +1,4 @@
-From adf195110d99178611d18f291c6a653849a16fd4 Mon Sep 17 00:00:00 2001
+From 3a49052f1dcc9ed3e60574d31bd04962d5d8adc1 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -2676,10 +2676,10 @@ index 0000000000000000000000000000000000000000..04f8b4b657068b3a2af64a58719023eb
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852dfd1a78ee 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..8fc87a8ffe7b6d481c4605ffb25616375fde9b95 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,25 +27,417 @@
+@@ -27,25 +27,409 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -3004,31 +3004,20 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
 +                break;
 +            }
 +        }
-+        if (stateful_exit) {
-+            /*
-+             * RR vCPUs share one host thread.  Set TCG's exit flags directly
-+             * for every CPUState so the active batch returns.  cpu_exit()
-+             * re-enters this accelerator kick hook through qemu_cpu_kick().
-+             */
-+            rr_crucible_sim_complete_wake_boundary();
-+            CPU_FOREACH(cpu) {
-+                tcg_kick_vcpu_thread(cpu);
-+            }
-+            wake_state_published = true;
-+        } else {
-+            /*
-+             * Preserve the request without modifying any CPUState.  The RR
-+             * thread's idle/active/pending handshake spans every partial TCG
-+             * slice and consumes the request only after a full switch quantum,
-+             * at an authorized scheduler ceiling, or at a guest idle boundary.
-+             * Host arrival therefore selects latency, never an intra-turn
-+             * execution coordinate.
-+             */
++        {
 +            unsigned int state;
 +            unsigned int pending_state;
 +            bool starting_wake = false;
 +            bool idle_wake = false;
- 
++
++            /*
++             * Publish every request through the same producer-owned arming
++             * transition.  In particular, a halted CPU still needs a durable
++             * IDLE_WAKE_PENDING predicate: qemu_cpu_kick() broadcasts the halt
++             * condition before this hook runs, so exit_request alone cannot
++             * protect the RR consumer from a broadcast-before-wait race.
++             * Only the RR thread may consume a pending wake boundary.
++             */
 +            do {
 +                state = qatomic_read(&rr_tcg_exec_state);
 +                if (state == RR_TCG_EXEC_STARTING_WAKE_ARMING ||
@@ -3053,7 +3042,17 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
 +                    break;
 +                }
 +            } while (true);
-+            if (starting_wake) {
++
++            if (stateful_exit || idle_wake) {
++                /*
++                 * RR vCPUs share one host thread.  Set TCG's exit flags
++                 * directly for every CPUState so an active batch returns.
++                 * cpu_exit() would re-enter this hook through qemu_cpu_kick().
++                 */
++                CPU_FOREACH(cpu) {
++                    tcg_kick_vcpu_thread(cpu);
++                }
++            } else if (starting_wake) {
 +                /*
 +                 * Publish the soft first-exit predicate before releasing the
 +                 * startup barrier.  The RR thread cannot enter steady-state
@@ -3062,20 +3061,13 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
 +                CPU_FOREACH(cpu) {
 +                    qatomic_set_mb(&cpu->exit_request, 1);
 +                }
++            }
+ 
++            if (starting_wake) {
 +                qatomic_cmpxchg(&rr_tcg_exec_state,
 +                                RR_TCG_EXEC_STARTING_WAKE_ARMING,
 +                                RR_TCG_EXEC_STARTING);
 +            } else if (idle_wake) {
-+                /*
-+                 * The arming state prevents the RR thread from entering TCG
-+                 * until exit_request is a durable wait predicate, closing the
-+                 * broadcast-before-wait race without allowing a delayed
-+                 * kick to interrupt later guest execution.  Use TCG's direct
-+                 * kick because cpu_exit() re-enters this accelerator hook.
-+                 */
-+                CPU_FOREACH(cpu) {
-+                    tcg_kick_vcpu_thread(cpu);
-+                }
 +                qatomic_cmpxchg(&rr_tcg_exec_state,
 +                                RR_TCG_EXEC_IDLE_WAKE_ARMING,
 +                                RR_TCG_EXEC_IDLE_WAKE_PENDING);
@@ -3097,7 +3089,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
  }
  
  /*
-@@ -61,7 +453,683 @@ void rr_kick_vcpu_thread(CPUState *unused)
+@@ -61,7 +445,683 @@ void rr_kick_vcpu_thread(CPUState *unused)
   */
  
  static QEMUTimer *rr_kick_vcpu_timer;
@@ -3782,7 +3774,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
  
  static inline int64_t rr_next_kick_time(void)
  {
-@@ -90,6 +1158,14 @@ static void rr_kick_thread(void *opaque)
+@@ -90,6 +1150,14 @@ static void rr_kick_thread(void *opaque)
  
  static void rr_start_kick_timer(void)
  {
@@ -3797,7 +3789,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
      if (!rr_kick_vcpu_timer && CPU_NEXT(first_cpu)) {
          rr_kick_vcpu_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                             rr_kick_thread, NULL);
-@@ -110,15 +1186,123 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1178,123 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -3923,7 +3915,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
      }
  }
  
-@@ -140,6 +1324,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +1316,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -3942,7 +3934,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
      rr_kick_next_cpu();
  }
  
-@@ -184,10 +1380,13 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,10 +1372,13 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -3956,7 +3948,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
  
      bql_lock();
      qemu_thread_get_self(cpu->thread);
-@@ -207,39 +1406,139 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -207,39 +1398,139 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_process_cpu_events_common(cpu);
          }
      }
@@ -4115,7 +4107,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
  
-@@ -251,14 +1550,37 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -251,14 +1542,37 @@ static void *rr_cpu_thread_fn(void *arg)
               */
              icount_handle_deadline();
  
@@ -4153,7 +4145,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,26 +1598,100 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,26 +1590,100 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -4269,7 +4261,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
                      break;
                  }
              } else if (cpu->stop) {
-@@ -305,11 +1701,103 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +1693,103 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -4374,7 +4366,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c391153a0fd215c68fdc1b8a6524852d
      }
  
      g_assert_not_reached();
-@@ -318,13 +1806,19 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +1798,19 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];

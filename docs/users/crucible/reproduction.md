@@ -94,8 +94,8 @@ otherwise it is content-addressed below `<artifact-dir>/findings`.
 ## Replay
 
 Replay validates the artifact schema and requires an exact producer/consumer
-build-identity match. Current production artifacts use the v3 schema; v2
-artifacts are rejected instead of falling back to model-only replay. A v3 QEMU
+build-identity match. Current production artifacts use the v4 schema, and all
+non-v4 artifacts are rejected. A v4 QEMU
 artifact contains the compact scenario, typed schedule, pure model proof, live
 replay recipe, canonical QEMU event bytes, and typed execution-fingerprint
 evidence. Run, verify, and fuzz artifacts retain the full sample stream. Search
@@ -148,7 +148,7 @@ divergence exits with status `1`.
 With `--to <savepoint>`, Crucible completes the same live artifact replay, then
 proves that the requested savepoint is a typed schedule prefix and validates its
 materialization through the replay oracle. The savepoint handle or checkpoint
-object must remain available in the selected store. A v3 artifact's own
+object must remain available in the selected store. A v4 artifact's own
 terminal checkpoint hash is self-contained: Crucible reconstructs that target
 from the embedded scenario, schedule, and recorded frontier when the store does
 not contain a separate checkpoint object.
@@ -192,7 +192,7 @@ usage error. Live QEMU boundary observation can wait for the backend's
 production completion window and is not limited by the control stream's short
 acknowledgement poll.
 
-Session-owned savepoint handles use schema `crucible.savepoint-handle.v5`. They
+Session-owned savepoint handles use schema `crucible.savepoint-handle.v6`. They
 include a `selector` line naming the property violation or guest marker (or
 `none`) and a `boundary-proof` line with the exact breakpoint or virtual-time
 coordinate.
@@ -206,7 +206,7 @@ This lets an agent audit which selector fired and where, instead of inferring it
 from generic `set-breakpoint` acknowledgements.
 
 Campaign-backed marker save handles also use schema
-`crucible.savepoint-handle.v5`. Their campaign owner stops on an authenticated
+`crucible.savepoint-handle.v6`. Their campaign owner stops on an authenticated
 named boundary without creating a session breakpoint, and their
 `boundary-proof` uses positional fields
 `campaign-marker-event`, retained event sequence, event content hash, source
@@ -216,14 +216,14 @@ checks its content hash, and verifies that the embedded scenario enables the
 source node's white-box channel. The campaign owner authenticates actual event
 observation while capturing the save; later reads verify the self-contained
 event record and its scenario relationship. Current session and campaign
-virtual-time or marker saves write v5 handles and retain the content-addressed
+virtual-time or marker saves write v6 handles and retain the content-addressed
 canonical campaign replay closure needed for delivery-order, random-draw,
 preemption, and typed Selection schedules. The local QEMU Campaign owner
 authenticates that closure before it opens attempt resources. Override
 decisions fail before handle or closure storage because the portable format
 does not carry their replay authority. Application-random choices are retained
-as authenticated random-draw and Selection decisions. Older handle schemas are
-rejected during decoding.
+as authenticated random-draw and Selection decisions. Any other handle schema
+is rejected during decoding.
 
 Campaign-backed quiescence and property saves use schema
 `crucible.savepoint-handle.v6`. Their `boundary-proof` line contains

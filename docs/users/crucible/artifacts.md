@@ -72,8 +72,8 @@ mismatch instead of partially restoring.
 ## Savepoint handles
 
 `save` stops at `virtual-time`, `quiescence`, `property`, or `marker` boundaries.
-Session-owned saves write a v3 handle. Campaign-owned virtual-time and marker
-saves write a v5 handle whose required `campaign-replay-closure` field carries
+All supported saves write a v6 handle. Campaign-owned virtual-time and marker
+saves require a `campaign-replay-closure` field carrying
 content-addressed canonical records for every typed guest Selection in the saved
 schedule. The handle also records the selected boundary, exact proof,
 content-addressed predicate payload, scenario/frontier identity, and checkpoint
@@ -81,11 +81,10 @@ hash. Property and marker misses exit 3 without a handle; an explicit trace
 still ends with `save_boundary_failure`.
 
 The handle is a reference, not an archive. Preserve every store object reachable
-from its checkpoint. A campaign save therefore writes a v3 local checkpoint
+from its checkpoint. A campaign save therefore writes the current v3 local checkpoint
 closure index: the index retains both the ordinary reproduction artifact and an
 opaque content-addressed replay-closure object. Explicit garbage collection
-traverses both references. Readers continue to accept selection-free v3 session
-handles, v4 campaign-marker handles, and v2 local closure indexes. A typed
+traverses both references. Readers accept only v6 handles and v3 closure indexes. A typed
 Selection schedule without an authenticated replay closure fails before QEMU or
 session execution. Standard non-interactive local-QEMU resume and unchanged
 forks to a virtual-time or stopped boundary consume the closure through the
@@ -126,7 +125,7 @@ Useful operations:
 ```
 
 `--check` requires byte-identical canonical JSONL after live replay. `--to`
-validates a typed prefix; a v3 artifact can resolve its embedded terminal
+validates a typed prefix; a v4 artifact can resolve its embedded terminal
 checkpoint without an external store object. Compare and bisect distinguish
 input, schedule, evidence, and terminal-fingerprint divergence.
 

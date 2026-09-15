@@ -1072,7 +1072,7 @@ mod tests {
                 let observation = Observation::new(
                     crate::AttemptId::from_content_id(ContentId::for_bytes(
                         ObjectKind::CampaignFact,
-                        1,
+                        8,
                         format!("attempt-{suffix}").as_bytes(),
                     ))
                     .expect("attempt id"),

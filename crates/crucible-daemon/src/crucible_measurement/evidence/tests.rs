@@ -445,27 +445,6 @@ fn evidence_decode_rejects_noncanonical_unknown_and_unsupported_input() {
     .expect("evidence");
     let bytes = evidence.canonical_bytes().expect("canonical bytes");
 
-    let mut legacy_value: ciborium::Value =
-        ciborium::de::from_reader(bytes.as_slice()).expect("decoded CBOR value");
-    let ciborium::Value::Map(legacy_fields) = &mut legacy_value else {
-        panic!("evidence root must be a map");
-    };
-    let legacy_schema = legacy_fields
-        .iter_mut()
-        .find(|(key, _)| key == &ciborium::Value::Text("schema_version".to_owned()))
-        .map(|(_, value)| value)
-        .expect("schema field");
-    *legacy_schema = ciborium::Value::Integer(1.into());
-    let mut legacy = Vec::new();
-    ciborium::ser::into_writer(&legacy_value, &mut legacy).expect("legacy-schema CBOR");
-    assert!(matches!(
-        CrucibleMeasurementReplayEvidence::from_canonical_bytes(&legacy),
-        Err(CrucibleMeasurementError::UnsupportedEvidenceSchema {
-            actual: 1,
-            expected: CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2,
-        })
-    ));
-
     let mut trailing_space = bytes.clone();
     trailing_space.push(b' ');
     assert!(matches!(

@@ -113,13 +113,18 @@ impl CampaignRepository {
             let cardinality = integer.cardinality();
             if generator.algorithm() != &CandidateGeneratorAlgorithm::PermutedInteger
                 || generator.implementation_version()
-                    != crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                    != crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
                 || cardinality == 0
                 || !cardinality.is_power_of_two()
                 || cardinality > u128::from(u64::MAX) + 1
             {
                 return Err(integrity("modeled-generated-source-contract-mismatch"));
             }
+            if *remaining == 0 {
+                return Err(integrity("candidate-generator-validation-limit"));
+            }
+            *remaining -= 1;
+            return Ok(());
         }
         self.validate_generator_for_domain_with_budget(generator_id, domain, remaining)
     }
@@ -204,38 +209,17 @@ impl CampaignRepository {
                     }
                 }
                 CandidateGeneratorAlgorithm::PermutedInteger => {
-                    let ChoiceDomain::Integer(integer) = domain else {
+                    let ChoiceDomain::Integer(_) = domain else {
                         return Err(integrity("candidate-generator-domain-family-mismatch"));
                     };
-                    if generator.implementation_version()
-                        == crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                        && integer.cardinality() > crate::PERMUTED_INTEGER_GENERATOR_MAX_CARDINALITY
-                    {
-                        return Err(integrity("permuted-generator-cardinality-limit"));
-                    }
-                    if generator.implementation_version()
-                        == crate::MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                        && (integer.cardinality() == 0
-                            || !integer.cardinality().is_power_of_two()
-                            || integer.cardinality() > u128::from(u64::MAX) + 1)
-                    {
-                        return Err(integrity("modeled-uniform-integer-cardinality-limit"));
-                    }
+                    return Err(integrity("permuted-generator-requires-modeled-source"));
                 }
                 CandidateGeneratorAlgorithm::ProgressiveInteger { initial_strata, .. }
                     if matches!(domain, ChoiceDomain::Integer(_)) =>
                 {
-                    if matches!(
-                        generator.implementation_version(),
-                        crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                            | crate::FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                            | crate::LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                            | crate::MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                            | crate::COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                            | crate::FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                            | crate::RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    ) && *initial_strata
-                        > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA
+                    if generator.implementation_version()
+                        == crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA
                     {
                         return Err(integrity("progressive-generator-initial-strata-limit"));
                     }

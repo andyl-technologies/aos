@@ -23,10 +23,6 @@
         needle = "pub const CONTROL_PROTOCOL_VERSION";
       }
       {
-        label = "minimum protocol version";
-        needle = "pub const CONTROL_PROTOCOL_MIN_VERSION";
-      }
-      {
         label = "host handshake config";
         needle = "pub struct HostHandshakeConfig";
       }
@@ -35,7 +31,7 @@
         needle = "pub struct PluginHandshakeConfig";
       }
       {
-        label = "negotiated handshake result";
+        label = "exact-version handshake result";
         needle = "pub struct NegotiatedHandshake";
       }
       {
@@ -51,7 +47,7 @@
         needle = "pub fn plugin_start_handshake";
       }
       {
-        label = "host pure negotiation";
+        label = "host exact-version validation";
         needle = "pub fn host_negotiate_handshake";
       }
       {
@@ -59,8 +55,8 @@
         needle = "pub fn plugin_validate_handshake_ack";
       }
       {
-        label = "minimum-version negotiation rule";
-        needle = "plugin_proto_version.min(config.proto_version)";
+        label = "exact current-version validation";
+        needle = "require_current_control_protocol(plugin_proto_version)?";
       }
       {
         label = "exact ABI mismatch error";
@@ -71,8 +67,8 @@
         needle = "validate_slot_assignment";
       }
       {
-        label = "no-overlap error";
-        needle = "ProtocolVersionNoOverlap";
+        label = "exact protocol-version mismatch error";
+        needle = "ProtocolVersionMismatch";
       }
       {
         label = "hello message write";
@@ -90,7 +86,7 @@
     ++ failuresFor "crates/crucible-protocol/tests/handshake.rs" handshakeTest [
       {
         label = "host happy path";
-        needle = "host_accepts_hello_negotiates_minimum_and_writes_hello_ack";
+        needle = "host_accepts_exact_hello_and_writes_hello_ack";
       }
       {
         label = "plugin happy path";
@@ -109,8 +105,8 @@
         needle = "struct ScriptedIo";
       }
       {
-        label = "version no-overlap assertion";
-        needle = "ProtocolVersionNoOverlap";
+        label = "exact version mismatch assertion";
+        needle = "ProtocolVersionMismatch";
       }
       {
         label = "ABI mismatch assertion";
@@ -215,7 +211,7 @@ in
             gate=gate:abi-conformance
             rust_tests=crucible-protocol::handshake
             handshake=Hello,HelloAck
-            proto_negotiation=min-plugin-host
+            proto_negotiation=exact-current-version
             abi_check=exact
             slot_check=slot-index-lt-node-count
             RESULT

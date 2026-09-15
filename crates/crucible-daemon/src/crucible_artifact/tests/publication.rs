@@ -1,6 +1,7 @@
 //! Prepared finding publication and reconciliation tests.
 
 use super::*;
+use crate::executor_supervisor::AllowAllAttemptAdmission;
 use crucible::{
     EventLogTime, FailureClusterReportFailure, FailureTriageReplayEvidence, Icount, NodeId,
     SchedulerEventLogEntry,

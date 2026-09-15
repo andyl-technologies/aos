@@ -1333,7 +1333,7 @@ mod tests {
         assert!(matches!(
             double.accept_host_control_frame(&bad_version),
             Err(SimDoubleError::Handshake {
-                source: HandshakeError::NegotiatedProtocolOutOfRange { .. },
+                source: HandshakeError::ProtocolVersionMismatch { .. },
             })
         ));
 

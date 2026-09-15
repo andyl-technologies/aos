@@ -195,7 +195,7 @@ in the selected scenario.
 `campaign configuration compile` admits a nonempty compact Schedule V2 beside
 the same strict canonical scenario TOML. Each input and output body is bounded
 to 32 MiB. The supplied schedule MUST round-trip byte-for-byte through the
-current Schedule V2 codec; legacy encodings, empty schedules, and unresolved
+current Schedule V2 codec; noncurrent encodings, empty schedules, and unresolved
 campaign selections are rejected before output. Selection-bearing schedules
 require repository-backed resolution and are not offline-authoritative. The
 compiler derives and independently decodes the exact configuration artifact,
@@ -534,37 +534,21 @@ the same exact states, as do implementation-version 3 `boundary_integer`
 sources and implementation-version 4 `stratified_integer` sources with at most
 4,096 strata. Implementation-version 5 `log_integer` sources over strictly
 positive integer domains report those states for their at-most-65-candidate
-rounded-power order. Implementation-version 6 `permuted_integer` sources report
-the same states while walking up to `2^64 - 1` legal values without
-materialization. Implementation-version 7 `weighted_categorical` sources
+rounded-power order. Implementation-version 7 `weighted_categorical` sources
 report them for an exact request-keyed without-replacement order over at most
 256 weighted discrete alternatives. Implementation-version 8
 `ordered_mixture` reports the same states for at most 512 deduplicated values
 from recursively executable finite children under its exact depth and work
-bounds. Implementation-version 9 `progressive_integer` additionally reports
+bounds. Implementation-version 16 `progressive_integer` additionally reports
 `WaitingForFeedback(completed_visits, required_visits)` between its bounded
-initial strata and each exact visit-gated largest-gap refinement; it reports
+initial strata and each exact visit-gated, ranked refinement; it reports
 `Closed`, rather than `Exhausted`, when the request budget truncates the domain.
 Implementation-version 10 `mutate_near_corpus` reports `Ready` only while the
 exact retained completed-selection basis yields an unproposed bounded mutation,
-and otherwise waits for another credit. Implementation-version 11
-`progressive_integer` reports the same thresholds as version 9 while its next
-midpoint is selected by exact owner-derived endpoint PUCT feedback.
-Implementation-version 12 reports those same thresholds while prioritizing
-authenticated producer-landmark intervals and selecting the nearest
-lower-midpoint landmark before ordinary midpoint refinement.
-Implementation-version 13 reports the same thresholds while prioritizing exact
-owner-verified endpoint mean objective-reward discontinuity before version
-12's interval terms.
-Implementation-version 14 reports the same thresholds while prioritizing exact
-owner-verified endpoint mean globally unique coverage-identity discontinuity
-before version 13's interval terms.
-Implementation-version 15 reports the same thresholds while prioritizing exact
-owner-verified endpoint mean active-policy-weighted finding-reward
-discontinuity before version 14's interval terms.
-Implementation-version 16 reports the same thresholds while prioritizing exact
-owner-verified endpoint mean inverse-frequency coverage-rarity discontinuity
-before version 15's interval terms.
+and otherwise waits for another credit. The current progressive implementation
+ranks by exact owner-verified inverse-frequency coverage rarity, weighted
+finding reward, unique coverage, objective reward, producer landmarks, PUCT,
+cardinality, and lower offset.
 A mixture containing any suspended child remains conservatively `Open`. Other
 generated sources remain `Open` until their deterministic enumerator and
 feedback owner land. Rich admitted-value and interval explanation views and CLI

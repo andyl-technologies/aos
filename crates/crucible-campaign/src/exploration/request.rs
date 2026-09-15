@@ -188,19 +188,6 @@ impl StopCondition {
             _ => Ok(()),
         }
     }
-
-    pub(crate) const fn uses_extended_wire_schema(&self) -> bool {
-        matches!(
-            self,
-            Self::ExecutionQuanta(_)
-                | Self::VirtualTimeOrExecutionQuanta { .. }
-                | Self::NextChoiceOrExecutionQuanta { .. }
-        )
-    }
-
-    pub(crate) const fn uses_observation_wire_schema(&self) -> bool {
-        matches!(self, Self::Observation(_))
-    }
 }
 
 impl Canonical for StopCondition {

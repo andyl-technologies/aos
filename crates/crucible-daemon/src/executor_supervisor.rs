@@ -241,10 +241,12 @@ where
     }
 }
 
-/// Admission validator used only by already-authenticated compositions/tests.
+/// Admission validator for supervisor tests that isolate execution behavior.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct AllowAllAttemptAdmission;
+pub(crate) struct AllowAllAttemptAdmission;
 
+#[cfg(test)]
 impl AttemptAdmissionValidator for AllowAllAttemptAdmission {
     fn validate(&self, _request: &SubmitAttemptRequest) -> Result<(), ExecutorRejection> {
         Ok(())

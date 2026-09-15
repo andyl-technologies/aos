@@ -1276,7 +1276,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
 
     let material = command.command_line_hash_material();
     for expected in [
-        "crucible.qemu-launch-command.v2",
+        "crucible.qemu-launch-command.v3",
         "command_line_in_hash=executable-and-argv",
         "executable=/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64",
         "argv[0]=-nodefaults",
@@ -1348,18 +1348,21 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
 }
 
 #[test]
-fn selectable_catalog_enters_the_v3_launch_identity_without_changing_empty_v2()
+fn plugin_setup_plan_enters_the_v3_launch_identity_for_every_catalog()
 -> Result<(), Box<dyn std::error::Error>> {
     use crucible_protocol::selectable_catalog_plan::{
         SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
         SelectablePlanLimits, SelectablePlanPresence,
     };
 
-    assert!(
-        default_launch_command()
-            .command_line_hash_material()
-            .starts_with("crucible.qemu-launch-command.v2\n")
-    );
+    let empty_command = default_launch_command();
+    let empty_material = empty_command.command_line_hash_material();
+    let empty_setup_digest =
+        lowercase_hex(blake3::hash(&empty_command.plugin_setup_plan().encode()?).as_bytes());
+
+    assert!(empty_material.starts_with("crucible.qemu-launch-command.v3\n"));
+    assert!(empty_material.contains(&format!("plugin_setup_plan_v1={empty_setup_digest}")));
+    assert!(!empty_material.contains("app_random_branch_plan_v1="));
 
     let declaration = SelectablePlanDeclaration::new(
         "network.policy",
@@ -1384,9 +1387,11 @@ fn selectable_catalog_enters_the_v3_launch_identity_without_changing_empty_v2()
         &default_fault_node(),
     )?;
     let material = command.command_line_hash_material();
+    let setup_digest =
+        lowercase_hex(blake3::hash(&command.plugin_setup_plan().encode()?).as_bytes());
 
     assert!(material.starts_with("crucible.qemu-launch-command.v3\n"));
-    assert!(material.contains("plugin_setup_plan_v1="));
+    assert!(material.contains(&format!("plugin_setup_plan_v1={setup_digest}")));
     assert!(!material.contains("app_random_branch_plan_v1="));
     assert_eq!(
         command.plugin_setup_plan().selectable_catalog_plan(),

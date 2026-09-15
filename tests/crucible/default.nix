@@ -1,6 +1,8 @@
 {
   pkgs,
   lib,
+  mkSystem,
+  testing,
 }: let
   redGate = import ./red-gate-placeholder.nix {inherit pkgs;};
   greenBeforeAdvance = {
@@ -59,6 +61,17 @@
       rawGate = gate;
       passthru.rawGate = gate;
     };
+  campaignModeBaseSystem = mkSystem {
+    modules = [../../systems/server.nix];
+    systemName = "campaign-mode-matrix";
+  };
+  campaignModeAuthorities = import ./phase9-campaign-mode-compositions.nix {
+    baseSystem = campaignModeBaseSystem;
+  };
+  campaignModeGateAdapters = import ./phase9-campaign-mode-gate-adapters.nix {
+    inherit pkgs lib testing;
+    compositions = campaignModeAuthorities;
+  };
 in rec {
   phase0 = {
     gates = rec {
@@ -3070,6 +3083,10 @@ in rec {
   };
   phase9 = {
     gates = rec {
+      campaignGateMatrix = import ./phase9-campaign-gate-matrix.nix {
+        inherit pkgs lib campaignModeAuthorities;
+        modeGateAdapters = campaignModeGateAdapters;
+      };
       campaignMidpointDebug = import ./phase9-campaign-midpoint-debug.nix {
         inherit pkgs lib;
       };

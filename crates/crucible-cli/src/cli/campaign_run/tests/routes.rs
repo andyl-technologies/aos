@@ -228,7 +228,7 @@ fn campaign_virtual_time_save_exports_closure_for_resume_and_replay_readers() {
 }
 
 #[test]
-fn campaign_marker_save_exports_v5_event_proof_for_resume_and_replay_readers() {
+fn campaign_marker_save_exports_current_event_proof_for_resume_and_replay_readers() {
     let marker = "guarded-campaign-save-fixture-marker";
     assert_campaign_save_exports_closure(
         &["--at", "marker", "--marker", marker],

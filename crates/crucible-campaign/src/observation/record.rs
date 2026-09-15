@@ -5,7 +5,6 @@ use super::*;
 /// Canonical modeled result of one admitted attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Observation {
-    schema_version: u32,
     attempt: AttemptId,
     child: ConfigurationId,
     child_content: ConfigurationArtifactId,
@@ -94,9 +93,7 @@ impl Observation {
         outcome: ObservationOutcome,
         discovered_choices: BTreeSet<ChoiceOpportunityId>,
     ) -> Result<Self, CampaignCodecError> {
-        let schema_version = observation_schema_version(&outcome.stop, false);
-        Self::from_versioned(Self {
-            schema_version,
+        Self::validate(Self {
             attempt,
             child: outcome.child,
             child_content: outcome.child_content,
@@ -129,12 +126,11 @@ impl Observation {
         if produced_selections.is_empty() {
             return Ok(self);
         }
-        self.schema_version = observation_schema_version(&self.stop, true);
         self.produced_selections = produced_selections;
-        Self::from_versioned(self)
+        Self::validate(self)
     }
 
-    fn from_versioned(value: Self) -> Result<Self, CampaignCodecError> {
+    fn validate(value: Self) -> Result<Self, CampaignCodecError> {
         value.stop.validate()?;
         if matches!(&value.stop, StopOutcome::ObservationReached(proof) if proof.child() != value.child)
         {
@@ -155,13 +151,6 @@ impl Observation {
         {
             return Err(CampaignCodecError::LimitExceeded {
                 limit: "observation-choice-reference-count",
-            });
-        }
-        let has_produced_selections = !value.produced_selections.is_empty();
-        if value.schema_version != observation_schema_version(&value.stop, has_produced_selections)
-        {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported observation schema or stop outcome",
             });
         }
         codec::ensure_encoded_size(&value, MAX_RECORD_BYTES, "observation-encoded-bytes")?;
@@ -252,7 +241,7 @@ impl Observation {
         ObservationId::from_content_id(
             crate::ObjectEnvelope::for_record_versioned(
                 crate::CampaignRecordKind::Observation,
-                self.schema_version,
+                OBSERVATION_SCHEMA_VERSION,
                 crate::object::content_children(self.content_children())?,
                 self.canonical_bytes(),
             )?
@@ -295,13 +284,13 @@ impl Observation {
     }
 
     pub(crate) const fn schema_version(&self) -> u32 {
-        self.schema_version
+        OBSERVATION_SCHEMA_VERSION
     }
 }
 
 impl Canonical for Observation {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
+        OBSERVATION_SCHEMA_VERSION.encode(encoder);
         self.attempt.encode(encoder);
         self.child.encode(encoder);
         self.child_content.encode(encoder);
@@ -311,17 +300,11 @@ impl Canonical for Observation {
         self.properties.encode(encoder);
         self.coverage.encode(encoder);
         self.discovered_choices.encode(encoder);
-        if observation_schema_has_produced_selections(self.schema_version) {
-            self.produced_selections.encode(encoder);
-        }
+        self.produced_selections.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            RECORD_SCHEMA_VERSION..=OBSERVATION_SCHEMA_VERSION
-        ) {
+        if u32::decode(decoder)? != OBSERVATION_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported observation schema or stop outcome",
             });
@@ -338,16 +321,11 @@ impl Canonical for Observation {
             MAX_DISCOVERED_CHOICES,
             "observation-discovered-choice-count",
         )?;
-        let produced_selections = if observation_schema_has_produced_selections(schema_version) {
-            decoder.set_bounded(
-                MAX_DISCOVERED_CHOICES,
-                "observation-produced-selection-count",
-            )?
-        } else {
-            BTreeSet::new()
-        };
-        Self::from_versioned(Self {
-            schema_version,
+        let produced_selections = decoder.set_bounded(
+            MAX_DISCOVERED_CHOICES,
+            "observation-produced-selection-count",
+        )?;
+        Self::validate(Self {
             attempt,
             child,
             child_content,
@@ -360,36 +338,6 @@ impl Canonical for Observation {
             produced_selections,
         })
     }
-}
-
-fn observation_schema_version(stop: &StopOutcome, has_produced_selections: bool) -> u32 {
-    let mut version = match (
-        matches!(stop, StopOutcome::ScenarioFailure(_)),
-        has_produced_selections,
-    ) {
-        (false, false) => RECORD_SCHEMA_VERSION,
-        (true, false) => SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION,
-        (false, true) => PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION,
-        (true, true) => SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION,
-    };
-    if stop.uses_extended_stop_schema() {
-        version += EXTENDED_STOP_OBSERVATION_SCHEMA_OFFSET;
-    } else if stop.uses_observation_stop_schema() {
-        version += OBSERVATION_STOP_SCHEMA_OFFSET;
-    }
-    version
-}
-
-const fn observation_schema_has_produced_selections(schema_version: u32) -> bool {
-    matches!(
-        schema_version,
-        PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-            | SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION
-            | 7
-            | 8
-            | 11
-            | 12
-    )
 }
 
 pub(super) fn require_schema(actual: u32) -> Result<(), CampaignCodecError> {

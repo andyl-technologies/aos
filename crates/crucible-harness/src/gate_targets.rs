@@ -324,7 +324,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         gate: "gate:fleet-equivalence",
         package: "crucible",
         test_target: "gate_fleet_equivalence",
-        required_features: &["test-double"],
+        required_features: &[],
     },
     GateTargetSpec {
         gate: "gate:campaign-continuity",

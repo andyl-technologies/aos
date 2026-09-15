@@ -13,8 +13,8 @@ use crucible_campaign::{
     CampaignCodecError, CampaignHash, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
     CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery, ChoiceDomain,
     ChoiceRngStreamId, ChoiceSource, ChoiceValue, ConfigurationId, ExactRational, IntegerDomain,
-    IntegerRepresentation, IntegerValue, MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-    ModelSampleEvidence, ModelSampleVerifier, ProbabilityModelId, ScenarioDefId,
+    IntegerRepresentation, IntegerValue, ModelSampleEvidence, ModelSampleVerifier,
+    PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, ProbabilityModelId, ScenarioDefId,
     SelectableDeclaration, Selection, SelectionOrigin,
 };
 use crucible_protocol::WHITEBOX_DOORBELL_PROTOCOL_VERSION;
@@ -248,7 +248,7 @@ impl AppRandomSelectable {
         &self,
     ) -> Result<(CandidateGeneratorSpec, CandidateSource), AppRandomSelectableError> {
         let generator = CandidateGeneratorSpec::new(
-            MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+            PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
             CandidateGeneratorAlgorithm::PermutedInteger,
         )?;
         let source = CandidateSource::modeled_generated(self.model.id(), generator.id()?);
@@ -835,7 +835,7 @@ mod tests {
 
         assert_eq!(
             generator.implementation_version(),
-            MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
         );
         assert_eq!(
             generator.algorithm(),

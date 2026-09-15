@@ -132,11 +132,10 @@ Admission is explicit per artifact type:
   a fallback for incompatible exact state;
 - otherwise a new lineage is required.
 
-- **[CSEC-9]** No decoder may infer compatibility from version ordering alone.
-  Admitted version pairs and migrations are explicit and tested.
-- **[CSEC-10]** Offline migration rewrites create new authenticated objects that
-  record source object IDs, migration tool identity, and output schema. Runtime
-  silent lowering is prohibited.
+- **[CSEC-9]** Every decoder admits only its exact current version and rejects
+  every other version before interpreting its body.
+- **[CSEC-10]** Runtime and offline tools do not rewrite noncurrent objects into
+  current ones. Producers must create current authenticated objects directly.
 
 ## 09.7 Policy and scenario changes
 

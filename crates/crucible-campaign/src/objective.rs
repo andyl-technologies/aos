@@ -23,7 +23,7 @@ use crate::{
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
-const SCENARIO_FAILURE_OBJECTIVE_SCHEMA_VERSION: u32 = 2;
+const OBJECTIVE_SCHEMA_VERSION: u32 = 2;
 const MAX_OBJECTIVE_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SURVIVOR_SELECTION_BYTES: usize = 32 * 1024 * 1024;
 const MAX_FIXED_REWARD_MAGNITUDE_BYTES: usize = 8 * 1024;
@@ -497,7 +497,6 @@ impl Canonical for ObjectiveRejection {
 /// Exact policy evaluation of one canonical observation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObjectiveEvaluation {
-    schema_version: u32,
     observation: ObservationId,
     configuration: ConfigurationId,
     policy: CampaignPolicyId,
@@ -515,16 +514,7 @@ impl ObjectiveEvaluation {
         components: BTreeMap<String, ObjectiveComponent>,
         scalar_reward: Option<FixedReward>,
     ) -> Result<Self, CampaignCodecError> {
-        let schema_version = if rejections
-            .iter()
-            .any(|rejection| matches!(rejection, ObjectiveRejection::ScenarioFailure(_)))
-        {
-            SCENARIO_FAILURE_OBJECTIVE_SCHEMA_VERSION
-        } else {
-            RECORD_SCHEMA_VERSION
-        };
-        Self::from_versioned_parts(
-            schema_version,
+        Self::from_validated_parts(
             observation,
             configuration,
             policy,
@@ -534,8 +524,7 @@ impl ObjectiveEvaluation {
         )
     }
 
-    fn from_versioned_parts(
-        schema_version: u32,
+    fn from_validated_parts(
         observation: ObservationId,
         configuration: ConfigurationId,
         policy: CampaignPolicyId,
@@ -543,19 +532,6 @@ impl ObjectiveEvaluation {
         components: BTreeMap<String, ObjectiveComponent>,
         scalar_reward: Option<FixedReward>,
     ) -> Result<Self, CampaignCodecError> {
-        let has_scenario_failure = rejections
-            .iter()
-            .any(|rejection| matches!(rejection, ObjectiveRejection::ScenarioFailure(_)));
-        let compatible = match schema_version {
-            RECORD_SCHEMA_VERSION => !has_scenario_failure,
-            SCENARIO_FAILURE_OBJECTIVE_SCHEMA_VERSION => has_scenario_failure,
-            _ => false,
-        };
-        if !compatible {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported objective-evaluation schema or rejection",
-            });
-        }
         for (name, component) in &components {
             if name != component.measurement() {
                 return Err(CampaignCodecError::InvalidValue {
@@ -581,7 +557,6 @@ impl ObjectiveEvaluation {
             });
         }
         let value = Self {
-            schema_version,
             observation,
             configuration,
             policy,
@@ -790,7 +765,7 @@ impl ObjectiveEvaluation {
         ObjectiveEvaluationId::from_content_id(
             crate::ObjectEnvelope::for_record_versioned(
                 crate::CampaignRecordKind::ObjectiveEvaluation,
-                self.schema_version,
+                OBJECTIVE_SCHEMA_VERSION,
                 crate::object::content_children(self.content_children())?,
                 self.canonical_bytes(),
             )?
@@ -806,13 +781,13 @@ impl ObjectiveEvaluation {
     }
 
     pub(crate) const fn schema_version(&self) -> u32 {
-        self.schema_version
+        OBJECTIVE_SCHEMA_VERSION
     }
 }
 
 impl Canonical for ObjectiveEvaluation {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
+        OBJECTIVE_SCHEMA_VERSION.encode(encoder);
         self.observation.encode(encoder);
         self.configuration.encode(encoder);
         self.policy.encode(encoder);
@@ -822,9 +797,12 @@ impl Canonical for ObjectiveEvaluation {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let schema_version = u32::decode(decoder)?;
-        Self::from_versioned_parts(
-            schema_version,
+        if u32::decode(decoder)? != OBJECTIVE_SCHEMA_VERSION {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported objective-evaluation schema version",
+            });
+        }
+        Self::from_validated_parts(
             ObservationId::decode(decoder)?,
             ConfigurationId::decode(decoder)?,
             CampaignPolicyId::decode(decoder)?,
@@ -1156,22 +1134,9 @@ impl Canonical for RankingDisposition {
     }
 }
 
-impl RankingDisposition {
-    fn has_scenario_failure(&self) -> bool {
-        matches!(
-            self,
-            Self::Filtered(rejections)
-                if rejections.iter().any(|rejection| {
-                    matches!(rejection, ObjectiveRejection::ScenarioFailure(_))
-                })
-        )
-    }
-}
-
 /// Deterministic explanation for one considered objective evaluation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RankingExplanation {
-    schema_version: u32,
     evaluation: ObjectiveEvaluationId,
     disposition: RankingDisposition,
     primary_rank: Option<u32>,
@@ -1187,13 +1152,7 @@ impl RankingExplanation {
         novelty_score: u64,
         breadth_ordinal: u64,
     ) -> Result<Self, CampaignCodecError> {
-        let schema_version = if disposition.has_scenario_failure() {
-            SCENARIO_FAILURE_OBJECTIVE_SCHEMA_VERSION
-        } else {
-            RECORD_SCHEMA_VERSION
-        };
-        Self::from_versioned_parts(
-            schema_version,
+        Self::from_validated_parts(
             evaluation,
             disposition,
             primary_rank,
@@ -1202,26 +1161,14 @@ impl RankingExplanation {
         )
     }
 
-    fn from_versioned_parts(
-        schema_version: u32,
+    fn from_validated_parts(
         evaluation: ObjectiveEvaluationId,
         disposition: RankingDisposition,
         primary_rank: Option<u32>,
         novelty_score: u64,
         breadth_ordinal: u64,
     ) -> Result<Self, CampaignCodecError> {
-        let compatible = match schema_version {
-            RECORD_SCHEMA_VERSION => !disposition.has_scenario_failure(),
-            SCENARIO_FAILURE_OBJECTIVE_SCHEMA_VERSION => disposition.has_scenario_failure(),
-            _ => false,
-        };
-        if !compatible {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported ranking-explanation schema or disposition",
-            });
-        }
         let value = Self {
-            schema_version,
             evaluation,
             disposition,
             primary_rank,
@@ -1295,7 +1242,7 @@ impl RankingExplanation {
         RankingExplanationId::from_content_id(
             crate::ObjectEnvelope::for_record_versioned(
                 crate::CampaignRecordKind::RankingExplanation,
-                self.schema_version,
+                OBJECTIVE_SCHEMA_VERSION,
                 crate::object::content_children(self.content_children())?,
                 self.canonical_bytes(),
             )?
@@ -1312,13 +1259,13 @@ impl RankingExplanation {
     }
 
     pub(crate) const fn schema_version(&self) -> u32 {
-        self.schema_version
+        OBJECTIVE_SCHEMA_VERSION
     }
 }
 
 impl Canonical for RankingExplanation {
     fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
+        OBJECTIVE_SCHEMA_VERSION.encode(encoder);
         self.evaluation.encode(encoder);
         self.disposition.encode(encoder);
         self.primary_rank.encode(encoder);
@@ -1327,9 +1274,12 @@ impl Canonical for RankingExplanation {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let schema_version = u32::decode(decoder)?;
-        Self::from_versioned_parts(
-            schema_version,
+        if u32::decode(decoder)? != OBJECTIVE_SCHEMA_VERSION {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported ranking-explanation schema version",
+            });
+        }
+        Self::from_validated_parts(
             ObjectiveEvaluationId::decode(decoder)?,
             RankingDisposition::decode(decoder)?,
             Option::decode(decoder)?,

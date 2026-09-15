@@ -768,7 +768,7 @@ fn campaign_save_boundary_proof(
 
     // The campaign owner stops directly on NamedBoundary and does not register
     // a session breakpoint. Preserve the scheduler-owned marker identity so
-    // the v5 handle cannot claim an actor-assigned breakpoint that never fired.
+    // the v6 handle cannot claim an actor-assigned breakpoint that never fired.
     if !entry.has_valid_content_hash() {
         return Err(campaign_run_error_message(
             "campaign marker proof has an invalid retained event content hash",
