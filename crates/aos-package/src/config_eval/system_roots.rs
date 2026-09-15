@@ -5,6 +5,15 @@
 //! locator is the sole configuration-module authority; registry-era module
 //! metadata is not represented at this boundary.
 
+/// Keeps one resolved package document with its authenticated public interfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPackageContract {
+    /// Canonical package document admitted by the package-contract resolver.
+    pub document: aos_ability_model::PackageDocument,
+    /// Canonical public interface documents committed by the package document.
+    pub interfaces: Vec<aos_ability_model::InterfaceDocument>,
+}
+
 /// Resolves one authenticated package document and its runtime identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedPackageModule {
@@ -22,10 +31,8 @@ pub struct ResolvedPackageModule {
     pub platform: String,
     /// Authenticated runtime payload output.
     pub runtime_output: String,
-    /// Authenticated companion output containing the package and interface documents.
-    pub ability_store_path: String,
-    /// Canonical package document containing the sole module locator.
-    pub document: aos_ability_model::PackageDocument,
+    /// Resolved package contract and authenticated public interfaces.
+    pub contract: ResolvedPackageContract,
 }
 
 /// Resolves authenticated package documents by package coordinate.

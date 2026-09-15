@@ -508,7 +508,7 @@ fn system_generation_hint(config: &ApmConfig) -> Option<usize> {
 /// # Errors
 ///
 /// Returns an error when the target requires cross-ABI re-eval but a retained
-/// input (`package_module_closure`, `host_nix_ref`, or `facts_hash`) is missing
+/// input (`package_modules`, `host_nix_ref`, or `facts_hash`) is missing
 /// from its record — a fail-closed signal that the generation cannot be safely
 /// recomputed.
 pub fn plan_config_gen_reactivation(
@@ -572,7 +572,7 @@ mod tests {
     use crate::profile::Profile;
     use crate::types::{
         ConfigGeneration, PackageContractArtifactMeta, PackageContractDocumentMeta,
-        PackageContractMeta, ProfileScope, ReactivationPlan,
+        PackageContractMeta, PackageModule, PackageModuleOrigin, ProfileScope, ReactivationPlan,
     };
     use tempfile::TempDir;
 
@@ -609,14 +609,9 @@ mod tests {
     fn legacy_snapshot_cannot_omit_new_registry_contract_metadata() {
         let current = contract_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-contract");
 
-        let error = super::require_rollback_contract(
-            "owner",
-            "1.0.0",
-            "test-reg",
-            None,
-            Some(&current),
-        )
-        .expect_err("rollback must not infer an package contract absent from its snapshot");
+        let error =
+            super::require_rollback_contract("owner", "1.0.0", "test-reg", None, Some(&current))
+                .expect_err("rollback must not infer an package contract absent from its snapshot");
 
         assert!(
             error
@@ -660,28 +655,24 @@ mod tests {
 
     /// Builds a configuration-generation record with the supplied axis metadata.
     fn config_gen(number: u32, module_abi_pinned: u32, with_inputs: bool) -> ConfigGeneration {
+        let package_modules = with_inputs
+            .then(|| PackageModule {
+                package: "server".to_string(),
+                document_digest: format!("sha256:{}", "a".repeat(64)),
+                store_path: "/nix/store/src0-cfg".to_string(),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                entrypoint: "module.nix".to_string(),
+                origin: PackageModuleOrigin::Registry,
+            })
+            .into_iter()
+            .collect();
         ConfigGeneration {
             number,
             created_at: "2026-06-01T00:00:00Z".into(),
             image_gen_parent: 1,
             module_abi_pinned,
             manifest_hash: "sha256:beef".into(),
-            package_module_closure: if with_inputs {
-                "/nix/store/src0-cfg".to_string()
-            } else {
-                "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-                    .to_string()
-            },
-            package_module_paths: if with_inputs {
-                vec!["/nix/store/src0-cfg".to_string()]
-            } else {
-                vec![]
-            },
-            package_module_packages: if with_inputs {
-                vec!["server".to_string()]
-            } else {
-                vec![]
-            },
+            package_modules,
             host_nix_ref: "/nix/store/hn0-host.nix".to_string(),
             host_nix_commit: None,
             facts_hash: "sha256:facts".to_string(),
@@ -689,19 +680,6 @@ mod tests {
             base_lib_ref: "/nix/store/bl0-base-lib".to_string(),
             evaluator_ref: "/nix/store/ev0-evaluator".to_string(),
         }
-    }
-
-    // A cross-ABI generation with unauthenticated module identity fails closed.
-    #[test]
-    fn reactivation_cross_abi_with_mismatched_module_identity_is_rejected() {
-        let mut target = config_gen(3, 1, true);
-        target.package_module_packages.clear();
-        let error = super::plan_config_gen_reactivation(&target, 1, 2).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("authenticated package identities")
-        );
     }
 
     // A host-only configuration has a legitimate empty module closure.
@@ -712,8 +690,7 @@ mod tests {
         let ReactivationPlan::CrossAbiReEval(inputs) = plan else {
             panic!("cross-ABI host-only reactivation must re-evaluate");
         };
-        assert!(inputs.package_module_paths.is_empty());
-        assert!(inputs.package_module_packages.is_empty());
+        assert!(inputs.package_modules.is_empty());
     }
 
     // The same ABI permits direct pointer-switch reactivation across images.
@@ -733,21 +710,13 @@ mod tests {
             ReactivationPlan::CrossAbiReEval(inputs) => {
                 assert_eq!(inputs.from_module_abi, 1);
                 assert_eq!(inputs.to_module_abi, 2);
-                assert_eq!(inputs.package_module_paths, ["/nix/store/src0-cfg"]);
+                assert_eq!(inputs.package_modules[0].store_path, "/nix/store/src0-cfg");
                 assert_eq!(inputs.host_nix_ref, "/nix/store/hn0-host.nix");
                 assert_eq!(inputs.facts_hash, "sha256:facts");
                 assert_eq!(inputs.facts_ref, "/nix/store/fa0-facts.json");
             }
             other => panic!("expected CrossAbiReEval, got {other:?}"),
         }
-    }
-
-    // A cross-ABI generation with unauthenticated retained inputs fails closed.
-    #[test]
-    fn reactivation_cross_abi_mismatched_input_identity_errors() {
-        let mut target = config_gen(3, 1, true);
-        target.package_module_paths.clear();
-        assert!(super::plan_config_gen_reactivation(&target, 1, 2).is_err());
     }
 
     #[tokio::test]

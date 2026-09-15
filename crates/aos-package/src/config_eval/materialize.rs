@@ -57,7 +57,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use aos_ability_model::VersionedDocument as _;
 use base64::Engine as _;
 use rustix::fd::OwnedFd;
 use rustix::fs::{AtFlags, Mode, OFlags, fchmod, mkdirat, openat, symlinkat, unlinkat};
@@ -65,12 +64,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::runtime::{RuntimePackageOrigin, RuntimePackagePin};
+use crate::types::{PackageModule, PackageModuleOrigin};
 
 mod ability_activation;
 
-pub use ability_activation::{
-    AbilityActivationInput, PackageContractCoordinate, PinnedAbilitySidecar,
-};
+pub use ability_activation::{AbilityActivationInput, PinnedAbilitySidecar};
 
 /// The runtime directory a materialized job script resolves to once the
 /// per-generation lower is mounted at `/etc`. Unit `Exec*=` placeholders are
@@ -548,45 +546,6 @@ fn validate_secret_refs(package: &str, value: &serde_json::Value) -> Result<()> 
     Ok(())
 }
 
-/// Computes the content-derived activation revision for one structured package.
-///
-/// The revision intentionally excludes store paths. Runtime, ability, and unit
-/// artifacts contribute their authenticated content identities, while the
-/// rendered projection contributes the exact configuration installed by this
-/// generation.
-///
-/// # Errors
-///
-/// Returns an error when the revision material cannot be encoded as canonical
-/// AOS JSON.
-pub(crate) fn package_activation_revision(
-    package: &str,
-    pin: &RuntimePackagePin,
-) -> Result<String> {
-    const DOMAIN: &str = "aos.package-activation-revision/v1";
-
-    let ability = pin
-        .contract
-        .as_ref()
-        .context("structured package has no ability metadata")?;
-    let resolved = super::static_packages::resolve(
-        package,
-        &pin.version,
-        &pin.platform,
-        &pin.store_path,
-        &pin.nar_hash,
-        ability,
-    )?;
-    let material = serde_json::json!({
-        "schema": DOMAIN,
-        "package": package,
-        "runtime_nar_hash": pin.nar_hash,
-        "package_contract_digest": resolved.document.content_digest()?,
-    });
-
-    Ok(aos_contract::Sha256Digest::of_canonical(DOMAIN, &material)?.to_string())
-}
-
 fn validate_runtime_pin(
     package: &str,
     pin: &RuntimePackagePin,
@@ -941,28 +900,10 @@ pub struct PackageModulesInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realization: Option<String>,
     /// Canonically package-ordered module identities.
-    pub modules: Vec<PackageModuleInput>,
+    pub modules: Vec<PackageModule>,
 }
 
-/// One module locator derived from a package's authenticated contract document.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageModuleInput {
-    /// Package identity declared by the contract document.
-    pub package: String,
-    /// Domain-separated semantic digest of the complete package document.
-    pub document_digest: String,
-    /// Exact artifact root containing the module.
-    pub store_path: String,
-    /// Authenticated NAR identity of the module artifact.
-    pub nar_hash: String,
-    /// Relative module entrypoint below the artifact root.
-    pub entrypoint: String,
-    /// Authority that supplied the authenticated package contract.
-    pub origin: PackageModuleOrigin,
-}
-
-impl PackageModuleInput {
+impl PackageModule {
     fn validate(&self) -> Result<()> {
         crate::types::validate_package_name(&self.package)
             .context("package_modules.modules contains an invalid package")?;
@@ -983,16 +924,6 @@ impl PackageModuleInput {
         }
         Ok(())
     }
-}
-
-/// Trust origin of one authenticated package contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PackageModuleOrigin {
-    /// Selected from one authenticated registry release.
-    Registry,
-    /// Recovered from the immutable image package catalog.
-    Image,
 }
 
 /// Authorized host module identity and trust evidence.
@@ -2486,7 +2417,6 @@ mod tests {
             ],
             desired_state: sidecar("desired-state"),
             authenticated_policy_set: sidecar("policy-set"),
-            packages: Vec::new(),
             fixed_point: Some(
                 crate::config_eval::ability_rounds::AbilityFixedPointProjection {
                     binding_plan: Some(aos_ability_model::PlanId(
@@ -2511,6 +2441,37 @@ mod tests {
         manifest
             .validate()
             .expect("historical planning-only feature set remains readable");
+    }
+
+    #[test]
+    fn activation_descriptor_rejects_parallel_package_coordinates() {
+        let mut manifest =
+            manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
+        let sidecar = |document: &str| PinnedAbilitySidecar {
+            store_path: format!("/nix/store/99999999999999999999999999999999-{document}"),
+            nar_hash: format!("sha256:{}", "0".repeat(52)),
+            nar_size: 1,
+            references: Vec::new(),
+            document: format!("{document}.json"),
+            document_sha256: format!("sha256:{}", "a".repeat(64)),
+            document_size: 1,
+        };
+        manifest.inputs.ability_activation = Some(AbilityActivationInput {
+            schema: AbilityActivationInput::SCHEMA.to_string(),
+            required_features: vec!["abilities-v1".to_string(), "ability-effects-v1".to_string()],
+            desired_state: sidecar("desired-state"),
+            authenticated_policy_set: sidecar("policy-set"),
+            fixed_point: None,
+        });
+        let mut encoded = serde_json::to_value(manifest).unwrap();
+        encoded["inputs"]["ability_activation"]["packages"] = serde_json::json!([]);
+
+        let error = serde_json::from_value::<ConfigManifest>(encoded)
+            .expect_err("activation package coordinates must have one manifest authority");
+        assert!(
+            error.to_string().contains("unknown field `packages`"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -36,9 +36,10 @@ use aos_ability_model::{
     ArtifactClosureMemberInput, ArtifactReference, HandlerDescriptor, InterfaceDocument, LocalKey,
     PackageDocument, ProviderImplementation, VersionedDocument, artifact_closure_identity,
 };
+#[cfg(test)]
+use aos_ability_validate::package_source_supported_features;
 use aos_ability_validate::{
-    PackageOutputSelector, decode_package_projection, package_source_supported_features,
-    resolve_package_projection,
+    PackageOutputSelector, decode_package_projection, resolve_package_projection,
 };
 use aos_contract::Sha256Digest;
 use serde::Serialize;
@@ -822,7 +823,7 @@ fn contract_artifacts(contract: &PackageContractMeta) -> Vec<PackageContractArti
     artifacts
 }
 
-/// Resolves the canonical package document from signed contract metadata.
+/// Resolves the canonical package contract from signed registry metadata.
 ///
 /// The exact manifest bytes, semantic digest, package coordinate, payload
 /// binding, and selector catalog are checked before the document is returned.
@@ -831,9 +832,9 @@ fn contract_artifacts(contract: &PackageContractMeta) -> Vec<PackageContractArti
 ///
 /// Returns an error when the package has malformed or inconsistent ability
 /// metadata, its manifest is absent, or its module artifact is not retained.
-pub(crate) fn resolve_package_document(
+pub(crate) fn resolve_package_contract(
     package_meta: &PackageMeta,
-) -> Result<Option<PackageDocument>> {
+) -> Result<Option<(PackageDocument, Vec<InterfaceDocument>)>> {
     let Some(contract) = package_meta.contract.as_ref() else {
         return Ok(None);
     };
@@ -857,7 +858,7 @@ pub(crate) fn resolve_package_document(
         "ability package module artifact is absent from the authenticated retention catalog"
     );
 
-    Ok(Some(bound.package))
+    Ok(Some((bound.package, bound.interfaces)))
 }
 
 /// Validates and seals retention metadata for native live-store tests.
@@ -910,6 +911,7 @@ pub(crate) fn verify_artifact_catalog(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn decode_package_manifest(bytes: &[u8]) -> Result<PackageDocument> {
     let supported_features = package_source_supported_features()
         .context("constructing supported package contract features")?;

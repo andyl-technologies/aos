@@ -376,9 +376,9 @@ fn reevaluate_manifest(
 
 fn validate_reevaluation_artifacts(target: &ConfigGeneration) -> Result<()> {
     let paths = target
-        .package_module_paths
+        .package_modules
         .iter()
-        .map(String::as_str)
+        .map(|module| module.store_path.as_str())
         .chain([
             target.host_nix_ref.as_str(),
             target.facts_ref.as_str(),
@@ -431,9 +431,14 @@ mod tests {
             image_gen_parent: 2,
             module_abi_pinned: 1,
             manifest_hash: "sha256:manifest".to_string(),
-            package_module_closure: "sha256:closure".to_string(),
-            package_module_paths: vec![format!("/nix/store/{}-missing-module", "0".repeat(32))],
-            package_module_packages: vec!["example@1".to_string()],
+            package_modules: vec![crate::types::PackageModule {
+                package: "example".to_string(),
+                document_digest: format!("sha256:{}", "a".repeat(64)),
+                store_path: format!("/nix/store/{}-missing-module", "0".repeat(32)),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                entrypoint: "module.nix".to_string(),
+                origin: crate::types::PackageModuleOrigin::Registry,
+            }],
             host_nix_ref: format!("/nix/store/{}-missing-host", "1".repeat(32)),
             host_nix_commit: None,
             facts_hash: "sha256:facts".to_string(),

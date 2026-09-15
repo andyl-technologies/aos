@@ -65,9 +65,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::config_eval::materialize::ConfigManifest;
+use crate::config_eval::materialize::{ConfigManifest, PackageModulesInput};
 use crate::graph_compile::reproject::hash_cjson;
-use crate::types::ImageGeneration;
+use crate::types::{ImageGeneration, PackageModule, PackageModuleOrigin};
 
 /// Schema discriminator for the generation-attestation record.
 pub const GEN_ATTESTATION_SCHEMA: &str = "aos.gen-attestation/v1";
@@ -136,7 +136,7 @@ pub struct AttestationInputs {
     /// The eval binary that produced the manifest.
     pub evaluator: EvaluatorAttInput,
     /// The signed-tag-blessed package-module set consumed.
-    pub package_modules: PackageModulesAttInput,
+    pub package_modules: PackageModulesInput,
     /// The policy-authorized `host.nix`.
     pub host_nix: HostNixAttInput,
     /// Separately authorized runtime operator module set.
@@ -197,44 +197,6 @@ pub struct EvaluatorAttInput {
     pub store_path: String,
     /// Authenticated identity of the evaluator store path.
     pub store_hash: String,
-}
-
-/// The measured-image and/or signed-release package-module set consumed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageModulesAttInput {
-    /// Registry whose signed release selected the registry-origin subset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub registry: Option<String>,
-    /// Semver release tag whose verified tag chain authenticates the set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub release_tag: Option<String>,
-    /// Fingerprint of the roster key that signed `release_tag`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tag_signer_key: Option<String>,
-    /// `sha256:<hex>` identity of the consumed signed `store/` subset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub realization: Option<String>,
-    /// Ordered package-document and module-locator identities.
-    pub modules: Vec<PackageModuleAttInput>,
-}
-
-/// One package module exactly as consumed by evaluation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageModuleAttInput {
-    /// Authenticated package name.
-    pub package: String,
-    /// Semantic digest of the complete package document.
-    pub document_digest: String,
-    /// Exact artifact root containing the module.
-    pub store_path: String,
-    /// Authenticated NAR identity of the module artifact.
-    pub nar_hash: String,
-    /// Relative module entrypoint below the artifact root.
-    pub entrypoint: String,
-    /// Authority that supplied the package contract.
-    pub origin: crate::config_eval::materialize::PackageModuleOrigin,
 }
 
 /// The policy-authorized `host.nix` provenance (mirrors the manifest's
@@ -709,9 +671,10 @@ fn inputs_from_manifest(
     image: &ImageGeneration,
 ) -> Result<AttestationInputs> {
     let config = &manifest.inputs.package_modules;
-    let has_registry_modules = config.modules.iter().any(|module| {
-        module.origin == crate::config_eval::materialize::PackageModuleOrigin::Registry
-    });
+    let has_registry_modules = config
+        .modules
+        .iter()
+        .any(|module| module.origin == PackageModuleOrigin::Registry);
     if !config.modules.is_empty()
         && has_registry_modules
         && (config.registry.is_none()
@@ -743,24 +706,7 @@ fn inputs_from_manifest(
             store_path: manifest.inputs.evaluator.store_path.clone(),
             store_hash: manifest.inputs.evaluator.store_hash.clone(),
         },
-        package_modules: PackageModulesAttInput {
-            registry: config.registry.clone(),
-            release_tag: config.release_tag.clone(),
-            tag_signer_key: config.tag_signer_key.clone(),
-            realization: config.realization.clone(),
-            modules: config
-                .modules
-                .iter()
-                .map(|module| PackageModuleAttInput {
-                    package: module.package.clone(),
-                    document_digest: module.document_digest.clone(),
-                    store_path: module.store_path.clone(),
-                    nar_hash: module.nar_hash.clone(),
-                    entrypoint: module.entrypoint.clone(),
-                    origin: module.origin,
-                })
-                .collect(),
-        },
+        package_modules: config.clone(),
         host_nix: HostNixAttInput {
             content_hash: host.content_hash.clone(),
             store_path: host.store_path.clone(),
@@ -1162,7 +1108,7 @@ pub fn verify_gen_attestation(
 }
 
 fn package_module_release_is_trusted(
-    modules: &PackageModulesAttInput,
+    modules: &PackageModulesInput,
     policy: &VerifierPolicy,
 ) -> bool {
     if modules.modules.is_empty() {
@@ -1203,9 +1149,7 @@ fn package_module_release_is_trusted(
     let image_modules = modules
         .modules
         .iter()
-        .filter(|module| {
-            module.origin == crate::config_eval::materialize::PackageModuleOrigin::Image
-        })
+        .filter(|module| module.origin == PackageModuleOrigin::Image)
         .collect::<Vec<_>>();
     if image_modules
         .iter()
@@ -1217,9 +1161,7 @@ fn package_module_release_is_trusted(
     let registry_modules = modules
         .modules
         .iter()
-        .filter(|module| {
-            module.origin == crate::config_eval::materialize::PackageModuleOrigin::Registry
-        })
+        .filter(|module| module.origin == PackageModuleOrigin::Registry)
         .collect::<Vec<_>>();
     if registry_modules.is_empty() {
         return modules.registry.is_none()
@@ -1287,7 +1229,7 @@ fn package_module_release_is_trusted(
         .all(|module| catalog.contains(&package_module_key(module)))
 }
 
-fn package_module_key(module: &PackageModuleAttInput) -> (&str, &str, &str, &str, &str) {
+fn package_module_key(module: &PackageModule) -> (&str, &str, &str, &str, &str) {
     (
         &module.package,
         &module.document_digest,
@@ -1530,18 +1472,18 @@ mod tests {
                 store_path: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-aos-eval-1".to_string(),
                 store_hash: "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh".to_string(),
             },
-            package_modules: PackageModulesAttInput {
+            package_modules: PackageModulesInput {
                 registry: Some("aos-core".to_string()),
                 release_tag: Some("1.4.0".to_string()),
                 tag_signer_key: Some("deadbeef".to_string()),
                 realization: Some(format!("sha256:{}", "aa".repeat(32))),
-                modules: vec![PackageModuleAttInput {
+                modules: vec![PackageModule {
                     package: "web".to_string(),
                     document_digest,
                     store_path: module_path,
                     nar_hash: module_nar_hash,
                     entrypoint: "module.nix".to_string(),
-                    origin: crate::config_eval::materialize::PackageModuleOrigin::Registry,
+                    origin: PackageModuleOrigin::Registry,
                 }],
             },
             host_nix: HostNixAttInput {
@@ -1812,7 +1754,7 @@ mod tests {
         modules.release_tag = None;
         modules.tag_signer_key = None;
         modules.realization = None;
-        modules.modules[0].origin = crate::config_eval::materialize::PackageModuleOrigin::Image;
+        modules.modules[0].origin = PackageModuleOrigin::Image;
         let image_member = VerifiedPackageModule {
             package_name: modules.modules[0].package.clone(),
             document_digest: modules.modules[0].document_digest.clone(),
@@ -1835,7 +1777,7 @@ mod tests {
         modules.release_tag = None;
         modules.tag_signer_key = None;
         modules.realization = None;
-        modules.modules[0].origin = crate::config_eval::materialize::PackageModuleOrigin::Image;
+        modules.modules[0].origin = PackageModuleOrigin::Image;
         let record = computed_with_inputs(inputs);
         let error =
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
@@ -1850,8 +1792,7 @@ mod tests {
         inputs.package_modules.release_tag = None;
         inputs.package_modules.tag_signer_key = None;
         inputs.package_modules.realization = None;
-        inputs.package_modules.modules[0].origin =
-            crate::config_eval::materialize::PackageModuleOrigin::Image;
+        inputs.package_modules.modules[0].origin = PackageModuleOrigin::Image;
         let record = computed_with_inputs(inputs);
         let error =
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
@@ -1873,7 +1814,7 @@ mod tests {
     #[test]
     fn verifier_accepts_only_canonical_empty_package_module_evidence() {
         let mut inputs = sample_inputs();
-        inputs.package_modules = PackageModulesAttInput {
+        inputs.package_modules = PackageModulesInput {
             registry: None,
             release_tag: None,
             tag_signer_key: None,

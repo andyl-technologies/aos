@@ -219,26 +219,13 @@ fn image_default_host_accepts_only_the_empty_module_without_operator_keys() {
 }
 
 #[test]
-fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
+fn retained_package_module_records_gate_cross_abi_rollback() {
     let source: materialize::ConfigManifest = serde_json::from_str(include_str!(
         "../../tests/fixtures/config_manifest/manifest.json"
     ))
     .unwrap();
     let mut retained = crate::types::CrossAbiReEvalInputs {
-        package_module_paths: source
-            .inputs
-            .package_modules
-            .modules
-            .iter()
-            .map(|module| module.store_path.clone())
-            .collect(),
-        package_module_packages: source
-            .inputs
-            .package_modules
-            .modules
-            .iter()
-            .map(|module| module.package.clone())
-            .collect(),
+        package_modules: source.inputs.package_modules.modules.clone(),
         host_nix_ref: source.inputs.host_nix.store_path.clone(),
         facts_hash: source.inputs.instance_facts.facts_hash.clone(),
         facts_ref: source.inputs.instance_facts.store_path.clone(),
@@ -246,24 +233,12 @@ fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
         to_module_abi: 2,
     };
 
+    retained.package_modules[0].document_digest = format!("sha256:{}", "f".repeat(64));
     let error = super::validate_retained_manifest_inputs(&source, &retained).unwrap_err();
-    assert!(error.to_string().contains("does not admit"), "{error:#}");
-    assert!(error.to_string().contains("example"), "{error:#}");
+    assert!(error.to_string().contains("disagree"), "{error:#}");
 
-    retained.to_module_abi = 1;
+    retained.package_modules = source.inputs.package_modules.modules.clone();
     super::validate_retained_manifest_inputs(&source, &retained).unwrap();
-
-    let working = super::retained_cross_abi_working_set(&source, &retained).unwrap();
-    assert_eq!(working.len(), 1);
-    assert_eq!(working[0].package, "example");
-    assert!(
-        working[0]
-            .ability
-            .as_ref()
-            .and_then(|document| document.package_module.as_ref())
-            .is_some(),
-        "retained working set must carry its authenticated package module"
-    );
 }
 
 #[test]
@@ -334,20 +309,7 @@ fn retained_identity_inputs(
     source.inputs.host_nix.store_path = host_nix.clone();
     source.inputs.host_nix.content_hash = super::sha256_identity(b"{}\n");
     let retained = crate::types::CrossAbiReEvalInputs {
-        package_module_paths: source
-            .inputs
-            .package_modules
-            .modules
-            .iter()
-            .map(|module| module.store_path.clone())
-            .collect(),
-        package_module_packages: source
-            .inputs
-            .package_modules
-            .modules
-            .iter()
-            .map(|module| module.package.clone())
-            .collect(),
+        package_modules: source.inputs.package_modules.modules.clone(),
         host_nix_ref: host_nix,
         facts_hash: source.inputs.instance_facts.facts_hash.clone(),
         facts_ref: source.inputs.instance_facts.store_path.clone(),

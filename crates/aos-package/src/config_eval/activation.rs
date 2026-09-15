@@ -768,6 +768,11 @@ where
         &params.marker_root.join("staging"),
         &mut projection,
     )?;
+    let projected_manifest: ConfigManifest = serde_json::from_value(projection.manifest.clone())
+        .context("parsing projected configuration manifest")?;
+    projected_manifest
+        .validate()
+        .context("validating projected configuration manifest")?;
     if verify_realized_paths {
         // A soft-failed package is deliberately absent from the local store.
         // Requiring every path from the source intent here would turn the
@@ -775,19 +780,15 @@ where
         // and make degraded re-projection impossible. The source manifest was
         // structurally validated above; realization is required only for the
         // dependency-closed manifest that will actually be committed.
-        let projected: ConfigManifest = serde_json::from_value(projection.manifest.clone())
-            .context("parsing projected manifest for realized-path verification")?;
-        verify_manifest_store_paths_realized(&projected)?;
+        verify_manifest_store_paths_realized(&projected_manifest)?;
     }
     let credential_reconciliation = if resolve_credentials {
-        let projected: ConfigManifest = serde_json::from_value(projection.manifest.clone())
-            .context("parsing staged credential projection")?;
         let config = crate::config::ApmConfig::load(ProfileScope::System)
             .context("loading system credential encryption settings")?;
         crate::credential_artifact::reconcile_secret_refs(
             &config.settings,
             &crate::credential_artifact::aos_root_path(),
-            &projected.credentials,
+            &projected_manifest.credentials,
         )
         .context("resolving configuration credential references")?
     } else {
@@ -851,7 +852,7 @@ where
                 number,
                 params.module_abi,
                 &projection.generation_id,
-                &projection.manifest,
+                &projected_manifest,
             )?;
             state.next = number.saturating_add(1);
             state.generations.push(record);
@@ -1285,62 +1286,21 @@ fn config_generation_record(
     number: u32,
     module_abi: u32,
     manifest_hash: &str,
-    manifest: &Value,
+    manifest: &ConfigManifest,
 ) -> Result<ConfigGeneration> {
-    let host_nix_ref = manifest
-        .pointer("/inputs/host_nix/store_path")
-        .and_then(Value::as_str)
-        .context("manifest has no host_nix store path")?
-        .to_string();
-    let facts_hash = manifest
-        .pointer("/inputs/instance_facts/facts_hash")
-        .and_then(Value::as_str)
-        .context("manifest has no instance facts hash")?
-        .to_string();
-    let package_modules = manifest
-        .pointer("/inputs/package_modules/modules")
-        .and_then(Value::as_array)
-        .context("manifest has no package module records")?;
-    let package_module_paths = package_modules
-        .iter()
-        .filter_map(|module| module.get("store_path").and_then(Value::as_str))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let package_module_packages = package_modules
-        .iter()
-        .filter_map(|module| module.get("package").and_then(Value::as_str))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let package_module_closure = package_module_paths.first().cloned().unwrap_or_else(|| {
-        crate::graph_compile::reproject::hash_cjson(&Value::Array(package_modules.clone()))
-    });
     Ok(ConfigGeneration {
         number,
         created_at: crate::metadata::now_rfc3339(),
         image_gen_parent: running_image.number,
         module_abi_pinned: module_abi,
         manifest_hash: manifest_hash.to_string(),
-        package_module_closure,
-        package_module_paths,
-        package_module_packages,
-        host_nix_ref,
+        package_modules: manifest.inputs.package_modules.modules.clone(),
+        host_nix_ref: manifest.inputs.host_nix.store_path.clone(),
         host_nix_commit: None,
-        facts_hash,
-        facts_ref: manifest
-            .pointer("/inputs/instance_facts/store_path")
-            .and_then(Value::as_str)
-            .context("manifest has no instance facts store path")?
-            .to_string(),
-        base_lib_ref: manifest
-            .pointer("/inputs/base_lib/store_path")
-            .and_then(Value::as_str)
-            .context("manifest has no base-lib store path")?
-            .to_string(),
-        evaluator_ref: manifest
-            .pointer("/inputs/evaluator/store_path")
-            .and_then(Value::as_str)
-            .context("manifest has no evaluator store path")?
-            .to_string(),
+        facts_hash: manifest.inputs.instance_facts.facts_hash.clone(),
+        facts_ref: manifest.inputs.instance_facts.store_path.clone(),
+        base_lib_ref: manifest.inputs.base_lib.store_path.clone(),
+        evaluator_ref: manifest.inputs.evaluator.store_path.clone(),
     })
 }
 
@@ -1470,12 +1430,14 @@ mod tests {
             image_gen_parent: 1,
             module_abi_pinned: 7,
             manifest_hash: "sha256:legacy-fixture".to_string(),
-            package_module_closure: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config"
-                .to_string(),
-            package_module_paths: vec![
-                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config".to_string(),
-            ],
-            package_module_packages: vec!["fixture".to_string()],
+            package_modules: vec![crate::types::PackageModule {
+                package: "fixture".to_string(),
+                document_digest: format!("sha256:{}", "a".repeat(64)),
+                store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config".to_string(),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                entrypoint: "module.nix".to_string(),
+                origin: crate::types::PackageModuleOrigin::Registry,
+            }],
             host_nix_ref: "/nix/store/cccccccccccccccccccccccccccccccc-host.nix".to_string(),
             host_nix_commit: None,
             facts_hash: "sha256:fixture".to_string(),
@@ -1745,7 +1707,6 @@ mod tests {
                 "document_sha256": format!("sha256:{}", "b".repeat(64)),
                 "document_size": 1
             },
-            "packages": [],
             "fixed_point": {
                 "bindings": {},
                 "resolvedResources": {},
@@ -1811,7 +1772,11 @@ mod tests {
         let expected_hash = hash_cjson(&manifest);
         assert_eq!(state.generations[1].manifest_hash, expected_hash);
         assert_eq!(
-            state.generations[1].package_module_paths,
+            state.generations[1]
+                .package_modules
+                .iter()
+                .map(|module| module.store_path.clone())
+                .collect::<Vec<_>>(),
             vec!["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config".to_string()]
         );
         assert_eq!(
