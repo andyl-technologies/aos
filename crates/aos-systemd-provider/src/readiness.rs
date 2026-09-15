@@ -6,17 +6,15 @@ use anyhow::{Result, bail};
 use aos_ability_model::{AbilityValue, AccessMode, LocalKey, MethodReference, MethodSemantics};
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, BoundNativeContext, INVOCATION_SCHEMA, Invocation,
-    InvocationDisposition, InvocationPurpose, InvocationResult, REQUEST_SCHEMA,
-    RESOURCE_CONTEXT_SCHEMA, RESULT_SCHEMA, SupportedPurposes, resource_set_digest,
+    AdmissionResult, AdmissionRevision, INVOCATION_SCHEMA, Invocation, InvocationDisposition,
+    InvocationPurpose, InvocationResult, REQUEST_SCHEMA, RESULT_SCHEMA, SupportedPurposes,
+    resource_set_digest, validate_admission_resource, validate_resource_context,
+    validate_resource_contexts,
 };
 use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 
 use crate::model::{PROVIDER_CONTEXT_SCHEMA, ProviderContext};
-use crate::{
-    decode_value, provider_context, require_target_revision, target_context, validate_contexts,
-    value,
-};
+use crate::{decode_value, provider_context, target_context, value};
 
 const NETWORK_INTERFACE: &str = "aos.network.readiness";
 const FILESYSTEM_INTERFACE: &str = "aos.filesystem.readiness";
@@ -34,14 +32,12 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         bail!("unsupported admission request schema");
     }
+    validate_admission_resource(&request)?;
     require_method(&request.method, &request.semantics)?;
-    if request.target.resource != request.resource_spec.resource {
-        bail!("admission target does not match its resource specification");
-    }
     if !request.resource_spec.realization.as_json().is_null() {
         bail!("readiness publication unexpectedly carries a desired realization");
     }
-    validate_contexts(&request.resources)?;
+    validate_resource_contexts(&request.resources)?;
 
     let selected = selected_target(&request.method, &request.resource_spec.value)?;
     let manager = PinnedSystemdManager::connect().await?;
@@ -65,9 +61,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
         revision: AdmissionRevision::Present {
             revision: request.resource_spec.revision,
         },
-        incarnation: Some(aos_ability_model::IncarnationId::new(
-            manager.incarnation().token(),
-        )?),
+        incarnation: Some(request.assignment.incarnation),
         observation: inspection.observation,
         native_context: context,
         supported_purposes,
@@ -97,16 +91,10 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     {
         bail!("invocation resource-set digest does not match");
     }
-    validate_contexts(&invocation.request.resources)?;
+    validate_resource_contexts(&invocation.request.resources)?;
 
     let target = target_context(&invocation)?;
-    let bound: BoundNativeContext = decode_value(&target.native_context)?;
-    if bound.schema != RESOURCE_CONTEXT_SCHEMA
-        || bound.resource_spec.resource != invocation.request.target.resource
-    {
-        bail!("target context is bound to another resource");
-    }
-    require_target_revision(bound.resource_spec.revision, target.revision)?;
+    let bound = validate_resource_context(target)?;
     if invocation.request.inputs != bound.resource_spec.value {
         bail!("invocation inputs differ from the checked readiness request");
     }
