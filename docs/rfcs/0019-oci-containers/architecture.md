@@ -382,6 +382,7 @@ The first-release media-type allowlist is:
 - `application/vnd.oci.empty.v1+json`, whose only accepted body is canonical
   `{}` and which is used as an artifact manifest config;
 - `application/vnd.aos.container-release.v1+json`;
+- `application/vnd.aos.container.static-abilities.v1+json`;
 - `application/vnd.aos.nix-closure.v1+json`;
 - `application/vnd.aos.source-closure.v1+json`;
 - `application/vnd.aos.source-closure.v1.tar+gzip`;
@@ -497,8 +498,15 @@ binds:
 - Nix definition and output provenance;
 - full-closure package mapping, corresponding-source, and license
   qualification, with `readyForVerifiedPublication = true`;
+- required static ability and launch-obligation evidence;
 - closure manifest and SBOM descriptors;
 - source, license, signature, and attestation referrers.
+
+The signature input, DSSE payload type, signed release sidecar, and static
+ability evidence each use their single `/v1` contract. The static ability
+descriptor is required in both the signature input and the final release, so
+every parser, verifier, Hub indexer, and graph traversal sees the same signed
+evidence set.
 
 The Hub indexer verifies this sidecar before creating a signed release root.
 Generic clients may pull an unverified manual tag, but only AOS-aware

@@ -248,7 +248,7 @@ in
 
           jq -e \
             --slurpfile qualification ${evidence}/qualification.json '
-              .schema == "aos.container.signature-input/v2"
+              .schema == "aos.container.signature-input/v1"
               and .qualification == $qualification[0]
               and .qualification.readyForVerifiedPublication == true
               and .nix.definition.attribute == "systems.server.build.containers.aos"
@@ -269,10 +269,10 @@ in
               .schema == "aos.container.signing-request/v1"
               and .input.digest == $digest
               and .input.size == $size
-              and .input.mediaType == "application/vnd.aos.container.signature-input.v2+json"
+              and .input.mediaType == "application/vnd.aos.container.signature-input.v1+json"
               and .qualified == $input[0].qualification.readyForVerifiedPublication
               and .qualified == true
-              and .requiredOutput.finalSidecarMediaType == "application/vnd.aos.container-release.v2+json"
+              and .requiredOutput.finalSidecarMediaType == "application/vnd.aos.container-release.v1+json"
               and .unsignedRelease.qualification == $input[0].qualification
               and .constraints.privateMaterialPermittedInNixBuild == false
               and .constraints.finalizerMustRejectUnqualifiedInput == true
@@ -281,8 +281,8 @@ in
 
           jq -cS '
             del(.schema)
-            | .schemaVersion = 2
-            | .mediaType = "application/vnd.aos.container-release.v2+json"
+            | .schemaVersion = 1
+            | .mediaType = "application/vnd.aos.container-release.v1+json"
             | .evidence.signature = {
                 mediaType: "application/vnd.oci.image.manifest.v1+json",
                 artifactType: "application/vnd.dsse.envelope.v1+json",

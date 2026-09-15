@@ -100,7 +100,7 @@ pkgs.mkDerivation {
         jq -e \
           --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
           --slurpfile index ${primaryIndex}/image-index.json '
-            .schema == "aos.container.signature-input/v2"
+            .schema == "aos.container.signature-input/v1"
             and .oci.index == $descriptor[0]
             and .oci.platformManifests == $index[0].manifests
             and (.oci.platformManifests | length) == 2
@@ -117,7 +117,7 @@ pkgs.mkDerivation {
             and .unsignedRelease.oci == $input[0].oci
             and .requiredOutput.finalSidecarPath == "containers/v1/index.json"
             and .requiredOutput.finalSidecarMediaType
-              == "application/vnd.aos.container-release.v2+json"
+              == "application/vnd.aos.container-release.v1+json"
             and .constraints.privateMaterialPermittedInNixBuild == false
             and .constraints.exactInputBytesRequired == true
           ' ${evidence}/signing-request.json >/dev/null \

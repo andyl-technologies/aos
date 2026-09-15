@@ -724,7 +724,7 @@ jq -S -n \
   --slurpfile provenance "$out/evidence/provenance.descriptor.json" \
   --slurpfile qualification "$out/qualification.json" '
     {
-      schema: "aos.container.signature-input/v2",
+      schema: "aos.container.signature-input/v1",
       identity: $spec[0].identity,
       oci: {
         index: $index[0],
@@ -766,7 +766,7 @@ jq -S -n \
     {
       schema: "aos.container.signing-request/v1",
       input: {
-        mediaType: "application/vnd.aos.container.signature-input.v2+json",
+        mediaType: "application/vnd.aos.container.signature-input.v1+json",
         digest: $inputDigest,
         size: $inputSize
       },
@@ -775,7 +775,7 @@ jq -S -n \
         artifactManifestMediaType: "application/vnd.oci.image.manifest.v1+json",
         artifactSubject: $input[0].oci.index,
         finalSidecarPath: "containers/v1/index.json",
-        finalSidecarMediaType: "application/vnd.aos.container-release.v2+json"
+        finalSidecarMediaType: "application/vnd.aos.container-release.v1+json"
       },
       constraints: {
         exactInputBytesRequired: true,
