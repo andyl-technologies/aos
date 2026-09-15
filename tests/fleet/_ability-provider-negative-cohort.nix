@@ -118,6 +118,7 @@ in {
       COHORT_CELLS = json.loads(Path(COHORT_CELLS_PATH).read_text())
       EFFECT_ORACLES.__dict__["MATRIX_SPEC"] = MATRIX_SPEC
       PROVIDER_ORACLES.__dict__["MATRIX_SPEC"] = MATRIX_SPEC
+      PROVIDER_FLIGHT.__dict__["MATRIX_SPEC"] = MATRIX_SPEC
       PROVIDER_BUILDER = PROVIDER_EVIDENCE.ProviderNegativeEvidence(
           MATRIX_SPEC, COHORT_CELLS
       )
