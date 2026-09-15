@@ -443,6 +443,51 @@ fn admission_rejects_a_realization_that_differs_from_the_planned_path() {
 }
 
 #[test]
+fn requested_path_admission_rejects_an_overlapping_durable_claim() {
+    let temporary = tempdir().expect("temporary directory exists");
+    let provider = provider(temporary.path());
+    let claimed_resource = resource("claimed-parent");
+    let claimed_path = PathBuf::from("/run/aos-filesystem-provider-test/claimed");
+    provider
+        .write_claim(&StorageClaim {
+            schema: CLAIM_SCHEMA.into(),
+            resource: claimed_resource,
+            path: claimed_path.clone(),
+            revision: RevisionId(Sha256Digest::of_bytes(b"claimed revision")),
+            mode: "0750".into(),
+            uid: None,
+            gid: None,
+            device: 1,
+            inode: 1,
+            kind: ClaimedEntryKind::Directory,
+            content_digest: None,
+            active: true,
+        })
+        .expect("durable claim fixture is written");
+
+    let mut request = admission_request(&provider, resource("claimed-child"));
+    let requested_path = claimed_path.join("child");
+    request.resource_spec.value = ability_value(json!({
+        "name": "claimed-child",
+        "purpose": "runtime",
+        "mode": "0750",
+        "requested_path": requested_path,
+    }))
+    .expect("requested-path input is valid");
+    request.resource_spec.realization = ability_value(json!({
+        "schema": REALIZATION_SCHEMA,
+        "path": requested_path,
+    }))
+    .expect("requested-path realization is valid");
+
+    let error = provider
+        .admit(request)
+        .expect_err("an overlapping requested path must fail before effect");
+
+    assert!(error.to_string().contains("overlaps"), "{error:#}");
+}
+
+#[test]
 fn cancellation_of_an_absent_allocation_never_creates_it() {
     let temporary = tempdir().expect("temporary directory exists");
     let provider = provider(temporary.path());
