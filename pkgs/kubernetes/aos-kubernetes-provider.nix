@@ -12,7 +12,7 @@
     inherit src;
     name = "aos-kubernetes-provider-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-Jw5dYxep8B2pG6vp6w2djfrr/BG9NuRVBhhH3SemBl0=";
+    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
   };
   cargoArtifactContract = {
     family = "aos-kubernetes-provider-release-and-test";

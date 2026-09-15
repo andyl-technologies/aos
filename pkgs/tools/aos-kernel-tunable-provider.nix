@@ -14,7 +14,7 @@
     inherit src;
     name = "aos-kernel-tunable-provider-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-EQ+gewGLp3HXvu8nOa5+2WrRMyG/kWmC8K+rMK83skU=";
+    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
   };
   targetTriple =
     {
