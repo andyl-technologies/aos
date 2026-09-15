@@ -442,9 +442,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use aos_ability_model::{
-        AbilityActivationMode, EnvironmentId, ExecutionStage, InstanceId, InterfaceDescriptor,
-        InterfaceDocument, InterfaceName, LifecycleSemantics, LocalKey, PlanId, RequiredFeature,
-        RequirementDeclaration, RevisionId, ScopePath,
+        AbilityActivationMode, AggregationContract, AggregationScope, EnvironmentId,
+        ExecutionStage, InstanceId, InterfaceDescriptor, InterfaceDocument, InterfaceName,
+        LifecycleSemantics, LocalKey, PlanId, RequiredFeature, RequirementDeclaration, RevisionId,
+        ScopePath,
     };
     use aos_contract::Sha256Digest;
 
@@ -489,6 +490,13 @@ mod tests {
     }
 
     fn panel() -> PackageAbilityReferencePanel {
+        let aggregation = AggregationContract {
+            scope: AggregationScope::ProviderInstance,
+            key: key("service"),
+            controller_group: key("service"),
+            reject_slot_collisions: true,
+            merge_contract: None,
+        };
         let interface = InterfaceDocument {
             schema: "aos.ability.interface/v1".into(),
             required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
@@ -508,6 +516,7 @@ mod tests {
                     retains_persistent_by_default: false,
                     persistent_delete_method: None,
                 },
+                aggregation: aggregation.clone(),
                 guarantees: Vec::new(),
             },
         };
@@ -527,7 +536,7 @@ mod tests {
             exports: vec![aos_doc_model::AbilityExportReference {
                 name: key("server"),
                 interface,
-                aggregation: None,
+                aggregation: Some(aggregation),
                 implementation: Sha256Digest::of_bytes(b"implementation"),
                 requirements: vec![RequirementDeclaration {
                     alias: key("service-runtime"),

@@ -2796,6 +2796,13 @@ fn interface_document(
                 retains_persistent_by_default: true,
                 persistent_delete_method: None,
             },
+            aggregation: AggregationContract {
+                scope: AggregationScope::ProviderInstance,
+                key: key("slot"),
+                controller_group: key("reference-test"),
+                reject_slot_collisions: true,
+                merge_contract: None,
+            },
             guarantees: Vec::new(),
         },
     }
