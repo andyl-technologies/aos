@@ -1920,6 +1920,23 @@ mod tests {
     }
 
     #[test]
+    fn package_option_declarations_accept_bounded_multiline_prose() {
+        let mut declaration = package_option("multiline", OptionType::Bool);
+        declaration.description = "First paragraph.\n\nSecond paragraph.".to_string();
+
+        validate_package_option_declarations(&[declaration], &ABILITY_LIMITS_V1)
+            .expect("bounded documentation prose");
+    }
+
+    #[test]
+    fn package_option_declarations_reject_non_prose_control_characters() {
+        let mut declaration = package_option("control", OptionType::Bool);
+        declaration.description = "Invalid\0description".to_string();
+
+        assert!(validate_package_option_declarations(&[declaration], &ABILITY_LIMITS_V1).is_err());
+    }
+
+    #[test]
     fn shared_nix_fixture_round_trips_canonically() -> Result<(), DocumentError> {
         let bytes = include_bytes!("../../../tests/abilities/fixtures/interface.json");
         let supported_features =

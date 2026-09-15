@@ -12,21 +12,20 @@
   abilityTypes = lib.abilities.types;
 
   positiveInt = types.addCheck types.int (value: value > 0);
-  credentialReference = types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      resource = mkOption {
-        type = types.nullOr (abilityTypes.deferredResult abilityTypes.resourceReference);
+  credentialReference = abilityTypes.record {
+    fields = {
+      resource = {
+        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
         default = null;
         description = "Typed source resource for this delivered credential.";
       };
-      encrypted = mkOption {
-        type = types.bool;
+      encrypted = {
+        type = abilityTypes.boolean;
         default = false;
         description = "Whether the credential requires encrypted delivery.";
       };
     };
-  });
+  };
   literal = text: {
     kind = "literal";
     inherit text;
@@ -379,7 +378,7 @@ in {
         description = "Typed credential containing the trusted certificate authority bundle.";
       };
       verifyClient = mkOption {
-        type = types.enum ["never" "allow" "try" "demand"];
+        type = types.enum ["allow" "demand" "never" "try"];
         default = "demand";
         description = "Client-certificate verification policy applied to TLS sessions.";
       };

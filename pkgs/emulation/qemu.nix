@@ -671,18 +671,6 @@ in
       passthru = {
         standaloneRelease = !applyCruciblePatches && !testOnlyNonDistributable;
         inherit testOnlyNonDistributable;
-        serviceDocumentation =
-          if pname == "qemu"
-          then {
-            kind = "on-demand";
-            summary = "Per-VM monitor launched by a VM orchestrator.";
-          }
-          else if pname == "qemu-crucible"
-          then {
-            kind = "on-demand";
-            summary = "Crucible-controlled monitor launched across the process boundary.";
-          }
-          else null;
         releaseVia =
           if applyCruciblePatches && !testOnlyNonDistributable
           then "crucible"
