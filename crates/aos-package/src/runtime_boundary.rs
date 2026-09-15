@@ -182,6 +182,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::LoadEbpfLsmPolicies { .. }
         | PackageCommand::Eval { .. }
         | PackageCommand::EvalRetained { .. }
+        | PackageCommand::EvalService { .. }
         | PackageCommand::Materialize { .. }
         | PackageCommand::ActivateConfig { .. }
         | PackageCommand::Switch { .. }
@@ -253,6 +254,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::LoadEbpfLsmPolicies { .. }
         | PackageCommand::Eval { .. }
         | PackageCommand::EvalRetained { .. }
+        | PackageCommand::EvalService { .. }
         | PackageCommand::Materialize { .. }
         | PackageCommand::ActivateConfig { .. }
         | PackageCommand::Switch { .. }

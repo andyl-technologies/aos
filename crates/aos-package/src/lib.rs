@@ -667,6 +667,28 @@ pub enum PackageCommand {
         #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
         eval_root: PathBuf,
     },
+    /// Hidden: run the complete boot-time configuration evaluation service.
+    #[command(name = "__eval-service", hide = true)]
+    EvalService {
+        /// Exact host module released by initrd metadata authorization.
+        #[arg(long = "host-nix", default_value = "/run/aos-metadata/host.nix")]
+        host_nix: PathBuf,
+        /// Image-owned base module library.
+        #[arg(long = "base-lib", default_value = "/aos-toplevel/base-lib")]
+        base_lib: PathBuf,
+        /// Fallback module ABI when the running image omits it.
+        #[arg(long = "module-abi", default_value_t = 1)]
+        module_abi: u32,
+        /// Optional desired package selection file.
+        #[arg(long, default_value = "/etc/aos/packages.d/desired.toml")]
+        desired: PathBuf,
+        /// Destination for the converged manifest.
+        #[arg(long, default_value = config_eval::stock::DEFAULT_MANIFEST_PATH)]
+        out: PathBuf,
+        /// Private evaluator scratch directory.
+        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
+        eval_root: PathBuf,
+    },
     /// Apply a converged config manifest into a per-generation `/etc` lower.
     ///
     /// Reads `--manifest` (an `aos.config-manifest/v1` document), writes its
@@ -1285,6 +1307,7 @@ impl PackageCommand {
                 | PackageCommand::LoadEbpfLsmPolicies { .. }
                 | PackageCommand::Eval { .. }
                 | PackageCommand::EvalRetained { .. }
+                | PackageCommand::EvalService { .. }
                 | PackageCommand::Materialize { .. }
                 | PackageCommand::ActivateConfig { .. }
                 | PackageCommand::Fetch { .. }
@@ -1312,6 +1335,7 @@ impl PackageCommand {
             | PackageCommand::ActivateRestoreRoutedSources { .. }
             | PackageCommand::LoadEbpfLsmPolicies { .. }
             | PackageCommand::EvalRetained { .. }
+            | PackageCommand::EvalService { .. }
             | PackageCommand::ActivateConfig { .. }
             | PackageCommand::Fetch { .. }
             | PackageCommand::RenderOne { .. }
@@ -3631,6 +3655,31 @@ pub async fn run(
         return result;
     }
 
+    if let PackageCommand::EvalService {
+        host_nix,
+        base_lib,
+        module_abi,
+        desired,
+        out,
+        eval_root,
+    } = command
+    {
+        let verbose = u8::from(printer.mode() == OutputMode::Verbose);
+        let result = config_eval::service::run(&config_eval::service::ServiceCommand {
+            host_nix: host_nix.clone(),
+            base_lib: base_lib.clone(),
+            module_abi: *module_abi,
+            desired: desired.clone(),
+            out: out.clone(),
+            eval_root: eval_root.clone(),
+            verbose,
+        });
+        if let Err(error) = &result {
+            exit_for_eval_failure(error, verbose);
+        }
+        return result;
+    }
+
     // Apply a converged manifest through the private package runtime.
     // /etc tree into a per-generation lower. Called by `activate` on the new
     // path after the configuration fixpoint has converged.
@@ -4362,6 +4411,9 @@ pub async fn run(
         }
         PackageCommand::EvalRetained { .. } => {
             unreachable!("EvalRetained is handled before ApmConfig::load")
+        }
+        PackageCommand::EvalService { .. } => {
+            unreachable!("EvalService is handled before ApmConfig::load")
         }
         PackageCommand::Materialize { .. } => {
             unreachable!("Materialize is handled before ApmConfig::load")

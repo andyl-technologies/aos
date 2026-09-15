@@ -56,6 +56,7 @@ mod cancellation;
 mod execution_observer;
 pub mod runtime;
 pub mod runtime_modules;
+pub mod service;
 pub mod stage_handoff;
 pub(crate) mod static_packages;
 pub mod stock;
