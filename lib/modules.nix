@@ -116,6 +116,8 @@
     # stored but otherwise ignored. Ports of nixpkgs code frequently
     # set this on `*.unit` / `*.jobScripts` fields.
     internal ? false,
+    deprecated ? null,
+    replacement ? null,
     # `contributable` marks the capability-scoped contribution surface. It
     # never changes how an option's value is merged. The declaring owner sets
     # it on the extension points other package modules may write into
@@ -139,6 +141,8 @@
       apply
       visible
       internal
+      deprecated
+      replacement
       contributable
       ;
   };
@@ -1849,6 +1853,9 @@
           readOnly = option.readOnly or false;
           contributable = option.contributable or false;
           owner = ownerForProvenance (decl.provenance or "@base");
+          deprecated = option.deprecated or null;
+          replacement = option.replacement or null;
+          source = decl.file;
         }
       ) (builtins.attrNames optionMap);
 

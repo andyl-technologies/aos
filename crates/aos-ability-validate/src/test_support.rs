@@ -380,6 +380,7 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
             path: aos_ability_model::RelativePath::new("module.nix")
                 .expect("fixture package module path is valid"),
         },
+        option_declarations: Vec::new(),
         exports: vec![
             ExportDeclaration {
                 name: key("handler"),

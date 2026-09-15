@@ -339,6 +339,7 @@ mod tests {
                 path: aos_ability_model::RelativePath::new("module.nix")
                     .expect("fixture package module path is valid"),
             },
+            option_declarations: Vec::new(),
             exports: vec![
                 ExportDeclaration {
                     name: aos_ability_model::LocalKey::new("echo").expect("valid export"),

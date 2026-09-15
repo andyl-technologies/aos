@@ -310,6 +310,13 @@
       (serviceRequestFor withCredential)
     ]
     ++ lib.optional withCredential credentialRequest;
+  staticAbilityFragments = builtins.map
+    (fragment: (serviceManagement.splitContribution fragment).declarations)
+    (abilityFragmentsFor true);
+  configuredAbilityFragments = withCredential:
+    builtins.map
+    (fragment: (serviceManagement.splitContribution fragment).configured)
+    (abilityFragmentsFor withCredential);
 in {
   options.rsyncd = {
     enable = mkOption {
@@ -352,6 +359,7 @@ in {
             message = "authenticated rsyncd modules require rsyncd.secrets.resource";
           }
         ];
+        aos.abilities = lib.mkMerge staticAbilityFragments;
       }
       (lib.mkIf cfg.enable {aos.abilities.instances.rsyncd = {};})
     ]
@@ -362,7 +370,7 @@ in {
       (lib.mkMerge (
         builtins.map
         (fragment: {aos.abilities = fragment;})
-        (abilityFragmentsFor withCredential)
+        (configuredAbilityFragments withCredential)
       )))
     [false true]
   );

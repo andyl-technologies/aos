@@ -7,6 +7,7 @@
   version,
   evaluated,
   packageModuleLocator ? null,
+  optionDeclarations,
 }: let
   packagePrefix = "${packageName}:";
   localName = name:
@@ -88,12 +89,12 @@
   in
     builtins.attrNames (builtins.listToAttrs (map
       (method: {
-        name = declaration.methods.${method}.targetResource;
+        name = declaration.interface.methods.${method}.target_resource;
         value = true;
       })
       (builtins.filter
         (method:
-          declaration.methods.${method}.semantics.requiredTargetAccess
+          declaration.interface.methods.${method}.semantics.required_target_access
           == "exclusive-write")
         implementation.methods)));
   providerFor = name: implementation: let
@@ -233,6 +234,7 @@
         artifact = selector packageModuleLocator.artifact;
         inherit (packageModuleLocator) path;
       };
+    option_declarations = optionDeclarations;
     exports = map (name: let
       implementation = semanticImplementations.${name};
     in {

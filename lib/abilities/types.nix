@@ -41,42 +41,52 @@
     then {
       kind = "list";
       element = nested schema.element;
+      max_items = schema.max_items;
       unique = schema.unique or false;
       canonical_order = schema.canonical_order or false;
     }
     else if schema.kind == "map"
     then {
-      kind = "attrs-of";
+      kind = "map";
+      inherit (schema) key;
       value = nested schema.value;
-      placeholder = "name";
+      max_entries = schema.max_entries;
     }
     else if schema.kind == "record"
     then {
-      kind = "submodule";
+      kind = "record";
       fields = builtins.mapAttrs (_: nested) schema.fields;
-      open = false;
+      inherit (schema) optional_fields;
     }
     else if schema.kind == "document-record"
     then {
-      kind = "submodule";
+      kind = "document-record";
+      inherit (schema) key_max_length optional_fields;
       fields = builtins.mapAttrs (_: nested) schema.fields;
-      open = false;
     }
     else if schema.kind == "tagged-union"
     then {
-      kind = "one-of";
-      alternatives = builtins.map nested (builtins.attrValues schema.variants);
+      kind = "tagged-union";
+      inherit (schema) tag;
+      variants = builtins.mapAttrs (_: nested) schema.variants;
     }
     else if schema.kind == "disjoint-union"
     then {
-      kind = "one-of";
-      alternatives = builtins.map nested schema.variants;
+      kind = "disjoint-union";
+      variants = builtins.map nested schema.variants;
     }
     else if schema.kind == "optional"
     then {
-      kind = "nullable";
+      kind = "optional";
       value = nested schema.value;
     }
+    else if builtins.elem schema.kind [
+      "artifact-reference"
+      "resource-reference"
+      "provider-assignment"
+      "operation-result-reference"
+    ]
+    then {inherit (schema) kind;}
     else {
       kind = "opaque";
       signature = schema.kind;
