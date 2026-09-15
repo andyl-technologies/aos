@@ -42,6 +42,7 @@ members = [
     "aos-kernel-tunable-provider",
     "aos-nix-store-provider",
     "aos-systemd-provider",
+    "aos-boot-preparation-provider",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",
@@ -239,6 +240,7 @@ aos-package = { path = "aos-package" }
 aos-configuration-provider = { path = "aos-configuration-provider" }
 aos-filesystem-provider = { path = "aos-filesystem-provider" }
 aos-nix-store-provider = { path = "aos-nix-store-provider" }
+aos-boot-preparation-provider = { path = "aos-boot-preparation-provider" }
 aos-hub-console-contract = { path = "aos-hub-console-contract" }
 aos-hub-core = { path = "aos-hub-core" }
 aos-hub = { path = "aos-hub" }

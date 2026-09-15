@@ -451,6 +451,7 @@ let
     "acl"
     "alsa-lib"
     "aos-ability-crucible"
+    "aos-boot-preparation-provider"
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"

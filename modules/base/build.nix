@@ -1035,6 +1035,9 @@ in {
       # The package owns the Nix store-database contract, provider module, and
       # handler while selecting the exact Nix executable symbolically.
       pkgs.aos-nix-store-provider
+      # Boot preparations are selected through this package's authenticated
+      # module and transaction-scoped command handler.
+      pkgs.aos-boot-preparation-provider
       pkgs.e2fsprogs
       pkgs.less
     ];
