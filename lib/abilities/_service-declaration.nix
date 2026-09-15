@@ -247,7 +247,11 @@
     then throw "service '${declaration.service}' ambient capabilities must be included in its bounding capability set"
     else if !syscallSetsDisjoint
     then throw "service '${declaration.service}' syscall allow and deny sets must be disjoint"
-    else declaration;
+    else
+      declaration
+      // {
+        lifecycle = {configuration_change_action = "restart";} // declaration.lifecycle;
+      };
 
   requirementFor = interface: methods: {
     description = interface.declaration.description;
