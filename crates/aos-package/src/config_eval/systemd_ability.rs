@@ -8,12 +8,8 @@
 //! Durable requests use the following versioned wire shape:
 //!
 //! ```json
-//! {"schema":"aos.ability.systemd-request/v2","action":"start","unit":"example.service","unit_identity":"/org/freedesktop/systemd1/unit/example_2eservice","revision":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","manager_bus_id":"0123456789abcdef0123456789abcdef","manager_owner":":1.42"}
+//! {"schema":"aos.ability.systemd-request/v1","action":"start","unit":"example.service","unit_identity":"/org/freedesktop/systemd1/unit/example_2eservice","revision":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","manager_bus_id":"0123456789abcdef0123456789abcdef","manager_owner":":1.42"}
 //! ```
-//!
-//! Version 1 requests predate the authenticated loaded-unit revision. Recovery
-//! rejects them explicitly because no trusted revision can be inferred from
-//! their durable fields; the operation must be replanned and admitted afresh.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -61,8 +57,7 @@ use crate::config_eval::native_provider_capability::NativeProviderReadinessOutpu
 use crate::config_eval::native_provider_capability::SystemdManagerReadinessOutput;
 use crate::config_eval::native_resource_map::NativeHttpConsumerObservation;
 
-const REQUEST_SCHEMA: &str = "aos.ability.systemd-request/v2";
-const LEGACY_REQUEST_SCHEMA: &str = "aos.ability.systemd-request/v1";
+const REQUEST_SCHEMA: &str = "aos.ability.systemd-request/v1";
 const RECORD_SCHEMA: &str = "aos.ability.systemd-observation/v1";
 const REVISION_RECEIPT_SCHEMA: &str = "aos.ability.systemd-unit-revision/v1";
 const REVISION_RECEIPT_ROOT: &str = "/etc/aos/ability-revisions";
@@ -614,11 +609,6 @@ fn decode_durable_request(
 ) -> Result<SystemdDurableRequest, io::Error> {
     let envelope: DurableRequestEnvelope = serde_json::from_value(durable.as_json().clone())
         .map_err(|error| invalid_data(format!("invalid durable {request_name}: {error}")))?;
-    if envelope.schema == LEGACY_REQUEST_SCHEMA {
-        return Err(invalid_data(format!(
-            "durable {request_name} v1 has no authenticated loaded-unit revision; a fresh plan and admission are required"
-        )));
-    }
     if envelope.schema != REQUEST_SCHEMA {
         return Err(invalid_data(format!(
             "unsupported durable {request_name} schema"
@@ -2312,9 +2302,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_durable_systemd_request_requires_a_fresh_plan() {
-        let legacy = AbilityValue::new(serde_json::json!({
-            "schema": LEGACY_REQUEST_SCHEMA,
+    fn durable_systemd_request_requires_an_authenticated_revision() {
+        let incomplete = AbilityValue::new(serde_json::json!({
+            "schema": REQUEST_SCHEMA,
             "action": "start",
             "unit": "example.service",
             "unit_identity": UNIT_PATH,
@@ -2323,10 +2313,10 @@ mod tests {
         }))
         .unwrap();
 
-        let error = decode_durable_request(&legacy, "systemd request")
-            .expect_err("v1 cannot supply an authenticated loaded-unit revision");
+        let error = decode_durable_request(&incomplete, "systemd request")
+            .expect_err("the current schema requires an authenticated loaded-unit revision");
 
-        assert!(error.to_string().contains("fresh plan and admission"));
+        assert!(error.to_string().contains("missing field `revision`"));
     }
 
     #[test]

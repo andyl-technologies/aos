@@ -170,7 +170,7 @@ def authority(
                 "state": {"revision": "sha256:" + "44" * 32, "state": "present"},
             }
         ],
-        "schema": "aos.ability.current-authority/v2",
+        "schema": "aos.ability.current-authority/v1",
         "sequence": sequence,
         "transaction": transaction,
     }
@@ -454,7 +454,7 @@ def incompatible_observation() -> object:
         "handler_method": "apply",
     }
     policy = {
-        "schema": "aos.ability.authenticated-policy-set/v3",
+        "schema": "aos.ability.authenticated-policy-set/v1",
         "transition_authority": {
             "current_planning": COMPATIBLE_BUNDLE_DOCUMENT["desired"][
                 "snapshot_digest"

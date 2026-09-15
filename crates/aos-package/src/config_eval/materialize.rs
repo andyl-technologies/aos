@@ -2896,7 +2896,7 @@ mod tests {
             required_features: vec![
                 "abilities-v1".to_string(),
                 "ability-effects-v1".to_string(),
-                "native-resource-map-v2".to_string(),
+                "native-resource-map-v1".to_string(),
             ],
             desired_state: sidecar("desired-state"),
             authenticated_policy_set: sidecar("policy-set"),
@@ -2953,7 +2953,7 @@ mod tests {
             required_features: vec![
                 "abilities-v1".to_string(),
                 "ability-effects-v1".to_string(),
-                "native-resource-map-v2".to_string(),
+                "native-resource-map-v1".to_string(),
             ],
             desired_state: sidecar("desired-state"),
             authenticated_policy_set: sidecar("policy-set"),

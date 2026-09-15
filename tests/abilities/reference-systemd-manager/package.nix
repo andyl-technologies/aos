@@ -153,11 +153,11 @@
           aggregation = aggregation "systemd-manager";
           requires = {};
           ownsResourceKinds = [systemdManager.name];
-          handler = "native-systemd-manager-v1";
+          handler = "native-systemd-manager";
         };
         handler = {
           artifact = packageRuntimeSelector;
-          entryPoint = "libexec/aos-systemd-manager-handler-v1";
+          entryPoint = "libexec/aos-systemd-manager-handler";
           arguments = request;
           result = observation;
         };

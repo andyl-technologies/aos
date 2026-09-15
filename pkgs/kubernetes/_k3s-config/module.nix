@@ -181,7 +181,7 @@
     resourceAuthorized contribution cfg.integrations.resources.${contribution})
   resourceNames;
   addonPayload = {
-    schema = "aos.kubernetes-resources/v2";
+    schema = "aos.kubernetes-resources/v1";
     inherit role;
     resources = renderedResources;
   };

@@ -30,9 +30,6 @@ use super::TransitionError;
 /// Exact schema discriminator passed to pure transition constructors.
 pub const TRANSITION_CONTEXT_SCHEMA: &str = "aos.ability.transition-context/v1";
 
-/// Schema discriminator for transition contexts carrying live reconciliation input.
-pub const TRANSITION_CONTEXT_SCHEMA_V2: &str = "aos.ability.transition-context/v2";
-
 /// Exact schema discriminator for one trusted runtime observation publication.
 pub const RUNTIME_OBSERVATIONS_SCHEMA: &str = "aos.ability.runtime-observations/v1";
 

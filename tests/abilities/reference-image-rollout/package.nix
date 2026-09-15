@@ -230,11 +230,11 @@
           aggregation = aggregation "rollout-effects";
           requires = {};
           ownsResourceKinds = [rolloutEffects.name];
-          handler = "native-ab-image-rollout-v1";
+          handler = "native-ab-image-rollout";
         };
         handler = {
           artifact = rolloutRuntimeSelector;
-          entryPoint = "libexec/aos-ab-image-rollout-handler-v1";
+          entryPoint = "libexec/aos-ab-image-rollout-handler";
           arguments = rolloutRequest;
           result = rolloutObservation;
         };

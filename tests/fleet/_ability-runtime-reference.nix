@@ -691,7 +691,7 @@ in {
           assert len(selected) == 1, (destination, markers)
           marker = selected[0]
           assert marker["schema"] == (
-              "aos.ability.managed-configuration-revision/v2"
+              "aos.ability.managed-configuration-revision/v1"
           ), marker
           assert marker["resource"] == mapping["resource"], (marker, mapping)
           assert marker["revision"] == mapping["revision"], (marker, mapping)

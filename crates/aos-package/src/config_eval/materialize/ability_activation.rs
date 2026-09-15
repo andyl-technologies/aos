@@ -1,10 +1,10 @@
-//! Version-3 manifest inputs for native structured ability activation.
+//! Manifest inputs for native structured ability activation.
 //!
 //! The manifest embeds one descriptor with independently retained sidecars and
-//! exact package coordinates. The legacy v1 shape is:
+//! exact package coordinates. The canonical shape is:
 //!
 //! ```json
-//! {"authenticated_policy_set":{"document":"policy.json","document_sha256":"sha256:...","document_size":1,"nar_hash":"sha256:<52-nix-base32-chars>","nar_size":1,"store_path":"/nix/store/...-policy"},"desired_state":{"document":"desired.json","document_sha256":"sha256:...","document_size":1,"nar_hash":"sha256:<52-nix-base32-chars>","nar_size":1,"store_path":"/nix/store/...-desired"},"packages":[{"ability_nar_hash":"sha256:...","ability_store_path":"/nix/store/...-ability","manifest_sha256":"sha256:...","name":"nginx","package_digest":"sha256:...","platform":"x86_64-linux","registry":"reference","runtime_nar_hash":"sha256:...","runtime_nar_size":1,"runtime_store_path":"/nix/store/...-nginx","version":"1.0.0"}],"required_features":["abilities-v1","ability-effects-v1","native-platform-policy-v1","native-resource-map-v2"],"schema":"aos.ability.activation-input/v1"}
+//! {"authenticated_policy_set":{"document":"policy.json","document_sha256":"sha256:...","document_size":1,"nar_hash":"sha256:<52-nix-base32-chars>","nar_size":1,"store_path":"/nix/store/...-policy"},"desired_state":{"document":"desired.json","document_sha256":"sha256:...","document_size":1,"nar_hash":"sha256:<52-nix-base32-chars>","nar_size":1,"store_path":"/nix/store/...-desired"},"packages":[{"ability_nar_hash":"sha256:...","ability_store_path":"/nix/store/...-ability","activation_revision":"sha256:...","manifest_sha256":"sha256:...","name":"nginx","package_digest":"sha256:...","platform":"x86_64-linux","registry":"reference","runtime_nar_hash":"sha256:...","runtime_nar_size":1,"runtime_store_path":"/nix/store/...-nginx","version":"1.0.0"}],"required_features":["abilities-v1","ability-effects-v1","native-platform-policy-v1","native-resource-map-v1"],"schema":"aos.ability.activation-input/v1"}
 //! ```
 
 use std::collections::BTreeMap;
@@ -36,10 +36,8 @@ pub struct AbilityActivationInput {
 }
 
 impl AbilityActivationInput {
-    /// Legacy activation input without derived package revisions.
-    pub const SCHEMA_V1: &'static str = "aos.ability.activation-input/v1";
     /// Current immutable activation-input descriptor schema.
-    pub const SCHEMA: &'static str = "aos.ability.activation-input/v2";
+    pub const SCHEMA: &'static str = "aos.ability.activation-input/v1";
 
     /// Validates immutable sidecars and package activation coordinates.
     ///
@@ -54,7 +52,7 @@ impl AbilityActivationInput {
     ) -> Result<()> {
         use crate::types::{FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1};
 
-        if self.schema != Self::SCHEMA_V1 && self.schema != Self::SCHEMA {
+        if self.schema != Self::SCHEMA {
             bail!(
                 "unsupported ability activation input schema {:?}",
                 self.schema
@@ -67,13 +65,13 @@ impl AbilityActivationInput {
         let execution_features = vec![
             FEATURE_ABILITIES_V1.to_string(),
             FEATURE_ABILITY_EFFECTS_V1.to_string(),
-            "native-resource-map-v2".to_string(),
+            "native-resource-map-v1".to_string(),
         ];
         let platform_execution_features = vec![
             FEATURE_ABILITIES_V1.to_string(),
             FEATURE_ABILITY_EFFECTS_V1.to_string(),
             "native-platform-policy-v1".to_string(),
-            "native-resource-map-v2".to_string(),
+            "native-resource-map-v1".to_string(),
         ];
         let rollout_planning_features = vec![
             aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE.to_string(),
@@ -84,14 +82,14 @@ impl AbilityActivationInput {
             aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE.to_string(),
             FEATURE_ABILITIES_V1.to_string(),
             FEATURE_ABILITY_EFFECTS_V1.to_string(),
-            "native-resource-map-v2".to_string(),
+            "native-resource-map-v1".to_string(),
         ];
         let rollout_platform_execution_features = vec![
             aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE.to_string(),
             FEATURE_ABILITIES_V1.to_string(),
             FEATURE_ABILITY_EFFECTS_V1.to_string(),
             "native-platform-policy-v1".to_string(),
-            "native-resource-map-v2".to_string(),
+            "native-resource-map-v1".to_string(),
         ];
         if self.required_features != planning_features
             && self.required_features != execution_features
@@ -147,7 +145,7 @@ impl AbilityActivationInput {
             }
             let expected_revision =
                 package_activation_revision(name, package, config_projections.get(name.as_str()))?;
-            if self.schema == Self::SCHEMA && coordinate.activation_revision.is_empty() {
+            if coordinate.activation_revision.is_empty() {
                 bail!(
                     "ability activation revision for {:?} is missing",
                     coordinate.name

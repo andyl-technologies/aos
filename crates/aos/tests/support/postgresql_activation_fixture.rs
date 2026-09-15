@@ -244,7 +244,7 @@ fn generate_with_options(options: GenerateOptions) -> Result<()> {
     };
     let policy_document = if options.authentication == Authentication::Trust {
         AuthenticatedPolicySetDocument {
-            schema: AuthenticatedPolicySetDocument::SCHEMA_V3.to_string(),
+            schema: AuthenticatedPolicySetDocument::SCHEMA.to_string(),
             policies: composed.policies,
             transition_authority,
             native_resource_map: Some(native_resources),
@@ -257,7 +257,7 @@ fn generate_with_options(options: GenerateOptions) -> Result<()> {
             transition_authority,
             native_resources,
         )?;
-        document.schema = AuthenticatedPolicySetDocument::SCHEMA_V3.to_string();
+        document.schema = AuthenticatedPolicySetDocument::SCHEMA.to_string();
         document.platform_policy = Some(platform_policy);
         document
     };
@@ -502,13 +502,13 @@ fn selected_package_name(options: &GenerateOptions) -> Result<String> {
     match options.artifact.as_str() {
         "baseline" => Ok("ability-reference-postgresql".to_string()),
         "upgrade" => Ok("ability-reference-postgresql-upgrade".to_string()),
-        "adoption-v1" => Ok("ability-reference-postgresql-adoption-v1".to_string()),
-        "adoption-v2" => Ok("ability-reference-postgresql-adoption-v2".to_string()),
+        "adoption-source" => Ok("ability-reference-postgresql-adoption-source".to_string()),
+        "adoption-candidate" => Ok("ability-reference-postgresql-adoption-candidate".to_string()),
         "adoption-incompatible" => {
             Ok("ability-reference-postgresql-adoption-incompatible".to_string())
         }
-        "adoption-v2-interrupted" => {
-            Ok("ability-reference-postgresql-adoption-v2-interrupted".to_string())
+        "adoption-candidate-interrupted" => {
+            Ok("ability-reference-postgresql-adoption-candidate-interrupted".to_string())
         }
         value => bail!("unknown PostgreSQL artifact selection {value:?}"),
     }
@@ -516,9 +516,11 @@ fn selected_package_name(options: &GenerateOptions) -> Result<String> {
 
 fn adoption_package_name(artifact: &str) -> Result<&'static str> {
     match artifact {
-        "adoption-v1" => Ok("ability-reference-postgresql-adoption-v1"),
-        "adoption-v2" => Ok("ability-reference-postgresql-adoption-v2"),
-        "adoption-v2-interrupted" => Ok("ability-reference-postgresql-adoption-v2-interrupted"),
+        "adoption-source" => Ok("ability-reference-postgresql-adoption-source"),
+        "adoption-candidate" => Ok("ability-reference-postgresql-adoption-candidate"),
+        "adoption-candidate-interrupted" => {
+            Ok("ability-reference-postgresql-adoption-candidate-interrupted")
+        }
         value => bail!("unknown PostgreSQL adoption source {value:?}"),
     }
 }
@@ -540,9 +542,9 @@ fn load_verified_packages(
     {
         [
             "ability-reference-postgresql-adoption-incompatible",
-            "ability-reference-postgresql-adoption-v1",
-            "ability-reference-postgresql-adoption-v2",
-            "ability-reference-postgresql-adoption-v2-interrupted",
+            "ability-reference-postgresql-adoption-source",
+            "ability-reference-postgresql-adoption-candidate",
+            "ability-reference-postgresql-adoption-candidate-interrupted",
         ]
         .into_iter()
         .map(str::to_string)
@@ -567,7 +569,7 @@ fn load_verified_packages(
 fn parse_credentialed(arguments: &[String]) -> Result<GenerateOptions> {
     if arguments.len() < 7 {
         bail!(
-            "usage: aos-release-fleet-fixture postgresql-activation OUTPUT DATABASE ROLE CREDENTIAL_VERSION --configuration LABEL [--lifecycle full|remove] [--fault NAME] [--additional-postgresql DATABASE ROLE VERSION CONFIGURATION]... [--postgresql-artifact baseline|upgrade|adoption-v1|adoption-v2|adoption-v2-interrupted|adoption-incompatible] [--provider-adoption-from adoption-v1|adoption-v2|adoption-v2-interrupted --provider-adoption-current-planning DIGEST --provider-adoption-method materialize|observe|restart|start|stop] --operator-authority-output DIR"
+            "usage: aos-release-fleet-fixture postgresql-activation OUTPUT DATABASE ROLE CREDENTIAL_VERSION --configuration LABEL [--lifecycle full|remove] [--fault NAME] [--additional-postgresql DATABASE ROLE VERSION CONFIGURATION]... [--postgresql-artifact baseline|upgrade|adoption-source|adoption-candidate|adoption-candidate-interrupted|adoption-incompatible] [--provider-adoption-from adoption-source|adoption-candidate|adoption-candidate-interrupted --provider-adoption-current-planning DIGEST --provider-adoption-method materialize|observe|restart|start|stop] --operator-authority-output DIR"
         );
     }
     let mut options = GenerateOptions {
@@ -770,7 +772,10 @@ fn validate_options(options: &GenerateOptions) -> Result<()> {
         ensure!(
             matches!(
                 options.artifact.as_str(),
-                "adoption-v1" | "adoption-v2" | "adoption-incompatible" | "adoption-v2-interrupted"
+                "adoption-source"
+                    | "adoption-candidate"
+                    | "adoption-incompatible"
+                    | "adoption-candidate-interrupted"
             ),
             "provider adoption requires a stateful PostgreSQL candidate"
         );
@@ -1864,7 +1869,7 @@ fn write_activation(
             "abilities-v1",
             "ability-effects-v1",
             "native-platform-policy-v1",
-            "native-resource-map-v2"
+            "native-resource-map-v1"
         ],
         "desired_state": desired,
         "authenticated_policy_set": policy,

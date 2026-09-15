@@ -38,7 +38,7 @@ use trace::TraceBudget;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompositionContext {
-    /// Carries `aos.ability.composition-context/v2`.
+    /// Carries `aos.ability.composition-context/v1`.
     pub schema: String,
     /// Identifies the provider aggregate evaluated exactly once in this pass.
     pub provider: InstanceId,

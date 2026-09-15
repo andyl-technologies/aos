@@ -243,7 +243,7 @@ fn empty_linked_repair_bundle(
 
     let source_plan = candidate.transition.checked_effect().id();
     let authority_json = serde_json::json!({
-        "schema": "aos.ability.current-authority/v2",
+        "schema": "aos.ability.current-authority/v1",
         "policy_fence": policy_revision,
         "transaction": transaction,
         "authority_epoch": 1,
@@ -268,7 +268,7 @@ fn empty_linked_repair_bundle(
             .collect::<Vec<_>>(),
     });
     let authority_publication = aos_contract::Sha256Digest::separated(
-        "aos.ability.current-authority/v2",
+        "aos.ability.current-authority/v1",
         aos_contract::canonical::to_vec(&authority_json)?,
     );
     let observations = candidate

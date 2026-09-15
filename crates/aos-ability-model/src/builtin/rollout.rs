@@ -24,9 +24,9 @@ pub const AB_IMAGE_ROLLOUT_INTERFACE_NAME: &str = "aos.ab-image-rollout-effects"
 /// Requires the single-host A/B rollout planning and execution semantics.
 pub const AB_IMAGE_ROLLOUT_FEATURE: &str = "ab-image-rollout-v1";
 /// Names the native A/B image rollout handler.
-pub const AB_IMAGE_ROLLOUT_HANDLER_KEY: &str = "native-ab-image-rollout-v1";
+pub const AB_IMAGE_ROLLOUT_HANDLER_KEY: &str = "native-ab-image-rollout";
 /// Names the rollout handler executable retained by package metadata.
-pub const AB_IMAGE_ROLLOUT_HANDLER_ENTRY_POINT: &str = "libexec/aos-ab-image-rollout-handler-v1";
+pub const AB_IMAGE_ROLLOUT_HANDLER_ENTRY_POINT: &str = "libexec/aos-ab-image-rollout-handler";
 /// Carries exact rollout lifecycle evidence.
 pub const AB_IMAGE_ROLLOUT_OBSERVATION_SCHEMA: &str = "aos.ability.ab-image-rollout-observation/v1";
 /// Names the output containing the exact observed rollout state.

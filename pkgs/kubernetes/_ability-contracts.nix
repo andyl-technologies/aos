@@ -252,14 +252,14 @@ in rec {
       definition = terminalExport {
         selected = kubernetesEffects;
         group = "kubernetes";
-        handler = "native-kubernetes-object-v1";
+        handler = "native-kubernetes-object";
         requestSchema = kubernetesIdentity;
         methods = kubernetesMethods;
         deleteMethod = "delete";
       };
       handler = {
         artifact = runtimeSelector;
-        entryPoint = "libexec/aos-kubernetes-object-handler-v1";
+        entryPoint = "libexec/aos-kubernetes-object-handler";
         arguments = schemas.boolean;
         result = kubernetesObservation;
       };

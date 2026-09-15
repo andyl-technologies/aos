@@ -29,11 +29,8 @@ use super::{TransitionError, TransitionInputs, TransitionPlanner, TransitionReco
 /// Exact schema discriminator for retained transition-construction provenance.
 pub const TRANSITION_SNAPSHOT_SCHEMA: &str = "aos.ability.transition-snapshot/v1";
 
-/// Schema discriminator for snapshots carrying linked live reconciliation input.
-pub const TRANSITION_SNAPSHOT_SCHEMA_V2: &str = "aos.ability.transition-snapshot/v2";
-
-// Version 2 adds one bounded current-authority document and its normalized
-// observation projection to the existing transition transcript components.
+// The snapshot includes one bounded current-authority document and its
+// normalized observation projection when reconciliation is required.
 const TRANSITION_SNAPSHOT_COMPONENT_LIMIT: usize = 6;
 
 /// Maximum encoded byte length accepted for one retained transition snapshot.
@@ -206,12 +203,7 @@ impl TransitionSnapshot {
         checked_effect: &CheckedEffectPlan,
     ) -> Result<Self, TransitionSnapshotError> {
         let snapshot = Self {
-            schema: if reconciliation.is_some() {
-                TRANSITION_SNAPSHOT_SCHEMA_V2
-            } else {
-                TRANSITION_SNAPSHOT_SCHEMA
-            }
-            .to_string(),
+            schema: TRANSITION_SNAPSHOT_SCHEMA.to_string(),
             desired_planning: desired.snapshot_digest(),
             current_planning: current.map(VerifiedPlanningSnapshot::snapshot_digest),
             transition_authority: authority.map(CheckedTransitionAuthority::digest),
@@ -320,10 +312,7 @@ impl TransitionSnapshot {
         let snapshot = transition_snapshot_limits()
             .decode::<Self>(bytes, "transition snapshot")
             .map_err(TransitionSnapshotError::Decode)?;
-        if !matches!(
-            snapshot.schema.as_str(),
-            TRANSITION_SNAPSHOT_SCHEMA | TRANSITION_SNAPSHOT_SCHEMA_V2
-        ) {
+        if snapshot.schema != TRANSITION_SNAPSHOT_SCHEMA {
             return Err(TransitionSnapshotError::UnsupportedSchema);
         }
         if snapshot.canonical_bytes()? != bytes {
@@ -433,10 +422,7 @@ impl TransitionSnapshot {
     }
 
     fn validate_linkage(&self) -> Result<(), TransitionSnapshotError> {
-        if !matches!(
-            (self.schema.as_str(), self.reconciliation.is_some()),
-            (TRANSITION_SNAPSHOT_SCHEMA, false) | (TRANSITION_SNAPSHOT_SCHEMA_V2, true)
-        ) {
+        if self.schema != TRANSITION_SNAPSHOT_SCHEMA {
             return Err(TransitionSnapshotError::UnsupportedSchema);
         }
         let document_id = self

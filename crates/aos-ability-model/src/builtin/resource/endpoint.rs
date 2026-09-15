@@ -22,9 +22,9 @@ pub const NETWORK_ENDPOINT_INTERFACE_NAME: &str = "aos.network-endpoint-effects"
 /// Names the endpoint port emitted by materialization and observation.
 pub const NETWORK_ENDPOINT_OUTPUT: &str = "endpoint";
 /// Names the native runtime endpoint handler.
-pub const NETWORK_ENDPOINT_HANDLER_KEY: &str = "native-network-endpoint-v1";
+pub const NETWORK_ENDPOINT_HANDLER_KEY: &str = "native-network-endpoint";
 /// Names the endpoint handler executable retained in package metadata.
-pub const NETWORK_ENDPOINT_HANDLER_ENTRY_POINT: &str = "libexec/aos-network-endpoint-handler-v1";
+pub const NETWORK_ENDPOINT_HANDLER_ENTRY_POINT: &str = "libexec/aos-network-endpoint-handler";
 /// Carries exact endpoint ownership and revision evidence.
 pub const NETWORK_ENDPOINT_OBSERVATION_SCHEMA: &str = "aos.ability.network-endpoint-observation/v1";
 

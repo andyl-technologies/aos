@@ -918,7 +918,7 @@ pub(crate) mod tests {
                                     Ok((
                                         postcondition.clone(),
                                         crate::qualification_evidence::NativeAdapterPostconditionProbe {
-                                            schema_version: "aos.release.native-adapter-postcondition-probe/v2".into(),
+                                            schema_version: "aos.release.native-adapter-postcondition-probe/v1".into(),
                                             kind: probe_kind(postcondition)?.into(),
                                             cell_id: cell.id.clone(),
                                             cell_digest,

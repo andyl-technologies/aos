@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
-const OUTPUT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-audit/v2";
+const OUTPUT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-audit/v1";
 const SUBJECT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-subject/v1";
 const REPLACEMENT_SUBJECT_SCHEMA: &str =
     "aos.qualification.native-adapter-incarnation-replacement-subject/v1";

@@ -302,7 +302,7 @@ def assert_provider_negative_validator(module, template_cell):
                 "candidate-linked": True,
                 "artifact": "sha256:" + "50" * 32,
                 "handler": "network-endpoint-terminal",
-                "entry-point": "libexec/aos-network-endpoint-handler-v1",
+                "entry-point": "libexec/aos-network-endpoint-handler",
             },
             "boundary": "after-durable-intent-before-external-effect",
             "journal": {
@@ -422,7 +422,7 @@ def assert_provider_negative_validator(module, template_cell):
             "interface": foreground_cell["interface"],
             "method": foreground_cell["method"],
             "handler": "foreground-process-terminal",
-            "entry-point": "libexec/aos-foreground-process-handler-v1",
+            "entry-point": "libexec/aos-foreground-process-handler",
         }
     )
     foreground_evidence["journal"]["foreign-operation"] = foreground_foreign
@@ -622,7 +622,7 @@ def assert_rollout_provider_negative_validator(module, template_cell):
                     "candidate-linked": True,
                     "artifact": "sha256:" + "50" * 32,
                     "handler": "image-rollout-terminal",
-                    "entry-point": "libexec/aos-ab-image-rollout-handler-v1",
+                    "entry-point": "libexec/aos-ab-image-rollout-handler",
                 },
                 "boundary": (
                     "after-durable-intent-before-external-effect"
@@ -1958,7 +1958,7 @@ def main() -> None:
         ]
     })
     runtime_audit = {
-        "schema": "aos.qualification.native-adapter-runtime-audit/v2",
+        "schema": "aos.qualification.native-adapter-runtime-audit/v1",
         "matrix_spec_digest": module.sha256(runtime_spec),
         "cells": {
             authority_cell["id"]: authority_record,

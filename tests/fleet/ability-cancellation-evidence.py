@@ -31,53 +31,53 @@ CANCELLATION_RESULTS = {
 }
 HANDLER_ROUTES = {
     "aos.credential-delivery-effects": (
-        "native-credential-delivery-v1",
-        "libexec/aos-credential-delivery-handler-v1",
+        "native-credential-delivery",
+        "libexec/aos-credential-delivery-handler",
     ),
     "aos.foreground-process": (
-        "native-foreground-process-v1",
-        "libexec/aos-foreground-process-handler-v1",
+        "native-foreground-process",
+        "libexec/aos-foreground-process-handler",
     ),
     "aos.host-network-policy-effects": (
-        "native-host-network-policy-v1",
-        "libexec/aos-host-network-policy-handler-v1",
+        "native-host-network-policy",
+        "libexec/aos-host-network-policy-handler",
     ),
     "aos.host-storage-effects": (
-        "native-host-storage-v1",
-        "libexec/aos-host-storage-handler-v1",
+        "native-host-storage",
+        "libexec/aos-host-storage-handler",
     ),
     "aos.managed-configuration-effects": (
         "managed-configuration-terminal",
         "bin/.aos-package-runtime-unwrapped",
     ),
     "aos.network-endpoint-effects": (
-        "native-network-endpoint-v1",
-        "libexec/aos-network-endpoint-handler-v1",
+        "native-network-endpoint",
+        "libexec/aos-network-endpoint-handler",
     ),
     "aos.nginx-validation": ("nginx-terminal", "bin/nginx"),
     "aos.postgresql-effects": (
-        "native-postgresql-v1",
-        "libexec/aos-postgresql-handler-v1",
+        "native-postgresql",
+        "libexec/aos-postgresql-handler",
     ),
     "aos.kubernetes-object-effects": (
-        "native-kubernetes-object-v1",
-        "libexec/aos-kubernetes-object-handler-v1",
+        "native-kubernetes-object",
+        "libexec/aos-kubernetes-object-handler",
     ),
     "aos.systemd-provider-bootstrap": (
         "systemd-bootstrap-terminal",
         "bin/.aos-package-runtime-unwrapped",
     ),
     "aos.systemd-manager": (
-        "native-systemd-manager-v1",
-        "libexec/aos-systemd-manager-handler-v1",
+        "native-systemd-manager",
+        "libexec/aos-systemd-manager-handler",
     ),
     "aos.service-management": (
         "service-management-terminal",
         "bin/.aos-package-runtime-unwrapped",
     ),
     "aos.ab-image-rollout-effects": (
-        "native-ab-image-rollout-v1",
-        "libexec/aos-ab-image-rollout-handler-v1",
+        "native-ab-image-rollout",
+        "libexec/aos-ab-image-rollout-handler",
     ),
 }
 

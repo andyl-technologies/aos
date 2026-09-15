@@ -329,7 +329,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         None,
         native_resource_map,
     )?;
-    policy_document.schema = AuthenticatedPolicySetDocument::SCHEMA_V3.to_string();
+    policy_document.schema = AuthenticatedPolicySetDocument::SCHEMA.to_string();
     policy_document.platform_policy = Some(platform_policy);
     policy_document.validate(&desired_document)?;
     let desired_sidecar = retain_sidecar(output, "desired", "desired.json", &desired_document)?;
@@ -341,7 +341,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
             "abilities-v1",
             "ability-effects-v1",
             "native-platform-policy-v1",
-            "native-resource-map-v2"
+            "native-resource-map-v1"
         ],
         "desired_state": desired_sidecar,
         "authenticated_policy_set": policy_sidecar,

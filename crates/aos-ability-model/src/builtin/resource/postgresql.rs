@@ -20,9 +20,9 @@ use super::endpoint::network_endpoint_value_schema;
 /// Names the built-in PostgreSQL effects interface.
 pub const POSTGRESQL_EFFECTS_INTERFACE_NAME: &str = "aos.postgresql-effects";
 /// Names the native production PostgreSQL handler.
-pub const POSTGRESQL_HANDLER_KEY: &str = "native-postgresql-v1";
+pub const POSTGRESQL_HANDLER_KEY: &str = "native-postgresql";
 /// Names the PostgreSQL handler executable retained in package metadata.
-pub const POSTGRESQL_HANDLER_ENTRY_POINT: &str = "libexec/aos-postgresql-handler-v1";
+pub const POSTGRESQL_HANDLER_ENTRY_POINT: &str = "libexec/aos-postgresql-handler";
 /// Carries exact submitted and observed PostgreSQL configuration evidence.
 pub const POSTGRESQL_OBSERVATION_SCHEMA: &str = "aos.ability.postgresql-observation/v1";
 /// Names the materialized configuration revision output.

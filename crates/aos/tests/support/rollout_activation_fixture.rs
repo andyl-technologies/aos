@@ -10,9 +10,9 @@ use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::builtin::{
-    ab_image_rollout_interface, ab_image_rollout_request_schema, AB_IMAGE_ROLLOUT_FEATURE,
+    AB_IMAGE_ROLLOUT_FEATURE, ab_image_rollout_interface, ab_image_rollout_request_schema,
 };
 use aos_ability_model::document::{
     DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory, ProviderState,
@@ -301,7 +301,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         transition_authority,
         native_resource_map,
     )?;
-    policy_document.schema = AuthenticatedPolicySetDocument::SCHEMA_V3.to_string();
+    policy_document.schema = AuthenticatedPolicySetDocument::SCHEMA.to_string();
     policy_document.platform_policy = Some(platform_policy);
     policy_document.validate(&desired_document)?;
 
@@ -315,7 +315,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
             "abilities-v1",
             "ability-effects-v1",
             "native-platform-policy-v1",
-            "native-resource-map-v2"
+            "native-resource-map-v1"
         ],
         "desired_state": desired_sidecar,
         "authenticated_policy_set": policy_sidecar,

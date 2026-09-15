@@ -759,7 +759,7 @@ in {
         definition = terminalExport {
           name = credentialDeliveryEffects.name;
           group = "credential-delivery-effects";
-          handler = "native-credential-delivery-v1";
+          handler = "native-credential-delivery";
           requestSchema = credentialRequest;
           selectedLifecycle = credentialEffectsLifecycle;
           methods = {
@@ -782,7 +782,7 @@ in {
         };
         handler = {
           artifact = selectorFor credentialRuntimeDependency;
-          entryPoint = "libexec/aos-credential-delivery-handler-v1";
+          entryPoint = "libexec/aos-credential-delivery-handler";
           arguments = credentialRequest;
           result = credentialObservation;
         };
@@ -797,7 +797,7 @@ in {
         definition = terminalExport {
           name = foregroundProcess.name;
           group = "foreground-process";
-          handler = "native-foreground-process-v1";
+          handler = "native-foreground-process";
           requestSchema = foregroundProcessRequest;
           selectedLifecycle = foregroundProcessLifecycle;
           guarantees = [foregroundProcessSupervisionGuarantee];
@@ -815,7 +815,7 @@ in {
         };
         handler = {
           artifact = packageRuntimeSelector;
-          entryPoint = "libexec/aos-foreground-process-handler-v1";
+          entryPoint = "libexec/aos-foreground-process-handler";
           arguments = foregroundProcessRequest;
           result = foregroundProcessObservation;
         };

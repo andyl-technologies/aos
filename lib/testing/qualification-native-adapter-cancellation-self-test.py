@@ -68,7 +68,7 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
             "nar_hash": digest("d"),
             "closure": digest("e"),
         },
-        "handler": "native-ab-image-rollout-v1",
+        "handler": "native-ab-image-rollout",
     }
     edge = {
         "from": {"kind": "operation", "key": operation_key},
@@ -107,10 +107,10 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
         "qualification": {"kind": "image-rollout"},
     }
     policy = {
-        "schema": "aos.ability.authenticated-policy-set/v3",
+        "schema": "aos.ability.authenticated-policy-set/v1",
         "policies": [],
         "native_resource_map": {
-            "schema": "aos.ability.native-resource-map/v3",
+            "schema": "aos.ability.native-resource-map/v1",
             "desired_state": digest("2"),
             "entries": [mapping],
         },
@@ -381,10 +381,10 @@ def main() -> None:
         "qualification": {"kind": "test"},
     }
     policy = {
-        "schema": "aos.ability.authenticated-policy-set/v3",
+        "schema": "aos.ability.authenticated-policy-set/v1",
         "policies": [],
         "native_resource_map": {
-            "schema": "aos.ability.native-resource-map/v3",
+            "schema": "aos.ability.native-resource-map/v1",
             "desired_state": digest("a"),
             "entries": [mapping],
         },

@@ -56,19 +56,19 @@
         package = packageSet.upgradeSuite;
       }
       {
-        name = "ability-reference-postgresql-adoption-v1";
-        package = packageSet.adoptionV1Suite;
+        name = "ability-reference-postgresql-adoption-source";
+        package = packageSet.adoptionSourceSuite;
       }
       {
-        name = "ability-reference-postgresql-adoption-v2";
-        package = packageSet.adoptionV2Suite;
+        name = "ability-reference-postgresql-adoption-candidate";
+        package = packageSet.adoptionCandidateSuite;
       }
       {
         name = "ability-reference-postgresql-adoption-incompatible";
         package = packageSet.adoptionIncompatibleSuite;
       }
       {
-        name = "ability-reference-postgresql-adoption-v2-interrupted";
+        name = "ability-reference-postgresql-adoption-candidate-interrupted";
         package = packageSet.adoptionInterruptedSuite;
       }
     ]

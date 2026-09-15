@@ -11,12 +11,10 @@ use crate::platform::{MatrixCell, Platform};
 
 /// Schema for a complete staging qualification report.
 pub const QUALIFICATION_REPORT_V1: &str = "aos.release.qualification-report/v1";
-/// Schema for one platform executor request over public staging objects.
+/// Schema for the final platform executor request over public staging objects.
 pub const QUALIFICATION_EXECUTOR_REQUEST_V1: &str = "aos.release.qualification-executor-request/v1";
-/// Schema for a shared-contract execution case over public staging objects.
+/// Pre-RFC-0022 schema for a shared-contract execution case.
 pub const QUALIFICATION_EXECUTOR_REQUEST_V2: &str = "aos.release.qualification-executor-request/v2";
-/// Schema for an execution case with authenticated retained predecessor objects.
-pub const QUALIFICATION_EXECUTOR_REQUEST_V3: &str = "aos.release.qualification-executor-request/v3";
 /// Schema for one platform executor's canonical response.
 pub const QUALIFICATION_EXECUTOR_RESPONSE_V1: &str =
     "aos.release.qualification-executor-response/v1";
@@ -77,7 +75,7 @@ pub struct QualificationRetainedBundleV1 {
 pub struct QualificationExecutorRequestV1 {
     /// Exact request schema identifier.
     pub schema_version: String,
-    /// Applicable shared-contract execution case, absent only in v1 requests.
+    /// Applicable shared-contract execution case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualification_case: Option<crate::qualification_evidence::QualificationCase>,
     /// Canonical registry identity.
@@ -115,14 +113,11 @@ impl QualificationExecutorRequestV1 {
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1
             && self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V2
-            && self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V3
         {
             bail!("unsupported qualification executor request schema");
         }
         if let Some(case) = &self.qualification_case {
-            if (self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V2
-                && self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V3)
-                || case.requirement_id != self.policy_id
+            if case.requirement_id != self.policy_id
                 || case.policy_digest != self.policy_digest
                 || case.subjects != self.subjects
                 || case
@@ -176,7 +171,7 @@ impl QualificationExecutorRequestV1 {
             .qualification_case
             .as_ref()
             .and_then(|case| case.predecessor.as_ref());
-        if self.schema_version == QUALIFICATION_EXECUTOR_REQUEST_V3 {
+        if self.schema_version == QUALIFICATION_EXECUTOR_REQUEST_V1 {
             match (case_predecessor, &self.retained_predecessor) {
                 (Some(_), Some(retained)) => retained.validate(&self.subjects)?,
                 (Some(_), None) => {
@@ -188,7 +183,7 @@ impl QualificationExecutorRequestV1 {
                 (None, None) => {}
             }
         } else if self.retained_predecessor.is_some() {
-            bail!("archived qualification request schema cannot carry a predecessor bundle");
+            bail!("pre-RFC qualification request schema cannot carry a predecessor bundle");
         }
         Ok(())
     }

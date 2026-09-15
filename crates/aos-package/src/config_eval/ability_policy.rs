@@ -45,7 +45,6 @@ use serde::{Deserialize, Serialize};
 pub const CURRENT_ABILITY_AUTHORITY_ROOT: &str = "/run/apm/ability-authority";
 
 const CURRENT_ABILITY_AUTHORITY_SCHEMA: &str = "aos.ability.current-authority/v1";
-const CURRENT_ABILITY_AUTHORITY_SCHEMA_V2: &str = "aos.ability.current-authority/v2";
 const CURRENT_ABILITY_AUTHORITY_MAX_BYTES: usize = 8 * 1024 * 1024;
 const CURRENT_ABILITY_AUTHORITY_MAX_ENTRIES: usize = 65_536;
 
@@ -79,13 +78,13 @@ pub use storage::{
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CurrentAbilityAuthorityDocument {
-    /// Carries current-authority v1 or transaction-linked health v2.
+    /// Carries the current-authority v1 discriminator.
     pub schema: String,
     /// Names required semantics in canonical order.
     pub required_features: Vec<RequiredFeature>,
     /// Changes whenever current operator authority is revoked or republished.
     pub policy_fence: RevisionId,
-    /// Identifies the transaction that owns a version-2 health publication.
+    /// Identifies the transaction that owns a runtime-health publication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction: Option<TransactionId>,
     /// Binds this publication to the protected monotonic authority epoch.
@@ -190,15 +189,9 @@ impl CurrentAbilityAuthorityDocument {
                 CurrentResourceState::Stopped { .. } | CurrentResourceState::Divergent { .. }
             )
         });
-        if !matches!(
-            (
-                self.schema.as_str(),
-                carries_runtime_health,
-                self.transaction.is_some()
-            ),
-            (CURRENT_ABILITY_AUTHORITY_SCHEMA, false, false)
-                | (CURRENT_ABILITY_AUTHORITY_SCHEMA_V2, _, true)
-        ) {
+        if self.schema != CURRENT_ABILITY_AUTHORITY_SCHEMA
+            || (carries_runtime_health && self.transaction.is_none())
+        {
             return Err(invalid("current authority uses an unsupported schema"));
         }
         if self
@@ -310,7 +303,7 @@ pub struct CurrentAuthorityObservations {
 pub struct CurrentAuthorityPublication<'a> {
     /// Identifies the revocation-sensitive current policy generation.
     pub policy_fence: RevisionId,
-    /// Identifies the transaction for a version-2 health publication.
+    /// Identifies the transaction for a runtime-health publication.
     pub transaction: Option<&'a TransactionId>,
     /// Supplies the authenticated desired-state resolution policy.
     pub resolution_policy: &'a ResolutionPolicyDocument,
@@ -329,7 +322,7 @@ pub struct CurrentAuthorityPublication<'a> {
 pub struct CurrentAuthorityCommitment {
     /// Identifies the exact retained effect plan.
     pub plan: PlanId,
-    /// Pins the transaction carried by version-2 health authority.
+    /// Pins the transaction carried by runtime-health authority.
     pub transaction: Option<TransactionId>,
     /// Pins the protected authority epoch observed during plan admission.
     pub authority_epoch: u64,
@@ -1195,25 +1188,16 @@ fn build_publication(
             CurrentResourceState::Stopped { .. } | CurrentResourceState::Divergent { .. }
         )
     });
-    let schema = if publication.transaction.is_some() || carries_runtime_health {
-        CURRENT_ABILITY_AUTHORITY_SCHEMA_V2
-    } else {
-        CURRENT_ABILITY_AUTHORITY_SCHEMA
-    };
+    if carries_runtime_health && publication.transaction.is_none() {
+        return Err(invalid(
+            "runtime-health current authority lacks a transaction",
+        ));
+    }
     Ok(CurrentAbilityAuthorityDocument {
-        schema: schema.to_string(),
+        schema: CURRENT_ABILITY_AUTHORITY_SCHEMA.to_string(),
         required_features,
         policy_fence: publication.policy_fence,
-        transaction: if schema == CURRENT_ABILITY_AUTHORITY_SCHEMA_V2 {
-            Some(
-                publication
-                    .transaction
-                    .cloned()
-                    .ok_or_else(|| invalid("version-2 current authority lacks a transaction"))?,
-            )
-        } else {
-            None
-        },
+        transaction: publication.transaction.cloned(),
         authority_epoch: 0,
         policy_revision,
         resolution_policy: policy_digest,

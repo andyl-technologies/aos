@@ -21,9 +21,9 @@ pub const HOST_STORAGE_INTERFACE_NAME: &str = "aos.host-storage-effects";
 /// Names the storage path emitted after successful acquisition.
 pub const HOST_STORAGE_PATH_OUTPUT: &str = "path";
 /// Names the native host-storage handler.
-pub const HOST_STORAGE_HANDLER_KEY: &str = "native-host-storage-v1";
+pub const HOST_STORAGE_HANDLER_KEY: &str = "native-host-storage";
 /// Names the storage handler executable retained in package metadata.
-pub const HOST_STORAGE_HANDLER_ENTRY_POINT: &str = "libexec/aos-host-storage-handler-v1";
+pub const HOST_STORAGE_HANDLER_ENTRY_POINT: &str = "libexec/aos-host-storage-handler";
 /// Carries exact storage attachment and revision evidence.
 pub const HOST_STORAGE_OBSERVATION_SCHEMA: &str = "aos.ability.host-storage-observation/v1";
 

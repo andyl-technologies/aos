@@ -47,8 +47,7 @@ pub(super) const INTERFACE_DESCRIPTOR: &str =
 const HANDLER_KEY: &str = "managed-configuration-terminal";
 const ENTRY_POINT: &str = "bin/.aos-package-runtime-unwrapped";
 const REQUEST_SCHEMA: &str = "aos.ability.managed-configuration-request/v1";
-const REQUEST_SCHEMA_V2: &str = "aos.ability.managed-configuration-request/v2";
-const MARKER_SCHEMA: &str = "aos.ability.managed-configuration-revision/v2";
+const MARKER_SCHEMA: &str = "aos.ability.managed-configuration-revision/v1";
 const MAX_MARKER_BYTES: u64 = 16 * 1024;
 
 /// Binds one logical resource to native candidate and destination authority.
@@ -509,10 +508,7 @@ impl TrustedAdapter for NativeManagedConfigurationAdapter {
                     "invalid durable managed configuration request: {error}"
                 ))
             })?;
-        if !matches!(
-            (request.schema.as_str(), request.owned_divergence),
-            (REQUEST_SCHEMA, false) | (REQUEST_SCHEMA_V2, true)
-        ) {
+        if request.schema != REQUEST_SCHEMA {
             return Err(invalid_data(
                 "unsupported durable managed configuration request schema",
             ));
@@ -942,12 +938,7 @@ fn durable_request(
     owned_divergence: bool,
 ) -> Result<ManagedConfigurationDurableRequest, io::Error> {
     Ok(ManagedConfigurationDurableRequest {
-        schema: if owned_divergence {
-            REQUEST_SCHEMA_V2
-        } else {
-            REQUEST_SCHEMA
-        }
-        .to_string(),
+        schema: REQUEST_SCHEMA.to_string(),
         action,
         resource: resource.spec.resource.clone(),
         destination: path_string(resource.destination.display())?,
@@ -1273,14 +1264,14 @@ mod tests {
     }
 
     #[test]
-    fn version_one_marker_cannot_be_adopted_as_resource_ownership() {
+    fn incomplete_marker_cannot_be_adopted_as_resource_ownership() {
         let fixture = managed_fixture(None, Some(revision("desired")), b"candidate");
         fixture
             .resource
             .destination
             .atomic_write(b"candidate", false)
             .expect("candidate destination is installed");
-        let legacy = serde_json::json!({
+        let incomplete = serde_json::json!({
             "schema": "aos.ability.managed-configuration-revision/v1",
             "destination": path_string(fixture.resource.destination.display())
                 .expect("destination is UTF-8"),
@@ -1291,13 +1282,13 @@ mod tests {
             .resource
             .marker_path
             .atomic_write(
-                &serde_json::to_vec(&legacy).expect("legacy marker encodes"),
+                &serde_json::to_vec(&incomplete).expect("incomplete marker encodes"),
                 false,
             )
-            .expect("legacy marker is installed");
+            .expect("incomplete marker is installed");
 
         let error = observe_revision(&fixture.resource)
-            .expect_err("unowned legacy marker must fail closed");
+            .expect_err("an incomplete ownership marker must fail closed");
         assert!(
             error
                 .to_string()

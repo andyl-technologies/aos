@@ -560,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_without_state_format_retains_exact_legacy_item_ceiling() {
+    fn stateless_provider_uses_its_exact_item_ceiling() {
         let implementation = provider_implementation();
         let encoded = serde_json::to_value(&implementation).expect("implementation serializes");
         let exact_items = collection_item_count(&encoded);
@@ -578,16 +578,16 @@ mod tests {
     }
 
     #[test]
-    fn provider_without_state_format_retains_exact_legacy_encoding() {
-        let legacy = ProviderImplementation {
+    fn stateless_provider_omits_the_state_format_from_its_canonical_encoding() {
+        let stateless = ProviderImplementation {
             interface: InterfaceKey {
-                name: InterfaceName::new("aos.test.legacy").expect("valid interface name"),
+                name: InterfaceName::new("aos.test.stateless").expect("valid interface name"),
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
                 descriptor: digest(1),
             },
             artifact: ArtifactReference {
                 content: digest(2),
-                store_path: "/nix/store/legacy-provider".to_string(),
+                store_path: "/nix/store/stateless-provider".to_string(),
                 nar_hash: digest(3),
                 closure: digest(4),
             },
@@ -598,10 +598,10 @@ mod tests {
             owns_resource_kinds: Vec::new(),
             state_format: None,
         };
-        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/legacy-provider"},"implementation":{"handler":"run","kind":"terminal-handler"},"interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.legacy"},"owns_resource_kinds":[],"requirements":[]}"#;
+        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/stateless-provider"},"implementation":{"handler":"run","kind":"terminal-handler"},"interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.stateless"},"owns_resource_kinds":[],"requirements":[]}"#;
 
-        let encoded = aos_contract::canonical::to_vec(&legacy)
-            .expect("legacy provider implementation encodes canonically");
+        let encoded = aos_contract::canonical::to_vec(&stateless)
+            .expect("stateless provider implementation encodes canonically");
         assert_eq!(encoded, expected);
         assert!(
             !encoded
@@ -610,18 +610,18 @@ mod tests {
         );
 
         let decoded: ProviderImplementation =
-            serde_json::from_slice(expected).expect("legacy provider implementation decodes");
-        assert_eq!(decoded, legacy);
+            serde_json::from_slice(expected).expect("stateless provider implementation decodes");
+        assert_eq!(decoded, stateless);
         assert_eq!(decoded.state_format, None);
     }
 
     #[test]
     fn provider_state_format_accounts_for_every_added_item() {
-        let legacy = provider_implementation();
-        let legacy_items = collection_item_count(
-            &serde_json::to_value(&legacy).expect("legacy implementation serializes"),
+        let stateless = provider_implementation();
+        let stateless_items = collection_item_count(
+            &serde_json::to_value(&stateless).expect("stateless implementation serializes"),
         );
-        let mut stateful = legacy;
+        let mut stateful = stateless;
         stateful.state_format = Some(ProviderStateFormat {
             descriptor: digest(7),
             artifact: stateful.artifact.clone(),
@@ -630,7 +630,7 @@ mod tests {
             &serde_json::to_value(&stateful).expect("stateful implementation serializes"),
         );
 
-        assert_eq!(stateful_items, legacy_items + 7);
+        assert_eq!(stateful_items, stateless_items + 7);
 
         let mut exact_remaining = stateful_items;
         consume_provider_implementation_items(&stateful, &mut exact_remaining, 64)

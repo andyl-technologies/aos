@@ -36,16 +36,16 @@ use graph::{
 pub use context::{
     AuthorizedTransitionBinding, RUNTIME_OBSERVATIONS_SCHEMA, ResourceChange, ResourceChangeKind,
     RuntimeResourceHealth, RuntimeResourceObservation, RuntimeResourceState, ScopedDesiredState,
-    ScopedObservations, TRANSITION_CONTEXT_SCHEMA, TRANSITION_CONTEXT_SCHEMA_V2,
-    TransitionBindingAuthority, TransitionContext, TransitionReconciliation,
+    ScopedObservations, TRANSITION_CONTEXT_SCHEMA, TransitionBindingAuthority, TransitionContext,
+    TransitionReconciliation,
 };
 pub use graph::{
     TRANSITION_FRAGMENT_SCHEMA, TransitionExport, TransitionExportKind, TransitionFragment,
     TransitionHandoff, TransitionImport, TransitionImportDirection, TransitionLink,
 };
 pub use snapshot::{
-    TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA, TRANSITION_SNAPSHOT_SCHEMA_V2,
-    TransitionEvaluation, TransitionEvaluationResult, TransitionReplayInputs, TransitionSnapshot,
+    TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA, TransitionEvaluation,
+    TransitionEvaluationResult, TransitionReplayInputs, TransitionSnapshot,
     TransitionSnapshotError, VerifiedTransitionPlan,
 };
 
@@ -327,12 +327,7 @@ impl<'a> TransitionPlanner<'a> {
             let after = scoped_desired_state(desired, &group.provider);
             let observations = scoped_observations(desired, &group.provider);
             let context = TransitionContext {
-                schema: if inputs.reconciliation.is_some() {
-                    TRANSITION_CONTEXT_SCHEMA_V2
-                } else {
-                    TRANSITION_CONTEXT_SCHEMA
-                }
-                .to_string(),
+                schema: TRANSITION_CONTEXT_SCHEMA.to_string(),
                 desired_planning: desired.snapshot_digest(),
                 current_planning: inputs
                     .current
@@ -661,7 +656,7 @@ pub(super) fn linked_healthy_provider_adoptions(
 fn validate_reconciliation_authority(
     reconciliation: &TransitionReconciliation,
 ) -> Result<(), TransitionError> {
-    const CURRENT_AUTHORITY_SCHEMA_V2: &str = "aos.ability.current-authority/v2";
+    const CURRENT_AUTHORITY_SCHEMA: &str = "aos.ability.current-authority/v1";
 
     let authority: LinkedCurrentAuthorityDocument = serde_json::from_value(
         reconciliation.authority_document.as_json().clone(),
@@ -678,7 +673,7 @@ fn validate_reconciliation_authority(
             ))
         })?;
     let digest = Sha256Digest::separated(&authority.schema, canonical);
-    if authority.schema != CURRENT_AUTHORITY_SCHEMA_V2
+    if authority.schema != CURRENT_AUTHORITY_SCHEMA
         || digest != reconciliation.authority_publication
         || authority.plan != reconciliation.source_plan
         || authority.transaction != reconciliation.transaction

@@ -504,7 +504,7 @@ in let
           export = terminalExport {
             name = endpointEffects.name;
             group = "network-endpoint";
-            handler = "native-network-endpoint-v1";
+            handler = "native-network-endpoint";
             requestSchema = endpointRequest;
             selectedLifecycle = ephemeralLifecycle;
             methods = {
@@ -536,7 +536,7 @@ in let
           export = terminalExport {
             name = networkPolicyEffects.name;
             group = "network-policy";
-            handler = "native-host-network-policy-v1";
+            handler = "native-host-network-policy";
             requestSchema = networkPolicyRequest false;
             selectedLifecycle = ephemeralLifecycle;
             guarantees = [loopbackEgressGuarantee loopbackIngressGuarantee];
@@ -569,7 +569,7 @@ in let
           export = terminalExport {
             name = storageEffects.name;
             group = "storage";
-            handler = "native-host-storage-v1";
+            handler = "native-host-storage";
             requestSchema = storageRequest;
             methods = {
               ensure =
@@ -607,23 +607,23 @@ in let
         // runtimeAttrs;
     }
     // lib.optionalAttrs (hostResourceRuntime != null) {
-      native-network-endpoint-v1 =
+      native-network-endpoint =
         {
-          entryPoint = "libexec/aos-network-endpoint-handler-v1";
+          entryPoint = "libexec/aos-network-endpoint-handler";
           arguments = endpointRequest;
           result = endpointObservation;
         }
         // hostResourceRuntimeAttrs;
-      native-host-network-policy-v1 =
+      native-host-network-policy =
         {
-          entryPoint = "libexec/aos-host-network-policy-handler-v1";
+          entryPoint = "libexec/aos-host-network-policy-handler";
           arguments = networkPolicyRequest false;
           result = networkPolicyObservation;
         }
         // hostResourceRuntimeAttrs;
-      native-host-storage-v1 =
+      native-host-storage =
         {
-          entryPoint = "libexec/aos-host-storage-handler-v1";
+          entryPoint = "libexec/aos-host-storage-handler";
           arguments = storageRequest;
           result = storageObservation;
         }

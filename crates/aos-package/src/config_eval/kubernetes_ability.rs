@@ -47,9 +47,8 @@ use crate::config_eval::native_resource_map::kubernetes_resource_owner;
 
 const INTERFACE_DESCRIPTOR: &str =
     "sha256:bbced9c501c3c41ab4b5f2a70a2945bde2128ef0a37ad900f6d9f1e2f110963e";
-const ENTRY_POINT: &str = "libexec/aos-kubernetes-object-handler-v1";
-const REQUEST_SCHEMA: &str = "aos.ability.kubernetes-object-request/v2";
-const REQUEST_SCHEMA_V3: &str = "aos.ability.kubernetes-object-request/v3";
+const ENTRY_POINT: &str = "libexec/aos-kubernetes-object-handler";
+const REQUEST_SCHEMA: &str = "aos.ability.kubernetes-object-request/v1";
 const REVISION_ANNOTATION: &str = "aos.andyl.com/object-revision";
 const OWNER_ANNOTATION: &str = "aos.andyl.com/resource-owner";
 
@@ -463,10 +462,7 @@ impl TrustedAdapter for NativeKubernetesObjectAdapter {
             .map_err(|error| {
             invalid_data(format!("invalid durable Kubernetes request: {error}"))
         })?;
-        if !matches!(
-            (request.schema.as_str(), request.owned_divergence),
-            (REQUEST_SCHEMA, false) | (REQUEST_SCHEMA_V3, true)
-        ) {
+        if request.schema != REQUEST_SCHEMA {
             return Err(invalid_data(
                 "unsupported durable Kubernetes request schema",
             ));
@@ -1345,12 +1341,7 @@ fn durable_request(
 ) -> Result<KubernetesDurableRequest, io::Error> {
     validate_action_spec(action, &resource.spec)?;
     Ok(KubernetesDurableRequest {
-        schema: if owned_divergence {
-            REQUEST_SCHEMA_V3
-        } else {
-            REQUEST_SCHEMA
-        }
-        .to_string(),
+        schema: REQUEST_SCHEMA.to_string(),
         action,
         resource: resource.spec.resource.clone(),
         api_version: resource.spec.api_version.clone(),
@@ -1967,7 +1958,7 @@ mod tests {
     fn divergent_repair_retry_retains_exact_ownership_guards() {
         let spec = test_spec(Some(revision("current")), Some(revision("desired")));
         let mut request = test_request(&spec, KubernetesObjectAction::Apply);
-        request.schema = REQUEST_SCHEMA_V3.to_string();
+        request.schema = REQUEST_SCHEMA.to_string();
         request.owned_divergence = true;
         let mut observation = present_observation();
         observation.object_revision = Some(revision("current").0.to_string());
@@ -1992,7 +1983,7 @@ mod tests {
     fn divergent_apply_recovers_after_the_desired_object_is_committed() {
         let spec = test_spec(Some(revision("current")), Some(revision("desired")));
         let mut durable = test_request(&spec, KubernetesObjectAction::Apply);
-        durable.schema = REQUEST_SCHEMA_V3.to_string();
+        durable.schema = REQUEST_SCHEMA.to_string();
         durable.owned_divergence = true;
         let observation = present_observation();
 

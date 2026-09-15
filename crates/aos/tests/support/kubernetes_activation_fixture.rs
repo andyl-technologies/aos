@@ -9,19 +9,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::document::{
     Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
     ProviderState,
 };
 use aos_ability_model::identity::compare_instance_ids;
 use aos_ability_model::{
-    AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
+    ABILITY_LIMITS_V1, AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
     ContributionPermission, DesiredStateDocument, EnvironmentDocument, EnvironmentId,
     ExecutionStage, ImplementationKind, InstanceId, InterfaceDocument, InterfaceKey, LocalKey,
     PackageDocument, ProviderImplementation, ProviderImplementationReference, RequestId,
     RequiredFeature, ResourceId, ResourceLifetime, ResourcePermission, RevisionId, ScopePath,
-    VersionedDocument, ABILITY_LIMITS_V1,
+    VersionedDocument,
 };
 use aos_ability_plan::{
     BindingCandidate, CandidateSelection, CompositionError, EnabledProviderSelection,
@@ -44,7 +44,7 @@ use aos_package::config_eval::materialize::PinnedAbilitySidecar;
 use aos_package::config_eval::native_resource_map::{
     NativeOutputLocator, NativeResourceMap, NativeResourceMapping, NativeResourceQualification,
 };
-use aos_package::config_eval::runtime::{resolve_runtime, RuntimeResolution};
+use aos_package::config_eval::runtime::{RuntimeResolution, resolve_runtime};
 use aos_package::platform::native_platform;
 use aos_package::registry::RegistrySet;
 use aos_package::types::ProfileScope;
@@ -320,7 +320,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         None,
         native_resource_map,
     )?;
-    policy_document.schema = AuthenticatedPolicySetDocument::SCHEMA_V3.to_string();
+    policy_document.schema = AuthenticatedPolicySetDocument::SCHEMA.to_string();
     policy_document.platform_policy = Some(platform_policy);
     policy_document.validate(&desired_document)?;
 
@@ -333,7 +333,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
             "abilities-v1",
             "ability-effects-v1",
             "native-platform-policy-v1",
-            "native-resource-map-v2"
+            "native-resource-map-v1"
         ],
         "desired_state": desired_sidecar,
         "authenticated_policy_set": policy_sidecar,

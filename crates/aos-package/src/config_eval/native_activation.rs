@@ -1040,7 +1040,7 @@ pub fn supported_native_ability_features() -> Result<std::collections::BTreeSet<
         crate::types::FEATURE_ABILITIES_V1,
         crate::types::FEATURE_ABILITY_EFFECTS_V1,
         "native-platform-policy-v1",
-        "native-resource-map-v2",
+        "native-resource-map-v1",
         aos_ability_model::PROVIDER_STATE_FORMAT_V1,
         aos_ability_model::PROVIDER_STATE_ADOPTION_V1,
     ]

@@ -997,8 +997,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_desired_instance_without_configuration_round_trips_unchanged() {
-        let legacy = serde_json::json!({
+    fn desired_instance_without_optional_configuration_round_trips_unchanged() {
+        let unconfigured = serde_json::json!({
             "instance": {
                 "environment": {
                     "authority": "test",
@@ -1012,12 +1012,12 @@ mod tests {
         });
 
         let decoded: DesiredInstance =
-            serde_json::from_value(legacy.clone()).expect("legacy instance must decode");
+            serde_json::from_value(unconfigured.clone()).expect("unconfigured instance decodes");
 
         assert_eq!(decoded.configuration, None);
         assert_eq!(
-            serde_json::to_value(decoded).expect("legacy instance must serialize"),
-            legacy
+            serde_json::to_value(decoded).expect("unconfigured instance serializes"),
+            unconfigured
         );
     }
 

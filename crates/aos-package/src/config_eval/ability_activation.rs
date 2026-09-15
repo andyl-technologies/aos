@@ -11,7 +11,7 @@
 //!
 //! ```json
 //! {"environment":{"schema":"aos.ability.environment/v1","...":"..."},"schema":"aos.ability.activation-desired/v1","seed":{"schema":"aos.ability.desired-state/v1","...":"..."}}
-//! {"native_resource_map":{"desired_state":"sha256:...","entries":[...],"schema":"aos.ability.native-resource-map/v4"},"platform_policy":{"bindings":[...],"policy_revision":"sha256:...","required_features":[],"schema":"aos.ability.platform-policy/v1"},"policies":[{"schema":"aos.ability.resolution-policy/v1","...":"..."}],"schema":"aos.ability.authenticated-policy-set/v3","transition_authority":null}
+//! {"native_resource_map":{"desired_state":"sha256:...","entries":[...],"schema":"aos.ability.native-resource-map/v1"},"platform_policy":{"bindings":[...],"policy_revision":"sha256:...","required_features":[],"schema":"aos.ability.platform-policy/v1"},"policies":[{"schema":"aos.ability.resolution-policy/v1","...":"..."}],"schema":"aos.ability.authenticated-policy-set/v1","transition_authority":null}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -118,14 +118,8 @@ pub struct AuthenticatedPolicySetDocument {
 }
 
 impl AuthenticatedPolicySetDocument {
-    /// Planning-only policy-set schema without native execution authority.
-    pub const SCHEMA_V1: &'static str = "aos.ability.authenticated-policy-set/v1";
-    /// Current policy-set schema carrying native execution authority.
-    pub const SCHEMA_V2: &'static str = "aos.ability.authenticated-policy-set/v2";
-    /// Native execution policy set with explicit platform binding authority.
-    pub const SCHEMA_V3: &'static str = "aos.ability.authenticated-policy-set/v3";
     /// Current authenticated policy-set schema.
-    pub const SCHEMA: &'static str = Self::SCHEMA_V3;
+    pub const SCHEMA: &'static str = "aos.ability.authenticated-policy-set/v1";
 
     /// Constructs a canonical execution-eligible policy-set document.
     ///
@@ -141,7 +135,7 @@ impl AuthenticatedPolicySetDocument {
     ) -> Result<Self> {
         policies.sort_by_key(|policy| policy.desired_state);
         let document = Self {
-            schema: Self::SCHEMA_V2.to_string(),
+            schema: Self::SCHEMA.to_string(),
             policies,
             transition_authority,
             native_resource_map: Some(native_resource_map),
@@ -153,31 +147,19 @@ impl AuthenticatedPolicySetDocument {
 
     /// Validates policy sequencing and its relationship to a desired input.
     ///
-    /// Version 1 remains valid for pure planning replay but carries no native
-    /// execution authority. Version 2 requires an intrinsic resource map.
-    ///
     /// # Errors
     ///
     /// Returns an error when the schema, ordering, environment commitments,
     /// embedded documents, or native map are invalid.
     pub fn validate(&self, desired: &ActivationDesiredInputDocument) -> Result<()> {
         ensure!(
-            matches!(
-                self.schema.as_str(),
-                Self::SCHEMA_V1 | Self::SCHEMA_V2 | Self::SCHEMA_V3
-            ),
+            self.schema == Self::SCHEMA,
             "unsupported authenticated ability policy-set schema {:?}",
             self.schema
         );
         ensure!(
-            (self.schema == Self::SCHEMA_V1
-                && self.native_resource_map.is_none()
-                && self.platform_policy.is_none())
-                || (self.schema == Self::SCHEMA_V2
-                    && self.native_resource_map.is_some()
-                    && self.platform_policy.is_none())
-                || (self.schema == Self::SCHEMA_V3 && self.native_resource_map.is_some()),
-            "authenticated policy-set schema does not match native authority fields"
+            self.platform_policy.is_none() || self.native_resource_map.is_some(),
+            "authenticated policy-set platform authority has no native resource map"
         );
         ensure!(
             self.policies
@@ -449,20 +431,13 @@ fn validate_policy_feature_binding(
 ) -> Result<()> {
     let native_execution = required_features
         .iter()
-        .any(|feature| feature == "native-resource-map-v2");
+        .any(|feature| feature == "native-resource-map-v1");
     let native_platform_policy = required_features
         .iter()
         .any(|feature| feature == "native-platform-policy-v1");
     ensure!(
-        (policy_set.schema == AuthenticatedPolicySetDocument::SCHEMA_V1
-            && !native_execution
-            && !native_platform_policy)
-            || (policy_set.schema == AuthenticatedPolicySetDocument::SCHEMA_V2
-                && native_execution
-                && !native_platform_policy)
-            || (policy_set.schema == AuthenticatedPolicySetDocument::SCHEMA_V3
-                && native_execution
-                && native_platform_policy),
+        (native_execution == policy_set.native_resource_map.is_some())
+            && (native_platform_policy == policy_set.platform_policy.is_some()),
         "authenticated policy-set schema does not match its manifest feature gates"
     );
     Ok(())
@@ -2230,30 +2205,29 @@ mod tests {
         assert!(specialized.plan().operations().is_empty());
 
         let mut planning_only = desired.clone();
-        planning_only.policy_set.schema = AuthenticatedPolicySetDocument::SCHEMA_V1.to_string();
         planning_only.policy_set.native_resource_map = None;
         let error =
             specialize_activation(&planning_only, Some(&current), &packages, &mut evaluator)
-                .expect_err("policy-set/v1 must remain execution-ineligible");
+                .expect_err("planning-only policy must remain execution-ineligible");
         assert!(error.to_string().contains("planning-readable"));
 
         let planning_features = vec!["abilities-v1".to_string(), "ability-effects-v1".to_string()];
         let execution_features = vec![
             "abilities-v1".to_string(),
             "ability-effects-v1".to_string(),
-            "native-resource-map-v2".to_string(),
+            "native-resource-map-v1".to_string(),
         ];
         let platform_execution_features = vec![
             "abilities-v1".to_string(),
             "ability-effects-v1".to_string(),
             "native-platform-policy-v1".to_string(),
-            "native-resource-map-v2".to_string(),
+            "native-resource-map-v1".to_string(),
         ];
         validate_policy_feature_binding(&planning_features, &planning_only.policy_set)
-            .expect("planning-only v1 remains readable with the historical feature set");
+            .expect("planning-only policy remains readable with planning features");
         assert!(
             validate_policy_feature_binding(&planning_features, &desired.policy_set).is_err(),
-            "v3 execution policy must require the platform-policy feature gate"
+            "execution policy must require the platform-policy feature gate"
         );
         assert!(
             validate_policy_feature_binding(&execution_features, &planning_only.policy_set)
@@ -2261,22 +2235,17 @@ mod tests {
             "planning-only policy must not advertise execution compatibility"
         );
         validate_policy_feature_binding(&platform_execution_features, &desired.policy_set)
-            .expect("v3 execution policy matches the explicit platform feature gate");
+            .expect("execution policy matches the explicit platform feature gate");
 
-        let mut v2_with_platform = desired.clone();
-        v2_with_platform.policy_set.schema = AuthenticatedPolicySetDocument::SCHEMA_V2.to_string();
-        v2_with_platform.policy_set.platform_policy = Some(CurrentPlatformPolicyDocument {
-            schema: CurrentPlatformPolicyDocument::SCHEMA.to_string(),
-            required_features: Vec::new(),
-            policy_revision: policy.policy_revision,
-            bindings: Vec::new(),
-        });
+        let mut unsupported_schema = desired.clone();
+        unsupported_schema.policy_set.schema =
+            "aos.ability.authenticated-policy-set/draft".to_string();
         assert!(
-            v2_with_platform
+            unsupported_schema
                 .policy_set
-                .validate(&v2_with_platform.desired)
+                .validate(&unsupported_schema.desired)
                 .is_err(),
-            "policy-set/v2 must reject v3 platform authority fields"
+            "the final parser must reject draft schema discriminators"
         );
 
         let mut mismatched = desired.clone();
@@ -2284,7 +2253,7 @@ mod tests {
             .policy_set
             .native_resource_map
             .as_mut()
-            .expect("v2 map is present")
+            .expect("native resource map is present")
             .desired_state = Sha256Digest::of_bytes(b"different desired state");
         let error = specialize_activation(&mismatched, Some(&current), &packages, &mut evaluator)
             .expect_err("map must bind the fixed-point desired state");

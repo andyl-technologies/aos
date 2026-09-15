@@ -13,10 +13,10 @@ use aos_release::artifact::ArtifactRecord;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::evidence::{
-    GateResult, QUALIFICATION_EXECUTOR_REQUEST_V1, QUALIFICATION_EXECUTOR_REQUEST_V3,
-    QUALIFICATION_EXECUTOR_RESPONSE_V1, QUALIFICATION_REPORT_V1, QualificationExecutorRequestV1,
-    QualificationExecutorResponseV1, QualificationObjectV1, QualificationReportV1,
-    QualificationRetainedBundleV1, QualificationRetainedObjectV1, QualificationTrustedKeyV1,
+    GateResult, QUALIFICATION_EXECUTOR_REQUEST_V1, QUALIFICATION_EXECUTOR_RESPONSE_V1,
+    QUALIFICATION_REPORT_V1, QualificationExecutorRequestV1, QualificationExecutorResponseV1,
+    QualificationObjectV1, QualificationReportV1, QualificationRetainedBundleV1,
+    QualificationRetainedObjectV1, QualificationTrustedKeyV1,
 };
 use aos_release::manifest::ManifestEnvelopeV1;
 use aos_release::platform::{MatrixCell, Platform};
@@ -186,7 +186,7 @@ async fn run_attempt(
         for case in cases.into_iter().flatten() {
             let platform = case.platform.unwrap_or(Platform::X86_64Linux);
             requests.push(QualificationExecutorRequestV1 {
-                schema_version: QUALIFICATION_EXECUTOR_REQUEST_V3.to_owned(),
+                schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
                 registry: plan.registry.clone(),
                 release_id: plan.release_id.clone(),
                 staging_receipt_digest: staging_digest,
