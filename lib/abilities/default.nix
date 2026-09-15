@@ -1616,6 +1616,10 @@ in rec {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
     };
+    networkConfiguration = import ./network-configuration.nix {
+      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
+      types = abilityTypes;
+    };
     blockStorage = import ./block-storage.nix {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
@@ -1646,6 +1650,7 @@ in rec {
         // interfaces.networkPolicy.declarations
         // interfaces.bootPreparation.declarations
         // interfaces.kernelTunables.declarations
+        // interfaces.networkConfiguration.declarations
         // interfaces.blockStorage.declarations
         // interfaces.contentAddressedArtifacts.declarations;
       moduleTypes = moduleOptionTypes;

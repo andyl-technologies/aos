@@ -31,6 +31,15 @@
   managerWatchdogTransition = import ./_systemd-manager-watchdog-transition.nix {
     effectsInterface = managerWatchdogEffectsInterface;
   };
+  networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
+  networkConfigurationAlias = networkConfiguration.alias;
+  networkConfigurationImplementation = "${packageName}:${networkConfigurationAlias}";
+  networkConfigurationController = config.aos.abilities.implementations.${networkConfigurationImplementation};
+  networkConfigurationEffectsInterface = builtins.head networkConfigurationController.requirements.network-configuration-effects.accepted_interfaces;
+  networkConfigurationTransition = import ./_systemd-network-configuration-transition.nix {
+    effectsInterface = networkConfigurationEffectsInterface;
+    resourceInterface = networkConfiguration.identity;
+  };
   serviceResourceFields = serviceManagement.types.serviceDeclaration._abilitySchema.fields;
   serviceImplementationNames = builtins.filter (featureName: let
     selected = serviceInterfaces.${featureName};
@@ -388,6 +397,65 @@
           };
         })
         entries);
+    };
+
+  provideNetworkConfiguration = context: let
+    entries = builtins.map (requestName: let
+      binding = bindingFor context.bindings requestName;
+      parameters = context.requests.${requestName}.parameters;
+      reference = {
+        _type = "aos-resource-reference";
+        interface = networkConfiguration.identity;
+        resource = {
+          provider = context.instance.id;
+          key = binding.slot;
+        };
+        operations = ["observe"];
+        lifetime = "persistent";
+      };
+    in {
+      inherit requestName binding parameters reference;
+    }) (builtins.attrNames context.requests);
+  in
+    emptyResult
+    // {
+      outputs = builtins.listToAttrs (builtins.map (entry: {
+          name = entry.requestName;
+          value.readiness-resource = entry.reference;
+        })
+        entries);
+      resourceFragments = builtins.listToAttrs (builtins.map (entry: {
+          name = entry.binding.slot;
+          value = {
+            kind = networkConfiguration.identity.name;
+            lifetime = "persistent";
+            value = entry.parameters;
+          };
+        })
+        entries);
+    };
+
+  composeNetworkConfiguration = {resources, ...}: let
+    systemdLocator = artifactLocatorFor (lib.abilities.packageOutput {});
+    systemdReference =
+      {_type = "aos-artifact-reference";}
+      // systemdLocator.artifactReference;
+  in
+    emptyResult
+    // {
+      requests = builtins.mapAttrs (key: resource: {
+        requirement = "network-configuration-effects";
+        scope = ["network-configuration-effects"];
+        slot = key;
+        parameters = {
+          kind = "network-configuration";
+          desired = resource.value;
+        };
+      }) resources;
+      realizations = builtins.mapAttrs (_: _: {
+        schema = "aos.systemd.network-configuration-realization/v1";
+        systemd = systemdReference;
+      }) resources;
     };
 
   composeManagerWatchdog = {resources, ...}:
@@ -853,6 +921,11 @@
     != null
     && config.aos.abilities.bindings.${resource.controller}.implementation == managerWatchdogImplementation)
   (builtins.attrValues config.aos.abilities.resolvedResources);
+  selectedNetworkConfigurationResources = builtins.filter (resource:
+    resource.controller
+    != null
+    && config.aos.abilities.bindings.${resource.controller}.implementation == networkConfigurationImplementation)
+  (builtins.attrValues config.aos.abilities.resolvedResources);
   staticArtifactFor = resource: let
     realization = builtins.toJSON resource.realization;
     rendered =
@@ -890,6 +963,27 @@
     if config.aos.abilities.compositionPendingRequests != {}
     then []
     else builtins.map staticArtifactFor selectedManagerWatchdogResources;
+  networkConfigurationArtifacts =
+    if config.aos.abilities.compositionPendingRequests != {}
+    then []
+    else
+      builtins.map (resource: let
+        input = builtins.toJSON {
+          schema = "aos.systemd.network-configuration-static-input/v1";
+          desired = resource.value;
+          inherit (resource) realization;
+        };
+        rendered = pkgs.runCommand "systemd-network-configuration-${builtins.hashString "sha256" input}" {
+          realization = input;
+          passAsFile = ["realization"];
+        } ''
+          ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider render
+        '';
+      in {
+        root = rendered;
+        resolver_enabled = resource.value.resolver.enabled;
+      })
+      selectedNetworkConfigurationResources;
   serviceProviderImplementations = builtins.listToAttrs (builtins.map (featureName: let
       selected = serviceInterfaces.${featureName};
     in {
@@ -950,6 +1044,11 @@ in {
         compose = composeManagerWatchdog;
         transition = managerWatchdogTransition;
       };
+      ${networkConfigurationAlias} = {
+        provide = provideNetworkConfiguration;
+        compose = composeNetworkConfiguration;
+        transition = networkConfigurationTransition;
+      };
       ${implementationAlias} = {
         inherit provide compose;
         transition = packagedUnitTransition;
@@ -958,4 +1057,5 @@ in {
 
   config.systemd.providerUnitArtifacts = staticArtifacts;
   config.systemd.providerManagerConfigurationArtifacts = managerWatchdogArtifacts;
+  config.systemd.providerNetworkConfigurationArtifacts = networkConfigurationArtifacts;
 }

@@ -10,6 +10,7 @@ mod manager_watchdog;
 mod materialize;
 mod model;
 mod native_resource;
+mod network_configuration;
 mod qualification_observer;
 mod readiness;
 mod render;
@@ -55,6 +56,7 @@ enum HandlerRole {
     Identity(identity::IdentityRole),
     ManagerWatchdog,
     NativeResource(native_resource::NativeResourceRole),
+    NetworkConfiguration,
     PackagedUnit,
     Readiness(readiness::ReadinessRole),
     Service,
@@ -91,6 +93,7 @@ impl HandlerRole {
             "aos-systemd-swap-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::Swap,
             )),
+            "aos-systemd-network-configuration-effects" => Ok(Self::NetworkConfiguration),
             "aos-systemd-network-readiness-effects" => {
                 Ok(Self::Readiness(readiness::ReadinessRole::Network))
             }
@@ -173,6 +176,7 @@ async fn admit(role: HandlerRole, request: AdmissionRequest) -> Result<Admission
         HandlerRole::Identity(role) => identity::admit(role, request).await,
         HandlerRole::ManagerWatchdog => manager_watchdog::admit(request).await,
         HandlerRole::NativeResource(role) => native_resource::admit(role, request).await,
+        HandlerRole::NetworkConfiguration => network_configuration::admit(request).await,
         HandlerRole::PackagedUnit => admit_packaged_unit(request).await,
         HandlerRole::Readiness(role) => readiness::admit(role, request).await,
         HandlerRole::Service => service::admit(request).await,
@@ -243,6 +247,7 @@ async fn invoke(role: HandlerRole, invocation: Invocation) -> Result<InvocationR
         HandlerRole::Identity(role) => identity::invoke(role, invocation).await,
         HandlerRole::ManagerWatchdog => manager_watchdog::invoke(invocation).await,
         HandlerRole::NativeResource(role) => native_resource::invoke(role, invocation).await,
+        HandlerRole::NetworkConfiguration => network_configuration::invoke(invocation).await,
         HandlerRole::PackagedUnit => invoke_packaged_unit(invocation).await,
         HandlerRole::Readiness(role) => readiness::invoke(role, invocation).await,
         HandlerRole::Service => service::invoke(invocation).await,
