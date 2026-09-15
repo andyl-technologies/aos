@@ -329,7 +329,7 @@ in
   == [
     "checks.fleet.ability-initrd-activation"
     "checks.fleet.ability-initrd-handoff-fail-closed"
-    "checks.fleet.ability-native-power-loss"
+    "checks.fleet.runtime-module-composition"
   ];
   assert abilityRequirements.ability-native-recovery.checks
   == [

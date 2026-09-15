@@ -5,10 +5,6 @@
   pkgs,
   qualificationImage ? false,
 }: let
-  fixture = import ./_ability-runtime-reference.nix {
-    inherit lib mkSystem pkgs;
-    guestTools = qualificationImage;
-  };
   adapterSocket = "/run/aos/ability-crucible/crucible.sock";
   executorSocket = "/run/aos-instrumentation/controller.sock";
   crucibleModule = {
@@ -19,7 +15,10 @@
     aos.profiles.abilityCrucible.enable = true;
     aos.services.abilityCrucible.socketName = "crucible.sock";
   '';
-  base = import ./ability-native-power-loss.nix {
+  disabled = import ./runtime-module-composition.nix {
+    inherit lib mkSystem pkgs qualificationImage;
+  };
+  base = import ./runtime-module-composition.nix {
     inherit lib mkSystem pkgs qualificationImage;
     observerForwardEndpoint = {
       request = "aos-ability-crucible:observer-endpoint";
@@ -30,7 +29,7 @@
     extraHostModule = crucibleHostModule;
     additionalClosures = [pkgs.aos-ability-crucible];
   };
-  disabledSystem = fixture.runtimeSystem;
+  disabledSystem = disabled.machines.runtime.system;
   enabledSystem = base.machines.runtime.system;
   disabledConfig = disabledSystem.config;
   enabledConfig = enabledSystem.config;
@@ -42,12 +41,12 @@
   assert builtins.elem adapterPath enabledPackages;
   assert enabledConfig.aos.abilities.executionObserver
   == {
-    request = "fleet-observer:endpoint";
+    request = "aos-ability-boundary-observer:endpoint";
     resourceOutput = "retained-resource";
     socketOutput = "socket-path";
   };
   assert enabledConfig.aos.abilities.requests."aos-ability-crucible:observer-endpoint".parameters.socket_path == adapterSocket;
-  assert enabledConfig.aos.abilities.requests."fleet-observer:endpoint".parameters.socket_path == executorSocket; true;
+  assert enabledConfig.aos.abilities.requests."aos-ability-boundary-observer:endpoint".parameters.socket_path == executorSocket; true;
 in
   assert evaluationContract;
     base
@@ -77,10 +76,15 @@ in
           selected_fault = read_json(TARGET)
           reached_fault = read_json(HELD_EVENT)
           reproduced_recovery = read_json(RESUMED_EVENT)
-          power_boundary_events = boundary_events(power_state[1], power_state[2])
+          power_boundary_events = boundary_events(
+              power_state["transaction"],
+              power_state["plan"],
+              publish_selector,
+          )
           assert selected_fault == {
+              "action": "disconnect",
               "boundary": "effect-returned",
-              "operation_key": PUBLISH_OPERATION,
+              **publish_selector,
               "purpose": "effect",
               "sequence": "power-loss",
           }, selected_fault
@@ -117,12 +121,16 @@ in
                   ),
               },
               "inspector": {
-                  "transaction": process_state[1],
-                  "plan": process_state[2],
-                  "operation": process_state[6],
-                  "timeline": process_timeline,
+                  "transaction": process_state["transaction"],
+                  "plan": process_state["plan"],
+                  "operation": process_state["publish"][1]["key"],
+                  "timeline": publish_timeline,
                   "boundary_timeline": boundary_timeline(
-                      process_boundary_events
+                      boundary_events(
+                          process_state["transaction"],
+                          process_state["plan"],
+                          publish_selector,
+                      )
                   ),
               },
               "outcome": "reconciled-completed",
@@ -131,11 +139,11 @@ in
           write_canonical(finding_path, finding)
           observed_finding = read_json(finding_path)
           assert observed_finding == finding
-          assert observed_finding["inspector"]["timeline"] == process_timeline
+          assert observed_finding["inspector"]["timeline"] == publish_timeline
           assert observed_finding["outcome"] == "reconciled-completed"
 
           runtime.fail(
-              f"{NIX_BIN}/nix-store --query --requisites "
+              f"{NIX_STORE} --query --requisites "
               "${disabledConfig.system.build.toplevel} "
               f"| {pkgs.grep}/bin/grep -E "
               "'(aos-ability-crucible|crucible-guest)'"
