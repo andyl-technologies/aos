@@ -53,7 +53,10 @@ async fn package_contract_publication_requires_the_committed_roster_binding() {
     .await
     .unwrap_err();
 
-    assert!(format!("{error:#}").contains("revoked in keys.toml"));
+    assert!(
+        format!("{error:#}").contains("revoked in keys.toml"),
+        "{error:#}"
+    );
 }
 
 #[tokio::test]

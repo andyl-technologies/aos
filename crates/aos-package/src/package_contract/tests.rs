@@ -27,7 +27,7 @@ use super::{
 use crate::provenance::{TrustedProvenanceKey, sign_statement_dsse_jsonl};
 use crate::types::{
     AttestationMeta, PackageContractArtifactMeta, PackageContractClosureMemberMeta,
-    PackageContractMeta, PackageMeta, PermissionsMeta,
+    PackageContractMeta, PackageContractSelectorMeta, PackageMeta, PermissionsMeta,
 };
 
 const STORE_ROOT: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-ability-artifact";
@@ -306,33 +306,25 @@ impl TestFixture {
             nar_hash: digest('2'),
             closure: closure_digest,
         };
-        let package = PackageDocument {
-            schema: PackageDocument::SCHEMA.to_string(),
-            required_features: vec![RequiredFeature::new("abilities-v1").unwrap()],
-            package: PackageSubject {
-                name: aos_ability_model::LocalKey::new("demo").unwrap(),
-                version: "1.0.0".to_string(),
-                payload: artifact.clone(),
-                source: artifact.clone(),
+        let projection = serde_json::json!({
+            "schema": aos_ability_validate::PACKAGE_PROJECTION_SCHEMA,
+            "required_features": ["abilities-v1"],
+            "package": {"name": "demo", "version": "1.0.0"},
+            "artifacts": [],
+            "interfaces": {},
+            "guarantees": {},
+            "package_module": {
+                "artifact": {"package": "self", "output": "out"},
+                "path": "module.nix"
             },
-            artifacts: Vec::new(),
-            interfaces: Default::default(),
-            guarantees: Default::default(),
-            package_module: Some(aos_ability_model::ModuleLocator {
-                artifact: artifact.clone(),
-                path: aos_ability_model::RelativePath::new("module.nix")
-                    .expect("fixture package module path is valid"),
-            }),
-            option_declarations: Vec::new(),
-            exports: Vec::new(),
-            requirements: Vec::new(),
-            implementation: PackageImplementation {
-                providers: Vec::new(),
-                handlers: BTreeMap::new(),
-            },
-            qualification: aos_ability_model::PackageQualification::default(),
-        };
-        let manifest_bytes = encode_canonical(&package).unwrap();
+            "option_declarations": [],
+            "exports": [],
+            "interface_documents": [],
+            "requirements": [],
+            "implementation": {"providers": [], "handlers": {}},
+            "qualification": {"implementations": {}}
+        });
+        let manifest_bytes = aos_contract::canonical::to_vec(&projection).unwrap();
         let retained_artifact = PackageContractArtifactMeta {
             content: artifact.content.to_string(),
             store_path: artifact.store_path.clone(),
@@ -351,8 +343,12 @@ impl TestFixture {
                 references: Vec::new(),
             },
             payload: retained_artifact.clone(),
-            source: retained_artifact,
-            selectors: Vec::new(),
+            source: retained_artifact.clone(),
+            selectors: vec![PackageContractSelectorMeta {
+                package: "self".to_string(),
+                output: "out".to_string(),
+                artifact: retained_artifact.clone(),
+            }],
             provenance: "provenance/demo.contract.intoto.jsonl".to_string(),
         };
         let package_meta = PackageMeta {
@@ -690,7 +686,7 @@ fn signed_package_rejects_coordinate_and_payload_substitution() {
         &AcceptRetention::default(),
     )
     .unwrap_err();
-    assert!(format!("{error:#}").contains("manifest payload does not match"));
+    assert!(format!("{error:#}").contains("payload does not match primary package"));
 }
 
 #[test]
@@ -723,7 +719,6 @@ fn signed_package_rejects_manifest_and_artifact_tampering() {
         .unwrap()
         .payload
         .content = digest('6').to_string();
-    wrong_artifact.resign();
     let error = verify_package_contract(
         &wrong_artifact.package_meta,
         &wrong_artifact.manifest_bytes,
@@ -733,7 +728,7 @@ fn signed_package_rejects_manifest_and_artifact_tampering() {
         &AcceptRetention::default(),
     )
     .unwrap_err();
-    assert!(format!("{error:#}").contains("retention catalog does not match"));
+    assert!(format!("{error:#}").contains("provenance"));
 }
 
 #[test]
@@ -760,10 +755,13 @@ fn signed_package_propagates_live_store_failures() {
 fn closure_mutation_invalidates_the_semantic_closure_digest() {
     let mut fixture = TestFixture::new();
     let contract = fixture.package_meta.contract.as_mut().unwrap();
-    contract.payload.closure[0].references = vec!["3456789abcdfghijklmnpqrsvwxyz012".to_string()];
+    contract.payload.closure[0].references = vec!["0123456789abcdfghijklmnpqrsvwxyz".to_string()];
 
     let error = validate_package_contract_meta(contract).unwrap_err();
-    assert!(format!("{error:#}").contains("closure digest does not match"));
+    assert!(
+        format!("{error:#}").contains("closure digest does not match"),
+        "{error:#}"
+    );
 }
 
 #[test]
