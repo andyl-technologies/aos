@@ -30,6 +30,7 @@
     storage = serviceInterfaces.storage;
     socket_activation = serviceInterfaces.socketActivation;
     logging = serviceInterfaces.logging;
+    terminal = serviceInterfaces.terminal;
     identity = serviceInterfaces.identity;
     isolation = serviceInterfaces.isolation;
     linux_isolation = serviceInterfaces.linuxIsolation;
@@ -98,6 +99,7 @@
     storage = declaration.storage or null;
     socketActivation = declaration.socket_activation or null;
     logging = declaration.logging or null;
+    terminal = declaration.terminal or null;
     linuxIsolation = declaration.linux_isolation or null;
     reloadValid =
       reload
@@ -289,6 +291,17 @@
       || builtins.all
       (syscall: !(builtins.elem syscall linuxIsolation.syscall_deny))
       linuxIsolation.syscall_allow;
+    terminalValid =
+      terminal
+      == null
+      || !terminal.start_when_idle
+      || (
+        lifecycle.execution_model
+        == "foreground"
+        && supervision == null
+        && readiness != null
+        && readiness.mechanism == "process-running"
+      );
   in
     if !serviceTypes.serviceDeclaration.check declaration
     then throw "service declaration does not match the canonical service type"
@@ -332,6 +345,8 @@
     then throw "service '${declaration.service}' has duplicate storage mount names"
     else if !socketsValid
     then throw "service '${declaration.service}' has duplicate socket names or public manager names"
+    else if !terminalValid
+    then throw "service '${declaration.service}' can start when the terminal is idle only with foreground process-running readiness and no alternate supervision protocol"
     else if !managerIdentityValid
     then throw "service '${declaration.service}' has an invalid public manager identity"
     else if !loggingValid

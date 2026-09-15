@@ -669,6 +669,16 @@
   } [];
   logging = request loggingFeature;
 
+  terminalFeature = feature {
+    device = deviceNode;
+    reset = types.boolean;
+    hangup = types.boolean;
+    deallocate = types.boolean;
+    send_hangup_on_stop = types.boolean;
+    start_when_idle = types.boolean;
+  } [];
+  terminal = request terminalFeature;
+
   identityFeature = feature {
     principal = {
       type = types.optional (types.deferredResult principalName);
@@ -1107,6 +1117,20 @@
       schema = types.enum ["aos.ability.filesystem-readiness-observation/v1"];
       expected = filesystemReadiness;
       state = types.enum ["configuring" "degraded" "failed" "ready" "unknown"];
+    };
+  };
+  activationMilestone = types.record {
+    fields.milestone = types.enum [
+      "early-system"
+      "interactive-console"
+      "user-sessions-ready"
+    ];
+  };
+  activationMilestoneObservation = types.record {
+    fields = {
+      schema = types.enum ["aos.ability.activation-milestone-observation/v1"];
+      expected = activationMilestone;
+      state = types.enum ["failed" "pending" "ready" "unknown"];
     };
   };
   kernelModuleNames = types.list {
@@ -1619,6 +1643,10 @@
           type = types.optional loggingFeature;
           optional = true;
         };
+        terminal = {
+          type = types.optional terminalFeature;
+          optional = true;
+        };
         identity = {
           type = types.optional identityFeature;
           optional = true;
@@ -1690,6 +1718,7 @@
     storage = observationFor "storage" storage featureState {};
     socketActivation = observationFor "socket-activation" socketActivation featureState {};
     logging = observationFor "logging" logging featureState {};
+    terminal = observationFor "terminal" terminal featureState {};
     identity = observationFor "identity" identity featureState {};
     isolation = observationFor "isolation" isolation featureState {};
     linuxIsolation = observationFor "linux-isolation" linuxIsolation featureState {};
@@ -1719,6 +1748,8 @@ in {
     networkReadinessObservation
     filesystemReadiness
     filesystemReadinessObservation
+    activationMilestone
+    activationMilestoneObservation
     kernelModules
     kernelModulesObservation
     namedCredential
@@ -1767,6 +1798,7 @@ in {
     storage
     socketActivation
     logging
+    terminal
     identity
     isolation
     linuxIsolation

@@ -18,6 +18,7 @@
   cython,
   linux-pam,
   sqlite,
+  bash,
 }: let
   # 2.42.1 is the first stable release including
   # mount --beneath (commit cbf05f69 by Karel Zak, 2025-08-11; in-tree
@@ -152,8 +153,11 @@ in
       python3
       linux-pam
       sqlite
+      bash
     ];
     propagatedDeps = [libselinux];
+
+    abilities = ./_util-linux-getty/module.nix;
 
     phases = [
       {
@@ -221,6 +225,27 @@ in
         name = "install";
         script = ''
           make install
+
+          mkdir -p "$out/libexec"
+          cat > "$out/libexec/aos-autologin-shell" <<EOF
+          #!${bash}/bin/bash
+          export USER=root
+          export LOGNAME=root
+          export HOME=/root
+          export SHELL=${bash}/bin/bash
+          cd /root 2>/dev/null || true
+          exec ${bash}/bin/bash -l
+          EOF
+          chmod 0555 "$out/libexec/aos-autologin-shell"
+
+          cat > "$out/libexec/aos-autologin-getty" <<EOF
+          #!${bash}/bin/bash
+          exec "$out/sbin/agetty" \
+            --autologin root \
+            --login-program="$out/libexec/aos-autologin-shell" \
+            "\$@"
+          EOF
+          chmod 0555 "$out/libexec/aos-autologin-getty"
 
           mkdir -p "$python/lib"
           for bindings in "$out"/lib/python*; do
