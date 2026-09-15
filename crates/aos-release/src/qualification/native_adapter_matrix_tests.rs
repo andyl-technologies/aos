@@ -756,7 +756,7 @@ fn unknown_status_and_regression_fields_are_rejected() -> Result<()> {
     first.insert("passed".into(), serde_json::Value::Bool(true));
     first.insert(
         "regressions".into(),
-        serde_json::json!(["checks.fleet.ability-native-postgresql"]),
+        serde_json::json!(["checks.fleet.ability-native-activation"]),
     );
 
     assert!(serde_json::from_value::<NativeAdapterMatrixObservation>(value).is_err());
@@ -790,7 +790,7 @@ fn unknown_status_and_regression_fields_are_rejected() -> Result<()> {
             "evidence".into(),
             serde_json::json!({
                 "status": "passed",
-                "regressions": ["checks.fleet.ability-native-postgresql"]
+                "regressions": ["checks.fleet.ability-native-activation"]
             }),
         );
     assert!(serde_json::from_value::<NativeAdapterMatrixObservation>(value).is_err());

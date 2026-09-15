@@ -9,13 +9,12 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-import postgresql_evidence
 import reference_evidence
 import rollout_evidence
 
 
 VALIDATION_RESULT_SCHEMA = "aos.qualification.provider-evidence-validation/v1"
-SUBJECT_VALIDATORS = (postgresql_evidence, reference_evidence)
+SUBJECT_VALIDATORS = (reference_evidence,)
 SPECIALIZED_CELL_VALIDATORS = (rollout_evidence,)
 SPECIALIZED_SNAPSHOT_VALIDATORS = (rollout_evidence,)
 

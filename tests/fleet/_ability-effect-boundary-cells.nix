@@ -13,7 +13,6 @@
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-intent"
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result"
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-outcome"
-    "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result"
   ];
   selected = builtins.filter (cell:
     builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) scenarios
@@ -31,7 +30,6 @@
       "nginx-validation"
       "service-management"
     ];
-    postgresql = byAdapters ["postgresql"];
     systemdManager = byAdapters ["systemd-manager"];
     kubernetes = byAdapters ["kubernetes-object" "systemd-bootstrap"];
     rollout = byAdapters ["image-rollout"];
@@ -40,7 +38,6 @@
   all =
     groups.reference
     ++ groups.systemdManager
-    ++ groups.postgresql
     ++ groups.kubernetes
     ++ groups.rollout
     ++ groups.foreground;

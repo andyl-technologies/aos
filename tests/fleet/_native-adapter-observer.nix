@@ -47,7 +47,6 @@ pkgs.writeTextFile {
         "IP": ${builtins.toJSON "${pkgs.iproute2}/sbin/ip"},
         "KUBECTL": ${builtins.toJSON "${pkgs.kubectl}/bin/kubectl"},
         "NFT": ${builtins.toJSON "${pkgs.nftables}/sbin/nft"},
-        "PG_ISREADY": ${builtins.toJSON "${pkgs.postgresql}/bin/pg_isready"},
         "SS": ${builtins.toJSON "${pkgs.iproute2}/sbin/ss"},
         "SYSTEMCTL": ${builtins.toJSON "${pkgs.systemd}/bin/systemctl"},
         "QUALIFICATION_OBSERVER_DIRECT": True,

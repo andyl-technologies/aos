@@ -456,8 +456,8 @@ be provisioned before a campaign. All source regression groups are exposed at
 
 The RFC-0022 native ability gates are `ability-native-activation`,
 `ability-native-image-rollout`, `ability-native-kubernetes`,
-`ability-native-postgresql`, `ability-native-recovery`, and
-`ability-native-adapter-matrix`. They use release scope so each staging case
+`ability-native-recovery`, and `ability-native-adapter-matrix`. They use release
+scope so each staging case
 binds the complete finalized non-control artifact set, including the exact
 package, provider, handler, and image records carried by the release. A change
 to the case subjects, qualification policy, executor, or environment
@@ -621,16 +621,15 @@ The established scenario `regressions` fields point to
 `checks.fleet.ability-native-activation`,
 `checks.fleet.ability-native-image-rollout`,
 `checks.fleet.ability-native-kubernetes`,
-`checks.fleet.ability-native-postgresql`, and
 `checks.fleet.ability-native-power-loss`. Those derivations establish
 source-candidate regression coverage. They do not satisfy the staging cases:
 release admission still requires fresh executor observations for the exact
 frozen release subjects and acceptance checks. The x86 fleet topology also
 does not claim direct aarch64 execution.
 
-The x86 release executor maps six implemented policy IDs to native ability
-scenarios: activation, adapter matrix, image rollout, Kubernetes, PostgreSQL,
-and recovery. Each mapped scenario selects the exact finalized server QCOW2,
+The x86 release executor maps five implemented policy IDs to native ability
+scenarios: activation, adapter matrix, image rollout, Kubernetes, and recovery.
+Each mapped scenario selects the exact finalized server QCOW2,
 slot-A UKI, metadata, unsigned assembly, and finalized-set objects from the
 downloaded release case.
 It verifies their byte identities and cross-bindings, extracts the UKI's initrd,

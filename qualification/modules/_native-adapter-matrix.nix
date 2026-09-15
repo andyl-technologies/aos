@@ -13,7 +13,6 @@
     "checks.fleet.ability-native-foreground-container"
     "checks.fleet.ability-native-image-rollout"
     "checks.fleet.ability-native-kubernetes"
-    "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ],
 }: let
@@ -33,7 +32,6 @@
     "checks.fleet.ability-native-foreground-container"
     "checks.fleet.ability-native-image-rollout"
     "checks.fleet.ability-native-kubernetes"
-    "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ];
   token = value:

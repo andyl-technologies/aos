@@ -263,8 +263,6 @@
       $out/share/aos-release/qualification-native-adapter-cohort.py
     cp ${../../qualification/providers/native_adapter_evidence.py} \
       $out/share/aos-release/native_adapter_evidence.py
-    cp ${../../qualification/providers/postgresql_evidence.py} \
-      $out/share/aos-release/postgresql_evidence.py
     cp ${../../qualification/providers/reference_evidence.py} \
       $out/share/aos-release/reference_evidence.py
     cp ${../../qualification/providers/rollout_evidence.py} \
@@ -274,7 +272,6 @@
       ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
       $out/share/aos-release/qualification-native-adapter-cohort.py \
       $out/share/aos-release/native_adapter_evidence.py \
-      $out/share/aos-release/postgresql_evidence.py \
       $out/share/aos-release/reference_evidence.py \
       $out/share/aos-release/rollout_evidence.py
 
@@ -396,7 +393,6 @@ in
     "ability-native-adapter-matrix"
     "ability-native-image-rollout"
     "ability-native-kubernetes"
-    "ability-native-postgresql"
     "ability-native-recovery"
   ];
   assert (matrixSpec != null) == (scenarioId == "ability-native-adapter-matrix");

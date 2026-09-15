@@ -36,22 +36,12 @@ PROVIDER_ORACLES = {
         "live": "filesystem",
     },
     "network-endpoint": {
-        "roots": [
-            "/var/lib/aos/ability-runtime/endpoints",
-            "/run/aos-ability-postgresql",
-        ],
+        "roots": ["/var/lib/aos/ability-runtime/endpoints"],
         "live": "network",
     },
     "nginx-validation": {
         "roots": ["/var/lib/aos/ability-runtime/nginx/associations"],
         "live": "filesystem",
-    },
-    "postgresql": {
-        "roots": [
-            "/var/lib/aos/ability-runtime/postgresql",
-            "/run/aos-ability-postgresql",
-        ],
-        "live": "postgresql",
     },
     "systemd-bootstrap": {
         "roots": ["/etc/aos/ability-revisions"],
@@ -190,7 +180,6 @@ INTERFACES = {
     "managed-configuration": "aos.managed-configuration-effects",
     "network-endpoint": "aos.network-endpoint-effects",
     "nginx-validation": "aos.nginx-validation",
-    "postgresql": "aos.postgresql-effects",
     "systemd-bootstrap": "aos.systemd-provider-bootstrap",
     "systemd-manager": "aos.systemd-manager",
     "service-management": "aos.service-management",
@@ -221,9 +210,6 @@ def inject_foreign_owner(
     documents = resource_documents(adapter, resource)
     if not documents and adapter == "foreground-process":
         install_absent_foreground_resource(operation)
-        return
-    if not documents and adapter == "postgresql":
-        install_absent_postgresql_resource(operation)
         return
     if not documents and adapter in {
         "credential-delivery",
@@ -359,13 +345,10 @@ def install_absent_foreign_host_resource(
         cleanup.append(f"{COREUTILS}/rm -f {shlex.quote(physical)}")
     elif adapter == "host-storage":
         marker_path = f"/var/lib/aos/ability-runtime/storage/.{resource_digest}.json"
-        if qualification["owner"] == "postgresql-slot":
-            physical = f"/var/lib/aos/ability-runtime/storage/{resource_digest}"
-        else:
-            physical = (
-                "/var/lib/aos/ability-runtime/storage/"
-                f"{qualification['cluster']}-{qualification['purpose']}"
-            )
+        physical = (
+            "/var/lib/aos/ability-runtime/storage/"
+            f"{qualification['cluster']}-{qualification['purpose']}"
+        )
         runtime.succeed(
             f"{COREUTILS}/mkdir -p {shlex.quote(physical)}; "
             f"{COREUTILS}/chmod 700 {shlex.quote(physical)}"
@@ -436,42 +419,6 @@ def install_absent_foreground_resource(operation: dict[str, Any]) -> None:
     )
     if json.loads(original) != receipt:
         raise RuntimeError("foreground source receipt changed while it was copied")
-    INJECTED_MARKERS[_resource_key(resource)] = {
-        "path": target_path,
-        "original": None,
-        "cleanup": [],
-    }
-
-
-def install_absent_postgresql_resource(operation: dict[str, Any]) -> None:
-    """Copies the live sentinel cluster authority into the absent target slot."""
-
-    resource = operation["resource"]
-    source_markers = [
-        (path, document)
-        for path, document in provider_documents(
-            PROVIDER_ORACLES["postgresql"]["roots"]
-        )
-        if path.startswith("/var/lib/aos/ability-runtime/postgresql/.")
-        and document.get("schema") == "aos.ability.native-host-resource-state/v1"
-        and document.get("resource") != resource
-        and document.get("qualification", {}).get("kind") == "postgresql"
-    ]
-    if len(source_markers) != 1:
-        raise RuntimeError("PostgreSQL creation needs one live sentinel cluster marker")
-
-    source_path, marker = source_markers[0]
-    resource_digest = domain_digest("aos.ability.native-host-resource/v1", resource)
-    target_path = (
-        "/var/lib/aos/ability-runtime/postgresql/"
-        f".{resource_digest}.json"
-    )
-    original = runtime.succeed(f"{COREUTILS}/cat {shlex.quote(source_path)}").encode()
-    runtime.succeed(
-        f"{COREUTILS}/cp {shlex.quote(source_path)} {shlex.quote(target_path)}"
-    )
-    if json.loads(original) != marker:
-        raise RuntimeError("PostgreSQL sentinel marker changed while it was copied")
     INJECTED_MARKERS[_resource_key(resource)] = {
         "path": target_path,
         "original": None,
@@ -668,8 +615,6 @@ def live_observation_with_documents(
         return systemd_snapshot(operation, documents, mapping)
     if kind == "kubernetes":
         return kubernetes_snapshot(operation, mapping)
-    if kind == "postgresql":
-        return postgresql_snapshot(operation, documents)
     if kind == "rollout":
         return rollout_snapshot(operation, documents)
     raise RuntimeError(f"unknown provider oracle {kind!r}")
@@ -807,36 +752,6 @@ def kubernetes_snapshot(
         },
         "api-document-digest": hashlib.sha256(output.encode()).hexdigest(),
         "api-document": json.loads(output) if output.strip() else None,
-    }
-
-
-def postgresql_snapshot(
-    operation: dict[str, Any], documents: list[tuple[str, Any]]
-) -> dict[str, Any]:
-    """Reads owned cluster files and asks the live PostgreSQL servers for status."""
-
-    sockets = runtime.succeed(
-        f"{FIND} /run/aos-ability-postgresql -maxdepth 2 -type s "
-        "-name '.s.PGSQL.*' -print 2>/dev/null || true"
-    ).splitlines()
-    readiness = []
-    for socket in sockets:
-        path = str(PurePosixPath(socket).parent)
-        port = PurePosixPath(socket).name.rsplit(".", 1)[-1]
-        readiness.append(
-            {
-                "socket": socket,
-                "status": runtime.succeed(
-                    f"{PG_ISREADY} -h {shlex.quote(path)} -p {shlex.quote(port)} "
-                    "2>&1 || true"
-                ).strip(),
-            }
-        )
-    return {
-        "kind": "postgresql",
-        "filesystem": exact_filesystem_snapshot(operation, documents),
-        "readiness": readiness,
-        "input-digest": hashlib.sha256(canonical(operation["inputs"])).hexdigest(),
     }
 
 

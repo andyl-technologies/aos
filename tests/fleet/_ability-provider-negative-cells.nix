@@ -27,7 +27,6 @@
       "nginx-validation"
       "service-management"
     ];
-    postgresql = byAdapters ["postgresql"];
     foreground-process = byAdapters ["foreground-process"];
     systemd-manager = byAdapters ["systemd-manager"];
     kubernetes-object = byAdapters ["kubernetes-object"];
@@ -37,7 +36,6 @@
   };
   all =
     groups.reference
-    ++ groups.postgresql
     ++ groups.foreground-process
     ++ groups.systemd-manager
     ++ groups.kubernetes

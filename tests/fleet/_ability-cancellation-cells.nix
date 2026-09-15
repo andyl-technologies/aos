@@ -24,7 +24,6 @@
       "nginx-validation"
     ];
     foreground = byAdapters ["foreground-process"];
-    postgresql = byAdapters ["postgresql"];
     kubernetes = byAdapters ["kubernetes-object"];
     systemd = byAdapters [
       "systemd-bootstrap"
@@ -38,7 +37,6 @@ in
   assert builtins.sort builtins.lessThan (
     groups.reference
     ++ groups.foreground
-    ++ groups.postgresql
     ++ groups.kubernetes
     ++ groups.systemd
     ++ groups.rollout

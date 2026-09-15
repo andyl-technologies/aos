@@ -316,49 +316,6 @@
       "scope": "host-process"
     },
     {
-      "adapter": "postgresql",
-      "interface_abi": 1,
-      "interface_descriptor": "sha256:6a1e7d5fb03d9b91127144a64fb96e4c98f4995e7f4f0de258f79fb61fbb9fd6",
-      "interface_name": "aos.postgresql-effects",
-      "methods": [
-        {
-          "cancel": "materialize",
-          "effect_class": "mutation",
-          "method": "materialize",
-          "reconcile": "materialize"
-        },
-        {
-          "cancel": "observe",
-          "effect_class": "observation",
-          "method": "observe",
-          "reconcile": "observe"
-        },
-        {
-          "cancel": "restart",
-          "effect_class": "mutation",
-          "method": "restart",
-          "reconcile": "restart"
-        },
-        {
-          "cancel": "start",
-          "effect_class": "mutation",
-          "method": "start",
-          "reconcile": "start"
-        },
-        {
-          "cancel": "stop",
-          "effect_class": "mutation",
-          "method": "stop",
-          "reconcile": "stop"
-        }
-      ],
-      "provider_contract": {
-        "resource_lifetime": "persistent",
-        "state_format": "sha256:3f1ee821c852480fa2cc3160555bbb187668c1509f84345d4339306910487596"
-      },
-      "scope": "host-resource"
-    },
-    {
       "adapter": "service-management",
       "interface_abi": 1,
       "interface_descriptor": "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff",
@@ -477,8 +434,8 @@
     }
   ],
   "limits": {
-    "max_adapters": 13,
-    "max_methods": 51,
+    "max_adapters": 12,
+    "max_methods": 46,
     "max_scenarios": 28
   },
   "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
