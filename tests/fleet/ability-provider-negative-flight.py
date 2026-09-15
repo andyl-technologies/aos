@@ -14,16 +14,6 @@ CONTINUE = f"{BOUNDARY_ROOT}/continue.json"
 EVENTS = f"{BOUNDARY_ROOT}/events.jsonl"
 HELD_EVENT = f"{BOUNDARY_ROOT}/held-event.json"
 TARGET = f"{BOUNDARY_ROOT}/target.json"
-OBSERVATION_METHODS = {
-    "acquire",
-    "observe",
-    "observe-boot",
-    "observe-health",
-    "observe-manager",
-    "read",
-}
-
-
 @dataclass(frozen=True)
 class ProviderFlight:
     """Names one exact method pair in a production provider plan."""
@@ -122,6 +112,20 @@ def project_operation(operation: dict[str, Any], ordinal: int) -> dict[str, Any]
     }
 
 
+def required_target_access(operation: dict[str, Any]) -> str:
+    """Returns the authenticated method access class selected by the matrix."""
+
+    matches = {
+        cell["required_target_access"]
+        for cell in MATRIX_SPEC["cells"]
+        if cell["interface"] == operation["interface"]
+        and cell["method"] == operation["method"]
+    }
+    if len(matches) != 1:
+        raise RuntimeError("operation does not resolve one matrix access class")
+    return next(iter(matches))
+
+
 def transaction_state(
     held: dict[str, Any], flight: ProviderFlight
 ) -> dict[str, Any]:
@@ -172,7 +176,7 @@ def transaction_state(
 
     witness_identity = None
     if flight.observation:
-        if dependent["method"] not in OBSERVATION_METHODS:
+        if required_target_access(dependent) != "read":
             witness_identity = dependent_identity
         else:
             witness_targets = set()
@@ -192,7 +196,7 @@ def transaction_state(
                 project_operation(operation, ordinal)
                 for ordinal, operation in enumerate(effect["operations"])
                 if operation["key"] in witness_targets
-                and operation["method"] not in OBSERVATION_METHODS
+                and required_target_access(operation) != "read"
             ]
             if witnesses:
                 witnesses.sort(key=lambda operation: canonical(operation["key"]))
