@@ -40,7 +40,7 @@
       description = "Opaque reference to the cluster token.";
     };
   };
-  objectContract = lib.abilities.interfaces.kubernetesObjectManagement;
+  objectContract = import ./object-interface.nix {inherit lib;};
   configurationContract = import ./configuration-interface.nix {inherit lib;};
   serverRole = role != "worker";
   labelValue = abilityTypes.refined {
@@ -194,6 +194,8 @@
   };
   configurationInterfaces =
     {
+      ${objectContract.controller.alias} = objectContract.controller.declaration;
+      ${objectContract.contribution.alias} = objectContract.contribution.declaration;
       ${configurationContract.controller.alias} = configurationContract.controller.declaration;
       ${configurationContract.contribution.alias} = configurationContract.contribution.declaration;
       ${configurationEffects.alias} = configurationEffects.declaration;

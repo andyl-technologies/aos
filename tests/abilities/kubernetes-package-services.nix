@@ -3,6 +3,7 @@
   lib,
   pkgs,
 }: let
+  objectContract = import ../../pkgs/kubernetes/_k3s-config/object-interface.nix {inherit lib;};
   evaluatePackages = consumerModules: configuration:
     lib.evalModules {
       inherit lib;
@@ -161,6 +162,7 @@
       else portableOptionTree option)
     (builtins.attrNames options);
 in
+  assert !(lib.abilities.interfaces ? kubernetesObjectManagement);
   assert commandFor cloudcore "cloudcore:cloudcore-lifecycle"
   == [
     {
@@ -328,18 +330,33 @@ in
     && directory.retention == "persistent")
   (requests k3sCombined)."k3s-combined:k3s-directories".parameters.managed;
   assert k3sCombined.config.aos.abilities.implementations."k3s-combined:kubernetes-object-set".interface
-  == lib.abilities.interfaces.kubernetesObjectManagement.controller.identity;
+  == objectContract.controller.identity;
   assert builtins.attrNames k3sPackageAbilities.interfaces
   == [
     "k3s-configuration"
     "k3s-configuration-effects"
     "k3s-integration"
     "kubernetes-object-effects"
+    "kubernetes-object-set"
+    "kubernetes-objects"
   ];
   assert k3sPackageAbilities.implementations.kubernetes-object-set.interface
-  == lib.abilities.interfaces.kubernetesObjectManagement.controller.identity;
+  == objectContract.controller.identity;
   assert k3sPackageAbilities.implementations.kubernetes-objects.interface
-  == lib.abilities.interfaces.kubernetesObjectManagement.contribution.identity;
+  == objectContract.contribution.identity;
+  assert objectContract.controller.declaration.lifecycle.releasesEphemeralOnDisable;
+  assert !objectContract.contribution.declaration.lifecycle.releasesEphemeralOnDisable;
+  assert objectContract.controller.declaration.methods.release.semantics
+  == {
+    requiredTargetAccess = "exclusive-write";
+    stopsProvider = true;
+  };
+  assert builtins.attrNames objectContract.controller.declaration.outputs
+  == [
+    "cluster-readiness-resource"
+    "kubeconfig-resource"
+    "readiness-resource"
+  ];
   assert k3sPackageAbilities.implementations.kubernetes-object-set ? provider_module;
   assert !(k3sPackageAbilities.implementations.kubernetes-object-set ? handler);
   assert k3sPackageAbilities.implementations.kubernetes-objects ? provider_module;

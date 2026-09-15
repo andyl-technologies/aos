@@ -9,7 +9,10 @@
   abilityTypes = lib.abilities.types;
   cfg = config.longhorn;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
-  objectContract = lib.abilities.interfaces.kubernetesObjectManagement;
+  objectInterface = lib.abilities.interfaceSelector {
+    name = "aos.kubernetes.objects";
+    abi = 1;
+  };
   chartObject = {
     apiVersion = "helm.cattle.io/v1";
     kind = "HelmChart";
@@ -30,9 +33,7 @@
   };
   objects = {
     requirementTemplates.kubernetes-objects =
-      lib.abilities.interfaceSelector {
-        inherit (objectContract.contribution.identity) name abi;
-      }
+      objectInterface
       // {
         description = "Contribute the exact Longhorn object set to a selected Kubernetes controller.";
         methods = ["observe"];

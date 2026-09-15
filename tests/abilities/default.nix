@@ -438,9 +438,6 @@
   attestationVerifierService = import ./attestation-verifier-service.nix {
     inherit lib pkgs;
   };
-  kubernetesObjectManagementCore = import ./kubernetes-object-management-core.nix {
-    inherit lib;
-  };
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
@@ -940,7 +937,6 @@ in
   assert upgradeTransitionFixture;
   assert k3sControllerTerminal;
   assert attestationVerifierService;
-  assert kubernetesObjectManagementCore;
   assert serviceManagement;
   assert managedIdentityAllocation;
   assert systemServiceModules;

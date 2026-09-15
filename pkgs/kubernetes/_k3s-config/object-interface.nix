@@ -1,10 +1,6 @@
-##! Canonical provider-neutral Kubernetes object-set declarations.
-{
-  types,
-  declareInterface,
-  interfaceDocumentFromDeclaration,
-  interfaceIdentity,
-}: let
+##! K3s-owned Kubernetes object-set declarations.
+{lib}: let
+  inherit (lib.abilities) declareInterface interfaceDocumentFromDeclaration interfaceIdentity types;
   controllerAlias = "kubernetes-object-set";
   contributionAlias = "kubernetes-objects";
   controllerName = "aos.kubernetes.object-set";
