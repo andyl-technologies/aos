@@ -157,7 +157,6 @@ pub(in crate::registry_ops) fn read_publish_config_module(
         package_name,
         runtime_output,
         dependency_outputs,
-        &authored,
     )?;
     let mut declares = declarations
         .iter()
@@ -340,28 +339,7 @@ fn derive_config_option_declarations(
     package_name: &str,
     runtime_output: &str,
     dependency_outputs: &BTreeMap<String, String>,
-    authored: &PublishConfigModuleManifest,
 ) -> Result<Vec<DerivedOptionDeclaration>> {
-    let owns = authored
-        .owns_roots
-        .iter()
-        .map(|owned| nix_publish_string(&owned.root))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let contributes = authored
-        .contributes
-        .iter()
-        .map(|contribution| {
-            let paths = contribution
-                .paths
-                .iter()
-                .map(|path| nix_publish_string(path))
-                .collect::<Vec<_>>()
-                .join(" ");
-            format!("{} = [ {paths} ];", nix_publish_string(&contribution.root))
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
     let expression = format!(
         r#"let
   base = import <aos-publish-base-lib>;
@@ -372,7 +350,6 @@ fn derive_config_option_declarations(
       configRoot = <aos-publish-config-module>;
       module = <aos-publish-config-module/module.nix>;
       outputs = {{ self = builtins.toString <aos-publish-runtime-output>; dependencies = {{ {} }}; }};
-      authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; }};
     }} ];
     inherit (base) lib;
   }};

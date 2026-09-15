@@ -387,38 +387,6 @@ where
             } else {
                 nix_path_str(path)
             };
-            let owns = member
-                .authorization
-                .owns
-                .iter()
-                .map(|root| nix_string(root))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let contributes = member
-                .authorization
-                .contributes
-                .iter()
-                .map(|(root, paths)| {
-                    let paths = paths
-                        .iter()
-                        .map(|path| nix_string(path))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    format!("{} = [ {paths} ];", nix_string(root))
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            let artifact_list = |values: &[String]| {
-                values
-                    .iter()
-                    .map(|value| nix_string(value))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            };
-            let artifact_etc = artifact_list(&member.authorization.artifacts.etc);
-            let artifact_units = artifact_list(&member.authorization.artifacts.units);
-            let artifact_users = artifact_list(&member.authorization.artifacts.users);
-            let artifact_groups = artifact_list(&member.authorization.artifacts.groups);
             let self_output = member
                 .outputs
                 .self_output
@@ -447,7 +415,7 @@ where
                 .collect::<Result<Vec<_>>>()?
                 .join(" ");
             items.push(format!(
-                    "    (let configRoot = {config_root}; in {{ name = {}; authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; artifacts = {{ etc = [ {artifact_etc} ]; units = [ {artifact_units} ]; users = [ {artifact_users} ]; groups = [ {artifact_groups} ]; }}; }}; inherit configRoot; module = configRoot + \"/module.nix\"; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
+                    "    (let configRoot = {config_root}; in {{ name = {}; inherit configRoot; module = configRoot + \"/module.nix\"; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
                     nix_string(&member.package),
                 ));
         }
@@ -1082,7 +1050,6 @@ mod tests {
             config_output: config_output.map(str::to_string),
             config_output_nar_hash: config_output.map(|_| "sha256:test".to_string()),
             module_abi_compat: Some(ModuleAbiCompat { min: 1, max: 2 }),
-            authorization: super::super::PackageAuthorization::default(),
             outputs: super::super::PackageOutputs::default(),
         }
     }
@@ -1375,6 +1342,7 @@ max = 1
         );
         assert!(text.contains("self = (admit /nix/store/hash-web-runtime)"));
         assert!(text.contains("\"openssl\" = (admit /nix/store/hash-openssl-runtime);"));
+        assert!(!text.contains("authorization"), "{text}");
     }
 
     #[test]

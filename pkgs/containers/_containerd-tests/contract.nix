@@ -17,6 +17,7 @@
             containerd.config = lib.mkOption {
               type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
               default = {};
+              contributable = true;
             };
           };
         }
@@ -25,10 +26,6 @@
       packageModules = [
         {
           name = "containerd";
-          authorization = {
-            owns = ["containerd"];
-            contributes = {};
-          };
           configRoot = ../_containerd-config;
           module = ../_containerd-config/module.nix;
           outputs = {

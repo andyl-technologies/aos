@@ -1542,8 +1542,7 @@ mod tests {
                     "store_paths": ["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config"],
                     "nar_hashes": [format!("sha256:{}", "0".repeat(52))],
                     "package_names": ["firewall"],
-                    "module_abi_compat": [{"min": 1, "max": 10}],
-                    "authorizations": [{"owns": [], "contributes": {}}]
+                    "module_abi_compat": [{"min": 1, "max": 10}]
                 },
                 "host_nix": {
                     "store_path": "/nix/store/cccccccccccccccccccccccccccccccc-host.nix",

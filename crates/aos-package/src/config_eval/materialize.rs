@@ -296,11 +296,6 @@ impl ConfigManifest {
         if self.inputs.config_modules.count != self.inputs.config_modules.module_abi_compat.len() {
             bail!("config_modules count does not match module_abi_compat");
         }
-        if !self.inputs.config_modules.authorizations.is_empty()
-            && self.inputs.config_modules.count != self.inputs.config_modules.authorizations.len()
-        {
-            bail!("config_modules count does not match authorizations");
-        }
         for compat in &self.inputs.config_modules.module_abi_compat {
             if compat.min > compat.max {
                 bail!("config_modules contains an inverted module ABI range");
@@ -1407,9 +1402,6 @@ pub struct ConfigModulesInput {
     pub origins: Vec<String>,
     /// ABI compatibility band corresponding to each ordered module path.
     pub module_abi_compat: Vec<ModuleAbiCompat>,
-    /// Exact authenticated write authorization corresponding to each module.
-    #[serde(default)]
-    pub authorizations: Vec<super::PackageAuthorization>,
 }
 
 /// Authorized host module identity and trust evidence.

@@ -26,9 +26,9 @@ in
     ];
     runtimeDeps = [];
 
-    # Cilium contributes typed CNI and Kubernetes resources to a selected k3s
-    # owner; installing its payload never creates a second lifecycle owner.
-    abilities = (import ./_ability-contracts.nix {inherit lib;}).contributorPackage;
+    # One module owns Cilium's configuration surface, k3s contributions, and
+    # ability requirements. Its declarations are the write-authority source.
+    abilities = ./_cilium-package-module.nix;
 
     phases = [
       {
@@ -88,41 +88,6 @@ in
         '';
       }
     ];
-
-    configModule = {
-      src = ./_cilium-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "cilium.enable"
-        "cilium.kubeProxyReplacement"
-        "cilium.operatorReplicas"
-      ];
-      ownsRoots = [
-        {
-          root = "cilium";
-          interfaceAbi = 1;
-        }
-      ];
-      contributes = [
-        {
-          root = "k3s";
-          interfaceAbi = 2;
-          paths = [
-            "integrations.cni.cilium"
-            "integrations.resources.cilium"
-          ];
-        }
-      ];
-      documentation = {
-        summary = "Cilium — eBPF-based networking, security, and observability";
-        sections.integration = lib.aosDoc.section "k3s integration" [
-          (lib.aosDoc.paragraph "Cilium contributes only its signed CNI settings and resource bundle. It cannot enable k3s or change unrelated cluster policy; the k3s owner must be installed with interface ABI 2.")
-        ];
-      };
-    };
 
     checks = {
       testing,

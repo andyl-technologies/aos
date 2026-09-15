@@ -109,54 +109,63 @@ in {
     services = lib.mkOption {
       type = systemdTypes.services;
       default = {};
+      contributable = true;
       description = "Typed systemd .service units.";
     };
 
     targets = lib.mkOption {
       type = systemdTypes.targets;
       default = {};
+      contributable = true;
       description = "Typed systemd .target units.";
     };
 
     sockets = lib.mkOption {
       type = systemdTypes.sockets;
       default = {};
+      contributable = true;
       description = "Typed systemd .socket units.";
     };
 
     timers = lib.mkOption {
       type = systemdTypes.timers;
       default = {};
+      contributable = true;
       description = "Typed systemd .timer units.";
     };
 
     paths = lib.mkOption {
       type = systemdTypes.paths;
       default = {};
+      contributable = true;
       description = "Typed systemd .path units.";
     };
 
     slices = lib.mkOption {
       type = systemdTypes.slices;
       default = {};
+      contributable = true;
       description = "Typed systemd .slice units.";
     };
 
     mounts = lib.mkOption {
       type = systemdTypes.mounts;
       default = [];
+      contributable = true;
       description = "Typed systemd .mount units. Keyed by `where`, not by name.";
     };
 
     automounts = lib.mkOption {
       type = systemdTypes.automounts;
       default = [];
+      contributable = true;
       description = "Typed systemd .automount units. Keyed by `where`, not by name.";
     };
 
     units = lib.mkOption {
       type = systemdTypes.units;
       default = {};
+      contributable = true;
       description = ''
         Generic escape-hatch unit type. Modules that want to ship raw
         unit text — e.g. to extend an upstream systemd.packages-provided

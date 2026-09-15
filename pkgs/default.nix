@@ -256,40 +256,6 @@
       if preparedAuthoredConfigModule != null
       then builtins.fromJSON preparedAuthoredConfigModule.metaJson
       else null;
-    packageModuleAuthorization = {
-      owns =
-        if authoredConfigMeta == null
-        then []
-        else builtins.map (owned: owned.root) authoredConfigMeta.owns_roots;
-      contributes =
-        (
-          if authoredConfigMeta == null
-          then {}
-          else
-            builtins.listToAttrs (builtins.map (contribution: {
-                name = contribution.root;
-                value = contribution.paths;
-              })
-              authoredConfigMeta.contributes)
-        )
-        // lib.optionalAttrs (authoredAbilities != null) {aos = ["abilities"];};
-      artifacts =
-        if authoredConfigMeta == null
-        then {
-          etc = [];
-          groups = [];
-          units = [];
-          users = [];
-        }
-        else
-          authoredConfigMeta.artifacts
-          or {
-            etc = [];
-            groups = [];
-            units = [];
-            users = [];
-          };
-    };
     packageModule = {
       imports =
         lib.optional
@@ -642,7 +608,7 @@
       then {
         abilities = abilityProjection;
         abilityModule = authoredAbilities;
-        inherit packageModule packageModuleAuthorization;
+        inherit packageModule;
         packageModuleOutputs = {
           self = builtins.toString drv;
           dependencies = preparedConfigModule.dependencyOutputs or {};
@@ -651,7 +617,7 @@
       }
       else if hasConfigModule
       then {
-        inherit packageModule packageModuleAuthorization;
+        inherit packageModule;
         packageModuleOutputs = {
           self = builtins.toString drv;
           dependencies = preparedConfigModule.dependencyOutputs or {};

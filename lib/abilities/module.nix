@@ -280,11 +280,13 @@ in {
     implementations = mkOption {
       type = moduleTypes.attrsOf implementationType;
       default = {};
+      contributable = true;
       description = "Package-owned ability implementations available to provider discovery.";
     };
     requirementTemplates = mkOption {
       type = moduleTypes.attrsOf requirementType;
       default = {};
+      contributable = true;
       description = "Package-owned ability requirements available to configured instances.";
     };
     instances = mkOption {

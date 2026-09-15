@@ -11,6 +11,7 @@
   }:
     lib.evalModules {
       modules = [
+        lib.abilities.module
         {
           options.assertions = lib.mkOption {
             type = lib.types.listOf lib.types.attrs;
@@ -20,10 +21,12 @@
             config = lib.mkOption {
               type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
               default = {};
+              contributable = true;
             };
             credentials = lib.mkOption {
               type = lib.types.attrsOf lib.types.attrs;
               default = {};
+              contributable = true;
             };
           };
         }
@@ -33,10 +36,6 @@
         [
           {
             inherit name;
-            authorization = {
-              owns = ["k3s"];
-              contributes = {};
-            };
             configRoot = ../../pkgs/kubernetes/_k3s-config;
             module = ../../pkgs/kubernetes/_k3s-config/module.nix;
             outputs = {
@@ -75,15 +74,7 @@
   integrationModules = [
     {
       name = "cilium";
-      authorization = {
-        owns = ["cilium"];
-        contributes.k3s = [
-          "integrations.cni.cilium"
-          "integrations.resources.cilium"
-        ];
-      };
-      configRoot = ../../pkgs/kubernetes/_cilium-config;
-      module = ../../pkgs/kubernetes/_cilium-config/module.nix;
+      module = pkgs.cilium.packageModule;
       outputs = {
         self = builtins.toString pkgs.cilium;
         dependencies = {};
@@ -91,13 +82,6 @@
     }
     {
       name = "longhorn-manager";
-      authorization = {
-        owns = ["longhorn"];
-        contributes.k3s = [
-          "integrations.csi.longhorn"
-          "integrations.resources.longhorn"
-        ];
-      };
       configRoot = ../../pkgs/storage/_longhorn-config;
       module = ../../pkgs/storage/_longhorn-config/module.nix;
       outputs = {
@@ -312,6 +296,14 @@
   };
 
   checks = [
+    {
+      assertion = pkgs.cilium ? packageModule && !(pkgs.cilium ? configModule);
+      message = "Cilium must publish its unified package module without the legacy configModule channel";
+    }
+    {
+      assertion = pkgs.cilium.abilities.requirementTemplates ? k3s;
+      message = "Cilium's unified package module must retain its k3s ability requirement";
+    }
     {
       assertion = worker.config.k3s.role == "worker";
       message = "k3s worker role must be fixed by its provider";

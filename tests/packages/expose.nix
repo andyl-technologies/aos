@@ -61,10 +61,6 @@
     packageModules = [
       {
         name = "config-module-smoke";
-        authorization = {
-          owns = ["configModuleSmoke"];
-          contributes = {};
-        };
         configRoot = ../../pkgs/tests/_config-module-smoke;
         module = ../../pkgs/tests/_config-module-smoke/module.nix;
         outputs = {
