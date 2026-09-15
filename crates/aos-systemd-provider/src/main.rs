@@ -21,15 +21,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, AccessMode, IncarnationId, LocalKey, MethodSemantics,
-    ResourceReference, RevisionId,
+    ABILITY_LIMITS_V1, AbilityValue, AccessMode, LocalKey, MethodSemantics, ResourceReference,
 };
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, BoundNativeContext, HANDLER_ABI_ARGUMENT,
-    INVOCATION_SCHEMA, Invocation, InvocationDisposition, InvocationPurpose, InvocationResult,
-    REQUEST_SCHEMA, RESOURCE_CONTEXT_SCHEMA, RESULT_SCHEMA, ResourceContext, SupportedPurposes,
-    native_context_digest, resource_set_digest,
+    AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
+    InvocationDisposition, InvocationPurpose, InvocationResult, REQUEST_SCHEMA, RESULT_SCHEMA,
+    ResourceContext, SupportedPurposes, resource_set_digest, validate_admission_resource,
+    validate_resource_context, validate_resource_contexts,
 };
 use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 use serde::Serialize;
@@ -107,11 +106,9 @@ async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResul
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         bail!("unsupported admission request schema");
     }
+    validate_admission_resource(&request)?;
     require_method(&request.method, &request.semantics)?;
-    if request.target.resource != request.resource_spec.resource {
-        bail!("admission target does not match its resource specification");
-    }
-    validate_contexts(&request.resources)?;
+    validate_resource_contexts(&request.resources)?;
 
     let expected: PackagedUnitRequest = decode_value(&request.resource_spec.value)?;
     require_resource_contexts(&packaged_resource_references(&expected), &request.resources)?;
@@ -135,7 +132,6 @@ async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResul
         &paths,
     )
     .await?;
-    let incarnation = IncarnationId::new(manager.incarnation().token())?;
     let provider_context = provider_context(
         &manager,
         inspection.unit_identity.clone(),
@@ -157,7 +153,7 @@ async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResul
         } else {
             AdmissionRevision::Absent
         },
-        incarnation: Some(incarnation),
+        incarnation: Some(request.assignment.incarnation),
         observation: value(&inspection.observation)?,
         native_context: provider_context,
         supported_purposes,
@@ -188,16 +184,10 @@ async fn invoke_packaged_unit(invocation: Invocation) -> Result<InvocationResult
     {
         bail!("invocation resource-set digest does not match");
     }
-    validate_contexts(&invocation.request.resources)?;
+    validate_resource_contexts(&invocation.request.resources)?;
 
     let target = target_context(&invocation)?;
-    let bound: BoundNativeContext = decode_value(&target.native_context)?;
-    if bound.schema != RESOURCE_CONTEXT_SCHEMA
-        || bound.resource_spec.resource != invocation.request.target.resource
-    {
-        bail!("target context is bound to another resource");
-    }
-    require_target_revision(bound.resource_spec.revision, target.revision)?;
+    let bound = validate_resource_context(target)?;
     let expected: PackagedUnitRequest = decode_value(&bound.resource_spec.value)?;
     require_resource_contexts(
         &packaged_resource_references(&expected),
@@ -531,15 +521,6 @@ fn target_context(invocation: &Invocation) -> Result<&ResourceContext> {
     Ok(matches[0])
 }
 
-fn validate_contexts(contexts: &[ResourceContext]) -> Result<()> {
-    for context in contexts {
-        if native_context_digest(&context.native_context)? != context.native_context_digest {
-            bail!("resource native-context digest does not match");
-        }
-    }
-    Ok(())
-}
-
 fn require_resource_contexts(
     prerequisites: &[aos_ability_model::ResourceReference],
     contexts: &[ResourceContext],
@@ -588,13 +569,6 @@ fn require_method(
     };
     if *semantics != expected {
         bail!("handler invocation carries mismatched method semantics");
-    }
-    Ok(())
-}
-
-fn require_target_revision(resource: RevisionId, context: RevisionId) -> Result<()> {
-    if resource != context {
-        bail!("target native context carries another semantic revision");
     }
     Ok(())
 }
@@ -698,10 +672,7 @@ mod tests {
     use aos_contract::Sha256Digest;
     use aos_provider_protocol::ResourceContext;
 
-    use super::{
-        packaged_resource_references, require_method, require_resource_contexts,
-        require_target_revision,
-    };
+    use super::{packaged_resource_references, require_method, require_resource_contexts};
     use crate::model::PackagedUnitRequest;
 
     fn method(name: &str) -> MethodReference {
@@ -742,15 +713,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn target_context_revision_must_equal_its_resource_specification() {
-        let expected = RevisionId(Sha256Digest::from_bytes([1; 32]));
-        let changed = RevisionId(Sha256Digest::from_bytes([2; 32]));
-
-        assert!(require_target_revision(expected, expected).is_ok());
-        assert!(require_target_revision(expected, changed).is_err());
-    }
-
     fn resource_reference(key: &str) -> ResourceReference {
         serde_json::from_value(serde_json::json!({
             "interface": {
@@ -778,8 +740,25 @@ mod tests {
     fn context(reference: ResourceReference) -> ResourceContext {
         let empty =
             AbilityValue::new(serde_json::Value::Null).expect("null context fixture is bounded");
+        let assignment = serde_json::from_value(serde_json::json!({
+            "provider": reference.resource.provider.clone(),
+            "interface": reference.interface.clone(),
+            "implementation": {
+                "descriptor": format!("sha256:{}", "4".repeat(64)),
+                "artifact": {
+                    "content": format!("sha256:{}", "5".repeat(64)),
+                    "store_path": "/nix/store/00000000000000000000000000000000-provider",
+                    "nar_hash": format!("sha256:{}", "6".repeat(64)),
+                    "closure": format!("sha256:{}", "7".repeat(64)),
+                },
+                "handler": "test",
+            },
+            "incarnation": "test-incarnation",
+        }))
+        .expect("provider-assignment fixture is valid");
         ResourceContext {
             reference,
+            assignment,
             revision: RevisionId(Sha256Digest::from_bytes([2; 32])),
             observation: empty.clone(),
             native_context: empty,

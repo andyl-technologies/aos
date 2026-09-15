@@ -10,9 +10,10 @@ use aos_ability_model::{
 };
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, BoundNativeContext, INVOCATION_SCHEMA, Invocation,
-    InvocationDisposition, InvocationPurpose, InvocationResult, REQUEST_SCHEMA,
-    RESOURCE_CONTEXT_SCHEMA, RESULT_SCHEMA, SupportedPurposes, resource_set_digest,
+    AdmissionResult, AdmissionRevision, INVOCATION_SCHEMA, Invocation, InvocationDisposition,
+    InvocationPurpose, InvocationResult, REQUEST_SCHEMA, RESULT_SCHEMA, SupportedPurposes,
+    resource_set_digest, validate_admission_resource, validate_resource_context,
+    validate_resource_contexts,
 };
 use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 use serde_json::{Map, Value};
@@ -26,10 +27,7 @@ use crate::model::{
     ServiceRealization, empty_outputs,
 };
 use crate::render::{RenderedService, render_service};
-use crate::{
-    decode_value, provider_context, require_resource_contexts, require_target_revision,
-    target_context, validate_contexts, value,
-};
+use crate::{decode_value, provider_context, require_resource_contexts, target_context, value};
 
 const ETC_ROOT: &str = "/etc";
 const SERVICE_LIFECYCLE_INTERFACE: &str = "aos.service.lifecycle";
@@ -41,10 +39,8 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         bail!("unsupported admission request schema");
     }
-    if request.target.resource != request.resource_spec.resource {
-        bail!("admission target does not match its resource specification");
-    }
-    validate_contexts(&request.resources)?;
+    validate_admission_resource(&request)?;
+    validate_resource_contexts(&request.resources)?;
 
     let realization: ServiceRealization = decode_value(&request.resource_spec.realization)?;
     let rendered = render_service(&realization)?;
@@ -98,9 +94,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
         } else {
             AdmissionRevision::Absent
         },
-        incarnation: Some(aos_ability_model::IncarnationId::new(
-            manager.incarnation().token(),
-        )?),
+        incarnation: Some(request.assignment.incarnation),
         observation: inspection.observation,
         native_context: context,
         supported_purposes,
@@ -119,16 +113,10 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     {
         bail!("invocation resource-set digest does not match");
     }
-    validate_contexts(&invocation.request.resources)?;
+    validate_resource_contexts(&invocation.request.resources)?;
 
     let target = target_context(&invocation)?;
-    let bound: BoundNativeContext = decode_value(&target.native_context)?;
-    if bound.schema != RESOURCE_CONTEXT_SCHEMA
-        || bound.resource_spec.resource != invocation.request.target.resource
-    {
-        bail!("target context is bound to another resource");
-    }
-    require_target_revision(bound.resource_spec.revision, target.revision)?;
+    let bound = validate_resource_context(target)?;
 
     let realization: ServiceRealization = decode_value(&bound.resource_spec.realization)?;
     let rendered = render_service(&realization)?;
@@ -603,16 +591,7 @@ fn validate_template_reuse(
         bail!("service instance template reference has invalid interface authority");
     }
     let context = matches[0];
-    let bound: BoundNativeContext = decode_value(&context.native_context)?;
-    if context.revision != bound.resource_spec.revision {
-        bail!("service template context revision does not match its resource specification");
-    }
-    if bound.schema != RESOURCE_CONTEXT_SCHEMA
-        || bound.resource_spec.resource != reference.resource
-        || context.reference.lifetime != reference.lifetime
-    {
-        bail!("service template context is bound to another resource");
-    }
+    let bound = validate_resource_context(context)?;
     let provider: ProviderContext = decode_value(&bound.provider_context)?;
     if provider.schema != PROVIDER_CONTEXT_SCHEMA || !provider.unit_owned {
         bail!("service template context does not prove a present owned definition");
