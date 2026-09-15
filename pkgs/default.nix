@@ -1107,8 +1107,8 @@
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
       packageArgumentScope
       // {
-      inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream callPackage;
-      inherit withProbeOnlyPackageContract;
+        inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream callPackage;
+        inherit withProbeOnlyPackageContract;
       }
     );
   in
