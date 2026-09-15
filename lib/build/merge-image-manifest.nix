@@ -3,7 +3,7 @@
 ##! Runtime evaluation compares the host/package candidate with an evaluation
 ##! of the same image modules without those inputs. Unchanged values retain the
 ##! exact image artifact, while explicit changes select the candidate. Generated
-##! job-script changes also select their otherwise text-identical unit body.
+##! job-script changes also select an otherwise text-identical referring file.
 {lib}: {
   imageManifest,
   baseline,
@@ -20,10 +20,6 @@
   candidateUsers = listBy (user: user.name) candidate.users;
   baselineUsers = listBy (user: user.name) baseline.users;
   imageUsers = listBy (user: user.name) imageManifest.users;
-  presetKey = preset: "${preset.unit}:${preset.source}";
-  candidatePresets = listBy presetKey candidate.presets;
-  baselinePresets = listBy presetKey baseline.presets;
-  imagePresets = listBy presetKey imageManifest.presets;
   candidateStorePaths = listBy (path: path) candidate.storePaths;
   imageStorePaths = listBy (path: path) imageManifest.storePaths;
 
@@ -35,23 +31,25 @@
     != candidateHas
     || (candidateHas && candidateValues.${name} != baselineValues.${name});
 
-  jobScriptChangedForUnit = unit: let
-    prefix = "${unit}:";
-    keys = builtins.attrNames (baseline.jobScripts // candidate.jobScripts);
+  changedJobScriptReferencedBy = path: let
+    entryText = manifest:
+      if builtins.hasAttr path manifest.etc
+      then manifest.etc.${path}.text or ""
+      else "";
+    baselineText = entryText baseline;
+    candidateText = entryText candidate;
   in
     builtins.any
     (key:
-      lib.hasPrefix prefix key
-      && changedFromBaseline key baseline.jobScripts candidate.jobScripts)
-    keys;
-  unitChangedFromBaseline = name:
-    changedFromBaseline name baseline.units candidate.units
-    || jobScriptChangedForUnit name;
+      changedFromBaseline key baseline.jobScripts candidate.jobScripts
+      && (
+        lib.hasInfix "#aos-jobscript:${key}#" baselineText
+        || lib.hasInfix "#aos-jobscript:${key}#" candidateText
+      ))
+    (builtins.attrNames (baseline.jobScripts // candidate.jobScripts));
   etcChangedFromBaseline = path:
     changedFromBaseline path baseline.etc candidate.etc
-    || builtins.any
-    (unit: path == "systemd/system/${unit}" && jobScriptChangedForUnit unit)
-    (builtins.attrNames (baseline.units // candidate.units));
+    || changedJobScriptReferencedBy path;
 
   mergeImageDefaultsBy = changed: imageValues: baselineValues: candidateValues:
     builtins.listToAttrs (builtins.concatMap
@@ -109,10 +107,8 @@
     imageValues;
 
   mergedEtc = mergeImageDefaultsBy etcChangedFromBaseline imageManifest.etc baseline.etc candidate.etc;
-  mergedUnits = mergeImageDefaultsBy unitChangedFromBaseline imageManifest.units baseline.units candidate.units;
   mergedJobScripts = mergeImageDefaults imageManifest.jobScripts baseline.jobScripts candidate.jobScripts;
   mergedUsers = mergeImageDefaults imageUsers baselineUsers candidateUsers;
-  mergedPresets = mergeImageDefaults imagePresets baselinePresets candidatePresets;
   mergedStorePaths = imageStorePaths // candidateStorePaths;
   pathIsAncestor = ancestor: path: lib.hasPrefix "${ancestor}/" path;
   structurallyMasked = removedPath:
@@ -132,10 +128,8 @@ in
   // {
     etc = mergedEtc;
     inherit removedEtc;
-    units = mergedUnits;
     jobScripts = mergedJobScripts;
     users = builtins.attrValues mergedUsers;
-    presets = builtins.attrValues mergedPresets;
     storePaths = builtins.attrNames mergedStorePaths;
     ownership =
       candidate.ownership
@@ -147,13 +141,6 @@ in
           imageManifest.etc
           imageManifest.ownership.etc
           candidate.ownership.etc;
-        units =
-          mergeOwnersBy
-          unitChangedFromBaseline
-          mergedUnits
-          imageManifest.units
-          imageManifest.ownership.units
-          candidate.ownership.units;
         jobScripts =
           mergeOwners
           imageManifest.jobScripts
@@ -168,13 +155,6 @@ in
           candidateUsers
           imageManifest.ownership.users
           candidate.ownership.users;
-        presets =
-          mergeOwners
-          imagePresets
-          baselinePresets
-          candidatePresets
-          imageManifest.ownership.presets
-          candidate.ownership.presets;
         # An immutable image path remains image-owned when host configuration
         # also references it.
         storePaths = candidate.ownership.storePaths // imageManifest.ownership.storePaths;

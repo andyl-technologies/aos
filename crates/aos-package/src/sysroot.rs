@@ -7198,15 +7198,12 @@ mod tests {
             "storePaths": [],
             "etc": {},
             "jobScripts": {},
-            "units": {},
             "users": [],
-            "presets": [],
             "graph": {"edges": {}},
             "config": {},
             "credentials": {},
             "ownership": {
-                "etc": {}, "units": {}, "jobScripts": {}, "users": {},
-                "presets": {}, "storePaths": {}
+                "etc": {}, "jobScripts": {}, "users": {}, "storePaths": {}
             }
         })
     }

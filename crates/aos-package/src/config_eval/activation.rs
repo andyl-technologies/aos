@@ -1490,9 +1490,7 @@ mod tests {
             "graph": {"edges": {"web": ["firewall"], "firewall": []}},
             "etc": {},
             "jobScripts": {},
-            "units": {},
             "users": [],
-            "presets": [],
             "storePaths": [
                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-runtime",
                 "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-firewall",
@@ -1562,10 +1560,8 @@ mod tests {
             },
             "ownership": {
                 "etc": {},
-                "units": {},
                 "jobScripts": {},
                 "users": {},
-                "presets": {},
                 "storePaths": {
                     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-runtime": "@base",
                     "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-firewall": "firewall",
@@ -1645,7 +1641,6 @@ mod tests {
             "package_pin": pin,
             "package": package,
             "artifacts": [],
-            "units": {},
             "credentials": manifest
                 .credentials
                 .get(package)

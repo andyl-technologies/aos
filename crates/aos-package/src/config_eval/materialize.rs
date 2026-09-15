@@ -43,10 +43,10 @@
 //! `<job_scripts_runtime_dir>/<key>` — the path that directory has once the
 //! lower is mounted as `/etc`.
 //!
-//! `users`, `presets`, and `units` are carried by the manifest too, but the
-//! `/etc` materialization here consumes `etc`, `removedEtc`, and `jobScripts`;
-//! the others are applied by their own reconcilers (users via the passwd path,
-//! presets are already `etc` entries under `systemd/system-preset/`).
+//! `users` are carried by the manifest too, but the `/etc` materialization
+//! here consumes `etc`, `removedEtc`, and `jobScripts`; accounts are applied
+//! by their own reconciler. Service-manager policy is represented by the
+//! checked ability fixed point rather than a second manifest catalog.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -114,17 +114,12 @@ pub struct ConfigManifest {
     /// Image-authored `/etc` paths intentionally absent from this generation.
     #[serde(rename = "removedEtc", default, skip_serializing_if = "Vec::is_empty")]
     pub removed_etc: Vec<String>,
-    /// Per-unit activation actions.
-    pub units: BTreeMap<String, UnitAction>,
     /// Job-script bodies keyed by `<unit>:<slot>.<index>`.
     #[serde(rename = "jobScripts", default)]
     pub job_scripts: BTreeMap<String, JobScript>,
     /// Users the generation ensures exist.
     #[serde(default)]
     pub users: Vec<ManifestUser>,
-    /// systemd preset decisions.
-    #[serde(default)]
-    pub presets: Vec<PresetEntry>,
     /// Sorted store closures pinned by the generation.
     #[serde(rename = "storePaths")]
     pub store_paths: Vec<String>,
@@ -479,12 +474,6 @@ impl ConfigManifest {
         }
         validate_owner_keys(self.etc.keys(), &self.ownership.etc, "etc", &package_set)?;
         validate_owner_keys(
-            self.units.keys(),
-            &self.ownership.units,
-            "units",
-            &package_set,
-        )?;
-        validate_owner_keys(
             self.job_scripts.keys(),
             &self.ownership.job_scripts,
             "jobScripts",
@@ -496,20 +485,6 @@ impl ConfigManifest {
             user_names.iter(),
             &self.ownership.users,
             "users",
-            &package_set,
-        )?;
-        let preset_keys: BTreeSet<String> = self
-            .presets
-            .iter()
-            .map(|preset| format!("{}:{}", preset.unit, preset.source))
-            .collect();
-        if preset_keys.len() != self.presets.len() {
-            bail!("duplicate manifest preset unit/source identity");
-        }
-        validate_owner_keys(
-            preset_keys.iter(),
-            &self.ownership.presets,
-            "presets",
             &package_set,
         )?;
         validate_owner_keys(
@@ -694,32 +669,6 @@ pub struct JobScript {
     pub name: Option<String>,
 }
 
-/// One unit's post-swap reconcile policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UnitAction {
-    /// Reconcile verb.
-    pub action: UnitReconcileAction,
-    /// Credential handles consumed by this unit.
-    #[serde(default)]
-    pub credentials: Vec<String>,
-    /// Whether the unit is enabled by operator policy.
-    #[serde(default)]
-    pub enable: bool,
-}
-
-/// Reconcile verb for a changed unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum UnitReconcileAction {
-    /// Restart the unit.
-    Restart,
-    /// Reload the unit, falling back to restart.
-    Reload,
-    /// Materialize without touching the running unit.
-    None,
-}
-
 /// A user declared by the evaluated generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -744,28 +693,6 @@ pub struct ManifestUser {
     /// Supplementary group names.
     #[serde(rename = "supplementaryGroups", default)]
     pub supplementary_groups: Vec<String>,
-}
-
-/// One systemd preset decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PresetEntry {
-    /// Unit name.
-    pub unit: String,
-    /// Enable/disable policy.
-    pub policy: PresetPolicy,
-    /// Package or operator provenance.
-    pub source: String,
-}
-
-/// A systemd preset policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PresetPolicy {
-    /// Enable the unit.
-    Enable,
-    /// Disable the unit.
-    Disable,
 }
 
 /// The five inputs that fully determine the manifest.
@@ -964,15 +891,11 @@ pub struct ManifestGraph {
 pub struct ManifestOwnership {
     /// Owners keyed by `/etc` relative path.
     pub etc: BTreeMap<String, String>,
-    /// Owners keyed by unit name.
-    pub units: BTreeMap<String, String>,
     /// Owners keyed by job-script key.
     #[serde(rename = "jobScripts")]
     pub job_scripts: BTreeMap<String, String>,
     /// Owners keyed by user name.
     pub users: BTreeMap<String, String>,
-    /// Owners keyed by `<unit>:<source>`.
-    pub presets: BTreeMap<String, String>,
     /// Owners keyed by absolute store path.
     #[serde(rename = "storePaths")]
     pub store_paths: BTreeMap<String, String>,
@@ -2178,9 +2101,7 @@ mod tests {
     fn manifest_from(json: &str) -> ConfigManifest {
         let mut value: serde_json::Value = serde_json::from_str(json).expect("valid json");
         let object = value.as_object_mut().expect("manifest object");
-        object.insert("units".into(), serde_json::json!({}));
         object.insert("users".into(), serde_json::json!([]));
-        object.insert("presets".into(), serde_json::json!([]));
         let mut stores = BTreeMap::new();
         if let Some(etc) = object.get("etc").and_then(serde_json::Value::as_object) {
             for entry in etc.values() {
@@ -2267,8 +2188,8 @@ mod tests {
         object.insert(
             "ownership".into(),
             serde_json::json!({
-                "etc": etc_owners, "units": {}, "jobScripts": script_owners,
-                "users": {}, "presets": {}, "storePaths": stores
+                "etc": etc_owners, "jobScripts": script_owners,
+                "users": {}, "storePaths": stores
             }),
         );
         serde_json::from_value(value).expect("valid manifest json")
@@ -2323,7 +2244,6 @@ mod tests {
         let round_trip: ConfigManifest =
             serde_json::from_value(serde_json::to_value(&manifest).unwrap()).unwrap();
         assert_eq!(round_trip, manifest);
-
     }
 
     #[test]

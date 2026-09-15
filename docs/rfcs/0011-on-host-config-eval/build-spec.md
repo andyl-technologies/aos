@@ -71,13 +71,6 @@ forcing, no secrets (credentials appear only as handles). It is persisted at
     },
     "ssl/certs/ca-bundle.crt": { "kind": "store-symlink", "target": "/nix/store/<hash>-ca-bundle/…" }
   },
-  "units": {
-    "redis.service": {
-      "action": "restart",
-      "credentials": ["redis-join-token"],
-      "enable": true
-    }
-  },
   "jobScripts": {
     "redis.service:ExecStartPre.0": { "text": "#!/bin/sh\nexec mkdir -p /var/lib/redis\n", "mode": "0755" }
   },
@@ -85,9 +78,6 @@ forcing, no secrets (credentials appear only as handles). It is persisted at
     { "name": "redis", "uid": 991, "group": "redis", "gid": 991,
       "home": "/var/lib/redis", "shell": "/sbin/nologin", "system": true,
       "description": "Redis service user", "supplementaryGroups": [] }
-  ],
-  "presets": [
-    { "unit": "redis.service", "policy": "enable", "source": "redis" }
   ],
   "storePaths": [
     "/nix/store/<hash>-redis-8.2",
@@ -128,17 +118,12 @@ pub struct ConfigManifest {
     pub schema: String,
     /// `/etc` tree keyed by path *relative to `/etc`* (no leading slash).
     pub etc: BTreeMap<String, EtcEntry>,
-    /// Per-unit post-swap reconcile actions, keyed by unit name.
-    pub units: BTreeMap<String, UnitAction>,
     /// Rendered job-script texts (F2-A), keyed `"<unit>:<phase>.<index>"`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub job_scripts: BTreeMap<String, JobScript>,
     /// Declared users, in resolver order (deduplicated by `name`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub users: Vec<ManifestUser>,
-    /// systemd preset decisions, in resolver order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub presets: Vec<PresetEntry>,
     /// Store paths whose closures the generation pins (GC roots).
     pub store_paths: Vec<String>,
     /// Shared-tree ABI this manifest was evaluated against. Equals
@@ -177,43 +162,6 @@ absolute-under-`/etc` path. `StoreSymlink.target` MUST start with the store dir
 and its store-path prefix MUST appear in `store_paths`. (The legacy
 `"mode": "symlink"` sentinel from the architecture sketch is replaced by the
 tagged `kind`.)
-
-#### `units`
-
-```rust
-/// Post-swap reconcile decision for a single unit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UnitAction {
-    /// What reconcile does when this unit's inputs changed.
-    pub action: UnitReconcileAction,
-    /// systemd credential *handles* (names) this unit consumes. Names only —
-    /// never values. Resolved from the credstore at activation.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub credentials: Vec<String>,
-    /// Operator-resolved enable state (install ≠ enable). `true` only when
-    /// `{service}.enable` was set at tier ≤ 100 in the fixpoint.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub enable: bool,
-}
-
-/// Reconcile verb for a unit whose config changed across generations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum UnitReconcileAction {
-    /// Restart the unit.
-    Restart,
-    /// Reload, falling back to restart if the unit declares no reload.
-    Reload,
-    /// Materialize only; do not touch the running unit.
-    None,
-}
-```
-
-`UnitReconcileAction` is the manifest-level mirror of the existing
-`ConfigReloadPolicy` (`types.rs:672`); values map 1:1
-(`restart`/`reload`/`none`). Keys in `units` need not appear in `etc` (a unit
-may reconcile because a referenced store path changed).
 
 #### `jobScripts` (F2-A)
 
@@ -267,26 +215,6 @@ pub struct ManifestUser {
 `users` is a `Vec` (preserves resolver order for stable diffs) but `name` is a
 key: duplicates are a manifest error. The materializer is responsible for
 group creation implied by `group`/`supplementary_groups`.
-
-#### `presets`
-
-```rust
-/// A systemd preset decision contributed by a package or the operator.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PresetEntry {
-    /// Unit the preset applies to.
-    pub unit: String,
-    /// `enable` or `disable`.
-    pub policy: PresetPolicy,
-    /// Provenance: the package root (or `"host.nix"`) that set it.
-    pub source: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PresetPolicy { Enable, Disable }
-```
 
 #### `storePaths`
 

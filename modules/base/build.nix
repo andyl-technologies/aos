@@ -303,8 +303,8 @@ in {
         description = ''
           The `aos.config-manifest/v1` value: a pure attrset (no
           derivations forced, no secrets) describing the rendered `/etc`
-          tree, systemd reconcile actions, F2-A job-script texts, users,
-          presets, pinned store paths, the module ABI, and the five
+          tree, F2-A job-script texts, users, pinned store paths, the module
+          ABI, and the five
           content-addressed eval inputs. This is the data contract the on-host
           evaluator emits and the imperative materializer consumes
           (architecture.md §"The manifest"). The builder-side systemd unit
@@ -774,33 +774,6 @@ in {
         else throw "config manifest user ${user.name} depends on multiple owners (including referenced groups): ${lib.concatStringsSep ", " owners}")
       users);
 
-      # Presets parsed from the image preset rules ("<policy> <unit>").
-      presetRecords = builtins.filter (p: p != null) (builtins.map (rule: let
-        parts = lib.splitString " " rule;
-        owner = provenance.ownerOfListString ["systemd" "systemPresetRules"] rule;
-        source =
-          if owner == "@base"
-          then "image"
-          else if owner == "@host"
-          then "host.nix"
-          else owner;
-      in
-        if builtins.length parts >= 2
-        then {
-          value = {
-            unit = builtins.elemAt parts 1;
-            policy = builtins.head parts;
-            inherit source;
-          };
-          inherit owner;
-        }
-        else null)
-      (config.systemd.systemPresetRules or []));
-      presets = builtins.map (record: record.value) presetRecords;
-      presetOwnership = builtins.listToAttrs (builtins.map (record:
-        lib.nameValuePair "${record.value.unit}:${record.value.source}" record.owner)
-      presetRecords);
-
       # Find every canonical store root embedded in an emitted manifest string.
       # Runtime role modules deliberately reference their tools by absolute
       # path instead of adding them to environment.systemPackages, so their
@@ -938,17 +911,14 @@ in {
       abilityActivationInput = config.aos.abilities.activationInput;
       ownership = {
         etc = etcOwnership;
-        units = unitOwnership;
         jobScripts = jobScriptOwnership;
         users = userOwnership;
-        presets = presetOwnership;
         storePaths = storeOwnership;
       };
     in ({
         schema = "aos.config-manifest/v1";
-        inherit etc users presets storePaths;
+        inherit etc users storePaths;
         jobScripts = jobScripts;
-        units = config.system.build.systemdUnitActions;
         module_abi = config.aos.system.moduleAbi or 1;
         inputs =
           {

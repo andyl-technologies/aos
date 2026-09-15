@@ -208,7 +208,7 @@ in {
             --eval-root /run/runtime-config-image-default-preview
       """, timeout=300))
       assert default_preview["etc_diff"] == [], default_preview
-      assert default_preview["unit_actions"] == [], default_preview
+      assert default_preview["resource_changes"] == [], default_preview
       image_default.succeed(f"""
           {APM} switch --eval-root /run/runtime-config-image-default-switch
       """, timeout=300)
@@ -274,7 +274,7 @@ in {
           assert isinstance(manifest[field], expected_type), field
       assert manifest["etc"]["hostname"]["text"] == "runtime-one\n"
       assert manifest["etc"]["runtime-config/runtime.conf"]["text"] == "generation=one\n"
-      assert "runtime-config-host.service" in manifest["units"]
+      assert "systemd/system/runtime-config-host.service" in manifest["etc"]
       assert any(
           key.startswith("runtime-config-host.service:") for key in manifest["jobScripts"]
       ), manifest["jobScripts"].keys()
@@ -421,10 +421,7 @@ in {
               ca_path,
               dry_run,
           )
-      assert any(
-          action["unit"] == "runtime-config-host.service"
-          for action in dry_run["unit_actions"]
-      ), dry_run
+      assert isinstance(dry_run["resource_changes"], list), dry_run
       assert isinstance(dry_run["fetch_plan"], list), dry_run
       assert isinstance(dry_run["resolution_trace"], list), dry_run
       assert current_generation() == first

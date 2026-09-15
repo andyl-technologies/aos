@@ -177,8 +177,6 @@ pub(crate) struct StagedPackage {
     pub(crate) artifacts: Vec<StagedArtifact>,
     /// Opaque credential handles copied from the manifest.
     pub(crate) credentials: Value,
-    /// Signed config-driven unit reconcile actions.
-    pub(crate) units: BTreeMap<String, crate::config_eval::materialize::UnitReconcileAction>,
 }
 
 /// One rendered file stored under an opaque content-derived payload name.
@@ -547,8 +545,6 @@ fn render_inner(
         .get(package)
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let units = BTreeMap::new();
-
     let pkg_dir = staging_package_dir(staging_root, &manifest, package)?;
     let transaction = super::graph_transaction(&manifest)?;
     let package_pin = transaction
@@ -563,7 +559,6 @@ fn render_inner(
         package: package.to_string(),
         artifacts: Vec::new(),
         credentials: credential_handles,
-        units,
     };
     let index_bytes = serde_json::to_vec(&index).context("serializing staged package index")?;
     crate::config_eval::materialize::write_bytes_beneath(
