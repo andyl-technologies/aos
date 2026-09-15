@@ -706,7 +706,7 @@ mod tests {
     use super::*;
     use aos_ability_model::{
         ArtifactReference, LocalKey, OptionSource, OptionVisibility, PackageOptionDeclaration,
-        ProviderImplementation, RelativePath, RequiredFeature,
+        ProviderImplementation, RelativePath, RequiredFeature, ValueSchema,
     };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
@@ -718,12 +718,12 @@ mod tests {
         let mut document = PackageDocumentation {
             schema: aos_doc_model::DOCUMENT_SCHEMA.to_string(),
             package: DocumentedPackage {
-                name: "nginx".to_string(),
+                name: "fixture".to_string(),
                 version: "1".to_string(),
                 platform: "x86_64-linux".to_string(),
-                summary: "HTTP server".to_string(),
+                summary: "Documentation fixture".to_string(),
                 homepage: None,
-                license: "BSD".to_string(),
+                license: "Apache-2.0".to_string(),
             },
             identity: DocumentationIdentity {
                 semantic_schema_sha256: String::new(),
@@ -737,11 +737,25 @@ mod tests {
     }
 
     fn loaded_document() -> LoadedDocumentation {
-        let interface = aos_ability_validate::test_support::test_lifecycle_interface();
+        let mut interface = aos_ability_validate::test_support::test_lifecycle_interface();
+        let request = ValueSchema::Record {
+            fields: BTreeMap::from([(
+                LocalKey::new("unit").expect("request field"),
+                ValueSchema::String {
+                    max_length: 256,
+                    syntax: None,
+                },
+            )]),
+            optional_fields: Vec::new(),
+        };
+        interface.interface.request = request.clone();
+        for method in interface.interface.methods.values_mut() {
+            method.parameters = request.clone();
+        }
         let interface_key = interface.interface_key().expect("interface key");
         let implementation = ProviderImplementation {
-            name: LocalKey::new("service-manager").expect("implementation name"),
-            description: "Implements the service manager interface.".to_string(),
+            name: LocalKey::new("lifecycle-provider").expect("implementation name"),
+            description: "Implements the test lifecycle interface.".to_string(),
             interface: interface_key.clone(),
             guarantees: Vec::new(),
             artifact: ArtifactReference {
@@ -765,22 +779,22 @@ mod tests {
             required_features: vec![
                 RequiredFeature::new("abilities-v1").expect("valid feature name"),
             ],
-            package: LocalKey::new("nginx").expect("valid package name"),
+            package: LocalKey::new("fixture").expect("valid package name"),
             version: "1".to_string(),
             manifest_sha256: Sha256Digest::of_bytes("manifest"),
             package_digest: Sha256Digest::of_bytes("package"),
             interfaces: BTreeMap::from([(
-                LocalKey::new("systemd-manager-interface").expect("interface alias"),
+                LocalKey::new("lifecycle-interface").expect("interface alias"),
                 interface,
             )]),
             guarantees: BTreeMap::new(),
             option_declarations: vec![PackageOptionDeclaration {
-                path: ["nginx", "virtualHosts", "<name>", "root"]
+                path: ["fixture", "services", "<name>", "root"]
                     .map(str::to_string)
                     .to_vec(),
                 type_signature: "absolute path".to_string(),
                 structured_type: OptionType::Path,
-                description: "Sets the virtual host document root.".to_string(),
+                description: "Sets the fixture service document root.".to_string(),
                 default: None,
                 example: None,
                 visibility: OptionVisibility::Public,
@@ -794,7 +808,7 @@ mod tests {
             }],
             implementations: vec![implementation],
             exports: vec![AbilityExportReference {
-                name: LocalKey::new("service-manager").expect("valid export name"),
+                name: LocalKey::new("lifecycle-provider").expect("valid export name"),
                 interface: interface_key,
                 implementation: implementation_key,
                 requirements: Vec::new(),
@@ -825,40 +839,40 @@ mod tests {
             open_files: BTreeMap::new(),
             shutdown: false,
         };
-        let completions = server.completions("nginx.vir", 0, 9);
+        let completions = server.completions("fixture.ser", 0, "fixture.ser".len());
         let completion_items = completions["items"].as_array().unwrap();
         assert_eq!(completion_items.len(), 1);
         assert!(
             completion_items[0]["documentation"]["value"]
                 .as_str()
                 .is_some_and(|markdown| {
-                    markdown.contains("Sets the virtual host document root.")
+                    markdown.contains("Sets the fixture service document root.")
                         && markdown.contains(&expected_package_digest)
                 })
         );
 
-        let hover = server.hover("nginx.virtualHosts.site.root", 0, 15).unwrap();
+        let hover = server.hover("fixture.services.site.root", 0, 25).unwrap();
         assert!(
             hover["contents"]["value"]
                 .as_str()
-                .is_some_and(|markdown| markdown.contains("Sets the virtual host document root."))
+                .is_some_and(|markdown| markdown.contains("Sets the fixture service document root."))
         );
 
-        let hints = server.option_hints(&json!({ "package": "nginx" }));
+        let hints = server.option_hints(&json!({ "package": "fixture" }));
         assert_eq!(hints[0]["packageDigest"], expected_package_digest);
         assert!(hints[0].get("semanticSchemaSha256").is_none());
 
         assert!(
             server
-                .diagnostics("nginx.virtualHosts.site.root = \"/srv\";")
+                .diagnostics("fixture.services.site.root = \"/srv\";")
                 .is_empty()
         );
-        let invalid = server.diagnostics("nginx.virtualHosts.site.missing = true;");
+        let invalid = server.diagnostics("fixture.services.site.missing = true;");
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0]["code"], "aos-unknown-option");
         assert!(
             server
-                .definition("nginx.virtualHosts.site.root", 0, 15)
+                .definition("fixture.services.site.root", 0, 25)
                 .unwrap()["uri"]
                 .as_str()
                 .unwrap()
@@ -866,7 +880,7 @@ mod tests {
         );
         assert_eq!(
             server
-                .document_links("nginx.virtualHosts.<name>.root = \"/srv\";")
+                .document_links("fixture.services.<name>.root = \"/srv\";")
                 .as_array()
                 .unwrap()
                 .len(),
@@ -884,17 +898,21 @@ mod tests {
             shutdown: false,
         };
 
-        let completion = server.completions("aos.systemd", 0, 11);
-        assert_eq!(completion["items"][0]["label"], "aos.systemd-manager");
-        assert!(server.hover("service-manager", 0, 4).is_some_and(|hover| {
-            hover["contents"]["value"]
-                .as_str()
-                .is_some_and(|text| text.contains("Static reference only"))
-        }));
+        let completion = server.completions("test.life", 0, 9);
+        assert_eq!(completion["items"][0]["label"], "test.lifecycle");
+        assert!(
+            server
+                .hover("lifecycle-provider", 0, 4)
+                .is_some_and(|hover| {
+                    hover["contents"]["value"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("Static reference only"))
+                })
+        );
         let hints = AbilityCatalog::new(&server.documents)
-            .hints(&json!({ "package": "nginx", "prefix": "service" }));
-        assert_eq!(hints[0]["selector"]["export"], "service-manager");
-        assert_eq!(hints[0]["methods"].as_array().map(Vec::len), Some(5));
+            .hints(&json!({ "package": "fixture", "prefix": "lifecycle" }));
+        assert_eq!(hints[0]["selector"]["export"], "lifecycle-provider");
+        assert_eq!(hints[0]["methods"].as_array().map(Vec::len), Some(3));
         assert!(hints[0]["limitations"].as_array().is_some_and(|limits| {
             limits
                 .iter()
@@ -913,9 +931,9 @@ mod tests {
     fn ability_candidates_preserve_ambiguity_escape_versions_and_bound_hints() {
         let first = loaded_document();
         let mut second = loaded_document();
-        second.document.package.name = "web-proxy".to_string();
+        second.document.package.name = "fixture-second".to_string();
         let second_reference = second.ability_reference.as_mut().unwrap();
-        second_reference.package = LocalKey::new("web-proxy").unwrap();
+        second_reference.package = LocalKey::new("fixture-second").unwrap();
         second_reference.version = "2`\n[link](https://example.invalid)".to_string();
         let server = Server {
             documents: vec![first.clone(), second],
@@ -923,7 +941,7 @@ mod tests {
             shutdown: false,
         };
 
-        let completions = server.completions("aos.systemd", 0, 11);
+        let completions = server.completions("test.life", 0, 9);
         let items = completions["items"].as_array().unwrap();
         assert_eq!(items.len(), 2);
         assert_ne!(
@@ -931,7 +949,7 @@ mod tests {
             items[1]["data"]["aosAbility"]["package"]
         );
 
-        let hover = server.hover("aos.systemd-manager", 0, 4).unwrap();
+        let hover = server.hover("test.lifecycle", 0, 4).unwrap();
         let markdown = hover["contents"]["value"].as_str().unwrap();
         assert!(markdown.contains("Multiple authenticated ability contracts match"));
         assert!(markdown.contains("`` 2` [link](https://example.invalid) ``"));
@@ -942,7 +960,7 @@ mod tests {
             shutdown: false,
         }
         .documents;
-        let bounded = AbilityCatalog::new(&bounded).hints(&json!({ "prefix": "service" }));
+        let bounded = AbilityCatalog::new(&bounded).hints(&json!({ "prefix": "lifecycle" }));
         assert_eq!(bounded.as_array().map(Vec::len), Some(256));
     }
 
@@ -953,7 +971,7 @@ mod tests {
         let documents = vec![loaded];
         let catalog = AbilityCatalog::new(&documents);
 
-        let item = catalog.completions("aos.systemd", 1).remove(0);
+        let item = catalog.completions("test.life", 1).remove(0);
         let selector = item.pointer("/data/aosAbility").unwrap().clone();
         let resolved_item = catalog.resolve_completion(&item).unwrap();
         assert_eq!(resolved_item["data"]["aosAbility"], selector);
@@ -965,7 +983,7 @@ mod tests {
         );
         assert_eq!(catalog.references(&json!({}))[0], resolved["reference"]);
 
-        let definition = catalog.definition("aos.systemd-manager").unwrap();
+        let definition = catalog.definition("test.lifecycle").unwrap();
         let uri = definition["uri"].as_str().unwrap();
         assert!(uri.starts_with("aos-ability://reference/sha256%3A"));
         assert!(uri.contains(&expected_reference.manifest_sha256.to_string()[7..]));
@@ -1006,7 +1024,7 @@ mod tests {
         );
 
         let partial = server.diagnostics(
-            r#"lib.abilities.request { interface = "aos.systemd-manager"; abi = 1; request = config.value; }"#,
+            r#"lib.abilities.request { interface = "test.lifecycle"; abi = 1; request = config.value; }"#,
         );
         assert!(partial.is_empty());
 
@@ -1134,10 +1152,10 @@ mod tests {
         let before_documents = vec![before.clone()];
         let after_documents = vec![after.clone()];
         let before_graph = AbilityCatalog::new(&before_documents)
-            .graph_slice("nginx", "1", &query)?
+            .graph_slice("fixture", "1", &query)?
             .canonical_bytes()?;
         let after_graph = AbilityCatalog::new(&after_documents)
-            .graph_slice("nginx", "1", &query)?
+            .graph_slice("fixture", "1", &query)?
             .canonical_bytes()?;
         assert_eq!(before_graph, after_graph);
         let graph_text = String::from_utf8(after_graph)?;
