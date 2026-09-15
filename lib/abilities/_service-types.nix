@@ -309,17 +309,28 @@
   } [];
   linuxConditions = request linuxConditionsFeature;
 
-  instantiationFeature = feature {
-    kind = types.enum ["singleton" "template" "instance"];
-    template = {
-      type = types.optional localKey;
-      optional = true;
+  instantiationSelection = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      singleton = types.record {
+        fields.kind = types.enum ["singleton"];
+      };
+      template = types.record {
+        fields = {
+          kind = types.enum ["template"];
+          template = localKey;
+        };
+      };
+      instance = types.record {
+        fields = {
+          kind = types.enum ["instance"];
+          instance = boundedString 1024;
+          template_resource = types.deferredResult types.resourceReference;
+        };
+      };
     };
-    instance = {
-      type = types.optional (boundedString 1024);
-      optional = true;
-    };
-  } [];
+  };
+  instantiationFeature = feature {selection = instantiationSelection;} [];
   instantiation = request instantiationFeature;
 
   supervisionFeature = feature {
@@ -1402,7 +1413,7 @@
           optional = true;
         };
         instantiation = {
-          type = types.optional instantiationFeature;
+          type = types.optional instantiationSelection;
           optional = true;
         };
         supervision = {

@@ -111,10 +111,13 @@
       == null
       || (
         if instantiation.kind == "singleton"
-        then (instantiation.template or null) == null && (instantiation.instance or null) == null
+        then builtins.attrNames instantiation == ["kind"]
         else if instantiation.kind == "template"
-        then (instantiation.template or null) != null && (instantiation.instance or null) == null
-        else (instantiation.template or null) != null && (instantiation.instance or null) != null
+        then builtins.attrNames instantiation == ["kind" "template"]
+        else
+          instantiation.kind
+          == "instance"
+          && builtins.attrNames instantiation == ["instance" "kind" "template_resource"]
       );
     templateIsStatic =
       instantiation
@@ -383,6 +386,8 @@
     featureValue =
       if feature == "template_definition"
       then declaration.lifecycle
+      else if feature == "instantiation"
+      then {selection = declaration.instantiation;}
       else declaration.${feature};
   in
     {inherit (declaration) service;}
@@ -561,6 +566,8 @@
           checked.conditions.all)
       else if feature == "linux_conditions" && checked.linux_conditions.capabilities != []
       then [featureInterfaces.linux_conditions.guaranteesByKind.capability]
+      else if feature == "lifecycle" && (checked.instantiation or null) != null && checked.instantiation.kind == "instance"
+      then [featureInterfaces.lifecycle.guaranteesByKind.instance]
       else [];
     contribution = {
       requirementTemplates = builtins.listToAttrs (builtins.map (feature: {
@@ -581,6 +588,35 @@
     };
   in
     qualifyForConsumer consumerInstance contribution;
+
+  ## Derives a concrete instance from one checked static template declaration.
+  instanceOf = {
+    serviceTypes,
+    template,
+    service,
+    instance,
+    enabled ? true,
+  }: let
+    checkedTemplate = validate serviceTypes template;
+    templateRequest = "${checkedTemplate.service}-template_definition";
+    derived =
+      builtins.removeAttrs checkedTemplate ["service" "enabled" "instantiation"]
+      // {
+        inherit service enabled;
+        instantiation = {
+          kind = "instance";
+          inherit instance;
+          template_resource = {
+            _type = "aos-request-output-reference";
+            request = templateRequest;
+            output = "service-resource";
+          };
+        };
+      };
+  in
+    if (checkedTemplate.instantiation or null) == null || checkedTemplate.instantiation.kind != "template"
+    then throw "service template instance source must be a static template declaration"
+    else validate serviceTypes derived;
 
   forConfiguration = {
     serviceTypes,
@@ -679,5 +715,5 @@
       )
     );
 in {
-  inherit featureInterfaces forConfiguration forProducer forProducers forService splitContribution structuredSource validate;
+  inherit featureInterfaces forConfiguration forProducer forProducers forService instanceOf splitContribution structuredSource validate;
 }
