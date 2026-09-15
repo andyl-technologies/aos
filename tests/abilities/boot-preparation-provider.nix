@@ -86,6 +86,7 @@ in
   assert controller.handlerDescriptor == null;
   assert terminal.providerModule == null;
   assert terminal.handlerDescriptor != null;
+  assert terminal.handlerDescriptor.entryPoint == "bin/aos-boot-preparation-provider";
   assert abilities.compositionPendingRequests == {};
   assert desired.kind == "aos.boot.preparation";
   assert desired.lifetime == "transaction";

@@ -24,7 +24,6 @@ use serde_json::json;
 
 use crate::process::{CommandRunner, ProcessCommandRunner};
 
-const INTERFACE_NAME: &str = "aos.boot.preparation-command";
 const REALIZATION_SCHEMA: &str = "aos.boot.preparation-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.boot-preparation-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.boot.preparation-context/v1";
@@ -91,11 +90,7 @@ impl BootPreparationProvider {
     }
 
     fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
-        validate_method(
-            &request.method.interface.name.to_string(),
-            request.method.method.as_str(),
-            &request.semantics,
-        )?;
+        validate_method(request.method.method.as_str(), &request.semantics)?;
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
 
@@ -147,10 +142,10 @@ impl BootPreparationProvider {
             invocation.method_is_bound(),
             "invocation method differs from durable recovery authority"
         );
+        validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
         validate_method(
-            &invocation.method.interface.name.to_string(),
-            invocation.method.method.as_str(),
-            &invocation.semantics,
+            invocation.request.method.method.as_str(),
+            &invocation.request.semantics,
         )?;
 
         let request = &invocation.request;
@@ -162,7 +157,8 @@ impl BootPreparationProvider {
         let target = require_resource(&request.resources, &request.target)?;
         let bound: BoundNativeContext = validate_resource_context(target)?;
         ensure!(
-            invocation.method.interface == request.target.interface
+            invocation.method.interface == request.method.interface
+                && invocation.method.interface == request.target.interface
                 && request
                     .target
                     .operations
@@ -514,11 +510,7 @@ fn ensure_marker_root(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_method(interface: &str, method: &str, semantics: &MethodSemantics) -> Result<()> {
-    ensure!(
-        interface == INTERFACE_NAME,
-        "selected interface is not boot preparation"
-    );
+fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
     let access = match method {
         "prepare" => AccessMode::ExclusiveWrite,
         "observe" => AccessMode::Read,
@@ -626,6 +618,8 @@ mod tests {
 
     use super::*;
 
+    const TEST_INTERFACE: &str = "aos.test.boot-preparation-command";
+
     struct NoopRunner;
 
     impl CommandRunner for NoopRunner {
@@ -637,7 +631,7 @@ mod tests {
     fn target() -> ResourceReference {
         serde_json::from_value(json!({
             "interface": {
-                "name": INTERFACE_NAME,
+                "name": TEST_INTERFACE,
                 "abi": 1,
                 "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             },
