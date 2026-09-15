@@ -1,19 +1,17 @@
 //! Util-linux-backed storage-format convergence.
 
 use std::fs;
-use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use anyhow::{Context as _, Result, ensure};
 use aos_ability_model::{AbilityValue, ResourceReference, RevisionId};
-use aos_contract::Sha256Digest;
 use aos_provider_protocol::ResourceContext;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::engine::{Backend, BackendObservation, ability_value};
 use crate::process::{Executable, ExecutableReference};
+use crate::state;
 
 const INTERFACE: &str = "aos.util-linux.storage-format-effects";
 const REALIZATION_SCHEMA: &str = "aos.storage.format-realization/v1";
@@ -147,7 +145,7 @@ impl Backend for StorageFormatBackend {
             evidence,
             ready,
             released,
-            path: ready.then(|| source).flatten(),
+            path: ready.then_some(source).flatten(),
             unknown: false,
         })
     }
@@ -165,23 +163,23 @@ impl Backend for StorageFormatBackend {
         let context: Context = decode(context)?;
         let source = canonical_source(&desired.source)?;
         let observed = inspect_format(&context.blkid, &source)?;
-        if desired.policy == FormatPolicy::IfAbsent {
-            if let Some(format) = observed {
-                ensure!(
-                    format == "swap",
-                    "refusing to replace existing storage format {format:?}"
-                );
-                return write_marker(
-                    target,
-                    &Marker {
-                        schema: MARKER_SCHEMA.into(),
-                        revision,
-                        source,
-                        format: desired.format,
-                        pending: false,
-                    },
-                );
-            }
+        if desired.policy == FormatPolicy::IfAbsent
+            && let Some(format) = observed
+        {
+            ensure!(
+                format == "swap",
+                "refusing to replace existing storage format {format:?}"
+            );
+            return write_marker(
+                target,
+                &Marker {
+                    schema: MARKER_SCHEMA.into(),
+                    revision,
+                    source,
+                    format: desired.format,
+                    pending: false,
+                },
+            );
         }
 
         let pending = Marker {
@@ -295,22 +293,15 @@ fn validate_path(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn marker_path(target: &ResourceReference) -> Result<PathBuf> {
-    let digest = Sha256Digest::of_canonical("aos.storage.format-resource/v1", &target.resource)?;
-    Ok(Path::new(STATE_ROOT).join(digest.hex()))
-}
-
 fn read_marker(target: &ResourceReference) -> Result<Option<Marker>> {
-    let path = marker_path(target)?;
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("opening storage-format marker"),
+    let marker: Marker = match state::read(
+        Path::new(STATE_ROOT),
+        "aos.storage.format-resource/v1",
+        target,
+    )? {
+        Some(marker) => marker,
+        None => return Ok(None),
     };
-    let mut bytes = Vec::new();
-    file.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= 64 * 1024, "storage-format marker is oversized");
-    let marker: Marker = aos_contract::canonical::from_slice(&bytes, "storage-format marker")?;
     ensure!(
         marker.schema == MARKER_SCHEMA,
         "unsupported storage-format marker"
@@ -320,29 +311,20 @@ fn read_marker(target: &ResourceReference) -> Result<Option<Marker>> {
 }
 
 fn write_marker(target: &ResourceReference, marker: &Marker) -> Result<()> {
-    fs::create_dir_all(STATE_ROOT)?;
-    fs::set_permissions(STATE_ROOT, fs::Permissions::from_mode(0o700))?;
-    let path = marker_path(target)?;
-    let temporary = path.with_extension("tmp");
-    let bytes = aos_contract::canonical::canonical_json(&serde_json::to_value(marker)?)?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    fs::rename(temporary, path)?;
-    Ok(())
+    state::write(
+        Path::new(STATE_ROOT),
+        "aos.storage.format-resource/v1",
+        target,
+        marker,
+    )
 }
 
 fn remove_marker(target: &ResourceReference) -> Result<()> {
-    match fs::remove_file(marker_path(target)?) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).context("removing storage-format marker"),
-    }
+    state::remove(
+        Path::new(STATE_ROOT),
+        "aos.storage.format-resource/v1",
+        target,
+    )
 }
 
 fn run_success(executable: &Executable, arguments: &[&str], remaining_millis: u64) -> Result<()> {

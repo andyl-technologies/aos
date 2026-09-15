@@ -84,6 +84,9 @@ impl Executable {
     }
 
     /// Runs the executable with a cleared environment and bounded deadline.
+    // Provider command deadlines are process-local control flow and never enter
+    // a deterministic Crucible state path.
+    #[allow(clippy::disallowed_methods)]
     pub fn run(&self, arguments: &[&str], remaining_millis: u64) -> Result<Output> {
         ensure!(remaining_millis > 0, "native command deadline expired");
         let mut child = Command::new(self.path())

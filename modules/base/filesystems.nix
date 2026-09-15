@@ -53,7 +53,7 @@
     (
       if cfg.zfs.enable
       then ''
-        # /var is a native ZFS dataset mounted by zfs-mount.service.
+        # /var is a native storage dataset mounted by the selected provider.
       ''
       else ''
         # /var — persistent mutable state (partition created by systemd-repart)
@@ -65,21 +65,6 @@
     "tmpfs  /tmp  tmpfs  nosuid,nodev,noexec,mode=1777,size=50%  0  0"
     "tmpfs  /run  tmpfs  nosuid,nodev,noexec,mode=755,size=25%  0  0"
   ];
-
-  # Build ZFS mount unit names from dataset definitions.
-  # systemd mount units use dashes for path separators.
-  zfsDatasets =
-    lib.mapAttrsToList (
-      name: attrs: let
-        mountpoint = attrs.mountpoint or "/${builtins.replaceStrings ["/"] ["/"] name}";
-        # Convert mountpoint to systemd unit name: /var/log -> var-log.mount
-        unitName = lib.removePrefix "-" (builtins.replaceStrings ["/"] ["-"] mountpoint);
-      in {
-        inherit name mountpoint unitName;
-        properties = builtins.removeAttrs attrs ["mountpoint"];
-      }
-    )
-    cfg.zfs.datasets;
 in {
   options.aos.filesystems = {
     ## Mount the root filesystem read-only (immutable OS foundation).
@@ -124,45 +109,11 @@ in {
     };
 
     zfs = {
-      ## Use ZFS for persistent mutable state under /var.
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          Use ZFS for persistent mutable state under /var. ZFS provides
-          snapshots, compression, checksumming, and dataset-level quotas.
-          Opt-in for the tier-ii initrd iteration — until the ZFS story
-          lands, `/var` lives on the ext4 root partition.
-        '';
-      };
-
-      ## Name of the ZFS pool for persistent data.
-      poolName = lib.mkOption {
-        type = lib.types.str;
-        default = "aos-pool";
-        description = "Name of the ZFS pool for persistent data.";
-      };
-
       package = lib.mkOption {
         type = lib.types.package;
         default = pkgs.zfs;
         internal = true;
         description = "OpenZFS userland and optional exact-kernel module package.";
-      };
-
-      ## ZFS datasets to create and mount.
-      ##
-      ## Modules add entries here; host activation creates them at first boot.
-      datasets = lib.mkOption {
-        type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
-        default = {};
-        description = ''
-          ZFS datasets to create and mount. Modules add entries; host activation
-          creates them at first boot, filesystems mounts them at runtime.
-          Each key is the dataset name (relative to the pool), and the value
-          is an attrset of ZFS properties. The "mountpoint" property
-          determines where the dataset is mounted.
-        '';
       };
     };
 
@@ -263,37 +214,5 @@ in {
         d /run 0755 root root -
       '';
     };
-
-    systemd.services = lib.mkMerge [
-      # ZFS import and mount services — only when zfs.enable is true.
-      (lib.mkIf cfg.zfs.enable {
-        "zfs-import" = {
-          description = "Import ZFS pool ${cfg.zfs.poolName}";
-          wantedBy = ["local-fs.target"];
-          before = ["local-fs.target"];
-          after = ["systemd-udev-settle.service"];
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-            ExecStart = "${pkgs.bash}/bin/bash -c '${cfg.zfs.package}/sbin/zpool list -H ${cfg.zfs.poolName} >/dev/null 2>&1 || ${cfg.zfs.package}/sbin/zpool import -N -f ${cfg.zfs.poolName}'";
-            ExecStop = "${cfg.zfs.package}/sbin/zpool export ${cfg.zfs.poolName}";
-          };
-        };
-
-        "zfs-mount" = {
-          description = "Mount ZFS datasets from ${cfg.zfs.poolName}";
-          wantedBy = ["local-fs.target"];
-          before = ["local-fs.target"];
-          after = ["zfs-import.service"];
-          requires = ["zfs-import.service"];
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-            ExecStart = "${cfg.zfs.package}/sbin/zfs mount -a -l";
-          };
-        };
-      })
-
-    ];
   };
 }
