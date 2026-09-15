@@ -50,8 +50,8 @@ pub mod dry_run;
 mod handler_dispatch;
 mod handler_process;
 pub mod materialize;
-mod protected_fs;
 mod native_activation;
+mod protected_fs;
 mod rollout_boot;
 mod transaction_verification;
 pub use native_activation::supported_native_ability_features;
@@ -198,6 +198,8 @@ pub struct IterRecord {
 pub struct FixpointOutcome {
     /// The JSON manifest text the final eval produced.
     pub manifest: String,
+    /// Exact activation authority emitted by the final ability fixed point.
+    pub ability_fixed_point: ability_rounds::AbilityFixedPointProjection,
     /// The converged working set (seed plus every fetched provider).
     pub working_set: Vec<WorkingSetMember>,
     /// The causal chain of provider additions.
@@ -673,6 +675,7 @@ where
             EvalClass::Manifest(manifest) => {
                 return Ok(FixpointOutcome {
                     manifest,
+                    ability_fixed_point: ability_rounds::AbilityFixedPointProjection::default(),
                     working_set,
                     trace,
                     iterations: iter,
@@ -1345,8 +1348,28 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             module_abi: cmd.module_abi,
             iter_cap: None,
         };
-        let candidate =
+        let mut candidate =
             run_fixpoint(&inputs, &resolver, &evaluator, &fetcher).map_err(eval_command_failure)?;
+        let ability_evaluator = stock::StockAbilityRoundEvaluator::new(
+            &evaluator,
+            EvalAttempt {
+                host_nix: &inputs.host_nix,
+                runtime_modules: &inputs.runtime_modules,
+                base_lib: &inputs.base_lib,
+                facts_json: inputs.facts_json.as_deref(),
+                working_set: &candidate.working_set,
+                iteration: candidate.iterations,
+            },
+        );
+        let ability_resolver = stock::StockAbilityRoundResolver::new(&candidate.working_set);
+        let ability = ability_rounds::resolve_ability_rounds(
+            &ability_evaluator,
+            &ability_resolver,
+            aos_ability_model::ABILITY_LIMITS_V1.max_resolver_rounds,
+        )
+        .context("resolving the final ability module fixed point")?;
+        candidate.manifest = ability.manifest;
+        candidate.ability_fixed_point = ability.fixed_point;
         let selected: Vec<String> = candidate
             .working_set
             .iter()

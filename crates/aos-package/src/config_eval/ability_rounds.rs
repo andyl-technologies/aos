@@ -64,8 +64,59 @@ pub struct PendingAbilityProjection {
     pub requests: BTreeMap<String, PendingAbilityRequest>,
     /// Retains exact nested requirement declarations keyed by derived identity.
     pub requirements: BTreeMap<String, PendingAbilityRequirement>,
-    /// Lists provider instances available in this complete module fixed point.
-    pub provider_instances: Vec<String>,
+    /// Maps each available provider instance to its selected implementation.
+    pub provider_instances: BTreeMap<String, PendingProviderInstance>,
+}
+
+/// Retains the provider selection relevant to one unresolved child request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingProviderInstance {
+    /// Names the exact implementation instantiated by this provider.
+    pub implementation: Option<String>,
+}
+
+/// Carries the activation authority emitted by the final module fixed point.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AbilityFixedPointProjection {
+    /// Retains exact selected bindings after all provider expansion rounds.
+    pub bindings: BTreeMap<String, AbilityValue>,
+    /// Retains exact desired and published resource projections.
+    pub resolved_resources: BTreeMap<String, AbilityValue>,
+}
+
+impl AbilityFixedPointProjection {
+    fn validate(&self) -> Result<(), AbilityRoundError> {
+        if self.bindings.len() as u64 > ABILITY_LIMITS_V1.max_collection_items
+            || self.resolved_resources.len() as u64 > ABILITY_LIMITS_V1.max_collection_items
+        {
+            return Err(AbilityRoundError::Limit {
+                limit: "final fixed-point item",
+            });
+        }
+        if self
+            .bindings
+            .keys()
+            .chain(self.resolved_resources.keys())
+            .any(|key| key.is_empty() || key.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes)
+        {
+            return Err(AbilityRoundError::InvalidProjection {
+                reason: "final fixed-point key is empty or exceeds its bound".to_string(),
+            });
+        }
+
+        encoded_digest("aos.ability.fixed-point-projection/v1", self).map(|_| ())
+    }
+}
+
+/// Returns the manifest and activation authority from one complete round.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompleteAbilityRound {
+    /// Carries the final configuration manifest JSON.
+    pub manifest: String,
+    /// Carries the exact final module fixed-point projection.
+    pub fixed_point: AbilityFixedPointProjection,
 }
 
 impl PendingAbilityProjection {
@@ -82,14 +133,21 @@ impl PendingAbilityProjection {
                 limit: "pending child selection input count",
             });
         }
-        if self
-            .provider_instances
-            .windows(2)
-            .any(|pair| pair[0] >= pair[1])
-        {
-            return Err(AbilityRoundError::InvalidProjection {
-                reason: "provider instance keys are not in strict canonical order".to_string(),
-            });
+        for (instance, selected) in &self.provider_instances {
+            if instance.is_empty()
+                || instance.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes
+                || selected
+                    .implementation
+                    .as_ref()
+                    .is_some_and(|implementation| {
+                        implementation.is_empty()
+                            || implementation.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes
+                    })
+            {
+                return Err(AbilityRoundError::InvalidProjection {
+                    reason: "provider instance selection is empty or exceeds its bound".to_string(),
+                });
+            }
         }
 
         for (key, request) in &self.requests {
@@ -212,8 +270,8 @@ impl AbilityRoundSelections {
 /// Reports one complete standard module fixed-point evaluation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AbilityRoundEvaluation {
-    /// The module graph converged and returned its final manifest JSON.
-    Complete(String),
+    /// The module graph converged and returned its final activation authority.
+    Complete(CompleteAbilityRound),
     /// Provider composition exposed unresolved internal child requests.
     Pending(PendingAbilityProjection),
 }
@@ -266,6 +324,8 @@ pub struct AbilityRoundTrace {
 pub struct AbilityRoundOutcome {
     /// Carries the final manifest JSON from the authoritative fixed point.
     pub manifest: String,
+    /// Carries exact bindings and resources from the authoritative fixed point.
+    pub fixed_point: AbilityFixedPointProjection,
     /// Retains every nonfinal provider-selection round.
     pub trace: Vec<AbilityRoundTrace>,
     /// Retains the exact bindings and modules admitted into the final round.
@@ -389,9 +449,11 @@ pub fn resolve_ability_rounds(
             .evaluate(round, &selections)
             .map_err(|source| AbilityRoundError::Evaluation { round, source })?
         {
-            AbilityRoundEvaluation::Complete(manifest) => {
+            AbilityRoundEvaluation::Complete(complete) => {
+                complete.fixed_point.validate()?;
                 return Ok(AbilityRoundOutcome {
-                    manifest,
+                    manifest: complete.manifest,
+                    fixed_point: complete.fixed_point,
                     trace,
                     selections,
                 });
@@ -666,11 +728,23 @@ mod tests {
         }
     }
 
+    fn complete(manifest: &str) -> AbilityRoundEvaluation {
+        complete_with_fixed_point(manifest, AbilityFixedPointProjection::default())
+    }
+
+    fn complete_with_fixed_point(
+        manifest: &str,
+        fixed_point: AbilityFixedPointProjection,
+    ) -> AbilityRoundEvaluation {
+        AbilityRoundEvaluation::Complete(CompleteAbilityRound {
+            manifest: manifest.to_string(),
+            fixed_point,
+        })
+    }
+
     #[test]
     fn complete_first_round_imports_nothing() {
-        let evaluator = ScriptedEvaluation::new(vec![AbilityRoundEvaluation::Complete(
-            "{\"manifest\":true}".to_string(),
-        )]);
+        let evaluator = ScriptedEvaluation::new(vec![complete("{\"manifest\":true}")]);
 
         let outcome = resolve_ability_rounds(&evaluator, &ExactResolver, 4)
             .expect("an already-complete module graph converges");
@@ -684,10 +758,52 @@ mod tests {
     }
 
     #[test]
+    fn complete_round_retains_the_exact_fixed_point_projection() {
+        let projection = AbilityFixedPointProjection {
+            bindings: BTreeMap::from([(
+                "consumer:storage".to_string(),
+                AbilityValue::new(serde_json::json!({"implementation": "provider:storage"}))
+                    .expect("test binding is bounded"),
+            )]),
+            resolved_resources: BTreeMap::from([(
+                "provider:state".to_string(),
+                AbilityValue::new(serde_json::json!({"kind": "aos.storage.instance"}))
+                    .expect("test resource is bounded"),
+            )]),
+        };
+        let evaluator = ScriptedEvaluation::new(vec![complete_with_fixed_point(
+            "{\"manifest\":true}",
+            projection.clone(),
+        )]);
+
+        let outcome = resolve_ability_rounds(&evaluator, &ExactResolver, 4)
+            .expect("a complete projection is retained");
+
+        assert_eq!(outcome.fixed_point, projection);
+    }
+
+    #[test]
+    fn complete_round_rejects_an_invalid_fixed_point_key() {
+        let projection = AbilityFixedPointProjection {
+            bindings: BTreeMap::from([(
+                String::new(),
+                AbilityValue::new(serde_json::json!(true)).expect("test value is bounded"),
+            )]),
+            resolved_resources: BTreeMap::new(),
+        };
+        let evaluator = ScriptedEvaluation::new(vec![complete_with_fixed_point("{}", projection)]);
+
+        let error = resolve_ability_rounds(&evaluator, &ExactResolver, 4)
+            .expect_err("invalid final authority must fail before activation");
+
+        assert!(matches!(error, AbilityRoundError::InvalidProjection { .. }));
+    }
+
+    #[test]
     fn pending_requests_add_only_their_bindings_and_selected_modules() {
         let evaluator = ScriptedEvaluation::new(vec![
             AbilityRoundEvaluation::Pending(pending(&["child-a", "child-b"])),
-            AbilityRoundEvaluation::Complete("{\"manifest\":true}".to_string()),
+            complete("{\"manifest\":true}"),
         ]);
 
         let outcome = resolve_ability_rounds(&evaluator, &ExactResolver, 4)
@@ -862,7 +978,12 @@ mod tests {
                     },
                 },
             )]),
-            provider_instances: vec!["provider:instance".to_string()],
+            provider_instances: BTreeMap::from([(
+                "provider:instance".to_string(),
+                PendingProviderInstance {
+                    implementation: Some("provider:recursive".to_string()),
+                },
+            )]),
         }
     }
 

@@ -498,6 +498,10 @@
 
   projectedRequirementType = strictSubmodule {
     alias = mkOption {type = localKeyType;};
+    description = mkOption {
+      type = descriptionType;
+      description = "Authenticated requirement documentation retained with its exact contract.";
+    };
     accepted_interfaces = mkOption {type = moduleTypes.listOf interfaceSelectorType;};
     methods = mkOption {
       type = moduleTypes.listOf localKeyType;
