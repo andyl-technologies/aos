@@ -30,5 +30,9 @@ name = "aos-zfs-dataset-provider"
 path = "src/bin/zfs_dataset.rs"
 
 [[bin]]
+name = "aos-zfs-memory-policy"
+path = "src/bin/zfs_memory_policy.rs"
+
+[[bin]]
 name = "aos-storage-provisioning-provider"
 path = "src/bin/storage_provisioning.rs"

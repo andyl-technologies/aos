@@ -209,9 +209,14 @@ in {
     # ZFS userland and its module must come from one kernel-bound build. The
     # same closure is retained in recovery so pool repair never mixes releases.
     aos.filesystems.zfs.package = lib.mkIf cfg.zfs.enable (lib.mkDefault zfsForRunningKernel);
+    aos.filesystems.zfs.packagedVersion = lib.mkIf cfg.zfs.enable cfg.zfs.package.version;
     aos.kernel.modulePackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
     aos.kernel.modules = lib.mkIf cfg.zfs.enable ["zfs"];
     aos.boot.recovery.extraPackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
+    aos.boot.kernelParams = lib.mkIf cfg.zfs.enable cfg.zfs.moduleParameters;
+    aos.monitoring.hardware.enable = lib.mkIf cfg.zfs.enable (lib.mkDefault true);
+    aos.zram.enable = lib.mkIf cfg.zfs.enable (lib.mkDefault true);
+    aos.zram.size = lib.mkIf cfg.zfs.enable (lib.mkDefault "min(ram / 8, 2048)");
     environment.systemPackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
   };
 }

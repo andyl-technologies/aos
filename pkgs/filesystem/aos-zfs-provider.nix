@@ -20,6 +20,7 @@
     }
     .${stdenv.hostPlatform.system};
   staticBuildSetup = ''
+    export AOS_ZFS_VERSION=${zfs.version}
     target_triple="$(rustc -vV | sed -n 's/^host: //p')"
     test "$target_triple" = "${targetTriple}"
     rustflags_var="CARGO_TARGET_$(printf '%s' "$target_triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
@@ -46,7 +47,7 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider --bin aos-zfs-pool-provider --bin aos-zfs-dataset-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider --bin aos-zfs-pool-provider --bin aos-zfs-dataset-provider --bin aos-zfs-memory-policy"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider"
     ];
     preBuild = staticBuildSetup;
@@ -63,25 +64,26 @@ in
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-block-storage-provider --bin aos-zfs-pool-provider --bin aos-zfs-dataset-provider";
+    cargoFlags = "-p aos-block-storage-provider --bin aos-zfs-pool-provider --bin aos-zfs-dataset-provider --bin aos-zfs-memory-policy";
     cargoTestFlags = "-p aos-block-storage-provider";
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [zfs];
 
-    abilities = ./_aos-zfs-provider/module.nix;
+    abilities = ./_aos-zfs-provider;
     preBuild = staticBuildSetup;
 
     preInstall = ''
       cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-pool-provider" target/release/
       cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-dataset-provider" target/release/
+      cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-memory-policy" target/release/
     '';
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
       cp ${./_aos-zfs-provider/pool-provider.nix} "$out/share/aos/providers/storage-pool.nix"
       cp ${./_aos-zfs-provider/dataset-provider.nix} "$out/share/aos/providers/storage-dataset.nix"
-      for provider in aos-zfs-pool-provider aos-zfs-dataset-provider; do
+      for provider in aos-zfs-pool-provider aos-zfs-dataset-provider aos-zfs-memory-policy; do
         test -x "$out/bin/$provider"
         if patchelf --print-interpreter "$out/bin/$provider" \
             > "$TMPDIR/$provider.interpreter" 2>/dev/null; then
