@@ -457,7 +457,7 @@
     inherit lib pkgs;
   };
   systemServiceModules = import ./system-service-modules.nix {
-    inherit lib;
+    inherit lib pkgs;
   };
   dockerService = import ./docker-service.nix {
     inherit pkgs lib;
@@ -490,7 +490,7 @@
     inherit lib pkgs;
   };
   releaseCoordinatorService = import ./release-coordinator-service.nix {
-    inherit lib;
+    inherit lib pkgs;
   };
   networkPolicyCore = import ./network-policy-core.nix {
     inherit lib;

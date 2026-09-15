@@ -428,6 +428,7 @@ let
   # under a Darwin platform key.
   buildOnly = [
     "ability-package-smoke"
+    "ability-package-smoke-provider"
     "aos-ability-contract-validator"
     "aos-ability-boundary-observer"
     "aos-hub-dialect-tests"
@@ -751,7 +752,6 @@ let
     "virtualization/_libvirt/dbus-registration.nix" = "linux-only-config-source";
     "virtualization/_libvirt/module.nix" = "linux-only-config-source";
     "tests/_ability-package-smoke-module.nix" = "target-independent-source";
-    "tests/_ability-package-smoke-provider.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
     "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";

@@ -3,8 +3,12 @@
   lib,
   pkgs,
 }: let
-  abilitiesModule = ../../pkgs/system/_systemd-abilities.nix;
-  providerModule = ../../pkgs/system/_systemd-provider.nix;
+  selectedSystemdProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.systemd;
+    implementation = "service-lifecycle";
+  };
+  providerRoot = selectedSystemdProvider.configRoot;
   serviceEffectsRequest = lib.abilities.compositionRequestKey {
     implementation = "systemd:service-lifecycle";
     providerInstance = "systemd:manager";
@@ -12,19 +16,6 @@
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   artifact = lib.abilities.packageOutput {};
-  artifactLocatorFor = selector:
-    if (selector._type or null) != "aos-package-output-selector"
-    then throw "provider attempted to resolve a materialized artifact reference"
-    else {
-      artifactReference = {
-        _type = "aos-artifact-reference";
-        content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-        nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-      };
-      path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-    };
   requirement = selected: methods: {
     interface = selected.identity.name;
     inherit (selected.identity) abi descriptor;
@@ -205,6 +196,7 @@
             key = "systemd-service";
             stage = "host";
           };
+          instances."systemd:manager" = {};
           bindings = {
             "test:lifecycle" = {
               request = "consumer:lifecycle";
@@ -261,19 +253,19 @@
     packageModules = [
       {
         name = "systemd";
-        module = {
-          imports = [abilitiesModule providerModule];
-          config.aos.abilities.instances.manager = {};
-        };
+        inherit (pkgs.systemd) version;
+        module = pkgs.systemd.module + "/module.nix";
       }
       {
         name = "consumer";
         module = consumerModule;
       }
     ];
+    selectedProviderModules = [
+      selectedSystemdProvider
+    ];
     specialArgs = {
-      inherit artifactLocatorFor pkgs;
-      packageName = "systemd";
+      inherit pkgs;
       provenance = {
         dependencyOwnersOfAttr = _: _: [];
         ownerOfListAttr = _: _: _: "@test";
@@ -313,11 +305,8 @@
     (directive:
       (builtins.head (builtins.attrValues directive.value.substitutions)).source.identity)
     (directives name selected);
-  serviceRenderer = import ../../pkgs/system/_systemd-service-document.nix {
-    inherit lib;
-    serviceFacets = resource.realization.facets;
-    unitNameForReference = _: throw "ownership fixture has no dependencies";
-  };
+  guarantees = evaluation.config.aos.abilities.guarantees;
+  lifecycleImplementation = evaluation.config.aos.abilities.implementations."systemd:service-lifecycle";
   ownershipResource = owner:
     resource
     // {
@@ -343,19 +332,38 @@
           ];
         };
     };
-  matchedOwnership = serviceRenderer.realizationFor serviceManagement.interfaces.lifecycle.identity (
-    ownershipResource "example"
-  );
-  mismatchedOwnership = builtins.tryEval (builtins.deepSeq (
-      serviceRenderer.realizationFor serviceManagement.interfaces.lifecycle.identity (
-        ownershipResource "another-principal"
-      )
-    )
-    true);
-  guarantees = evaluation.config.aos.abilities.guarantees;
-  lifecycleImplementation = evaluation.config.aos.abilities.implementations."systemd:service-lifecycle";
+  ownershipComposition = owner:
+    lifecycleImplementation.compose {
+      bindings.lifecycle.providerInstance = "systemd:manager";
+      resources.main = ownershipResource owner;
+    };
+  matchedOwnership = ownershipComposition "example";
+  mismatchedOwnership = ownershipComposition "another-principal";
+  ownershipPreparation = builtins.head (builtins.filter
+    (request: request.requirement == "directory-preparation")
+    (builtins.attrValues mismatchedOwnership.requests));
+  ownershipPreparationRequest = lib.abilities.compositionRequestKey {
+    implementation = "systemd:service-lifecycle";
+    providerInstance = "systemd:manager";
+    key = ownershipPreparation.parameters.name;
+  };
   effectsRequest = evaluation.config.aos.abilities.compositionRequests.${serviceEffectsRequest};
   conditionImplementation = evaluation.config.aos.abilities.implementations."systemd:service-conditions";
+  rejectedProviderSelection = selectedProvider:
+    builtins.tryEval (builtins.deepSeq ((lib.evalModules {
+        inherit lib pkgs;
+        modules = [lib.abilities.module];
+        selectedProviderModules = [selectedProvider];
+      }).config.aos.abilities.implementations)
+      true);
+  traversalSelection = rejectedProviderSelection (
+    selectedSystemdProvider
+    // {module = "${providerRoot}/share/aos/providers/../providers/systemd.nix";}
+  );
+  mismatchedRootSelection = rejectedProviderSelection (
+    selectedSystemdProvider
+    // {configRoot = "${providerRoot}/share/aos";}
+  );
 in
   assert builtins.length resources == 1;
   assert resource.kind == "aos.service.instance";
@@ -472,6 +480,24 @@ in
   assert lifecycleImplementation.guarantees == ["core:service-template-exact-reuse"];
   assert lifecycleImplementation.handlerDescriptor == null;
   assert builtins.isFunction lifecycleImplementation.transition;
+  assert lifecycleImplementation.requirements.directory-preparation.strength == "required";
+  assert builtins.length matchedOwnership.realizations.main.units == 2;
+  assert ownershipPreparation
+  == {
+    requirement = "directory-preparation";
+    scope = ["managed-directory"];
+    slot = ownershipPreparation.parameters.name;
+    parameters = {
+      name = ownershipPreparation.parameters.name;
+      entry.kind = "directory";
+      destination = "/var/lib/example/nested";
+      mode = "0750";
+      owner = "another-principal";
+      group = "example";
+      prerequisites = [];
+    };
+  };
+  assert !builtins.hasAttr ownershipPreparationRequest evaluation.config.aos.abilities.compositionOutputs;
   assert effectsRequest.parameters.kind == "service";
   assert effectsRequest.parameters.desired.service == "main";
   assert conditionImplementation.guarantees
@@ -479,5 +505,5 @@ in
     "core:service-condition-kernel-argument"
     "core:service-condition-path"
   ];
-  assert builtins.length matchedOwnership.units == 3;
-  assert !mismatchedOwnership.success; true
+  assert !traversalSelection.success;
+  assert !mismatchedRootSelection.success; true
