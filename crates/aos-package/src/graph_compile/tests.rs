@@ -134,10 +134,15 @@ fn strict_manifest(names: &[&str], graph: &ConfigGraph) -> ConfigManifest {
                 "platform": "test",
                 "registry": "test",
                 "store_path": store_path,
+                "nar_hash": format!("sha256:{}", "0".repeat(52)),
+                "nar_size": 1,
                 "closure": [{
                     "store_path_hash": hash,
                     "store_path": store_path,
-                    "realisations": [{"nar_hash": "sha256:test", "nar_size": 1}]
+                    "realisations": [{
+                        "nar_hash": format!("sha256:{}", "0".repeat(52)),
+                        "nar_size": 1
+                    }]
                 }]
             }),
         );

@@ -466,7 +466,7 @@ impl ConfigManifest {
             ) {
                 bail!("packageOutputs.{package}.store_path is not owned by that package");
             }
-            validate_runtime_pin(package, pin, self.inputs.ability_activation.is_some())?;
+            validate_runtime_pin(package, pin)?;
         }
         for (package, deps) in &self.graph.edges {
             if !package_set.contains(package.as_str()) {
@@ -546,19 +546,12 @@ fn validate_secret_refs(package: &str, value: &serde_json::Value) -> Result<()> 
     Ok(())
 }
 
-fn validate_runtime_pin(
-    package: &str,
-    pin: &RuntimePackagePin,
-    require_exact_runtime_nar: bool,
-) -> Result<()> {
-    let carries_runtime_nar = !pin.nar_hash.is_empty() || pin.nar_size != 0;
-    if require_exact_runtime_nar || carries_runtime_nar {
-        let canonical_runtime_nar =
-            crate::registry::store::NarBytes::from_hash(&pin.nar_hash, pin.nar_size)
-                .with_context(|| format!("validating packageOutputs.{package}.nar_hash"))?;
-        if canonical_runtime_nar.nar_hash() != pin.nar_hash || pin.nar_size == 0 {
-            bail!("packageOutputs.{package} has a noncanonical or empty runtime NAR identity");
-        }
+fn validate_runtime_pin(package: &str, pin: &RuntimePackagePin) -> Result<()> {
+    let canonical_runtime_nar =
+        crate::registry::store::NarBytes::from_hash(&pin.nar_hash, pin.nar_size)
+            .with_context(|| format!("validating packageOutputs.{package}.nar_hash"))?;
+    if canonical_runtime_nar.nar_hash() != pin.nar_hash || pin.nar_size == 0 {
+        bail!("packageOutputs.{package} has a noncanonical or empty runtime NAR identity");
     }
     if let Some(ability) = &pin.contract {
         super::static_packages::resolve(
@@ -633,7 +626,7 @@ fn validate_runtime_pin(
     if !includes_root {
         bail!("packageOutputs.{package}.closure omits its runtime output root");
     }
-    if (require_exact_runtime_nar || carries_runtime_nar) && !includes_exact_root_nar {
+    if !includes_exact_root_nar {
         bail!("packageOutputs.{package}.closure does not bless its selected runtime output NAR");
     }
     Ok(())
@@ -1432,8 +1425,8 @@ fn validate_sorted_unique(values: &[String], field: &str) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if the manifest cannot be read or parsed, if its `schema`
-/// tag is unsupported, if structured activation requires the native
-/// dispatcher, or if any filesystem write fails.
+/// tag is unsupported, if native activation reaches the standalone
+/// materializer, or if any filesystem write fails.
 pub fn materialize_manifest(
     manifest_path: &Path,
     etc_root: &Path,
@@ -1443,7 +1436,7 @@ pub fn materialize_manifest(
         .with_context(|| format!("reading manifest {}", manifest_path.display()))?;
     let manifest: ConfigManifest = serde_json::from_str(&raw)
         .with_context(|| format!("parsing manifest {}", manifest_path.display()))?;
-    reject_structured_activation_on_legacy_materialization_path(&manifest)?;
+    reject_native_activation_on_standalone_materialization(&manifest)?;
     apply(&manifest, etc_root, job_scripts_runtime_dir)
 }
 
@@ -1456,8 +1449,8 @@ pub fn materialize_manifest(
 ///
 /// # Errors
 ///
-/// Returns an error if the manifest or overlay root is invalid, structured
-/// activation requires the native dispatcher, a parent path crosses a
+/// Returns an error if the manifest or overlay root is invalid, native
+/// activation reaches the standalone materializer, a parent path crosses a
 /// symlink, or an intended leaf cannot be removed.
 pub fn apply_manifest_removals(manifest_path: &Path, etc_root: &Path) -> Result<()> {
     let raw = std::fs::read_to_string(manifest_path)
@@ -1465,7 +1458,7 @@ pub fn apply_manifest_removals(manifest_path: &Path, etc_root: &Path) -> Result<
     let manifest: ConfigManifest = serde_json::from_str(&raw)
         .with_context(|| format!("parsing manifest {}", manifest_path.display()))?;
     manifest.validate()?;
-    reject_structured_activation_on_legacy_materialization_path(&manifest)?;
+    reject_native_activation_on_standalone_materialization(&manifest)?;
 
     let root = openat(
         rustix::fs::CWD,
@@ -1506,8 +1499,8 @@ pub fn apply_manifest_removals(manifest_path: &Path, etc_root: &Path) -> Result<
 ///
 /// # Errors
 ///
-/// Returns an error if the manifest or generation directory is invalid,
-/// structured activation requires the native dispatcher, an existing artifact
+/// Returns an error if the manifest or generation directory is invalid, native
+/// activation reaches the standalone materializer, an existing artifact
 /// fails validation, rendering fails, either EROFS tool fails, or the durable
 /// staging rename cannot be completed.
 pub fn materialize_generation_lower(
@@ -1540,7 +1533,7 @@ pub fn materialize_generation_lower(
     manifest
         .validate()
         .with_context(|| format!("validating manifest {}", manifest_path.display()))?;
-    reject_structured_activation_on_legacy_materialization_path(&manifest)?;
+    reject_native_activation_on_standalone_materialization(&manifest)?;
     let manifest_value = serde_json::to_value(&manifest)?;
     let manifest_hash = crate::graph_compile::reproject::hash_cjson(&manifest_value);
     let final_dir = generation_dir.join(GENERATION_LOWER_DIR);
@@ -1608,13 +1601,9 @@ pub fn materialize_generation_lower(
     result
 }
 
-fn reject_structured_activation_on_legacy_materialization_path(
-    manifest: &ConfigManifest,
-) -> Result<()> {
+fn reject_native_activation_on_standalone_materialization(manifest: &ConfigManifest) -> Result<()> {
     if manifest.inputs.ability_activation.is_some() {
-        bail!(
-            "structured ability generation requires the native activation dispatcher; legacy materialization is disabled"
-        );
+        bail!("native ability generation cannot use the standalone materializer");
     }
     Ok(())
 }
@@ -1848,15 +1837,15 @@ fn remove_stage_if_present(path: &Path) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error if the schema tag is wrong, structured activation requires
-/// the native dispatcher, or any filesystem write fails.
+/// Returns an error if the schema tag is wrong, native activation reaches the
+/// standalone materializer, or any filesystem write fails.
 pub fn apply(
     manifest: &ConfigManifest,
     etc_root: &Path,
     job_scripts_runtime_dir: &str,
 ) -> Result<()> {
     manifest.validate()?;
-    reject_structured_activation_on_legacy_materialization_path(manifest)?;
+    reject_native_activation_on_standalone_materialization(manifest)?;
     std::fs::create_dir_all(etc_root)
         .with_context(|| format!("creating materialization root {}", etc_root.display()))?;
     let root = openat(
@@ -2334,67 +2323,11 @@ mod tests {
         let round_trip: ConfigManifest =
             serde_json::from_value(serde_json::to_value(&manifest).unwrap()).unwrap();
         assert_eq!(round_trip, manifest);
+
     }
 
     #[test]
-    fn retained_v2_manifest_accepts_package_pin_without_selected_nar_fields() {
-        let mut manifest =
-            manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
-        let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-legacy";
-        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
-        manifest.inputs.runtime_modules = Some(RuntimeModulesInput {
-            schema: "aos.runtime-module-set/v1".to_string(),
-            trust_mode: "local-root".to_string(),
-            store_path: "/nix/store/99999999999999999999999999999999-runtime-modules".to_string(),
-            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_string(),
-            entrypoints: vec!["10-packages.nix".to_string()],
-            signer_key: None,
-        });
-        manifest.inputs.expected_current_generation = Some(4);
-        manifest.packages = vec!["legacy".to_string()];
-        manifest.store_paths = vec![store_path.to_string()];
-        manifest
-            .ownership
-            .store_paths
-            .insert(store_path.to_string(), "legacy".to_string());
-        manifest.package_outputs.insert(
-            "legacy".to_string(),
-            RuntimePackagePin {
-                version: "1.0.0".to_string(),
-                platform: "x86_64-linux".to_string(),
-                registry: "legacy-registry".to_string(),
-                origin: RuntimePackageOrigin::Registry,
-                store_path: store_path.to_string(),
-                nar_hash: String::new(),
-                nar_size: 0,
-                contract: None,
-                closure: vec![crate::config_eval::runtime::RuntimeClosurePin {
-                    store_path_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-                    store_path: Some(store_path.to_string()),
-                    realisations: vec![crate::config_eval::runtime::RuntimeRealisationPin {
-                        nar_hash: format!("sha256:{}", "0".repeat(52)),
-                        nar_size: 1,
-                    }],
-                }],
-            },
-        );
-
-        let mut old_shape = serde_json::to_value(&manifest).unwrap();
-        let package = old_shape["packageOutputs"]["legacy"]
-            .as_object_mut()
-            .unwrap();
-        package.remove("nar_hash");
-        package.remove("nar_size");
-
-        let decoded: ConfigManifest = serde_json::from_value(old_shape).unwrap();
-        assert_eq!(decoded.package_outputs["legacy"].nar_hash, "");
-        assert_eq!(decoded.package_outputs["legacy"].nar_size, 0);
-        decoded.validate().unwrap();
-    }
-
-    #[test]
-    fn manifest_v3_binds_native_ability_specialization_inputs() {
+    fn native_manifest_binds_ability_specialization_inputs() {
         let mut manifest =
             manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
         let sidecar = |document: &str| PinnedAbilitySidecar {
@@ -2413,6 +2346,7 @@ mod tests {
             required_features: vec![
                 "abilities-v1".to_string(),
                 "ability-effects-v1".to_string(),
+                "native-platform-policy-v1".to_string(),
                 "native-resource-map-v1".to_string(),
             ],
             desired_state: sidecar("desired-state"),
@@ -2440,7 +2374,7 @@ mod tests {
             .required_features = vec!["abilities-v1".to_string(), "ability-effects-v1".to_string()];
         manifest
             .validate()
-            .expect("historical planning-only feature set remains readable");
+            .expect_err("an incomplete native feature sequence must be rejected");
     }
 
     #[test]
@@ -2458,7 +2392,12 @@ mod tests {
         };
         manifest.inputs.ability_activation = Some(AbilityActivationInput {
             schema: AbilityActivationInput::SCHEMA.to_string(),
-            required_features: vec!["abilities-v1".to_string(), "ability-effects-v1".to_string()],
+            required_features: vec![
+                "abilities-v1".to_string(),
+                "ability-effects-v1".to_string(),
+                "native-platform-policy-v1".to_string(),
+                "native-resource-map-v1".to_string(),
+            ],
             desired_state: sidecar("desired-state"),
             authenticated_policy_set: sidecar("policy-set"),
             fixed_point: None,

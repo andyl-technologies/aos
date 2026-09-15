@@ -9,6 +9,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::{error::Error, fmt};
@@ -74,17 +75,17 @@ struct ActivationRecord<'a> {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StoredActivationRecord {
-    schema: String,
-    generation: u32,
-    generation_id: String,
-    transaction_manifest: String,
+pub(super) struct StoredActivationRecord {
+    pub(super) schema: String,
+    pub(super) generation: u32,
+    pub(super) generation_id: String,
+    pub(super) transaction_manifest: String,
     #[serde(rename = "dropped_packages")]
     _dropped_packages: Vec<String>,
-    status: String,
-    activation_exit: i32,
-    native_ability_transaction: Option<String>,
-    native_ability_prior_generation: Option<u32>,
+    pub(super) status: String,
+    pub(super) activation_exit: i32,
+    pub(super) native_ability_transaction: Option<String>,
+    pub(super) native_ability_prior_generation: Option<NonZeroU32>,
 }
 
 /// Returns generations retained by the current native recovery record.
@@ -160,12 +161,12 @@ pub(crate) fn required_native_recovery_generations(
         {
             bail!("structured recovery record is incomplete");
         }
-        let prior = record
+        let Some(prior) = record
             .native_ability_prior_generation
-            .context("structured recovery record has no prior generation")?;
-        if prior == 0 {
+            .map(NonZeroU32::get)
+        else {
             break;
-        }
+        };
         if prior == generation {
             bail!("native recovery generation references itself");
         }
@@ -175,7 +176,7 @@ pub(crate) fn required_native_recovery_generations(
     Ok(required)
 }
 
-fn read_stored_activation_record(
+pub(super) fn read_stored_activation_record(
     path: &Path,
     required: bool,
 ) -> Result<Option<StoredActivationRecord>> {
@@ -429,7 +430,7 @@ pub(crate) fn commit_structured_config_while_locked(
     params: &ActivateConfigParams,
     manifest: &ConfigManifest,
     transaction: &aos_ability_model::TransactionId,
-    prior_generation: u32,
+    prior_generation: Option<u32>,
 ) -> Result<u32> {
     let mut locked = params.clone();
     locked.switch_lock_held = true;
@@ -712,7 +713,7 @@ fn activate_config_with_reconciliation_mode<F, G>(
     run_activate: F,
     apply_credentials: G,
     provided_manifest: Option<&ConfigManifest>,
-    structured_transaction: Option<(&aos_ability_model::TransactionId, u32)>,
+    structured_transaction: Option<(&aos_ability_model::TransactionId, Option<u32>)>,
 ) -> Result<u32>
 where
     F: FnOnce(
@@ -879,7 +880,7 @@ where
             6,
             !projection.projected,
             Some(transaction),
-            Some(prior_generation),
+            prior_generation,
             false,
         )?;
     }
@@ -950,7 +951,7 @@ where
             if structured_transaction.is_some() && !native_pending && !projection.projected {
                 let native_transaction = structured_transaction.map(|(transaction, _)| transaction);
                 let native_prior_generation =
-                    structured_transaction.map(|(_, prior_generation)| prior_generation);
+                    structured_transaction.and_then(|(_, prior_generation)| prior_generation);
                 publish_activation_record(
                     params,
                     &projection,
@@ -1417,6 +1418,34 @@ mod tests {
         drop(duplicate);
     }
 
+    #[test]
+    fn stored_activation_record_rejects_unknown_fields_and_zero_predecessor() {
+        let record = serde_json::json!({
+            "schema": "aos.config-activation/v1",
+            "generation": 2,
+            "generation_id": "sha256:generation",
+            "transaction_manifest": "sha256:transaction",
+            "dropped_packages": [],
+            "status": "native-pending",
+            "activation_exit": 6,
+            "native_ability_transaction": "sha256:ability-transaction",
+            "native_ability_prior_generation": 1,
+        });
+
+        let mut extended = record.clone();
+        extended
+            .as_object_mut()
+            .unwrap()
+            .insert("compatibility_marker".to_string(), Value::Bool(true));
+        serde_json::from_value::<StoredActivationRecord>(extended)
+            .expect_err("activation records must reject unknown fields");
+
+        let mut zero_predecessor = record;
+        zero_predecessor["native_ability_prior_generation"] = serde_json::json!(0);
+        serde_json::from_value::<StoredActivationRecord>(zero_predecessor)
+            .expect_err("zero must not encode an absent predecessor");
+    }
+
     fn setup() -> (TempDir, ActivateConfigParams, Value) {
         let root = tempfile::tempdir().unwrap();
         let profile = root.path().join("profile");
@@ -1511,19 +1540,23 @@ mod tests {
                 "firewall": {
                     "version": "1", "platform": "test", "registry": "test",
                     "store_path": "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-firewall",
+                    "nar_hash": format!("sha256:{}", "0".repeat(52)),
+                    "nar_size": 1,
                     "closure": [{
                         "store_path_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                         "store_path": "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-firewall",
-                        "realisations": [{"nar_hash": "sha256:firewall", "nar_size": 1}]
+                        "realisations": [{"nar_hash": format!("sha256:{}", "0".repeat(52)), "nar_size": 1}]
                     }]
                 },
                 "web": {
                     "version": "1", "platform": "test", "registry": "test",
                     "store_path": "/nix/store/cccccccccccccccccccccccccccccccc-web",
+                    "nar_hash": format!("sha256:{}", "1".repeat(52)),
+                    "nar_size": 1,
                     "closure": [{
                         "store_path_hash": "cccccccccccccccccccccccccccccccc",
                         "store_path": "/nix/store/cccccccccccccccccccccccccccccccc-web",
-                        "realisations": [{"nar_hash": "sha256:web", "nar_size": 1}]
+                        "realisations": [{"nar_hash": format!("sha256:{}", "1".repeat(52)), "nar_size": 1}]
                     }]
                 }
             },
@@ -1689,8 +1722,13 @@ mod tests {
         manifest["schema"] = json!(ConfigManifest::SCHEMA_V2);
         manifest["inputs"]["expected_current_generation"] = json!(1);
         manifest["inputs"]["ability_activation"] = json!({
-            "schema": "aos.ability.activation-input/v1",
-            "required_features": ["abilities-v1", "ability-effects-v1"],
+            "schema": "aos.contract.activation-input/v1",
+            "required_features": [
+                "abilities-v1",
+                "ability-effects-v1",
+                "native-platform-policy-v1",
+                "native-resource-map-v1"
+            ],
             "desired_state": {
                 "store_path": "/nix/store/99999999999999999999999999999999-desired",
                 "nar_hash": format!("sha256:{}", "0".repeat(52)),
@@ -2216,7 +2254,7 @@ mod tests {
             },
             |_reconciliation, _plan| Ok(()),
             Some(&manifest),
-            Some((&transaction, 1)),
+            Some((&transaction, Some(1))),
         )
         .unwrap_err();
 
@@ -2258,7 +2296,7 @@ mod tests {
             },
             |_reconciliation, _plan| Ok(()),
             Some(&manifest),
-            Some((&transaction, 1)),
+            Some((&transaction, Some(1))),
         )
         .unwrap_err();
 
