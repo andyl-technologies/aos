@@ -10,6 +10,7 @@ mod manager_watchdog;
 mod materialize;
 mod model;
 mod native_resource;
+mod qualification_observer;
 mod readiness;
 mod render;
 mod semantic;
@@ -117,6 +118,12 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let arguments = std::env::args_os().collect::<Vec<_>>();
+    if arguments.len() == 1
+        && Path::new(&arguments[0]).file_name()
+            == Some(OsStr::new("aos-systemd-service-effects-observer"))
+    {
+        return qualification_observer::run().await;
+    }
     if arguments.len() == 2 && arguments[1] == "render" {
         return static_render::run();
     }

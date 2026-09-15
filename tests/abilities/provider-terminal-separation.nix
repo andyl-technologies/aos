@@ -45,6 +45,7 @@
   audited = builtins.filter (name: lib.hasPrefix "systemd:" name) (builtins.attrNames implementations);
   hasProvider = implementation: implementation.providerModule != null;
   hasHandler = implementation: implementation.handlerDescriptor != null;
+  serviceTerminal = implementations."systemd:systemd-service-effects";
   exactlyOne = name: let
     implementation = implementations.${name};
   in
@@ -54,4 +55,8 @@ in
   assert builtins.all exactlyOne audited;
   assert implementations."systemd:systemd-packaged-unit".handlerDescriptor == null;
   assert implementations."systemd:network-readiness".handlerDescriptor == null;
-  assert implementations."systemd:filesystem-readiness".handlerDescriptor == null; true
+  assert implementations."systemd:filesystem-readiness".handlerDescriptor == null;
+  assert serviceTerminal.qualification.adapter == "service-management";
+  assert serviceTerminal.qualification.observationKind == "systemd";
+  assert serviceTerminal.qualification.scope == "host-manager";
+  assert serviceTerminal.qualification.observer.entryPoint == "bin/aos-systemd-service-effects-observer"; true
