@@ -129,6 +129,14 @@ pub fn validate_resource_contexts(resources: &[ResourceContext]) -> anyhow::Resu
 /// lifetime identity.
 pub fn validate_admission_resource(request: &AdmissionRequest) -> anyhow::Result<()> {
     anyhow::ensure!(
+        request.assignment.provider == request.target.resource.provider,
+        "admission provider assignment differs from the target owner"
+    );
+    anyhow::ensure!(
+        request.assignment.interface == request.target.interface,
+        "admission provider assignment differs from the target interface"
+    );
+    anyhow::ensure!(
         request.target.resource == request.resource_spec.resource,
         "admission target differs from the resolved resource"
     );
@@ -215,6 +223,9 @@ pub struct AdmissionRequest {
     pub semantics: MethodSemantics,
     /// Retains the full target resource authority.
     pub target: ResourceReference,
+    /// Pins the exact provider implementation and live incarnation selected by
+    /// the checked plan or its authenticated recovery inventory.
+    pub assignment: aos_ability_model::ProviderAssignment,
     /// Carries the exact resource being admitted.
     pub resource_spec: ResourceSpec,
     /// Carries every transitively referenced resource context in canonical order.
@@ -570,6 +581,22 @@ mod tests {
             "key":"resource"
         }))
         .expect("resource identity is valid");
+        let assignment = serde_json::from_value(serde_json::json!({
+            "provider": resource.provider.clone(),
+            "interface": resource_interface.clone(),
+            "implementation": {
+                "descriptor": format!("sha256:{}", "3".repeat(64)),
+                "artifact": {
+                    "content": format!("sha256:{}", "4".repeat(64)),
+                    "store_path": "/nix/store/00000000000000000000000000000000-provider",
+                    "nar_hash": format!("sha256:{}", "5".repeat(64)),
+                    "closure": format!("sha256:{}", "6".repeat(64)),
+                },
+                "handler": "test",
+            },
+            "incarnation": "test-incarnation",
+        }))
+        .expect("provider assignment is valid");
         let request = AdmissionRequest {
             schema: ADMISSION_REQUEST_SCHEMA.into(),
             method: MethodReference {
@@ -583,6 +610,7 @@ mod tests {
                 operations: vec![LocalKey::new("apply").expect("operation is valid")],
                 lifetime: ResourceLifetime::Instance,
             },
+            assignment,
             resource_spec: ResourceSpec {
                 resource,
                 kind: InterfaceName::new("aos.test.resource").expect("kind is valid"),
@@ -611,6 +639,11 @@ mod tests {
         wrong_interface.method.interface.name =
             InterfaceName::new("aos.test.other").expect("interface is valid");
         assert!(validate_admission_resource(&wrong_interface).is_err());
+
+        let mut wrong_assignment = request.clone();
+        wrong_assignment.assignment.interface.name =
+            InterfaceName::new("aos.test.other").expect("interface is valid");
+        assert!(validate_admission_resource(&wrong_assignment).is_err());
 
         let mut missing_method = request;
         missing_method.target.operations.clear();

@@ -415,6 +415,7 @@ impl CommandHandlerResourceEntry {
             method,
             semantics,
             target: target.clone(),
+            assignment: self.assignment.clone(),
             resource_spec: resource_spec(&self.spec),
             resources,
             control: invocation_control(remaining_millis, remaining_millis, false),
