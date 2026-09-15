@@ -33,6 +33,7 @@
   edgecore = evaluate "edgecore" "1.21.0" ../../pkgs/kubernetes/_edgecore-config/module.nix {
     edgecore = {
       enable = true;
+      nodeName = "edge-01";
       cloudHub = {
         httpServer = "https://cloud.example.test";
         server = "cloud.example.test:10000";
@@ -48,6 +49,8 @@
     kubelet = {
       enable = true;
       nodeName = "worker-a";
+      maxPods = 80;
+      registerNode = true;
       kubeconfig.ref = "system-credential:kubelet";
     };
   };
@@ -61,6 +64,14 @@
   disabledKubelet = evaluate "kubelet" "1.34.0" ../../pkgs/kubernetes/_kubelet-config/module.nix {};
   commandFor = evaluated: key: (requests evaluated).${key}.parameters.start;
   sourceFor = evaluated: package: (requests evaluated)."${package}:configuration".parameters.source;
+  literalConfiguration = evaluated: package:
+    lib.concatMapStrings (
+      fragment:
+        if fragment.kind == "literal"
+        then fragment.text
+        else "<credential-path>"
+    )
+    (sourceFor evaluated package).fragments;
   containsManagerCredentialPath = source:
     builtins.any (
       fragment: fragment.kind == "literal" && lib.hasInfix "/run/credentials" fragment.text
@@ -111,6 +122,13 @@ in
     (sourceFor edgecore "edgecore").fragments
   )
   == 3;
+  assert (sourceFor cloudcore "cloudcore").kind == "interpolated-text";
+  assert lib.hasInfix "apiVersion: cloudcore.config.kubeedge.io/v1alpha1" (literalConfiguration cloudcore "cloudcore");
+  assert lib.hasInfix "    - 192.0.2.20" (literalConfiguration cloudcore "cloudcore");
+  assert (sourceFor edgecore "edgecore").kind == "interpolated-text";
+  assert lib.hasInfix "apiVersion: edgecore.config.kubeedge.io/v1alpha2" (literalConfiguration edgecore "edgecore");
+  assert lib.hasInfix "hostnameOverride: edge-01" (literalConfiguration edgecore "edgecore");
+  assert lib.hasInfix "server: cloud.example.test:10000" (literalConfiguration edgecore "edgecore");
   assert !containsManagerCredentialPath (sourceFor cloudcore "cloudcore");
   assert !containsManagerCredentialPath (sourceFor edgecore "edgecore");
   assert requests disabledCloudcore == {};
@@ -123,6 +141,17 @@ in
   assert portableOptionTree edgecore.options.edgecore;
   assert portableOptionTree kubelet.options.kubelet;
   assert (requests kubelet)."kubelet:kubelet-supervision".parameters.startup_protocol == "notification";
+  assert let
+    configuration = builtins.fromJSON (
+      builtins.unsafeDiscardStringContext (sourceFor kubelet "kubelet").content
+    );
+  in
+    configuration.apiVersion
+    == "kubelet.config.k8s.io/v1beta1"
+    && configuration.maxPods == 80
+    && configuration.containerRuntimeEndpoint == "unix:///run/containerd/containerd.sock";
+  assert lib.elem "worker-a" (builtins.head (commandFor kubelet "kubelet:kubelet-lifecycle")).executable.arguments;
+  assert (requests kubelet)."kubelet:kubeconfig-source".parameters.name == "kubelet";
   assert (requests kubelet)."kubelet:kubelet-linux_device_policy".parameters.rules
   == [
     {

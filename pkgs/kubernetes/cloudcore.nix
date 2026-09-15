@@ -1,6 +1,5 @@
 ##! CloudCore — KubeEdge cloud-side component
 {
-  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -59,72 +58,17 @@ mkDerivation {
     }
   ];
 
-  checks =
-    {
-      testing,
-      self,
-      pkgs,
-    }:
-    let
-      evaluated = lib.evalModules {
-        inherit lib;
-        modules = [
-          ../../modules/abilities/default.nix
-          {
-            aos.abilities.environment = {
-              authority = "deployment";
-              key = "cloudcore-package-check";
-              stage = "host";
-            };
-            cloudcore = {
-              enable = true;
-              advertiseAddresses = [ "192.0.2.20" ];
-              kubeApi.kubeconfig.ref = "system-credential:kubeconfig";
-              tls = {
-                caCertificate.ref = "system-credential:kubeedge-ca";
-                caPrivateKey.ref = "system-credential:kubeedge-ca-key";
-                serverCertificate.ref = "system-credential:kubeedge-server";
-                serverPrivateKey.ref = "system-credential:kubeedge-server-key";
-              };
-            };
-          }
-        ];
-        packageModules = [
-          {
-            name = "cloudcore";
-            inherit version;
-            module = ./_cloudcore-config/module.nix;
-          }
-        ];
-      };
-      configurationSource =
-        evaluated.config.aos.abilities.requests."cloudcore:configuration".parameters.source;
-      renderedLiterals = lib.concatMapStrings (
-        fragment: if fragment.kind == "literal" then fragment.text else "<credential-path>"
-      ) configurationSource.fragments;
-    in
-    {
-      version = testing.mkToolCheck {
-        pname = "tool-cloudcore";
-        tool = self;
-        command = "cloudcore --help";
-      };
-
-      config = pkgs.runCommand "cloudcore-config-module" { } ''
-        config=${builtins.toFile "package-config.yaml" renderedLiterals}
-        grep -F 'apiVersion: cloudcore.config.kubeedge.io/v1alpha1' "$config"
-        grep -F '    - 192.0.2.20' "$config"
-        test '${configurationSource.kind}' = interpolated-text
-        test '${
-          toString (
-            builtins.length (
-              builtins.filter (fragment: fragment.kind == "execution-path") configurationSource.fragments
-            )
-          )
-        }' -gt 0
-        touch "$out"
-      '';
+  checks = {
+    testing,
+    self,
+    ...
+  }: {
+    version = testing.mkToolCheck {
+      pname = "tool-cloudcore";
+      tool = self;
+      command = "cloudcore --help";
     };
+  };
 
   meta = {
     description = "CloudCore — KubeEdge cloud-side component";
