@@ -498,6 +498,9 @@
   systemdReadiness = import ./systemd-readiness.nix {
     inherit pkgs lib;
   };
+  baseKernelNative = import ./base-kernel-native.nix {
+    inherit pkgs lib;
+  };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokeArtifactSelectors = pkgs.ability-package-smoke.contract.selectors;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
@@ -908,6 +911,7 @@ in
   assert systemdServiceRealization;
   assert systemdDirectoryPreparation;
   assert systemdReadiness;
+  assert baseKernelNative;
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.length (builtins.attrNames smokeAbilityProjection.requirementTemplates) == 1;
