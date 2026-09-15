@@ -1,0 +1,130 @@
+##! Pure K3s composition for one authorized Kubernetes object-set controller.
+{lib, ...}: let
+  contract = lib.abilities.interfaces.kubernetesObjectManagement;
+  controllerAlias = contract.controller.alias;
+  contributionAlias = contract.contribution.alias;
+  controllerIdentity = contract.controller.identity;
+  emptyResult = {
+    requests = {};
+    outputs = {};
+    resourceFragments = {};
+  };
+  bindingFor = bindings: requestName: let
+    matches = builtins.filter (
+      binding: binding.request == requestName
+    ) (builtins.attrValues bindings);
+    binding =
+      if builtins.length matches == 1
+      then builtins.head matches
+      else throw "a Kubernetes object request must have exactly one selected binding";
+  in
+    if binding.slot == "objects"
+    then binding
+    else throw "the K3s provider accepts only its canonical 'objects' aggregate slot";
+  resourceReference = instance: {
+    interface = controllerIdentity;
+    resource = {
+      provider = instance.id;
+      key = "objects";
+    };
+    operations = ["observe"];
+    lifetime = "instance";
+  };
+  requestOutput = instance: let
+    reference = resourceReference instance;
+  in {
+    readiness-resource = reference;
+    cluster-readiness-resource = reference;
+    kubeconfig-resource = reference;
+  };
+  entriesFor = context:
+    map (
+      requestName: {
+        inherit requestName;
+        request = context.requests.${requestName};
+        binding = bindingFor context.bindings requestName;
+      }
+    ) (builtins.attrNames context.requests);
+  outputsFor = instance: entries:
+    builtins.listToAttrs (
+      map (entry: {
+        name = entry.requestName;
+        value = requestOutput instance;
+      })
+      entries
+    );
+  exactlyOne = context: entries:
+    if builtins.length entries == 1
+    then builtins.head entries
+    else throw "${context} requires exactly one contribution to the aggregate object set";
+  validateContribution = entry: let
+    package = entry.request.package or null;
+  in
+    if package == null
+    then throw "a Kubernetes object contribution must retain its authenticated package owner"
+    else entry.request.parameters;
+  contributionKey = requestName: builtins.hashString "sha256" requestName;
+  provideBase = context: let
+    entry = exactlyOne "Kubernetes cluster base" (entriesFor context);
+  in
+    emptyResult
+    // {
+      outputs = outputsFor context.instance [entry];
+      resourceFragments.objects = {
+        kind = controllerIdentity.name;
+        lifetime = "instance";
+        value = {
+          cluster = entry.request.parameters;
+          contributions = {};
+        };
+      };
+    };
+  provideContribution = context: let
+    entries = entriesFor context;
+    contributions = builtins.listToAttrs (
+      map (entry: {
+        name = contributionKey entry.requestName;
+        value = validateContribution entry;
+      })
+      entries
+    );
+  in
+    emptyResult
+    // {
+      outputs = outputsFor context.instance entries;
+      resourceFragments = lib.optionalAttrs (entries != []) {
+        objects = {
+          kind = controllerIdentity.name;
+          lifetime = "instance";
+          value.contributions = contributions;
+        };
+      };
+    };
+  compose = {resources, ...}: let
+    resource = resources.objects or (throw "K3s did not receive its canonical object-set resource");
+    objects = lib.concatMap (entry: entry.objects) (builtins.attrValues resource.value.contributions);
+    identities =
+      map (
+        object: builtins.toJSON [object.api_version object.kind object.namespace object.name]
+      )
+      objects;
+  in
+    if builtins.length identities != builtins.length (lib.unique identities)
+    then throw "Kubernetes object contributions contain a duplicate API identity"
+    else {
+      requests = {};
+      outputs = {};
+      realizations.objects = {
+        schema = "aos.kubernetes.object-set-realization/v1";
+        kubeconfig = "/etc/rancher/k3s/k3s.yaml";
+      };
+    };
+in {
+  config.aos.abilities.implementations = {
+    ${controllerAlias} = {
+      provide = provideBase;
+      inherit compose;
+    };
+    ${contributionAlias}.provide = provideContribution;
+  };
+}

@@ -1,0 +1,131 @@
+##! Pure K3s configuration composition for authorized integration requests.
+{lib, ...}: let
+  contract = import ./configuration-interface.nix {inherit lib;};
+  controllerAlias = contract.controller.alias;
+  contributionAlias = contract.contribution.alias;
+  controllerIdentity = contract.controller.identity;
+  emptyResult = {
+    requests = {};
+    outputs = {};
+    resourceFragments = {};
+  };
+  bindingFor = bindings: requestName: let
+    matches = builtins.filter (
+      binding: binding.request == requestName
+    ) (builtins.attrValues bindings);
+    binding =
+      if builtins.length matches == 1
+      then builtins.head matches
+      else throw "a K3s configuration request must have exactly one selected binding";
+  in
+    if binding.slot == "configuration"
+    then binding
+    else throw "the K3s provider accepts only its canonical 'configuration' aggregate slot";
+  entriesFor = context:
+    map
+    (requestName: {
+      inherit requestName;
+      request = context.requests.${requestName};
+      binding = bindingFor context.bindings requestName;
+    })
+    (builtins.attrNames context.requests);
+  resourceReference = instance: {
+    interface = controllerIdentity;
+    resource = {
+      provider = instance.id;
+      key = "configuration";
+    };
+    operations = ["observe"];
+    lifetime = "instance";
+  };
+  executionPath = instance: "/run/aos/k3s/${builtins.hashString "sha256" (builtins.toJSON instance.id)}.json";
+  outputsFor = instance: entries:
+    builtins.listToAttrs (
+      map
+      (entry: {
+        name = entry.requestName;
+        value = {
+          execution-path = executionPath instance;
+          readiness-resource = resourceReference instance;
+        };
+      })
+      entries
+    );
+  exactlyOne = description: entries:
+    if builtins.length entries == 1
+    then builtins.head entries
+    else throw "${description} requires exactly one contribution";
+  provideBase = context: let
+    entry = exactlyOne "K3s configuration base" (entriesFor context);
+  in
+    emptyResult
+    // {
+      outputs = outputsFor context.instance [entry];
+      resourceFragments.configuration = {
+        kind = controllerIdentity.name;
+        lifetime = "instance";
+        value = {
+          base = entry.request.parameters;
+          contributions = {};
+        };
+      };
+    };
+  provideContribution = context: let
+    entries = entriesFor context;
+    checked =
+      map
+      (entry:
+        if entry.request.package == null
+        then throw "a K3s integration request must retain its authenticated package owner"
+        else entry)
+      entries;
+  in
+    emptyResult
+    // {
+      outputs = outputsFor context.instance checked;
+      resourceFragments = lib.optionalAttrs (checked != []) {
+        configuration = {
+          kind = controllerIdentity.name;
+          lifetime = "instance";
+          value.contributions = builtins.listToAttrs (
+            map
+            (entry: {
+              name = builtins.hashString "sha256" entry.requestName;
+              value = entry.request.parameters;
+            })
+            checked
+          );
+        };
+      };
+    };
+  compose = {
+    instance,
+    resources,
+    ...
+  }: let
+    resource = resources.configuration or (throw "K3s configuration resource is absent");
+    labels =
+      [resource.value.base.node_labels]
+      ++ map (entry: entry.node_labels) (builtins.attrValues resource.value.contributions);
+    mergedLabels = builtins.foldl' (result: current: result // current) {} labels;
+    labelCount = builtins.foldl' (count: current: count + builtins.length (builtins.attrNames current)) 0 labels;
+  in
+    if builtins.length (builtins.attrNames mergedLabels) != labelCount
+    then throw "K3s integration contributions contain a duplicate node label"
+    else {
+      requests = {};
+      outputs = {};
+      realizations.configuration = {
+        schema = "aos.k3s.configuration-realization/v1";
+        path = executionPath instance;
+      };
+    };
+in {
+  config.aos.abilities.implementations = {
+    ${controllerAlias} = {
+      provide = provideBase;
+      inherit compose;
+    };
+    ${contributionAlias}.provide = provideContribution;
+  };
+}

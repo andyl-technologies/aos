@@ -782,6 +782,9 @@ let
     "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_k3s-ability-provider/default.nix" = "target-independent-source";
     "kubernetes/_k3s-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-config/configuration-interface.nix" = "target-independent-source";
+    "kubernetes/_k3s-config/configuration-provider.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-config/object-provider.nix" = "linux-only-config-source";
     "kubernetes/_kubelet-config/module.nix" = "linux-only-config-source";
     "networking/_chrony-abilities/module.nix" = "linux-only-config-source";
     "networking/_envoy/module.nix" = "linux-only-config-source";
