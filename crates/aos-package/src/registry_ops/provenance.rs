@@ -676,6 +676,7 @@ pub(in crate::registry_ops) fn package_provenance_trusted_keys(
             key_id: entry.id.clone(),
             key: entry.key.clone(),
             retired_before_sequence: None,
+            package_contract_retired_before_sequence: None,
         });
     }
     for entry in &roster.revoked {
@@ -707,6 +708,7 @@ pub(in crate::registry_ops) fn package_provenance_trusted_keys(
             key_id: entry.id.clone(),
             key: key.clone(),
             retired_before_sequence: Some(retired_before_sequence),
+            package_contract_retired_before_sequence: entry.package_contract_before_sequence,
         });
     }
     Ok((registry_name, trusted))

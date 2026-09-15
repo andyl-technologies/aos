@@ -457,12 +457,54 @@ impl VerifiedAbilityPackage {
 /// Returns an error when metadata validation, exact canonical decoding,
 /// package association, dedicated provenance verification, artifact catalog
 /// equality, or live-store retention verification fails.
+#[cfg(test)]
 pub(crate) fn verify_ability_package(
     package_meta: &PackageMeta,
     manifest_bytes: &[u8],
     provenance_jsonl: &str,
     registry_name: &str,
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
+    retention_verifier: &impl AbilityRetentionVerifier,
+) -> Result<VerifiedAbilityPackage> {
+    verify_ability_package_inner(
+        package_meta,
+        manifest_bytes,
+        provenance_jsonl,
+        registry_name,
+        trusted_keys,
+        None,
+        retention_verifier,
+    )
+}
+
+/// Verifies one registry package at its authenticated publication sequence.
+pub(crate) fn verify_ability_package_at_sequence(
+    package_meta: &PackageMeta,
+    manifest_bytes: &[u8],
+    provenance_jsonl: &str,
+    registry_name: &str,
+    trusted_keys: &[crate::provenance::TrustedProvenanceKey],
+    publication_sequence: u64,
+    retention_verifier: &impl AbilityRetentionVerifier,
+) -> Result<VerifiedAbilityPackage> {
+    verify_ability_package_inner(
+        package_meta,
+        manifest_bytes,
+        provenance_jsonl,
+        registry_name,
+        trusted_keys,
+        Some(publication_sequence),
+        retention_verifier,
+    )
+}
+
+fn verify_ability_package_inner(
+    package_meta: &PackageMeta,
+    manifest_bytes: &[u8],
+    provenance_jsonl: &str,
+    registry_name: &str,
+    trusted_keys: &[crate::provenance::TrustedProvenanceKey],
+    publication_sequence: Option<u64>,
     retention_verifier: &impl AbilityRetentionVerifier,
 ) -> Result<VerifiedAbilityPackage> {
     let ability = package_meta
@@ -476,13 +518,14 @@ pub(crate) fn verify_ability_package(
         store_path: &package_meta.store_path,
         nar_hash: &package_meta.nar_hash,
     };
-    verify_pinned_ability_package(
+    verify_pinned_ability_package_inner(
         coordinate,
         ability,
         manifest_bytes,
         provenance_jsonl,
         registry_name,
         trusted_keys,
+        publication_sequence,
         retention_verifier,
     )
 }
@@ -497,6 +540,28 @@ pub(crate) fn verify_pinned_ability_package(
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
     retention_verifier: &impl AbilityRetentionVerifier,
 ) -> Result<VerifiedAbilityPackage> {
+    verify_pinned_ability_package_inner(
+        coordinate,
+        ability,
+        manifest_bytes,
+        provenance_jsonl,
+        registry_name,
+        trusted_keys,
+        None,
+        retention_verifier,
+    )
+}
+
+fn verify_pinned_ability_package_inner(
+    coordinate: AbilityPackageCoordinate<'_>,
+    ability: &AbilityPackageMeta,
+    manifest_bytes: &[u8],
+    provenance_jsonl: &str,
+    registry_name: &str,
+    trusted_keys: &[crate::provenance::TrustedProvenanceKey],
+    publication_sequence: Option<u64>,
+    retention_verifier: &impl AbilityRetentionVerifier,
+) -> Result<VerifiedAbilityPackage> {
     let BoundAbilityManifest {
         package,
         manifest_sha256,
@@ -509,6 +574,7 @@ pub(crate) fn verify_pinned_ability_package(
         provenance_jsonl,
         registry_name,
         trusted_keys,
+        publication_sequence,
     )?;
 
     let retention = VerifiedAbilityRetentionManifest {
@@ -936,6 +1002,7 @@ pub(crate) fn verify_ability_provenance(
         provenance_jsonl,
         registry_name,
         trusted_keys,
+        None,
     )
 }
 
@@ -945,17 +1012,22 @@ fn verify_ability_provenance_coordinate(
     provenance_jsonl: &str,
     registry_name: &str,
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
+    publication_sequence: Option<u64>,
 ) -> Result<String> {
     let (statement, key_id) =
         crate::provenance::verify_statement_dsse_jsonl(provenance_jsonl, trusted_keys)
             .context("verifying ability provenance DSSE")?;
-    if trusted_keys
+    if let Some(sequence) = publication_sequence {
+        crate::provenance::verify_key_allowed_for_package_contract_sequence(
+            trusted_keys,
+            &key_id,
+            sequence,
+        )?;
+    } else if trusted_keys
         .iter()
         .any(|trusted| trusted.key_id == key_id && trusted.retired_before_sequence.is_some())
     {
-        bail!(
-            "ability provenance key '{key_id}' is retired; dedicated ability statements require an active key"
-        );
+        bail!("ability provenance key '{key_id}' is retired without a publication sequence");
     }
     let expected = ability_provenance_statement(coordinate, ability, registry_name, &key_id)?;
     if statement != expected {
