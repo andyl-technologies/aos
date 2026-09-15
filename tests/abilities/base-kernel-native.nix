@@ -8,6 +8,9 @@
     name = "base-kernel";
     module = ../../modules/base/kernel.nix;
     packages = [pkgs.kmod pkgs.aos-kernel-tunable-provider];
+    extraModules = [
+      {aos.kernel.sysctl."vm.vfs_cache_pressure" = "50";}
+    ];
   };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
@@ -32,6 +35,9 @@ in
   ];
   assert requests."system:kernel-tunables".parameters.values."net.core.default_qdisc" == "fq";
   assert requests."system:kernel-tunables".parameters.values."net.ipv4.tcp_congestion_control" == "bbr";
+  assert requests."system:kernel-tunables".parameters.values."vm.swappiness" == "10";
+  assert requests."system:kernel-tunables".parameters.values."vm.vfs_cache_pressure" == "50";
+  assert requests."system:kernel-tunables".parameters.values."net.core.somaxconn" == "32768";
   assert config.systemd.services == {};
   assert !(config.environment.etc ? "modules-load.d/10-aos-kernel.conf");
   assert !(config.environment.etc ? "sysctl.d/10-aos-kernel.conf");
