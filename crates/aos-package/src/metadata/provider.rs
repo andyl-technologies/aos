@@ -7,6 +7,7 @@
 //! below the metadata stash is a cross-provider data channel.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -42,20 +43,62 @@ use super::provisioning::{
 use super::{FetchOptions, run_fetch};
 use crate::config_eval::provisioning_evaluator::{self, EvaluationParameters, MANIFEST_SLOT};
 
-const AUTHORIZATION_INTERFACE: &str = "aos.metadata.storage-provisioning-input-authorization";
-const DETECTION_INTERFACE: &str = "aos.metadata.storage-provisioning-platform-detection";
-const PLAN_INTERFACE: &str = "aos.metadata.storage-provisioning-plan";
-const NETWORK_SEED_INTERFACE: &str = "aos.metadata.storage-provisioning-network-seed";
-const EVALUATION_INTERFACE: &str = "aos.configuration.storage-provisioning-evaluation";
 const AUTHORIZATION_OBSERVATION: &str = "aos.metadata.provisioning-authorization-observation/v1";
 const DETECTION_OBSERVATION: &str = "aos.metadata.provisioning-platform-observation/v1";
 const PLAN_OBSERVATION: &str = "aos.metadata.provisioning-plan-observation/v1";
 const NETWORK_SEED_OBSERVATION: &str = "aos.metadata.provisioning-network-seed-observation/v1";
 const EVALUATION_OBSERVATION: &str = "aos.configuration.provisioning-evaluation-observation/v1";
 const PROVIDER_CONTEXT: &str = "aos.metadata.provisioning-provider-context/v1";
-const STORAGE_VIEW_INTERFACE: &str = "aos.storage.view";
 const STORAGE_VIEW_OBSERVATION: &str = "aos.ability.storage-view-observation/v1";
 const MAX_NETWORK_SEED_BYTES: usize = 32 * 1024;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum MetadataRole {
+    Authorization,
+    ConfigurationEvaluation,
+    NetworkSeed,
+    PlanObservation,
+    PlatformDetection,
+}
+
+impl MetadataRole {
+    fn from_entry_point(entry_point: &OsStr) -> Result<Self> {
+        let name = Path::new(entry_point)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .context("metadata handler entry point is not valid UTF-8")?;
+
+        match name {
+            "aos-storage-provisioning-input-authorizer" => Ok(Self::Authorization),
+            "aos-storage-provisioning-configuration-evaluator" => Ok(Self::ConfigurationEvaluation),
+            "aos-storage-provisioning-network-seeder" => Ok(Self::NetworkSeed),
+            "aos-storage-provisioning-plan-observer" => Ok(Self::PlanObservation),
+            "aos-storage-provisioning-platform-detector" => Ok(Self::PlatformDetection),
+            _ => bail!("entry point does not select a checked metadata handler role"),
+        }
+    }
+
+    const fn method(self) -> &'static str {
+        match self {
+            Self::Authorization => "authorize",
+            Self::ConfigurationEvaluation => "evaluate",
+            Self::NetworkSeed => "seed",
+            Self::PlanObservation => "observe",
+            Self::PlatformDetection => "detect",
+        }
+    }
+
+    fn initial_observation(self) -> Result<AbilityValue> {
+        match self {
+            Self::Authorization => authorization_observation(None, "ready"),
+            Self::ConfigurationEvaluation => evaluation_observation(None, "ready"),
+            Self::NetworkSeed => network_seed_observation(None, "ready"),
+            Self::PlanObservation => plan_observation(None, "ready"),
+            Self::PlatformDetection => detection_observation(None, "ready"),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -138,11 +181,11 @@ struct StorageViewObservation {
     state: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderContext {
-    schema: &'static str,
-    interface: String,
+    schema: String,
+    role: MetadataRole,
 }
 
 #[derive(Debug, Serialize)]
@@ -197,11 +240,18 @@ struct EvaluationObservation {
 /// Returns an error when the selected ABI, checked authority, metadata input,
 /// restricted evaluation, or provider result is invalid.
 pub async fn run_provider_from_process() -> Result<()> {
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    let entry_point = arguments
+        .first()
+        .context("metadata handler process has no entry point")?;
+    let role = MetadataRole::from_entry_point(entry_point)?;
     ensure!(
-        arguments.len() == 2 && arguments[0] == HANDLER_ABI_ARGUMENT,
+        arguments.len() == 3 && arguments[1] == HANDLER_ABI_ARGUMENT,
         "expected --aos-primitive-v1 and one purpose"
     );
+    let purpose = arguments[2]
+        .to_str()
+        .context("metadata handler purpose is not valid UTF-8")?;
 
     let mut input = Vec::new();
     io::stdin()
@@ -212,14 +262,14 @@ pub async fn run_provider_from_process() -> Result<()> {
         "protocol input exceeds the canonical document bound"
     );
 
-    let value = match arguments[1].as_str() {
+    let value = match purpose {
         "admit" => {
             let request = aos_contract::canonical::from_slice(&input, "metadata admission")?;
-            serde_json::to_value(admit(request)?)?
+            serde_json::to_value(admit(role, request)?)?
         }
         "effect" | "reconcile" | "cancel" => {
             let invocation = aos_contract::canonical::from_slice(&input, "metadata invocation")?;
-            serde_json::to_value(invoke(invocation, &arguments[1]).await?)?
+            serde_json::to_value(invoke(role, invocation, purpose).await?)?
         }
         purpose => bail!("unsupported metadata provider purpose {purpose:?}"),
     };
@@ -232,26 +282,18 @@ pub async fn run_provider_from_process() -> Result<()> {
     Ok(())
 }
 
-fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
+fn admit(role: MetadataRole, request: AdmissionRequest) -> Result<AdmissionResult> {
     ensure!(
         request.schema == ADMISSION_REQUEST_SCHEMA,
         "unsupported admission schema"
     );
     validate_admission_resource(&request)?;
     validate_resource_contexts(&request.resources)?;
-    let interface = request.method.interface.name.as_str();
-    validate_method(interface, request.method.method.as_str())?;
+    validate_method(role, request.method.method.as_str())?;
     let intent: ProvisioningIntent = decode(&request.resource_spec.value)?;
     validate_provisioning_intent(&intent)?;
 
-    let observation = match interface {
-        DETECTION_INTERFACE => detection_observation(None, "ready")?,
-        AUTHORIZATION_INTERFACE => authorization_observation(None, "ready")?,
-        PLAN_INTERFACE => plan_observation(None, "ready")?,
-        EVALUATION_INTERFACE => evaluation_observation(None, "ready")?,
-        NETWORK_SEED_INTERFACE => network_seed_observation(None, "ready")?,
-        _ => bail!("unsupported metadata provisioning interface"),
-    };
+    let observation = role.initial_observation()?;
     Ok(AdmissionResult {
         schema: ADMISSION_SCHEMA.into(),
         disposition: AdmissionDisposition::Admitted,
@@ -259,8 +301,8 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
         incarnation: Some(request.assignment.incarnation),
         observation,
         native_context: ability_value(serde_json::to_value(ProviderContext {
-            schema: PROVIDER_CONTEXT,
-            interface: interface.into(),
+            schema: PROVIDER_CONTEXT.into(),
+            role,
         })?)?,
         supported_purposes: SupportedPurposes::from_ordered(vec![
             InvocationPurpose::Effect,
@@ -271,7 +313,11 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     })
 }
 
-async fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
+async fn invoke(
+    role: MetadataRole,
+    invocation: Invocation,
+    purpose: &str,
+) -> Result<InvocationResult> {
     ensure!(
         invocation.schema == INVOCATION_SCHEMA && purpose == purpose_name(invocation.purpose),
         "invocation envelope differs from the selected ABI"
@@ -286,15 +332,31 @@ async fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResul
             == invocation.request.native_context_digest,
         "resource contexts differ from their authenticated digest"
     );
-    let interface = invocation.method.interface.name.as_str();
-    validate_method(interface, invocation.method.method.as_str())?;
+    validate_method(role, invocation.method.method.as_str())?;
+    validate_method(role, invocation.request.method.method.as_str())?;
     let target = exact_context(&invocation.request.target, &invocation.request.resources)?;
     let bound = validate_resource_context(target)?;
+    ensure!(
+        invocation.method.interface == invocation.request.method.interface
+            && invocation.method.interface == invocation.request.target.interface
+            && invocation
+                .request
+                .target
+                .operations
+                .binary_search(&invocation.method.method)
+                .is_ok(),
+        "invocation method differs from the checked target interface"
+    );
+    let provider_context: ProviderContext = decode(&bound.provider_context)?;
+    ensure!(
+        provider_context.schema == PROVIDER_CONTEXT && provider_context.role == role,
+        "metadata provider context differs from the selected handler role"
+    );
     let intent: ProvisioningIntent = decode(&bound.resource_spec.value)?;
     validate_provisioning_intent(&intent)?;
 
     if invocation.control.cancelled || invocation.purpose == InvocationPurpose::Cancel {
-        return cancelled_result(&invocation, interface);
+        return cancelled_result(&invocation, role);
     }
     ensure!(
         matches!(
@@ -304,8 +366,8 @@ async fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResul
         "metadata provisioning does not support compensation"
     );
 
-    match interface {
-        DETECTION_INTERFACE => {
+    match role {
+        MetadataRole::PlatformDetection => {
             let parameters: DetectionParameters = decode(&invocation.request.inputs)?;
             ensure!(
                 parameters.request == intent,
@@ -325,7 +387,7 @@ async fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResul
                 ])?,
             )
         }
-        AUTHORIZATION_INTERFACE => {
+        MetadataRole::Authorization => {
             let parameters: AuthorizationParameters = decode(&invocation.request.inputs)?;
             ensure!(
                 parameters.request == intent,
@@ -349,7 +411,7 @@ async fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResul
                 ])?,
             )
         }
-        PLAN_INTERFACE => {
+        MetadataRole::PlanObservation => {
             let parameters: PlanParameters = decode(&invocation.request.inputs)?;
             ensure!(
                 parameters.request == intent,
@@ -373,7 +435,7 @@ async fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResul
                 )])?,
             )
         }
-        EVALUATION_INTERFACE => {
+        MetadataRole::ConfigurationEvaluation => {
             let parameters: EvaluationParameters = decode(&invocation.request.inputs)?;
             ensure!(
                 parameters.request == intent,
@@ -391,7 +453,7 @@ async fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResul
                 )])?,
             )
         }
-        NETWORK_SEED_INTERFACE => {
+        MetadataRole::NetworkSeed => {
             let parameters: NetworkSeedParameters = decode(&invocation.request.inputs)?;
             ensure!(
                 parameters.request == intent,
@@ -409,7 +471,6 @@ async fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResul
                 BTreeMap::new(),
             )
         }
-        _ => bail!("unsupported metadata provisioning interface"),
     }
 }
 
@@ -625,10 +686,6 @@ fn seed_network(
     resources: &[ResourceContext],
 ) -> Result<Option<String>> {
     let view = exact_context(&parameters.storage_view, resources)?;
-    ensure!(
-        view.reference.interface.name.as_str() == STORAGE_VIEW_INTERFACE,
-        "network seed resource is not a storage view"
-    );
     ensure!(
         view.reference
             .operations
@@ -947,15 +1004,12 @@ fn observed_marker(lsblk: &Path) -> Result<(Option<ProvisioningSource>, Option<S
     Ok((Some(source), Some(uuid)))
 }
 
-fn validate_method(interface: &str, method: &str) -> Result<()> {
-    match (interface, method) {
-        (DETECTION_INTERFACE, "detect")
-        | (AUTHORIZATION_INTERFACE, "authorize")
-        | (PLAN_INTERFACE, "observe")
-        | (EVALUATION_INTERFACE, "evaluate")
-        | (NETWORK_SEED_INTERFACE, "seed") => Ok(()),
-        _ => bail!("unsupported metadata provisioning method"),
-    }
+fn validate_method(role: MetadataRole, method: &str) -> Result<()> {
+    ensure!(
+        method == role.method(),
+        "method differs from the selected metadata handler role"
+    );
+    Ok(())
 }
 
 fn exact_context<'a>(
@@ -1039,15 +1093,8 @@ fn completed_result(
     })
 }
 
-fn cancelled_result(invocation: &Invocation, interface: &str) -> Result<InvocationResult> {
-    let evidence = match interface {
-        DETECTION_INTERFACE => detection_observation(None, "ready")?,
-        AUTHORIZATION_INTERFACE => authorization_observation(None, "ready")?,
-        PLAN_INTERFACE => plan_observation(None, "ready")?,
-        EVALUATION_INTERFACE => evaluation_observation(None, "ready")?,
-        NETWORK_SEED_INTERFACE => network_seed_observation(None, "ready")?,
-        _ => bail!("unsupported metadata provisioning interface"),
-    };
+fn cancelled_result(invocation: &Invocation, role: MetadataRole) -> Result<InvocationResult> {
+    let evidence = role.initial_observation()?;
     Ok(InvocationResult {
         schema: RESULT_SCHEMA.into(),
         disposition: InvocationDisposition::RejectedBeforeEffect,
@@ -1092,9 +1139,52 @@ fn purpose_name(purpose: InvocationPurpose) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::os::unix::fs::{MetadataExt as _, symlink};
 
     use super::*;
+
+    #[test]
+    fn package_entry_points_select_closed_metadata_roles() {
+        let cases = [
+            (
+                "aos-storage-provisioning-platform-detector",
+                MetadataRole::PlatformDetection,
+                "detect",
+            ),
+            (
+                "aos-storage-provisioning-input-authorizer",
+                MetadataRole::Authorization,
+                "authorize",
+            ),
+            (
+                "aos-storage-provisioning-plan-observer",
+                MetadataRole::PlanObservation,
+                "observe",
+            ),
+            (
+                "aos-storage-provisioning-configuration-evaluator",
+                MetadataRole::ConfigurationEvaluation,
+                "evaluate",
+            ),
+            (
+                "aos-storage-provisioning-network-seeder",
+                MetadataRole::NetworkSeed,
+                "seed",
+            ),
+        ];
+
+        for (entry_point, expected, method) in cases {
+            let role = MetadataRole::from_entry_point(OsStr::new(entry_point))
+                .expect("package role entry point parses");
+            assert_eq!(role, expected);
+            validate_method(role, method).expect("role method matches");
+        }
+        assert!(
+            MetadataRole::from_entry_point(OsStr::new("aos-metadata-provisioning-provider"))
+                .is_err()
+        );
+    }
 
     #[test]
     fn network_seed_is_written_atomically_with_fixed_mode() {

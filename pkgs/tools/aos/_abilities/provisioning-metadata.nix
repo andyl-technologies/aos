@@ -377,9 +377,9 @@
     aggregation = aggregation seedAlias;
     guarantees = [];
   };
-  handler = arguments: result: {
+  handler = role: arguments: result: {
     artifact = runtimeArtifact;
-    entryPoint = "libexec/aos-metadata-provisioning-provider";
+    entryPoint = "libexec/aos-${role}";
     inherit arguments result;
   };
 in {
@@ -409,7 +409,7 @@ in {
         );
         methods = ["detect"];
         guarantees = [];
-        handlerDescriptor = handler detectionParameters detectionObservation;
+        handlerDescriptor = handler detectionAlias detectionParameters detectionObservation;
         providerModule = null;
         desiredType = null;
         requiredFeatures = [];
@@ -422,7 +422,7 @@ in {
         );
         methods = ["authorize"];
         guarantees = [];
-        handlerDescriptor = handler authorizationParameters authorizationObservation;
+        handlerDescriptor = handler authorizationAlias authorizationParameters authorizationObservation;
         providerModule = null;
         desiredType = null;
         requiredFeatures = [];
@@ -435,7 +435,7 @@ in {
         );
         methods = ["observe"];
         guarantees = [];
-        handlerDescriptor = handler observerParameters planObservation;
+        handlerDescriptor = handler observerAlias observerParameters planObservation;
         providerModule = null;
         desiredType = null;
         requiredFeatures = [];
@@ -448,7 +448,7 @@ in {
         );
         methods = ["evaluate"];
         guarantees = [];
-        handlerDescriptor = handler evaluationParameters evaluationObservation;
+        handlerDescriptor = handler evaluatorAlias evaluationParameters evaluationObservation;
         providerModule = null;
         desiredType = null;
         requiredFeatures = [];
@@ -461,7 +461,7 @@ in {
         );
         methods = ["seed"];
         guarantees = [];
-        handlerDescriptor = handler seedParameters seedObservation;
+        handlerDescriptor = handler seedAlias seedParameters seedObservation;
         providerModule = null;
         desiredType = null;
         requiredFeatures = [];
