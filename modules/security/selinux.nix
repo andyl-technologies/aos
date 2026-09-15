@@ -30,14 +30,14 @@
   # predates the privileged sandbox-setup operations modern systemd performs
   # on behalf of confined units, so the policy denies them even though both
   # the classes and permissions are *defined* (so handle-unknown=allow cannot
-  # help). Two such operations block AOS exposed/confined package units:
+  # help). Two such operations block AOS confined service units:
   #
   #   * `user_namespace { create }` — systemd opens a user namespace when a
-  #     unit sets PrivateUsers=identity (every confined `expose` unit does;
-  #     see pkgs/build-support/_expose-renderer.nix). Without this the unit
-  #     dies at "Failed to set up user namespacing" / status=217/USER before
-  #     it can transition into its generated domain, and the smoke check sees
-  #     it still in system_u:system_r:kernel_t.
+  #     native service declaration requests identity user-namespace ownership.
+  #     The systemd service provider renders that request as
+  #     PrivateUsers=identity. Without this grant the unit dies at "Failed to
+  #     set up user namespacing" / status=217/USER before it can enter its
+  #     declared SELinux domain.
   #   * `filesystem { associate }` for the unlabeled root associating with a
   #     `tmpfs_t` superblock — systemd mounts the per-unit
   #     TemporaryFileSystem=/tmp:/var/tmp and PrivateTmp tmpfs instances while
