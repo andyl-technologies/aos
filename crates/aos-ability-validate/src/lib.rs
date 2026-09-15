@@ -48,9 +48,10 @@ pub use package_projection::{
 };
 pub use schema::{SchemaPath, validate_value};
 pub use static_contract::{
-    CheckedStaticAbilityContract, StaticAbilityArtifactClass, StaticAbilityContractExpectation,
+    CheckedStaticAbilityContract, CheckedStaticAbilityPackage, CheckedStaticPackageManifest,
+    StaticAbilityArtifactClass, StaticAbilityContractExpectation,
     StaticAbilityContractValidationError, StaticAbilityExecutionStage, StaticAbilityPlatform,
-    validate_static_ability_artifacts,
+    validate_static_ability_artifacts, validate_static_ability_artifacts_at_store_root,
 };
 pub use transition_authority::{
     CheckedTransitionAuthority, TransitionAuthorityError, TransitionAuthorityInputs,
