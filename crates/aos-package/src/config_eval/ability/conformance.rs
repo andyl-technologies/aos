@@ -9,8 +9,8 @@ use std::path::Path;
 use anyhow::{Context, Result, ensure};
 use aos_ability_model::value::ValueExpression;
 use aos_ability_model::{
-    AbilityValue, ArtifactReference, DiagnosticCode, InterfaceKey, InterfaceName, LocalKey,
-    ModuleLocator, ProviderImplementation, RelativePath, ValueSchema,
+    AbilityValue, ArtifactReference, DiagnosticCode, InterfaceKey, InterfaceName, ModuleLocator,
+    ProviderImplementation, RelativePath, ValueSchema,
 };
 use aos_ability_validate::validate_value;
 use aos_contract::Sha256Digest;
@@ -238,10 +238,6 @@ fn implementation_at(store_path: &str, nar_hash: Sha256Digest) -> ProviderImplem
         owns_resource_kinds: Vec::new(),
         state_format: None,
     }
-}
-
-fn key(value: &str) -> LocalKey {
-    LocalKey::new(value).expect("valid static conformance key")
 }
 
 fn digest(digit: char) -> Sha256Digest {
