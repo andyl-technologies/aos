@@ -10,6 +10,22 @@
   serviceTypes = serviceManagement.types;
   inherit (lib.abilities) resultOf;
 
+  ingress = serviceManagement.forProducer {
+    consumerInstance = "test-static-cache-server";
+    key = "ingress";
+    interface = lib.abilities.interfaces.networkPolicy.interfaces.ingress;
+    methods = ["observe"];
+    parameters = {
+      endpoints = [
+        {
+          transport = "tcp";
+          port = cfg.port;
+        }
+      ];
+      prerequisites = [];
+    };
+  };
+
   content = serviceManagement.forProducer {
     consumerInstance = "test-static-cache-server";
     key = "content";
@@ -74,9 +90,12 @@
         host_paths = [];
         permit_core_dumps = false;
       };
+      dependencies.prerequisites = [
+        (resultOf "ingress" "readiness-resource")
+      ];
     };
   };
-  fragments = [content service];
+  fragments = [content ingress service];
 in {
   options.test-static-cache-server = {
     enable = lib.mkOption {
