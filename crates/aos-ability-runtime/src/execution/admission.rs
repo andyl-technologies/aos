@@ -8,7 +8,6 @@ use aos_ability_model::{
     TransactionId, compare_resource_ids,
 };
 use aos_ability_validate::{CheckedEffectPlan, InvocationAuthorizationError};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::adapter::{
@@ -16,166 +15,14 @@ use crate::adapter::{
     ResourceAdmissionEvidence, ResourceHandle, RuntimeControl, TrustedAdapter,
     TrustedResourceCatalog,
 };
+use crate::execution::invocation;
 use crate::execution::{
-    Boundary, CompensationInterventionReason, CompensationState, ExecutionBoundaryControl,
-    ExecutionBoundaryObservation, ExecutionBoundaryObserver, ExecutionEventKind,
-    ExecutionTransaction, OperationHistory, RecoveryAction, TransactionError,
+    AuthorityCheckBoundary, Boundary, CompensationInterventionReason, CompensationState,
+    ExecutionBoundaryControl, ExecutionBoundaryObservation, ExecutionBoundaryObserver,
+    ExecutionEventKind, ExecutionTransaction, OperationHistory, RecoveryAction,
+    RuntimeAuthorityRole, TransactionError, TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
     transaction::LiveReservationGuard,
 };
-
-/// Names one independently revocable authority required by a runtime invocation.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RuntimeAuthorityRole {
-    /// The consumer identity, exact binding, and caller grant remain authorized.
-    CallerBindingGrant,
-    /// The selected provider method and exact implementation remain authorized.
-    ProviderMethodImplementation,
-    /// The promised enforcement and native platform guarantees remain available.
-    EnforcementPlatformGuarantee,
-    /// The selected provider assignment and resource incarnations remain current.
-    AssignmentIncarnation,
-    /// The protected current-authority publication itself remains available.
-    CurrentAuthorityPublication,
-}
-
-/// Names the runtime boundary at which current authority was checked.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AuthorityCheckBoundary {
-    /// Current invocation authority is checked before acquiring resources.
-    BeforeResourceAcquisition,
-    /// Current assignments and guarantees are checked under acquired resources.
-    AfterResourceAcquisition,
-    /// All authority is checked under a fence immediately before adapter dispatch.
-    FinalDispatch,
-}
-
-/// Associates a current-policy failure with the authority that was revoked.
-#[derive(Debug, Error)]
-#[error("{role:?} authority rejected the invocation: {source}")]
-pub struct AuthorityRejection<Error> {
-    role: RuntimeAuthorityRole,
-    #[source]
-    source: Error,
-}
-
-impl<Error> AuthorityRejection<Error> {
-    /// Constructs a role-specific current-authority rejection.
-    #[must_use]
-    pub const fn new(role: RuntimeAuthorityRole, source: Error) -> Self {
-        Self { role, source }
-    }
-
-    /// Returns the independently revocable authority that rejected the invocation.
-    #[must_use]
-    pub const fn role(&self) -> RuntimeAuthorityRole {
-        self.role
-    }
-
-    /// Returns the policy-specific rejection detail.
-    #[must_use]
-    pub const fn source(&self) -> &Error {
-        &self.source
-    }
-
-    pub(crate) fn into_parts(self) -> (RuntimeAuthorityRole, Error) {
-        (self.role, self.source)
-    }
-}
-
-/// Revalidates an exact invocation against one current-authority snapshot.
-pub trait TrustedAuthoritySnapshot {
-    /// Structured current-policy failure type.
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Authorizes one independently revocable invocation role.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the snapshot no longer authorizes the role for
-    /// the exact binding, method, implementation, or promised guarantees.
-    fn authorize_role(
-        &mut self,
-        plan: &CheckedEffectPlan,
-        binding: &Binding,
-        operation: &Operation,
-        method: &MethodReference,
-        purpose: InvocationPurpose,
-        role: RuntimeAuthorityRole,
-    ) -> Result<(), Self::Error>;
-
-    /// Authorizes current assignments and observations under held reservations.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when current policy no longer accepts the exact
-    /// provider assignments, revisions, or precondition observations.
-    fn authorize_resources(
-        &mut self,
-        plan: &CheckedEffectPlan,
-        binding: &Binding,
-        operation: &Operation,
-        expected_provider: Option<&aos_ability_model::ProviderAssignment>,
-        resources: &[ResourceAdmissionEvidence],
-    ) -> Result<(), Self::Error>;
-}
-
-/// Revalidates current policy and provider assignment at every admission.
-pub trait TrustedAdmissionPolicy: TrustedAuthoritySnapshot {
-    /// Holds one current authority generation stable through adapter invocation.
-    ///
-    /// The fence linearizes revocation either before the returned snapshot is
-    /// checked or after the adapter call using it returns. Implementations may
-    /// hold an existing protected policy lock or use a monotonic provider fence;
-    /// this interface does not create a resource broker or imply handle revocation.
-    type DispatchFence: TrustedAuthoritySnapshot<Error = Self::Error>;
-
-    /// Authorizes every independently revocable role for one invocation.
-    ///
-    /// This convenience method preserves the complete admission check for
-    /// callers that do not need role-specific qualification observations.
-    /// Runtime dispatch uses [`TrustedAuthoritySnapshot::authorize_role`]
-    /// directly so a rejection retains its exact authority role.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first current-authority rejection in deterministic role order.
-    fn authorize(
-        &mut self,
-        plan: &CheckedEffectPlan,
-        binding: &Binding,
-        operation: &Operation,
-        method: &MethodReference,
-        purpose: InvocationPurpose,
-    ) -> Result<(), Self::Error> {
-        for role in [
-            RuntimeAuthorityRole::CallerBindingGrant,
-            RuntimeAuthorityRole::ProviderMethodImplementation,
-            RuntimeAuthorityRole::EnforcementPlatformGuarantee,
-            RuntimeAuthorityRole::AssignmentIncarnation,
-        ] {
-            self.authorize_role(plan, binding, operation, method, purpose, role)?;
-        }
-        Ok(())
-    }
-
-    /// Acquires a current-authority snapshot whose validity is held through dispatch.
-    ///
-    /// # Errors
-    ///
-    /// Returns a role-specific error when the fence cannot be acquired under
-    /// current authority. The runtime performs all role and resource checks on
-    /// the returned snapshot before invoking the adapter.
-    fn acquire_dispatch_fence(
-        &mut self,
-        plan: &CheckedEffectPlan,
-        binding: &Binding,
-        operation: &Operation,
-        method: &MethodReference,
-        purpose: InvocationPurpose,
-    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>>;
-}
 
 /// Reports why fresh operation admission did not complete.
 #[derive(Debug, Error)]
@@ -630,7 +477,7 @@ impl<'plan> ExecutionTransaction<'plan> {
         )
         .map_err(failure)?;
         if !admission.release_only {
-            let method = invocation_method(admission.operation, admission.invocation_purpose)
+            let method = invocation::method(admission.operation, admission.invocation_purpose)
                 .ok_or_else(|| failure(AdmissionError::StateDoesNotPermitAdmission))?;
             if let Err(error) = check_invocation(
                 plan,
@@ -897,7 +744,8 @@ impl<'plan> ExecutionTransaction<'plan> {
             return Err(cleanup_failure(error, resources, catalog, live_reservation));
         }
         if !admission.release_only {
-            let Some(method) = invocation_method(admission.operation, admission.invocation_purpose)
+            let Some(method) =
+                invocation::method(admission.operation, admission.invocation_purpose)
             else {
                 return Err(cleanup_failure(
                     AdmissionError::StateDoesNotPermitAdmission,
@@ -1322,24 +1170,6 @@ where
         })
 }
 
-fn effect_method(operation: &Operation) -> MethodReference {
-    MethodReference {
-        interface: operation.interface.clone(),
-        method: operation.method.clone(),
-    }
-}
-
-fn invocation_method(operation: &Operation, purpose: InvocationPurpose) -> Option<MethodReference> {
-    match purpose {
-        InvocationPurpose::Effect => Some(effect_method(operation)),
-        InvocationPurpose::Reconcile | InvocationPurpose::ReconcileCompensation => {
-            operation.recovery.reconcile.clone()
-        }
-        InvocationPurpose::Cancel => operation.recovery.cancel.clone(),
-        InvocationPurpose::Compensate => operation.recovery.compensate.clone(),
-    }
-}
-
 struct AdmissionTimer<'clock, Clock> {
     clock: &'clock Clock,
     started_at: u64,
@@ -1607,130 +1437,5 @@ fn transaction_failure<H>(error: TransactionError) -> AdmissionFailure<H> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::io;
-
-    use aos_ability_model::{
-        AccessMode, EnvironmentId, ExecutionStage, InstanceId, LocalKey, ResourceAccess,
-    };
-
-    use super::*;
-    use crate::adapter::CatalogReservation;
-
-    #[test]
-    fn incomplete_acquisition_releases_in_reverse_and_retains_failures()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mut resources = vec![handle("alpha")?, handle("beta")?, handle("gamma")?];
-        let mut errors = Vec::new();
-        let mut catalog = TestCatalog::failing("beta");
-
-        release_incomplete(&mut resources, &mut errors, &mut catalog);
-
-        assert_eq!(catalog.release_order, ["gamma", "beta", "alpha"]);
-        assert_eq!(errors.len(), 1);
-        assert_eq!(
-            resources
-                .iter()
-                .map(|resource| resource.resource().key.as_str())
-                .collect::<Vec<_>>(),
-            ["beta"]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn retry_cleanup_preserves_the_token_until_release_succeeds()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let failure = AdmissionFailure {
-            state: Box::new(AdmissionFailureState {
-                error: AdmissionError::PlanNotExecutable,
-                retained_resources: vec![handle("alpha")?],
-                cleanup_errors: Vec::new(),
-                live_reservation: None,
-            }),
-        };
-        let mut catalog = TestCatalog::failing("alpha");
-
-        let failure = failure
-            .retry_cleanup(&mut catalog)
-            .expect_err("the failed release must retain its ownership token");
-        assert_eq!(failure.retained_resources().count(), 1);
-
-        catalog.fail_resource = None;
-        failure.retry_cleanup(&mut catalog).map_err(|failure| {
-            io::Error::other(format!("cleanup remained failed: {}", failure.error()))
-        })?;
-        Ok(())
-    }
-
-    fn handle(key: &str) -> Result<ResourceHandle<String>, Box<dyn std::error::Error>> {
-        let resource = resource(key)?;
-        let observation = aos_ability_model::AbilityValue::new(serde_json::json!({}))?;
-        Ok(ResourceHandle::new(
-            resource.clone(),
-            ResourceAccess {
-                resource: resource.clone(),
-                mode: AccessMode::ExclusiveWrite,
-            },
-            CatalogReservation::new(
-                key.to_string(),
-                ResourceAdmissionEvidence::new(resource, None, None, observation),
-            ),
-        ))
-    }
-
-    fn resource(key: &str) -> Result<ResourceId, Box<dyn std::error::Error>> {
-        Ok(ResourceId {
-            provider: InstanceId {
-                environment: EnvironmentId {
-                    authority: LocalKey::new("test-authority")?,
-                    key: LocalKey::new("test-environment")?,
-                    stage: ExecutionStage::Host,
-                },
-                key: LocalKey::new("provider")?,
-            },
-            key: LocalKey::new(key)?,
-        })
-    }
-
-    struct TestCatalog {
-        fail_resource: Option<String>,
-        release_order: Vec<String>,
-    }
-
-    impl TestCatalog {
-        fn failing(resource: &str) -> Self {
-            Self {
-                fail_resource: Some(resource.to_string()),
-                release_order: Vec::new(),
-            }
-        }
-    }
-
-    impl TrustedResourceCatalog for TestCatalog {
-        type Handle = String;
-        type Error = io::Error;
-
-        fn acquire(
-            &mut self,
-            _context: ReservationContext<'_>,
-            _operation: &Operation,
-            _access: &ResourceAccess,
-        ) -> Result<CatalogReservation<Self::Handle>, Self::Error> {
-            Err(io::Error::other("acquire is not used by this test"))
-        }
-
-        fn release(
-            &mut self,
-            resource: &ResourceId,
-            _handle: &mut Self::Handle,
-        ) -> Result<(), Self::Error> {
-            self.release_order.push(resource.key.as_str().to_string());
-            if self.fail_resource.as_deref() == Some(resource.key.as_str()) {
-                Err(io::Error::other("injected release failure"))
-            } else {
-                Ok(())
-            }
-        }
-    }
-}
+#[path = "admission/tests.rs"]
+mod tests;

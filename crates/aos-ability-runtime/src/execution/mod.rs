@@ -1,9 +1,11 @@
 //! Durable finite operation execution, scheduling, and recovery state.
 
 mod admission;
+mod authority;
 mod controller;
 mod event;
 mod inputs;
+mod invocation;
 mod lifecycle;
 mod machine;
 mod scheduler;
@@ -14,9 +16,10 @@ mod transaction;
 #[cfg(test)]
 mod tests;
 
-pub use admission::{
-    AdmissionError, AdmissionFailure, AdmissionResult, AdmittedOperation, AuthorityCheckBoundary,
-    AuthorityRejection, RuntimeAuthorityRole, TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
+pub use admission::{AdmissionError, AdmissionFailure, AdmissionResult, AdmittedOperation};
+pub use authority::{
+    AuthorityCheckBoundary, AuthorityRejection, RuntimeAuthorityRole, TrustedAdmissionPolicy,
+    TrustedAuthoritySnapshot,
 };
 pub use event::{
     CancellationResult, CompensationInterventionReason, DispatchAbortReason,
