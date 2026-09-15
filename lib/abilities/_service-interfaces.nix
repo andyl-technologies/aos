@@ -989,6 +989,10 @@
         output "planning" "instance"
         "Returns the exact destination selected for this filesystem entry before materialization."
         serviceTypes.executionPath;
+      interfaceOutputs.entry-resource =
+        output "planning" "instance"
+        "References the exact filesystem entry selected for preparation ordering."
+        serviceTypes.resourceReference;
     };
     hostPathView = producer {
       alias = "host-path-view";

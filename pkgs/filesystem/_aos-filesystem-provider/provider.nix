@@ -2,11 +2,15 @@
 {lib, ...}: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
-  emptyResult = {
+  emptyProvision = {
     requests = {};
     outputs = {};
     resourceFragments = {};
-    conditionalRequirements = [];
+  };
+  emptyComposition = {
+    requests = {};
+    outputs = {};
+    realizations = {};
   };
   bindingFor = bindings: requestName: let
     matches = builtins.filter
@@ -19,6 +23,11 @@
   resourceIdFor = instance: binding: {
     provider = instance.id;
     key = binding.slot;
+  };
+  referenceFor = interface: lifetime: resource: {
+    interface = interface.identity;
+    inherit resource lifetime;
+    operations = ["observe"];
   };
   defaultStoragePath = persistent: resource: let
     root =
@@ -35,7 +44,7 @@
     else if entry.source.kind == "artifact-file"
     then "${entry.source.reference.artifact.store_path}/${entry.source.reference.path}"
     else entry.source.path;
-  provide = interface: lifetime: plannedPath: {
+  provide = interface: lifetime: plannedPath: publishedOutput: {
     instance,
     requests,
     bindings,
@@ -49,11 +58,17 @@
       inherit requestName request binding resource;
     }) (builtins.attrNames requests);
   in
-    emptyResult
+    emptyProvision
     // {
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
-          value.planned-path = plannedPath entry.resource entry.request.parameters;
+          value =
+            {
+              planned-path = plannedPath entry.resource entry.request.parameters;
+            }
+            // lib.optionalAttrs (publishedOutput != null) {
+              ${publishedOutput} = referenceFor interface lifetime entry.resource;
+            };
         })
         entries);
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {
@@ -67,7 +82,7 @@
         entries);
     };
   storageCompose = persistent: {resources, ...}:
-    emptyResult
+    emptyComposition
     // {
       realizations = builtins.mapAttrs (_: resource: {
           schema = "aos.filesystem.storage-realization/v1";
@@ -88,7 +103,7 @@
     bindings,
     ...
   }:
-    emptyResult
+    emptyProvision
     // {
       outputs =
         builtins.mapAttrs (_: request: {
@@ -108,7 +123,7 @@
         }) (builtins.attrNames requests));
     };
   storageViewCompose = {resources, ...}:
-    emptyResult
+    emptyComposition
     // {
       realizations = builtins.mapAttrs (_: resource: {
           schema = "aos.filesystem.storage-view-realization/v1";
@@ -119,7 +134,7 @@
         resources;
     };
   entryCompose = {resources, ...}:
-    emptyResult
+    emptyComposition
     // {
       realizations = builtins.mapAttrs (_: resource: {
           schema = "aos.filesystem.entry-realization/v1";
@@ -131,11 +146,11 @@
 in {
   config.aos.abilities.implementations = {
     storage-allocation = {
-      provide = provide interfaces.storageAllocation "instance" (storagePath false);
+      provide = provide interfaces.storageAllocation "instance" (storagePath false) null;
       compose = storageCompose false;
     };
     persistent-storage-allocation = {
-      provide = provide interfaces.persistentStorageAllocation "persistent" (storagePath true);
+      provide = provide interfaces.persistentStorageAllocation "persistent" (storagePath true) null;
       compose = storageCompose true;
     };
     storage-view = {
@@ -143,7 +158,7 @@ in {
       compose = storageViewCompose;
     };
     filesystem-entry = {
-      provide = provide interfaces.filesystemEntry "instance" (_: request: request.destination);
+      provide = provide interfaces.filesystemEntry "instance" (_: request: request.destination) "entry-resource";
       compose = entryCompose;
     };
   };

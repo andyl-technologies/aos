@@ -1169,6 +1169,10 @@ in
   assert succeedsAs serviceTypes.storageAllocation ownedStorageAllocation;
   assert !succeedsAs serviceTypes.storageAllocation invalidOwnedStorageAllocation;
   assert interfaces.filesystemEntry.document.interface.outputs.planned-path.phase == "planning";
+  assert interfaces.filesystemEntry.document.interface.outputs.entry-resource.phase == "planning";
+  assert interfaces.filesystemEntry.document.interface.outputs.entry-resource.visibility == "protected";
+  assert interfaces.filesystemEntry.document.interface.outputs.entry-resource.lifetime == "instance";
+  assert interfaces.filesystemEntry.document.interface.outputs.entry-resource.schema == resourceReferenceSchema;
   assert interfaces.filesystemEntry.document.interface.methods.materialize.outputs.execution-path.phase == "runtime";
   assert interfaces.filesystemEntry.document.interface.methods.release.semantics.stops_provider;
   assert succeedsAs serviceTypes.storageAllocation placedStorageAllocation;
