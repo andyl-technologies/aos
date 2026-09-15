@@ -19,8 +19,8 @@ use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 use serde_json::{Map, Value};
 
 use crate::materialize::{
-    ServicePaths, materialize_service, remove_service, service_is_absent, service_matches,
-    service_paths_for,
+    ServicePaths, materialize_service, publish_service_consumer, remove_service,
+    service_consumer_matches, service_is_absent, service_matches, service_paths_for,
 };
 use crate::model::{
     PROVIDER_CONTEXT_SCHEMA, ProviderContext, SERVICE_EFFECTS_INTERFACE_NAME,
@@ -95,8 +95,12 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
         schema: ADMISSION_SCHEMA.to_string(),
         disposition: AdmissionDisposition::Admitted,
         revision: if inspection.files_match && inspection.manager_is_current {
-            AdmissionRevision::Present {
-                revision: request.resource_spec.revision,
+            if inspection.consumer_is_current {
+                AdmissionRevision::Present {
+                    revision: request.resource_spec.revision,
+                }
+            } else {
+                AdmissionRevision::Unknown
             }
         } else {
             AdmissionRevision::Absent
@@ -332,7 +336,7 @@ async fn apply_method(
         Err(error) => return Err(error.into()),
     };
     if method == "materialize" {
-        return Ok(());
+        return publish_service_consumer(paths, resource, revision, rendered);
     }
     if !realization.enabled && method != "stop" {
         if manager.is_active_exact(unit_name, &identity).await? {
@@ -341,7 +345,7 @@ async fn apply_method(
                 bail!("systemd stop job completed as {}", outcome.result.label());
             }
         }
-        return Ok(());
+        return publish_service_consumer(paths, resource, revision, rendered);
     }
     let outcome = match method {
         "start" => {
@@ -363,7 +367,7 @@ async fn apply_method(
     if !service_matches(paths, rendered, resource, revision)? && method != "stop" {
         bail!("systemd service bytes changed during the manager operation");
     }
-    Ok(())
+    publish_service_consumer(paths, resource, revision, rendered)
 }
 
 #[derive(Clone, Copy)]
@@ -378,6 +382,7 @@ struct Inspection {
     unit_identity: Option<String>,
     files_match: bool,
     manager_is_current: bool,
+    consumer_is_current: bool,
     complete: bool,
 }
 
@@ -414,6 +419,7 @@ async fn inspect(
     let files_after = service_matches(paths, rendered, resource, revision)?;
     let absent_after = service_is_absent(paths)?;
     let files_match = files_before && files_after;
+    let consumer_is_current = service_consumer_matches(paths, resource, revision, rendered)?;
     let files_absent = absent_before && absent_after;
     let active = active_state
         .as_ref()
@@ -425,7 +431,9 @@ async fn inspect(
         Goal::Absent => unit_identity.is_none(),
     };
     let complete = match goal {
-        Goal::Desired | Goal::Stopped => files_match && manager_is_current && state_matches,
+        Goal::Desired | Goal::Stopped => {
+            files_match && manager_is_current && consumer_is_current && state_matches
+        }
         Goal::Absent => files_absent && state_matches,
     };
     let mut discrepancies = Vec::new();
@@ -442,6 +450,9 @@ async fn inspect(
     if !state_matches {
         discrepancies.push("state".to_string());
     }
+    if !consumer_is_current && !matches!(goal, Goal::Absent) {
+        discrepancies.push("consumer-state".to_string());
+    }
     discrepancies.sort();
     let lifecycle_state = matches!(
         facet.interface.name.as_str(),
@@ -450,8 +461,10 @@ async fn inspect(
     let state = if lifecycle_state {
         if failed {
             "failed"
-        } else if active {
+        } else if active && consumer_is_current {
             "ready"
+        } else if active {
+            "unknown"
         } else if realization.enabled && matches!(goal, Goal::Desired) {
             "inactive"
         } else {
@@ -473,6 +486,7 @@ async fn inspect(
         unit_identity,
         files_match,
         manager_is_current,
+        consumer_is_current,
         complete,
     })
 }

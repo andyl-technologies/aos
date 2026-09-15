@@ -14,6 +14,7 @@ use crate::render::{DROP_IN_FILE, RenderedService, RenderedUnit};
 
 const RECEIPT_SCHEMA: &str = "aos.systemd.packaged-unit-revision/v1";
 const SERVICE_RECEIPT_SCHEMA: &str = "aos.systemd.service-revision/v1";
+const SERVICE_CONSUMER_RECEIPT_SCHEMA: &str = "aos.systemd.service-consumer-revision/v1";
 
 pub(crate) struct UnitPaths {
     pub(crate) unit: PathBuf,
@@ -25,6 +26,7 @@ pub(crate) struct ServicePaths {
     pub(crate) units: Vec<PathBuf>,
     pub(crate) links: Vec<PathBuf>,
     pub(crate) receipt: PathBuf,
+    pub(crate) consumer_receipt: PathBuf,
 }
 
 pub(crate) fn paths_for(root: &Path, unit_name: &str, revision: RevisionId) -> UnitPaths {
@@ -94,6 +96,42 @@ pub(crate) fn service_paths_for(
             .join(primary_unit)
             .join("sha256")
             .join(revision.0.hex()),
+        consumer_receipt: root
+            .join("aos/ability-consumers")
+            .join(primary_unit)
+            .join("sha256")
+            .join(revision.0.hex()),
+    }
+}
+
+pub(crate) fn publish_service_consumer(
+    paths: &ServicePaths,
+    resource: &ResourceId,
+    revision: RevisionId,
+    rendered: &RenderedService,
+) -> Result<()> {
+    let receipt_directory = paths
+        .consumer_receipt
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("service consumer receipt has no parent"))?;
+    ensure_directory(receipt_directory)?;
+    publish_file(
+        &paths.consumer_receipt,
+        &service_consumer_receipt_bytes(resource, revision, rendered)?,
+    )
+}
+
+pub(crate) fn service_consumer_matches(
+    paths: &ServicePaths,
+    resource: &ResourceId,
+    revision: RevisionId,
+    rendered: &RenderedService,
+) -> Result<bool> {
+    let expected = service_consumer_receipt_bytes(resource, revision, rendered)?;
+    match fs::read(&paths.consumer_receipt) {
+        Ok(bytes) => Ok(bytes == expected),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).context("reading service consumer receipt"),
     }
 }
 
@@ -194,6 +232,9 @@ pub(crate) fn remove_service(
     if presence.receipt {
         remove_managed_path(&paths.receipt)?;
     }
+    if presence.consumer_receipt {
+        remove_managed_path(&paths.consumer_receipt)?;
+    }
     Ok(())
 }
 
@@ -202,7 +243,7 @@ pub(crate) fn service_is_absent(paths: &ServicePaths) -> Result<bool> {
         .units
         .iter()
         .chain(&paths.links)
-        .chain(std::iter::once(&paths.receipt))
+        .chain([&paths.receipt, &paths.consumer_receipt])
     {
         match fs::symlink_metadata(path) {
             Ok(_) => return Ok(false),
@@ -283,6 +324,7 @@ struct ServiceRemovalPresence {
     units: Vec<bool>,
     links: Vec<bool>,
     receipt: bool,
+    consumer_receipt: bool,
 }
 
 fn service_removal_presence(
@@ -311,11 +353,16 @@ fn service_removal_presence(
         &paths.receipt,
         &service_receipt_bytes(resource, revision, rendered)?,
     )?;
+    let consumer_receipt = verify_file_exact_or_absent(
+        &paths.consumer_receipt,
+        &service_consumer_receipt_bytes(resource, revision, rendered)?,
+    )?;
 
     Ok(ServiceRemovalPresence {
         units,
         links,
         receipt,
+        consumer_receipt,
     })
 }
 
@@ -385,6 +432,32 @@ fn service_receipt_bytes(
         revision,
     };
     aos_contract::canonical::to_vec(&receipt).context("encoding service revision receipt")
+}
+
+fn service_consumer_receipt_bytes(
+    resource: &ResourceId,
+    revision: RevisionId,
+    rendered: &RenderedService,
+) -> Result<Vec<u8>> {
+    let receipt = ServiceRevisionReceipt {
+        schema: SERVICE_CONSUMER_RECEIPT_SCHEMA,
+        resource,
+        units: rendered
+            .units
+            .iter()
+            .map(|unit| unit.name.as_str())
+            .collect(),
+        links: rendered
+            .links
+            .iter()
+            .map(|link| ServiceReceiptLink {
+                path: &link.path,
+                target: &link.target,
+            })
+            .collect(),
+        revision,
+    };
+    aos_contract::canonical::to_vec(&receipt).context("encoding service consumer receipt")
 }
 
 pub(crate) fn ensure_directory(path: &Path) -> Result<()> {
@@ -519,8 +592,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        is_absent, matches, materialize, materialize_service, paths_for, remove, remove_service,
-        service_is_absent, service_matches, service_paths_for,
+        is_absent, matches, materialize, materialize_service, paths_for, publish_service_consumer,
+        remove, remove_service, service_consumer_matches, service_is_absent, service_matches,
+        service_paths_for,
     };
     use crate::render::{RenderedService, RenderedServiceLink, RenderedServiceUnit, RenderedUnit};
 
@@ -576,6 +650,16 @@ mod tests {
             service_matches(&paths, &rendered, &resource(), revision)
                 .expect("service state is readable")
         );
+        assert!(
+            !service_consumer_matches(&paths, &resource(), revision, &rendered)
+                .expect("absent consumer state is readable")
+        );
+        publish_service_consumer(&paths, &resource(), revision, &rendered)
+            .expect("consumer revision publishes");
+        assert!(
+            service_consumer_matches(&paths, &resource(), revision, &rendered)
+                .expect("consumer state is readable")
+        );
         assert_eq!(
             fs::read_link(&paths.links[0]).expect("installation link is readable"),
             std::path::Path::new("../example.service")
@@ -604,6 +688,8 @@ mod tests {
             &rendered,
         )
         .expect("service materializes");
+        publish_service_consumer(&paths, &resource(), revision, &rendered)
+            .expect("consumer revision publishes");
 
         remove_service(&paths, &rendered, &resource(), revision).expect("service removes");
         assert!(service_is_absent(&paths).expect("absence is observable"));
