@@ -14,13 +14,13 @@ use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
-use aos_ability_plan::{AbRolloutRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::types::{ImageGeneration, ImageGenerationState, ImageRolloutStatus};
 
+use super::{AbRolloutRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity};
 use super::{qualified_rollout_record, validate_active_rollout_selection};
 use crate::sysroot::{
     load_image_generation_state_pub, prepare_image_selection, remove_file_durable, sync_directory,
