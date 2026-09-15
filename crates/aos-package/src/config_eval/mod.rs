@@ -46,7 +46,6 @@ mod handler_process;
 pub mod materialize;
 mod native_activation;
 mod protected_fs;
-mod rollout_boot;
 mod transaction_verification;
 pub use native_activation::supported_native_ability_features;
 pub(crate) use native_activation::{
