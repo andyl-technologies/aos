@@ -950,7 +950,7 @@ in {
       manifest = json.loads(runtime.succeed(
           f"cat /var/lib/profiles/system/gen-{configured}/manifest.json"
       ))
-      assert manifest["schema"] == "aos.config-manifest/v2", manifest["schema"]
+      assert manifest["schema"] == "aos.config-manifest/v1", manifest["schema"]
       runtime_input = manifest["inputs"]["runtime_modules"]
       assert runtime_input["schema"] == "aos.runtime-module-set/v1", runtime_input
       assert runtime_input["trust_mode"] == "local-root", runtime_input

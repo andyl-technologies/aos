@@ -143,12 +143,8 @@ pub struct ConfigManifest {
 }
 
 impl ConfigManifest {
-    /// Legacy manifest schema without runtime operator modules.
-    pub const SCHEMA_V1: &'static str = "aos.config-manifest/v1";
-    /// Manifest schema binding generation-pinned transactional inputs.
-    pub const SCHEMA_V2: &'static str = "aos.config-manifest/v2";
-    /// Default schema emitted for image and host-only manifests.
-    pub const SCHEMA: &'static str = Self::SCHEMA_V1;
+    /// The sole configuration manifest schema.
+    pub const SCHEMA: &'static str = "aos.config-manifest/v1";
 
     /// Validates invariants that Serde's structural checks cannot express.
     ///
@@ -157,35 +153,27 @@ impl ConfigManifest {
     /// Returns an error for a wrong schema, malformed paths or modes, duplicate
     /// ordered records, inconsistent ABI/input data, or an invalid graph.
     pub fn validate(&self) -> Result<()> {
-        if !matches!(self.schema.as_str(), Self::SCHEMA_V1 | Self::SCHEMA_V2) {
+        if self.schema != Self::SCHEMA {
             bail!(
                 "unsupported config-manifest schema {:?} (expected {:?})",
                 self.schema,
-                format!("{} or {}", Self::SCHEMA_V1, Self::SCHEMA_V2)
+                Self::SCHEMA
             );
         }
-        match self.schema.as_str() {
-            Self::SCHEMA_V1
-                if self.inputs.runtime_modules.is_none()
-                    && self.inputs.expected_current_generation.is_none()
-                    && self.inputs.ability_activation.is_none() => {}
-            Self::SCHEMA_V1 => bail!("config-manifest/v1 cannot carry runtime transaction state"),
-            Self::SCHEMA_V2 => {
-                if self.inputs.runtime_modules.is_none() && self.inputs.ability_activation.is_none()
-                {
-                    bail!("config-manifest/v2 requires transactional inputs");
-                }
-                if let Some(runtime) = &self.inputs.runtime_modules {
-                    runtime.validate()?;
-                }
-                if self.inputs.expected_current_generation.is_none() {
-                    bail!("config-manifest/v2 requires expected_current_generation");
-                }
-                if let Some(activation) = &self.inputs.ability_activation {
-                    activation.validate(&self.package_outputs)?;
-                }
-            }
-            _ => unreachable!(),
+
+        let has_transactional_inputs =
+            self.inputs.runtime_modules.is_some() || self.inputs.ability_activation.is_some();
+        if has_transactional_inputs && self.inputs.expected_current_generation.is_none() {
+            bail!("transactional inputs require expected_current_generation");
+        }
+        if !has_transactional_inputs && self.inputs.expected_current_generation.is_some() {
+            bail!("expected_current_generation requires transactional inputs");
+        }
+        if let Some(runtime) = &self.inputs.runtime_modules {
+            runtime.validate()?;
+        }
+        if let Some(activation) = &self.inputs.ability_activation {
+            activation.validate(&self.package_outputs)?;
         }
         if self.module_abi != self.inputs.base_lib.module_abi {
             bail!("manifest module_abi does not match inputs.base_lib.module_abi");
@@ -2222,10 +2210,9 @@ mod tests {
     }
 
     #[test]
-    fn manifest_v2_binds_runtime_module_set_and_transaction_base() {
+    fn manifest_binds_runtime_module_set_and_transaction_base() {
         let mut manifest =
             manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
-        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
         manifest.inputs.runtime_modules = Some(RuntimeModulesInput {
             schema: "aos.runtime-module-set/v1".to_string(),
             trust_mode: "local-root".to_string(),
@@ -2259,7 +2246,6 @@ mod tests {
             document_sha256: format!("sha256:{}", "a".repeat(64)),
             document_size: 1,
         };
-        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
         manifest.inputs.expected_current_generation = Some(7);
         manifest.inputs.ability_activation = Some(AbilityActivationInput {
             schema: AbilityActivationInput::SCHEMA.to_string(),
@@ -2334,20 +2320,34 @@ mod tests {
     }
 
     #[test]
-    fn manifest_versions_require_transactional_state() {
+    fn manifest_requires_transactional_state_to_match_generation_snapshot() {
         let mut manifest =
             manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
         manifest.inputs.expected_current_generation = Some(1);
-        assert!(manifest.validate().unwrap_err().to_string().contains("v1"));
-
-        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
-        manifest.inputs.expected_current_generation = None;
         assert!(
             manifest
                 .validate()
                 .unwrap_err()
                 .to_string()
-                .contains("transactional inputs")
+                .contains("requires transactional inputs")
+        );
+
+        manifest.inputs.expected_current_generation = None;
+        manifest.inputs.runtime_modules = Some(RuntimeModulesInput {
+            schema: "aos.runtime-module-set/v1".to_string(),
+            trust_mode: "local-root".to_string(),
+            store_path: "/nix/store/99999999999999999999999999999999-runtime-modules".to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            entrypoints: vec!["10-packages.nix".to_string()],
+            signer_key: None,
+        });
+        assert!(
+            manifest
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("require expected_current_generation")
         );
     }
 
@@ -2355,7 +2355,6 @@ mod tests {
     fn runtime_module_descriptor_rejects_unsafe_or_duplicate_entrypoints() {
         let mut manifest =
             manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
-        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
         manifest.inputs.expected_current_generation = Some(1);
         manifest.inputs.runtime_modules = Some(RuntimeModulesInput {
             schema: "aos.runtime-module-set/v1".to_string(),
