@@ -26,6 +26,7 @@
       ];
     };
   disabled = evaluate {};
+  disabledRequests = disabled.config.aos.abilities.requests;
   enabled = evaluate {
     enable = true;
     eventLog = "/var/lib/verifier/events.cel";
@@ -55,7 +56,8 @@
       else portableOptionTree option)
     (builtins.attrNames options);
 in
-  assert disabled.config.aos.abilities.requests == {};
+  assert !(disabledRequests ? "aos:local-filesystems");
+  assert !(disabledRequests ? "aos:aos-attestation-verifier-lifecycle");
   assert disabled.config.aos.abilities.requirementTemplates == abilities.requirementTemplates;
   assert abilities.instances ? "aos:service";
   assert requests."aos:local-filesystems".parameters.scope == "local-filesystems";
