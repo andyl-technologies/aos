@@ -141,6 +141,10 @@
     inherit name abi description requestType configurationType outputs methods lifecycle aggregation guarantees requiredFeatures;
   };
 
+  kubernetesObjectManagement = import ./kubernetes-object-management.nix {
+    inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
+    types = abilityTypes;
+  };
   makeInterfaceDocument = requiredFeatures: export: {
     schema = "aos.ability.interface/v1";
     required_features = uniqueSortedStrings "required features" requiredFeatures;
@@ -1596,6 +1600,7 @@ in rec {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
     };
+    inherit kubernetesObjectManagement;
   };
   module = {config, ...}:
     import ./module.nix {
@@ -1616,7 +1621,8 @@ in rec {
       coreInterfaces =
         interfaces.serviceManagement.declarations
         // interfaces.networkPolicy.declarations
-        // interfaces.bootPreparation.declarations;
+        // interfaces.bootPreparation.declarations
+        // interfaces.kubernetesObjectManagement.declarations;
       moduleTypes = moduleOptionTypes;
     };
 

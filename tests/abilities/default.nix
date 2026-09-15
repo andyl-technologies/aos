@@ -426,6 +426,9 @@
     inherit (lib) abilities;
   };
   effectPlan = effectFixture.normalized;
+  kubernetesObjectManagementCore = import ./kubernetes-object-management-core.nix {
+    inherit lib;
+  };
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
@@ -854,6 +857,7 @@ in
   effectFixture.bootstrap.edges;
   assert !(builtins.head effectFixture.kubernetes.operations ? semantics);
   assert effectFixture.omitted == emptyEffects;
+  assert kubernetesObjectManagementCore;
   assert serviceManagement;
   assert systemServiceModules;
   assert compositionDriver;
