@@ -86,6 +86,7 @@ in {
 
       APM = "${pkgs.aos.apm}/bin/apm"
       APR = "${pkgs.aos.apr}/bin/apr"
+      AOS = "${pkgs.aos}/bin/aos"
       CURL = "${pkgs.curl}/bin/curl"
       JQ = "${pkgs.jq}/bin/jq"
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
@@ -408,7 +409,123 @@ in {
       assert runtime.succeed(
           "systemctl show -p MainPID --value nginx.service"
       ).strip() == nginx_pid
+      nginx_consumer_receipts = runtime.succeed(
+          "ls -1 /etc/aos/ability-consumers/nginx.service/sha256"
+      ).splitlines()
+      assert len(nginx_consumer_receipts) == 1, nginx_consumer_receipts
       assert_payloads_immutable()
+
+      # Force the selected service manager's reload operation to fail after
+      # configuration publication. The configuration generation and bytes must
+      # remain published, while the separately tracked consumer revision stays
+      # unknown and the old process continues serving its prior route.
+      runtime.succeed(f"""
+          install -d -m 0755 /run/systemd/system/nginx.service.d
+          cat > /run/systemd/system/nginx.service.d/99-fail-reload.conf <<'EOF'
+          [Service]
+          ExecReload=
+          ExecReload={COREUTILS}/bin/false
+          EOF
+          systemctl daemon-reload
+      """)
+      failed_services_module = services_module.replace(
+          'body = "nginx-runtime";',
+          'body = "nginx-runtime-failed-reload";',
+      )
+      write_file(
+          "/run/runtime-module-fixtures/20-services-failed-reload.nix",
+          failed_services_module,
+      )
+      runtime.succeed(
+          f"{APM} config replace 20-services.nix "
+          "/run/runtime-module-fixtures/20-services-failed-reload.nix"
+      )
+      status, stdout, stderr = runtime.execute(
+          f"XDG_CACHE_HOME={XDG_CACHE_HOME} {APM} config apply "
+          "--eval-root /run/runtime-module-composition-failed-reload",
+          timeout=600,
+      )
+      assert status != 0, (stdout, stderr)
+      failed_reload = current_generation()
+      assert failed_reload != reloaded, (reloaded, failed_reload)
+      assert runtime.succeed(
+          "systemctl show -p InvocationID --value nginx.service"
+      ).strip() == nginx_invocation
+      assert runtime.succeed(
+          "systemctl show -p MainPID --value nginx.service"
+      ).strip() == nginx_pid
+      runtime.succeed("grep -q 'nginx-runtime-failed-reload' /etc/nginx/nginx.conf")
+      nginx_body = runtime.succeed(
+          f"{CURL} --fail --silent http://127.0.0.1:18080/health"
+      )
+      assert nginx_body == "nginx-runtime-reloaded", nginx_body
+      assert runtime.succeed(
+          "ls -1 /etc/aos/ability-consumers/nginx.service/sha256"
+      ).splitlines() == nginx_consumer_receipts
+
+      activation = json.loads(runtime.succeed(
+          f"cat /var/lib/profiles/system/gen-{failed_reload}/activation.json"
+      ))
+      assert activation["status"] == "native-failed", activation
+      assert activation["activation_exit"] == 6, activation
+      assert activation["native_ability_prior_generation"] == reloaded, activation
+      transaction = activation["native_ability_transaction"]
+      transaction_root = (
+          f"/var/lib/profiles/system/gen-{failed_reload}/ability-transactions/"
+          f"{transaction}"
+      )
+      bundle = json.loads(runtime.succeed(
+          f"cat {transaction_root}/plan-bundle.json"
+      ))
+      effect = bundle["transition"]["effect_document"]
+      operations = effect["operations"]
+      operation_by_key = {
+          json.dumps(operation["key"], sort_keys=True): (ordinal, operation)
+          for ordinal, operation in enumerate(operations)
+      }
+      configuration_service_pairs = []
+      for edge in effect["edges"]:
+          if edge["kind"] != "required-success":
+              continue
+          source = operation_by_key.get(
+              json.dumps(edge["from"].get("key"), sort_keys=True)
+          )
+          target = operation_by_key.get(
+              json.dumps(edge["to"].get("key"), sort_keys=True)
+          )
+          if source is None or target is None:
+              continue
+          if source[1]["method"] == "materialize" and target[1]["method"] == "update":
+              configuration_service_pairs.append((source, target))
+      assert len(configuration_service_pairs) == 1, configuration_service_pairs
+      (publish_ordinal, publish), (reload_ordinal, reload) = configuration_service_pairs[0]
+      assert publish["target"]["resource"]["key"].endswith("server-configuration"), publish
+      assert reload["target"]["resource"]["key"].endswith("service"), reload
+
+      diagnostic = json.loads(runtime.succeed(
+          f"{AOS} --json ability diagnostic "
+          f"/var/lib/profiles/system/gen-{failed_reload} {transaction}"
+      ))
+      publish_events = [
+          event["kind"] for event in diagnostic["timeline"]["events"]
+          if event.get("node_ordinal") == publish_ordinal
+      ]
+      reload_events = [
+          event["kind"] for event in diagnostic["timeline"]["events"]
+          if event.get("node_ordinal") == reload_ordinal
+      ]
+      assert "effect-completed" in publish_events, (publish_events, diagnostic)
+      assert "effect-indeterminate" in reload_events, (reload_events, diagnostic)
+      assert "effect-completed" not in reload_events, (reload_events, diagnostic)
+      assert "settled-failure" in reload_events, (reload_events, diagnostic)
+      terminal = json.loads(runtime.succeed(f"cat {transaction_root}/terminal.json"))
+      assert terminal["terminal"] == "settled-failure", terminal
+      assert_payloads_immutable()
+      runtime.succeed(f"""
+          rm /run/systemd/system/nginx.service.d/99-fail-reload.conf
+          systemctl daemon-reload
+          {APM} config discard
+      """)
 
       # Restore the original declaration through the same reload path so the
       # retained generation used by the reboot and rollback checks below has
