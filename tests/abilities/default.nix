@@ -459,6 +459,9 @@
   securityWrappers = import ./security-wrappers.nix {
     inherit lib;
   };
+  kernelTunables = import ./kernel-tunables.nix {
+    inherit lib;
+  };
   compositionDriver = import ./composition-driver.nix {
     inherit lib;
   };
@@ -898,6 +901,7 @@ in
   assert postgresqlService;
   assert securityWrappers;
   assert networkPolicyCore;
+  assert kernelTunables;
   assert fails (normalizeBounded [true false null true false]);
   assert fails (normalizeBounded {oversized-member-name = true;});
   assert fails (normalizeBounded "0123456789abcdefg");

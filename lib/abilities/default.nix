@@ -1604,6 +1604,10 @@ in rec {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
     };
+    kernelTunables = import ./kernel-tunables.nix {
+      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
+      types = abilityTypes;
+    };
     inherit kubernetesObjectManagement;
   };
   module = {config, ...}:
@@ -1626,6 +1630,7 @@ in rec {
         interfaces.serviceManagement.moduleDeclarations
         // interfaces.networkPolicy.declarations
         // interfaces.bootPreparation.declarations
+        // interfaces.kernelTunables.declarations
         // interfaces.kubernetesObjectManagement.declarations;
       moduleTypes = moduleOptionTypes;
     };
