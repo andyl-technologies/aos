@@ -29,7 +29,9 @@ use aos_provider_protocol::{
 use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 use serde::Serialize;
 
-use crate::materialize::{UnitPaths, matches, materialize, paths_for};
+use crate::materialize::{
+    UnitPaths, is_absent, matches, materialize, paths_for, remove, validate_removal,
+};
 use crate::model::{
     Activation, INTERFACE_NAME, OBSERVATION_SCHEMA, PackagedUnitObservation,
     PackagedUnitRealization, PackagedUnitRequest, ProviderContext, UnitState, empty_outputs,
@@ -113,7 +115,11 @@ async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     )
     .await?;
     let incarnation = IncarnationId::new(manager.incarnation().token())?;
-    let provider_context = provider_context(&manager, inspection.unit_identity.clone())?;
+    let provider_context = provider_context(
+        &manager,
+        inspection.unit_identity.clone(),
+        inspection.materialization_matches,
+    )?;
     let supported_purposes = SupportedPurposes::from_ordered(vec![
         InvocationPurpose::Effect,
         InvocationPurpose::Reconcile,
@@ -238,17 +244,49 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
             )
             .await?
         }
-        InvocationPurpose::Reconcile if selected_method == "observe" => {
-            inspect(
-                &manager,
-                &expected,
-                &realization,
-                &bound.resource_spec.resource,
-                bound.resource_spec.revision,
-                &rendered,
+        InvocationPurpose::Effect if selected_method == "remove" => {
+            validate_removal(
                 &paths,
-            )
-            .await?
+                &rendered,
+                &bound.resource_spec.resource,
+                &realization.systemd_unit.unit_name,
+                bound.resource_spec.revision,
+            )?;
+            if provider.unit_owned
+                && let Some(identity) = &provider.unit_identity
+            {
+                let outcome = manager
+                    .stop_unit_exact(&realization.systemd_unit.unit_name, identity)
+                    .await?;
+                if !outcome.result.is_done() {
+                    bail!("systemd stop job completed as {}", outcome.result.label());
+                }
+            }
+            remove(
+                &paths,
+                &rendered,
+                &bound.resource_spec.resource,
+                &realization.systemd_unit.unit_name,
+                bound.resource_spec.revision,
+            )?;
+            manager.daemon_reload().await?;
+            inspect_absence(&manager, &expected, &realization, &paths).await?
+        }
+        InvocationPurpose::Reconcile if selected_method == "observe" => {
+            if primary_method == "remove" {
+                inspect_absence(&manager, &expected, &realization, &paths).await?
+            } else {
+                inspect(
+                    &manager,
+                    &expected,
+                    &realization,
+                    &bound.resource_spec.resource,
+                    bound.resource_spec.revision,
+                    &rendered,
+                    &paths,
+                )
+                .await?
+            }
         }
         InvocationPurpose::Cancel
         | InvocationPurpose::Compensate
@@ -261,6 +299,7 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     let completed = match invocation.purpose {
         InvocationPurpose::Effect if selected_method == "apply" => inspection.complete,
         InvocationPurpose::Effect if selected_method == "observe" => true,
+        InvocationPurpose::Effect if selected_method == "remove" => inspection.complete,
         InvocationPurpose::Reconcile if selected_method == "observe" => {
             primary_method == "observe" || inspection.complete
         }
@@ -289,6 +328,7 @@ struct Inspection {
     observation: PackagedUnitObservation,
     unit_identity: Option<String>,
     revision_matches: bool,
+    materialization_matches: bool,
     complete: bool,
 }
 
@@ -362,6 +402,54 @@ async fn inspect(
         },
         unit_identity,
         revision_matches: files_match && manager_is_current,
+        materialization_matches: files_match,
+        complete,
+    })
+}
+
+async fn inspect_absence(
+    manager: &PinnedSystemdManager,
+    expected: &PackagedUnitRequest,
+    realization: &PackagedUnitRealization,
+    paths: &UnitPaths,
+) -> Result<Inspection> {
+    let files_absent_before_manager_check = is_absent(paths)?;
+    let unit_identity = match manager
+        .unit_identity(&realization.systemd_unit.unit_name)
+        .await
+    {
+        Ok(identity) => Some(identity),
+        Err(error) if error.is_no_such_unit() => None,
+        Err(error) => return Err(error.into()),
+    };
+    let files_absent_after_manager_check = is_absent(paths)?;
+    let files_absent = files_absent_before_manager_check && files_absent_after_manager_check;
+    let manager_absent = unit_identity.is_none();
+    let complete = files_absent && manager_absent;
+    let mut discrepancies = Vec::new();
+    if !files_absent {
+        discrepancies.push("drop_in".to_string());
+    }
+    if !manager_absent {
+        discrepancies.push("state".to_string());
+    }
+
+    Ok(Inspection {
+        observation: PackagedUnitObservation {
+            schema: OBSERVATION_SCHEMA.to_string(),
+            expected: expected.clone(),
+            observed: None,
+            unit_name: realization.systemd_unit.unit_name.clone(),
+            state: if manager_absent {
+                UnitState::Absent
+            } else {
+                UnitState::Unknown
+            },
+            discrepancies,
+        },
+        unit_identity,
+        revision_matches: false,
+        materialization_matches: false,
         complete,
     })
 }
@@ -369,12 +457,14 @@ async fn inspect(
 fn provider_context(
     manager: &PinnedSystemdManager,
     unit_identity: Option<String>,
+    unit_owned: bool,
 ) -> Result<AbilityValue> {
     value(&ProviderContext {
         schema: model::PROVIDER_CONTEXT_SCHEMA.to_string(),
         manager_bus_id: manager.incarnation().bus_id().to_string(),
         manager_owner: manager.incarnation().owner().to_string(),
         unit_identity,
+        unit_owned,
     })
 }
 
@@ -442,6 +532,7 @@ fn require_method(
     let expected = match method.method.as_str() {
         "apply" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         "observe" => MethodSemantics::ordinary(AccessMode::Read),
+        "remove" => MethodSemantics::provider_stop(),
         _ => bail!("handler invocation selects an unsupported method"),
     };
     if *semantics != expected {
@@ -574,6 +665,7 @@ mod tests {
     fn methods_require_their_exact_declared_semantics() {
         let apply = method("apply");
         let observe = method("observe");
+        let remove = method("remove");
 
         assert!(
             require_method(
@@ -585,6 +677,14 @@ mod tests {
         assert!(require_method(&observe, &MethodSemantics::ordinary(AccessMode::Read)).is_ok());
         assert!(require_method(&apply, &MethodSemantics::ordinary(AccessMode::Read)).is_err());
         assert!(require_method(&observe, &MethodSemantics::provider_stop()).is_err());
+        assert!(require_method(&remove, &MethodSemantics::provider_stop()).is_ok());
+        assert!(
+            require_method(
+                &remove,
+                &MethodSemantics::ordinary(AccessMode::ExclusiveWrite)
+            )
+            .is_err()
+        );
     }
 
     #[test]

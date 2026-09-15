@@ -195,6 +195,13 @@
         "read"
         false
         false;
+      remove =
+        method
+        "remove"
+        "Stops an owned unit and removes its exact managed activation state."
+        "exclusive-write"
+        true
+        false;
     };
     inherit lifecycle aggregation;
     configurationType = null;
@@ -208,7 +215,7 @@ in {
       description = "Activates authenticated packaged units and materializes bounded systemd drop-ins.";
       interface = "systemd-packaged-unit";
       inherit artifact;
-      methods = ["apply" "observe"];
+      methods = ["apply" "observe" "remove"];
       guarantees = [];
       providerModule = {
         inherit artifact;
