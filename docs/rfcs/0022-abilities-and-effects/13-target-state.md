@@ -95,8 +95,15 @@ Nix and Rust schema implementations.
 
 Every interface, implementation, requirement template, option type, default,
 semantic constraint, method, guarantee, handler selector, and description has
-one owning module declaration. Configured instances and requests refer to
-those declarations by typed identity instead of copying their contents.
+one owning module declaration. Each method declares its required target access
+and the small provider-neutral scheduling facts needed by the planner, such as
+whether it establishes provider readiness or stops a provider. There is no
+central operation-family or backend-action catalog. Checked operations carry
+the selected method's exact projected semantics, and validation requires them
+to agree with the retained interface document. Facts that can be determined
+from a method's schemas, references, or visibility are derived rather than
+authored as additional flags. Configured instances and requests refer to those
+declarations by typed identity instead of copying their contents.
 Bindings refer to requests and implementations; desired resources refer to
 the selected definitions. Module type checking rejects unknown fields,
 malformed values, invalid merges, and missing required values during the final
@@ -193,8 +200,11 @@ fixed point. The public model does not use
 `passthru.abilityPackage`, `passthru.abilities`, or a parallel package wrapper.
 
 The package projection contains statically discoverable implementations and
-requirement templates plus the module option surface. The final system
-projection contains enabled instances and concrete requests. An enabled
+requirement templates, the module option surface and provenance, and the exact
+package module or authenticated module locator used by selection. It does not
+expose another `abilityModule` or `configModule` field alongside
+`package.abilities`. The final system projection contains enabled instances
+and concrete requests. An enabled
 instance references its package-owned template; it does not restate the
 interface, schema, methods, or guarantees. A provider instance likewise
 references its package-owned implementation declaration. This preserves
@@ -251,7 +261,9 @@ systemd = mkDerivation {
 ```
 
 An implementation declaration names its interface, supported methods and
-guarantees, provider module, and symbolic handler artifact. Package-specific
+guarantees, symbolic provider module locator, and symbolic handler artifact.
+The outer resolver imports that provider module only when it selects the exact
+implementation. Package-specific
 composition and transition logic stays with the provider package. Generic
 libraries never dispatch on a package name.
 
@@ -364,12 +376,18 @@ remain distinct.
 - An attempt identifies one execution of an operation.
 
 Revision material is derived centrally from canonical content and exact
-artifact identities. Raw store-path strings, manually copied hashes, package
-lists, and hand-maintained counters are not revision inputs. Package authors do
-not set a revision for ordinary service changes. An operator may supply one
-explicit restart token to force reapplication; providers may expose narrowly
-typed additional content inputs when an external resource is intentionally
-outside the normal graph.
+artifact identities after symbolic package outputs have been resolved. An
+artifact's semantic content identity is based on immutable NAR/content and
+closure identities; its store path remains an authenticated locator and is
+excluded from semantic revision material. Per-resource revisions project the
+typed instance configuration, its concrete requests, selected interface and
+implementation identities, and normalized artifact identities. They do not
+reuse a package-document digest that contains locator fields. Raw store-path
+strings, manually copied hashes, package lists, and hand-maintained counters
+are not revision inputs. Package authors do not set a revision for ordinary
+service changes. An operator may supply one explicit restart token to force
+reapplication; providers may expose narrowly typed additional content inputs
+when an external resource is intentionally outside the normal graph.
 
 Lifetimes are interface semantics:
 
@@ -563,6 +581,7 @@ The completed implementation rejects these patterns during review or checks:
 - an ability fact authored both in package metadata and module configuration;
 - handwritten parser, option, default, or reference-documentation tables for
   package abilities;
+- a central operation-family, backend-action, or method-classification catalog;
 - declarative contracts depending on `jq`, shell, or another executable tool;
 - an independently assembled ability-module configuration evaluation;
 - raw store paths used as semantic revisions;
