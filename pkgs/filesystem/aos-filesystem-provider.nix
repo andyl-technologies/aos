@@ -1,17 +1,12 @@
 ##! aos-filesystem-provider - package-owned mutable filesystem realization
 {
-  lib,
   mkCargoPackage,
-  fetchCargoVendor,
+  aosWorkspaceSource,
+  aosWorkspaceVendor,
 }: let
   version = "0.1.0";
-  src = import ../tools/aos/_workspace-source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-filesystem-provider-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
-  };
+  src = aosWorkspaceSource;
+  cargoDeps = aosWorkspaceVendor;
 in
   mkCargoPackage {
     pname = "aos-filesystem-provider";

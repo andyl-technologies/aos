@@ -1,21 +1,16 @@
 ##! aos-ability-crucible - optional RFC-0022 baseline guest adapter
 {
-  lib,
   stdenv,
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceSource,
+  aosWorkspaceVendor,
   patchelf,
 }: let
   version = "0.1.0";
-  src = import ./aos/_workspace-source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-ability-crucible-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
-  };
+  src = aosWorkspaceSource;
+  cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
       "x86_64-linux" = "x86_64-unknown-linux-gnu";

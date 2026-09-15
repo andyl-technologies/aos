@@ -4,7 +4,8 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceSource,
+  aosWorkspaceVendor,
   bash,
   git-minimal,
   nix,
@@ -155,7 +156,7 @@
   # Retain the .drv for the denial test without realizing its intentionally forbidden output.
   abilityEvaluatorIfdDrvPath =
     builtins.unsafeDiscardOutputDependency abilityEvaluatorIfdFixture.drvPath;
-  src = import ./_workspace-source.nix {inherit lib;};
+  src = aosWorkspaceSource;
   applicationTestPackages = [
     "aos"
     "aos-ability-inspect"
@@ -189,12 +190,7 @@
   applicationTestFlags = builtins.concatStringsSep " " (
     map (package: "-p ${package}") applicationTestPackages
   );
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
-  };
+  cargoDeps = aosWorkspaceVendor;
   cargoArtifactContract = {
     family = "aos-native-release-and-test";
     checkType = "debug";
