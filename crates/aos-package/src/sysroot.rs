@@ -1038,95 +1038,6 @@ pub(crate) fn authenticated_current_generation_manifest(
     validate_generation_manifest(profile_path, generation).map(Some)
 }
 
-fn validate_direct_reactivation(
-    target: &ConfigGeneration,
-    running: &ImageGeneration,
-    manifest_path: &Path,
-) -> Result<()> {
-    if target.module_abi_pinned != running.module_abi {
-        bail!(
-            "configuration generation {} is not ABI-compatible with running image generation {}",
-            target.number,
-            running.number
-        );
-    }
-    let manifest: crate::config_eval::materialize::ConfigManifest =
-        serde_json::from_slice(&std::fs::read(manifest_path)?)?;
-    crate::config_eval::activation::reject_structured_activation_on_legacy_path(&manifest)?;
-    if manifest.module_abi != running.module_abi
-        || target.base_lib_ref != manifest.inputs.base_lib.store_path
-    {
-        bail!(
-            "configuration generation {} manifest does not match its recorded ABI/base-library binding",
-            target.number
-        );
-    }
-    Ok(())
-}
-
-fn load_reactivation_record(
-    profile_path: &Path,
-    target: &ConfigGeneration,
-    generation_id: &str,
-) -> Result<serde_json::Value> {
-    let path = profile_path
-        .join(format!("gen-{}", target.number))
-        .join("activation.json");
-    let record: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(&path)
-            .with_context(|| format!("reading retained activation record {}", path.display()))?,
-    )
-    .with_context(|| format!("parsing retained activation record {}", path.display()))?;
-    if record.get("schema").and_then(serde_json::Value::as_str) != Some("aos.config-activation/v1")
-        || record.get("generation").and_then(serde_json::Value::as_u64)
-            != Some(u64::from(target.number))
-        || record
-            .get("generation_id")
-            .and_then(serde_json::Value::as_str)
-            != Some(generation_id)
-        || record
-            .get("transaction_manifest")
-            .and_then(serde_json::Value::as_str)
-            .is_none()
-    {
-        bail!(
-            "retained activation record for configuration generation {} does not authenticate its generation and graph transaction",
-            target.number
-        );
-    }
-    Ok(record)
-}
-
-fn publish_reactivation_record(
-    profile_path: &Path,
-    retained: &serde_json::Value,
-    activation_exit: i32,
-) -> Result<()> {
-    let mut record = retained.clone();
-    let object = record
-        .as_object_mut()
-        .context("retained activation record is not an object")?;
-    object.insert("activation_exit".to_string(), activation_exit.into());
-    object.insert(
-        "status".to_string(),
-        serde_json::Value::String(if activation_exit == 6 {
-            "degraded".to_string()
-        } else {
-            "complete".to_string()
-        }),
-    );
-    let generation = object
-        .get("generation")
-        .and_then(serde_json::Value::as_u64)
-        .context("retained activation record has no generation")?;
-    let bytes = serde_json::to_vec_pretty(&record)?;
-    write_atomic_durable(
-        &profile_path.join(format!("gen-{generation}/activation.json")),
-        &bytes,
-    )?;
-    write_atomic_durable(Path::new("/run/aos/activation.json"), &bytes)
-}
-
 /// Checks for a different sysroot version and stages its A/B image.
 ///
 /// Looks up the current generation's package in the configured registries;
@@ -1263,7 +1174,7 @@ pub async fn rollback_system(
         }
         return Ok(());
     }
-    let mut state = load_generation_state(&profile_path)?;
+    let state = load_generation_state(&profile_path)?;
 
     let current = state
         .generations
@@ -1315,95 +1226,28 @@ pub async fn rollback_system(
         match target.reactivation_plan(running_abi)? {
             ReactivationPlan::DirectReactivate => {
                 let manifest_path = validate_generation_manifest(&profile_path, &target)?;
-                let manifest: crate::config_eval::materialize::ConfigManifest =
-                    serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
-                if manifest.inputs.ability_activation.is_some() {
-                    drop(switch_guard);
-                    let marker_root = PathBuf::from(format!(
-                        "/run/aos/rollback-native-{}-{}",
-                        target.number,
-                        std::process::id()
-                    ));
-                    stage_retained_runtime(config, &manifest_path, &marker_root)?;
-                    let activated = crate::config_eval::activation::activate_config(
-                        &crate::config_eval::activation::ActivateConfigParams {
-                            manifest: manifest_path,
-                            graph: marker_root.join("graph.json"),
-                            marker_root,
-                            profile: profile_path.clone(),
-                            module_abi: running_abi,
-                            running_image: Some(running_image),
-                            switch_lock,
-                            ..crate::config_eval::activation::ActivateConfigParams::default()
-                        },
-                    )?;
-                    printer.success(&format!(
-                        "Configuration generation {activated} is active under the running image."
-                    ));
-                    return Ok(());
-                }
-                validate_direct_reactivation(&target, &running_image, &manifest_path)?;
-                let reconciliation = crate::credential_artifact::reconcile_secret_refs(
-                    &config.settings,
-                    &crate::credential_artifact::aos_root_path(),
-                    &manifest.credentials,
-                )
-                .context("resolving retained generation credential references")?;
-                let activation_record =
-                    load_reactivation_record(&profile_path, &target, &target.manifest_hash)?;
-                direct_reactivate_config_generation_with(
-                    &profile_path,
-                    &mut state,
-                    Path::new(&running_image.toplevel),
-                    &target,
-                    printer,
-                    crate::config_eval::activation::run_activation_with_credential_barrier,
-                    {
-                        let mut reconciliation = Some(reconciliation);
-                        move |event| match event {
-                            crate::config_eval::activation::CredentialBarrier::StagedView(
-                                candidate_etc,
-                            ) => reconciliation
-                                .as_mut()
-                                .context("credential reconciliation already published")?
-                                .validate_staged_view(candidate_etc),
-                            crate::config_eval::activation::CredentialBarrier::Publish(plan) => {
-                                reconciliation
-                                    .take()
-                                    .context("credential reconciliation published twice")?
-                                    .publish_with(|units| {
-                                        if units.is_empty() {
-                                            Ok(())
-                                        } else {
-                                            augment_reconcile_plan_with_credential_units(
-                                                plan, units,
-                                            )
-                                        }
-                                    })
-                                    .map(|_| ())
-                            }
-                        }
-                    },
-                    || {
-                        crate::attestation::persist_generation_attestation(
-                            &profile_path.join(format!("gen-{}", target.number)),
-                            &target.manifest_hash,
-                            &target.manifest_hash,
-                            &manifest,
-                            &running_image,
-                            crate::attestation::image_requires_generation_quote(&running_image),
-                            true,
-                        )
-                        .map(|_| ())
-                    },
-                    |activation_exit| {
-                        publish_reactivation_record(
-                            &profile_path,
-                            &activation_record,
-                            activation_exit,
-                        )
+                drop(switch_guard);
+                let marker_root = PathBuf::from(format!(
+                    "/run/aos/rollback-native-{}-{}",
+                    target.number,
+                    std::process::id()
+                ));
+                stage_retained_runtime(config, &manifest_path, &marker_root)?;
+                let activated = crate::config_eval::activation::activate_config(
+                    &crate::config_eval::activation::ActivateConfigParams {
+                        manifest: manifest_path,
+                        graph: marker_root.join("graph.json"),
+                        marker_root,
+                        profile: profile_path.clone(),
+                        module_abi: running_abi,
+                        running_image: Some(running_image),
+                        switch_lock,
+                        ..crate::config_eval::activation::ActivateConfigParams::default()
                     },
                 )?;
+                printer.success(&format!(
+                    "Configuration generation {activated} is active under the running image."
+                ));
                 return Ok(());
             }
             ReactivationPlan::CrossAbiReEval(inputs) => {
@@ -3168,129 +3012,6 @@ fn prepare_image_selection(
         &serde_json::to_vec_pretty(&prepared)?,
     )?;
     *state = prepared;
-    Ok(())
-}
-
-fn direct_reactivate_config_generation_with<F, G, H, I>(
-    profile_path: &Path,
-    state: &mut ConfigGenerationState,
-    running_toplevel: &Path,
-    target: &ConfigGeneration,
-    printer: &Printer,
-    run_activate: F,
-    publish_credentials: G,
-    persist_attestation: H,
-    publish_record: I,
-) -> Result<()>
-where
-    F: FnOnce(
-        &Path,
-        u32,
-        &str,
-        &mut dyn FnMut(crate::config_eval::activation::CredentialBarrier<'_>) -> Result<()>,
-    ) -> Result<Option<i32>>,
-    G: FnMut(crate::config_eval::activation::CredentialBarrier<'_>) -> Result<()>,
-    H: FnOnce() -> Result<()>,
-    I: FnOnce(i32) -> Result<()>,
-{
-    let activate = running_toplevel.join("activate");
-    let nonce = write_activation_intent_pub(profile_path, state, target.number)?;
-    let mut reconcile_credentials = publish_credentials;
-    let mut validated_staged_view = false;
-    let mut crossed_barrier = false;
-    let mut barrier = |event: crate::config_eval::activation::CredentialBarrier<'_>| match event {
-        event @ crate::config_eval::activation::CredentialBarrier::StagedView(_) => {
-            if validated_staged_view || crossed_barrier {
-                bail!("configuration rollback repeated its staged credential validation");
-            }
-            reconcile_credentials(event)?;
-            validated_staged_view = true;
-            Ok(())
-        }
-        event @ crate::config_eval::activation::CredentialBarrier::Publish(_) => {
-            if !validated_staged_view || crossed_barrier {
-                return Err(
-                    crate::config_eval::activation::ActivationFailure::rescue(
-                        "configuration rollback crossed an invalid credential publication barrier; rescue mode is required",
-                    )
-                    .into(),
-                );
-            }
-            reconcile_credentials(event).map_err(|error| {
-                crate::config_eval::activation::ActivationFailure::rescue(format!(
-                    "configuration rollback swapped /etc but credential publication failed: {error:#}; rescue mode is required"
-                ))
-            })?;
-            crossed_barrier = true;
-            Ok(())
-        }
-    };
-    let activation_exit = match run_activate(&activate, target.number, &nonce, &mut barrier)? {
-        Some(exit @ (0 | 5 | 6)) => exit,
-        Some(4) | None => {
-            return Err(crate::config_eval::activation::ActivationFailure::rescue(
-                "configuration rollback left /etc indeterminate; rescue mode is required",
-            )
-            .into());
-        }
-        other => {
-            clear_activation_intent_pub(profile_path)?;
-            bail!(
-                "Configuration rollback failed before the /etc swap (exit {other:?}); the previous generation remains current."
-            )
-        }
-    };
-    if !validated_staged_view || !crossed_barrier {
-        return Err(
-            crate::config_eval::activation::ActivationFailure::rescue(
-                "configuration rollback swapped /etc without publishing credentials; rescue mode is required",
-            )
-            .into(),
-        );
-    }
-    let degraded = match activation_exit {
-        0 => false,
-        5 => {
-            printer.warning(
-                "Configuration rollback succeeded, but cleanup of the previous generation's mounts failed.",
-            );
-            false
-        }
-        6 => true,
-        other => {
-            return Err(
-                crate::config_eval::activation::ActivationFailure::rescue(format!(
-                    "configuration rollback returned impossible post-swap exit {other}; rescue mode is required"
-                ))
-                .into(),
-            );
-        }
-    };
-    persist_attestation().map_err(|error| {
-        crate::config_eval::activation::ActivationFailure::rescue(format!(
-            "configuration rollback swapped /etc but attestation publication failed: {error:#}; rescue mode is required"
-        ))
-    })?;
-    commit_current_generation(profile_path, state, target.number).map_err(|error| {
-        crate::config_eval::activation::ActivationFailure::rescue(format!(
-            "configuration rollback swapped /etc but pointer publication failed: {error:#}; rescue mode is required"
-        ))
-    })?;
-    publish_record(activation_exit).map_err(|error| {
-        crate::config_eval::activation::ActivationFailure::rescue(format!(
-            "configuration rollback committed its pointer but activation record publication failed: {error:#}; rescue mode is required"
-        ))
-    })?;
-    if degraded {
-        bail!(
-            "Configuration generation {} is live, but one or more units failed to restart",
-            target.number
-        );
-    }
-    printer.success(&format!(
-        "Configuration generation {} is active under the running image.",
-        target.number
-    ));
     Ok(())
 }
 
@@ -7227,151 +6948,6 @@ mod tests {
             PathBuf::from("gen-2")
         );
         assert!(!tmp.path().join(SYSTEM_COMMIT_JOURNAL).exists());
-    }
-
-    #[test]
-    fn same_abi_config_rollback_uses_running_image_activator() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut state = generation_state_for_commit();
-        save_generation_state(tmp.path(), &state).unwrap();
-        let target = state.generations[1].clone();
-        let printer = Printer::new(0, true, false);
-
-        direct_reactivate_config_generation_with(
-            tmp.path(),
-            &mut state,
-            Path::new("/nix/store/test-generation-1"),
-            &target,
-            &printer,
-            |activate, number, _nonce, barrier| {
-                assert_eq!(activate, Path::new("/nix/store/test-generation-1/activate"));
-                assert_eq!(number, 2);
-                barrier(
-                    crate::config_eval::activation::CredentialBarrier::StagedView(Path::new(
-                        "/run/etc/candidate",
-                    )),
-                )?;
-                barrier(crate::config_eval::activation::CredentialBarrier::Publish(
-                    Path::new("/run/apm/test-plan.json"),
-                ))?;
-                Ok(Some(0))
-            },
-            |_plan| Ok(()),
-            || Ok(()),
-            |_activation_exit| Ok(()),
-        )
-        .unwrap();
-
-        assert_eq!(state.current, 2);
-        assert_eq!(
-            std::fs::read_link(tmp.path().join("current")).unwrap(),
-            PathBuf::from("gen-2")
-        );
-    }
-
-    #[test]
-    fn same_abi_rollback_credential_failure_refuses_pointer_and_evidence() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut state = generation_state_for_commit();
-        save_generation_state(tmp.path(), &state).unwrap();
-        let target = state.generations[1].clone();
-        let printer = Printer::new(0, true, false);
-        let evidence_published = std::cell::Cell::new(false);
-
-        let error = direct_reactivate_config_generation_with(
-            tmp.path(),
-            &mut state,
-            Path::new("/nix/store/test-generation-1"),
-            &target,
-            &printer,
-            |_activate, _number, _nonce, barrier| {
-                barrier(
-                    crate::config_eval::activation::CredentialBarrier::StagedView(Path::new(
-                        "/run/etc/candidate",
-                    )),
-                )?;
-                barrier(crate::config_eval::activation::CredentialBarrier::Publish(
-                    Path::new("/run/apm/test-plan.json"),
-                ))?;
-                Ok(Some(0))
-            },
-            |event| match event {
-                crate::config_eval::activation::CredentialBarrier::StagedView(_) => Ok(()),
-                crate::config_eval::activation::CredentialBarrier::Publish(_) => {
-                    bail!("injected retained credential publication failure")
-                }
-            },
-            || {
-                evidence_published.set(true);
-                Ok(())
-            },
-            |_activation_exit| {
-                evidence_published.set(true);
-                Ok(())
-            },
-        )
-        .unwrap_err();
-
-        assert!(
-            format!("{error:#}").contains("retained credential publication failure"),
-            "{error:#}"
-        );
-        assert_eq!(
-            error
-                .downcast_ref::<crate::config_eval::activation::ActivationFailure>()
-                .unwrap()
-                .exit_code(),
-            4
-        );
-        assert_eq!(state.current, 1);
-        assert!(!evidence_published.get());
-        assert_eq!(load_generation_state(tmp.path()).unwrap().current, 1);
-        assert!(!tmp.path().join("current").exists());
-    }
-
-    #[test]
-    fn same_abi_rollback_staged_credential_failure_precedes_live_mutation() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut state = generation_state_for_commit();
-        save_generation_state(tmp.path(), &state).unwrap();
-        let target = state.generations[1].clone();
-        let printer = Printer::new(0, true, false);
-        let publish_seen = std::cell::Cell::new(false);
-
-        let error = direct_reactivate_config_generation_with(
-            tmp.path(),
-            &mut state,
-            Path::new("/nix/store/test-generation-1"),
-            &target,
-            &printer,
-            |_activate, _number, _nonce, barrier| {
-                barrier(
-                    crate::config_eval::activation::CredentialBarrier::StagedView(Path::new(
-                        "/run/etc/candidate",
-                    )),
-                )?;
-                publish_seen.set(true);
-                barrier(crate::config_eval::activation::CredentialBarrier::Publish(
-                    Path::new("/run/apm/test-plan.json"),
-                ))?;
-                Ok(Some(0))
-            },
-            |event| match event {
-                crate::config_eval::activation::CredentialBarrier::StagedView(_) => {
-                    bail!("injected staged sealed credential validation failure")
-                }
-                crate::config_eval::activation::CredentialBarrier::Publish(_) => Ok(()),
-            },
-            || Ok(()),
-            |_activation_exit| Ok(()),
-        )
-        .unwrap_err();
-
-        assert!(format!("{error:#}").contains("staged sealed credential"));
-        assert!(!publish_seen.get());
-        assert_eq!(state.current, 1);
-        assert_eq!(load_generation_state(tmp.path()).unwrap().current, 1);
-        assert!(!tmp.path().join("current").exists());
     }
 
     #[test]

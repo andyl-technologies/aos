@@ -87,14 +87,14 @@ pub struct StockAbilityRoundEvaluator<'a> {
 /// Selects child providers only from authenticated packages in one working set.
 pub(super) struct StockAbilityRoundResolver<'a> {
     working_set: &'a [WorkingSetMember],
-    planning: Option<&'a VerifiedPlanningSnapshot>,
+    planning: &'a VerifiedPlanningSnapshot,
 }
 
 impl<'a> StockAbilityRoundResolver<'a> {
     /// Creates a resolver over one replayed checked plan and its exact package set.
     pub(super) const fn new(
         working_set: &'a [WorkingSetMember],
-        planning: Option<&'a VerifiedPlanningSnapshot>,
+        planning: &'a VerifiedPlanningSnapshot,
     ) -> Self {
         Self {
             working_set,
@@ -106,10 +106,8 @@ impl<'a> StockAbilityRoundResolver<'a> {
         &self,
         request: &super::ability_rounds::PendingAbilityRequest,
     ) -> Result<&Binding> {
-        let planning = self
+        let matches = self
             .planning
-            .context("pending ability request has no authenticated activation plan")?;
-        let matches = planning
             .checked_binding()
             .bindings()
             .iter()
@@ -264,10 +262,8 @@ impl AbilityRoundResolver for StockAbilityRoundResolver<'_> {
         let mut selections = Vec::with_capacity(pending.requests.len());
         for request in pending.requests.values() {
             let binding = self.checked_binding(request)?;
-            let planning = self
+            let checked_request = self
                 .planning
-                .context("pending ability request has no authenticated activation plan")?;
-            let checked_request = planning
                 .checked_binding()
                 .document()
                 .requests

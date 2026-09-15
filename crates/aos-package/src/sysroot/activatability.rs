@@ -255,41 +255,30 @@ pub(super) fn configuration(
             );
         }
 
-        if manifest.inputs.ability_activation.is_some() {
-            let params = ActivateConfigParams {
-                profile: profile.to_path_buf(),
-                running_image: Some(running.clone()),
-                ..ActivateConfigParams::default()
-            };
-            crate::config_eval::preflight_retained_manifest(&params, &manifest).unwrap_or_else(
-                |error| {
-                    let code = match error {
-                        crate::config_eval::RetainedNativePreflightError::CurrentAuthority(_) => {
-                            ActivatabilityReasonCode::CurrentAuthorityRejected
-                        }
-                        crate::config_eval::RetainedNativePreflightError::Artifact(_) => {
-                            ActivatabilityReasonCode::ArtifactUnavailable
-                        }
-                        crate::config_eval::RetainedNativePreflightError::Provider(_) => {
-                            ActivatabilityReasonCode::ProviderUnavailable
-                        }
-                    };
-                    reasons.push(ActivatabilityReason {
-                        code,
-                        detail: bounded_detail(format!("{error:#}")),
-                    });
-                },
-            );
-        } else if mode == RetainedActivationMode::Direct {
-            super::validate_direct_reactivation(target, running, &manifest_path(profile, target))
-                .unwrap_or_else(|error| {
-                    push_reason(
-                        &mut reasons,
-                        ActivatabilityReasonCode::ModuleAbiIncompatible,
-                        error,
-                    );
+        let params = ActivateConfigParams {
+            profile: profile.to_path_buf(),
+            running_image: Some(running.clone()),
+            ..ActivateConfigParams::default()
+        };
+        crate::config_eval::preflight_retained_manifest(&params, &manifest).unwrap_or_else(
+            |error| {
+                let code = match error {
+                    crate::config_eval::RetainedNativePreflightError::CurrentAuthority(_) => {
+                        ActivatabilityReasonCode::CurrentAuthorityRejected
+                    }
+                    crate::config_eval::RetainedNativePreflightError::Artifact(_) => {
+                        ActivatabilityReasonCode::ArtifactUnavailable
+                    }
+                    crate::config_eval::RetainedNativePreflightError::Provider(_) => {
+                        ActivatabilityReasonCode::ProviderUnavailable
+                    }
+                };
+                reasons.push(ActivatabilityReason {
+                    code,
+                    detail: bounded_detail(format!("{error:#}")),
                 });
-        }
+            },
+        );
     }
 
     RetainedActivatabilityReport::new(
@@ -385,6 +374,7 @@ fn reevaluate_manifest(
     Ok(manifest)
 }
 
+#[cfg(test)]
 fn manifest_path(profile: &Path, target: &ConfigGeneration) -> std::path::PathBuf {
     profile.join(format!("gen-{}/manifest.json", target.number))
 }
