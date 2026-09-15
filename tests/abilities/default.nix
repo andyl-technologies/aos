@@ -429,6 +429,9 @@
   kubernetesPackageServices = import ./kubernetes-package-services.nix {
     inherit lib pkgs;
   };
+  upgradeTransitionFixture = import ./upgrade-transition-fixture.nix {
+    inherit lib pkgs;
+  };
   attestationVerifierService = import ./attestation-verifier-service.nix {
     inherit lib pkgs;
   };
@@ -919,6 +922,7 @@ in
   assert !(builtins.head effectFixture.kubernetes.operations ? semantics);
   assert effectFixture.omitted == emptyEffects;
   assert kubernetesPackageServices;
+  assert upgradeTransitionFixture;
   assert attestationVerifierService;
   assert kubernetesObjectManagementCore;
   assert serviceManagement;

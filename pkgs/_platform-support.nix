@@ -442,6 +442,7 @@ let
     "desired-prune-test"
     "landlock-argv-test"
     "nuke-references"
+    "upgrade-transition-fixture"
   ];
 
   # These outputs implement Linux kernel, userspace, guest or service
@@ -824,6 +825,7 @@ let
     "tests/_landlock-argv-test/module.nix" = "linux-only-config-source";
     "tests/_test-http-server/module.nix" = "linux-only-config-source";
     "tests/_test-static-cache-server/module.nix" = "linux-only-config-source";
+    "tests/_upgrade-transition-fixture/module.nix" = "linux-only-config-source";
     "tools/_conntrackd/module.nix" = "linux-only-config-source";
     "tools/_smartmontools/module.nix" = "linux-only-config-source";
     "tools/aos/_abilities/configuration-provider/module.nix" = "target-independent-source";
