@@ -60,8 +60,8 @@
     inherit value;
   };
   configPath = resultOf "daemon-configuration" "execution-path";
-  runtimePath = resultOf "runtime-storage" "storage-path";
-  logPath = resultOf "log-storage" "storage-path";
+  runtimePath = resultOf "runtime-storage" "planned-path";
+  logPath = resultOf "log-storage" "planned-path";
   configurationFragments = [
     (literal ''
       General {
@@ -257,6 +257,14 @@
     configuration
     service
   ];
+  staticAbilityFragments =
+    builtins.map
+    (fragment: (serviceManagement.splitContribution fragment).declarations)
+    abilityFragments;
+  configuredAbilityFragments =
+    builtins.map
+    (fragment: (serviceManagement.splitContribution fragment).configured)
+    abilityFragments;
 in {
   options.conntrackd = {
     enable = mkOption {
@@ -357,6 +365,9 @@ in {
           }
         ];
       }
+      (lib.mkMerge (builtins.map
+        (fragment: {aos.abilities = fragment;})
+        staticAbilityFragments))
       (lib.mkIf cfg.enable {aos.abilities.instances."conntrack-tools" = {};})
     ]
     ++ builtins.map
@@ -365,7 +376,7 @@ in {
       (cfg.enable && cfg.mode == mode)
       (lib.mkMerge (builtins.map
         (fragment: {aos.abilities = fragment;})
-        abilityFragments)))
+        configuredAbilityFragments)))
     ["stats" "sync"]
   );
 }
