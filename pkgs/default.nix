@@ -1080,7 +1080,7 @@
     src = aosWorkspaceSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source/crates";
-    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
+    hash = "sha256-lxX52CDtxFb8nm9+KekWeMHMi1jWP9N7ubCUc+EzQ6A=";
   };
 
   # Auto-discover packages from subdirectories.
