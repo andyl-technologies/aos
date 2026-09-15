@@ -210,6 +210,8 @@
     builtins.stringLength value
     <= 257
     && builtins.match "[A-Za-z0-9+._-]+:[A-Za-z0-9._-]+" value != null);
+  requestReferenceKeyType = moduleTypes.addCheck moduleTypes.str (value:
+    localKeyType.check value || declarationKeyType.check value);
   qualifiedNameType = moduleTypes.addCheck moduleTypes.str (syntaxMatches "qualified-name-v1");
   stageType = moduleTypes.enum ["build" "initrd" "host" "system-container" "user" "application-container"];
   interfaceKeyType = strictRecordType "<lib.abilities.types.interface-key>" {
@@ -267,7 +269,7 @@
   operationResultReferenceType =
     (specialType "operation-result-reference" schemas.operationResultReference {
       _type = moduleTypes.enum ["aos-request-output-reference"];
-      request = localKeyType;
+      request = requestReferenceKeyType;
       output = localKeyType;
     })
     // {
@@ -275,7 +277,7 @@
         builtins.isAttrs value
         && builtins.attrNames value == ["_type" "output" "request"]
         && value._type == "aos-request-output-reference"
-        && localKeyType.check value.request
+        && requestReferenceKeyType.check value.request
         && localKeyType.check value.output;
     };
 in rec {
