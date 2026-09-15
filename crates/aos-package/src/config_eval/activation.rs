@@ -1214,10 +1214,6 @@ fn prepare_generation(
         &staged.join("generation-id"),
         format!("{generation_id}\n").as_bytes(),
     )?;
-    if has_authoritative_host_network(manifest) {
-        write_bytes_durable(&staged.join("host-network-authoritative"), b"\n")?;
-    }
-
     let outputs = manifest_string_array(manifest, "storePaths");
     let mut sources = manifest
         .pointer("/inputs/package_modules/modules")
@@ -1247,19 +1243,6 @@ fn prepare_generation(
     std::fs::rename(&staged, &dir)
         .with_context(|| format!("publishing durable generation {}", dir.display()))?;
     sync_directory(&params.profile)
-}
-
-fn has_authoritative_host_network(manifest: &Value) -> bool {
-    manifest
-        .pointer("/ownership/etc")
-        .and_then(Value::as_object)
-        .is_some_and(|owners| {
-            owners.iter().any(|(path, owner)| {
-                path.starts_with("systemd/network/")
-                    && path.ends_with(".network")
-                    && owner.as_str() == Some("@host")
-            })
-        })
 }
 
 fn validate_retained_manifest(generation_dir: &Path, expected_hash: &str) -> Result<()> {
@@ -1654,48 +1637,6 @@ mod tests {
             "0600",
         )
         .unwrap();
-    }
-
-    #[test]
-    fn only_authoritative_host_network_ownership_retires_metadata_seed() {
-        let host = json!({
-            "ownership": {
-                "etc": {"systemd/network/20-host.network": "@host"}
-            }
-        });
-        assert!(has_authoritative_host_network(&host));
-
-        for owner in ["@base", "firewall", "@host-forged"] {
-            let manifest = json!({
-                "ownership": {
-                    "etc": {"systemd/network/20-package.network": owner}
-                }
-            });
-            assert!(
-                !has_authoritative_host_network(&manifest),
-                "owner {owner:?} must not retire the metadata network seed"
-            );
-        }
-    }
-
-    #[test]
-    fn host_ownership_outside_networkd_does_not_retire_metadata_seed() {
-        for path in [
-            "network/20-host.network",
-            "systemd/network/20-host.netdev",
-            "systemd/networking/20-host.network",
-        ] {
-            let mut manifest = json!({"ownership": {"etc": {}}});
-            manifest
-                .pointer_mut("/ownership/etc")
-                .and_then(Value::as_object_mut)
-                .unwrap()
-                .insert(path.to_string(), json!("@host"));
-            assert!(
-                !has_authoritative_host_network(&manifest),
-                "path {path:?} is not an authoritative networkd network file"
-            );
-        }
     }
 
     #[test]
