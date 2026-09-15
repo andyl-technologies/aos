@@ -1249,17 +1249,6 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                     }
                 }
             }
-            if let Some(config_module) = platform.get("config_module") {
-                for output in ["config_output", "evaluation_base_lib"] {
-                    if let Some(path) = config_module
-                        .get(output)
-                        .and_then(|metadata| metadata.get("store_path"))
-                        .and_then(TomlValue::as_str)
-                    {
-                        inventory.roots.insert(path.to_string());
-                    }
-                }
-            }
             if let Some(expose_artifact) = platform.get("expose_artifact")
                 && let Some(path) = expose_artifact
                     .get("store_path")
@@ -1704,18 +1693,6 @@ store_path = "/nix/store/info111-system-image-info"
 
 [versions.platforms.x86_64-linux.images.delivery.update_payload]
 store_path = "/nix/store/payload111-system-update-payload"
-
-[versions.platforms.x86_64-linux.config_module.config_output]
-store_path = "/nix/store/cfg111-kernel-config"
-nar_hash = "sha256:config"
-nar_size = 3
-references = []
-
-[versions.platforms.x86_64-linux.config_module.evaluation_base_lib]
-store_path = "/nix/store/lib111-config-base-lib"
-nar_hash = "sha256:base-lib"
-nar_size = 4
-references = []
 
 [versions.platforms.x86_64-linux.expose_artifact]
 store_path = "/nix/store/expose111-kernel-expose"

@@ -1829,15 +1829,6 @@ pub enum RegistryCommand {
         /// Expose manifest.json to publish with package metadata
         #[arg(long = "expose-manifest")]
         expose_manifest: Option<String>,
-        /// Config-only module output to publish (contains module.nix and config-meta.json)
-        #[arg(long = "config-module")]
-        config_module: Option<String>,
-        /// Trusted AOS base-lib store path used for the publish-time options-only eval
-        #[arg(long = "config-base-lib", requires = "config_module")]
-        config_base_lib: Option<String>,
-        /// Named runtime output exposed to the config module (`name=/nix/store/...`)
-        #[arg(long = "config-dependency", requires = "config_module")]
-        config_dependencies: Vec<String>,
         /// Bless additional content for paths already recorded with different
         /// bits in the store/ graph instead of failing
         #[arg(long)]
@@ -5627,9 +5618,6 @@ async fn run_registry(
             image_formats,
             image_ukis,
             expose_manifest,
-            config_module,
-            config_base_lib,
-            config_dependencies,
             bless,
             no_ca,
             no_commit,
@@ -5657,9 +5645,6 @@ async fn run_registry(
                 image_formats,
                 image_ukis,
                 expose_manifest.as_deref(),
-                config_module.as_deref(),
-                config_base_lib.as_deref(),
-                config_dependencies,
                 *bless,
                 *no_ca,
                 *no_commit,
@@ -6919,70 +6904,6 @@ mod tests {
         })
     }
 
-    fn generation_verifier_evidence(
-        root: &Path,
-        label: &str,
-        mut record: attestation::GenAttestation,
-    ) -> (
-        PathBuf,
-        PreverifiedGenerationQuote,
-        package_attestation::PackageEventLogVerification,
-    ) {
-        use sha2::{Digest as _, Sha256};
-
-        let digest = attestation::record_hash(&record).expect("hash generation attestation");
-        let mut pcr = Sha256::new();
-        pcr.update([0_u8; 32]);
-        pcr.update(digest);
-        let pcr15 = hex::encode(pcr.finalize());
-        let checker = PreverifiedGenerationQuote {
-            pcrs: attestation::QuotedPcrs {
-                pcr7: "11".repeat(32),
-                pcr11: "22".repeat(32),
-                pcr12: "00".repeat(32),
-                pcr15,
-            },
-            bundle: package_attestation::PackageQuoteBundleBinding {
-                ak_public: "aa".repeat(8),
-                quote_message: "bb".repeat(8),
-                quote_signature: "cc".repeat(8),
-                quote_pcrs: "dd".repeat(8),
-            },
-        };
-        record.quote = hex::encode(
-            serde_json::to_vec(&embedded_generation_quote(&checker, &digest))
-                .expect("serialize embedded quote"),
-        );
-        assert_eq!(
-            attestation::record_hash(&record).expect("rehash quoted generation attestation"),
-            digest,
-            "the embedded quote must not change the measured record identity"
-        );
-
-        let record_path = root.join(format!("{label}.gen-attestation.json"));
-        fs::write(
-            &record_path,
-            serde_json::to_vec(&record).expect("serialize generation attestation"),
-        )
-        .expect("write generation attestation");
-        let measured_hash = format!("sha256:{}", hex::encode(digest));
-        let cel = package_attestation::PackageEventLogVerification {
-            pcr15: checker.pcrs.pcr15.clone(),
-            pcr15_baseline: None,
-            package_count: 0,
-            current_packages: Vec::new(),
-            generation_attestations: std::collections::BTreeMap::from([(
-                record.activation_id.clone(),
-                measured_hash,
-            )]),
-            generation_attestation_prefix_digests: std::collections::BTreeMap::from([(
-                record.activation_id,
-                Vec::new(),
-            )]),
-        };
-        (record_path, checker, cel)
-    }
-
     #[test]
     fn authoring_repository_uses_sha256_object_format() {
         let clone_dir = TempDir::new().unwrap();
@@ -7184,9 +7105,8 @@ mod tests {
             requires_features: vec!["attestation-v1".into()],
             expose: None,
             expose_artifact: None,
-            package_module: None,
             documentation: None,
-            ability: None,
+            contract: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
@@ -7280,434 +7200,45 @@ mod tests {
     }
 
     #[test]
-    fn generation_release_snapshot_reverifies_tag_catalog_and_store_graph() {
-        let tmp = TempDir::new().expect("temporary release repository");
-        let registry_cache = tmp.path().join("cache/aos-core");
-        let repo = registry_cache.join("repo.git");
-        fs::create_dir_all(&repo).expect("create repository");
-        crate::testutil::git(&repo, &["init", "--object-format=sha256"]);
+    fn generation_release_selection_filters_image_origin_package_modules() {
+        use config_eval::materialize::PackageModuleOrigin;
 
-        let keypair = crate::sshkey::Ed25519Keypair::from_seed([71_u8; 32]);
-        let private_key = tmp.path().join("release.key");
-        fs::write(&private_key, keypair.to_openssh_private_key("release"))
-            .expect("write release key");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&private_key, fs::Permissions::from_mode(0o600))
-                .expect("protect release key");
-        }
-
-        let store_hash = "00000000000000000000000000000000";
-        let nar_digest = "0".repeat(52);
-        let store_path = format!("/nix/store/{store_hash}-firewall-config");
-        let package_dir = repo.join("packages/f");
-        fs::create_dir_all(&package_dir).expect("create package directory");
-        fs::write(
-            package_dir.join("firewall.toml"),
-            format!(
-                r#"[package]
-name = "firewall"
-description = "fixture"
-license = "MIT"
-maintainer = "test"
-
-[[versions]]
-version = "1.0.0"
-
-[versions.platforms.x86_64-linux]
-store_path = "/nix/store/11111111111111111111111111111111-firewall"
-nar_hash = "sha256:{nar_digest}"
-nar_size = 1
-closure_size = 1
-source_drv = "/nix/store/22222222222222222222222222222222-firewall.drv"
-source_nar_hash = "sha256:{nar_digest}"
-references = []
-requires-features = ["package-module-v1", "attestation-v1"]
-provenance = "provenance/firewall.jsonl"
-
-[versions.platforms.x86_64-linux.package_module.config_output]
-store_path = "{store_path}"
-nar_hash = "sha256:{nar_digest}"
-nar_size = 7
-references = []
-
-[versions.platforms.x86_64-linux.package_module.module_abi_compat]
-min = 1
-max = 1
-
-[[versions.platforms.x86_64-linux.package_module.owns_roots]]
-root = "firewall"
-interface_abi = 1
-contributable = ["allowedTCPPorts"]
-"#
-            ),
-        )
-        .expect("write signed package catalog");
-        let store_dir = repo.join("store/00");
-        fs::create_dir_all(&store_dir).expect("create store graph shard");
-        fs::write(
-            store_dir.join(store_hash),
-            format!("nar:sha256:{nar_digest}:7\n"),
-        )
-        .expect("write signed store record");
-        crate::testutil::git(&repo, &["add", "."]);
-        crate::testutil::git(&repo, &["commit", "-m", "release fixture"]);
-        crate::testutil::git(
-            &repo,
-            &[
-                "-c",
-                "gpg.format=ssh",
-                "-c",
-                &format!("user.signingkey={}", private_key.display()),
-                "tag",
-                "-s",
-                "1.0.0",
-                "-m",
-                "release 1.0.0",
-            ],
-        );
-
-        let commit = crate::testutil::git(&repo, &["rev-parse", "HEAD"]);
-        let public_key = keypair.public_key_base64();
-        let fingerprint = security::key_fingerprint(&public_key);
-        let key = security::TrustedKey {
-            registry: "aos-core".to_string(),
-            algorithm: "Ed25519".to_string(),
-            public_key,
-            fingerprint: fingerprint.clone(),
-            source: security::KeySource::Tofu,
+        let package_module = |package: &str, origin| attestation::PackageModuleAttInput {
+            package: package.to_string(),
+            document_digest: format!("sha256:{}", "1".repeat(64)),
+            store_path: format!("/nix/store/{}-{package}-module", "a".repeat(32)),
+            nar_hash: format!("sha256:{}", "2".repeat(64)),
+            entrypoint: "module.nix".to_string(),
+            origin,
         };
-        let receipt = registry::ReleaseTrustReceipt {
-            schema: "aos.registry-release-trust/v1".to_string(),
-            registry: "aos-core".to_string(),
-            release_tag: "1.0.0".to_string(),
-            commit,
-            tag_signer_key: fingerprint.clone(),
-        };
-        let modules = attestation::PackageModulesAttInput {
-            closure_hash: format!("sha256:{}", "1".repeat(64)),
-            count: 1,
-            store_paths: vec![store_path.clone()],
-            nar_hashes: vec![format!("sha256:{nar_digest}")],
-            package_names: vec!["firewall".to_string()],
-            registry: Some("aos-core".to_string()),
-            release_tag: Some("1.0.0".to_string()),
-            tag_signer_key: Some(fingerprint),
-            realization: None,
-            provenance: serde_json::Value::Null,
-        };
-
-        let (_, _, release) = verify_generation_release_snapshot(
-            &repo,
-            std::slice::from_ref(&key),
-            vec![],
-            &receipt,
-            &modules,
-        )
-        .expect("verify signed release snapshot");
-        let release = release.expect("non-empty release");
-        assert_eq!(release.registry, "aos-core");
-        assert_eq!(release.release_tag, "1.0.0");
-        assert_eq!(release.package_modules[0].store_path, store_path);
-        assert_eq!(
-            release.package_modules[0].module_abi_compat,
-            types::ModuleAbiCompat { min: 1, max: 1 }
-        );
-        assert!(
-            verify_generation_release_snapshot(
-                &repo,
-                std::slice::from_ref(&key),
-                vec![key.fingerprint.clone()],
-                &receipt,
-                &modules,
-            )
-            .is_err(),
-            "an explicitly revoked signer must fail even if its key remains available"
-        );
-
-        let trusted_keys = tmp.path().join("trusted-keys.d");
-        fs::create_dir_all(&trusted_keys).expect("create trusted key directory");
-        let trusted_key_file = trusted_keys.join("aos-core.pub");
-        fs::write(&trusted_key_file, format!("{}\n", key.key_line()))
-            .expect("write active release key");
-        fs::write(
-            registry_cache.join(registry::RELEASE_TRUST_RECEIPT),
-            serde_json::to_vec(&receipt).expect("serialize release trust receipt"),
-        )
-        .expect("write release trust receipt");
-
-        let mut verified_modules = modules.clone();
-        verified_modules.closure_hash = graph_compile::reproject::hash_cjson(&serde_json::json!([
-            [&store_path, &verified_modules.nar_hashes[0]]
-        ]));
-        verified_modules.realization = Some(release.realization.clone());
-        verified_modules.provenance = serde_json::json!({
-            "module_abi_compat": [{"min": 1, "max": 1}]
-        });
-        let base_record = attestation::GenAttestation {
-            schema: attestation::GEN_ATTESTATION_SCHEMA.to_string(),
-            activation_id: format!("sha256:{}", "a1".repeat(32)),
-            generation_id: format!("sha256:{}", "b2".repeat(32)),
-            manifest_hash: format!("sha256:{}", "c3".repeat(32)),
-            inputs: attestation::AttestationInputs {
-                base_lib: attestation::BaseLibAttInput {
-                    store_path: "/nix/store/33333333333333333333333333333333-aos-base-lib"
-                        .to_string(),
-                    pcr11_expected: Some(format!("sha256:{}", "22".repeat(32))),
-                    abi_hash: format!("sha256:{}", "44".repeat(32)),
-                    module_abi: 1,
-                    root_verity_roothash: Some("55".repeat(32)),
-                    root_verity_uuid: None,
-                },
-                evaluator: attestation::EvaluatorAttInput {
-                    store_path: "/nix/store/44444444444444444444444444444444-aos-eval".to_string(),
-                    store_hash: "44444444444444444444444444444444".to_string(),
-                },
-                package_modules: verified_modules,
-                host_nix: attestation::HostNixAttInput {
-                    content_hash: format!("sha256:{}", "66".repeat(32)),
-                    store_path: "/nix/store/55555555555555555555555555555555-host-nix".to_string(),
-                    trust_mode: "platform".to_string(),
-                    platform: Some("aws".to_string()),
-                    signer_key: None,
-                },
-                runtime_modules: None,
-                instance_facts: attestation::InstanceFactsAttInput {
-                    facts_hash: format!("sha256:{}", "77".repeat(32)),
-                    store_path: "/nix/store/66666666666666666666666666666666-host-facts"
-                        .to_string(),
-                    platform: "aws".to_string(),
-                },
-            },
-            eval_mode: attestation::EVAL_MODE_PURE.to_string(),
-            quote_status: attestation::QUOTE_STATUS_QUOTED.to_string(),
-            quote: String::new(),
-        };
-        let policy_path = tmp.path().join("generation-policy.json");
-        fs::write(
-            &policy_path,
-            serde_json::to_vec(&serde_json::json!({
-                "schema": GENERATION_VERIFIER_POLICY_SCHEMA,
-                "expected_pcr7": "11".repeat(32),
-                "expected_pcr11": format!("sha256:{}", "22".repeat(32)),
-                "expected_pcr12": "00".repeat(32),
-                "expected_root_roothash": "55".repeat(32),
-                "trusted_platforms": ["aws"]
-            }))
-            .expect("serialize generation policy"),
-        )
-        .expect("write generation policy");
-        let quote_trust = AttestationQuoteTrust::IdentityPinned {
-            anchor: "test-enrolled-ak".to_string(),
-            ak_ek_trusted: true,
-        };
-        let (record_path, checker, cel) =
-            generation_verifier_evidence(tmp.path(), "valid", base_record.clone());
-        let summary = verify_generation_attestation_cli_with(
-            &record_path,
-            &policy_path,
-            None,
-            &checker,
-            &quote_trust,
-            &cel,
-            |attested_modules| {
-                verified_generation_release_from_paths(
-                    &tmp.path().join("cache"),
-                    vec![trusted_keys.clone()],
-                    attested_modules,
-                )
-            },
-        )
-        .expect("verify generation through the public-command core");
-        assert_eq!(summary.registry.as_deref(), Some("aos-core"));
-        assert_eq!(summary.release_tag.as_deref(), Some("1.0.0"));
-        assert_eq!(
-            summary.tag_signer_key.as_deref(),
-            Some(key.fingerprint.as_str())
-        );
-        assert_eq!(
-            summary.realization.as_deref(),
-            Some(release.realization.as_str())
-        );
-
-        fs::write(
-            &trusted_key_file,
-            format!("{}\n# revoked: {}\n", key.key_line(), key.key_line()),
-        )
-        .expect("revoke release key");
-        assert!(
-            verify_generation_attestation_cli_with(
-                &record_path,
-                &policy_path,
-                None,
-                &checker,
-                &quote_trust,
-                &cel,
-                |attested_modules| {
-                    verified_generation_release_from_paths(
-                        &tmp.path().join("cache"),
-                        vec![trusted_keys.clone()],
-                        attested_modules,
-                    )
-                },
-            )
-            .is_err(),
-            "the generation verifier must reject a signer revoked in the actual key store"
-        );
-        fs::write(&trusted_key_file, format!("{}\n", key.key_line()))
-            .expect("restore active release key");
-
-        let mut mismatched_receipt = receipt.clone();
-        mismatched_receipt.commit = "f".repeat(receipt.commit.len());
-        fs::write(
-            registry_cache.join(registry::RELEASE_TRUST_RECEIPT),
-            serde_json::to_vec(&mismatched_receipt).expect("serialize mismatched receipt"),
-        )
-        .expect("write mismatched receipt");
-        assert!(
-            verify_generation_attestation_cli_with(
-                &record_path,
-                &policy_path,
-                None,
-                &checker,
-                &quote_trust,
-                &cel,
-                |attested_modules| {
-                    verified_generation_release_from_paths(
-                        &tmp.path().join("cache"),
-                        vec![trusted_keys.clone()],
-                        attested_modules,
-                    )
-                },
-            )
-            .is_err(),
-            "the generation verifier must reject a receipt for another commit"
-        );
-        fs::write(
-            registry_cache.join(registry::RELEASE_TRUST_RECEIPT),
-            serde_json::to_vec(&receipt).expect("serialize restored receipt"),
-        )
-        .expect("restore release trust receipt");
-
-        let mut wrong_realization = base_record.clone();
-        wrong_realization.activation_id = format!("sha256:{}", "a2".repeat(32));
-        wrong_realization.inputs.package_modules.realization =
-            Some(format!("sha256:{}", "88".repeat(32)));
-        let (wrong_realization_path, wrong_realization_checker, wrong_realization_cel) =
-            generation_verifier_evidence(tmp.path(), "wrong-realization", wrong_realization);
-        assert!(
-            verify_generation_attestation_cli_with(
-                &wrong_realization_path,
-                &policy_path,
-                None,
-                &wrong_realization_checker,
-                &quote_trust,
-                &wrong_realization_cel,
-                |attested_modules| {
-                    verified_generation_release_from_paths(
-                        &tmp.path().join("cache"),
-                        vec![trusted_keys.clone()],
-                        attested_modules,
-                    )
-                },
-            )
-            .is_err(),
-            "the generation verifier must reject a different signed-store realization"
-        );
-
-        let mut wrong_catalog = base_record;
-        wrong_catalog.activation_id = format!("sha256:{}", "a3".repeat(32));
-        wrong_catalog.inputs.package_modules.nar_hashes[0] = format!("sha256:{}", "1".repeat(52));
-        wrong_catalog.inputs.package_modules.closure_hash =
-            graph_compile::reproject::hash_cjson(&serde_json::json!([[
-                &store_path,
-                &wrong_catalog.inputs.package_modules.nar_hashes[0]
-            ]]));
-        let (wrong_catalog_path, wrong_catalog_checker, wrong_catalog_cel) =
-            generation_verifier_evidence(tmp.path(), "wrong-catalog", wrong_catalog);
-        assert!(
-            verify_generation_attestation_cli_with(
-                &wrong_catalog_path,
-                &policy_path,
-                None,
-                &wrong_catalog_checker,
-                &quote_trust,
-                &wrong_catalog_cel,
-                |attested_modules| {
-                    verified_generation_release_from_paths(
-                        &tmp.path().join("cache"),
-                        vec![trusted_keys.clone()],
-                        attested_modules,
-                    )
-                },
-            )
-            .is_err(),
-            "the generation verifier must reject module evidence absent from the signed catalog"
-        );
-
-        let mut unrelated = modules;
-        unrelated.nar_hashes[0] = format!("sha256:{}", "1".repeat(52));
-        assert!(
-            verify_generation_release_snapshot(
-                &repo,
-                std::slice::from_ref(&key),
-                vec![],
-                &receipt,
-                &unrelated,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn generation_release_selection_filters_image_origins() {
         let mut modules = attestation::PackageModulesAttInput {
             registry: Some("aos-core".to_string()),
             release_tag: Some("1.0.0".to_string()),
             tag_signer_key: Some("1234abcd".to_string()),
-            realization: Some(format!("sha256:{}", "11".repeat(32))),
-            closure_hash: format!("sha256:{}", "22".repeat(32)),
-            count: 2,
-            store_paths: vec![
-                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-image-module".to_string(),
-                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-registry-module".to_string(),
+            realization: Some(format!("sha256:{}", "3".repeat(64))),
+            modules: vec![
+                package_module("image-package", PackageModuleOrigin::Image),
+                package_module("registry-package", PackageModuleOrigin::Registry),
             ],
-            nar_hashes: vec![
-                format!("sha256:{}", "33".repeat(32)),
-                format!("sha256:{}", "44".repeat(32)),
-            ],
-            package_names: vec!["image-package".to_string(), "registry-package".to_string()],
-            provenance: serde_json::json!({
-                "module_abi_compat": [
-                    {"min": 1, "max": 1},
-                    {"min": 1, "max": 1}
-                ],
-                "origins": ["image", "registry"]
-            }),
         };
 
         let subset = registry_package_module_subset(&modules)
             .expect("select registry subset")
             .expect("mixed evidence has a registry subset");
-        assert_eq!(subset.count, 1);
-        assert_eq!(subset.package_names, ["registry-package"]);
-        assert_eq!(subset.store_paths, [modules.store_paths[1].clone()]);
-        assert_eq!(subset.nar_hashes, [modules.nar_hashes[1].clone()]);
+        assert_eq!(subset.modules.len(), 1);
+        assert_eq!(subset.modules[0].package, "registry-package");
+        assert_eq!(subset.modules[0], modules.modules[1]);
 
         modules.registry = None;
         modules.release_tag = None;
         modules.tag_signer_key = None;
         modules.realization = None;
-        modules.provenance["origins"] = serde_json::json!(["image", "image"]);
+        modules.modules[1].origin = PackageModuleOrigin::Image;
         assert!(
             registry_package_module_subset(&modules)
-                .expect("accept image-only origins")
+                .expect("accept image-only package modules")
                 .is_none()
         );
-
-        modules.provenance["origins"] = serde_json::json!(["image"]);
-        assert!(registry_package_module_subset(&modules).is_err());
     }
 
     #[test]

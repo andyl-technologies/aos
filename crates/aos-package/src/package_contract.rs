@@ -789,37 +789,6 @@ pub(crate) fn resolve_package_document(
     Ok(Some(bound.package))
 }
 
-/// Seals a package document for sibling-module tests without registry I/O.
-#[cfg(test)]
-pub(crate) fn seal_test_package(package: PackageDocument) -> Result<VerifiedPackageContract> {
-    let manifest = aos_ability_model::encode_canonical(&package)
-        .context("encoding test ability package manifest")?;
-    let package_digest = package
-        .content_digest()
-        .context("computing test ability package digest")?;
-    let artifacts = collect_distinct_artifacts(&package)?;
-    let package_name = package.package.name.as_str().to_string();
-    let package_version = package.package.version.clone();
-    Ok(VerifiedPackageContract {
-        package,
-        interfaces: Vec::new(),
-        manifest_sha256: Sha256Digest::of_bytes(&manifest),
-        package_digest,
-        package_name,
-        package_version,
-        platform: "x86_64-linux".to_string(),
-        artifacts,
-        retention: VerifiedPackageContractRetentionManifest {
-            document_store_path: "/nix/store/00000000000000000000000000000000-test-abilities"
-                .to_string(),
-            document_nar_hash: Sha256Digest::of_bytes(&[]),
-            document_nar_size: 1,
-            document_references: Vec::new(),
-            artifacts: Vec::new(),
-        },
-    })
-}
-
 /// Validates and seals retention metadata for native live-store tests.
 #[cfg(test)]
 pub(crate) fn seal_test_retention_manifest(

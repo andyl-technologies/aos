@@ -1087,7 +1087,6 @@ mod tests {
             requires_features: Vec::new(),
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: None,
             permissions: Default::default(),

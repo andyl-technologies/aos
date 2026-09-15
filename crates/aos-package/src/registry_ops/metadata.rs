@@ -15,16 +15,14 @@ use crate::registry_ops::mac::PublishExposeManifest;
 use crate::registry_ops::provenance::bind_documentation_provenance;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::types::{
-    AttestationMeta, ConfigModuleMeta, DocumentationArtifactMeta, ExposeArtifactMeta,
-    FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1,
-    FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
-    FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
+    AttestationMeta, DocumentationArtifactMeta, ExposeArtifactMeta, FEATURE_ABILITIES_V1,
+    FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
+    FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
     FEATURE_MAC_PROFILE_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1,
     FEATURE_OPTIONAL_CREDENTIALS_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1,
     FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
     PACKAGE_META_FORMAT, PackageContractMeta, validate_attestation_meta,
-    validate_config_module_meta, validate_documentation_artifact_meta,
-    validate_expose_artifact_meta,
+    validate_documentation_artifact_meta, validate_expose_artifact_meta,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeSet, HashSet};
@@ -54,8 +52,6 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
     expose_manifest: Option<&PublishExposeManifest>,
     expose_artifact_info: Option<&StorePathInfo>,
     expose_manifest_digest: Option<&str>,
-    config_module: Option<&ConfigModuleMeta>,
-    config_attestation: Option<&AttestationMeta>,
     documentation: Option<&DocumentationArtifactMeta>,
     documentation_attestation: Option<&AttestationMeta>,
 ) -> Result<String> {
@@ -92,17 +88,7 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
             .context("new package platform metadata is not a TOML table")?;
         record_documentation_platform_fields(table, documentation)?;
     }
-    if let Some(module) = config_module {
-        let table = platform_table
-            .as_table_mut()
-            .context("new package platform metadata is not a TOML table")?;
-        record_config_module_platform_fields(table, name, module)?;
-        record_attestation_platform_fields(
-            table,
-            config_attestation
-                .context("config-module package is missing its publish provenance attestation")?,
-        )?;
-    } else if let Some(attestation) = documentation_attestation {
+    if let Some(attestation) = documentation_attestation {
         let table = platform_table
             .as_table_mut()
             .context("new package platform metadata is not a TOML table")?;
@@ -515,8 +501,6 @@ fn build_package_toml(
     expose_manifest: Option<&PublishExposeManifest>,
     expose_artifact_info: Option<&StorePathInfo>,
     expose_manifest_digest: Option<&str>,
-    config_module: Option<&ConfigModuleMeta>,
-    config_attestation: Option<&AttestationMeta>,
 ) -> Result<String> {
     build_package_toml_with_documentation(
         existing,
@@ -535,8 +519,6 @@ fn build_package_toml(
         expose_manifest,
         expose_artifact_info,
         expose_manifest_digest,
-        config_module,
-        config_attestation,
         None,
         None,
     )
@@ -904,62 +886,6 @@ fn record_documentation_platform_fields(
         "documentation".into(),
         toml::Value::try_from(documentation)
             .context("serializing package documentation metadata")?,
-    );
-    Ok(())
-}
-
-/// Records a `config_module` block and its fail-closed format gates.
-///
-/// # Errors
-///
-/// Returns an error when the package name or `module` metadata is malformed,
-/// including when a declaration escapes the package's private, owned, and
-/// contributed roots, or when TOML serialization fails.
-pub(crate) fn record_config_module_platform_fields(
-    table: &mut toml::map::Map<String, toml::Value>,
-    package_name: &str,
-    module: &ConfigModuleMeta,
-) -> Result<()> {
-    validate_config_module_meta(package_name, module)
-        .context("validating config-module metadata for publish")?;
-    let feature = toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string());
-    let required_features_value = table
-        .entry("requires-features")
-        .or_insert_with(|| toml::Value::Array(Vec::new()));
-    let required_features = required_features_value
-        .as_array_mut()
-        .context("platform requires-features metadata is not an array")?;
-    if !required_features.contains(&feature) {
-        required_features.push(feature.clone());
-    }
-    table.insert(
-        "min-format".into(),
-        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-    );
-    let references_value = table.entry("references").or_insert_with(|| {
-        let mut references = toml::map::Map::new();
-        references.insert("hashes".into(), toml::Value::Array(Vec::new()));
-        toml::Value::Table(references)
-    });
-    let references = references_value
-        .as_table_mut()
-        .context("platform references metadata is not a table")?;
-    references.insert(
-        "min-format".into(),
-        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-    );
-    let reference_features_value = references
-        .entry("requires-features")
-        .or_insert_with(|| toml::Value::Array(Vec::new()));
-    let reference_features = reference_features_value
-        .as_array_mut()
-        .context("platform references requires-features metadata is not an array")?;
-    if !reference_features.contains(&feature) {
-        reference_features.push(feature);
-    }
-    table.insert(
-        "config_module".into(),
-        toml::Value::try_from(module).context("serializing config-module metadata")?,
     );
     Ok(())
 }

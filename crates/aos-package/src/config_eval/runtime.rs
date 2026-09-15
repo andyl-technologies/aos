@@ -486,8 +486,6 @@ mod tests {
             LocalRuntimePackage {
                 version: "1.2.3".to_string(),
                 store_path: store_path.to_string(),
-                expose: None,
-                expose_artifact: None,
                 contract: None,
                 closure: RefCell::new(Some(vec![RuntimeClosurePin {
                     store_path_hash: store_path_hash(store_path).to_string(),

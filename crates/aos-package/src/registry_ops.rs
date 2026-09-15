@@ -49,7 +49,6 @@ mod attestation;
 mod cache_validation;
 mod channels;
 mod config;
-mod config_modules;
 mod distribution;
 mod documentation;
 mod git;
@@ -81,7 +80,7 @@ pub use distribution::{run_cache, run_origin, run_web};
 pub(crate) use git::{refresh_registry_object_store, validate_canonical_release_registry_index};
 pub use lifecycle::{LocalRegistry, authoring_clone_precious, create, local_registries};
 #[cfg(test)]
-pub(crate) use metadata::{record_named_output, record_package_contract};
+pub(crate) use metadata::record_named_output;
 pub(crate) use package_contract_transparency::{
     PACKAGE_CONTRACT_TRANSPARENCY_LOG, package_contract_transparency_sequence,
 };

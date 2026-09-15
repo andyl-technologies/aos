@@ -376,7 +376,6 @@ impl TestFixture {
             requires_features: Vec::new(),
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: None,
             contract: Some(ability),
             permissions: PermissionsMeta::default(),

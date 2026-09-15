@@ -1814,23 +1814,6 @@ fn release_snapshot_artifacts(
                         store_path: expose.store_path.clone(),
                     });
                 }
-                if let Some(config) = &entry.config_module {
-                    for (kind, output) in [
-                        ("config", Some(&config.config_output)),
-                        ("evaluation_base_lib", config.evaluation_base_lib.as_ref()),
-                    ] {
-                        if let Some(output) = output {
-                            artifacts.push(ReleaseSnapshotArtifact {
-                                package_name: package.package.name.clone(),
-                                package_version: version.version.clone(),
-                                platform: platform.clone(),
-                                artifact_kind: kind.to_string(),
-                                store_hash: store_hash_component(&output.store_path),
-                                store_path: output.store_path.clone(),
-                            });
-                        }
-                    }
-                }
                 if let Some(documentation) = &entry.documentation {
                     artifacts.push(ReleaseSnapshotArtifact {
                         package_name: package.package.name.clone(),
@@ -2640,33 +2623,6 @@ async fn verify_package_documentation(
                     )?,
                     "package documentation runtime identity mismatch"
                 );
-                if let Some(config) = &entry.config_module {
-                    anyhow::ensure!(
-                        document
-                            .identity
-                            .config_module_nar_hash
-                            .as_deref()
-                            .map(|digest| documentation_digest_matches(
-                                digest,
-                                &config.config_output.nar_hash,
-                            ))
-                            .transpose()?
-                            == Some(true),
-                        "package documentation config-module identity mismatch"
-                    );
-                }
-                if let Some(expose) = &entry.expose_artifact {
-                    anyhow::ensure!(
-                        document
-                            .identity
-                            .expose_artifact_nar_hash
-                            .as_deref()
-                            .map(|digest| documentation_digest_matches(digest, &expose.nar_hash))
-                            .transpose()?
-                            == Some(true),
-                        "package documentation expose-artifact identity mismatch"
-                    );
-                }
                 let ability_reference = ability_references
                     .iter()
                     .find(|reference| {
@@ -3947,8 +3903,6 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
             identity: aos_doc_model::DocumentationIdentity {
                 semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
                 runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
-                config_module_nar_hash: Some(format!("sha256:{}", "2".repeat(64))),
-                expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
                 source_nar_hash: format!("sha256:{}", "4".repeat(64)),
             },
         };

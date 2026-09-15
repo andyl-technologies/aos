@@ -649,7 +649,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     let cmd = &pinned_cmd;
 
     // The by-name config-module resolver is the on-host registry set: it reads
-    // each package's `config_module` block from `registry.toml`. This replaces
+    // each package's authenticated package module. This replaces
     // the removed registry-wide provides index. When apm config is
     // unavailable or corrupt, fail closed before selecting or fetching any
     // package. Off-host callers inject an explicit resolver instead.
@@ -992,24 +992,24 @@ fn package_module_release_identity(
     let registry = first
         .registry
         .as_deref()
-        .context("config module has no authenticated source registry")?;
+        .context("package module has no authenticated source registry")?;
     let receipt = first
         .release_trust
         .as_ref()
-        .context("config module registry has no verified signed-release receipt")?;
+        .context("package module registry has no verified signed-release receipt")?;
     if receipt.registry != registry {
-        anyhow::bail!("config module registry disagrees with its signed-release receipt");
+        anyhow::bail!("package module registry disagrees with its signed-release receipt");
     }
     let mut realization_members = Vec::with_capacity(modules.len());
     for member in modules {
         let member_registry = member
             .registry
             .as_deref()
-            .context("config module has no authenticated source registry")?;
+            .context("package module has no authenticated source registry")?;
         let member_receipt = member
             .release_trust
             .as_ref()
-            .context("config module registry has no verified signed-release receipt")?;
+            .context("package module registry has no verified signed-release receipt")?;
         if member_registry != registry || member_receipt != receipt {
             anyhow::bail!("one configuration generation cannot mix signed registry releases");
         }
@@ -1906,8 +1906,8 @@ fn validate_retained_manifest_inputs(
         .iter()
         .map(|module| module.package.clone())
         .collect::<Vec<_>>();
-    if module_paths != retained.config_module_paths
-        || module_packages != retained.config_module_packages
+    if module_paths != retained.package_module_paths
+        || module_packages != retained.package_module_packages
         || source.inputs.host_nix.store_path != retained.host_nix_ref
         || source.inputs.instance_facts.facts_hash != retained.facts_hash
         || source.inputs.instance_facts.store_path != retained.facts_ref
@@ -1935,9 +1935,9 @@ fn validate_cross_abi_inputs(
         )))
         .chain(
             retained
-                .config_module_paths
+                .package_module_paths
                 .iter()
-                .map(|path| ("config module", Path::new(path))),
+                .map(|path| ("package module", Path::new(path))),
         )
     {
         if !path.starts_with("/nix/store/") || !path.exists() {
@@ -1960,7 +1960,7 @@ fn validate_cross_abi_inputs(
     Ok(())
 }
 
-/// Verifies the exact retained host and config-module bytes before evaluation.
+/// Verifies the exact retained host and package-module bytes before evaluation.
 ///
 /// The source manifest is already authenticated by the generation record. Its
 /// hashes therefore remain the authority; a fresh image must prove that every
@@ -1986,13 +1986,13 @@ where
         );
     }
 
-    if retained.config_module_paths.len() != source.inputs.package_modules.modules.len() {
-        anyhow::bail!("retained config-module paths and authenticated NAR hashes differ in count");
+    if retained.package_module_paths.len() != source.inputs.package_modules.modules.len() {
+        anyhow::bail!("retained package-module paths and authenticated NAR hashes differ in count");
     }
     for ((path, package), expected) in retained
-        .config_module_paths
+        .package_module_paths
         .iter()
-        .zip(&retained.config_module_packages)
+        .zip(&retained.package_module_packages)
         .zip(
             source
                 .inputs
@@ -2003,10 +2003,10 @@ where
         )
     {
         let actual = nar_hash(Path::new(path))
-            .with_context(|| format!("hashing retained config module {package} at {path}"))?;
+            .with_context(|| format!("hashing retained package module {package} at {path}"))?;
         if !crate::verify::sha256_hashes_equal(&actual, expected)? {
             anyhow::bail!(
-                "retained config module {package} at {path} does not match authenticated NAR hash: expected {expected}, got {actual}"
+                "retained package module {package} at {path} does not match authenticated NAR hash: expected {expected}, got {actual}"
             );
         }
     }
@@ -2093,7 +2093,7 @@ fn retained_store_path_nar_hash_in(
 /// Evaluates the closed host package-selection projection before resolution.
 ///
 /// This is the bootstrap half of the fixpoint: package names must be known
-/// before their registry config modules can be fetched, while the complete
+/// before their registry package modules can be fetched, while the complete
 /// runtime evaluation needs those modules. Only `aos.apm.desiredPackages` is
 /// declared, so unrelated host definitions remain lazy.
 fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {

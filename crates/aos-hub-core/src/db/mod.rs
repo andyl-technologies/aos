@@ -4318,14 +4318,6 @@ impl Database {
                     if let Some(expose) = &entry.expose_artifact {
                         catalog_artifacts.push(("expose", expose.store_path.as_str()));
                     }
-                    if let Some(config) = &entry.config_module {
-                        catalog_artifacts
-                            .push(("config", config.config_output.store_path.as_str()));
-                        if let Some(base_lib) = &config.evaluation_base_lib {
-                            catalog_artifacts
-                                .push(("evaluation_base_lib", base_lib.store_path.as_str()));
-                        }
-                    }
                     if let Some(documentation) = &entry.documentation {
                         catalog_artifacts
                             .push(("documentation", documentation.store_path.as_str()));

@@ -340,7 +340,6 @@ fn package_metas_for_platform(
                 requires_features,
                 expose: plat.expose.clone(),
                 expose_artifact: plat.expose_artifact.clone(),
-                config_module: plat.config_module.clone(),
                 documentation: plat.documentation.clone(),
                 contract: plat.contract.clone(),
                 permissions: plat.permissions.clone(),

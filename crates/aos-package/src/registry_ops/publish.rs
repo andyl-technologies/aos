@@ -9,14 +9,9 @@ use crate::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
 use crate::registry::parse::{ImageVerificationState, parse_package_file};
 use crate::registry::sb_certs::SbCertsToml;
 use crate::registry::{objectstore, sb_certs, store};
-use crate::registry_ops::attestation::{
-    publish_config_attestation_meta, publish_documentation_attestation_meta,
-};
+use crate::registry_ops::attestation::publish_documentation_attestation_meta;
 use crate::registry_ops::config::{
     format_size, read_registry_toml, registry_content_addressed, resolve_registry_name,
-};
-use crate::registry_ops::config_modules::{
-    parse_config_dependency_outputs, read_publish_config_module,
 };
 use crate::registry_ops::documentation::publish_package_documentation;
 use crate::registry_ops::git::{
@@ -35,7 +30,6 @@ use crate::registry_ops::package_contract::{
 use crate::registry_ops::package_contract_transparency::append_package_contract_transparency_log;
 use crate::registry_ops::provenance::{
     append_package_provenance_transparency_log, bind_documentation_provenance,
-    publish_config_provenance_artifact_with_documentation,
     publish_documentation_provenance_artifact, publish_provenance_artifact_with_documentation,
     resolve_package_provenance_signer, validate_external_provenance_signer,
 };
@@ -85,11 +79,6 @@ use std::path::{Path, PathBuf};
 /// provenance, so they must be published with `--key-id`; a raw `--key` has
 /// no stable roster id for the DSSE builder identity.
 ///
-/// `--config-module` publishes the package's config-only companion output.
-/// `--config-base-lib` is required with it and records the exact options
-/// library used by the restricted, no-IFD options-only evaluation. The signed
-/// provenance binds the payload, config output, base lib, and (when present)
-/// expose manifest in one statement.
 /// # Errors
 ///
 /// Fails when required package distribution metadata is missing, empty, or a
@@ -99,9 +88,8 @@ use std::path::{Path, PathBuf};
 /// given in triples or their files/metadata disagree, when the `nix path-info` /
 /// `nix-store` queries fail for the store path, when `--expose-manifest`
 /// cannot be parsed or validated, when the config output references a
-/// derivation, when authored config metadata disagrees with the mechanically
-/// evaluated/scanned interface, or when a file write, the commit, or the
-/// object-store refresh fails. Policy-bearing internal components also fail
+/// derivation, when a file write, the commit, or the object-store refresh
+/// fails. Policy-bearing internal components also fail
 /// when published directly, and aggregate roots fail unless their restricted
 /// component and corresponding source are direct runtime references.
 ///
@@ -125,9 +113,6 @@ pub async fn publish(
     image_formats: &[String],
     image_uki_paths: &[String],
     expose_manifest_path: Option<&str>,
-    config_module_path: Option<&str>,
-    config_base_lib_path: Option<&str>,
-    config_dependencies: &[String],
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -161,9 +146,6 @@ pub async fn publish(
         image_formats,
         image_uki_paths,
         expose_manifest_path,
-        config_module_path,
-        config_base_lib_path,
-        config_dependencies,
         bless,
         no_ca,
         no_commit,
@@ -204,9 +186,6 @@ pub(crate) async fn publish_to_registry_directory(
     image_formats: &[String],
     image_uki_paths: &[String],
     expose_manifest_path: Option<&str>,
-    config_module_path: Option<&str>,
-    config_base_lib_path: Option<&str>,
-    config_dependencies: &[String],
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -250,12 +229,6 @@ pub(crate) async fn publish_to_registry_directory(
             image_uki_paths.len()
         );
     }
-    if config_module_path.is_some() != config_base_lib_path.is_some() {
-        bail!("--config-module and --config-base-lib must be specified together");
-    }
-    if config_module_path.is_none() && !config_dependencies.is_empty() {
-        bail!("--config-dependency requires --config-module");
-    }
     if !image_payload_paths.is_empty() && !sysroot {
         bail!("image artifact options are valid only with --sysroot");
     }
@@ -277,27 +250,6 @@ pub(crate) async fn publish_to_registry_directory(
     let pkg_version = version_override.unwrap_or(&parsed_version);
     validate_package_name(pkg_name)?;
     let platform = resolve_publish_platform(&info.path, platform_override)?;
-    let config_module_info = config_module_path
-        .map(introspect_store_path)
-        .transpose()
-        .context("introspecting config-module store path")?;
-    let config_base_lib_info = config_base_lib_path
-        .map(introspect_store_path)
-        .transpose()
-        .context("introspecting config base-lib")?;
-    let config_dependency_outputs = parse_config_dependency_outputs(config_dependencies, &info)?;
-    let config_module_bundle = match (config_module_info.as_ref(), config_base_lib_info.as_ref()) {
-        (Some(output), Some(base_lib)) => Some(read_publish_config_module(
-            output,
-            base_lib,
-            pkg_name,
-            &info.path,
-            &config_dependency_outputs,
-        )?),
-        (None, None) => None,
-        _ => bail!("--config-module and --config-base-lib must be specified together"),
-    };
-    let config_module = config_module_bundle.as_ref().map(|bundle| &bundle.metadata);
     // Bind the exact disk, canonical per-format metadata, and paired UKI
     // before catalog construction. Committed Secure Boot policy is enforced
     // below.
@@ -350,8 +302,6 @@ pub(crate) async fn publish_to_registry_directory(
         license,
         &info,
         source_info.as_ref(),
-        config_module,
-        expose_artifact_info.as_ref(),
     )?;
     let mut local_provenance_signer;
     let provenance_signer: &mut dyn ProvenanceSigner =
@@ -380,23 +330,7 @@ pub(crate) async fn publish_to_registry_directory(
         String::new()
     };
 
-    let config_attestation = config_module
-        .map(|module| {
-            publish_config_attestation_meta(
-                pkg_name,
-                pkg_version,
-                &platform,
-                &info,
-                module,
-                expose_manifest_digest.as_deref(),
-            )
-        })
-        .transpose()?
-        .map(|attestation| {
-            bind_documentation_provenance(attestation, pkg_name, &platform, &documentation.metadata)
-        })
-        .transpose()?;
-    let documentation_attestation = if config_module.is_none() && expose_manifest.is_none() {
+    let documentation_attestation = if expose_manifest.is_none() {
         Some(bind_documentation_provenance(
             publish_documentation_attestation_meta(pkg_name, pkg_version, &platform, &info)?,
             pkg_name,
@@ -423,64 +357,42 @@ pub(crate) async fn publish_to_registry_directory(
         expose_manifest.as_ref(),
         expose_artifact_info.as_ref(),
         expose_manifest_digest.as_deref(),
-        config_module,
-        config_attestation.as_ref(),
         Some(&documentation.metadata),
         documentation_attestation.as_ref(),
     )?;
-    let provenance_artifact =
-        if let (Some(module), Some(attestation)) = (config_module, config_attestation.as_ref()) {
-            Some(
-                publish_config_provenance_artifact_with_documentation(
-                    &name,
-                    pkg_name,
-                    pkg_version,
-                    &platform,
-                    &info,
-                    source_info.as_ref(),
-                    module,
-                    expose_manifest_digest.as_deref(),
-                    attestation,
-                    &documentation.metadata,
-                    provenance_signer,
-                )
-                .await?,
+    let provenance_artifact = match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
+        (Some(manifest), Some(manifest_digest)) => {
+            publish_provenance_artifact_with_documentation(
+                &name,
+                pkg_name,
+                pkg_version,
+                &platform,
+                &info,
+                source_info.as_ref(),
+                manifest,
+                manifest_digest,
+                &documentation.metadata,
+                provenance_signer,
             )
-        } else {
-            match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
-                (Some(manifest), Some(manifest_digest)) => {
-                    publish_provenance_artifact_with_documentation(
-                        &name,
-                        pkg_name,
-                        pkg_version,
-                        &platform,
-                        &info,
-                        source_info.as_ref(),
-                        manifest,
-                        manifest_digest,
-                        &documentation.metadata,
-                        provenance_signer,
-                    )
-                    .await?
-                }
-                _ => Some(
-                    publish_documentation_provenance_artifact(
-                        &name,
-                        pkg_name,
-                        pkg_version,
-                        &platform,
-                        &info,
-                        source_info.as_ref(),
-                        &documentation.metadata,
-                        documentation_attestation.as_ref().context(
-                            "documentation-only package is missing attestation metadata",
-                        )?,
-                        provenance_signer,
-                    )
-                    .await?,
-                ),
-            }
-        };
+            .await?
+        }
+        _ => Some(
+            publish_documentation_provenance_artifact(
+                &name,
+                pkg_name,
+                pkg_version,
+                &platform,
+                &info,
+                source_info.as_ref(),
+                &documentation.metadata,
+                documentation_attestation
+                    .as_ref()
+                    .context("documentation-only package is missing attestation metadata")?,
+                provenance_signer,
+            )
+            .await?,
+        ),
+    };
 
     std::fs::write(&toml_path, &new_content)?;
     let provenance_path = if let Some(artifact) = &provenance_artifact {
@@ -521,20 +433,6 @@ pub(crate) async fn publish_to_registry_directory(
                         artifact.path
                     )
                 })?,
-        )
-    } else {
-        None
-    };
-    let config_store_report = if let Some(output) = &config_module_info {
-        Some(
-            write_store_files(&dir, &output.path, content_addressed, bless, printer).with_context(
-                || {
-                    format!(
-                        "writing store/ realisation graph for config module {}",
-                        output.path
-                    )
-                },
-            )?,
         )
     } else {
         None
@@ -590,12 +488,6 @@ pub(crate) async fn publish_to_registry_directory(
     }
     if let Some(report) = &expose_store_report {
         printer.kv("Expose artifact graph", &report.summary());
-    }
-    if let Some(output) = &config_module_info {
-        printer.kv("Config module", &output.path);
-    }
-    if let Some(report) = &config_store_report {
-        printer.kv("Config module graph", &report.summary());
     }
     printer.kv("Documentation", &documentation.info.path);
     printer.kv("Documentation graph", &documentation_store_report.summary());
@@ -789,9 +681,6 @@ pub(crate) async fn publish_canonical_release_entry(
         &[],
         &[],
         None,
-        None,
-        None,
-        &[],
         false,
         false,
         true,

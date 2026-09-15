@@ -1237,7 +1237,6 @@ fn resolved_image_package_module(
         requires_features: Vec::new(),
         expose: None,
         expose_artifact: None,
-        config_module: None,
         documentation: None,
         contract: Some(contract),
         permissions: Default::default(),
@@ -1409,23 +1408,32 @@ mod tests {
 
     use super::*;
     use crate::config_eval::PackageOutputs;
-    use crate::config_eval::ability_rounds::{
-        PendingAbilityRequest, SelectedAbilityBinding, SelectedProviderModule,
-    };
-    use crate::types::{ApmMeta, ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat};
+    use crate::config_eval::ability_rounds::{SelectedAbilityBinding, SelectedProviderModule};
+    use crate::types::ApmMeta;
 
     fn member(pkg: &str, module_artifact: Option<&str>) -> WorkingSetMember {
+        let ability = module_artifact.map(|store_path| {
+            ability_document(
+                pkg,
+                ModuleLocator {
+                    artifact: ArtifactReference {
+                        content: Sha256Digest::of_bytes(store_path.as_bytes()),
+                        store_path: store_path.to_string(),
+                        nar_hash: Sha256Digest::of_bytes(b"module NAR"),
+                        closure: Sha256Digest::of_bytes(b"module closure"),
+                    },
+                    path: RelativePath::new("module.nix").unwrap(),
+                },
+            )
+        });
         WorkingSetMember {
             registry: None,
             release_trust: None,
             config_realization: None,
             package: pkg.to_string(),
             version: Some("1.0.0".to_string()),
-            ability: None,
+            ability,
             ability_store_path: None,
-            module_artifact: module_artifact.map(str::to_string),
-            module_artifact_nar_hash: module_artifact.map(|_| "sha256:test".to_string()),
-            module_abi_compat: Some(ModuleAbiCompat { min: 1, max: 2 }),
             outputs: super::super::PackageOutputs::default(),
         }
     }
@@ -1469,34 +1477,11 @@ mod tests {
             source_nar_hash: "sha256:source".to_string(),
             expose: None,
             expose_artifact: None,
-            config_module: None,
             documentation: None,
-            ability: None,
+            contract: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
-        }
-    }
-
-    fn image_config_module() -> ConfigModuleMeta {
-        ConfigModuleMeta {
-            module_artifact: ConfigOutputMeta {
-                store_path: "/nix/store/11111111111111111111111111111111-image-web-config"
-                    .to_string(),
-                nar_hash: "sha256:test".to_string(),
-                nar_size: 1,
-                references: Vec::new(),
-            },
-            evaluation_base_lib: None,
-            dependency_outputs: BTreeMap::new(),
-            module_abi_compat: ModuleAbiCompat { min: 1, max: 1 },
-            declares: Vec::new(),
-            declaration_schema: Vec::new(),
-            requires: Vec::new(),
-            owns_roots: Vec::new(),
-            contributes: Vec::new(),
-            provides_capabilities: Vec::new(),
-            artifacts: Default::default(),
         }
     }
 
@@ -1514,140 +1499,6 @@ mod tests {
                 .to_string()
                 .contains("disagrees with immutable image metadata"),
             "{error:#}"
-        );
-    }
-
-    #[test]
-    fn unavailable_registry_uses_image_module_with_exact_identity_pins() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let missing = crate::registry::tests::registry_config("andyl", 500);
-        let registries =
-            RegistrySet::load_for_config_evaluation(temp.path(), &[&missing], "x86_64-linux")
-                .unwrap();
-        let store_path = "/nix/store/00000000000000000000000000000000-image-web";
-        let image_packages = BTreeMap::from([(
-            "image-web".to_string(),
-            super::super::runtime::LocalRuntimePackage {
-                version: "1.2.3".to_string(),
-                store_path: store_path.to_string(),
-                expose: None,
-                expose_artifact: None,
-                config_module: Some(image_config_module()),
-                ability: None,
-                closure: std::cell::RefCell::new(None),
-            },
-        )]);
-        let resolver = RegistryConfigModules {
-            registries,
-            installed: Vec::new(),
-            image_packages,
-        };
-
-        let by_name = resolver.config_module("image-web").unwrap();
-        let exact = resolver
-            .config_module_exact("image-web", Some("1.2.3"), Some(store_path))
-            .unwrap();
-
-        assert_eq!(by_name.registry, "");
-        assert_eq!(by_name.platform, "image");
-        assert_eq!(exact.version, "1.2.3");
-        assert_eq!(exact.runtime_output, store_path);
-        assert!(
-            resolver
-                .config_module_exact("image-web", Some("9.9.9"), Some(store_path))
-                .is_none()
-        );
-        assert!(
-            resolver
-                .config_module_exact(
-                    "image-web",
-                    Some("1.2.3"),
-                    Some("/nix/store/22222222222222222222222222222222-other"),
-                )
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn loaded_registry_name_prevents_exact_image_fallback_across_a_gap() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let loaded = crate::registry::tests::registry_config("loaded", 600);
-        let missing = crate::registry::tests::registry_config("missing", 500);
-        let nar_digest = "0".repeat(52);
-        let catalog = format!(
-            r#"[package]
-name = "image-web"
-description = "registry package with the same name as an image package"
-license = "MIT"
-maintainer = "test"
-
-[[versions]]
-version = "2.0.0"
-
-[versions.platforms.x86_64-linux]
-store_path = "/nix/store/22222222222222222222222222222222-image-web"
-nar_hash = "sha256:{nar_digest}"
-nar_size = 1
-closure_size = 1
-source_drv = "/nix/store/33333333333333333333333333333333-image-web.drv"
-source_nar_hash = "sha256:{nar_digest}"
-provenance = "provenance/image-web.jsonl"
-
-[versions.platforms.x86_64-linux.references]
-hashes = []
-min-format = 1
-requires-features = ["config-module-v1", "attestation-v1"]
-
-[versions.platforms.x86_64-linux.config_module.module_artifact]
-store_path = "/nix/store/44444444444444444444444444444444-image-web-config"
-nar_hash = "sha256:{nar_digest}"
-nar_size = 1
-references = []
-
-[versions.platforms.x86_64-linux.config_module.module_abi_compat]
-min = 1
-max = 1
-"#
-        );
-        let _ = crate::registry::tests::make_registry(
-            &temp,
-            &loaded.name,
-            loaded.priority,
-            &[("image-web", &catalog)],
-        );
-        let registries = RegistrySet::load_for_config_evaluation(
-            temp.path(),
-            &[&loaded, &missing],
-            "x86_64-linux",
-        )
-        .unwrap();
-        let image_store_path = "/nix/store/00000000000000000000000000000000-image-web";
-        let image_packages = BTreeMap::from([(
-            "image-web".to_string(),
-            super::super::runtime::LocalRuntimePackage {
-                version: "1.2.3".to_string(),
-                store_path: image_store_path.to_string(),
-                expose: None,
-                expose_artifact: None,
-                config_module: Some(image_config_module()),
-                ability: None,
-                closure: std::cell::RefCell::new(None),
-            },
-        )]);
-        let resolver = RegistryConfigModules {
-            registries,
-            installed: Vec::new(),
-            image_packages,
-        };
-
-        let by_name = resolver.config_module("image-web").unwrap();
-
-        assert_eq!(by_name.registry, "loaded");
-        assert_eq!(by_name.version, "2.0.0");
-        assert!(
-            resolver
-                .config_module_exact("image-web", Some("1.2.3"), Some(image_store_path))
-                .is_none()
         );
     }
 
@@ -1699,11 +1550,10 @@ max = 1
 
     #[test]
     fn locked_entry_coerces_authenticated_config_roots_to_nix_paths() {
-        let mut web = member(
+        let web = member(
             "web",
             Some("/nix/store/00000000000000000000000000000000-web-config"),
         );
-        web.module_artifact_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
         let working = vec![web];
         let text = render_package_module_list(&working, true).unwrap();
 
@@ -1752,40 +1602,11 @@ max = 1
     }
 
     #[test]
-    fn package_module_and_legacy_config_module_cannot_coexist() {
-        let mut web = member(
-            "web",
-            Some("/nix/store/11111111111111111111111111111111-web-config"),
-        );
-        web.ability = Some(ability_document(
-            "web",
-            ModuleLocator {
-                artifact: ArtifactReference {
-                    content: Sha256Digest::of_bytes(b"web module"),
-                    store_path: "/nix/store/00000000000000000000000000000000-web-module"
-                        .to_string(),
-                    nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
-                    closure: Sha256Digest::of_bytes(b"web module closure"),
-                },
-                path: RelativePath::new("module.nix").unwrap(),
-            },
-        ));
-
-        let error = render_package_module_list(&[web], true).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("both current ability-module and legacy")
-        );
-    }
-
-    #[test]
     fn locked_entry_admits_self_and_dependency_outputs() {
         let mut web = member(
             "web",
             Some("/nix/store/00000000000000000000000000000000-web-config"),
         );
-        web.module_artifact_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
         web.outputs.self_output = Some("/nix/store/hash-web-runtime".to_string());
         web.outputs.dependencies.insert(
             "openssl".to_string(),
@@ -1910,46 +1731,6 @@ max = 1
     }
 
     #[test]
-    fn pending_child_projection_decodes_from_the_real_module_fixed_point() {
-        let Ok(mut command) = command_from_path("nix-instantiate") else {
-            return;
-        };
-        let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let repository = crate_root
-            .parent()
-            .and_then(Path::parent)
-            .expect("aos-package must remain below the workspace root");
-        let expression = format!(
-            "let pkgs = import {} {{}}; in import {} {{ inherit (pkgs) lib; returnPending = true; }}",
-            nix_path(&repository.join("default.nix")),
-            nix_path(&repository.join("tests/abilities/composition-driver.nix")),
-        );
-        command.env_remove("LD_LIBRARY_PATH");
-        command.args(["--eval", "--strict", "--json", "--expr", &expression]);
-
-        let output = command
-            .output()
-            .expect("the AOS Nix evaluator must execute the fixed-point fixture");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let projection: PendingAbilityProjection = serde_json::from_slice(&output.stdout)
-            .expect("the real camelCase Nix projection must decode");
-        let pending = projection
-            .requests
-            .values()
-            .next()
-            .expect("the fixture must emit one pending child");
-
-        assert_eq!(projection.requests.len(), 1);
-        assert_eq!(pending.local_request_key, "child");
-        assert_eq!(pending.requirement, "network");
-        assert_eq!(pending.provider_instance, "provider:manager");
-    }
-
-    #[test]
     fn entry_nix_imports_rendered_typed_facts_module() {
         let root = std::env::temp_dir().join(format!(
             "aos-stock-facts-test-{}-{:?}",
@@ -2059,44 +1840,6 @@ max = 1
         assert!(command.get_envs().any(|(name, value)| {
             name == "XDG_CACHE_HOME"
                 && value.is_some_and(|value| value == "/var/cache/aos/nix-eval")
-        }));
-    }
-
-    #[test]
-    fn realise_command_uses_registry_caches_without_delegating_trust() {
-        let mut command = Command::new("nix-store");
-        configure_realise_command(
-            &mut command,
-            "/nix/store/hash-config",
-            &[
-                "https://cache-one.example".to_string(),
-                "https://cache-two.example".to_string(),
-            ],
-            Path::new("/run/aos-eval/nix-cache"),
-            1,
-        );
-
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            args,
-            [
-                "--realise",
-                "/nix/store/hash-config",
-                "--option",
-                "substituters",
-                "https://cache-one.example https://cache-two.example",
-                "--option",
-                "require-sigs",
-                "false",
-                "-v",
-            ]
-        );
-        assert!(command.get_envs().any(|(name, value)| {
-            name == "XDG_CACHE_HOME"
-                && value.is_some_and(|value| value == "/run/aos-eval/nix-cache")
         }));
     }
 }

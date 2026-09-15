@@ -328,7 +328,6 @@ mod tests {
                 source_nar_hash: String::new(),
                 expose: None,
                 expose_artifact: None,
-                config_module: None,
                 documentation: None,
                 contract: None,
                 permissions: Default::default(),
