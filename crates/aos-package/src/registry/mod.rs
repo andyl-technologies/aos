@@ -941,10 +941,7 @@ pub(crate) mod tests {
                     "nar_size": 1
                 },
                 "module_abi_compat": {"min": 1, "max": 2},
-                "declares": [
-                    format!("{package}._aosExposeConfigProjection"),
-                    format!("{package}.enable")
-                ],
+                "declares": [format!("{package}.enable")],
                 "owns_roots": [{
                     "root": package,
                     "interface_abi": 1
