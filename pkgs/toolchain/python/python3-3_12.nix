@@ -59,24 +59,20 @@ in
       );
     runtimeDeps =
       [
+        # Keep the optional standard-library extensions complete in the
+        # native bootstrap interpreter as well as cross-built interpreters.
+        bzip2
+        ncurses
+        readline
+        sqlite
+        zstd
         zlib
         openssl
         xz
-      ]
-      ++ (
-        if stdenv.isCross
-        then [
-          bzip2
-          ncurses
-          readline
-          sqlite
-          zstd
-          # CPython 3.12 uses system libffi for _ctypes. Its historical
-          # --with-system-ffi switch is no longer recognized by configure.
-          libffi
-        ]
-        else []
-      );
+        # CPython 3.12 uses system libffi for _ctypes. Its historical
+        # --with-system-ffi switch is no longer recognized by configure.
+        libffi
+      ];
     propagatedDeps = [];
 
     # CPython models PyTupleObject's variable-length ob_item storage as a
