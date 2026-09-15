@@ -335,6 +335,9 @@
   systemServiceModules = import ./system-service-modules.nix {
     inherit lib;
   };
+  dockerService = import ./docker-service.nix {
+    inherit pkgs lib;
+  };
   compositionDriver = import ./composition-driver.nix {
     inherit lib;
   };
@@ -720,6 +723,7 @@ in
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.attrNames smokeAbilityProjection.requirements == ["canonical-edge"];
+  assert dockerService;
   assert (builtins.head smokePublishedInterfaces).document == smokeAbilityProjection.interfaces.default;
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
   assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
