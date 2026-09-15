@@ -104,6 +104,7 @@ pub(crate) struct ProviderContext {
     pub(crate) manager_bus_id: String,
     pub(crate) manager_owner: String,
     pub(crate) unit_identity: Option<String>,
+    pub(crate) unit_owned: bool,
 }
 
 #[derive(Debug, Serialize)]

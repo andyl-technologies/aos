@@ -91,6 +91,76 @@ pub(crate) fn matches(
     Ok(link_matches && drop_in_matches && receipt_matches)
 }
 
+pub(crate) fn remove(
+    paths: &UnitPaths,
+    rendered: &RenderedUnit,
+    resource: &ResourceId,
+    unit_name: &str,
+    revision: RevisionId,
+) -> Result<()> {
+    let presence = removal_presence(paths, rendered, resource, unit_name, revision)?;
+
+    if presence.unit {
+        remove_managed_path(&paths.unit)?;
+    }
+    if presence.drop_in {
+        remove_managed_path(&paths.drop_in)?;
+    }
+    if presence.receipt {
+        remove_managed_path(&paths.receipt)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_removal(
+    paths: &UnitPaths,
+    rendered: &RenderedUnit,
+    resource: &ResourceId,
+    unit_name: &str,
+    revision: RevisionId,
+) -> Result<()> {
+    removal_presence(paths, rendered, resource, unit_name, revision)?;
+    Ok(())
+}
+
+struct RemovalPresence {
+    unit: bool,
+    drop_in: bool,
+    receipt: bool,
+}
+
+fn removal_presence(
+    paths: &UnitPaths,
+    rendered: &RenderedUnit,
+    resource: &ResourceId,
+    unit_name: &str,
+    revision: RevisionId,
+) -> Result<RemovalPresence> {
+    let expected_receipt = receipt_bytes(resource, unit_name, revision)?;
+    let unit_present = verify_symlink_exact_or_absent(&paths.unit, &rendered.source)?;
+    let drop_in_present = verify_file_exact_or_absent(&paths.drop_in, &rendered.drop_in)?;
+    let receipt_present = verify_file_exact_or_absent(&paths.receipt, &expected_receipt)?;
+
+    Ok(RemovalPresence {
+        unit: unit_present,
+        drop_in: drop_in_present,
+        receipt: receipt_present,
+    })
+}
+
+pub(crate) fn is_absent(paths: &UnitPaths) -> Result<bool> {
+    for path in [&paths.unit, &paths.drop_in, &paths.receipt] {
+        match fs::symlink_metadata(path) {
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspecting {}", path.display()));
+            }
+        }
+    }
+    Ok(true)
+}
+
 fn receipt_bytes(resource: &ResourceId, unit_name: &str, revision: RevisionId) -> Result<Vec<u8>> {
     let receipt = RevisionReceipt {
         schema: RECEIPT_SCHEMA,
@@ -122,6 +192,12 @@ fn ensure_directory(path: &Path) -> Result<()> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 fs::create_dir(&current)
                     .with_context(|| format!("creating {}", current.display()))?;
+                if let Some(parent) = current
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                {
+                    sync_directory(parent)?;
+                }
             }
             Err(error) => {
                 return Err(error).with_context(|| format!("inspecting {}", current.display()));
@@ -129,6 +205,32 @@ fn ensure_directory(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn verify_symlink_exact_or_absent(path: &Path, expected: &Path) -> Result<bool> {
+    match fs::read_link(path) {
+        Ok(target) if target == expected => Ok(true),
+        Ok(_) => bail!("refusing to remove changed symlink {}", path.display()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+fn verify_file_exact_or_absent(path: &Path, expected: &[u8]) -> Result<bool> {
+    match fs::read(path) {
+        Ok(bytes) if bytes == expected => Ok(true),
+        Ok(_) => bail!("refusing to remove changed file {}", path.display()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+fn remove_managed_path(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("managed path has no parent"))?;
+    fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+    sync_directory(parent)
 }
 
 fn publish_symlink(path: &Path, target: &Path) -> Result<()> {
@@ -200,7 +302,7 @@ mod tests {
     use aos_contract::Sha256Digest;
     use tempfile::TempDir;
 
-    use super::{matches, materialize, paths_for};
+    use super::{is_absent, matches, materialize, paths_for, remove};
     use crate::render::RenderedUnit;
 
     fn resource() -> ResourceId {
@@ -318,6 +420,64 @@ mod tests {
                 &rendered
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn removal_is_exact_durable_and_idempotent() {
+        let temporary = TempDir::new().expect("temporary root exists");
+        let artifact = temporary.path().join("artifact");
+        fs::create_dir(&artifact).expect("artifact directory exists");
+        let source = artifact.join("example.service");
+        fs::write(&source, b"[Service]\nExecStart=/example\n").expect("source unit exists");
+        let rendered = RenderedUnit {
+            source,
+            drop_in: b"[Service]\nSuccessExitStatus=0 2\n".to_vec(),
+        };
+        let revision = RevisionId(Sha256Digest::from_bytes([7; 32]));
+        let resource = resource();
+        let paths = materialize(
+            temporary.path(),
+            "example.service",
+            revision,
+            &resource,
+            &rendered,
+        )
+        .expect("materialization succeeds");
+
+        remove(&paths, &rendered, &resource, "example.service", revision)
+            .expect("exact removal succeeds");
+        assert!(is_absent(&paths).expect("absence is observable"));
+        remove(&paths, &rendered, &resource, "example.service", revision)
+            .expect("interrupted removal reconciliation is idempotent");
+
+        materialize(
+            temporary.path(),
+            "example.service",
+            revision,
+            &resource,
+            &rendered,
+        )
+        .expect("materialization can be recreated");
+        fs::remove_file(&paths.unit).expect("interrupted removal can unlink the unit first");
+        remove(&paths, &rendered, &resource, "example.service", revision)
+            .expect("reconciliation finishes a partial removal");
+        assert!(is_absent(&paths).expect("reconciled removal is observable"));
+
+        materialize(
+            temporary.path(),
+            "example.service",
+            revision,
+            &resource,
+            &rendered,
+        )
+        .expect("materialization can be recreated again");
+        fs::write(&paths.drop_in, b"changed").expect("drop-in can change concurrently");
+        assert!(remove(&paths, &rendered, &resource, "example.service", revision).is_err());
+        assert!(paths.unit.is_symlink());
+        assert_eq!(
+            fs::read(&paths.drop_in).expect("changed drop-in remains"),
+            b"changed"
         );
     }
 }
