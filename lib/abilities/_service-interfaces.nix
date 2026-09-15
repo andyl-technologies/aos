@@ -690,7 +690,7 @@
       });
     directories =
       canonical "service-directories" "aos.service.directories"
-      "Contributes managed runtime, state, cache, and log directories to a service resource."
+      "Contributes managed runtime, state, configuration, cache, and log directories to a service resource."
       serviceTypes.directories
       serviceTypes.observations.directories
       (targetResource: {

@@ -460,7 +460,7 @@
   managedDirectory = types.record {
     fields = {
       path = types.relativePath;
-      purpose = types.enum ["cache" "logs" "runtime" "state"];
+      purpose = types.enum ["cache" "configuration" "logs" "runtime" "state"];
       mode = types.fileMode;
       retention = types.enum ["service-lifetime" "restart" "persistent"];
       owner = {

@@ -39,6 +39,14 @@
       retention = "persistent";
     }];
   };
+  configurationDirectoryService = minimalService // {
+    directories.managed = [{
+      path = "rancher/k3s";
+      purpose = "configuration";
+      mode = "0755";
+      retention = "persistent";
+    }];
+  };
   escapedDirectoryService = minimalService // {
     directories.managed = [{
       path = "../k3s";
@@ -1301,6 +1309,7 @@ in
     relative_path = "../containerd.sock";
   };
   assert succeedsAs serviceTypes.serviceDeclaration nestedDirectoryService;
+  assert succeedsAs serviceTypes.serviceDeclaration configurationDirectoryService;
   assert !succeedsAs serviceTypes.serviceDeclaration escapedDirectoryService;
   assert succeedsAs serviceTypes.filesystemReadiness {scope = "local-filesystems";};
   assert succeedsAs serviceTypes.namedCredential {
