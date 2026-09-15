@@ -402,37 +402,20 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
       ...
     }: let
-      serviceManagement = lib.abilities.interfaces.serviceManagement;
       qualifiedResultOf = request: output: {
         _type = "aos-request-output-reference";
         inherit request output;
       };
-      environmentId = lib.abilities.environmentId {
-        authority = "deployment";
-        key = "krb5-test";
-        stage = "host";
-      };
       evaluate = krb5Config:
-        lib.evalModules {
-          inherit lib;
+        mkSystem {
+          systemName = "krb5-package-check";
           modules = [
-            ../../modules/abilities/default.nix
             {
-              options.assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-                contributable = true;
-              };
-              aos.abilities.environment = builtins.removeAttrs environmentId ["_type"];
+              environment.systemPackages = [self];
               krb5Kdc = krb5Config;
-            }
-          ];
-          packageModules = [
-            {
-              name = "krb5";
-              module.imports = [./_krb5-kdc/module.nix];
             }
           ];
         };
@@ -454,6 +437,7 @@ in
       detachedAdministration = evaluate {enableAdminServer = true;};
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
+      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "krb5:" name);
       abilities = enabled.config.aos.abilities;
       administrationAbilities = withAdministration.config.aos.abilities;
       disabledAbilities = disabled.config.aos.abilities;
@@ -481,8 +465,8 @@ in
         && assertionsHold withAdministration
         && !assertionsHold missingPassword
         && !assertionsHold detachedAdministration
-        && disabledAbilities.instances == {}
-        && disabledAbilities.requests == {}
+        && ownedValues disabledAbilities.instances == {}
+        && ownedValues disabledAbilities.requests == {}
         && builtins.elem "krb5:named-credential-resolution"
         (builtins.attrNames disabledAbilities.requirementTemplates)
         && builtins.elem "krb5:credential-delivery"

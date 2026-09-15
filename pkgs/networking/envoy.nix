@@ -1239,11 +1239,12 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
     }: let
       serviceManagement = lib.abilities.interfaces.serviceManagement;
       environmentId = lib.abilities.environmentId {
-        authority = "deployment";
-        key = "envoy-test";
+        authority = "system-image";
+        key = "envoy-package-check";
         stage = "host";
       };
       credentialProvider = lib.abilities.instanceId {
@@ -1261,29 +1262,18 @@ in
           lifetime = "persistent";
         };
       evalConfig = envoyConfig:
-        lib.evalModules {
+        mkSystem {
+          systemName = "envoy-package-check";
           modules = [
-            ../../modules/abilities/default.nix
             {
-              options.assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-                contributable = true;
-              };
-              aos.abilities.environment = builtins.removeAttrs environmentId ["_type"];
+              environment.systemPackages = [self];
               envoy = envoyConfig;
             }
           ];
-          packageModules = [
-            {
-              name = "envoy";
-              module.imports = [./_envoy/module.nix];
-            }
-          ];
-          inherit lib;
         };
       assertionsHoldFor = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
+      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "envoy:" name);
       disabledConfig = evalConfig {};
       evaluatedConfig = evalConfig {
         enable = true;
@@ -1426,8 +1416,8 @@ in
         && !assertionsHoldFor invalidTls
         && !assertionsHoldFor invalidAdmin
         && !invalidAdminLog.success
-        && disabledAbilities.instances == {}
-        && disabledAbilities.requests == {}
+        && ownedValues disabledAbilities.instances == {}
+        && ownedValues disabledAbilities.requests == {}
         && builtins.elem "envoy:credential-delivery" disabledRequirements
         && builtins.elem "envoy:service-credentials" disabledRequirements
         && builtins.elem "envoy:service-lifecycle" disabledRequirements
