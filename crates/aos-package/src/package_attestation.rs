@@ -24,7 +24,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::types::{ApmMeta, InstalledMeta, PackageMeta};
+use crate::types::PackageMeta;
+#[cfg(test)]
+use crate::types::{ApmMeta, InstalledMeta};
 
 const AOS_PACKAGE_CEL_REL: &str = "run/log/aos-packages.cel";
 const PCR_EXTEND_ENV: &str = "AOS_SYSTEMD_PCREXTEND";
@@ -49,21 +51,6 @@ const PCR_BASELINE_EVENT_TYPE: &str = "aos-pcr-baseline";
 const PACKAGE_EVENT_TYPE: &str = "aos-package";
 const PACKAGE_SET_EVENT_TYPE: &str = "aos-package-set";
 const GENERATION_EVENT_TYPE: &str = "aos-generation-attestation";
-
-/// Measures the activated exposed package set into PCR 15.
-///
-/// The event log is rooted at `root` so tests and image construction can
-/// exercise the same code against an alternate filesystem. PCR extension runs
-/// only for the live `/` root; non-live roots still get deterministic event
-/// log contents.
-///
-/// # Errors
-///
-/// Returns an error if package metadata cannot be converted into measurement
-/// events, the event log cannot be written, or live PCR extension fails.
-pub(crate) fn measure_activated_packages(root: &Path, installed: &[InstalledMeta]) -> Result<()> {
-    measure_activated_packages_inner(root, installed, root == Path::new("/"), None)
-}
 
 /// Measures a canonical generation-attestation record into the shared AOS
 /// application-PCR event stream.
@@ -247,49 +234,6 @@ fn generation_measurement_recovery(
 /// Returns an error when an explicitly configured TPM transport is invalid.
 pub(crate) fn tpm_available() -> Result<bool> {
     Ok(tpm2_tcti()?.is_some())
-}
-
-fn measure_activated_packages_inner(
-    root: &Path,
-    installed: &[InstalledMeta],
-    live_root: bool,
-    pcrextend_override: Option<&Path>,
-) -> Result<()> {
-    let events = measurement_events(root, installed)?;
-    // PCR 15 measurement requires a TPM. On systems without one — most VMs,
-    // TPM-less hardware — the live baseline read and PCR extension are skipped:
-    // the package event log is still written deterministically, but there is no
-    // PCR to anchor it to, so the seed/activation path degrades gracefully
-    // rather than failing the whole reconcile. Measured-boot systems (TPM
-    // present) keep the full read-then-extend path. `tpm2_tcti` already encodes
-    // presence detection (the `AOS_TPM2_TCTI` override, then `/dev/tpmrm0` /
-    // `/dev/tpm0`). An explicit `pcrextend_override` forces the live path so
-    // unit tests can exercise extension/rollback without a TPM.
-    let measure_pcr = live_root && (pcrextend_override.is_some() || tpm2_tcti()?.is_some());
-    let needs_baseline = measure_pcr && !event_log_has_records(root)?;
-    let mut logged_events = Vec::with_capacity(events.len() + usize::from(measure_pcr));
-    if needs_baseline {
-        let pcr15 = read_current_pcr15()
-            .context("reading current PCR 15 before first live package measurement")?;
-        logged_events.push(pcr_baseline_event(&pcr15));
-    }
-    logged_events.extend(events.iter().cloned());
-    let append = append_event_log(root, &logged_events)?;
-    if measure_pcr {
-        let pcrextend = match pcrextend_override {
-            Some(path) => path.to_path_buf(),
-            None => trusted_systemd_pcrextend_path()?,
-        };
-        if let Err(err) = extend_pcr15(&pcrextend, &events) {
-            if let Err(rollback_err) = rollback_event_log_append(&append) {
-                bail!(
-                    "extending PCR 15 failed and rolling back the package event log also failed: {err:#}; rollback: {rollback_err:#}"
-                );
-            }
-            return Err(err);
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -590,6 +534,7 @@ struct PendingPackageSet {
     next_digest: usize,
 }
 
+#[cfg(test)]
 fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<MeasurementEvent>> {
     let mut packages = Vec::new();
     for entry in installed {
@@ -618,6 +563,7 @@ fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<Me
     Ok(events)
 }
 
+#[cfg(test)]
 fn measured_package(_root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Result<MeasuredPackage> {
     let root_digest = package_root_digest(entry, apm);
     let manifest_digest = package_manifest_digest(apm)?;
@@ -647,6 +593,7 @@ fn measured_package(_root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Resul
     Ok(package)
 }
 
+#[cfg(test)]
 fn package_root_digest(entry: &InstalledMeta, apm: &ApmMeta) -> String {
     if let Some(root_digest) = &apm.attestation.root_digest {
         return canonical_digest(root_digest);
@@ -659,10 +606,12 @@ fn package_root_digest(entry: &InstalledMeta, apm: &ApmMeta) -> String {
     package_store_path_root_digest(&entry.store_path)
 }
 
+#[cfg(test)]
 fn package_store_path_root_digest(store_path: &str) -> String {
     format!("sha256:{}", digest_hex(store_path.as_bytes()))
 }
 
+#[cfg(test)]
 fn package_manifest_digest(apm: &ApmMeta) -> Result<String> {
     let contract = apm.contract.as_ref().with_context(|| {
         format!(
@@ -690,6 +639,7 @@ pub(crate) fn package_measurement_digest(
 }
 
 /// Returns the manifest digest format used in package measurement events.
+#[cfg(test)]
 pub(crate) fn package_manifest_digest_bytes(bytes: &[u8]) -> String {
     format!("sha256:{}", digest_hex(bytes))
 }
@@ -1322,6 +1272,7 @@ fn replay_package_event_log_pcr15(event_log: &str) -> Result<String> {
     Ok(hex::encode(pcr))
 }
 
+#[cfg(test)]
 fn package_event(package: MeasuredPackage) -> Result<MeasurementEvent> {
     let word = package_tuple_word(&package);
     let digest = format!("sha256:{}", digest_for_word(&word));
@@ -1338,6 +1289,7 @@ fn package_event(package: MeasuredPackage) -> Result<MeasurementEvent> {
     })
 }
 
+#[cfg(test)]
 fn package_set_event(package_events: &[MeasurementEvent]) -> MeasurementEvent {
     let digests = package_events
         .iter()
@@ -2331,31 +2283,17 @@ fn event_log_has_records(root: &Path) -> Result<bool> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct EventLogAppend {
-    path: PathBuf,
-    previous_len: u64,
-    created_file: bool,
-}
-
-fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<EventLogAppend> {
+fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<()> {
     let path = rooted_absolute_path(root, Path::new("/").join(AOS_PACKAGE_CEL_REL).as_path())?;
-    let (existing_lines, needs_separator, previous_len, created_file) =
-        match fs::read_to_string(&path) {
-            Ok(log) => {
-                let previous_len = fs::metadata(&path)
-                    .with_context(|| format!("reading metadata for {}", path.display()))?
-                    .len();
-                (
-                    log.lines().count(),
-                    !log.is_empty() && !log.ends_with('\n'),
-                    previous_len,
-                    false,
-                )
-            }
-            Err(err) if err.kind() == ErrorKind::NotFound => (0, false, 0, true),
-            Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
-        };
+    let (existing_lines, needs_separator, created_file) = match fs::read_to_string(&path) {
+        Ok(log) => (
+            log.lines().count(),
+            !log.is_empty() && !log.ends_with('\n'),
+            false,
+        ),
+        Err(err) if err.kind() == ErrorKind::NotFound => (0, false, true),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
     let parent = path
         .parent()
         .with_context(|| format!("event log path has no parent: {}", path.display()))?;
@@ -2380,29 +2318,7 @@ fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<EventLog
             .sync_all()
             .with_context(|| format!("syncing {}", parent.display()))?;
     }
-    Ok(EventLogAppend {
-        path,
-        previous_len,
-        created_file,
-    })
-}
-
-fn rollback_event_log_append(append: &EventLogAppend) -> Result<()> {
-    if append.created_file && append.previous_len == 0 {
-        match fs::remove_file(&append.path) {
-            Ok(()) => return Ok(()),
-            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
-            Err(err) => {
-                return Err(err).with_context(|| format!("removing {}", append.path.display()));
-            }
-        }
-    }
-    let file = OpenOptions::new()
-        .write(true)
-        .open(&append.path)
-        .with_context(|| format!("opening {}", append.path.display()))?;
-    file.set_len(append.previous_len)
-        .with_context(|| format!("truncating {}", append.path.display()))
+    Ok(())
 }
 
 fn event_log_line(sequence_number: usize, event: &MeasurementEvent) -> Result<String> {
@@ -2802,7 +2718,11 @@ mod tests {
         let manifest_digest = package_manifest_digest_bytes(manifest);
         let measurement =
             package_measurement_digest(&apm.name, &apm.version, root_hash, &manifest_digest);
-        measure_activated_packages(tmp.path(), &[installed]).expect("measure packages");
+        append_event_log(
+            tmp.path(),
+            &measurement_events(tmp.path(), &[installed]).expect("events"),
+        )
+        .expect("write events");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         (log, root_hash.into(), measurement)
     }
@@ -2972,80 +2892,6 @@ mod tests {
 
         let err = measurement_events(tmp.path(), &[installed]).unwrap_err();
         assert!(format!("{err:#}").contains("does not match installed metadata"));
-    }
-
-    #[test]
-    fn measure_activated_packages_writes_event_log_under_root() {
-        let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"package":"web"}"#);
-
-        measure_activated_packages(tmp.path(), &[installed]).expect("measure");
-
-        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
-        assert!(log.contains("\"format\":\"aos-package-cel-v1\""));
-        assert!(log.contains("\"sequence_number\":1"));
-        assert!(log.contains("\"pcr_index\":15"));
-        assert!(log.contains("\"digests\":[{\"algorithm\":\"sha256\""));
-        assert!(log.contains("\"event_size\":"));
-        assert!(log.contains("\"event_type\":\"aos-package-set\""));
-        assert!(log.contains("\"event_type\":\"aos-package\""));
-        assert!(log.contains("\"package\":\"web\""));
-
-        let first: serde_json::Value =
-            serde_json::from_str(log.lines().next().expect("first log line")).expect("json");
-        assert_eq!(first["sequence_number"], serde_json::Value::from(1));
-        assert_eq!(first["pcr_index"], serde_json::Value::from(PCR_INDEX));
-        assert_eq!(first["digests"][0]["algorithm"], PCR_BANK);
-        assert_eq!(first["digests"][0]["digest"], first["digest"]);
-        assert_eq!(
-            first["event_size"],
-            serde_json::Value::from(first["event"].as_str().expect("event").len())
-        );
-    }
-
-    #[test]
-    fn measure_activated_packages_rolls_back_log_when_live_pcr_extend_fails() {
-        let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"package":"web"}"#);
-        let log_path = tmp.path().join(AOS_PACKAGE_CEL_REL);
-        fs::create_dir_all(log_path.parent().expect("log parent")).expect("log parent");
-        fs::write(&log_path, "existing\n").expect("existing log");
-        let failing_pcrextend = tmp.path().join("systemd-pcrextend");
-        fs::write(&failing_pcrextend, "").expect("failing pcrextend");
-
-        let err = measure_activated_packages_inner(
-            tmp.path(),
-            &[installed],
-            true,
-            Some(&failing_pcrextend),
-        )
-        .unwrap_err();
-
-        assert!(format!("{err:#}").contains("systemd-pcrextend"));
-        assert_eq!(
-            fs::read_to_string(&log_path).expect("log after rollback"),
-            "existing\n"
-        );
-    }
-
-    #[test]
-    fn measure_activated_packages_skips_pcr_when_no_tpm() {
-        // A live root with no TPM and no forced pcrextend must not fail: the
-        // package event log is still written, but no baseline event is added
-        // and no PCR extension is attempted. Self-skip on the rare build host
-        // that exposes a real TPM, where the live path would (correctly) run.
-        if tpm2_tcti().ok().flatten().is_some() {
-            return;
-        }
-        let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"package":"web"}"#);
-
-        measure_activated_packages_inner(tmp.path(), &[installed], true, None)
-            .expect("measure without a tpm succeeds");
-
-        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
-        assert!(log.contains("\"event_type\":\"aos-package\""));
-        assert!(!log.contains(PCR_BASELINE_EVENT_TYPE));
     }
 
     #[test]
@@ -3299,7 +3145,11 @@ mod tests {
         let measurement =
             package_measurement_digest(&apm.name, &apm.version, root_hash, &manifest_digest);
 
-        measure_activated_packages(tmp.path(), &[installed]).expect("measure");
+        append_event_log(
+            tmp.path(),
+            &measurement_events(tmp.path(), &[installed]).expect("events"),
+        )
+        .expect("write events");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let json = serde_json::to_string(&vec![PackageMeasurementCatalogEntry {
@@ -3493,7 +3343,11 @@ mod tests {
     #[test]
     fn package_event_log_verifier_accepts_empty_package_set_event() {
         let tmp = TempDir::new().expect("tempdir");
-        measure_activated_packages(tmp.path(), &[]).expect("measure empty package set");
+        append_event_log(
+            tmp.path(),
+            &measurement_events(tmp.path(), &[]).expect("events"),
+        )
+        .expect("write events");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
 
@@ -3512,8 +3366,16 @@ mod tests {
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let manifest_digest = package_manifest_digest_bytes(manifest);
         let measurement = package_measurement_digest("web", "1.0", root_hash, &manifest_digest);
-        measure_activated_packages(tmp.path(), &[installed]).expect("measure package set");
-        measure_activated_packages(tmp.path(), &[]).expect("measure empty package set");
+        append_event_log(
+            tmp.path(),
+            &measurement_events(tmp.path(), &[installed]).expect("events"),
+        )
+        .expect("write events");
+        append_event_log(
+            tmp.path(),
+            &measurement_events(tmp.path(), &[]).expect("events"),
+        )
+        .expect("write events");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let catalog = vec![catalog_meta(&root_hash, &measurement)];
