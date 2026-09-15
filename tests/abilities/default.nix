@@ -471,6 +471,9 @@
   kernelTunables = import ./kernel-tunables.nix {
     inherit lib;
   };
+  filesystemEntryProvider = import ./filesystem-entry-provider.nix {
+    inherit lib pkgs;
+  };
   compositionDriver = import ./composition-driver.nix {
     inherit lib;
   };
@@ -920,6 +923,7 @@ in
   assert postgresqlService;
   assert securityWrappers;
   assert releaseCoordinatorService;
+  assert filesystemEntryProvider;
   assert networkPolicyCore;
   assert kernelTunables;
   assert fails (normalizeBounded [true false null true false]);
