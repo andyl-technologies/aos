@@ -32,7 +32,9 @@
     then throw "resource controller transition must classify every canonical change kind exactly once"
     else actions;
   actionFor = change:
-    if builtins.hasAttr change.kind checkedActions
+    if change.kind == "retain-persistent"
+    then null
+    else if builtins.hasAttr change.kind checkedActions
     then checkedActions.${change.kind}
     else throw "resource controller transition received an unsupported change kind";
   activeChanges = builtins.filter (change: actionFor change != null) context.changes;

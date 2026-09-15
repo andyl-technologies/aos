@@ -43,6 +43,8 @@ pub enum ResourceChangeKind {
     Update,
     /// Removes a resource present in the authenticated current snapshot.
     Remove,
+    /// Retains persistent state because no explicit deletion was authorized.
+    RetainPersistent,
     /// Preserves the same logical resource and semantic revision.
     Unchanged,
     /// Repairs a desired resource that was observed at its exact revision but stopped.
@@ -155,8 +157,12 @@ pub struct ResourceChange {
     pub resource: aos_ability_model::ResourceId,
     /// Carries the authenticated current revision when the resource exists.
     pub current: Option<RevisionId>,
+    /// Carries the authenticated current lifetime when the resource exists.
+    pub current_lifetime: Option<aos_ability_model::ResourceLifetime>,
     /// Carries the normalized desired revision when the resource remains desired.
     pub desired: Option<RevisionId>,
+    /// Carries the normalized desired lifetime when the resource remains desired.
+    pub desired_lifetime: Option<aos_ability_model::ResourceLifetime>,
     /// Classifies the exact current and desired revision relationship.
     pub kind: ResourceChangeKind,
 }
@@ -381,14 +387,25 @@ pub(super) fn resource_changes(
     current: &[ResourceRevision],
     desired: &[ResourceRevision],
     observations: Option<&[RuntimeResourceObservation]>,
+    persistent_deletions: &BTreeSet<aos_ability_model::ResourceId>,
 ) -> Vec<ResourceChange> {
     let mut current: BTreeMap<_, _> = current
         .iter()
-        .map(|revision| (revision.resource.clone(), revision.revision))
+        .map(|revision| {
+            (
+                revision.resource.clone(),
+                (revision.revision, revision.lifetime),
+            )
+        })
         .collect();
     let desired: BTreeMap<_, _> = desired
         .iter()
-        .map(|revision| (revision.resource.clone(), revision.revision))
+        .map(|revision| {
+            (
+                revision.resource.clone(),
+                (revision.revision, revision.lifetime),
+            )
+        })
         .collect();
     let observations: BTreeMap<_, _> = observations
         .unwrap_or_default()
@@ -401,7 +418,14 @@ pub(super) fn resource_changes(
                 current.remove(resource);
             }
             RuntimeResourceState::Present { revision, .. } => {
-                current.insert(resource.clone(), *revision);
+                let Some(lifetime) = current
+                    .get(resource)
+                    .or_else(|| desired.get(resource))
+                    .map(|(_, lifetime)| *lifetime)
+                else {
+                    continue;
+                };
+                current.insert(resource.clone(), (*revision, lifetime));
             }
         }
     }
@@ -412,8 +436,12 @@ pub(super) fn resource_changes(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .filter_map(|resource| {
-            let current = current.get(&resource).copied();
-            let desired = desired.get(&resource).copied();
+            let current_entry = current.get(&resource).copied();
+            let desired_entry = desired.get(&resource).copied();
+            let current = current_entry.map(|(revision, _)| revision);
+            let current_lifetime = current_entry.map(|(_, lifetime)| lifetime);
+            let desired = desired_entry.map(|(revision, _)| revision);
+            let desired_lifetime = desired_entry.map(|(_, lifetime)| lifetime);
             let kind = match observations.get(&resource) {
                 Some(RuntimeResourceState::Present {
                     revision,
@@ -425,6 +453,13 @@ pub(super) fn resource_changes(
                 }) if desired == Some(*revision) => ResourceChangeKind::ReconcileDivergent,
                 _ => match (current, desired) {
                     (None, Some(_)) => ResourceChangeKind::Create,
+                    (Some(_), None)
+                        if current_lifetime
+                            == Some(aos_ability_model::ResourceLifetime::Persistent)
+                            && !persistent_deletions.contains(&resource) =>
+                    {
+                        ResourceChangeKind::RetainPersistent
+                    }
                     (Some(_), None) => ResourceChangeKind::Remove,
                     (Some(left), Some(right)) if left != right => ResourceChangeKind::Update,
                     (Some(_), Some(_)) => ResourceChangeKind::Unchanged,
@@ -434,11 +469,36 @@ pub(super) fn resource_changes(
             Some(ResourceChange {
                 resource,
                 current,
+                current_lifetime,
                 desired,
+                desired_lifetime,
                 kind,
             })
         })
         .collect()
+}
+
+pub(super) fn validate_resource_lifetime_continuity(
+    current: &[ResourceRevision],
+    desired: &[ResourceRevision],
+) -> Result<(), TransitionError> {
+    let current_lifetimes = current
+        .iter()
+        .map(|revision| (revision.resource.clone(), revision.lifetime))
+        .collect::<BTreeMap<_, _>>();
+    for revision in desired {
+        let Some(current_lifetime) = current_lifetimes.get(&revision.resource).copied() else {
+            continue;
+        };
+        if current_lifetime != revision.lifetime {
+            return Err(TransitionError::ResourceLifetimeChange {
+                resource: revision.resource.clone(),
+                current: current_lifetime,
+                desired: revision.lifetime,
+            });
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn controller_union(outcome: &CompositionOutcome) -> Vec<ControllerAssignment> {
@@ -707,7 +767,7 @@ mod tests {
             },
         ];
 
-        let changes = resource_changes(&current, &desired, Some(&observations));
+        let changes = resource_changes(&current, &desired, Some(&observations), &BTreeSet::new());
         let kinds = changes
             .into_iter()
             .map(|change| (change.resource, (change.kind, change.current)))
@@ -772,11 +832,107 @@ mod tests {
             },
         ];
 
-        let changes = resource_changes(&desired, &desired, Some(&observations));
+        let changes = resource_changes(&desired, &desired, Some(&observations), &BTreeSet::new());
 
         assert!(changes.iter().all(|change| {
             change.kind == ResourceChangeKind::Update && change.current == Some(old_revision)
         }));
+    }
+
+    #[test]
+    fn persistent_resource_removal_requires_explicit_deletion_authority() {
+        let resource = resource(&instance("provider"), "persistent");
+        let revision = ResourceRevision {
+            resource: resource.clone(),
+            kind: aos_ability_model::InterfaceName::new("aos.test-resource").unwrap(),
+            lifetime: ResourceLifetime::Persistent,
+            value: AbilityValue::new(serde_json::json!(true)).unwrap(),
+            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            revision: RevisionId(Sha256Digest::separated(
+                "aos.test.transition-context/v1",
+                b"persistent",
+            )),
+        };
+
+        let retained =
+            resource_changes(std::slice::from_ref(&revision), &[], None, &BTreeSet::new());
+        let deleted = resource_changes(
+            std::slice::from_ref(&revision),
+            &[],
+            None,
+            &BTreeSet::from([resource]),
+        );
+
+        assert_eq!(retained[0].kind, ResourceChangeKind::RetainPersistent);
+        assert_eq!(
+            retained[0].current_lifetime,
+            Some(ResourceLifetime::Persistent)
+        );
+        assert_eq!(retained[0].desired_lifetime, None);
+        assert_eq!(deleted[0].kind, ResourceChangeKind::Remove);
+    }
+
+    #[test]
+    fn bounded_lifetimes_are_removed_when_their_owner_disappears() {
+        for lifetime in [
+            ResourceLifetime::Attempt,
+            ResourceLifetime::Transaction,
+            ResourceLifetime::Instance,
+        ] {
+            let resource = resource(&instance("provider"), "bounded");
+            let revision = ResourceRevision {
+                resource,
+                kind: aos_ability_model::InterfaceName::new("aos.test-resource").unwrap(),
+                lifetime,
+                value: AbilityValue::new(serde_json::json!(true)).unwrap(),
+                realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+                revision: RevisionId(Sha256Digest::separated(
+                    "aos.test.transition-context/v1",
+                    b"bounded",
+                )),
+            };
+
+            let changes =
+                resource_changes(std::slice::from_ref(&revision), &[], None, &BTreeSet::new());
+
+            assert_eq!(changes[0].kind, ResourceChangeKind::Remove);
+            assert_eq!(changes[0].current_lifetime, Some(lifetime));
+            assert_eq!(changes[0].desired_lifetime, None);
+        }
+    }
+
+    #[test]
+    fn stable_resource_identity_cannot_change_lifetime() {
+        let resource = resource(&instance("provider"), "stable");
+        let current = ResourceRevision {
+            resource: resource.clone(),
+            kind: aos_ability_model::InterfaceName::new("aos.test-resource").unwrap(),
+            lifetime: ResourceLifetime::Persistent,
+            value: AbilityValue::new(serde_json::json!(true)).unwrap(),
+            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            revision: RevisionId(Sha256Digest::separated(
+                "aos.test.transition-context/v1",
+                b"current",
+            )),
+        };
+        let mut desired = current.clone();
+        desired.lifetime = ResourceLifetime::Instance;
+        desired.revision = RevisionId(Sha256Digest::separated(
+            "aos.test.transition-context/v1",
+            b"desired",
+        ));
+
+        let error = validate_resource_lifetime_continuity(&[current], &[desired])
+            .expect_err("one stable resource cannot weaken its retention boundary");
+
+        assert!(matches!(
+            error,
+            TransitionError::ResourceLifetimeChange {
+                current: ResourceLifetime::Persistent,
+                desired: ResourceLifetime::Instance,
+                ..
+            }
+        ));
     }
 
     fn authorized(binding: Binding) -> AuthorizedTransitionBinding {
@@ -851,10 +1007,12 @@ mod tests {
         ResourceChange {
             resource,
             current: None,
+            current_lifetime: None,
             desired: Some(RevisionId(Sha256Digest::separated(
                 "aos.test.transition-context/v1",
                 b"desired",
             ))),
+            desired_lifetime: Some(ResourceLifetime::Instance),
             kind: ResourceChangeKind::Create,
         }
     }

@@ -12,7 +12,9 @@ mod snapshot;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
-use aos_ability_model::{ABILITY_LIMITS_V1, AbilityValue, InstanceId, ResourceId};
+use aos_ability_model::{
+    ABILITY_LIMITS_V1, AbilityValue, InstanceId, ResourceId, ResourceLifetime,
+};
 use aos_ability_validate::{
     BindingAuthorityKind, CheckedEffectPlan, CheckedTransitionAuthority, ValidationContext,
     ValidationErrors,
@@ -27,6 +29,7 @@ use context::{
     LinkedCurrentAuthorityDocument, LinkedCurrentResourceObservation, LinkedCurrentResourceState,
     bounded_evaluation_message, controller_union, encode_ability_value, resource_changes,
     scoped_changes_and_controllers, scoped_desired_state, scoped_observations,
+    validate_resource_lifetime_continuity,
 };
 use graph::{
     AuthoredTransitionFragment, index_packages, merge_fragments, operation_scope,
@@ -105,6 +108,18 @@ pub enum TransitionError {
     /// The sealed teardown authority commits to different planning inputs.
     #[error("transition authority does not match the desired and prior planning snapshots")]
     MismatchedTeardownAuthority,
+    /// A stable logical resource attempts to change its retention boundary.
+    #[error(
+        "resource {resource:?} changes lifetime from {current:?} to {desired:?}; use a new logical resource identity"
+    )]
+    ResourceLifetimeChange {
+        /// Identifies the stable logical resource.
+        resource: ResourceId,
+        /// Records the authenticated current lifetime.
+        current: ResourceLifetime,
+        /// Records the requested desired lifetime.
+        desired: ResourceLifetime,
+    },
     /// A restricted transition constructor rejected its exact input.
     #[error("transition evaluation failed for provider {provider:?}: {message}")]
     Evaluation {
@@ -231,6 +246,31 @@ impl<'a> TransitionPlanner<'a> {
         );
         let packages = index_packages(binding_plan.packages())?;
         let groups = transition_groups(desired, inputs.current, inputs.authority)?;
+        let persistent_deletions = inputs
+            .authority
+            .map(|authority| {
+                authority
+                    .document()
+                    .persistent_deletions
+                    .iter()
+                    .map(|deletion| deletion.resource.clone())
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        validate_resource_lifetime_continuity(
+            outcome
+                .resolution
+                .checked
+                .environment()
+                .resources
+                .as_slice(),
+            outcome
+                .resolution
+                .checked
+                .desired_state()
+                .resources
+                .as_slice(),
+        )?;
         let changes = resource_changes(
             outcome
                 .resolution
@@ -247,6 +287,7 @@ impl<'a> TransitionPlanner<'a> {
             inputs
                 .reconciliation
                 .map(|reconciliation| reconciliation.observations.as_slice()),
+            &persistent_deletions,
         );
         let controllers = controller_union(outcome);
         let mut budget = TransitionBudget::default();

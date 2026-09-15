@@ -137,6 +137,7 @@ fn empty_transition_authority(
         authorization_policy_revision: policy_revision,
         teardown_bindings: Vec::new(),
         teardown_providers: Vec::new(),
+        persistent_deletions: Vec::new(),
         provider_adoptions: Vec::new(),
     };
     let expected_digest = document
@@ -1252,6 +1253,7 @@ fn enabled_root_retirement_fixture() -> EnabledRootRetirementFixture {
             package: enabled_package.package,
             policy_revision: desired.checked_binding().document().policy_revision,
         }],
+        persistent_deletions: Vec::new(),
         provider_adoptions: Vec::new(),
     };
     let authorization_digest = authorization_document
@@ -1716,6 +1718,7 @@ fn lifecycle_upgrade_fixture(payload_only: bool) -> LifecycleUpgradeFixture {
         authorization_policy_revision: desired.checked_binding().document().policy_revision,
         teardown_bindings,
         teardown_providers: Vec::new(),
+        persistent_deletions: Vec::new(),
         provider_adoptions: Vec::new(),
     };
     let authorization_digest = authorization_document
