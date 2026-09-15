@@ -2,7 +2,6 @@
 {
   lib,
   config,
-  outputs,
   ...
 }: let
   private = import ./private.nix {inherit lib;};
@@ -14,9 +13,13 @@ in {
   };
 
   options.configModuleSmoke.command = lib.mkOption {
-    type = lib.types.str;
-    default = "${outputs.dependencies.bash}/bin/bash";
-    description = "Resolved dependency-backed command for the config-output smoke fixture.";
+    type = lib.abilities.types.executableReference;
+    default = {
+      artifact = lib.abilities.packageOutput {package = "bash";};
+      entry_point = "bin/bash";
+      arguments = [];
+    };
+    description = "Symbolic dependency-backed command for the package-module smoke fixture.";
   };
 
   options.configModuleSmoke.privateMessage = lib.mkOption {
