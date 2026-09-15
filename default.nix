@@ -203,9 +203,13 @@
         (builtins.filter
           (package:
             builtins.isAttrs package
+            && package ? abilities
             && (
-              package ? _aosAbilityCarrier
-              || package ? packageModule
+              if package.abilities ? _module && package.abilities ? _artifact_outputs
+              then true
+              else
+                throw
+                "selected package '${package.pname or package.name or "<unnamed>"}' has an incomplete native ability carrier"
             ))
           selectionEvaluation.config.environment.systemPackages)
       );
@@ -216,18 +220,11 @@
       builtins.map (package: {
         name = package.pname or package.name;
         version = package.version or "0";
-        module =
-          if package ? _aosAbilityCarrier
-          then package._aosAbilityCarrier.module
-          else package.packageModule;
-        outputs =
-          if package ? _aosAbilityCarrier
-          then {
-            self = builtins.toString package;
-            dependencies = {};
-          }
-          else package.packageModuleOutputs;
-        packageVersion = package.version or "0";
+        module = package.abilities._module;
+        outputs = {
+          self = builtins.toString package;
+          dependencies = {};
+        };
       }) (builtins.filter
         (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
         selectedAbilityPackages);
@@ -1785,7 +1782,7 @@ in {
       inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
     };
-    abilities = import ./tests/abilities {inherit pkgs lib;};
+    abilities = import ./tests/abilities {inherit pkgs lib mkSystem;};
     package-maintenance = import ./tests/packages/maintenance.nix {inherit pkgs lib;};
     # Pure evaluation and focused all-variant output contracts are one gate.
     # Rendered store paths remain contextual Nix references rather than
