@@ -1061,6 +1061,22 @@ impl PinnedSystemdManager {
         self.ensure_current().await
     }
 
+    /// Requests re-execution of this exact manager incarnation.
+    ///
+    /// The systemd D-Bus method intentionally has no reply. Callers must drop
+    /// this pin and establish a new one, then prove that its incarnation differs
+    /// before treating the re-execution as complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager changed before the request or rejects
+    /// the no-reply call.
+    pub async fn reexecute(&self) -> Result<()> {
+        self.ensure_current().await?;
+        self.manager.reexecute().await?;
+        Ok(())
+    }
+
     /// Starts a unit through the pinned owner and awaits its exact job result.
     ///
     /// # Errors

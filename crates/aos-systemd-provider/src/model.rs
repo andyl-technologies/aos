@@ -13,6 +13,13 @@ pub(crate) const REALIZATION_SCHEMA: &str = "aos.systemd.packaged-unit-realizati
 pub(crate) const PROVIDER_CONTEXT_SCHEMA: &str = "aos.systemd.packaged-unit-context/v1";
 pub(crate) const SERVICE_REALIZATION_SCHEMA: &str = "aos.systemd.service-realization/v2";
 pub(crate) const SERVICE_EFFECTS_INTERFACE_NAME: &str = "aos.systemd.service-effects";
+pub(crate) const MANAGER_WATCHDOG_EFFECTS_INTERFACE_NAME: &str =
+    "aos.systemd.manager-watchdog-effects";
+pub(crate) const MANAGER_WATCHDOG_REALIZATION_SCHEMA: &str =
+    "aos.systemd.manager-watchdog-realization/v1";
+pub(crate) const MANAGER_WATCHDOG_OBSERVATION_SCHEMA: &str =
+    "aos.ability.systemd-manager-watchdog-observation/v1";
+pub(crate) const MANAGER_WATCHDOG_CONTEXT_SCHEMA: &str = "aos.systemd.manager-watchdog-context/v1";
 pub(crate) const STATIC_MANIFEST_SCHEMA: &str = "aos.systemd.static-unit-manifest/v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -228,6 +235,69 @@ pub(crate) struct ServiceRealization {
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum ServiceEffectsRequest {
     Service { desired: AbilityValue },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManagerWatchdogRequest {
+    pub(crate) enabled: bool,
+    pub(crate) runtime_timeout_millis: u64,
+    pub(crate) reboot_timeout_millis: u64,
+    pub(crate) kexec_timeout_millis: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManagerWatchdogRealization {
+    pub(crate) schema: String,
+    pub(crate) enabled: bool,
+    pub(crate) runtime_timeout_millis: u64,
+    pub(crate) reboot_timeout_millis: u64,
+    pub(crate) kexec_timeout_millis: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum ManagerWatchdogEffectsRequest {
+    ManagerWatchdog { desired: ManagerWatchdogRequest },
+}
+
+impl ManagerWatchdogEffectsRequest {
+    pub(crate) const fn desired(&self) -> &ManagerWatchdogRequest {
+        match self {
+            Self::ManagerWatchdog { desired } => desired,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ManagerWatchdogState {
+    Absent,
+    Configured,
+    Divergent,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManagerWatchdogObservation {
+    pub(crate) schema: String,
+    pub(crate) expected: ManagerWatchdogRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) observed: Option<ManagerWatchdogRequest>,
+    pub(crate) state: ManagerWatchdogState,
+    pub(crate) manager_incarnation_changed: bool,
+    pub(crate) discrepancies: Vec<LocalKey>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ManagerWatchdogContext {
+    pub(crate) schema: String,
+    pub(crate) manager_bus_id: String,
+    pub(crate) manager_owner: String,
+    pub(crate) materialization_owned: bool,
 }
 
 impl ServiceEffectsRequest {

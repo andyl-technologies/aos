@@ -153,13 +153,6 @@
   contributions = builtins.map serviceManagement.splitContribution abilityFragments;
 in {
   options.aos.monitoring.hardware = {
-    ## Enable hardware health monitoring.
-    enable = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Enable hardware watchdog and S.M.A.R.T. disk monitoring facilities.";
-    };
-
     ## Enable S.M.A.R.T. disk health monitoring via smartd.
     smartd = lib.mkOption {
       type = abilityTypes.boolean;
@@ -176,7 +169,7 @@ in {
     {
       aos.abilities = lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions);
     }
-    (lib.mkIf (cfg.enable && cfg.smartd) {
+    (lib.mkIf cfg.smartd {
       aos.abilities = lib.mkMerge (
         [{instances.service = {};}]
         ++ builtins.map (contribution: contribution.configured) contributions
