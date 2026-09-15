@@ -569,20 +569,19 @@ pub(crate) fn package_activation_revision(
         .contract
         .as_ref()
         .context("structured package has no ability metadata")?;
-    let coordinate = crate::package_contract::PackageContractCoordinate {
-        name: package,
-        version: &pin.version,
-        platform: &pin.platform,
-        store_path: &pin.store_path,
-        nar_hash: &pin.nar_hash,
-    };
-    let (document, _) =
-        crate::package_contract::resolve_pinned_package_document(coordinate, ability)?;
+    let resolved = super::static_packages::resolve(
+        package,
+        &pin.version,
+        &pin.platform,
+        &pin.store_path,
+        &pin.nar_hash,
+        ability,
+    )?;
     let material = serde_json::json!({
         "schema": DOMAIN,
         "package": package,
         "runtime_nar_hash": pin.nar_hash,
-        "package_contract_digest": document.content_digest()?,
+        "package_contract_digest": resolved.document.content_digest()?,
     });
 
     Ok(aos_contract::Sha256Digest::of_canonical(DOMAIN, &material)?.to_string())
@@ -603,8 +602,16 @@ fn validate_runtime_pin(
         }
     }
     if let Some(ability) = &pin.contract {
-        crate::package_contract::validate_package_contract_meta(ability)
-            .with_context(|| format!("validating packageOutputs.{package}.contract"))?;
+        super::static_packages::resolve(
+            package,
+            &pin.version,
+            &pin.platform,
+            &pin.store_path,
+            &pin.nar_hash,
+            ability,
+        )
+        .map(|_| ())
+        .with_context(|| format!("validating packageOutputs.{package}.contract"))?;
     }
     let root_hash = pin
         .store_path

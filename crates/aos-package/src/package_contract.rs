@@ -723,6 +723,77 @@ pub(crate) fn resolve_pinned_package_document(
     Ok((bound.package, bound.interfaces))
 }
 
+/// Seals one package already authenticated by the embedded static contract.
+///
+/// Registry provenance is intentionally absent on this path: the measured
+/// image's exact static-contract artifact is the authority. Live store
+/// inspection still has to reproduce every package artifact and companion NAR
+/// before the package enters an activation session.
+///
+/// # Errors
+///
+/// Returns an error when the package coordinate, companion bytes, or any live
+/// artifact and closure identity differs from the checked static selection.
+pub(crate) fn verify_embedded_static_package(
+    coordinate: PackageContractCoordinate<'_>,
+    resolved: crate::config_eval::static_packages::ResolvedContract,
+) -> Result<VerifiedPackageContract> {
+    let package = resolved.document;
+    ensure!(
+        package.package.name.as_str() == coordinate.name
+            && package.package.version == coordinate.version
+            && package.package.payload.store_path == coordinate.store_path
+            && package.package.payload.nar_hash.to_string() == coordinate.nar_hash,
+        "embedded static package differs from its runtime coordinate"
+    );
+
+    let companion = crate::registry_ops::resolve_store_artifact(&resolved.manifest_store_path)?;
+    ensure!(
+        companion.reference.nar_hash.to_string() == resolved.manifest_nar_hash,
+        "embedded package companion NAR differs from its checked static selection"
+    );
+    let companion_root = companion
+        .retention
+        .closure
+        .iter()
+        .find(|member| member.store_path == resolved.manifest_store_path)
+        .context("embedded package companion closure omits its root")?;
+
+    let artifacts = collect_distinct_artifacts(&package)?;
+    let mut retained_artifacts = Vec::with_capacity(artifacts.len());
+    for artifact in &artifacts {
+        let retained = crate::registry_ops::resolve_store_artifact(&artifact.store_path)?;
+        ensure!(
+            retained.reference == *artifact,
+            "embedded package artifact differs from its checked static selection"
+        );
+        retained_artifacts.push(retained.retention);
+    }
+    retained_artifacts.sort_by(|left, right| left.content.cmp(&right.content));
+    retained_artifacts.dedup();
+
+    let package_digest = package
+        .content_digest()
+        .context("computing embedded package contract digest")?;
+    Ok(VerifiedPackageContract {
+        package,
+        interfaces: resolved.interfaces,
+        manifest_sha256: resolved.manifest_digest,
+        package_digest,
+        package_name: coordinate.name.to_string(),
+        package_version: coordinate.version.to_string(),
+        platform: coordinate.platform.to_string(),
+        artifacts,
+        retention: VerifiedPackageContractRetentionManifest {
+            document_store_path: resolved.manifest_store_path,
+            document_nar_hash: companion.reference.nar_hash,
+            document_nar_size: companion.retention.nar_size,
+            document_references: companion_root.references.clone(),
+            artifacts: retained_artifacts,
+        },
+    })
+}
+
 fn artifact_reference(artifact: &PackageContractArtifactMeta) -> Result<ArtifactReference> {
     Ok(ArtifactReference {
         content: validate_sha256_identity("package contract artifact content", &artifact.content)?,

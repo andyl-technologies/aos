@@ -44,7 +44,7 @@ use super::materialize::{
     AbilityActivationInput, ConfigManifest,
     PackageContractCoordinate as PinnedPackageContractCoordinate, PinnedAbilitySidecar,
 };
-use super::runtime::{RuntimePackageOrigin, RuntimeResolution};
+use super::runtime::{ContractOrigin, RuntimePackagePin, RuntimeResolution};
 use crate::config::ApmConfig;
 use crate::package_contract::{
     NativePackageContractRetentionVerifier, PackageContractCoordinate, VerifiedPackageContractSet,
@@ -811,48 +811,17 @@ pub fn verify_generation_packages(
                         pinned.name
                     )
                 })?;
-            ensure!(
-                package.origin == RuntimePackageOrigin::Registry,
-                "image-local structured ability package {:?} has no replayable registry trust receipt",
-                pinned.name
-            );
             let ability = package
                 .contract
                 .as_ref()
                 .context("ability coordinate has no authenticated package metadata")?;
-            let (_, provenance) = crate::install::read_provenance_artifact(
-                &config.cache_path(),
-                &pinned.registry,
-                &ability.provenance,
-            )?;
-            let trusted_keys = crate::install::read_registry_provenance_trusted_keys(
-                &config.cache_path(),
-                &pinned.registry,
-            )?;
-            let manifest_bytes =
-                crate::package_contract::read_package_manifest(&pinned.contract_store_path)?;
-            let coordinate = PackageContractCoordinate {
-                name: &pinned.name,
-                version: &pinned.version,
-                platform: &pinned.platform,
-                store_path: &pinned.runtime_store_path,
-                nar_hash: &pinned.runtime_nar_hash,
-            };
-            let verified = crate::package_contract::verify_pinned_package_contract(
-                coordinate,
-                ability,
-                &manifest_bytes,
-                &provenance,
-                &pinned.registry,
-                &trusted_keys,
-                &NativePackageContractRetentionVerifier::new(),
-            )
-            .with_context(|| {
-                format!(
-                    "reverifying generation ability package {}@{}",
-                    pinned.name, pinned.version
-                )
-            })?;
+            let verified = verify_runtime_package_contract(config, &pinned.name, package, ability)
+                .with_context(|| {
+                    format!(
+                        "reverifying generation ability package {}@{}",
+                        pinned.name, pinned.version
+                    )
+                })?;
             packages.push(verified);
         }
     }
@@ -880,46 +849,66 @@ pub fn verify_runtime_packages(
         let Some(ability) = &package.contract else {
             continue;
         };
-        ensure!(
-            package.origin == RuntimePackageOrigin::Registry,
-            "image-local structured ability package {name:?} has no replayable registry trust receipt"
-        );
-        let (_, provenance) = crate::install::read_provenance_artifact(
-            &config.cache_path(),
-            &package.registry,
-            &ability.provenance,
-        )?;
-        let trusted_keys = crate::install::read_registry_provenance_trusted_keys(
-            &config.cache_path(),
-            &package.registry,
-        )?;
-        let manifest_bytes =
-            crate::package_contract::read_package_manifest(&ability.document.store_path)?;
-        let coordinate = PackageContractCoordinate {
-            name,
-            version: &package.version,
-            platform: &package.platform,
-            store_path: &package.store_path,
-            nar_hash: &package.nar_hash,
-        };
-        let verified = crate::package_contract::verify_pinned_package_contract(
-            coordinate,
-            ability,
-            &manifest_bytes,
-            &provenance,
-            &package.registry,
-            &trusted_keys,
-            &NativePackageContractRetentionVerifier::new(),
-        )
-        .with_context(|| {
-            format!(
-                "verifying resolved ability package {}@{}",
-                name, package.version
-            )
-        })?;
+        let verified = verify_runtime_package_contract(config, name, package, ability)
+            .with_context(|| {
+                format!(
+                    "verifying resolved ability package {}@{}",
+                    name, package.version
+                )
+            })?;
         packages.push(verified);
     }
     VerifiedPackageContractSet::from_verified(packages)
+}
+
+fn verify_runtime_package_contract(
+    config: &ApmConfig,
+    name: &str,
+    package: &RuntimePackagePin,
+    origin: &ContractOrigin,
+) -> Result<crate::package_contract::VerifiedPackageContract> {
+    let coordinate = PackageContractCoordinate {
+        name,
+        version: &package.version,
+        platform: &package.platform,
+        store_path: &package.store_path,
+        nar_hash: &package.nar_hash,
+    };
+    match origin {
+        ContractOrigin::Registry { metadata } => {
+            let (_, provenance) = crate::install::read_provenance_artifact(
+                &config.cache_path(),
+                &package.registry,
+                &metadata.provenance,
+            )?;
+            let trusted_keys = crate::install::read_registry_provenance_trusted_keys(
+                &config.cache_path(),
+                &package.registry,
+            )?;
+            let manifest_bytes =
+                crate::package_contract::read_package_manifest(&metadata.document.store_path)?;
+            crate::package_contract::verify_pinned_package_contract(
+                coordinate,
+                metadata,
+                &manifest_bytes,
+                &provenance,
+                &package.registry,
+                &trusted_keys,
+                &NativePackageContractRetentionVerifier::new(),
+            )
+        }
+        ContractOrigin::EmbeddedStatic { .. } => {
+            let resolved = super::static_packages::resolve(
+                name,
+                &package.version,
+                &package.platform,
+                &package.store_path,
+                &package.nar_hash,
+                origin,
+            )?;
+            crate::package_contract::verify_embedded_static_package(coordinate, resolved)
+        }
+    }
 }
 
 fn load_sidecar(sidecar: &PinnedAbilitySidecar, label: &str) -> Result<Vec<u8>> {

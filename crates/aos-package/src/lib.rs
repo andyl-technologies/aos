@@ -184,8 +184,6 @@ use types::{
     validate_commit_hash, validate_git_ref_name, validate_registry_name,
 };
 
-const PACKAGE_ATTESTATION_SEED_CATALOG: &str = "/etc/aos/package-attestation-catalog.json";
-
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
   AOS_RUNTIME            Runtime kind. AOS containers set this to `container`;
@@ -5320,44 +5318,34 @@ fn load_package_attestation_catalog(
         .iter()
         .flat_map(|registry| registry.package_versions().cloned())
         .collect::<Vec<_>>();
-    package_attestation_catalog_from_sources(
-        &catalog,
-        Some(Path::new(PACKAGE_ATTESTATION_SEED_CATALOG)),
-        catalog_files,
-    )
+    let embedded = embedded_package_attestation_catalog()?;
+    package_attestation_catalog_from_sources(&catalog, &embedded, catalog_files)
 }
 
 fn package_attestation_catalog_from_sources(
     registry_packages: &[types::PackageMeta],
-    seed_catalog: Option<&Path>,
+    embedded_packages: &[package_attestation::PackageMeasurementCatalogEntry],
     catalog_files: &[PathBuf],
 ) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
     let mut catalog =
         package_attestation::package_measurement_catalog_from_package_meta(registry_packages)?;
-    if let Some(seed_catalog) = seed_catalog {
-        append_optional_package_attestation_catalog(seed_catalog, &mut catalog)?;
-    }
+    catalog.extend_from_slice(embedded_packages);
     for path in catalog_files {
         append_package_attestation_catalog(path, &mut catalog)?;
     }
     package_attestation::canonical_package_measurement_catalog(&catalog)
 }
 
-fn append_optional_package_attestation_catalog(
-    path: &Path,
-    catalog: &mut Vec<package_attestation::PackageMeasurementCatalogEntry>,
-) -> Result<()> {
-    match read_package_attestation_catalog(path) {
-        Ok(entries) => {
-            catalog.extend(entries);
-            Ok(())
-        }
+fn embedded_package_attestation_catalog()
+-> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
+    match config_eval::static_packages::measurement_catalog() {
+        Ok(entries) => Ok(entries),
         Err(err)
             if err
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|err| err.kind() == ErrorKind::NotFound) =>
         {
-            Ok(())
+            Ok(Vec::new())
         }
         Err(err) => Err(err),
     }
@@ -7418,9 +7406,8 @@ mod tests {
     }
 
     #[test]
-    fn package_attestation_catalog_sources_merge_registry_seed_and_files() {
+    fn package_attestation_catalog_sources_merge_registry_embedded_and_files() {
         let tmp = TempDir::new().expect("tempdir");
-        let seed = tmp.path().join("seed-catalog.json");
         let explicit = tmp.path().join("explicit-catalog.json");
         let root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let web_measurement =
@@ -7429,21 +7416,26 @@ mod tests {
             "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
         let explicit_measurement =
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
-        write_catalog_file(&seed, "seeded", "1.0", root_digest, seed_measurement);
         write_catalog_file(&explicit, "extra", "2.0", root_digest, explicit_measurement);
         let registry = attested_package_meta("web", "1.0", root_digest, web_measurement);
+        let embedded = package_attestation::PackageMeasurementCatalogEntry {
+            name: "embedded".to_string(),
+            version: "1.0".to_string(),
+            root_digest: root_digest.to_string(),
+            measurement: seed_measurement.to_string(),
+        };
 
         let catalog =
-            package_attestation_catalog_from_sources(&[registry], Some(&seed), &[explicit])
+            package_attestation_catalog_from_sources(&[registry], &[embedded], &[explicit])
                 .expect("merged catalog");
 
         let names = catalog
             .iter()
             .map(|entry| entry.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["extra", "seeded", "web"]);
-        assert_eq!(catalog[0].measurement, explicit_measurement);
-        assert_eq!(catalog[1].measurement, seed_measurement);
+        assert_eq!(names, vec!["embedded", "extra", "web"]);
+        assert_eq!(catalog[0].measurement, seed_measurement);
+        assert_eq!(catalog[1].measurement, explicit_measurement);
         assert_eq!(catalog[2].measurement, web_measurement);
     }
 
@@ -7460,7 +7452,7 @@ mod tests {
         let registry = attested_package_meta("web", "1.0", root_digest, registry_measurement);
 
         let err =
-            package_attestation_catalog_from_sources(&[registry], None, &[explicit]).unwrap_err();
+            package_attestation_catalog_from_sources(&[registry], &[], &[explicit]).unwrap_err();
 
         assert!(format!("{err:#}").contains("conflicting golden measurements"));
     }
