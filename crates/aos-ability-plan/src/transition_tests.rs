@@ -1551,23 +1551,44 @@ fn lifecycle_operation(
     operation
 }
 
+fn transition_manager_interface() -> InterfaceDocument {
+    let mut document = aos_ability_validate::test_support::test_manager_interface();
+    let mut stop = aos_ability_validate::test_support::test_lifecycle_interface()
+        .interface
+        .methods
+        .remove(&key("stop"))
+        .expect("neutral lifecycle interface must declare Stop");
+    stop.target_resource = document.interface.name.clone();
+    stop.parameters = document.interface.request.clone();
+    stop.outcome.indeterminate = IndeterminateSemantics::Reconcile;
+    document.interface.methods.insert(key("stop"), stop);
+    document
+}
+
 fn lifecycle_upgrade_fixture(payload_only: bool) -> LifecycleUpgradeFixture {
     let source = aos_ability_validate::test_support::checked_lifecycle_effect_plan();
-    let interface_document = source
-        .interfaces()
-        .values()
-        .next()
-        .expect("systemd interface")
-        .clone();
+    let interface_document = transition_manager_interface();
     let interface = interface_document
         .interface_key()
         .expect("systemd interface must digest");
-    let context = ValidationContext::new(BTreeSet::new(), [interface_document])
-        .expect("systemd interface catalog must validate");
+    let controller_group = interface_document
+        .interface
+        .aggregation
+        .controller_group
+        .clone();
+    let context = ValidationContext::new(
+        effect_features().into_iter().collect(),
+        [interface_document],
+    )
+    .expect("systemd interface catalog must validate");
     let source_binding = &source.binding_plan().bindings()[0];
     let terminal_artifact = source_binding.implementation.artifact.clone();
-    let terminal_provider =
+    let mut terminal_provider =
         aos_ability_validate::test_support::test_manager_provider(terminal_artifact.clone());
+    terminal_provider.interface = interface.clone();
+    terminal_provider.desired_schema = Some(ValueSchema::Optional {
+        value: Box::new(ValueSchema::Boolean),
+    });
     let terminal_reference = ProviderImplementationReference {
         descriptor: terminal_provider
             .descriptor_digest()
@@ -1596,11 +1617,11 @@ fn lifecycle_upgrade_fixture(payload_only: bool) -> LifecycleUpgradeFixture {
     };
     let old_controller = AggregateId {
         provider: old_manager.clone(),
-        group: key("systemd"),
+        group: controller_group.clone(),
     };
     let new_controller = AggregateId {
         provider: new_manager.clone(),
-        group: key("systemd"),
+        group: controller_group,
     };
 
     let module_template = distinct_artifact(&terminal_artifact, 0x91, "service-module");
@@ -1695,6 +1716,19 @@ fn lifecycle_upgrade_fixture(payload_only: bool) -> LifecycleUpgradeFixture {
             binding.caller_grant.methods = vec![key("observe"), key("stop")];
             binding.caller_grant.resources[0].operations = vec![key("observe"), key("stop")];
         }
+        binding.caller_grant.methods.sort();
+        binding.caller_grant.methods.dedup();
+        binding.provider_grant.methods.sort();
+        binding.provider_grant.methods.dedup();
+        for permission in binding
+            .caller_grant
+            .resources
+            .iter_mut()
+            .chain(binding.provider_grant.resources.iter_mut())
+        {
+            permission.operations.sort();
+            permission.operations.dedup();
+        }
         teardown_bindings.push(TeardownBindingAuthorization {
             source_binding: source.id.clone(),
             request,
@@ -1755,6 +1789,20 @@ fn lifecycle_upgrade_fixture(payload_only: bool) -> LifecycleUpgradeFixture {
         .id
         .clone();
 
+    let mut operation_template = source.operations()[0].clone();
+    operation_template.interface = interface.clone();
+    operation_template.target.interface = interface;
+    for recovery in [
+        operation_template.recovery.reconcile.as_mut(),
+        operation_template.recovery.cancel.as_mut(),
+        operation_template.recovery.compensate.as_mut(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        recovery.interface = operation_template.interface.clone();
+    }
+
     LifecycleUpgradeFixture {
         context,
         desired,
@@ -1771,7 +1819,7 @@ fn lifecycle_upgrade_fixture(payload_only: bool) -> LifecycleUpgradeFixture {
         new_controller,
         old_descriptor,
         new_descriptor,
-        operation_template: source.operations()[0].clone(),
+        operation_template,
         old_payload,
         new_payload,
         old_package,
@@ -1806,7 +1854,7 @@ fn pure_service_package(
     artifacts.dedup();
     PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
+        required_features: effect_features(),
         package: PackageSubject {
             name: key("upgrade-service"),
             version: version.to_string(),
@@ -1849,7 +1897,7 @@ fn terminal_package(
     let handler = aos_ability_validate::test_support::test_manager_handler(artifact.clone());
     PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
+        required_features: effect_features(),
         package: PackageSubject {
             name: key("systemd-terminal"),
             version: "1.0.0".to_string(),
@@ -2022,11 +2070,10 @@ fn lifecycle_planning_snapshot(
         methods: vec![key("start")],
         guarantees: stage_guarantees.clone(),
         lifetime: ResourceLifetime::Instance,
-        parameters: ability_value(serde_json::json!({"unit": "example.service"})),
+        parameters: ability_value(serde_json::json!({"subject": "example.service"})),
     };
     let manager_request = BindingRequest {
-        package: aos_ability_model::LocalKey::new("test-package")
-            .expect("valid test package provenance"),
+        package: pure_package.package.name.clone(),
         id: if operator_enabled {
             crate::child_request_id(service, manager_alias)
                 .expect("enabled root child request must be in scope")
@@ -2041,11 +2088,23 @@ fn lifecycle_planning_snapshot(
         methods: vec![key("observe"), key("start")],
         guarantees: stage_guarantees.clone(),
         lifetime: ResourceLifetime::Instance,
-        parameters: ability_value(serde_json::json!({"unit": "example.service"})),
+        parameters: ability_value(serde_json::json!({"subject": "example.service"})),
     };
     let environment_digest = environment
         .content_digest()
         .expect("lifecycle environment must digest");
+    let planned_resources = environment
+        .resources
+        .iter()
+        .filter(|candidate| candidate.resource == *resource)
+        .cloned()
+        .collect::<Vec<_>>();
+    let planned_controllers = environment
+        .controllers
+        .iter()
+        .filter(|assignment| assignment.resource == *resource)
+        .cloned()
+        .collect::<Vec<_>>();
     let child_requests = if operator_enabled {
         Vec::new()
     } else {
@@ -2063,9 +2122,13 @@ fn lifecycle_planning_snapshot(
         }],
         contributions: Vec::new(),
         child_requests,
-        resources: environment.resources.clone(),
+        resources: planned_resources.clone(),
         outputs: Vec::new(),
-        controllers: environment.controllers.clone(),
+        controllers: if operator_enabled {
+            Vec::new()
+        } else {
+            planned_controllers.clone()
+        },
     };
     let desired_digest = desired
         .content_digest()
@@ -2137,7 +2200,7 @@ fn lifecycle_planning_snapshot(
     } else {
         Vec::new()
     };
-    let policies = if operator_enabled {
+    let mut policies = if operator_enabled {
         let initial_policy = ResolutionPolicyDocument {
             schema: ResolutionPolicyDocument::SCHEMA.to_string(),
             required_features: Vec::new(),
@@ -2201,6 +2264,7 @@ fn lifecycle_planning_snapshot(
             obligations: Vec::new(),
         }]
     };
+    policies.sort_by_key(|policy| policy.desired_state);
     let mut packages = vec![pure_package, terminal_package];
     packages.sort_by_key(|package| {
         package
@@ -2233,7 +2297,7 @@ fn lifecycle_planning_snapshot(
                 .interface
                 .aggregation
                 .controller_group,
-            key("service")
+            key("manager")
         );
         assert!(selection.implementation.handler.is_none());
         assert_eq!(
@@ -2521,11 +2585,10 @@ impl CompositionEvaluator for LifecycleCompositionEvaluator {
     ) -> Result<AbilityValue, EvaluationError> {
         let context: CompositionContext = serde_json::from_value(input.as_json().clone())
             .map_err(|error| EvaluationError::new(error.to_string()))?;
-        let requests = if self.expanding_provider.as_ref() == Some(&context.provider) {
-            vec![self.manager_request.clone()]
-        } else {
-            Vec::new()
-        };
+        let expands = self.expanding_provider.as_ref() == Some(&context.provider);
+        let requests = expands
+            .then(|| vec![self.manager_request.clone()])
+            .unwrap_or_default();
         let fragment = CompositionFragment {
             schema: "aos.ability.composition-fragment/v1".to_string(),
             requests,
@@ -2570,6 +2633,11 @@ impl CompositionEvaluator for EmptyCompositionEvaluator {
 
 fn pipeline_planning_fixture() -> PipelinePlanningFixture {
     let source = aos_ability_validate::test_support::plan_fixture();
+    let context = ValidationContext::new(
+        effect_features().into_iter().collect(),
+        source.interfaces.clone(),
+    )
+    .expect("pipeline interface catalog must validate");
     let interface = source.binding_plan.bindings[0].interface.clone();
     let terminal = source.binding_plan.bindings[0].provider.clone();
     let environment_id = terminal.environment.clone();
@@ -2604,7 +2672,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
     };
     let pure_package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
+        required_features: effect_features(),
         package: PackageSubject {
             name: key("pipeline-pure"),
             version: "1.0.0".to_string(),
@@ -2661,7 +2729,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
     let terminal_source = distinct_artifact(&artifact, 0x92, "pipeline-terminal-source");
     let terminal_package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
+        required_features: effect_features(),
         package: PackageSubject {
             name: key("pipeline-terminal"),
             version: "1.0.0".to_string(),
@@ -2726,7 +2794,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         .content_digest()
         .expect("pipeline environment must have a digest");
     let request_specs = [
-        ("a-root", application, root.clone(), true),
+        ("a-root", application.clone(), root.clone(), true),
         ("b-configuration", root.clone(), configuration.clone(), true),
         ("c-service", root.clone(), service.clone(), true),
         (
@@ -2753,8 +2821,11 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
     let mut candidates = Vec::new();
     for (name, consumer, provider, pure) in request_specs {
         let request = BindingRequest {
-            package: aos_ability_model::LocalKey::new("test-package")
-                .expect("valid test package provenance"),
+            package: if consumer == application {
+                key("test-package")
+            } else {
+                pure_package.package.name.clone()
+            },
             id: RequestId {
                 consumer: consumer.clone(),
                 scope: ScopePath::root(),
@@ -2871,10 +2942,15 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         enabled_providers: Vec::new(),
         obligations: Vec::new(),
     };
-    let packages = vec![pure_package, terminal_package];
+    let mut packages = vec![pure_package, terminal_package];
+    packages.sort_by_key(|package| {
+        package
+            .content_digest()
+            .expect("pipeline package must digest")
+    });
     let policies = vec![policy];
     let mut composition_evaluator = EmptyCompositionEvaluator;
-    let outcome = RecursiveComposer::new(&source.context)
+    let outcome = RecursiveComposer::new(&context)
         .compose(
             &policies,
             desired.clone(),
@@ -2888,7 +2964,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
     let snapshot_digest = snapshot.digest().expect("pipeline snapshot must digest");
     let planning = snapshot
         .verify_structure(
-            &RecursiveComposer::new(&source.context),
+            &RecursiveComposer::new(&context),
             PlanningReplayInputs {
                 expected_digest: snapshot_digest,
                 authenticated_policies: &policies,
@@ -2903,7 +2979,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
     operation_template.target.interface = interface;
 
     PipelinePlanningFixture {
-        context: source.context,
+        context,
         planning,
         root,
         configuration,
@@ -2975,6 +3051,13 @@ fn module_locator(artifact: ArtifactReference) -> ModuleLocator {
 
 fn ability_value(value: serde_json::Value) -> AbilityValue {
     AbilityValue::new(value).expect("test value must be canonical and bounded")
+}
+
+fn effect_features() -> Vec<RequiredFeature> {
+    vec![
+        RequiredFeature::new("abilities-v1").expect("base abilities feature"),
+        RequiredFeature::new(FEATURE_ABILITY_EFFECTS_V1).expect("effect semantics feature"),
+    ]
 }
 
 fn key(value: &str) -> LocalKey {
