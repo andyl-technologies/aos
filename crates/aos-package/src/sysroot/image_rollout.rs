@@ -2,9 +2,7 @@
 //!
 //! This module authenticates the running and candidate image identities before
 //! A/B selection, gates native executor replacement on a drained reboot, and
-//! constructs the durable `aos.image-rollout/v1` record. It also owns the
-//! one-time migration from immutable images that predate the explicit
-//! `state-version` and `native-executor-ref` toplevel metadata.
+//! constructs the durable `aos.image-rollout/v1` record.
 
 use std::path::{Path, PathBuf};
 
@@ -13,8 +11,8 @@ use anyhow::{Context, Result, bail, ensure};
 use crate::types::{ImageGeneration, ImageGenerationState, ImageRollout, ImageRolloutStatus};
 
 use super::{
-    IMAGE_STATE_FILE, SystemTransitionMode, load_image_generation_state_pub,
-    read_immutable_os_release, read_toplevel_meta, running_image_generation, write_atomic_durable,
+    SystemTransitionMode, load_image_generation_state_pub, read_toplevel_meta,
+    running_image_generation,
 };
 
 mod ability;
@@ -51,7 +49,6 @@ pub(super) fn preflight_image_selection(
         qualified_rollout,
         Path::new("/"),
         &authenticated_running,
-        true,
     )
 }
 
@@ -77,7 +74,6 @@ pub(super) fn probe_image_selection(
         qualified_rollout,
         Path::new("/"),
         &authenticated_running,
-        false,
     )
 }
 
@@ -88,9 +84,8 @@ fn preflight_image_selection_beneath(
     qualified_rollout: bool,
     immutable_root: &Path,
     authenticated_running: &ImageGeneration,
-    publish_legacy_migration: bool,
 ) -> Result<()> {
-    let mut images = load_image_generation_state_pub(image_profile)?;
+    let images = load_image_generation_state_pub(image_profile)?;
     let running = images
         .running_generation()
         .cloned()
@@ -103,10 +98,10 @@ fn preflight_image_selection_beneath(
         .context("validating running image toplevel identity")?;
     let running_toplevel =
         immutable_store_path_beneath(immutable_root, Path::new(&running.toplevel))?;
-    let immutable_running_state_version =
-        read_optional_toplevel_meta(&running_toplevel, "state-version")?;
-    let immutable_running_executor =
-        read_optional_toplevel_meta(&running_toplevel, "native-executor-ref")?;
+    let immutable_running_state_version = read_toplevel_meta(&running_toplevel, "state-version")?;
+    let immutable_running_executor = read_toplevel_meta(&running_toplevel, "native-executor-ref")?;
+    crate::config_eval::materialize::validate_canonical_store_path(&immutable_running_executor)
+        .context("validating immutable running native executor identity")?;
 
     let candidate_toplevel = candidate_toplevel
         .to_str()
@@ -120,58 +115,21 @@ fn preflight_image_selection_beneath(
     crate::config_eval::materialize::validate_canonical_store_path(&candidate_executor)
         .context("validating candidate native executor identity")?;
 
-    let legacy_state_version = match (
-        immutable_running_state_version.as_deref(),
-        immutable_running_executor.as_deref(),
-    ) {
-        (Some(state_version), Some(executor)) => {
-            crate::config_eval::materialize::validate_canonical_store_path(executor)
-                .context("validating immutable running native executor identity")?;
-            validate_image_selection_compatibility(
-                &running,
-                state_version,
-                executor,
-                &candidate_state_version,
-                &candidate_executor,
-                qualified_rollout,
-            )?;
-            None
-        }
-        (None, None) => {
-            let state_version = authenticate_legacy_running_state_version(
-                &running,
-                &running_toplevel,
-                immutable_root,
-            )?;
-            validate_legacy_image_selection_compatibility(
-                &running,
-                &state_version,
-                &candidate_state_version,
-                qualified_rollout,
-            )?;
-            Some(state_version)
-        }
-        _ => {
-            bail!("running immutable toplevel has a partial state-version/native-executor identity")
-        }
-    };
+    validate_image_selection_compatibility(
+        &running,
+        &immutable_running_state_version,
+        &immutable_running_executor,
+        &candidate_state_version,
+        &candidate_executor,
+        qualified_rollout,
+    )?;
 
-    let executor_changes = legacy_state_version.is_some()
-        || immutable_running_executor.as_deref() != Some(candidate_executor.as_str());
+    let executor_changes = immutable_running_executor != candidate_executor;
     if !executor_changes {
         return Ok(());
     }
 
     ensure_executor_replacement_is_settled(retained_config_generation_paths(system_profile)?)?;
-
-    if publish_legacy_migration && let Some(state_version) = legacy_state_version {
-        migrate_legacy_running_state_version(
-            image_profile,
-            &mut images,
-            running.number,
-            &state_version,
-        )?;
-    }
     Ok(())
 }
 
@@ -184,142 +142,6 @@ fn immutable_store_path_beneath(root: &Path, store_path: &Path) -> Result<PathBu
         .strip_prefix("/")
         .context("immutable store path must be absolute")?;
     Ok(root.join(relative))
-}
-
-fn read_optional_toplevel_meta(toplevel: &Path, name: &str) -> Result<Option<String>> {
-    match std::fs::read_to_string(toplevel.join("meta").join(name)) {
-        Ok(value) => Ok(Some(value.trim().to_string())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("reading target image metadata {name}")),
-    }
-}
-
-fn authenticate_legacy_running_state_version(
-    running: &ImageGeneration,
-    toplevel: &Path,
-    immutable_root: &Path,
-) -> Result<String> {
-    let immutable_base_lib = std::fs::read_link(toplevel.join("base-lib"))
-        .context("reading legacy immutable base-library pointer")?;
-    ensure!(
-        immutable_base_lib == Path::new(&running.evaluator_ref),
-        "legacy running base library differs from immutable toplevel metadata"
-    );
-    let immutable_abi = read_toplevel_meta(toplevel, "module-abi")?
-        .parse::<u32>()
-        .context("legacy immutable toplevel has invalid module ABI")?;
-    let immutable_digest = read_toplevel_meta(toplevel, "baselib-digest")?;
-    let immutable_uki = read_toplevel_meta(toplevel, "uki-path")?;
-    let immutable_package = read_toplevel_meta(toplevel, "package-name")?;
-    let immutable_version = read_toplevel_meta(toplevel, "version")?;
-    let recorded_uki = running
-        .uki_source_path
-        .as_deref()
-        .unwrap_or(&running.uki_path);
-    ensure!(
-        immutable_abi == running.module_abi
-            && immutable_digest == running.baselib_digest
-            && immutable_uki == recorded_uki
-            && immutable_package == running.package_name
-            && immutable_version == running.version,
-        "legacy running image differs from immutable toplevel metadata"
-    );
-
-    let os_release = std::fs::read_link(toplevel.join("os-release"))
-        .context("reading legacy immutable os-release pointer")?;
-    let fields = read_immutable_os_release(immutable_root, &os_release)
-        .context("reading legacy immutable os-release identity")?;
-    let os_abi = fields
-        .get("AOS_MODULE_ABI")
-        .context("legacy immutable os-release has no AOS_MODULE_ABI")?
-        .parse::<u32>()
-        .context("legacy immutable os-release has invalid AOS_MODULE_ABI")?;
-    let os_digest = fields
-        .get("AOS_BASELIB_DIGEST")
-        .context("legacy immutable os-release has no AOS_BASELIB_DIGEST")?;
-    let os_version = fields
-        .get("VERSION_ID")
-        .context("legacy immutable os-release has no VERSION_ID")?;
-    ensure!(
-        os_abi == immutable_abi
-            && os_digest == &immutable_digest
-            && os_version == &immutable_version,
-        "legacy immutable os-release disagrees with toplevel metadata"
-    );
-    let state_version = fields
-        .get("AOS_STATE_VERSION")
-        .filter(|version| !version.is_empty())
-        .context("legacy immutable os-release has no nonempty AOS_STATE_VERSION")?;
-    Ok(state_version.clone())
-}
-
-fn validate_legacy_image_selection_compatibility(
-    running: &ImageGeneration,
-    authenticated_state_version: &str,
-    candidate_state_version: &str,
-    qualified_rollout: bool,
-) -> Result<()> {
-    ensure!(
-        running.native_executor_ref.is_none(),
-        "legacy running image record unexpectedly names a native executor"
-    );
-    ensure!(
-        running
-            .state_version
-            .as_deref()
-            .is_none_or(|version| version == authenticated_state_version),
-        "legacy running image state version differs from immutable os-release"
-    );
-    ensure!(
-        !candidate_state_version.is_empty()
-            && candidate_state_version == authenticated_state_version,
-        "legacy image migration requires the candidate to preserve the authenticated state version"
-    );
-    ensure!(
-        qualified_rollout,
-        "introducing the native executor requires an explicit drained reboot rollout"
-    );
-    Ok(())
-}
-
-fn migrate_legacy_running_state_version(
-    image_profile: &Path,
-    state: &mut ImageGenerationState,
-    running_number: u32,
-    state_version: &str,
-) -> Result<()> {
-    let matching = state
-        .generations
-        .iter()
-        .enumerate()
-        .filter(|(_, generation)| generation.number == running_number)
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    ensure!(
-        matching.len() == 1,
-        "legacy running image generation is absent or ambiguous"
-    );
-    let index = matching[0];
-    ensure!(
-        state.generations[index].native_executor_ref.is_none(),
-        "legacy running image record unexpectedly names a native executor"
-    );
-    if state.generations[index].state_version.as_deref() == Some(state_version) {
-        return Ok(());
-    }
-    ensure!(
-        state.generations[index].state_version.is_none(),
-        "legacy running image state version changed before migration"
-    );
-
-    let mut migrated = state.clone();
-    migrated.generations[index].state_version = Some(state_version.to_string());
-    write_atomic_durable(
-        &image_profile.join(IMAGE_STATE_FILE),
-        &serde_json::to_vec_pretty(&migrated)?,
-    )?;
-    *state = migrated;
-    Ok(())
 }
 
 fn validate_image_selection_compatibility(
@@ -491,15 +313,14 @@ pub(super) fn validate_active_rollout_selection(
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::symlink;
-
     use tempfile::TempDir;
 
     use crate::types::{ImageSlot, RecoveryPublication};
 
     use super::*;
     use crate::sysroot::{
-        IMAGE_TRANSITION_INTENT, abort_unpublished_image_selection, prepare_image_selection,
+        IMAGE_STATE_FILE, IMAGE_TRANSITION_INTENT, abort_unpublished_image_selection,
+        prepare_image_selection,
     };
 
     fn rollout_test_image(number: u32, state_version: &str, executor: &str) -> ImageGeneration {
@@ -530,346 +351,61 @@ mod tests {
         }
     }
 
-    struct LegacyPreflightFixture {
-        _tmp: TempDir,
-        immutable_root: PathBuf,
-        image_profile: PathBuf,
-        system_profile: PathBuf,
-        legacy_toplevel: PathBuf,
-        candidate_toplevel: PathBuf,
-    }
-
-    impl LegacyPreflightFixture {
-        fn new() -> Self {
-            let tmp = TempDir::new().unwrap();
-            let immutable_root = tmp.path().join("root");
-            let image_profile = tmp.path().join("image-profile");
-            let system_profile = tmp.path().join("system-profile");
-            let legacy_toplevel =
-                PathBuf::from(format!("/nix/store/{}-legacy-toplevel", "0".repeat(32)));
-            let legacy_base =
-                PathBuf::from(format!("/nix/store/{}-legacy-base-lib", "1".repeat(32)));
-            let legacy_os_release = PathBuf::from(format!(
-                "/nix/store/{}-legacy-os-release/os-release",
-                "2".repeat(32)
-            ));
-            let candidate_toplevel =
-                PathBuf::from(format!("/nix/store/{}-candidate-toplevel", "3".repeat(32)));
-            let candidate_executor = format!("/nix/store/{}-aos-package-runtime", "4".repeat(32));
-
-            let physical_legacy =
-                immutable_store_path_beneath(&immutable_root, &legacy_toplevel).unwrap();
-            std::fs::create_dir_all(physical_legacy.join("meta")).unwrap();
-            for (name, value) in [
-                ("module-abi", "7"),
-                ("baselib-digest", "sha256:legacy-base"),
-                ("uki-path", "EFI/Linux/aos-legacy+3.efi"),
-                ("package-name", "aos"),
-                ("version", "1"),
-            ] {
-                std::fs::write(physical_legacy.join("meta").join(name), value).unwrap();
-            }
-            symlink(&legacy_base, physical_legacy.join("base-lib")).unwrap();
-            symlink(&legacy_os_release, physical_legacy.join("os-release")).unwrap();
-            let physical_os_release =
-                immutable_store_path_beneath(&immutable_root, &legacy_os_release).unwrap();
-            std::fs::create_dir_all(physical_os_release.parent().unwrap()).unwrap();
-            std::fs::write(
-                physical_os_release,
-                "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:legacy-base\nAOS_STATE_VERSION=1\n",
-            )
-            .unwrap();
-
-            let physical_candidate =
-                immutable_store_path_beneath(&immutable_root, &candidate_toplevel).unwrap();
-            std::fs::create_dir_all(physical_candidate.join("meta")).unwrap();
-            std::fs::write(physical_candidate.join("meta/state-version"), "1").unwrap();
-            std::fs::write(
-                physical_candidate.join("meta/native-executor-ref"),
-                candidate_executor,
-            )
-            .unwrap();
-
-            std::fs::create_dir_all(&image_profile).unwrap();
-            let state = ImageGenerationState {
-                running: 1,
-                default: 1,
-                pending: None,
-                recovery_known_good: None,
-                recovery_pending: None::<RecoveryPublication>,
-                active_rollout: None,
-                last_rollout: None,
-                generations: vec![ImageGeneration {
-                    number: 1,
-                    slot: ImageSlot::A,
-                    uki_path: "EFI/Linux/aos-legacy+3.efi".into(),
-                    uki_source_path: None,
-                    toplevel: legacy_toplevel.to_string_lossy().into_owned(),
-                    package_name: "aos".into(),
-                    version: "1".into(),
-                    state_version: None,
-                    native_executor_ref: None,
-                    registry: "system".into(),
-                    kernel_path: None,
-                    evaluator_ref: legacy_base.to_string_lossy().into_owned(),
-                    module_abi: 7,
-                    baselib_digest: "sha256:legacy-base".into(),
-                    root_verity_roothash: None,
-                    expected_pcr11: None,
-                    initrd_pcr11: None,
-                    recovery: None,
-                    created_at: "2026-09-10T00:00:00Z".into(),
-                }],
-            };
-            std::fs::write(
-                image_profile.join(IMAGE_STATE_FILE),
-                serde_json::to_vec_pretty(&state).unwrap(),
-            )
-            .unwrap();
-
-            Self {
-                _tmp: tmp,
-                immutable_root,
-                image_profile,
-                system_profile,
-                legacy_toplevel,
-                candidate_toplevel,
-            }
-        }
-
-        fn preflight(&self, qualified_rollout: bool) -> Result<()> {
-            let state = self.image_state();
-            let authenticated_running = state.running_generation().unwrap();
-            self.preflight_with_authenticated(qualified_rollout, authenticated_running)
-        }
-
-        fn probe(&self, qualified_rollout: bool) -> Result<()> {
-            let state = self.image_state();
-            let authenticated_running = state.running_generation().unwrap();
-            preflight_image_selection_beneath(
-                &self.image_profile,
-                &self.system_profile,
-                &self.candidate_toplevel,
-                qualified_rollout,
-                &self.immutable_root,
-                authenticated_running,
-                false,
-            )
-        }
-
-        fn preflight_with_authenticated(
-            &self,
-            qualified_rollout: bool,
-            authenticated_running: &ImageGeneration,
-        ) -> Result<()> {
-            preflight_image_selection_beneath(
-                &self.image_profile,
-                &self.system_profile,
-                &self.candidate_toplevel,
-                qualified_rollout,
-                &self.immutable_root,
-                authenticated_running,
-                true,
-            )
-        }
-
-        fn image_state(&self) -> ImageGenerationState {
-            load_image_generation_state_pub(&self.image_profile).unwrap()
-        }
-
-        fn write_image_state(&self, state: &ImageGenerationState) {
-            std::fs::write(
-                self.image_profile.join(IMAGE_STATE_FILE),
-                serde_json::to_vec_pretty(state).unwrap(),
-            )
-            .unwrap();
-        }
-
-        fn legacy_meta(&self, name: &str) -> PathBuf {
-            immutable_store_path_beneath(&self.immutable_root, &self.legacy_toplevel)
-                .unwrap()
-                .join("meta")
-                .join(name)
-        }
-
-        fn legacy_os_release(&self) -> PathBuf {
-            let toplevel =
-                immutable_store_path_beneath(&self.immutable_root, &self.legacy_toplevel).unwrap();
-            let logical = std::fs::read_link(toplevel.join("os-release")).unwrap();
-            immutable_store_path_beneath(&self.immutable_root, &logical).unwrap()
-        }
-    }
-
-    #[test]
-    fn legacy_preflight_authenticates_and_durably_migrates_state_version() {
-        let fixture = LegacyPreflightFixture::new();
-        let rejected = fixture
-            .preflight(false)
-            .expect_err("legacy executor introduction requires a drained reboot");
-        assert!(rejected.to_string().contains("explicit drained reboot"));
-        assert_eq!(
-            fixture.image_state().generations[0].state_version,
-            None,
-            "a rejected preflight must not mutate legacy state"
-        );
-
-        fixture
-            .preflight(true)
-            .expect("authenticated legacy identity should migrate");
-        let migrated = fixture.image_state();
-        assert_eq!(migrated.generations[0].state_version.as_deref(), Some("1"));
-        assert_eq!(migrated.generations[0].native_executor_ref, None);
-
-        let durable = std::fs::read(fixture.image_profile.join(IMAGE_STATE_FILE)).unwrap();
-        fixture
-            .preflight(true)
-            .expect("the durable migration should be idempotent");
-        assert_eq!(
-            std::fs::read(fixture.image_profile.join(IMAGE_STATE_FILE)).unwrap(),
-            durable
-        );
-    }
-
-    #[test]
-    fn activatability_probe_authenticates_legacy_state_without_migration() {
-        let fixture = LegacyPreflightFixture::new();
-        let before = std::fs::read(fixture.image_profile.join(IMAGE_STATE_FILE)).unwrap();
-
-        fixture
-            .probe(true)
-            .expect("a compatible legacy image should be currently selectable");
-
-        assert_eq!(
-            std::fs::read(fixture.image_profile.join(IMAGE_STATE_FILE)).unwrap(),
-            before,
-            "the read-only probe must not publish legacy migration state"
-        );
-        assert_eq!(fixture.image_state().generations[0].state_version, None);
-    }
-
-    #[test]
-    fn legacy_preflight_rejects_os_release_symlink_escape() {
-        let fixture = LegacyPreflightFixture::new();
-        let outside = fixture
-            .immutable_root
-            .parent()
-            .unwrap()
-            .join("live-root-os-release");
-        std::fs::write(
-            &outside,
-            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:legacy-base\nAOS_STATE_VERSION=1\n",
-        )
-        .unwrap();
-        let os_release = fixture.legacy_os_release();
-        std::fs::remove_file(&os_release).unwrap();
-        symlink(&outside, &os_release).unwrap();
-
-        let error = fixture
-            .preflight(true)
-            .expect_err("legacy identity reads must not follow a live-root symlink");
-
-        assert!(
-            format!("{error:#}").contains("opening"),
-            "unexpected error: {error:#}"
-        );
-        assert_eq!(fixture.image_state().generations[0].state_version, None);
-    }
-
-    #[test]
-    fn legacy_preflight_scans_retained_generations_without_parsing_config_state() {
-        let fixture = LegacyPreflightFixture::new();
-        let generation = fixture.system_profile.join("gen-1");
-        std::fs::create_dir_all(&generation).unwrap();
-        std::fs::write(
-            fixture.system_profile.join(super::super::SYSTEM_STATE_FILE),
-            r#"{"current":1,"next":2,"generations":[{"number":1,"toplevel":"/nix/store/legacy","created_at":"2026-01-01T00:00:00Z"}]}"#,
-        )
-        .unwrap();
-
-        fixture
-            .preflight(true)
-            .expect("legacy config state must not strand the first native rollout");
-        assert_eq!(
-            fixture.image_state().generations[0]
-                .state_version
-                .as_deref(),
-            Some("1")
-        );
-
-        let blocked = LegacyPreflightFixture::new();
-        let unfinished = blocked
-            .system_profile
-            .join("gen-7/ability-transactions/unfinished");
-        std::fs::create_dir_all(&unfinished).unwrap();
-        std::fs::write(
-            blocked.system_profile.join(super::super::SYSTEM_STATE_FILE),
-            r#"{"current":7,"next":8,"generations":[{"number":7,"toplevel":"/nix/store/legacy","created_at":"2026-01-01T00:00:00Z"}]}"#,
-        )
-        .unwrap();
-        let error = blocked
-            .preflight(true)
-            .expect_err("unfinished retained work must block executor replacement");
-        assert!(error.to_string().contains("config generation 7"));
-        assert_eq!(blocked.image_state().generations[0].state_version, None);
-    }
-
-    #[test]
-    fn legacy_preflight_rejects_partial_new_metadata() {
-        let fixture = LegacyPreflightFixture::new();
-        for (present, absent, value) in [
-            ("state-version", "native-executor-ref", "1"),
-            (
-                "native-executor-ref",
-                "state-version",
-                &format!("/nix/store/{}-runtime", "5".repeat(32)),
-            ),
-        ] {
-            std::fs::write(fixture.legacy_meta(present), value).unwrap();
-            let error = fixture
-                .preflight(true)
-                .expect_err("one new immutable identity field must fail closed");
-            assert!(error.to_string().contains("partial state-version"));
-            std::fs::remove_file(fixture.legacy_meta(present)).unwrap();
-            assert!(!fixture.legacy_meta(absent).exists());
-        }
-    }
-
-    #[test]
-    fn legacy_preflight_rejects_record_mismatches() {
-        let fixture = LegacyPreflightFixture::new();
-        let mut state = fixture.image_state();
-        state.generations[0].state_version = Some("9".into());
-        fixture.write_image_state(&state);
-        let error = fixture
-            .preflight(true)
-            .expect_err("persisted state version must match immutable os-release");
-        assert!(error.to_string().contains("state version differs"));
-
-        state.generations[0].state_version = None;
-        state.generations[0].version = "attacker".into();
-        fixture.write_image_state(&state);
-        let error = fixture
-            .preflight(true)
-            .expect_err("legacy record must match immutable toplevel fields");
-        assert!(
-            error
-                .to_string()
-                .contains("differs from immutable toplevel")
-        );
-    }
-
     #[test]
     fn preflight_rejects_state_that_differs_from_authenticated_boot_identity() {
-        let fixture = LegacyPreflightFixture::new();
-        let mut authenticated_running = fixture.image_state().generations[0].clone();
-        authenticated_running.slot = ImageSlot::B;
+        let tmp = TempDir::new().unwrap();
+        let immutable_root = tmp.path().join("root");
+        let image_profile = tmp.path().join("image-profile");
+        let system_profile = tmp.path().join("system-profile");
+        let running_toplevel =
+            PathBuf::from(format!("/nix/store/{}-running-toplevel", "0".repeat(32)));
+        let candidate_toplevel =
+            PathBuf::from(format!("/nix/store/{}-candidate-toplevel", "1".repeat(32)));
+        let running_executor = format!("/nix/store/{}-running-executor", "2".repeat(32));
+        let candidate_executor = format!("/nix/store/{}-candidate-executor", "3".repeat(32));
 
-        let error = fixture
-            .preflight_with_authenticated(true, &authenticated_running)
-            .expect_err("persisted running selection must match authenticated boot identity");
+        for (toplevel, executor) in [
+            (&running_toplevel, &running_executor),
+            (&candidate_toplevel, &candidate_executor),
+        ] {
+            let physical = immutable_store_path_beneath(&immutable_root, toplevel).unwrap();
+            std::fs::create_dir_all(physical.join("meta")).unwrap();
+            std::fs::write(physical.join("meta/state-version"), "1").unwrap();
+            std::fs::write(physical.join("meta/native-executor-ref"), executor).unwrap();
+        }
+
+        let mut running = rollout_test_image(1, "1", &running_executor);
+        running.toplevel = running_toplevel.to_string_lossy().into_owned();
+        let state = ImageGenerationState {
+            running: running.number,
+            default: running.number,
+            pending: None,
+            recovery_known_good: None,
+            recovery_pending: None,
+            active_rollout: None,
+            last_rollout: None,
+            generations: vec![running.clone()],
+        };
+        std::fs::create_dir_all(&image_profile).unwrap();
+        std::fs::write(
+            image_profile.join(IMAGE_STATE_FILE),
+            serde_json::to_vec_pretty(&state).unwrap(),
+        )
+        .unwrap();
+
+        let mut different_boot_identity = running;
+        different_boot_identity.slot = ImageSlot::B;
+        let error = preflight_image_selection_beneath(
+            &image_profile,
+            &system_profile,
+            &candidate_toplevel,
+            true,
+            &immutable_root,
+            &different_boot_identity,
+        )
+        .expect_err("persisted running selection must match authenticated boot identity");
 
         assert!(error.to_string().contains("authenticated booted image"));
-        assert_eq!(fixture.image_state().generations[0].state_version, None);
     }
 
     #[test]

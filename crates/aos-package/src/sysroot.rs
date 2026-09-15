@@ -144,31 +144,6 @@ struct ActivationIntent {
     state: ConfigGenerationState,
 }
 
-/// Retired bundled generation schema, accepted only by one-shot migration.
-#[derive(Debug, serde::Deserialize)]
-struct LegacySystemGeneration {
-    number: u32,
-    toplevel: String,
-    created_at: String,
-    image_gen_parent: Option<u32>,
-    module_abi_pinned: Option<u32>,
-    manifest_hash: Option<String>,
-    host_nix_ref: Option<String>,
-    host_nix_commit: Option<String>,
-    facts_hash: Option<String>,
-    facts_ref: Option<String>,
-    base_lib_ref: Option<String>,
-    evaluator_ref: Option<String>,
-}
-
-/// Retired system-profile state, never written by current code.
-#[derive(Debug, serde::Deserialize)]
-struct LegacySystemGenerationState {
-    current: u32,
-    next: u32,
-    generations: Vec<LegacySystemGeneration>,
-}
-
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct ImageTransitionIntent {
     target: u32,
@@ -2706,10 +2681,6 @@ pub async fn rollback_image_generation(
         Path::new(&target.toplevel),
         qualified_rollout,
     )?;
-    // Legacy preflight may have durably authenticated and added the running
-    // state version. Reload beneath the held switch lock so rollout
-    // construction observes that exact migrated record.
-    state = load_image_generation_state_pub(profile)?;
     let rollout = if qualified_rollout {
         drain_workloads(printer).await?;
         let state_version = target
@@ -3438,130 +3409,7 @@ fn load_generation_state(profile_path: &Path) -> Result<ConfigGenerationState> {
     }
     let content = std::fs::read_to_string(&state_path)
         .with_context(|| format!("reading {}", state_path.display()))?;
-    match serde_json::from_str(&content) {
-        Ok(state) => Ok(state),
-        Err(config_error) => migrate_legacy_generation_state(
-            profile_path,
-            Path::new(IMAGE_PROFILE_DIR),
-            &content,
-        )
-        .with_context(|| {
-            format!(
-                "parsing {} as config-generation state failed ({config_error}); authenticated legacy migration also failed",
-                state_path.display()
-            )
-        }),
-    }
-}
-
-fn migrate_legacy_generation_state(
-    profile_path: &Path,
-    image_profile: &Path,
-    content: &str,
-) -> Result<ConfigGenerationState> {
-    let legacy: LegacySystemGenerationState =
-        serde_json::from_str(content).context("parsing retired system-generation state")?;
-    let images = load_image_generation_state_pub(image_profile)
-        .context("legacy migration requires an authenticated image-generation index")?;
-    let mut generations = Vec::with_capacity(legacy.generations.len());
-    for old in legacy.generations {
-        let abi = old
-            .module_abi_pinned
-            .with_context(|| format!("legacy generation {} has no module ABI pin", old.number))?;
-        let base_lib_ref = old.base_lib_ref.with_context(|| {
-            format!(
-                "legacy generation {} has no base-library identity",
-                old.number
-            )
-        })?;
-        let matching = images
-            .generations
-            .iter()
-            .filter(|image| {
-                image.toplevel == old.toplevel
-                    && image.module_abi == abi
-                    && image.evaluator_ref == base_lib_ref
-                    && old
-                        .image_gen_parent
-                        .is_none_or(|parent| image.number == parent)
-            })
-            .collect::<Vec<_>>();
-        if matching.len() != 1 {
-            bail!(
-                "legacy generation {} does not authenticate to exactly one image generation",
-                old.number
-            );
-        }
-        let parent = matching[0];
-        let manifest_path = profile_path
-            .join(format!("gen-{}", old.number))
-            .join("manifest.json");
-        let manifest_bytes = std::fs::read(&manifest_path).with_context(|| {
-            format!(
-                "reading authenticated legacy manifest {}",
-                manifest_path.display()
-            )
-        })?;
-        let manifest: crate::config_eval::materialize::ConfigManifest =
-            serde_json::from_slice(&manifest_bytes).with_context(|| {
-                format!(
-                    "parsing authenticated legacy manifest {}",
-                    manifest_path.display()
-                )
-            })?;
-        manifest.validate().with_context(|| {
-            format!(
-                "validating authenticated legacy manifest {}",
-                manifest_path.display()
-            )
-        })?;
-        let generation = ConfigGeneration {
-            number: old.number,
-            image_gen_parent: parent.number,
-            module_abi_pinned: abi,
-            manifest_hash: old.manifest_hash.with_context(|| {
-                format!("legacy generation {} has no manifest hash", old.number)
-            })?,
-            package_modules: manifest.inputs.package_modules.modules,
-            host_nix_ref: old.host_nix_ref.with_context(|| {
-                format!(
-                    "legacy generation {} has no host.nix content pin",
-                    old.number
-                )
-            })?,
-            host_nix_commit: old.host_nix_commit,
-            facts_hash: old
-                .facts_hash
-                .with_context(|| format!("legacy generation {} has no facts hash", old.number))?,
-            facts_ref: old.facts_ref.with_context(|| {
-                format!("legacy generation {} has no facts store path", old.number)
-            })?,
-            base_lib_ref,
-            evaluator_ref: old.evaluator_ref.with_context(|| {
-                format!("legacy generation {} has no evaluator identity", old.number)
-            })?,
-            created_at: old.created_at,
-        };
-        validate_generation_manifest(profile_path, &generation)?;
-        generations.push(generation);
-    }
-    if legacy.current != 0
-        && !generations
-            .iter()
-            .any(|generation| generation.number == legacy.current)
-    {
-        bail!(
-            "legacy state names missing current generation {}",
-            legacy.current
-        );
-    }
-    let migrated = ConfigGenerationState {
-        current: legacy.current,
-        next: legacy.next,
-        generations,
-    };
-    save_generation_state(profile_path, &migrated)?;
-    Ok(migrated)
+    serde_json::from_str(&content).with_context(|| format!("parsing {}", state_path.display()))
 }
 
 fn load_generation_state_readonly(profile_path: &Path) -> Result<ConfigGenerationState> {
@@ -6785,110 +6633,6 @@ mod tests {
         let loaded = load_generation_state(tmp.path()).unwrap();
         assert_eq!(loaded.current, 1);
         assert_eq!(loaded.generations.len(), 1);
-    }
-
-    #[test]
-    fn authenticated_legacy_state_migrates_to_config_only_shape() {
-        let root = tempfile::tempdir().unwrap();
-        let profile = root.path().join("system");
-        let image_profile = root.path().join("image");
-        std::fs::create_dir_all(profile.join("gen-1")).unwrap();
-        std::fs::create_dir_all(&image_profile).unwrap();
-        let manifest_text = include_str!("../tests/fixtures/config_manifest/manifest.json");
-        let manifest: crate::config_eval::materialize::ConfigManifest =
-            serde_json::from_str(manifest_text).unwrap();
-        manifest.validate().unwrap();
-        std::fs::write(profile.join("gen-1/manifest.json"), manifest_text).unwrap();
-        let manifest_hash =
-            crate::graph_compile::reproject::hash_cjson(&serde_json::to_value(&manifest).unwrap());
-        let base = manifest.inputs.base_lib.store_path.clone();
-        let evaluator = manifest.inputs.evaluator.store_path.clone();
-        let host = manifest.inputs.host_nix.store_path.clone();
-        let facts_hash = manifest.inputs.instance_facts.facts_hash.clone();
-        let facts_ref = manifest.inputs.instance_facts.store_path.clone();
-        let top = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system";
-        let images = ImageGenerationState {
-            running: 4,
-            default: 4,
-            pending: None,
-            recovery_known_good: None,
-            recovery_pending: None,
-            active_rollout: None,
-            last_rollout: None,
-            generations: vec![ImageGeneration {
-                number: 4,
-                slot: ImageSlot::A,
-                uki_path: "EFI/Linux/aos+3.efi".into(),
-                uki_source_path: None,
-                toplevel: top.into(),
-                package_name: "aos-system".into(),
-                version: "1".into(),
-                state_version: None,
-                native_executor_ref: None,
-                registry: "core".into(),
-                kernel_path: None,
-                evaluator_ref: base.clone(),
-                module_abi: manifest.module_abi,
-                baselib_digest: format!("sha256:{}", "a".repeat(64)),
-                root_verity_roothash: None,
-                expected_pcr11: None,
-                initrd_pcr11: None,
-                recovery: None,
-                created_at: "2026-01-01T00:00:00Z".into(),
-            }],
-        };
-        std::fs::write(
-            image_profile.join(IMAGE_STATE_FILE),
-            serde_json::to_vec(&images).unwrap(),
-        )
-        .unwrap();
-        let legacy = serde_json::json!({
-            "current": 1,
-            "next": 2,
-            "generations": [{
-                "number": 1,
-                "toplevel": top,
-                "created_at": "2026-01-01T00:00:00Z",
-                "image_gen_parent": 4,
-                "module_abi_pinned": manifest.module_abi,
-                "manifest_hash": manifest_hash,
-                "host_nix_ref": host,
-                "facts_hash": facts_hash,
-                "facts_ref": facts_ref,
-                "base_lib_ref": base,
-                "evaluator_ref": evaluator
-            }]
-        });
-        let migrated = migrate_legacy_generation_state(
-            &profile,
-            &image_profile,
-            &serde_json::to_string(&legacy).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(migrated.current, 1);
-        assert_eq!(migrated.generations[0].image_gen_parent, 4);
-        let persisted: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(profile.join(SYSTEM_STATE_FILE)).unwrap())
-                .unwrap();
-        assert!(persisted["generations"][0].get("toplevel").is_none());
-        assert_eq!(persisted["generations"][0]["manifest_hash"], manifest_hash);
-    }
-
-    #[test]
-    fn incomplete_legacy_state_migration_fails_without_publication() {
-        let root = tempfile::tempdir().unwrap();
-        let profile = root.path().join("system");
-        let image_profile = root.path().join("image");
-        std::fs::create_dir_all(&profile).unwrap();
-        std::fs::create_dir_all(&image_profile).unwrap();
-        let legacy = r#"{"current":1,"next":2,"generations":[{"number":1,"toplevel":"/nix/store/missing","created_at":"2026-01-01T00:00:00Z"}]}"#;
-        std::fs::write(profile.join(SYSTEM_STATE_FILE), legacy).unwrap();
-        let error = migrate_legacy_generation_state(&profile, &image_profile, legacy).unwrap_err();
-        assert!(error.to_string().contains("image-generation index"));
-        assert_eq!(
-            std::fs::read_to_string(profile.join(SYSTEM_STATE_FILE)).unwrap(),
-            legacy
-        );
     }
 
     #[test]
