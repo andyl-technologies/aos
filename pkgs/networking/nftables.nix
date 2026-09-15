@@ -70,6 +70,8 @@ in
 
     inherit version;
 
+    abilities = ./_nftables/module.nix;
+
     src = fetchurl {
       urls = [
         "https://www.netfilter.org/projects/nftables/files/nftables-${version}.tar.xz"
