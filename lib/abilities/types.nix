@@ -149,7 +149,8 @@
     && builtins.stringLength value <= 4096
     && builtins.substring 0 1 value == "/"
     && (
-      value == "/"
+      value
+      == "/"
       || builtins.all (component: component != "" && component != "." && component != "..") components
     );
 
@@ -770,7 +771,8 @@ in rec {
   deferredResult = expectedType: let
     schema = schemaOf "deferred result" expectedType;
     admitsPathWithin =
-      schema.kind == "string"
+      schema.kind
+      == "string"
       && schema.syntax == "execution-path-v1";
     pathWithinType = moduleTypes.mkOptionType {
       name = "path within a deferred execution path";
