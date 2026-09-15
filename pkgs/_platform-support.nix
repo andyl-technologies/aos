@@ -771,7 +771,6 @@ let
   # Source fragments kept below underscore-prefixed directories are also
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
-    "build-support/_service-ability-provider/default.nix" = "target-independent-source";
     "tests/_ability-package-smoke/default.nix" = "linux-only-test-source";
     "containers/_containerd-config/module.nix" = "linux-only-config-source";
     "containers/_containerd-tests/contract.nix" = "linux-only-test-source";

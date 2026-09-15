@@ -146,13 +146,6 @@
     inherit lib;
     abilities = lib.abilities;
   };
-  mkServiceAbilityModule = args:
-    import ./build-support/_service-ability-module.nix (
-      args
-      // {
-        inherit lib;
-      }
-    );
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
@@ -1696,7 +1689,7 @@
   self =
     {
       # --- Plumbing ---
-      inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream mkServiceAbilityModule lib packageNames allPackageNames;
+      inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
