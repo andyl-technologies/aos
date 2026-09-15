@@ -483,6 +483,12 @@
   kernelTunables = import ./kernel-tunables.nix {
     inherit lib;
   };
+  blockStorage = import ./block-storage.nix {
+    inherit lib;
+  };
+  baseFilesystemsNative = import ./base-filesystems-native.nix {
+    inherit lib pkgs;
+  };
   filesystemEntryProvider = import ./filesystem-entry-provider.nix {
     inherit lib pkgs;
   };
@@ -1009,6 +1015,8 @@ in
   assert aosControllerTerminal;
   assert networkPolicyCore;
   assert kernelTunables;
+  assert blockStorage;
+  assert baseFilesystemsNative;
   assert packageQualification;
   assert fails (normalizeBounded [true false null true false]);
   assert fails (normalizeBounded {oversized-member-name = true;});
