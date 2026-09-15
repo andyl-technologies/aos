@@ -710,11 +710,6 @@ let
   helperInventory = {
     "_platform-support.nix" = "platform-policy";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
-    "build-support/_config-module-renderer.nix" = "native-build-helper";
-    "build-support/_expose-module.nix" = "target-independent-source";
-    "build-support/_expose-config-projection-module.nix" = "target-independent-source";
-    "build-support/_expose-renderer.nix" = "native-build-helper";
-    "build-support/_generated-expose-config-module.nix" = "target-independent-source";
     "build-support/_github-upstream.nix" = "native-build-helper";
     "build-support/_manual-upstream.nix" = "native-build-helper";
     "build-support/_perl-module.nix" = "native-build-helper";

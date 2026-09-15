@@ -968,9 +968,6 @@
       else acc
   ) {} (builtins.attrNames pkgs);
 
-  packagesWithExpose =
-    lib.filterAttrs (_: p: builtins.isAttrs p && p ? expose) pkgs;
-
   packagePresetCheck = import ./tests/packages/preset.nix {
     inherit pkgs mkSystem testing;
   };
@@ -1742,7 +1739,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem containerImages containerDefinitions releaseQualificationExecutor;
   packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
@@ -1779,7 +1776,7 @@ in {
       crucible-guest = pkgs.crucible-guest;
     };
     eval-standalone = import ./lib/testing/eval.nix {
-      inherit pkgs lib mkSystem packagesWithExpose;
+      inherit pkgs lib mkSystem;
       system = serverSystem;
     };
     abilities = import ./tests/abilities {inherit pkgs lib mkSystem;};
