@@ -837,6 +837,8 @@ in
   assert interfaces.persistentStorageAllocation.document.interface.lifecycle.persistent_delete_method == null;
   assert interfaces.persistentStorageAllocation.document.interface.methods.release.semantics.required_target_access == "exclusive-write";
   assert interfaces.persistentStorageAllocation.document.interface.methods.release.semantics.stops_provider;
+  assert !interfaces.networkReadiness.document.interface.lifecycle.releases_ephemeral_on_disable;
+  assert !interfaces.filesystemReadiness.document.interface.lifecycle.releases_ephemeral_on_disable;
   assert succeedsAs serviceTypes.storageAllocation placedStorageAllocation;
   assert !succeedsAs serviceTypes.storageAllocation invalidPlacedStorageAllocation;
   assert succeedsAs serviceTypes.storageAllocation ownedStorageAllocation;
