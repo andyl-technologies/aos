@@ -94,6 +94,16 @@ def exact_mapping(
     return matches[0]
 
 
+def _adapter_claim(adapter: str) -> dict[str, Any]:
+    """Resolves the package-owned qualification claim selected by the matrix."""
+
+    adapters = MATRIX_SPEC.get("surface", {}).get("adapters", [])
+    matches = [entry for entry in adapters if entry.get("adapter") == adapter]
+    if len(matches) != 1:
+        raise RuntimeError("matrix does not select one observer for the adapter")
+    return matches[0]
+
+
 def observe_exact(
     adapter: str, operation: dict[str, Any], resource_map: dict[str, Any]
 ) -> dict[str, Any]:
@@ -133,9 +143,9 @@ def observe_operation(
 
     interface = operation["interface"]["name"]
     matches = [
-        adapter
-        for adapter, expected in INTERFACES.items()
-        if expected == interface
+        claim["adapter"]
+        for claim in MATRIX_SPEC.get("surface", {}).get("adapters", [])
+        if claim.get("interface_name") == interface
     ]
     if len(matches) != 1:
         raise RuntimeError(f"no unique provider oracle for interface {interface!r}")
@@ -168,23 +178,6 @@ def observe_canonical_foreground(
         "owner-count": len(documents),
         "live": live,
     }
-
-
-INTERFACES = {
-    "credential-delivery": "aos.credential-delivery-effects",
-    "foreground-process": "aos.foreground-process",
-    "host-network-policy": "aos.host-network-policy-effects",
-    "host-storage": "aos.host-storage-effects",
-    "image-rollout": "aos.ab-image-rollout-effects",
-    "kubernetes-object": "aos.kubernetes-object-effects",
-    "managed-configuration": "aos.managed-configuration-effects",
-    "network-endpoint": "aos.network-endpoint-effects",
-    "nginx-validation": "aos.nginx-validation",
-    "systemd-bootstrap": "aos.systemd-provider-bootstrap",
-    "systemd-manager": "aos.systemd-manager",
-    "service-management": "aos.service-management",
-}
-
 
 def inject_foreign_owner(
     adapter: str, operation: dict[str, Any], resource_map: dict[str, Any]
@@ -495,8 +488,7 @@ def adapter_from_cell(cell_id: str) -> str:
     """Returns the adapter component of one canonical matrix cell ID."""
 
     adapter = cell_id.split("/", 1)[0]
-    if adapter not in PROVIDER_ORACLES:
-        raise RuntimeError(f"no live-resource oracle for adapter {adapter!r}")
+    _adapter_claim(adapter)
     return adapter
 
 
@@ -510,8 +502,7 @@ def observe_resource(
 
     adapter = adapter_from_cell(cell_id)
     foreign_adapter = foreign_operation["adapter"]
-    if foreign_adapter not in PROVIDER_ORACLES:
-        raise RuntimeError(f"no foreign oracle for adapter {foreign_adapter!r}")
+    _adapter_claim(foreign_adapter)
     target = operation["target"]["resource"]
     foreign_target = foreign_operation["operation"]["target"]["resource"]
     if target == foreign_target:
@@ -595,7 +586,9 @@ def live_observation_with_documents(
 ) -> dict[str, Any]:
     """Reads live state using an already selected exact marker set."""
 
-    kind = PROVIDER_ORACLES[adapter]["live"]
+    kind = _adapter_claim(adapter).get("observation_kind")
+    if not isinstance(kind, str):
+        raise RuntimeError("qualification claim does not select one observation kind")
     if kind == "foreground-process":
         observed_operation = operation
         if documents:
