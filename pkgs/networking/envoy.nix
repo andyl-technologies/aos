@@ -1594,6 +1594,16 @@ in
               test -e "${targetGcc}/${targetTriple}/lib64/$library"
               cp -L "${targetGcc}/${targetTriple}/lib64/$library" "$out/lib/$library"
             done
+
+            # DT_RUNPATH is not transitive: the executable's path does not
+            # help libstdc++ locate libgcc_s. Give the binary and its copied
+            # runtime libraries a self-contained target runtime search path.
+            for elf in "$out/bin/envoy" "$out/lib/"*.so.*; do
+              chmod u+w "$elf"
+              ${buildPatchelf}/bin/patchelf \
+                --set-rpath "$out/lib:${glibc}/lib" \
+                "$elf"
+            done
           ''
           else ''
             # Patch the native ELF interpreter and RPATH.
@@ -1615,7 +1625,9 @@ in
       '';
 
     buildDeps = [buildPatchelf];
-    runtimeDeps = [];
+    # The Linux cross-toolchain embeds the target glibc interpreter in Envoy.
+    # Retain that loader through reference scrubbing and in the runtime closure.
+    runtimeDeps = lib.optional isLinuxCross glibc;
     propagatedDeps = [];
 
     meta = {
