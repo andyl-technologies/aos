@@ -79,7 +79,7 @@ in
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
-      cp ${./_procps-provider.nix} \
+      cp ${./_kernel-tunable-provider.nix} \
         "$out/share/aos/providers/kernel-tunables.nix"
       test -x "$out/bin/aos-kernel-tunable-provider"
       if patchelf --print-interpreter "$out/bin/aos-kernel-tunable-provider" \

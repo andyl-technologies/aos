@@ -25,7 +25,7 @@
         name = "aos-kernel-tunable-provider";
         module.imports = [
           ../../pkgs/tools/_aos-kernel-tunable-provider-module.nix
-          ../../pkgs/tools/_procps-provider.nix
+          ../../pkgs/tools/_kernel-tunable-provider.nix
           {config.aos.abilities.instances.manager = {};}
         ];
       }
