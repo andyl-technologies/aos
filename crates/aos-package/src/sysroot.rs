@@ -6806,8 +6806,20 @@ mod tests {
             crate::graph_compile::reproject::hash_cjson(&serde_json::to_value(&manifest).unwrap());
         let base = manifest.inputs.base_lib.store_path.clone();
         let evaluator = manifest.inputs.evaluator.store_path.clone();
-        let modules = manifest.inputs.config_modules.store_paths.clone();
-        let packages = manifest.inputs.config_modules.package_names.clone();
+        let modules = manifest
+            .inputs
+            .package_modules
+            .modules
+            .iter()
+            .map(|module| module.store_path.clone())
+            .collect::<Vec<_>>();
+        let packages = manifest
+            .inputs
+            .package_modules
+            .modules
+            .iter()
+            .map(|module| module.package.clone())
+            .collect::<Vec<_>>();
         let host = manifest.inputs.host_nix.store_path.clone();
         let facts_hash = manifest.inputs.instance_facts.facts_hash.clone();
         let facts_ref = manifest.inputs.instance_facts.store_path.clone();
@@ -7258,14 +7270,7 @@ mod tests {
                     "store_path": "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-evaluator",
                     "store_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 },
-                "config_modules": {
-                    "closure_hash": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-                    "count": 0,
-                    "store_paths": [],
-                    "nar_hashes": [],
-                    "package_names": [],
-                    "module_abi_compat": []
-                },
+                "package_modules": {"modules": []},
                 "host_nix": {
                     "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "trust_mode": "platform",
