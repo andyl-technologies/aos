@@ -3,12 +3,12 @@
 use std::num::NonZeroU32;
 
 use aos_ability_model::MethodReference;
-use aos_contract::Sha256Digest;
 
 use crate::adapter::{
     CancellationToken, InvocationPurpose, MonotonicClock, RuntimeControl, TrustedAdapter,
 };
 use crate::execution::admission::{check_invocation, check_resources};
+use crate::execution::invocation;
 use crate::execution::machine::{
     AttemptContext, Boundary, BoundaryHook, ExecutionBoundaryControl, ExecutionBoundaryObservation,
     ExecutionBoundaryObserver, OperationExecutor,
@@ -95,43 +95,15 @@ impl<'plan> ExecutionTransaction<'plan> {
             }
             Err(error) => return Err(error),
         };
-        let (method, purpose) = match action {
-            RecoveryAction::Execute { .. } => (
-                MethodReference {
-                    interface: admitted.operation().interface.clone(),
-                    method: admitted.operation().method.clone(),
-                },
-                InvocationPurpose::Effect,
-            ),
-            RecoveryAction::ReconcileBeforeRetry { .. } => (
-                admitted
-                    .operation()
-                    .recovery
-                    .reconcile
-                    .clone()
-                    .ok_or(ExecutionError::StaleAdmission)?,
-                InvocationPurpose::Reconcile,
-            ),
-            RecoveryAction::ExecuteCompensation => (
-                admitted
-                    .operation()
-                    .recovery
-                    .compensate
-                    .clone()
-                    .ok_or(ExecutionError::StaleAdmission)?,
-                InvocationPurpose::Compensate,
-            ),
-            RecoveryAction::ReconcileCompensation => (
-                admitted
-                    .operation()
-                    .recovery
-                    .reconcile
-                    .clone()
-                    .ok_or(ExecutionError::StaleAdmission)?,
-                InvocationPurpose::ReconcileCompensation,
-            ),
+        let purpose = match action {
+            RecoveryAction::Execute { .. } => InvocationPurpose::Effect,
+            RecoveryAction::ReconcileBeforeRetry { .. } => InvocationPurpose::Reconcile,
+            RecoveryAction::ExecuteCompensation => InvocationPurpose::Compensate,
+            RecoveryAction::ReconcileCompensation => InvocationPurpose::ReconcileCompensation,
             _ => return Err(ExecutionError::StaleAdmission),
         };
+        let method = invocation::method(admitted.operation(), purpose)
+            .ok_or(ExecutionError::StaleAdmission)?;
 
         authorize_before_intent(admitted, adapter, policy, &method, purpose)?;
         let persisted_elapsed = self
@@ -466,9 +438,16 @@ impl<'plan> ExecutionTransaction<'plan> {
         let elapsed_millis =
             observed_operation_elapsed(admitted, clock).max(history.elapsed_millis());
         ensure_dispatch_budget(self, admitted, history.elapsed_millis(), elapsed_millis)?;
-        let idempotency_key = history
-            .idempotency_key()
-            .map_or_else(|| logical_idempotency_key(admitted), Ok)?;
+        let idempotency_key = history.idempotency_key().map_or_else(
+            || {
+                invocation::operation_idempotency_key(
+                    admitted.transaction(),
+                    admitted.operation_id(),
+                )
+                .map_err(ExecutionError::Identity)
+            },
+            Ok,
+        )?;
         Ok(AttemptContext {
             transaction: admitted.transaction(),
             operation: admitted.operation_id(),
@@ -542,8 +521,16 @@ impl<'plan> ExecutionTransaction<'plan> {
             history.idempotency_key()
         } {
             Some(key) => key,
-            None if compensation => compensation_idempotency_key(admitted)?,
-            None => logical_idempotency_key(admitted)?,
+            None if compensation => invocation::compensation_idempotency_key(
+                admitted.transaction(),
+                admitted.operation_id(),
+            )
+            .map_err(ExecutionError::Identity)?,
+            None => invocation::operation_idempotency_key(
+                admitted.transaction(),
+                admitted.operation_id(),
+            )
+            .map_err(ExecutionError::Identity)?,
         };
         Ok((
             action,
@@ -748,24 +735,4 @@ fn ensure_dispatch_budget<Request, Handle>(
         return Err(ExecutionError::DeadlineBeforeIntent);
     }
     Ok(())
-}
-
-fn logical_idempotency_key<Request, Handle>(
-    admitted: &AdmittedOperation<'_, Request, Handle>,
-) -> Result<Sha256Digest, ExecutionError> {
-    Sha256Digest::of_canonical(
-        "aos.ability.operation-idempotency-key/v1",
-        &(admitted.transaction(), admitted.operation_id()),
-    )
-    .map_err(ExecutionError::Identity)
-}
-
-fn compensation_idempotency_key<Request, Handle>(
-    admitted: &AdmittedOperation<'_, Request, Handle>,
-) -> Result<Sha256Digest, ExecutionError> {
-    Sha256Digest::of_canonical(
-        "aos.ability.compensation-idempotency-key/v1",
-        &(admitted.transaction(), admitted.operation_id()),
-    )
-    .map_err(ExecutionError::Identity)
 }

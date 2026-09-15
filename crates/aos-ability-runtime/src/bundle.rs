@@ -481,12 +481,19 @@ mod tests {
 
     use super::*;
 
-    fn stateful_features() -> BTreeSet<RequiredFeature> {
-        BTreeSet::from([
-            RequiredFeature::new("abilities-v1").expect("valid base feature"),
-            RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
-                .expect("valid provider state-format feature"),
-        ])
+    fn package_features(bundle: &ReloadablePlanBundle) -> BTreeSet<RequiredFeature> {
+        bundle
+            .desired
+            .packages
+            .iter()
+            .chain(
+                bundle
+                    .current
+                    .iter()
+                    .flat_map(|current| current.packages.iter()),
+            )
+            .flat_map(|package| package.required_features.iter().cloned())
+            .collect()
     }
 
     fn assert_replay_diagnostic(
@@ -526,7 +533,8 @@ mod tests {
 
         let decoded = ReloadablePlanBundle::decode(&bytes)?;
         assert_eq!(decoded.digest()?, expected_digest);
-        assert_eq!(decoded.revalidate(BTreeSet::new())?.id(), expected_plan);
+        let supported_features = package_features(&decoded);
+        assert_eq!(decoded.revalidate(supported_features)?.id(), expected_plan);
         Ok(())
     }
 
@@ -544,7 +552,8 @@ mod tests {
                 .state_format
                 .is_some()
         );
-        assert_eq!(decoded.revalidate(stateful_features())?.id(), expected_plan);
+        let supported_features = package_features(&decoded);
+        assert_eq!(decoded.revalidate(supported_features)?.id(), expected_plan);
         Ok(())
     }
 
@@ -553,8 +562,11 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (planning, transition) = verified_stateful_planning_transition_plan();
         let bundle = ReloadablePlanBundle::from_verified(&planning, None, None, &transition)?;
-        let old_features =
-            BTreeSet::from([RequiredFeature::new("abilities-v1").expect("valid base feature")]);
+        let mut old_features = package_features(&bundle);
+        old_features.remove(
+            &RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
+                .expect("valid provider state-format feature"),
+        );
 
         let error = bundle
             .revalidate(old_features)
@@ -572,6 +584,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (planning, transition) = verified_stateful_planning_transition_plan();
         let mut bundle = ReloadablePlanBundle::from_verified(&planning, None, None, &transition)?;
+        let supported_features = package_features(&bundle);
         bundle.desired.packages[0].required_features.push(
             RequiredFeature::new("provider-state-format-future").expect("valid future feature"),
         );
@@ -580,7 +593,7 @@ mod tests {
         let decoded = ReloadablePlanBundle::decode(&bytes)?;
 
         let error = decoded
-            .revalidate(stateful_features())
+            .revalidate(supported_features)
             .expect_err("unknown future state-format semantics must fail closed");
         assert_replay_diagnostic(
             error,
@@ -603,9 +616,10 @@ mod tests {
         state_format.artifact.content = Sha256Digest::of_bytes("divergent format artifact");
         let bytes = bundle.canonical_bytes()?;
         let decoded = ReloadablePlanBundle::decode(&bytes)?;
+        let supported_features = package_features(&decoded);
 
         let error = decoded
-            .revalidate(stateful_features())
+            .revalidate(supported_features)
             .expect_err("state-format and implementation artifacts must remain identical");
         assert_replay_diagnostic(
             error,
@@ -623,9 +637,10 @@ mod tests {
         bundle.desired.packages[0].implementation.providers[0].state_format = None;
         let bytes = bundle.canonical_bytes()?;
         let decoded = ReloadablePlanBundle::decode(&bytes)?;
+        let supported_features = package_features(&decoded);
 
         let error = decoded
-            .revalidate(stateful_features())
+            .revalidate(supported_features)
             .expect_err("feature and state-format declaration must remain coupled");
         assert_replay_diagnostic(
             error,
@@ -660,10 +675,11 @@ mod tests {
         let bytes = bundle.canonical_bytes()?;
 
         let decoded = ReloadablePlanBundle::decode(&bytes)?;
+        let supported_features = package_features(&decoded);
         assert_eq!(decoded.current_planning_digest(), expected_current);
         assert_ne!(decoded.desired_planning_digest(), current.snapshot_digest());
         assert_eq!(
-            decoded.revalidate(BTreeSet::new())?.id(),
+            decoded.revalidate(supported_features)?.id(),
             transition.effect_plan()
         );
         Ok(())
@@ -682,12 +698,13 @@ mod tests {
         let bytes = bundle.canonical_bytes()?;
 
         let decoded = ReloadablePlanBundle::decode(&bytes)?;
+        let supported_features = package_features(&decoded);
         assert_eq!(
             decoded.transition_authority_digest(),
             Some(authority.digest())
         );
         assert_eq!(
-            decoded.revalidate(BTreeSet::new())?.id(),
+            decoded.revalidate(supported_features)?.id(),
             transition.effect_plan()
         );
         Ok(())
