@@ -20,13 +20,22 @@
       mode = "0700";
     };
   };
+  credentialSource = serviceManagement.forProducer {
+    consumerInstance = "aos-secret-reference-test";
+    key = "join-token-source";
+    interface = serviceManagement.interfaces.namedCredential;
+    parameters = {
+      name = cfg.credentialName;
+      scope = "system";
+    };
+  };
   credential = serviceManagement.forProducer {
     consumerInstance = "aos-secret-reference-test";
     key = "join-token";
     interface = serviceManagement.interfaces.credentialDelivery;
     parameters = {
       name = "join-token";
-      source = cfg.credential;
+      source = resultOf "join-token-source" "credential-resource";
       encrypted = cfg.encrypted;
     };
   };
@@ -83,18 +92,18 @@
       ];
     };
   };
-  fragments = [state credential service];
+  fragments = [state credentialSource credential service];
 in {
   options.aos-secret-reference-test = {
     enable = lib.mkOption {
       type = abilityTypes.boolean;
-      default = false;
+      default = true;
       description = "Enable the credential-delivery integration fixture.";
     };
-    credential = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.resourceReference;
-      default = null;
-      description = "Credential resource delivered to the test consumer.";
+    credentialName = lib.mkOption {
+      type = abilityTypes.localKey;
+      default = "bootstrap-token";
+      description = "Logical system credential name resolved before delivery.";
     };
     encrypted = lib.mkOption {
       type = abilityTypes.boolean;
@@ -110,12 +119,6 @@ in {
 
   config = lib.mkMerge [
     {
-      assertions = [
-        {
-          assertion = !cfg.enable || cfg.credential != null;
-          message = "aos-secret-reference-test.enable requires a credential resource";
-        }
-      ];
       aos.abilities = lib.mkMerge (builtins.map
         (fragment: (serviceManagement.splitContribution fragment).declarations)
         fragments);
