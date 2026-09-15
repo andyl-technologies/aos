@@ -225,11 +225,24 @@
     descriptor = identity.descriptor;
     value = document;
   }) (builtins.attrNames ownedInterfaceDocuments);
-  interfaceEntries = builtins.attrValues (builtins.listToAttrs (map (entry: {
-      name = entry.descriptor;
-      value = entry;
-    })
-    interfaceAliases));
+  implementedInterfaceEntries = map (name: let
+    document = interfaceFor semanticImplementations.${name};
+    identity = abilities.interfaceIdentity document;
+  in {
+    name = identity.descriptor;
+    value = {
+      descriptor = identity.descriptor;
+      value = document;
+    };
+  }) implementationNames;
+  interfaceEntries = builtins.attrValues (builtins.listToAttrs (
+    (map (entry: {
+        name = entry.descriptor;
+        value = entry;
+      })
+      interfaceAliases)
+    ++ implementedInterfaceEntries
+  ));
   projectionValue = {
     schema = "aos.ability.package-projection/v1";
     required_features = lib.sort builtins.lessThan (lib.unique (
