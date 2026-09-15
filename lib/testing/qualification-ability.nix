@@ -15,6 +15,18 @@
   matrixSpec ? null,
   matrixQualifiedCells ? [],
   matrixAdditionalCohorts ? [],
+  cohorts ? [
+    {
+      id = "ability";
+      requiredInputs = [];
+      execution = {
+        bootInput = "candidate-image";
+        fixtureRole = null;
+        recordsGuestKernel = true;
+      };
+      report = {kind = "ordinary";};
+    }
+  ],
 }: let
   platform = pkgs.stdenv.hostPlatform.system;
   fixtureScriptRoot = pkgs.writeTextFile {
@@ -62,7 +74,16 @@
       '';
     };
   in
-    cohort
+    {
+      requiredInputs = cohort.requiredInputs or [];
+      execution = cohort.execution or {
+        bootInput = "candidate-image";
+        fixtureRole = null;
+        recordsGuestKernel = true;
+      };
+      report = cohort.report or {kind = "matrix";};
+    }
+    // cohort
     // {
       inherit scriptRoot setupRoot;
       script = "${scriptRoot}/script.py";
@@ -89,26 +110,41 @@
       cellId: !builtins.elem cellId additionalQualifiedCells
     )
     matrixQualifiedCells;
+  cohortInput = cohort: script: setup: qualifiedCells: {
+    inherit (cohort) id requiredInputs execution report;
+    inherit script setup qualifiedCells;
+  };
   matrixCohortInputs =
-    lib.optional (matrixSpec != null) {
-      id = "managed-configuration-negative";
-      script = fixtureScript;
-      setup = setupModule;
-      qualifiedCells = primaryQualifiedCells;
-    }
-    ++ map (cohort: {
-      inherit (cohort) id script setup qualifiedCells;
-    })
+    lib.optional (matrixSpec != null) (cohortInput {
+        id = "primary";
+        requiredInputs = [];
+        execution = {
+          bootInput = "candidate-image";
+          fixtureRole = null;
+          recordsGuestKernel = true;
+        };
+        report = {kind = "matrix";};
+      }
+      fixtureScript
+      setupModule
+      primaryQualifiedCells)
+    ++ map (cohort:
+      cohortInput
+      cohort
+      cohort.script
+      cohort.setup
+      cohort.qualifiedCells)
     additionalCohorts;
-  matrixUsesImageRollout =
-    builtins.any (
-      cellId: builtins.head (lib.splitString "/" cellId) == "image-rollout"
-    )
-    matrixQualifiedCells;
-  requiresStagingHub =
-    scenarioId
-    == "ability-native-image-rollout"
-    || (scenarioId == "ability-native-adapter-matrix" && matrixUsesImageRollout);
+  scenarioCohortInputs = map (cohort:
+    cohortInput cohort fixtureScript setupModule [])
+  cohorts;
+  qualificationCohorts =
+    if matrixSpec == null
+    then scenarioCohortInputs
+    else matrixCohortInputs;
+  requiresStagingHub = builtins.any (
+    cohort: builtins.elem "predecessor-image" cohort.requiredInputs
+  ) qualificationCohorts;
   fixtureRoots = lib.unique (
     map builtins.toString (
       [fixtureScriptRoot setupModuleRoot]
@@ -169,8 +205,10 @@
       roots = fixtureRoots;
       script = testScript;
     }
+    // {
+      inherit qualificationCohorts;
+    }
     // lib.optionalAttrs (matrixSpec != null) {
-      matrixCohorts = matrixCohortInputs;
       inherit matrixQualifiedCells matrixSpec;
     }
   ))}";
@@ -339,7 +377,7 @@
     export AOS_QUALIFICATION_FIXTURE_SCRIPT=${lib.escapeShellArg fixtureScript}
     export AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC=${lib.escapeShellArg matrixSpecPath}
     export AOS_QUALIFICATION_NATIVE_ADAPTER_QUALIFIED_CELLS=${lib.escapeShellArg (builtins.toJSON matrixQualifiedCells)}
-    export AOS_QUALIFICATION_NATIVE_ADAPTER_COHORTS=${lib.escapeShellArg (builtins.toJSON matrixCohortInputs)}
+    export AOS_QUALIFICATION_COHORTS=${lib.escapeShellArg (builtins.toJSON qualificationCohorts)}
     export AOS_QUALIFICATION_NATIVE_ADAPTER_COHORT_SUPPORT=${lib.escapeShellArg matrixCohortSupportPath}
     export AOS_QUALIFICATION_SETUP_MODULE=${lib.escapeShellArg setupModule}
     export AOS_QUALIFICATION_IMAGE_SUPPORT=${lib.escapeShellArg "${support}/share/aos-release/qualification-image.py"}
@@ -407,6 +445,39 @@ in
     "ability-native-recovery"
   ];
   assert (matrixSpec != null) == (scenarioId == "ability-native-adapter-matrix");
+  assert qualificationCohorts != [];
+  assert builtins.all (cohort:
+    builtins.sort builtins.lessThan (builtins.attrNames cohort)
+    == ["execution" "id" "qualifiedCells" "report" "requiredInputs" "script" "setup"]
+    && cohort.id != ""
+    && builtins.all (input: builtins.elem input ["predecessor-image"]) cohort.requiredInputs
+    && builtins.length cohort.requiredInputs == builtins.length (lib.unique cohort.requiredInputs)
+    && builtins.sort builtins.lessThan (builtins.attrNames cohort.execution) == ["bootInput" "fixtureRole" "recordsGuestKernel"]
+    && builtins.elem cohort.execution.bootInput ["candidate-image" "predecessor-image"]
+    && (cohort.execution.fixtureRole == null || cohort.execution.fixtureRole != "")
+    && builtins.isBool cohort.execution.recordsGuestKernel
+    && builtins.elem cohort.execution.bootInput (["candidate-image"] ++ cohort.requiredInputs)
+    && builtins.elem cohort.report.kind ["matrix" "ordinary" "release-transition"]
+    && (
+      if cohort.report.kind == "release-transition"
+      then
+        builtins.sort builtins.lessThan (builtins.attrNames cohort.report)
+        == ["evidenceVariable" "expectedEvidence" "kind"]
+        && cohort.report.evidenceVariable != ""
+        && cohort.execution.fixtureRole != null
+        && cohort.execution.bootInput == "predecessor-image"
+        && builtins.sort builtins.lessThan (builtins.attrNames cohort.report.expectedEvidence)
+        == ["branch" "outcome" "retired"]
+        && cohort.report.expectedEvidence.branch == cohort.execution.fixtureRole
+        && cohort.report.expectedEvidence.outcome != ""
+        && builtins.isBool cohort.report.expectedEvidence.retired
+      else builtins.attrNames cohort.report == ["kind"]
+    ))
+  qualificationCohorts;
+  assert matrixSpec == null
+  || builtins.all (cohort: cohort.report.kind == "matrix") qualificationCohorts;
+  assert !(builtins.any (cohort: cohort.report.kind == "release-transition") qualificationCohorts)
+  || builtins.all (cohort: cohort.report.kind == "release-transition") qualificationCohorts;
   assert (matrixQualifiedCells != []) == (matrixSpec != null);
   assert matrixQualifiedCells == lib.concatMap (cohort: cohort.qualifiedCells) matrixCohortInputs;
   assert builtins.length matrixQualifiedCells == builtins.length (lib.unique matrixQualifiedCells);
