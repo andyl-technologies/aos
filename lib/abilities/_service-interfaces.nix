@@ -922,6 +922,23 @@
         };
       releaseDescription = "Detaches the exact active ownership of this persistent allocation while preserving its retained data.";
     };
+    filesystemEntry = producer {
+      alias = "filesystem-entry";
+      name = "aos.filesystem.entry";
+      description = "Materializes one provider-neutral directory or copied file at an authorized execution path.";
+      requestType = serviceTypes.filesystemEntry;
+      observationType = serviceTypes.producerObservations.filesystemEntry;
+      action = "materialize";
+      actionDescription = "Materializes the exact declared directory or copied file.";
+      observationDescription = "Observes the destination identity, content, mode, and ownership of the exact filesystem entry.";
+      outputName = "execution-path";
+      outputDescription = "Returns the exact authorized path of the materialized filesystem entry.";
+      outputType = serviceTypes.executionPath;
+      interfaceOutputs.planned-path =
+        output "planning" "instance"
+        "Returns the exact destination selected for this filesystem entry before materialization."
+        serviceTypes.executionPath;
+    };
     hostPathView = producer {
       alias = "host-path-view";
       name = "aos.filesystem.host-view";

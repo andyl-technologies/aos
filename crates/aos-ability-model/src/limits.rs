@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Defines the largest integer that canonical JSON transports without loss.
+pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
 /// Defines the bounded version-1 ability contract profile.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
