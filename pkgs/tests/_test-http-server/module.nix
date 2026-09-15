@@ -8,6 +8,21 @@
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
+  ingress = serviceManagement.forProducer {
+    consumerInstance = "test-http-server";
+    key = "ingress";
+    interface = lib.abilities.interfaces.networkPolicy.interfaces.ingress;
+    methods = ["observe"];
+    parameters = {
+      endpoints = [
+        {
+          transport = "tcp";
+          port = cfg.port;
+        }
+      ];
+      prerequisites = [];
+    };
+  };
 
   service = serviceManagement.forService {
     inherit serviceTypes;
@@ -53,8 +68,12 @@
         host_paths = [];
         permit_core_dumps = false;
       };
+      dependencies.prerequisites = [
+        (lib.abilities.resultOf "ingress" "readiness-resource")
+      ];
     };
   };
+  fragments = [ingress service];
 in {
   options.test-http-server = {
     enable = lib.mkOption {
@@ -78,12 +97,18 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = (serviceManagement.splitContribution service).declarations;}
+    {
+      aos.abilities = lib.mkMerge (builtins.map
+        (fragment: (serviceManagement.splitContribution fragment).declarations)
+        fragments);
+    }
     (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge [
-        {instances.test-http-server = {};}
-        (serviceManagement.splitContribution service).configured
-      ];
+      aos.abilities = lib.mkMerge (
+        [{instances.test-http-server = {};}]
+        ++ builtins.map
+        (fragment: (serviceManagement.splitContribution fragment).configured)
+        fragments
+      );
     })
   ];
 }

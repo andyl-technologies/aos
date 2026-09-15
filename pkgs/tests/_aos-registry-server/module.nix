@@ -8,6 +8,7 @@
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
+  ingressInterface = lib.abilities.interfaces.networkPolicy.interfaces.ingress;
   inherit (lib.abilities) pathWithin resultOf;
 
   listenAddress = abilityTypes.refined {
@@ -42,6 +43,22 @@
   };
   selfCommand = entryPoint: arguments:
     command "aos-registry-server" entryPoint arguments;
+  ingressFor = key: servicePort:
+    serviceManagement.forProducer {
+      consumerInstance = "aos-registry-server";
+      inherit key;
+      interface = ingressInterface;
+      methods = ["observe"];
+      parameters = {
+        endpoints = [
+          {
+            transport = "tcp";
+            port = servicePort;
+          }
+        ];
+        prerequisites = [];
+      };
+    };
   serviceFor = name: lifecycle: features:
     serviceManagement.forService {
       inherit serviceTypes;
@@ -136,6 +153,8 @@
     base = runtimePath;
     relativePath = cfg.cache.bootstrapSocket;
   };
+  gitIngress = ingressFor "git-ingress" cfg.git.port;
+  cacheIngress = ingressFor "cache-ingress" cfg.cache.port;
 
   gitConfiguration = serviceManagement.forConfiguration {
     inherit serviceTypes;
@@ -216,6 +235,9 @@
         ])
       ];
     } {
+      dependencies.prerequisites = [
+        (resultOf "git-ingress" "readiness-resource")
+      ];
       configuration.views = [
         {
           name = "git";
@@ -244,6 +266,9 @@
         ])
       ];
     } {
+      dependencies.prerequisites = [
+        (resultOf "cache-ingress" "readiness-resource")
+      ];
       environment = {
         variables = {
           AOS_ROOT = storePath;
@@ -294,17 +319,20 @@
     gitConfiguration
     cacheConfiguration
     serveConfiguration
+    gitIngress
+    cacheIngress
     gitService
     cacheService
   ];
   enabledFragments =
-    lib.optionals cfg.git.enable [registryStorage gitConfiguration gitService]
+    lib.optionals cfg.git.enable [registryStorage gitConfiguration gitIngress gitService]
     ++ lib.optionals cfg.cache.enable [
       cacheStorage
       storeStorage
       runtimeStorage
       cacheConfiguration
       serveConfiguration
+      cacheIngress
       cacheService
     ];
 in {
