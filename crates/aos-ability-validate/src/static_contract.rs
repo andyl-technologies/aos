@@ -69,6 +69,7 @@ pub struct StaticAbilityContractExpectation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckedStaticAbilityContract {
     platform_count: usize,
+    packages: Vec<CheckedStaticAbilityPackage>,
 }
 
 impl CheckedStaticAbilityContract {
@@ -76,6 +77,78 @@ impl CheckedStaticAbilityContract {
     #[must_use]
     pub const fn platform_count(&self) -> usize {
         self.platform_count
+    }
+
+    /// Iterates the exact package selections retained by the checked contract.
+    ///
+    /// Artifact-backed validation also attaches the checked package document
+    /// to each selection. Byte-only validation leaves it unavailable because
+    /// the static document alone cannot prove the companion bytes.
+    pub fn packages(&self) -> impl ExactSizeIterator<Item = &CheckedStaticAbilityPackage> {
+        self.packages.iter()
+    }
+}
+
+/// Retains one exact package selection from a checked static contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckedStaticAbilityPackage {
+    name: LocalKey,
+    version: String,
+    payload: ArtifactReference,
+    manifest: CheckedStaticPackageManifest,
+    package_document: Option<PackageDocument>,
+}
+
+impl CheckedStaticAbilityPackage {
+    /// Returns the package's canonical local name.
+    #[must_use]
+    pub const fn name(&self) -> &LocalKey {
+        &self.name
+    }
+
+    /// Returns the exact selected package version.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Returns the exact selected payload artifact.
+    #[must_use]
+    pub const fn payload(&self) -> &ArtifactReference {
+        &self.payload
+    }
+
+    /// Returns the exact package-manifest reference.
+    #[must_use]
+    pub const fn manifest(&self) -> &CheckedStaticPackageManifest {
+        &self.manifest
+    }
+
+    /// Returns the artifact-backed package document when companion validation ran.
+    #[must_use]
+    pub const fn package_document(&self) -> Option<&PackageDocument> {
+        self.package_document.as_ref()
+    }
+}
+
+/// Identifies the exact package companion selected by a static contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckedStaticPackageManifest {
+    store_path: String,
+    digest: Sha256Digest,
+}
+
+impl CheckedStaticPackageManifest {
+    /// Returns the canonical store path of the package companion.
+    #[must_use]
+    pub fn store_path(&self) -> &str {
+        &self.store_path
+    }
+
+    /// Returns the digest of the canonical package document bytes.
+    #[must_use]
+    pub const fn digest(&self) -> Sha256Digest {
+        self.digest
     }
 }
 
@@ -101,7 +174,7 @@ pub(crate) fn validate_static_ability_contract(
     expectation: &StaticAbilityContractExpectation,
 ) -> Result<CheckedStaticAbilityContract, StaticAbilityContractValidationError> {
     validate_static_ability_contract_document(bytes, expectation)
-        .map(checked_static_ability_contract)
+        .map(|contract| checked_static_ability_contract(contract, BTreeMap::new()))
         .map_err(|source| StaticAbilityContractValidationError { source })
 }
 
@@ -121,14 +194,35 @@ pub fn validate_static_ability_artifacts(
         .map_err(|source| StaticAbilityContractValidationError { source })
 }
 
+/// Validates a static contract against companions beneath a mounted store root.
+///
+/// Contract references retain their canonical `/nix/store` identity. The
+/// supplied root changes only where those exact store entries are read, which
+/// allows immutable lower stores to use the same authenticated contract.
+///
+/// # Errors
+///
+/// Returns every static artifact validation error, and rejects malformed store
+/// references or missing and changed companion files beneath `store_root`.
+pub fn validate_static_ability_artifacts_at_store_root(
+    bytes: &[u8],
+    expectation: &StaticAbilityContractExpectation,
+    store_root: &Path,
+) -> Result<CheckedStaticAbilityContract, StaticAbilityContractValidationError> {
+    validate_static_ability_artifacts_with(bytes, expectation, |store_path| {
+        read_package_artifacts_at_store_root(store_root, store_path)
+    })
+    .map_err(|source| StaticAbilityContractValidationError { source })
+}
+
 fn validate_static_ability_artifacts_with(
     bytes: &[u8],
     expectation: &StaticAbilityContractExpectation,
     mut read_package: impl FnMut(&str) -> Result<StaticPackageArtifacts>,
 ) -> Result<CheckedStaticAbilityContract> {
     let contract = validate_static_ability_contract_document(bytes, expectation)?;
-    validate_artifact_projections(&contract, &mut read_package)?;
-    Ok(checked_static_ability_contract(contract))
+    let package_documents = validate_artifact_projections(&contract, &mut read_package)?;
+    Ok(checked_static_ability_contract(contract, package_documents))
 }
 
 fn validate_static_ability_contract_document(
@@ -197,9 +291,29 @@ fn validate_static_ability_contract_document(
 
 fn checked_static_ability_contract(
     contract: StaticAbilityContract,
+    package_documents: BTreeMap<(String, Sha256Digest), PackageDocument>,
 ) -> CheckedStaticAbilityContract {
+    let packages = contract
+        .platforms
+        .iter()
+        .flat_map(|platform| &platform.packages)
+        .map(|package| CheckedStaticAbilityPackage {
+            name: package.name.clone(),
+            version: package.version.clone(),
+            payload: package.payload.clone(),
+            manifest: CheckedStaticPackageManifest {
+                store_path: package.manifest.store_path.clone(),
+                digest: package.manifest.digest,
+            },
+            package_document: package_documents
+                .get(&manifest_key(&package.manifest))
+                .cloned(),
+        })
+        .collect();
+
     CheckedStaticAbilityContract {
         platform_count: contract.platforms.len(),
+        packages,
     }
 }
 
@@ -210,9 +324,25 @@ struct StaticPackageArtifacts {
 }
 
 fn read_package_artifacts(store_path: &str) -> Result<StaticPackageArtifacts> {
-    let manifest_path = Path::new(store_path).join("package.json");
+    read_package_artifacts_from_path(Path::new(store_path))
+}
+
+fn read_package_artifacts_at_store_root(
+    store_root: &Path,
+    canonical_store_path: &str,
+) -> Result<StaticPackageArtifacts> {
+    validate_store_path(canonical_store_path)?;
+    let store_entry = canonical_store_path
+        .strip_prefix("/nix/store/")
+        .context("validated static package path has no store prefix")?;
+
+    read_package_artifacts_from_path(&store_root.join(store_entry))
+}
+
+fn read_package_artifacts_from_path(package_path: &Path) -> Result<StaticPackageArtifacts> {
+    let manifest_path = package_path.join("package.json");
     let manifest = read_bounded_regular_file(&manifest_path, "static package manifest")?;
-    let interface_directory = Path::new(store_path).join("interfaces");
+    let interface_directory = package_path.join("interfaces");
     let mut interface_paths = interface_directory
         .read_dir()
         .with_context(|| {
@@ -283,7 +413,9 @@ fn read_bounded_regular_file(path: &Path, label: &str) -> Result<Vec<u8>> {
 fn validate_artifact_projections(
     contract: &StaticAbilityContract,
     read_package: &mut impl FnMut(&str) -> Result<StaticPackageArtifacts>,
-) -> Result<()> {
+) -> Result<BTreeMap<(String, Sha256Digest), PackageDocument>> {
+    let mut package_documents = BTreeMap::new();
+
     for platform in &contract.platforms {
         for static_package in &platform.packages {
             let artifacts = read_package(&static_package.manifest.store_path)?;
@@ -298,9 +430,18 @@ fn validate_artifact_projections(
             .context("validating artifact-backed static package companion")?;
 
             validate_package_projection(platform, static_package, checked_package.package())?;
+            let manifest = manifest_key(&static_package.manifest);
+            if let Some(previous) =
+                package_documents.insert(manifest, checked_package.package().clone())
+            {
+                ensure!(
+                    previous == *checked_package.package(),
+                    "static package manifest identity resolves to different package documents"
+                );
+            }
         }
     }
-    Ok(())
+    Ok(package_documents)
 }
 
 fn validate_package_projection(
@@ -1130,6 +1271,7 @@ mod tests {
         let checked = validate_static_ability_contract(EMPTY_CONTAINER, &expectation())
             .expect("canonical static contract must validate");
         assert_eq!(checked.platform_count(), 1);
+        assert_eq!(checked.packages().len(), 0);
     }
 
     #[test]
@@ -1144,8 +1286,17 @@ mod tests {
         let bytes = aos_contract::canonical::to_vec(&populated_container_contract())
             .expect("static contract fixture must encode canonically");
 
-        validate_static_ability_contract(&bytes, &aggregate_expectation())
+        let checked = validate_static_ability_contract(&bytes, &aggregate_expectation())
             .expect("strictly ordered static records must validate");
+        let packages = checked.packages().collect::<Vec<_>>();
+        assert_eq!(packages.len(), 2);
+        assert_eq!(packages[0].name().as_str(), "package-a");
+        assert_eq!(packages[0].version(), "1");
+        assert_eq!(
+            packages[0].manifest().store_path(),
+            "/nix/store/00000000000000000000000000000000-package-a"
+        );
+        assert!(packages[0].package_document().is_none());
     }
 
     #[test]
@@ -1230,10 +1381,57 @@ mod tests {
         let bytes = aos_contract::canonical::to_vec(&contract)
             .expect("static contract fixture must encode canonically");
 
-        validate_static_ability_artifacts_with(&bytes, &aggregate_expectation(), |_| {
-            Ok(artifacts.clone())
-        })
-        .expect("exact artifact-backed projection must validate");
+        let checked =
+            validate_static_ability_artifacts_with(&bytes, &aggregate_expectation(), |_| {
+                Ok(artifacts.clone())
+            })
+            .expect("exact artifact-backed projection must validate");
+        let package = checked
+            .packages()
+            .next()
+            .expect("artifact-backed contract must retain its package selection");
+        assert_eq!(
+            package.name(),
+            &package.package_document().unwrap().package.name
+        );
+        assert_eq!(
+            package.payload(),
+            &package.package_document().unwrap().package.payload
+        );
+    }
+
+    #[test]
+    fn reads_exact_package_companions_from_an_immutable_store_root() {
+        let (contract, artifacts) = artifact_backed_container_contract();
+        let bytes = aos_contract::canonical::to_vec(&contract)
+            .expect("static contract fixture must encode canonically");
+        let root = std::env::temp_dir().join(format!(
+            "aos-static-contract-store-root-{}",
+            std::process::id()
+        ));
+        let package = root.join("44444444444444444444444444444444-package-manifest");
+        let interfaces = package.join("interfaces");
+        std::fs::create_dir_all(&interfaces).expect("fixture store root must be created");
+        std::fs::write(package.join("package.json"), &artifacts.manifest)
+            .expect("fixture package manifest must be written");
+        for (index, interface) in artifacts.retained_interfaces.iter().enumerate() {
+            std::fs::write(interfaces.join(format!("{index}.json")), interface)
+                .expect("fixture interface must be written");
+        }
+
+        let checked = validate_static_ability_artifacts_at_store_root(
+            &bytes,
+            &aggregate_expectation(),
+            &root,
+        )
+        .expect("immutable-root package companions must validate");
+        let selected = checked
+            .packages()
+            .next()
+            .expect("checked contract must retain its package selection");
+
+        assert!(selected.package_document().is_some());
+        std::fs::remove_dir_all(root).expect("fixture store root must be removed");
     }
 
     #[test]
