@@ -633,15 +633,17 @@ impl OptionType {
 
         while let Some(option_type) = stack.pop() {
             match option_type {
-                Self::Opaque { .. } => return true,
+                Self::Opaque { .. } | Self::Submodule { open: true, .. } => return true,
                 Self::List { element, .. }
                 | Self::Set { element }
                 | Self::Nullable { value: element }
                 | Self::Optional { value: element } => stack.push(element),
                 Self::AttrsOf { value, .. } | Self::Map { value, .. } => stack.push(value),
-                Self::Submodule { fields, .. } | Self::DocumentRecord { fields, .. } => {
-                    stack.extend(fields.values())
+                Self::Submodule {
+                    fields,
+                    open: false,
                 }
+                | Self::DocumentRecord { fields, .. } => stack.extend(fields.values()),
                 Self::Record { fields, .. }
                 | Self::TaggedUnion {
                     variants: fields, ..

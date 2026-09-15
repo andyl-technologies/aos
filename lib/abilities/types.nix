@@ -30,12 +30,7 @@
     else if schema.kind == "string-enum"
     then {
       kind = "enum";
-      values =
-        builtins.map (value: {
-          inherit value;
-          description = [];
-        })
-        schema.values;
+      values = builtins.map (value: {inherit value;}) schema.values;
     }
     else if schema.kind == "list"
     then {
@@ -299,19 +294,7 @@
     );
 
   specialType = context: schema: fields:
-    (decorate context schema (strictRecordType "<lib.abilities.types.${context}>" fields))
-    // {
-      _aosDocType = {
-        kind = "submodule";
-        fields = builtins.mapAttrs (_: type:
-          type._aosDocType
-          or {
-            kind = type.name or "opaque";
-          })
-        fields;
-        open = false;
-      };
-    };
+    decorate context schema (strictRecordType "<lib.abilities.types.${context}>" fields);
   operationResultReferenceType =
     (specialType "operation-result-reference" schemas.operationResultReference {
       _type = moduleTypes.enum ["aos-request-output-reference"];
