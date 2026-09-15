@@ -11,10 +11,11 @@ use anyhow::{Context as _, Result, bail};
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
     AbilityActivationMode, ArtifactReference, ExportDeclaration, GuaranteeDeclaration,
-    HandlerDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, LocalKey, ModuleLocator,
-    PackageDocument, PackageImplementation, PackageOptionDeclaration, ProviderImplementation,
-    ProviderQualification, ProviderStateFormat, RelativePath, RequiredFeature,
-    RequirementDeclaration, ValueSchema, VersionedDocument, validate_package_option_declarations,
+    GuaranteeKey, HandlerDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, LocalKey,
+    ModuleLocator, PackageDocument, PackageImplementation, PackageOptionDeclaration,
+    ProviderImplementation, ProviderQualification, ProviderStateFormat, RelativePath,
+    RequiredFeature, RequirementDeclaration, ValueSchema, VersionedDocument,
+    validate_package_option_declarations,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -235,6 +236,8 @@ pub struct ProviderImplementationProjection {
     pub description: String,
     /// Exact public interface implemented by this provider.
     pub interface: InterfaceKey,
+    /// Exact execution guarantees supplied by this provider.
+    pub guarantees: Vec<GuaranteeKey>,
     /// Symbolic implementation artifact.
     pub artifact: PackageOutputSelector,
     /// Lower-interface requirements.
@@ -441,6 +444,7 @@ pub fn resolve_package_projection(
                 name: provider.name,
                 description: provider.description,
                 interface: provider.interface,
+                guarantees: provider.guarantees,
                 artifact,
                 requirements: provider.requirements,
                 owns_resource_kinds: provider.owns_resource_kinds,
@@ -593,6 +597,14 @@ fn validate_projection_structure(projection: &PackageAbilityProjection) -> Resul
             || (pair[0].interface == pair[1].interface && pair[0].name >= pair[1].name)
     }) {
         bail!("ability projection implementations are not in canonical interface/name order");
+    }
+    if projection.implementation.providers.iter().any(|provider| {
+        provider
+            .guarantees
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    }) {
+        bail!("ability projection implementation guarantees are repeated or unordered");
     }
     let provider_names = projection
         .implementation

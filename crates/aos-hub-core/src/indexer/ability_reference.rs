@@ -316,6 +316,7 @@ mod tests {
             name: aos_ability_model::LocalKey::new("provider").expect("valid implementation name"),
             description: "Hub reference test provider.".to_string(),
             interface: interface_key.clone(),
+            guarantees: Vec::new(),
             artifact: artifact.clone(),
             requirements: Vec::new(),
             desired_schema: None,

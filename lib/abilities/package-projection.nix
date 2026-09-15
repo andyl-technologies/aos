@@ -128,6 +128,7 @@
     {
       name = localName name;
       inherit (implementation) description;
+      inherit (implementation) guarantees;
       inherit artifact interface;
       requirements = requirementsFor implementation;
       owns_resource_kinds = ownedResourceKinds implementation;

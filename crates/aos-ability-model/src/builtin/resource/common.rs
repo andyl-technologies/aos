@@ -107,6 +107,7 @@ pub(crate) fn terminal_provider(
         owns_resource_kinds: vec![interface.name.clone()],
         state_format: None,
         interface,
+        guarantees: Vec::new(),
         artifact,
         requirements: Vec::new(),
         desired_schema: None,

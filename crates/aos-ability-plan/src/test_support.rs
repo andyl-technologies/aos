@@ -389,6 +389,7 @@ fn build_verified_planning_fixture(
         name: key("provider"),
         description: "Planning fixture provider.".to_string(),
         interface: interface.clone(),
+        guarantees: Vec::new(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
         desired_schema: None,
