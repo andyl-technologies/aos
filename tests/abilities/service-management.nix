@@ -373,6 +373,27 @@
     options = ["nodev" "nosuid"];
     timeout_millis = 30000;
   };
+  providerOwnedStorageMount = {
+    name = "state";
+    source = resultOf "state-storage" "storage-path";
+    access = "read-write";
+  };
+  serviceIdentityStorageMount =
+    providerOwnedStorageMount
+    // {ownership = "service-identity";};
+  invalidStorageMount =
+    providerOwnedStorageMount
+    // {ownership = "consumer";};
+  storageRequestFor = mount: {
+    service = "worker";
+    enabled = true;
+    mounts = [mount];
+  };
+  expandedWithStorage = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "consumer";
+    declaration = minimalService // {storage.mounts = [providerOwnedStorageMount];};
+  };
   placedStorageAllocation = {
     name = "state";
     purpose = "state";
@@ -773,6 +794,10 @@ in
   assert succeedsAs serviceTypes.scheduledActivation scheduledActivation;
   assert succeedsAs serviceTypes.pathActivation pathActivation;
   assert succeedsAs serviceTypes.mountResource mountResource;
+  assert succeedsAs serviceTypes.storage (storageRequestFor providerOwnedStorageMount);
+  assert succeedsAs serviceTypes.storage (storageRequestFor serviceIdentityStorageMount);
+  assert !succeedsAs serviceTypes.storage (storageRequestFor invalidStorageMount);
+  assert (builtins.head expandedWithStorage.requests.main-storage.parameters.mounts).ownership == "provider";
   assert succeedsAs serviceTypes.automountResource {
     name = "state-automount";
     enabled = true;

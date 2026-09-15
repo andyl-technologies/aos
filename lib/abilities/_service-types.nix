@@ -498,6 +498,10 @@
       name = localKey;
       source = types.deferredResult storagePath;
       access = types.enum ["read-only" "read-write"];
+      ownership = {
+        type = types.enum ["provider" "service-identity"];
+        default = "provider";
+      };
     };
   };
   storageFeature = feature {
