@@ -18,12 +18,11 @@
   };
 in
   lib.evalModules {
-    inherit lib;
+    inherit lib pkgs;
     modules = [
       lib.abilities.module
       module
       {
-        _module.args.pkgs = pkgs;
         options = {
           environment.etc = lib.mkOption {
             type = lib.types.attrsOf lib.types.anything;
