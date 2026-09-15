@@ -20,7 +20,7 @@ pub(crate) struct UnitPaths {
     pub(crate) receipt: PathBuf,
 }
 
-pub(crate) fn paths_for(root: &Path, unit_name: &str) -> UnitPaths {
+pub(crate) fn paths_for(root: &Path, unit_name: &str, revision: RevisionId) -> UnitPaths {
     UnitPaths {
         unit: root.join("systemd/system").join(unit_name),
         drop_in: root
@@ -30,7 +30,8 @@ pub(crate) fn paths_for(root: &Path, unit_name: &str) -> UnitPaths {
         receipt: root
             .join("aos/ability-revisions")
             .join(unit_name)
-            .join("current"),
+            .join("sha256")
+            .join(revision.0.hex()),
     }
 }
 
@@ -41,7 +42,7 @@ pub(crate) fn materialize(
     resource: &ResourceId,
     rendered: &RenderedUnit,
 ) -> Result<UnitPaths> {
-    let paths = paths_for(root, unit_name);
+    let paths = paths_for(root, unit_name, revision);
     let systemd_root = root.join("systemd/system");
     ensure_directory(&systemd_root)?;
     publish_symlink(&paths.unit, &rendered.source)?;
@@ -194,7 +195,7 @@ mod tests {
     use aos_contract::Sha256Digest;
     use tempfile::TempDir;
 
-    use super::{matches, materialize};
+    use super::{matches, materialize, paths_for};
     use crate::render::RenderedUnit;
 
     fn resource() -> ResourceId {
@@ -227,6 +228,9 @@ mod tests {
         )
         .expect("digest parses");
         let revision = RevisionId(digest);
+        let receipt_path = paths_for(temporary.path(), "example.service", revision).receipt;
+        assert!(receipt_path.ends_with(format!("sha256/{}", digest.hex())));
+        assert!(!receipt_path.ends_with("current"));
 
         let paths = materialize(
             temporary.path(),
@@ -240,6 +244,26 @@ mod tests {
             matches(&paths, &rendered, &resource(), "example.service", revision,)
                 .expect("materialization is observable")
         );
+
+        let files_before_concurrent_change =
+            matches(&paths, &rendered, &resource(), "example.service", revision)
+                .expect("first file observation succeeds");
+        fs::write(&paths.drop_in, b"[Unit]\nDescription=replaced\n")
+            .expect("drop-in is concurrently replaced");
+        let files_after_concurrent_change =
+            matches(&paths, &rendered, &resource(), "example.service", revision)
+                .expect("second file observation succeeds");
+        assert!(files_before_concurrent_change);
+        assert!(!files_after_concurrent_change);
+
+        materialize(
+            temporary.path(),
+            "example.service",
+            revision,
+            &resource(),
+            &rendered,
+        )
+        .expect("unit rematerializes after concurrent replacement");
 
         fs::write(&paths.receipt, b"{}\n").expect("receipt is corrupted");
         assert!(
@@ -255,6 +279,23 @@ mod tests {
             &rendered,
         )
         .expect("unit rematerializes exactly");
+
+        let next_digest = Sha256Digest::parse(
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        .expect("second digest parses");
+        let next_revision = RevisionId(next_digest);
+        let next_paths = materialize(
+            temporary.path(),
+            "example.service",
+            next_revision,
+            &resource(),
+            &rendered,
+        )
+        .expect("next revision materializes");
+        assert_ne!(paths.receipt, next_paths.receipt);
+        assert!(paths.receipt.is_file());
+        assert!(next_paths.receipt.is_file());
 
         fs::remove_dir_all(temporary.path().join("systemd/system/example.service.d"))
             .expect("drop-in directory removes");

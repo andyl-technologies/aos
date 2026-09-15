@@ -58,11 +58,7 @@ pub(crate) fn render(realization: &PackagedUnitRealization) -> Result<RenderedUn
     }
     validate_unit_name(&realization.systemd_unit.unit_name)?;
     validate_relative_path(&realization.source.unit_file)?;
-    validate_receipt(
-        &realization.revision_receipt,
-        &realization.systemd_unit.unit_name,
-    )?;
-    validate_drop_in(&realization.drop_in_text, &realization.revision_receipt)?;
+    validate_drop_in(&realization.drop_in_text)?;
 
     let artifact_root = checked_store_root(&realization.source.artifact.store_path)?;
     let source = artifact_root.join(&realization.source.unit_file);
@@ -90,28 +86,16 @@ fn checked_store_root(store_path: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn validate_receipt(receipt: &str, unit_name: &str) -> Result<()> {
-    let expected = format!("/etc/aos/ability-revisions/{unit_name}/current");
-    if receipt != expected {
-        bail!("systemd realization contains a mismatched revision receipt path");
-    }
-    Ok(())
-}
-
-fn validate_drop_in(text: &str, receipt: &str) -> Result<()> {
+fn validate_drop_in(text: &str) -> Result<()> {
     if text.is_empty() || text.len() > 1024 * 1024 || text.contains('\0') || !text.ends_with('\n') {
         bail!("systemd realization contains invalid drop-in text");
-    }
-    let expected = format!("Documentation=file:{receipt}");
-    if text.lines().filter(|line| *line == expected).count() != 1 {
-        bail!("systemd realization drop-in does not bind its revision receipt");
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_drop_in, validate_receipt, validate_relative_path, validate_unit_name};
+    use super::{validate_drop_in, validate_relative_path, validate_unit_name};
 
     #[test]
     fn unit_names_and_relative_paths_are_closed() {
@@ -124,17 +108,10 @@ mod tests {
     }
 
     #[test]
-    fn realization_binds_one_exact_receipt() {
-        let receipt = "/etc/aos/ability-revisions/example.service/current";
-        assert!(validate_receipt(receipt, "example.service").is_ok());
-        assert!(validate_receipt(receipt, "other.service").is_err());
-        assert!(
-            validate_drop_in(
-                "[Unit]\nDocumentation=file:/etc/aos/ability-revisions/example.service/current\n",
-                receipt,
-            )
-            .is_ok()
-        );
-        assert!(validate_drop_in("[Unit]\n", receipt).is_err());
+    fn realization_requires_bounded_complete_drop_in_bytes() {
+        assert!(validate_drop_in("[Unit]\n").is_ok());
+        assert!(validate_drop_in("").is_err());
+        assert!(validate_drop_in("[Unit]").is_err());
+        assert!(validate_drop_in("[Unit]\0\n").is_err());
     }
 }

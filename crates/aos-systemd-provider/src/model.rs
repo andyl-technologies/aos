@@ -30,7 +30,6 @@ pub(crate) struct UnitSource {
 pub(crate) struct RealizedUnitSource {
     pub(crate) artifact: ArtifactReference,
     pub(crate) unit_file: String,
-    pub(crate) unit_name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -67,7 +66,6 @@ pub(crate) struct PackagedUnitRealization {
     pub(crate) systemd_unit: SystemdUnitIdentity,
     pub(crate) activation: Activation,
     pub(crate) drop_in_text: String,
-    pub(crate) revision_receipt: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

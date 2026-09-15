@@ -101,7 +101,6 @@
         maxLength = 1048576;
         syntax = null;
       };
-      revision_receipt = types.executionPath;
     };
   };
 

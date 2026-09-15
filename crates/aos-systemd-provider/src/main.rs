@@ -92,7 +92,11 @@ async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     let realization: PackagedUnitRealization = decode_value(&request.resource_spec.realization)?;
     require_matching_request(&expected, &realization)?;
     let rendered = render(&realization)?;
-    let paths = paths_for(Path::new(ETC_ROOT), &realization.systemd_unit.unit_name);
+    let paths = paths_for(
+        Path::new(ETC_ROOT),
+        &realization.systemd_unit.unit_name,
+        request.resource_spec.revision,
+    );
 
     let manager = PinnedSystemdManager::connect().await?;
     let inspection = inspect(
@@ -171,7 +175,11 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         bail!("systemd manager changed after admission");
     }
     let rendered = render(&realization)?;
-    let paths = paths_for(Path::new(ETC_ROOT), &realization.systemd_unit.unit_name);
+    let paths = paths_for(
+        Path::new(ETC_ROOT),
+        &realization.systemd_unit.unit_name,
+        bound.resource_spec.revision,
+    );
 
     let primary_method = invocation.request.method.method.as_str();
     let selected_method = invocation.method.method.as_str();
@@ -195,11 +203,7 @@ async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
             }
             if realization.activation == Activation::Enabled {
                 let outcome = manager
-                    .start_unit_exact_receipt(
-                        &realization.systemd_unit.unit_name,
-                        &identity,
-                        &format!("file:{}", realization.revision_receipt),
-                    )
+                    .start_unit_exact_current(&realization.systemd_unit.unit_name, &identity)
                     .await?;
                 if !outcome.result.is_done() {
                     bail!("systemd start job completed as {}", outcome.result.label());
@@ -291,7 +295,7 @@ async fn inspect(
     rendered: &RenderedUnit,
     paths: &UnitPaths,
 ) -> Result<Inspection> {
-    let files_match = matches(
+    let files_before_manager_check = matches(
         paths,
         rendered,
         resource,
@@ -306,35 +310,36 @@ async fn inspect(
         Err(error) if error.is_no_such_unit() => None,
         Err(error) => return Err(error.into()),
     };
-    let (state, revision_matches) = if let Some(identity) = &unit_identity {
+    let (state, manager_is_current) = if let Some(identity) = &unit_identity {
         let state = manager
             .active_state_exact(&realization.systemd_unit.unit_name, identity)
             .await?;
-        let revision_matches = match manager
-            .unit_identity_at_receipt(
-                &realization.systemd_unit.unit_name,
-                &format!("file:{}", realization.revision_receipt),
-            )
-            .await
-        {
-            Ok(revision_identity) if revision_identity == *identity => true,
-            Ok(_) => bail!("systemd unit identity changed while observing its revision"),
-            Err(error) if error.is_authority_mismatch() || error.is_no_such_unit() => false,
-            Err(error) => return Err(error.into()),
-        };
-        (unit_state(state), revision_matches)
+        let needs_reload = manager
+            .needs_daemon_reload_exact(&realization.systemd_unit.unit_name, identity)
+            .await?;
+        (unit_state(state), !needs_reload)
     } else {
         (UnitState::Absent, false)
     };
+    // Re-read the exact files after the manager property so a concurrent
+    // replacement cannot pass by changing between the two observations.
+    let files_after_manager_check = matches(
+        paths,
+        rendered,
+        resource,
+        &realization.systemd_unit.unit_name,
+        revision,
+    )?;
+    let files_match = files_before_manager_check && files_after_manager_check;
     let activation_matches =
         realization.activation == Activation::Reference || state == UnitState::Active;
-    let complete = files_match && revision_matches && activation_matches;
+    let complete = files_match && manager_is_current && activation_matches;
     let mut discrepancies = Vec::new();
     if !files_match {
         discrepancies.push("drop_in".to_string());
     }
-    if !revision_matches {
-        discrepancies.push("revision".to_string());
+    if !manager_is_current {
+        discrepancies.push("manager-reload".to_string());
     }
     if !activation_matches {
         discrepancies.push("state".to_string());
@@ -350,7 +355,7 @@ async fn inspect(
             discrepancies,
         },
         unit_identity,
-        revision_matches,
+        revision_matches: files_match && manager_is_current,
         complete,
     })
 }
