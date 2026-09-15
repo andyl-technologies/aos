@@ -95,6 +95,7 @@ impl<'a> HandlerDispatcher<'a> {
         let mut policy =
             OperatorAuthorizedPolicy::new(self.activation, operator_authority, current_policy);
         let clock = SystemMonotonicClock::new();
+        let blobs = session.transaction_blob_store()?;
 
         loop {
             if let Some(terminal) = session.transaction().summary().terminal() {
@@ -171,7 +172,8 @@ impl<'a> HandlerDispatcher<'a> {
                 &assignments,
                 resources,
             )?;
-            let mut adapter = CommandHandlerAdapter::new(package, assignment, interface.clone())?;
+            let mut adapter =
+                CommandHandlerAdapter::new(package, assignment, interface.clone(), blobs.clone())?;
             drive_with_adapter(
                 session,
                 item.operation(),

@@ -155,6 +155,8 @@ pub enum ValueSchema {
     ResourceReference,
     /// Accepts the closed shape of a [`crate::ProviderAssignment`] record.
     ProviderAssignment,
+    /// Accepts a runtime-generated [`crate::TransactionBlobReference`].
+    TransactionBlobReference,
     /// Accepts a typed [`crate::OperationResultReference`].
     OperationResultReference,
 }
@@ -225,6 +227,7 @@ impl ValueSchema {
                 | Self::ArtifactReference
                 | Self::ResourceReference
                 | Self::ProviderAssignment
+                | Self::TransactionBlobReference
                 | Self::OperationResultReference => {}
                 Self::StringEnum { values } => {
                     item_count = item_count.saturating_add(values.len() as u64);
@@ -256,6 +259,7 @@ impl ValueSchema {
             | Self::ArtifactReference
             | Self::ResourceReference
             | Self::ProviderAssignment
+            | Self::TransactionBlobReference
             | Self::OperationResultReference => Some(JsonValueKind::Object),
             Self::DisjointUnion { .. } | Self::Optional { .. } => None,
         }

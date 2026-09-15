@@ -27,6 +27,7 @@ pub mod limits;
 pub mod option;
 pub mod plan;
 pub mod schema;
+pub mod transaction_blob;
 pub mod transition;
 pub mod value;
 
@@ -59,5 +60,6 @@ pub use option::{
 };
 pub use plan::*;
 pub use schema::*;
+pub use transaction_blob::*;
 pub use transition::*;
 pub use value::*;

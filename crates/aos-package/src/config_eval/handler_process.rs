@@ -6,6 +6,7 @@
 //! direct child on every incomplete outcome. Descendants are reparented by
 //! Linux after termination.
 
+use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::process::CommandExt as _;
@@ -68,6 +69,7 @@ pub(crate) fn run_bounded(
     output_limit: usize,
     descendants: DescendantPolicy,
     control: &dyn RuntimeControl,
+    environment: &[(OsString, OsString)],
 ) -> Result<ProcessOutput, io::Error> {
     if input.is_some_and(|bytes| bytes.len() > MAX_HELPER_INPUT_BYTES) {
         return Err(invalid("native handler input exceeds its size bound"));
@@ -92,6 +94,7 @@ pub(crate) fn run_bounded(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    command.envs(environment.iter().cloned());
     let mut child = command.spawn()?;
     let group = match child_process_group(&child) {
         Ok(group) => group,
@@ -298,6 +301,7 @@ mod tests {
             16 * 1024,
             DescendantPolicy::Reap,
             &control,
+            &[],
         )
         .expect("bounded native handler completes");
 

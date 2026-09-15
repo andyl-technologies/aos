@@ -170,6 +170,7 @@ pub(super) fn schema_summary(schema: &ValueSchema) -> String {
         ValueSchema::ArtifactReference => "artifact reference".to_string(),
         ValueSchema::ResourceReference => "resource reference".to_string(),
         ValueSchema::ProviderAssignment => "provider assignment".to_string(),
+        ValueSchema::TransactionBlobReference => "transaction blob reference".to_string(),
         ValueSchema::OperationResultReference => "operation result reference".to_string(),
     }
 }

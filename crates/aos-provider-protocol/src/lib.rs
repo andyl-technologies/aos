@@ -12,6 +12,9 @@ use aos_ability_model::{
     AbilityValue, IncarnationId, InterfaceName, LocalKey, MethodReference, MethodSemantics,
     ResourceId, ResourceLifetime, ResourceReference, RevisionId,
 };
+pub use aos_ability_model::{
+    MAX_TRANSACTION_BLOB_BYTES, TRANSACTION_BLOB_REFERENCE_TYPE, TransactionBlobReference,
+};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +38,12 @@ pub const NATIVE_CONTEXT_DIGEST_DOMAIN: &str = "aos.primitive.command-handler-co
 pub const RESOURCE_SET_DIGEST_DOMAIN: &str = "aos.primitive.command-handler-resource-set/v1";
 /// Bounds one handler result independently of the child process implementation.
 pub const MAX_HANDLER_RESULT_BYTES: usize = 256 * 1024;
+/// Environment variable naming the invocation's authorized blob inputs.
+pub const TRANSACTION_BLOB_INPUT_DIRECTORY_ENV: &str = "AOS_ABILITY_TRANSACTION_BLOB_INPUTS";
+/// Environment variable naming the invocation's private blob output slots.
+pub const TRANSACTION_BLOB_OUTPUT_DIRECTORY_ENV: &str = "AOS_ABILITY_TRANSACTION_BLOB_OUTPUTS";
+/// Marker returned by a handler after writing one blob output slot.
+pub const TRANSACTION_BLOB_OUTPUT_TYPE: &str = "aos-transaction-blob-output";
 
 /// Computes the canonical digest of one provider-native context.
 ///
@@ -439,6 +448,21 @@ pub struct InvocationResult {
     pub outputs: BTreeMap<LocalKey, AbilityValue>,
     /// Echoes the complete checked resource-context digest.
     pub native_context_digest: Sha256Digest,
+}
+
+/// Names one private output slot written through the runtime blob transport.
+///
+/// Handlers may return this marker as a method output. The command adapter
+/// replaces it with a [`TransactionBlobReference`] only after durably copying,
+/// sizing, and hashing the slot bytes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransactionBlobOutput {
+    /// Carries [`TRANSACTION_BLOB_OUTPUT_TYPE`].
+    #[serde(rename = "_type")]
+    pub kind: String,
+    /// Selects one bounded file name inside the invocation output directory.
+    pub slot: LocalKey,
 }
 
 /// Reports the legal command-handler disposition vocabulary.
