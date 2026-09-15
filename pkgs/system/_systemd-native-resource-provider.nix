@@ -6,6 +6,7 @@
 }: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
+  providerLib = import ./_systemd-service-provider-lib.nix {inherit lib;};
   emptyProvision = {
     requests = {};
     outputs = {};
@@ -30,7 +31,32 @@
       effectsAlias = "systemd-swap-effects";
       backend = "swap-unit";
     };
+    schedule = {
+      selected = interfaces.scheduledActivation;
+      resourceKind = "aos.activation.schedule";
+      effectsAlias = "systemd-scheduled-activation-effects";
+      backend = "timer-unit";
+    };
   };
+  scheduleUnitFor = resource: let
+    normalized = providerLib.normalizedResourceId resource.resource;
+    name = resource.value.name;
+    digest = builtins.hashString "sha256" (builtins.toJSON normalized);
+  in {
+    unit_name = "aos-${name}-${digest}.timer";
+  };
+  triggerFor = resource: let
+    matches = builtins.filter (candidate:
+      candidate.kind == "aos.service.instance"
+      && builtins.any (binding:
+        binding.relationship == "resource-triggers-service"
+        && binding.resource.resource == resource.resource)
+      ((candidate.value.activation or {bindings = [];}).bindings))
+    (builtins.attrValues config.aos.abilities.resolvedResources);
+  in
+    if builtins.length matches != 1
+    then throw "a systemd scheduled activation must trigger exactly one service resource"
+    else builtins.head matches;
   providerFor = kind: let
     specification = kinds.${kind};
     effectsInterface = lib.abilities.interfaceIdentity (
@@ -56,6 +82,17 @@
             };
           }) entries);
       };
+    realizationFor = resource:
+      {
+        schema = "aos.systemd.native-resource-realization/v1";
+        inherit (specification) backend;
+      }
+      // lib.optionalAttrs (kind == "schedule") (let
+        trigger = triggerFor resource;
+      in {
+        systemd_unit = scheduleUnitFor resource;
+        target = trigger.realization.systemd_unit;
+      });
     compose = {resources, ...}: {
       outputs = {};
       requests = builtins.mapAttrs (key: resource: {
@@ -64,10 +101,7 @@
         slot = key;
         parameters.desired = resource.value;
       }) resources;
-      realizations = builtins.mapAttrs (_: _: {
-        schema = "aos.systemd.native-resource-realization/v1";
-        inherit (specification) backend;
-      }) resources;
+      realizations = builtins.mapAttrs (_: realizationFor) resources;
     };
     transition = import ./_systemd-native-resource-transition.nix {
       inherit effectsInterface;

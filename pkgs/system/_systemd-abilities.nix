@@ -881,10 +881,29 @@
         requiredFeatures = [];
       };
     }) (builtins.attrNames identityKinds));
-  nativeResourceRealizationType = types.record {
-    fields = {
-      schema = types.enum ["aos.systemd.native-resource-realization/v1"];
-      backend = types.enum ["mount-unit" "swap-unit"];
+  nativeResourceRealizationType = types.taggedUnion {
+    tag = "backend";
+    variants = {
+      mount-unit = types.record {
+        fields = {
+          schema = types.enum ["aos.systemd.native-resource-realization/v1"];
+          backend = types.enum ["mount-unit"];
+        };
+      };
+      swap-unit = types.record {
+        fields = {
+          schema = types.enum ["aos.systemd.native-resource-realization/v1"];
+          backend = types.enum ["swap-unit"];
+        };
+      };
+      timer-unit = types.record {
+        fields = {
+          schema = types.enum ["aos.systemd.native-resource-realization/v1"];
+          backend = types.enum ["timer-unit"];
+          systemd_unit = systemdUnitIdentity;
+          target = serviceUnitIdentity;
+        };
+      };
     };
   };
   nativeResourceKinds = {
@@ -903,6 +922,14 @@
       requestType = serviceManagement.types.swapResource;
       observationType = serviceManagement.types.producerObservations.swapResource;
       resourceKind = "aos.memory.swap";
+    };
+    schedule = {
+      controller = serviceInterfaces.scheduledActivation;
+      effectsAlias = "systemd-scheduled-activation-effects";
+      effectsName = "aos.systemd.scheduled-activation-effects";
+      requestType = serviceManagement.types.scheduledActivation;
+      observationType = serviceManagement.types.producerObservations.scheduledActivation;
+      resourceKind = "aos.activation.schedule";
     };
   };
   nativeEffectsRequest = selected:
