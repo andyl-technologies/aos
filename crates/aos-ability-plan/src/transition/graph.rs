@@ -796,6 +796,7 @@ fn collect_expression_results(
         match expression {
             ValueExpression::List { items } => pending.extend(items),
             ValueExpression::Object { fields } => pending.extend(fields.values()),
+            ValueExpression::PathWithin { base, .. } => pending.push(base),
             ValueExpression::OperationResult { reference } => {
                 references.insert(reference.clone());
             }

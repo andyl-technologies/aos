@@ -29,6 +29,9 @@ pub enum InputResolutionError {
     /// The fully resolved input exceeded the bounded ability-value contract.
     #[error("resolved input is outside the bounded ability-value contract: {0}")]
     Value(#[from] aos_ability_model::ValueError),
+    /// A path composition base was not a normalized absolute execution path.
+    #[error("path-within base or result is not a normalized absolute execution path")]
+    InvalidExecutionPath,
     /// The materialized value violates the checked method or nested authority.
     #[error("resolved input violates the checked method contract: {0}")]
     Checked(#[source] anyhow::Error),
@@ -196,6 +199,13 @@ fn expression_footprint(
         ValueExpression::OperationResult { reference } => {
             let value = transaction.resolved_result(reference)?;
             json_footprint(value, depth, limits)
+        }
+        ValueExpression::PathWithin {
+            base,
+            relative_path,
+        } => {
+            let path = resolve_path_within(transaction, base, relative_path)?;
+            json_footprint(&serde_json::Value::String(path), depth, limits)
         }
         ValueExpression::List { items } => {
             let mut footprint = Footprint {
@@ -383,6 +393,10 @@ fn resolve_expression(
             })
             .collect::<Result<serde_json::Map<_, _>, _>>()
             .map(serde_json::Value::Object),
+        ValueExpression::PathWithin {
+            base,
+            relative_path,
+        } => resolve_path_within(transaction, base, relative_path).map(serde_json::Value::String),
         ValueExpression::ArtifactReference { reference } => {
             serde_json::to_value(reference).map_err(InputResolutionError::Encoding)
         }
@@ -398,10 +412,59 @@ fn resolve_expression(
     }
 }
 
+fn resolve_path_within(
+    transaction: &ExecutionTransaction<'_>,
+    base: &ValueExpression,
+    relative_path: &aos_ability_model::RelativePath,
+) -> Result<String, InputResolutionError> {
+    let serde_json::Value::String(base) = resolve_expression(transaction, base)? else {
+        return Err(InputResolutionError::InvalidExecutionPath);
+    };
+    if !is_execution_path(&base) {
+        return Err(InputResolutionError::InvalidExecutionPath);
+    }
+    let resolved = join_execution_path(&base, relative_path);
+    if !is_execution_path(&resolved) {
+        return Err(InputResolutionError::InvalidExecutionPath);
+    }
+    Ok(resolved)
+}
+
+fn join_execution_path(base: &str, relative_path: &aos_ability_model::RelativePath) -> String {
+    if base == "/" {
+        format!("/{relative_path}")
+    } else {
+        format!("{base}/{relative_path}")
+    }
+}
+
+fn is_execution_path(path: &str) -> bool {
+    path.len() <= 4_096
+        && path.starts_with('/')
+        && !path.contains('\0')
+        && (path == "/"
+            || path[1..]
+                .split('/')
+                .all(|component| !component.is_empty() && component != "." && component != ".."))
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joins_only_normalized_execution_paths() {
+        let child = aos_ability_model::RelativePath::new("krb5/service.pid")
+            .expect("normalized relative path");
+
+        assert_eq!(join_execution_path("/run", &child), "/run/krb5/service.pid");
+        assert_eq!(join_execution_path("/", &child), "/krb5/service.pid");
+        assert!(is_execution_path("/run/krb5/service.pid"));
+        assert!(!is_execution_path("run/krb5/service.pid"));
+        assert!(!is_execution_path("/run/../service.pid"));
+        assert!(!is_execution_path("/run//service.pid"));
+    }
 
     #[test]
     fn repeated_borrowed_values_fit_the_exact_aggregate_boundary() {

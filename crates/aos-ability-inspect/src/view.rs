@@ -924,6 +924,9 @@ fn expression_uses_sensitive_reference(
                         || schema_contains_sensitive_reference(&output.descriptor.schema)
                 }),
         },
+        ValueExpression::PathWithin { base, .. } => {
+            expression_uses_sensitive_reference(plan, schema, base)
+        }
         ValueExpression::List { items } => {
             let ValueSchema::List { element, .. } = schema else {
                 return false;
@@ -1065,6 +1068,9 @@ fn insert_expression_artifacts(
         }
         ValueExpression::ArtifactReference { reference } => {
             insert_artifact_retention(nodes, edges, &owner, reference)?;
+        }
+        ValueExpression::PathWithin { base, .. } => {
+            insert_expression_artifacts(nodes, edges, owner, schema, base)?;
         }
         ValueExpression::List { items } => {
             if let ValueSchema::List { element, .. } = schema {

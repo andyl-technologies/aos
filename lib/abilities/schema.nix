@@ -133,6 +133,19 @@ let
       builtins.stringLength value
       <= 128
       && builtins.match "[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+" value != null
+    else if syntax == "execution-path-v1"
+    then let
+      splitComponents = builtins.filter builtins.isString (builtins.split "/" value);
+      components =
+        if splitComponents == []
+        then []
+        else builtins.tail splitComponents;
+    in
+      builtins.substring 0 1 value == "/"
+      && (
+        value == "/"
+        || builtins.all (component: component != "" && component != "." && component != "..") components
+      )
     else fail "unsupported string syntax '${syntax}'";
 
   schemaTopLevelKind = schema:
@@ -192,7 +205,7 @@ let
           && checked.max_length <= maxStringLength
         )
       then fail "${context}.max_length must be between 1 and ${builtins.toString maxStringLength}"
-      else if !(builtins.elem checked.syntax [null "local-key-v1" "qualified-name-v1"])
+      else if !(builtins.elem checked.syntax [null "local-key-v1" "qualified-name-v1" "execution-path-v1"])
       then fail "${context}.syntax is unsupported"
       else checked
     else if schema.kind == "string-enum"
@@ -590,7 +603,7 @@ in rec {
     checked = requireAttrs "string schema" ["maxLength" "syntax"] args;
     syntax = checked.syntax or null;
   in
-    if !(builtins.elem syntax [null "local-key-v1" "qualified-name-v1"])
+    if !(builtins.elem syntax [null "local-key-v1" "qualified-name-v1" "execution-path-v1"])
     then fail "string schema has unsupported syntax"
     else {
       kind = "string";
@@ -648,7 +661,7 @@ in rec {
       value = checked.value;
     };
   in
-    if !(builtins.elem keySyntax [null "local-key-v1" "qualified-name-v1"])
+    if !(builtins.elem keySyntax [null "local-key-v1" "qualified-name-v1" "execution-path-v1"])
     then fail "map schema has unsupported key syntax"
     else validateSchema "map schema" candidate;
 

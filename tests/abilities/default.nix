@@ -128,6 +128,26 @@
   };
   documentRecordSchema = lib.abilities.types.schemaOf "document record test" documentRecordType;
 
+  deferredExecutionPath = lib.abilities.types.deferredResult lib.abilities.types.executionPath;
+  pathWithin = lib.abilities.pathWithin {
+    base = lib.abilities.resultOf "runtime-directory" "execution-path";
+    relativePath = "krb5/service.pid";
+  };
+  invalidPathWithin = builtins.tryEval (builtins.deepSeq (lib.abilities.pathWithin {
+      base = "/run/krb5";
+      relativePath = "../service.pid";
+    })
+    true);
+  nonPathDeferred = lib.abilities.types.deferredResult (lib.abilities.types.integer {
+    minimum = 0;
+    maximum = 16;
+  });
+  forgedIntegerPathWithin = {
+    _type = "aos-runtime-path";
+    base = 1;
+    relative_path = "child";
+  };
+
   testEnvironment = lib.abilities.environmentId {
     authority = "deployment";
     key = "test";
@@ -490,6 +510,11 @@ in
   == {"@type" = "type.googleapis.com/example";};
   assert builtins.attrNames documentRecordType._aosDocType.fields == ["@type" "enabled"];
   assert !documentRecordType._aosDocType.open;
+  assert deferredExecutionPath.check pathWithin;
+  assert pathWithin.relative_path == "krb5/service.pid";
+  assert !invalidPathWithin.success;
+  assert !nonPathDeferred.check forgedIntegerPathWithin;
+  assert (lib.abilities.types.schemaOf "execution path" lib.abilities.types.executionPath).syntax == "execution-path-v1";
   assert fails (lib.abilities.schemas.checkValue documentRecordSchema {unknown = true;});
   assert reservedAbilityOutputRejected "abilities";
   assert reservedAbilityOutputRejected "abilityContract";
@@ -709,6 +734,27 @@ in
   assert builtins.length effectPlan.edges == 29;
   assert builtins.length effectFixture.longChain.operations == 65;
   assert builtins.length effectFixture.longChain.edges == 64;
+  assert let
+    consumer = builtins.head (builtins.filter (operation: operation.key.key == "consumer") effectFixture.pathWithin.operations);
+  in
+    consumer.inputs.fields.pid_file
+    == {
+      source = "path-within";
+      base = {
+        source = "operation-result";
+        reference = {
+          producer = {
+            kind = "operation";
+            key = {
+              scope = ["path-within"];
+              key = "directory";
+            };
+          };
+          output = "execution-path";
+        };
+      };
+      relative_path = "krb5/service.pid";
+    };
   assert builtins.map (operation: operation.key) effectPlan.operations
   == [
     {

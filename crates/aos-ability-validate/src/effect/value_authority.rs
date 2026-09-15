@@ -51,6 +51,18 @@ pub(super) fn validate_nested_authority(
         ),
         ValueExpression::AggregateOutput { .. } => {}
         ValueExpression::OperationResult { .. } => {}
+        ValueExpression::PathWithin { base, .. } => validate_nested_authority(
+            context,
+            schema,
+            base,
+            operation,
+            operation_index,
+            binding,
+            grant,
+            artifacts,
+            resources,
+            diagnostics,
+        ),
         ValueExpression::List { items } => {
             if let ValueSchema::List { element, .. } = schema {
                 for item in items {

@@ -82,6 +82,21 @@ let
     builtins.isString value
     && builtins.match "[[:cntrl:][:print:]]*" value != null;
 
+  requireRelativePath = context: value: let
+    components =
+      if builtins.isString value
+      then builtins.filter builtins.isString (builtins.split "/" value)
+      else [];
+  in
+    if
+      builtins.isString value
+      && value != ""
+      && builtins.stringLength value <= 4096
+      && builtins.substring 0 1 value != "/"
+      && builtins.all (component: component != "" && component != "." && component != "..") components
+    then value
+    else fail "${context} must be a normalized relative path";
+
   uniqueSortedLocalKeys = context: values: let
     checked =
       if builtins.isList values && builtins.length values <= profile.max_collection_items
@@ -503,6 +518,7 @@ let
       "aos-artifact-reference"
       "aos-resource-reference"
       "aos-effect-result-reference"
+      "aos-runtime-path"
     ];
 
   containsTypedReference = depth: value:
@@ -715,6 +731,14 @@ let
     then {
       source = "operation-result";
       reference = normalizeResultReference rootDepth scope value;
+    }
+    else if builtins.isAttrs value && (value._type or null) == "aos-runtime-path"
+    then let
+      checked = requireAttrs "path-within expression" ["_type" "base" "relative_path"] value;
+    in {
+      source = "path-within";
+      base = normalizeExpression rootDepth scope (depth + 1) checked.base;
+      relative_path = requireRelativePath "path-within relative path" checked.relative_path;
     }
     else if builtins.isAttrs value && (value._type or null) == "aos-resource-reference"
     then {
