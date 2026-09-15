@@ -28,21 +28,27 @@
     predicate = value: builtins.match ".+" value != null;
   };
   dbEngineType = abilityTypes.enum ["lmdb" "sqlite"];
-  secretRef = types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      resource = mkOption {
-        type = types.nullOr (abilityTypes.deferredResult abilityTypes.resourceReference);
+  secretRef = abilityTypes.record {
+    fields = {
+      resource = {
+        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
         default = null;
         description = "Typed resource reference producing the credential without exposing secret bytes.";
       };
-      encrypted = mkOption {
-        type = types.bool;
+      encrypted = {
+        type = abilityTypes.boolean;
         default = false;
         description = "Whether the referenced credential requires encrypted delivery.";
       };
     };
-  });
+  };
+  normalizeSecret = reference: {
+    resource = reference.resource or null;
+    encrypted = reference.encrypted or false;
+  };
+  rpcSecret = normalizeSecret cfg.rpc.secret;
+  adminToken = normalizeSecret cfg.admin.token;
+  metricsToken = normalizeSecret cfg.admin.metrics.token;
   runtimeString = abilityTypes.runtimeString;
   optionalRuntimeString = {
     type = abilityTypes.optional runtimeString;
@@ -123,21 +129,21 @@
     [
       {
         name = "rpc-secret";
-        inherit (cfg.rpc.secret) resource encrypted;
+        inherit (rpcSecret) resource encrypted;
         environment_variable = "GARAGE_RPC_SECRET_FILE";
       }
     ]
     ++ lib.optionals variant.admin [
       {
         name = "admin-token";
-        inherit (cfg.admin.token) resource encrypted;
+        inherit (adminToken) resource encrypted;
         environment_variable = "GARAGE_ADMIN_TOKEN_FILE";
       }
     ]
     ++ lib.optionals (variant.admin && variant.metrics) [
       {
         name = "metrics-token";
-        inherit (cfg.admin.metrics.token) resource encrypted;
+        inherit (metricsToken) resource encrypted;
         environment_variable = "GARAGE_METRICS_TOKEN_FILE";
       }
     ];
@@ -494,15 +500,15 @@ in {
     {
       assertions = [
         {
-          assertion = !cfg.enable || cfg.rpc.secret.resource != null;
+          assertion = !cfg.enable || rpcSecret.resource != null;
           message = "garage.rpc.secret.resource is required when Garage is enabled";
         }
         {
-          assertion = !cfg.enable || !cfg.admin.enable || cfg.admin.token.resource != null;
+          assertion = !cfg.enable || !cfg.admin.enable || adminToken.resource != null;
           message = "garage.admin.token.resource is required when the administration API is enabled";
         }
         {
-          assertion = !cfg.enable || !cfg.admin.enable || !cfg.admin.metrics.requireToken || cfg.admin.metrics.token.resource != null;
+          assertion = !cfg.enable || !cfg.admin.enable || !cfg.admin.metrics.requireToken || metricsToken.resource != null;
           message = "garage.admin.metrics.token.resource is required when authenticated metrics are enabled";
         }
         {
