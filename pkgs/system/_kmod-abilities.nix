@@ -14,11 +14,9 @@
   };
 in {
   config.aos.abilities = {
-    interfaces.${kernelModules.alias} = kernelModules.declaration;
-
     implementations.kernel-modules = {
       description = "Loads and observes exact kernel-module sets through libkmod.";
-      interface = kernelModules.alias;
+      interface = kernelModules.identity;
       inherit artifact;
       methods = kernelModules.methods;
       guarantees = [];

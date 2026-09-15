@@ -159,9 +159,14 @@
         maintainers = ["AOS test"];
         aos.platformSupport = {disposition = "target";};
       };
-      _aosAbilityCarrier.artifactOutputs.module = {
-        derivation = "/nix/store/44444444444444444444444444444444-example-module.drv";
-        storePath = "/nix/store/55555555555555555555555555555555-example-module";
+      abilities = {
+        _artifact_outputs.module = {
+          type = "derivation";
+          outputName = "module";
+          drvPath = "/nix/store/44444444444444444444444444444444-example-module.drv";
+          outPath = "/nix/store/55555555555555555555555555555555-example-module";
+          __toString = value: value.outPath;
+        };
       };
     };
   } ["aos"];
@@ -184,8 +189,8 @@
   fileModulePayload = abilityModulePayload ./fixtures/ability-module-file.nix;
   directoryModulePayload = abilityModulePayload ./fixtures/ability-module-directory;
   missingEntryRejected = !(builtins.tryEval (abilityModulePayload ./fixtures)).success;
-  fileModuleArtifact = fileModulePayload._aosAbilityCarrier.artifactOutputs.module.output;
-  directoryModuleArtifact = directoryModulePayload._aosAbilityCarrier.artifactOutputs.module.output;
+  fileModuleArtifact = fileModulePayload.abilities._artifact_outputs.module;
+  directoryModuleArtifact = directoryModulePayload.abilities._artifact_outputs.module;
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
   nestedSourceRoot = builtins.unsafeDiscardStringContext (toString (builtins.path {
     path = nestedSource;

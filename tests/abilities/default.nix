@@ -453,7 +453,6 @@
     inherit lib;
   };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
-  smokeInterfaceProjection = pkgs.ability-package-smoke._aosAbilityCarrier.interfaces;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
       requirementExport "advisory" {outputs.payload = effectFixture.oversizedValue;}
     )
@@ -478,8 +477,7 @@
         phases = [];
         abilities = ../build/fixtures/ability-module-file.nix;
       })
-      ._aosAbilityCarrier
-      .document))
+      .abilities))
     .success;
   inlineAbilitiesRejected = !(
     builtins.tryEval (pkgs.mkDerivation {
@@ -854,7 +852,6 @@ in
   assert fails (normalizeBounded [true false null true false]);
   assert fails (normalizeBounded {oversized-member-name = true;});
   assert fails (normalizeBounded "0123456789abcdefg");
-  assert (builtins.head smokeAbilityProjection.interface_documents).document == (builtins.head smokeInterfaceProjection).value;
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
   assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
   assert fails (lib.abilities.effects.normalize [] effectFixture.incompleteBoolean);

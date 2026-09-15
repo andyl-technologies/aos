@@ -597,10 +597,11 @@
     guarantees = ["authoring"];
   };
   guaranteeReferenceEvaluation = lib.evalModules {
-    modules = [
-      lib.abilities.module
+    modules = [lib.abilities.module];
+    packageModules = [
       {
-        config.aos.abilities = {
+        name = "authoring";
+        module.config.aos.abilities = {
           guarantees.authoring = authoredGuarantee;
           interfaces.test = guaranteeReferenceDeclaration;
         };
@@ -617,9 +618,12 @@
       evaluated = evaluation.config.aos.abilities;
     };
   missingGuaranteeReferenceEvaluation = lib.evalModules {
-    modules = [
-      lib.abilities.module
-      {config.aos.abilities.interfaces.test = guaranteeReferenceDeclaration;}
+    modules = [lib.abilities.module];
+    packageModules = [
+      {
+        name = "missing";
+        module.config.aos.abilities.interfaces.test = guaranteeReferenceDeclaration;
+      }
     ];
   };
   missingGuaranteeReference = builtins.tryEval (builtins.deepSeq (
@@ -645,7 +649,10 @@
     lib.abilities.interfaceDocumentFromDeclaration implementationInterface
   );
   sharedImplementationEvaluation = lib.evalModules {
-    modules = [lib.abilities.module];
+    modules = [
+      lib.abilities.module
+      {config.aos.abilities.interfaces.shared = implementationInterface;}
+    ];
     packageModules = [
       {
         name = "authoring";
@@ -939,14 +946,14 @@ in
   assert !invalidResourceReference.success;
   assert validExecutableRequest.config.aos.abilities.requests."authoring:executable".parameters.executable.entry_point == "bin/server";
   assert !(authoredGuarantee ? descriptor);
-  assert guaranteeReferenceEvaluation.config.aos.abilities.guarantees.authoring == authoredGuarantee;
-  assert guaranteeReferenceEvaluation.config.aos.abilities.interfaces.test.guarantees == ["authoring"];
+  assert guaranteeReferenceEvaluation.config.aos.abilities.guarantees."authoring:authoring" == authoredGuarantee;
+  assert guaranteeReferenceEvaluation.config.aos.abilities.interfaces."authoring:test".guarantees == ["authoring:authoring"];
   assert sharedImplementationEvaluation.config.aos.abilities.implementations."authoring:shared".interface
   == sharedInterfaceIdentity;
-  assert sharedImplementationProjection.value.interfaces == {};
-  assert (builtins.head sharedImplementationProjection.value.exports).interface == sharedInterfaceIdentity;
+  assert sharedImplementationProjection.interfaces == {};
+  assert (builtins.head sharedImplementationProjection.exports).interface == sharedInterfaceIdentity;
   assert sharedImplementationFixedPoint.config.aos.abilities.instances."authoring:shared".configuration;
-  assert (builtins.head guaranteeReferenceProjection.value.interface_documents).document.interface.guarantees == [{
+  assert (builtins.head guaranteeReferenceProjection.interface_documents).document.interface.guarantees == [{
     name = authoredGuarantee.name;
     version = authoredGuarantee.version;
     descriptor = expectedGuaranteeDescriptor;
@@ -955,7 +962,7 @@ in
   assert !conflictingGuaranteeCatalog.success;
   assert lib.abilities.guaranteeIdentity authoredGuarantee == lib.abilities.guaranteeIdentity proseChangedGuarantee;
   assert lib.abilities.guaranteeIdentity authoredGuarantee != lib.abilities.guaranteeIdentity semanticsChangedGuarantee;
-  assert (builtins.head guaranteeReferenceProjection.value.interface_documents).document.interface.guarantees
+  assert (builtins.head guaranteeReferenceProjection.interface_documents).document.interface.guarantees
   == [{
     name = authoredGuarantee.name;
     version = authoredGuarantee.version;
