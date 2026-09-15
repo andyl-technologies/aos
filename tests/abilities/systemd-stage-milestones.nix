@@ -24,6 +24,7 @@
     };
     initrd = {
       initrd-filesystems = "initrd-fs.target";
+      initrd-root-filesystems = "initrd-root-fs.target";
       root-device = "initrd-root-device.target";
       switch-root = "initrd-switch-root.target";
       sysroot = "sysroot.mount";
@@ -32,10 +33,16 @@
       etc-overlay = "etc-overlay-setup.service";
       run-etc = "run-etc-setup.service";
       device-settle = "systemd-udev-settle.service";
+      device-manager = "systemd-udevd.service";
+      device-events-triggered = "systemd-udev-trigger.service";
       kernel-modules = "systemd-modules-load.service";
       boot-identity-validated = "aos-boot-identity-guard.service";
+      boot-storage-unlocked = "aos-zfs-unlock.service";
       boot-integrity-failure = "aos-boot-identity-failure.target";
       partition-layout-ready = "aos-repart.service";
+      root-a-device = "dev-disk-by\\x2dpartlabel-root\\x2da.device";
+      storage-provisioning-state-ready = "aos-provisioning-state.service";
+      storage-provisioning-plan-ready = "aos-provisioning-eval.service";
       verity-root-verified = "aos-verity-root-verify.service";
     };
   };

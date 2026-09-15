@@ -25,13 +25,16 @@
         ++ modules;
     };
   disabled = evaluate "host" [] [
+    (packageModule pkgs.aos-boot-identity)
     (packageModule pkgs.aos-verity-root-guard)
     (packageModule pkgs.aos-var-policy-migrate)
+    (packageModule pkgs.systemd)
   ];
   configured =
     evaluate "initrd" [
       {
         aos.security = {
+          bootIdentityServices.enable = true;
           verityRootVerification.enable = true;
           measuredVar = {
             enable = true;
@@ -44,8 +47,10 @@
         };
       }
     ] [
+      (packageModule pkgs.aos-boot-identity)
       (packageModule pkgs.aos-verity-root-guard)
       (packageModule pkgs.aos-var-policy-migrate)
+      (packageModule pkgs.systemd)
     ];
   requests = configured.config.aos.abilities.requests;
   request = package: name: requests."${package}:${name}".parameters;
@@ -59,6 +64,8 @@
   measuredVarLifecycle = request "aos-var-policy-migrate" "aos-var-crypt-lifecycle";
   measuredVarDependencies = request "aos-var-policy-migrate" "aos-var-crypt-dependencies";
   measuredVarCondition = request "aos-var-policy-migrate" "aos-var-crypt-conditions";
+  identityGuardDependencies = request "aos-boot-identity" "aos-boot-identity-guard-dependencies";
+  identityGuardFailure = request "aos-boot-identity" "aos-boot-identity-guard-failure_policy";
   secureVeritySystem = mkSystem {
     systemName = "initrd-security-intent-test";
     modules = [../../systems/server-verity.nix];
@@ -75,6 +82,7 @@ in
   assert disabled.config.aos.abilities.requests == {};
   assert builtins.attrNames configured.config.aos.abilities.instances
   == [
+    "aos-boot-identity:boot-identity"
     "aos-var-policy-migrate:measured-var"
     "aos-verity-root-guard:verity-root-verification"
   ];
@@ -117,6 +125,14 @@ in
   assert (request "aos-var-policy-migrate" "persistent-state").milestone == "var";
   assert (request "aos-var-policy-migrate" "verity-root").milestone
   == "verity-root-verified";
+  assert (request "aos-boot-identity" "boot-identity-failure-target").source.unit_file
+  == "lib/systemd/system/aos-boot-identity-failure.target";
+  assert identityGuardDependencies.required_by
+  == [(output "aos-boot-identity:initrd-filesystems" "readiness-resource")];
+  assert identityGuardFailure.dispatch == "isolate-active-goal";
+  assert identityGuardFailure.handlers
+  == [(output "aos-boot-identity:integrity-failure" "readiness-resource")];
+  assert intentValuesAt ["aos" "security" "bootIdentityServices" "enable"] == [true];
   assert intentValuesAt ["aos" "security" "verityRootVerification" "enable"] == [true];
   assert intentValuesAt ["aos" "security" "measuredVar" "enable"] == [true];
   assert intentValuesAt ["aos" "security" "measuredVar" "requireVerity"] == [true];

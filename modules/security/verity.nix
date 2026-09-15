@@ -126,12 +126,17 @@ in {
     # The package-owned initrd module joins the generated verity activation,
     # republishes the completed mapper event, and reads the complete mapper
     # before persistent state becomes available.
-    environment.systemPackages = [pkgs.aos-verity-root-guard];
-    aos.boot.initrd.extraPackages = [pkgs.aos-verity-root-guard];
+    environment.systemPackages = [pkgs.aos-boot-identity pkgs.aos-verity-root-guard];
+    aos.boot.initrd.extraPackages = [pkgs.aos-boot-identity pkgs.aos-verity-root-guard];
     aos.abilities.stages.initrd = {
-      packages = [pkgs.aos-verity-root-guard pkgs.systemd];
+      packages = [pkgs.aos-boot-identity pkgs.aos-verity-root-guard pkgs.systemd];
       intent = [
-        {aos.security.verityRootVerification.enable = true;}
+        {
+          aos.security = {
+            bootIdentityServices.enable = true;
+            verityRootVerification.enable = true;
+          };
+        }
       ];
     };
   };

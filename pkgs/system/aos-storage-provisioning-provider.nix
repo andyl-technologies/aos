@@ -7,6 +7,11 @@
   mkCargoDummySource,
   aosWorkspaceSource,
   aosWorkspaceVendor,
+  bash,
+  coreutils,
+  dosfstools,
+  e2fsprogs,
+  jq,
   patchelf,
   systemd,
   util-linux,
@@ -19,7 +24,9 @@
       "x86_64-linux" = "x86_64-unknown-linux-gnu";
       "aarch64-linux" = "aarch64-unknown-linux-gnu";
     }
-    .${stdenv.hostPlatform.system};
+    .${
+      stdenv.hostPlatform.system
+    };
   staticBuildSetup = ''
     target_triple="$(rustc -vV | sed -n 's/^host: //p')"
     test "$target_triple" = "${targetTriple}"
@@ -68,7 +75,15 @@ in
     cargoTestFlags = "-p aos-block-storage-provider -p aos-storage-provisioning";
     doCheck = true;
     buildDeps = [patchelf];
-    runtimeDeps = [systemd util-linux];
+    runtimeDeps = [
+      bash
+      coreutils
+      dosfstools
+      e2fsprogs
+      jq
+      systemd
+      util-linux
+    ];
 
     abilities = ./_aos-storage-provisioning-provider/module.nix;
     preBuild = staticBuildSetup;
@@ -79,6 +94,10 @@ in
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
+      sed 's|@bash@|${bash}|g' \
+        ${./_aos-storage-provisioning-provider/aos-repart.sh} \
+        > "$out/bin/aos-repart"
+      chmod 0555 "$out/bin/aos-repart"
       cp ${./_aos-storage-provisioning-provider/provider.nix} \
         "$out/share/aos/providers/storage-provisioning.nix"
       test -x "$out/bin/aos-storage-provisioning-provider"

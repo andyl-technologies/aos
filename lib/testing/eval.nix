@@ -16,6 +16,15 @@
   abilityRequests = system.config.aos.abilities.requests;
   imageBootCommitLifecycle = abilityRequests."aos:image-boot-commit-lifecycle".parameters;
   imageBootCommitDependencies = abilityRequests."aos:image-boot-commit-dependencies".parameters;
+  initrdAbilityRequests = system.config.system.build.initrdAbilityGraph.requests;
+  initrdRequest = package: name: initrdAbilityRequests."${package}:${name}".parameters;
+  initrdOutput = package: name: output: {
+    _type = "aos-request-output-reference";
+    request = "${package}:${name}";
+    inherit output;
+  };
+  repartScript = builtins.readFile ../../pkgs/system/_aos-storage-provisioning-provider/aos-repart.sh;
+  etcOverlayScript = builtins.readFile ../../pkgs/boot/_aos-boot-preparations/etc-overlay-setup.sh;
   abiOverrideSystem = mkSystem [
     ../../systems/server.nix
     {aos.system.moduleAbi = 2;}
@@ -240,9 +249,11 @@
     else "not-present";
   rfcLifecycleRecurrence =
     builtins.seq
-    (assertRecurringLifecycleUnit
-      "aos-repart.service"
-      system.config.boot.initrd.systemd.services.aos-repart)
+    (
+      if !(initrdRequest "aos-storage-provisioning-provider" "aos-repart-lifecycle").enabled
+      then throw "aos-repart.service must remain enabled on every GPT-backed boot"
+      else "ok"
+    )
     (builtins.seq
       (assertOptionalRecurringLifecycleUnit "systemd-tmpfiles-setup")
       (builtins.seq
@@ -417,7 +428,7 @@
     else if
       !(containsStr
         "readlink /sysroot/aos-toplevel"
-        system.config.boot.initrd.systemd.services."etc-overlay-setup".script)
+        etcOverlayScript)
     then throw "the boot /etc lower must come from the image that actually booted"
     else if
       !(containsStr
@@ -473,8 +484,8 @@
     then throw "the stock system must emit aos-metadata-network-seed.service"
     else if !(builtins.hasAttr "aos-provisioning-eval" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-provisioning-eval.service"
-    else if !(builtins.hasAttr "aos-repart" system.config.boot.initrd.systemd.services)
-    then throw "the stock system must emit aos-repart.service"
+    else if !(builtins.hasAttr "aos-storage-provisioning-provider:aos-repart-lifecycle" initrdAbilityRequests)
+    then throw "the stock system must request the package-owned aos-repart lifecycle"
     else if !(builtins.hasAttr "aos-provisioning-persist" system.config.systemd.services)
     then throw "the stock system must persist provisioning audit evidence"
     else if !(builtins.hasAttr "aos-host-config-restore" system.config.systemd.services)
@@ -528,22 +539,22 @@
     else if
       !(containsStr
         "pending provisioning marker found; refusing automatic replay"
-        system.config.boot.initrd.systemd.services.aos-repart.script)
+        repartScript)
     then throw "aos-repart.service must fail closed on a pending marker"
     else if
       !(containsStr
         "--dry-run=yes"
-        system.config.boot.initrd.systemd.services.aos-repart.script)
+        repartScript)
     then throw "committed storage must be compared without mutation"
     else if
       !(containsStr
         "storage-coherence"
-        system.config.boot.initrd.systemd.services.aos-repart.script)
+        repartScript)
     then throw "committed storage comparison must publish an observable result"
     else if
-      !(containsStr
-        (builtins.toString pkgs.dosfstools)
-        system.config.boot.initrd.systemd.services.aos-repart.environment.PATH)
+      !(builtins.elem
+        {package = "dosfstools";}
+        (initrdRequest "aos-storage-provisioning-provider" "aos-repart-environment").search_path)
     then throw "every admitted vfat format must have its AOS-built initrd tool"
     else if
       !(builtins.elem
@@ -552,21 +563,19 @@
     then throw "initrd-root-fs.target must require provisioning authorization"
     else if
       !(builtins.elem
-        "initrd-root-fs.target"
-        system.config.boot.initrd.systemd.services.aos-repart.requiredBy)
+        (initrdOutput "aos-storage-provisioning-provider" "initrd-root-filesystems" "readiness-resource")
+        (initrdRequest "aos-storage-provisioning-provider" "aos-repart-dependencies").required_by)
     then throw "initrd-root-fs.target must require repartitioning"
     else if
       !(builtins.elem
-        "initrd-fs.target"
-        system.config.boot.initrd.systemd.services."mount-var".requiredBy)
+        (initrdOutput "aos-boot-preparations" "initrd-filesystems" "readiness-resource")
+        (initrdRequest "aos-boot-preparations" "mount-var-dependencies").required_by)
     then throw "initrd-fs.target must require the persistent /var substrate"
     else if
-      system.config.boot.initrd.systemd.services."mount-var".unitConfig.DefaultDependencies
-      != "no"
+      (initrdRequest "aos-boot-preparations" "mount-var-dependencies").implicit_dependencies
     then throw "the initrd /var mount must not pull stage-2 default dependencies into switch-root"
     else if
-      system.config.boot.initrd.systemd.services."nix-overlay-setup".unitConfig.DefaultDependencies
-      != "no"
+      (initrdRequest "aos-boot-preparations" "nix-overlay-setup-dependencies").implicit_dependencies
     then throw "the initrd /nix overlay must not pull stage-2 default dependencies into switch-root"
     else if
       builtins.elem
@@ -575,13 +584,13 @@
     then throw "encrypted swap must not close the mount/swap/local-fs ordering cycle"
     else if
       !(builtins.elem
-        "aos-provisioning-eval.service"
-        system.config.boot.initrd.systemd.services.aos-repart.requires)
+        (initrdOutput "aos-storage-provisioning-provider" "provisioning-plan" "readiness-resource")
+        (initrdRequest "aos-storage-provisioning-provider" "aos-repart-dependencies").requires)
     then throw "aos-repart.service must require restricted provisioning evaluation"
     else if
       !(builtins.elem
-        "aos-provisioning-eval.service"
-        system.config.boot.initrd.systemd.services.aos-repart.after)
+        (initrdOutput "aos-storage-provisioning-provider" "provisioning-plan" "readiness-resource")
+        (initrdRequest "aos-storage-provisioning-provider" "aos-repart-dependencies").after)
     then throw "aos-repart.service must run after restricted provisioning evaluation"
     else "ok";
 

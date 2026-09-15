@@ -2,7 +2,11 @@
 {
   lib,
   mkDerivation,
+  bash,
+  coreutils,
   rust,
+  systemd,
+  util-linux,
 }: let
   source = ../../crates/aos-boot-identity;
 in
@@ -66,8 +70,9 @@ in
     src = source;
 
     buildDeps = [rust];
-    runtimeDeps = [];
+    runtimeDeps = [bash coreutils systemd util-linux];
     propagatedDeps = [];
+    abilities = ./_aos-boot-identity;
 
     phases = [
       {
@@ -91,6 +96,14 @@ in
         script = ''
           mkdir -p $out/bin
           cp aos-boot-identity $out/bin/
+          for source in ${./_aos-boot-identity}/*.sh; do
+            destination="$out/bin/$(basename "$source" .sh)"
+            sed 's|@bash@|${bash}|g' "$source" > "$destination"
+            chmod 0555 "$destination"
+          done
+          mkdir -p $out/lib/systemd/system
+          cp ${./_aos-boot-identity/aos-boot-identity-failure.target} \
+            $out/lib/systemd/system/
         '';
       }
     ];

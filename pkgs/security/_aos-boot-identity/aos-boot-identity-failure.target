@@ -1,0 +1,5 @@
+[Unit]
+Description=AOS boot identity rejected
+DefaultDependencies=no
+AllowIsolate=yes
+Conflicts=initrd-fs.target initrd-root-fs.target initrd-switch-root.target emergency.target rescue.target
