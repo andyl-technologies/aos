@@ -196,6 +196,7 @@ pub fn verified_planning_authorized_removal_fixture() -> (
             binding,
         }],
         teardown_providers: Vec::new(),
+        persistent_deletions: Vec::new(),
         provider_adoptions: Vec::new(),
     };
     let authorization_digest = authorization_document

@@ -322,7 +322,7 @@
         ];
       };
   in
-    if change == null || change.kind == "unchanged"
+    if change == null || builtins.elem change.kind ["unchanged" "retain-persistent"]
     then empty
     else if change.kind == "remove"
     then retirement

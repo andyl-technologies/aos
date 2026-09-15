@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
-    Binding, BindingId, PROVIDER_STATE_ADOPTION_V1, PackageDocument, PlanId,
+    AccessMode, Binding, BindingId, PROVIDER_STATE_ADOPTION_V1, PackageDocument, PlanId,
     ProviderAdoptionEndpoint, ProviderImplementation, ResourceLifetime, RevisionId,
     TransitionAuthorizationDocument, VersionedDocument, encode_canonical,
 };
@@ -173,6 +173,8 @@ fn validate_document(
         > aos_ability_model::ABILITY_LIMITS_V1.max_graph_nodes as usize
         || document.teardown_providers.len()
             > aos_ability_model::ABILITY_LIMITS_V1.max_graph_nodes as usize
+        || document.persistent_deletions.len()
+            > aos_ability_model::ABILITY_LIMITS_V1.max_graph_nodes as usize
     {
         return Err(TransitionAuthorityError::InvalidDocument(
             "authorization exceeds the transition binding limit".to_string(),
@@ -199,6 +201,14 @@ fn validate_document(
     }) {
         return Err(TransitionAuthorityError::InvalidDocument(
             "teardown providers are not in strict canonical order".to_string(),
+        ));
+    }
+    if document.persistent_deletions.windows(2).any(|pair| {
+        (&pair[0].resource, &pair[0].source_binding, &pair[0].binding)
+            >= (&pair[1].resource, &pair[1].source_binding, &pair[1].binding)
+    }) {
+        return Err(TransitionAuthorityError::InvalidDocument(
+            "persistent deletions are not in strict canonical resource order".to_string(),
         ));
     }
     let adoption_feature = aos_ability_model::RequiredFeature::new(PROVIDER_STATE_ADOPTION_V1)
@@ -229,8 +239,93 @@ fn validate_document(
     for provider in &document.teardown_providers {
         validate_teardown_provider(context, document, inputs, provider)?;
     }
+    for deletion in &document.persistent_deletions {
+        validate_persistent_deletion(context, document, inputs, deletion)?;
+    }
     for adoption in &document.provider_adoptions {
         validate_provider_adoption(context, inputs, adoption)?;
+    }
+    Ok(())
+}
+
+fn validate_persistent_deletion(
+    context: &ValidationContext,
+    document: &TransitionAuthorizationDocument,
+    inputs: &TransitionAuthorityInputs<'_>,
+    authorization: &aos_ability_model::PersistentResourceDeletionAuthorization,
+) -> Result<(), TransitionAuthorityError> {
+    let Some(teardown) = document.teardown_bindings.iter().find(|entry| {
+        entry.source_binding == authorization.source_binding
+            && entry.binding.id == authorization.binding
+    }) else {
+        return Err(TransitionAuthorityError::InvalidDocument(
+            "persistent deletion does not name one exact teardown binding".to_string(),
+        ));
+    };
+    let Some(source) = inputs.current.binding(&authorization.source_binding) else {
+        return Err(TransitionAuthorityError::InvalidDocument(
+            "persistent deletion source binding is absent from the prior plan".to_string(),
+        ));
+    };
+    let retained_resource = inputs
+        .current
+        .desired_state()
+        .resources
+        .iter()
+        .find(|revision| revision.resource == authorization.resource);
+    if retained_resource.is_none_or(|revision| revision.lifetime != ResourceLifetime::Persistent)
+        || source.lifetime != ResourceLifetime::Persistent
+        || teardown.binding.lifetime != ResourceLifetime::Persistent
+        || !source_resource(source, &authorization.resource)
+    {
+        return Err(TransitionAuthorityError::InvalidDocument(
+            "persistent deletion is not confined to one retained persistent resource".to_string(),
+        ));
+    }
+    let Some(interface) = context.interface(&teardown.binding.interface) else {
+        return Err(binding_error(
+            &teardown.binding,
+            "persistent deletion interface is absent from the catalog",
+        ));
+    };
+    if interface
+        .interface
+        .lifecycle
+        .persistent_delete_method
+        .as_ref()
+        != Some(&authorization.method)
+        || !teardown
+            .binding
+            .caller_grant
+            .methods
+            .contains(&authorization.method)
+        || teardown
+            .binding
+            .provider_grant
+            .methods
+            .contains(&authorization.method)
+    {
+        return Err(binding_error(
+            &teardown.binding,
+            "persistent deletion does not use the interface's exact caller-authorized delete method",
+        ));
+    }
+    let matching_permissions = teardown
+        .binding
+        .caller_grant
+        .resources
+        .iter()
+        .filter(|permission| permission.resource == authorization.resource)
+        .collect::<Vec<_>>();
+    if matching_permissions.len() != 1
+        || matching_permissions[0].access != AccessMode::ExclusiveWrite
+        || matching_permissions[0].operations.as_slice()
+            != std::slice::from_ref(&authorization.method)
+    {
+        return Err(binding_error(
+            &teardown.binding,
+            "persistent deletion requires one exact exclusive caller resource grant",
+        ));
     }
     Ok(())
 }
@@ -834,6 +929,13 @@ fn validate_teardown_binding(
         .lifecycle
         .persistent_delete_method
         .as_ref();
+    let explicitly_authorized_delete = |method: &aos_ability_model::LocalKey| {
+        document.persistent_deletions.iter().any(|deletion| {
+            deletion.source_binding == authorization.source_binding
+                && deletion.binding == binding.id
+                && deletion.method == *method
+        })
+    };
     for (grant, caller_grant) in [
         (&binding.caller_grant, true),
         (&binding.provider_grant, false),
@@ -849,11 +951,14 @@ fn validate_teardown_binding(
                 "fresh grant methods are not exact and canonical",
             ));
         }
-        if persistent_delete.is_some_and(|method| grant.methods.contains(method)) {
-            return Err(binding_error(
-                binding,
-                "persistent deletion requires a separately typed authorization",
-            ));
+        if let Some(method) = persistent_delete {
+            let grants_delete = grant.methods.contains(method);
+            if grants_delete && (!caller_grant || !explicitly_authorized_delete(method)) {
+                return Err(binding_error(
+                    binding,
+                    "persistent deletion requires a separately typed caller authorization",
+                ));
+            }
         }
         if grant
             .resources
@@ -882,17 +987,6 @@ fn validate_teardown_binding(
                 "fresh resource grants exceed checked resource scope",
             ));
         }
-    }
-    if binding.lifetime == ResourceLifetime::Persistent
-        && persistent_delete.is_some_and(|method| {
-            binding.caller_grant.methods.contains(method)
-                || binding.provider_grant.methods.contains(method)
-        })
-    {
-        return Err(binding_error(
-            binding,
-            "persistent resource deletion is not implicit teardown",
-        ));
     }
     Ok(())
 }
@@ -1179,14 +1273,30 @@ mod tests {
     #[test]
     fn persistent_delete_method_requires_separate_authorization_type() {
         let mut fixture = authority_fixture();
+        let selected_interface = fixture.document.teardown_bindings[0]
+            .binding
+            .interface
+            .clone();
         let mut interface = fixture
             .context
             .interfaces()
-            .values()
-            .next()
+            .get(&selected_interface)
             .expect("fixture interface")
             .clone();
-        interface.interface.lifecycle.persistent_delete_method = Some(key("stop"));
+        let delete_method = interface
+            .interface
+            .methods
+            .keys()
+            .next()
+            .expect("fixture interface method")
+            .clone();
+        interface
+            .interface
+            .methods
+            .get_mut(&delete_method)
+            .expect("fixture delete method")
+            .semantics = aos_ability_model::MethodSemantics::provider_stop();
+        interface.interface.lifecycle.persistent_delete_method = Some(delete_method.clone());
         let interface_key = interface
             .interface_key()
             .expect("mutated interface must digest");
@@ -1197,11 +1307,108 @@ mod tests {
             plan.inputs.environment.providers[0].interface = interface_key.clone();
         }
         fixture.document.teardown_bindings[0].binding.interface = interface_key;
+        fixture.document.teardown_bindings[0]
+            .binding
+            .caller_grant
+            .methods = vec![delete_method.clone()];
+        fixture.document.teardown_bindings[0]
+            .binding
+            .caller_grant
+            .resources[0]
+            .operations = vec![delete_method];
 
         assert!(matches!(
             fixture.validate(),
             Err(TransitionAuthorityError::Binding { .. })
         ));
+    }
+
+    #[test]
+    fn typed_persistent_deletion_requires_exact_exclusive_grant() {
+        let mut fixture = authority_fixture();
+        let selected_interface = fixture.document.teardown_bindings[0]
+            .binding
+            .interface
+            .clone();
+        let mut interface = fixture
+            .context
+            .interfaces()
+            .get(&selected_interface)
+            .expect("fixture interface")
+            .clone();
+        let delete_method = interface
+            .interface
+            .methods
+            .keys()
+            .next()
+            .expect("fixture interface method")
+            .clone();
+        interface
+            .interface
+            .methods
+            .get_mut(&delete_method)
+            .expect("fixture delete method")
+            .semantics = aos_ability_model::MethodSemantics::provider_stop();
+        interface.interface.lifecycle.persistent_delete_method = Some(delete_method.clone());
+        let interface_key = interface
+            .interface_key()
+            .expect("mutated interface must digest");
+        fixture.context = ValidationContext::new(BTreeSet::new(), [interface])
+            .expect("mutated interface must validate");
+
+        let source_binding = fixture.document.teardown_bindings[0].source_binding.clone();
+        let transition_binding = fixture.document.teardown_bindings[0].binding.id.clone();
+        let resource = fixture.current.document.resources[0].resource.clone();
+        fixture.current.document.bindings[0].lifetime = ResourceLifetime::Persistent;
+        fixture.current.inputs.desired_state.resources[0].lifetime = ResourceLifetime::Persistent;
+        fixture.document.teardown_bindings[0].binding.interface = interface_key;
+        fixture.document.teardown_bindings[0].binding.lifetime = ResourceLifetime::Persistent;
+        fixture.document.teardown_bindings[0]
+            .binding
+            .caller_grant
+            .methods = vec![delete_method.clone()];
+        fixture.document.teardown_bindings[0]
+            .binding
+            .caller_grant
+            .resources[0]
+            .operations = vec![delete_method.clone()];
+        let deletion = aos_ability_model::PersistentResourceDeletionAuthorization {
+            source_binding,
+            binding: transition_binding,
+            resource,
+            method: delete_method,
+        };
+        fixture.document.persistent_deletions = vec![deletion.clone()];
+        let inputs = TransitionAuthorityInputs {
+            expected_digest: Sha256Digest::of_bytes("unused test digest"),
+            desired_planning: fixture.document.desired_planning,
+            current_planning: fixture.document.current_planning,
+            authorization_policy_revision: fixture.document.authorization_policy_revision,
+            desired: &fixture.desired,
+            current: &fixture.current,
+        };
+
+        validate_persistent_deletion(&fixture.context, &fixture.document, &inputs, &deletion)
+            .expect("exact typed persistent deletion must validate");
+        drop(inputs);
+
+        fixture.document.teardown_bindings[0]
+            .binding
+            .caller_grant
+            .resources[0]
+            .access = AccessMode::SharedWrite;
+        let inputs = TransitionAuthorityInputs {
+            expected_digest: Sha256Digest::of_bytes("unused test digest"),
+            desired_planning: fixture.document.desired_planning,
+            current_planning: fixture.document.current_planning,
+            authorization_policy_revision: fixture.document.authorization_policy_revision,
+            desired: &fixture.desired,
+            current: &fixture.current,
+        };
+        let error =
+            validate_persistent_deletion(&fixture.context, &fixture.document, &inputs, &deletion)
+                .expect_err("persistent deletion without exclusive authority must fail");
+        assert!(matches!(error, TransitionAuthorityError::Binding { .. }));
     }
 
     #[test]
@@ -1592,6 +1799,7 @@ mod tests {
             authorization_policy_revision: policy_revision,
             teardown_bindings: Vec::new(),
             teardown_providers: Vec::new(),
+            persistent_deletions: Vec::new(),
             provider_adoptions: vec![ProviderAdoptionAuthorization {
                 resource,
                 resource_interface,
@@ -1944,6 +2152,7 @@ mod tests {
                 binding,
             }],
             teardown_providers: Vec::new(),
+            persistent_deletions: Vec::new(),
             provider_adoptions: Vec::new(),
         };
 

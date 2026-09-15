@@ -442,7 +442,7 @@
         ];
       };
   in
-    if change.kind == "unchanged"
+    if builtins.elem change.kind ["unchanged" "retain-persistent"]
     then emptyTransition
     else if change.kind == "remove"
     then retirement

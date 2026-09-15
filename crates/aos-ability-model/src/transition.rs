@@ -103,6 +103,25 @@ pub struct TeardownProviderAuthorization {
     pub policy_revision: RevisionId,
 }
 
+/// Authorizes deletion of one exact persistent resource.
+///
+/// Ordinary teardown retains persistent resources. This record binds an
+/// operator's deletion decision to the prior binding, its transition-local
+/// replacement, the exact resource, and the interface's declared deletion
+/// method.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistentResourceDeletionAuthorization {
+    /// Identifies the binding in the verified prior planning snapshot.
+    pub source_binding: BindingId,
+    /// Identifies the freshly authorized transition-local binding.
+    pub binding: BindingId,
+    /// Identifies the exact persistent resource to delete.
+    pub resource: ResourceId,
+    /// Names the interface method declared for persistent deletion.
+    pub method: LocalKey,
+}
+
 /// Carries independently authenticated current-policy teardown authority.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -125,6 +144,9 @@ pub struct TransitionAuthorizationDocument {
     pub teardown_bindings: Vec<TeardownBindingAuthorization>,
     /// Lists exact prior operator-enabled roots reauthorized for retirement.
     pub teardown_providers: Vec<TeardownProviderAuthorization>,
+    /// Lists separately authorized persistent resource deletions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub persistent_deletions: Vec<PersistentResourceDeletionAuthorization>,
     /// Lists explicit compatible provider-state ownership transfers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_adoptions: Vec<ProviderAdoptionAuthorization>,

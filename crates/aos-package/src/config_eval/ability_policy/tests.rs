@@ -664,6 +664,7 @@ fn publisher_rejects_cross_policy_binding_shadowing() {
             binding,
         }],
         teardown_providers: Vec::new(),
+        persistent_deletions: Vec::new(),
         provider_adoptions: Vec::new(),
     };
     let error = CurrentAbilityAuthorityPublisher::for_test(
