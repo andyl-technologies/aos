@@ -69,7 +69,15 @@
       else "";
   in
     pkgs.runCommand "aos-package-${name}-meta.json" {
-      buildDeps = [pkgs.coreutils pkgs.jq];
+      buildDeps = [pkgs.coreutils pkgs.jq pkgs.nix];
+      exportReferencesGraph =
+        {
+          exposeArtifact = [package.package.expose];
+          packagePayload = [package.package];
+        }
+        // lib.optionalAttrs (package.package ? config) {
+          configOutput = [package.package.config];
+        };
       preferLocalBuild = true;
       allowSubstitutes = false;
     } ''
@@ -85,6 +93,36 @@
       else
         config_meta=/dev/null
       fi
+
+      jq -ce \
+        --arg path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
+        '[.exposeArtifact[] | select(.path == $path)] | if length == 1 then .[0] else error("missing expose artifact realization") end' \
+        "$NIX_ATTRS_JSON_FILE" > expose-info.json
+      jq -ce \
+        --arg path "$package_store_path" \
+        '[.packagePayload[] | select(.path == $path)] | if length == 1 then .[0] else error("missing package payload realization") end' \
+        "$NIX_ATTRS_JSON_FILE" > package-info.json
+
+      canonical_nar_hash() {
+        nar_hash=$1
+        nar_hex=$(${pkgs.nix}/bin/nix --extra-experimental-features nix-command hash convert \
+          --hash-algo sha256 --to base16 "$nar_hash")
+        printf 'sha256:%s\n' "$nar_hex"
+      }
+      expose_nar_hash=$(canonical_nar_hash "$(jq -r '.narHash' expose-info.json)")
+      package_nar_hash=$(canonical_nar_hash "$(jq -r '.narHash' package-info.json)")
+      if [ -n "$config_output" ]; then
+        jq -ce \
+          --arg path "$config_output" \
+          '[.configOutput[] | select(.path == $path)] | if length == 1 then .[0] else error("missing config output realization") end' \
+        "$NIX_ATTRS_JSON_FILE" > config-info.json
+        config_info_file=config-info.json
+        config_nar_hash=$(canonical_nar_hash "$(jq -r '.narHash' config-info.json)")
+      else
+        config_info_file=/dev/null
+        config_nar_hash=
+      fi
+
       jq -n \
         --slurpfile manifest "$manifest" \
         --arg store_path "$package_store_path" \
@@ -103,7 +141,7 @@
         esac
         root_digest=$(printf '%s' "$root_digest" | tr 'A-F' 'a-f')
       else
-        root_digest="sha256:$(printf '%s' "$package_store_path" | sha256sum | cut -d ' ' -f 1)"
+        root_digest=$package_nar_hash
       fi
       manifest_digest="sha256:$(sha256sum "$manifest" | cut -d ' ' -f 1)"
       word="aos-package-v1|name=''${#package_name}:$package_name|version=''${#package_version}:$package_version|root-digest=''${#root_digest}:$root_digest|manifest-digest=''${#manifest_digest}:$manifest_digest"
@@ -117,6 +155,10 @@
         --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
         --arg config_output "$config_output" \
         --slurpfile config_meta "$config_meta" \
+        --slurpfile expose_info expose-info.json \
+        --slurpfile config_info "$config_info_file" \
+        --arg expose_nar_hash "$expose_nar_hash" \
+        --arg config_nar_hash "$config_nar_hash" \
         --arg root_hash "$root_hash" \
         --arg root_hash_sig "$root_hash_sig" \
         --arg root_digest "$root_digest" \
@@ -136,22 +178,24 @@
             registry: "seed",
             installed_at: "1970-01-01T00:00:00Z",
             held: false,
-            source_drv: "",
-            source_nar_hash: "",
             expose: $manifest[0].expose,
             expose_artifact: {
               store_path: $expose_path,
-              nar_hash: "sha256:aos-image",
-              nar_size: 1
+              nar_hash: $expose_nar_hash,
+              nar_size: $expose_info[0].narSize
             },
             config_module: (
               if $config_output == "" then null
               else {
                 config_output: {
                   store_path: $config_output,
-                  nar_hash: "sha256:aos-image",
-                  nar_size: 1,
-                  references: []
+                  nar_hash: $config_nar_hash,
+                  nar_size: $config_info[0].narSize,
+                  references: (
+                    $config_info[0].references
+                    | map(split("/")[-1] | split("-")[0])
+                    | unique
+                  )
                 },
                 evaluation_base_lib: null,
                 module_abi_compat: $config_meta[0].module_abi_compat,
