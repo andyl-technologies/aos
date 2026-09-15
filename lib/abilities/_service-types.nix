@@ -27,6 +27,36 @@
   principalName = types.principalName;
   groupName = types.groupName;
   restartToken = boundedString 1024;
+  signalName = boundedString 64;
+  statusCode = types.integer {
+    minimum = 0;
+    maximum = 255;
+  };
+  durationMillis = types.integer {
+    minimum = 0;
+    maximum = 9007199254740991;
+  };
+  positiveDurationMillis = types.integer {
+    minimum = 1;
+    maximum = 9007199254740991;
+  };
+  resourceQuantity = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      finite = types.record {
+        fields = {
+          kind = types.enum ["finite"];
+          value = types.integer {
+            minimum = 0;
+            maximum = 9007199254740991;
+          };
+        };
+      };
+      unbounded = types.record {
+        fields.kind = types.enum ["unbounded"];
+      };
+    };
+  };
   command = types.record {
     fields = {
       executable = types.executableReference;
@@ -95,9 +125,17 @@
       minimum = 1;
       maximum = 86400000;
     };
+    start_timeout_unbounded = {
+      type = types.boolean;
+      default = false;
+    };
     stop_timeout_millis = types.integer {
       minimum = 1;
       maximum = 86400000;
+    };
+    stop_timeout_unbounded = {
+      type = types.boolean;
+      default = false;
     };
   } [];
   lifecycle = request lifecycleFeature;
@@ -118,8 +156,129 @@
       element = types.deferredResult types.resourceReference;
       maxItems = 256;
     };
+    requisite = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
+    };
+    conflicts = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
+    };
+    binds_to = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
+    };
+    part_of = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
+    };
+    upholds = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
+    };
+    required_by = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
+    };
+    wanted_by = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
+    };
+    required_mounts = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
+    };
+    implicit_dependencies = {
+      type = types.boolean;
+      default = true;
+    };
   } [];
   dependencies = request dependenciesFeature;
+
+  pathCondition = types.record {
+    fields = {
+      kind = types.enum ["path"];
+      predicate = types.enum ["exists" "is-directory" "is-mount-point" "is-nonempty"];
+      path = types.deferredResult executionPath;
+      negated = types.boolean;
+    };
+  };
+  kernelArgumentCondition = types.record {
+    fields = {
+      kind = types.enum ["kernel-argument"];
+      argument = boundedString 4096;
+      negated = types.boolean;
+    };
+  };
+  facilityCondition = types.record {
+    fields = {
+      kind = types.enum ["facility"];
+      facility = localKey;
+      negated = types.boolean;
+    };
+  };
+  condition = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      path = pathCondition;
+      kernel-argument = kernelArgumentCondition;
+      facility = facilityCondition;
+    };
+  };
+  conditionsFeature = feature {
+    all = types.list {
+      element = condition;
+      maxItems = 256;
+    };
+  } [];
+  conditions = request conditionsFeature;
+
+  instantiationFeature = feature {
+    kind = types.enum ["singleton" "template" "instance"];
+    template = {
+      type = types.optional localKey;
+      optional = true;
+    };
+    instance = {
+      type = types.optional (boundedString 1024);
+      optional = true;
+    };
+  } [];
+  instantiation = request instantiationFeature;
+
+  supervisionFeature = feature {
+    startup_protocol = types.enum ["process" "notification" "bus-name"];
+    notification_access = types.enum ["none" "main-process" "all-processes"];
+    bus_name = {
+      type = types.optional (boundedString 255);
+      optional = true;
+    };
+  } [];
+  supervision = request supervisionFeature;
   readinessFeature = feature {
     mechanism = types.enum ["process-running" "process-signal" "socket-accepting" "successful-exit"];
     signal_scope = types.enum ["all-processes" "children" "main-process" "none"];
@@ -130,10 +289,124 @@
   } [];
   readiness = request readinessFeature;
   reloadFeature = feature {
-    strategy = types.enum ["command" "restart" "unsupported"];
+    strategy = types.enum ["command" "restart" "signal" "unsupported"];
     commands = commands;
+    signal = {
+      type = types.optional signalName;
+      optional = true;
+    };
+    completion = {
+      type = types.optional (types.enum ["command-exit" "notification"]);
+      optional = true;
+    };
   } [];
   reload = request reloadFeature;
+
+  terminationFeature = feature {
+    signal = signalName;
+    final_signal = {
+      type = types.optional signalName;
+      optional = true;
+    };
+    process_id_file = {
+      type = types.optional (types.deferredResult executionPath);
+      optional = true;
+    };
+    send_to_all_processes = types.boolean;
+  } [];
+  termination = request terminationFeature;
+
+  watchdogFeature = feature {
+    timeout_millis = positiveDurationMillis;
+    action = types.enum ["restart" "stop"];
+  } [];
+  watchdog = request watchdogFeature;
+
+  startPolicyFeature = feature {
+    accepted_exit_statuses = types.list {
+      element = statusCode;
+      maxItems = 256;
+    };
+    restart_preventing_exit_statuses = types.list {
+      element = statusCode;
+      maxItems = 256;
+    };
+    rate_interval_millis = {
+      type = types.optional positiveDurationMillis;
+      optional = true;
+    };
+    rate_burst = {
+      type = types.optional (types.integer {
+        minimum = 1;
+        maximum = 4294967295;
+      });
+      optional = true;
+    };
+  } [];
+  startPolicy = request startPolicyFeature;
+
+  failurePolicyFeature = feature {
+    handlers = types.list {
+      element = types.deferredResult types.resourceReference;
+      maxItems = 256;
+    };
+    dispatch = types.enum ["enqueue" "replace-active-goal"];
+  } [];
+  failurePolicy = request failurePolicyFeature;
+
+  schedulingFeature = feature {
+    nice = types.integer {
+      minimum = -20;
+      maximum = 19;
+    };
+    io_class = types.enum ["best-effort" "idle" "realtime"];
+    io_priority = types.integer {
+      minimum = 0;
+      maximum = 7;
+    };
+  } [];
+  scheduling = request schedulingFeature;
+
+  resourcesFeature = feature {
+    open_files = resourceQuantity;
+    processes = resourceQuantity;
+    tasks = resourceQuantity;
+    locked_memory_bytes = resourceQuantity;
+    memory_high_bytes = resourceQuantity;
+    memory_max_bytes = resourceQuantity;
+  } [];
+  resources = request resourcesFeature;
+
+  managedDirectory = types.record {
+    fields = {
+      name = localKey;
+      purpose = types.enum ["cache" "logs" "runtime" "state"];
+      mode = types.fileMode;
+      retention = types.enum ["service-lifetime" "restart" "persistent"];
+    };
+  };
+  directoriesFeature = feature {
+    managed = types.list {
+      element = managedDirectory;
+      maxItems = 256;
+    };
+  } [];
+  directories = request directoriesFeature;
+
+  activationBinding = types.record {
+    fields = {
+      name = localKey;
+      resource = types.deferredResult types.resourceReference;
+      relationship = types.enum ["dependency" "membership" "trigger"];
+    };
+  };
+  activationFeature = feature {
+    bindings = types.list {
+      element = activationBinding;
+      maxItems = 256;
+    };
+  } [];
+  activation = request activationFeature;
 
   credentialView = types.record {
     fields = {
@@ -562,6 +835,120 @@
     };
   };
 
+  calendarSchedule = types.record {
+    fields = {
+      kind = types.enum ["calendar"];
+      expression = boundedString 4096;
+    };
+  };
+  intervalSchedule = types.record {
+    fields = {
+      kind = types.enum ["interval"];
+      initial_delay_millis = durationMillis;
+      interval_millis = positiveDurationMillis;
+    };
+  };
+  schedule = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      calendar = calendarSchedule;
+      interval = intervalSchedule;
+    };
+  };
+  scheduledActivation = types.record {
+    fields = {
+      name = localKey;
+      enabled = types.boolean;
+      schedule = schedule;
+      persistent = types.boolean;
+      randomized_delay_millis = durationMillis;
+    };
+  };
+
+  watchedPath = types.record {
+    fields = {
+      path = types.deferredResult executionPath;
+      event = types.enum ["changed" "created" "directory-not-empty" "exists" "modified"];
+    };
+  };
+  pathActivation = types.record {
+    fields = {
+      name = localKey;
+      enabled = types.boolean;
+      paths = types.list {
+        element = watchedPath;
+        maxItems = 256;
+      };
+    };
+  };
+
+  mountResource = types.record {
+    fields = {
+      name = localKey;
+      enabled = types.boolean;
+      source = types.deferredResult storagePath;
+      destination = types.deferredResult executionPath;
+      filesystem = {
+        type = types.optional localKey;
+        optional = true;
+      };
+      options = types.list {
+        element = boundedString 1024;
+        maxItems = 256;
+      };
+      timeout_millis = {
+        type = types.optional positiveDurationMillis;
+        optional = true;
+      };
+    };
+  };
+  automountResource = types.record {
+    fields = {
+      name = localKey;
+      enabled = types.boolean;
+      destination = types.deferredResult executionPath;
+      idle_timeout_millis = {
+        type = types.optional positiveDurationMillis;
+        optional = true;
+      };
+    };
+  };
+  swapResource = types.record {
+    fields = {
+      name = localKey;
+      enabled = types.boolean;
+      source = types.deferredResult storagePath;
+      priority = {
+        type = types.optional (types.integer {
+          minimum = -1;
+          maximum = 32767;
+        });
+        optional = true;
+      };
+    };
+  };
+  activationGroup = types.record {
+    fields = {
+      name = localKey;
+      enabled = types.boolean;
+      description = boundedString 1024;
+      members = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+    };
+  };
+  devicePresence = types.record {
+    fields = {
+      name = localKey;
+      device = types.deferredResult deviceNode;
+      timeout_millis = {
+        type = types.optional positiveDurationMillis;
+        optional = true;
+      };
+    };
+  };
+
   referencedViewFields = {
     name = localKey;
     source = types.deferredResult types.resourceReference;
@@ -664,6 +1051,41 @@
       (types.enum ["aos.ability.group-resolution-observation/v1"])
       groupResolution
       groupName;
+    scheduledActivation =
+      producerObservation
+      (types.enum ["aos.ability.scheduled-activation-observation/v1"])
+      scheduledActivation
+      types.resourceReference;
+    pathActivation =
+      producerObservation
+      (types.enum ["aos.ability.path-activation-observation/v1"])
+      pathActivation
+      types.resourceReference;
+    mountResource =
+      producerObservation
+      (types.enum ["aos.ability.mount-resource-observation/v1"])
+      mountResource
+      types.resourceReference;
+    automountResource =
+      producerObservation
+      (types.enum ["aos.ability.automount-resource-observation/v1"])
+      automountResource
+      types.resourceReference;
+    swapResource =
+      producerObservation
+      (types.enum ["aos.ability.swap-resource-observation/v1"])
+      swapResource
+      types.resourceReference;
+    activationGroup =
+      producerObservation
+      (types.enum ["aos.ability.activation-group-observation/v1"])
+      activationGroup
+      types.resourceReference;
+    devicePresence =
+      producerObservation
+      (types.enum ["aos.ability.device-presence-observation/v1"])
+      devicePresence
+      deviceNode;
   };
 
   serviceDeclaration = types.record {
@@ -675,12 +1097,56 @@
           type = types.optional dependenciesFeature;
           optional = true;
         };
+        conditions = {
+          type = types.optional conditionsFeature;
+          optional = true;
+        };
+        instantiation = {
+          type = types.optional instantiationFeature;
+          optional = true;
+        };
+        supervision = {
+          type = types.optional supervisionFeature;
+          optional = true;
+        };
         readiness = {
           type = types.optional readinessFeature;
           optional = true;
         };
         reload = {
           type = types.optional reloadFeature;
+          optional = true;
+        };
+        termination = {
+          type = types.optional terminationFeature;
+          optional = true;
+        };
+        watchdog = {
+          type = types.optional watchdogFeature;
+          optional = true;
+        };
+        start_policy = {
+          type = types.optional startPolicyFeature;
+          optional = true;
+        };
+        failure_policy = {
+          type = types.optional failurePolicyFeature;
+          optional = true;
+        };
+        scheduling = {
+          type = types.optional schedulingFeature;
+          optional = true;
+        };
+        resources = {
+          type = types.optional resourcesFeature;
+          optional = true;
+        };
+        directories = {
+          type = types.optional directoriesFeature;
+          optional = true;
+        };
+        activation = {
+          type = types.optional activationFeature;
           optional = true;
         };
         credentials = {
@@ -747,8 +1213,19 @@
       };
     };
     dependencies = observationFor "dependencies" dependencies featureState {};
+    conditions = observationFor "conditions" conditions featureState {};
+    instantiation = observationFor "instantiation" instantiation featureState {};
+    supervision = observationFor "supervision" supervision featureState {};
     readiness = observationFor "readiness" readiness lifecycleState {};
     reload = observationFor "reload" reload featureState {available = types.boolean;};
+    termination = observationFor "termination" termination featureState {};
+    watchdog = observationFor "watchdog" watchdog featureState {};
+    startPolicy = observationFor "start-policy" startPolicy featureState {};
+    failurePolicy = observationFor "failure-policy" failurePolicy featureState {};
+    scheduling = observationFor "scheduling" scheduling featureState {};
+    resources = observationFor "resources" resources featureState {};
+    directories = observationFor "directories" directories featureState {};
+    activation = observationFor "activation" activation featureState {};
     credentials = observationFor "credentials" credentials featureState {};
     configuration = observationFor "configuration" configuration featureState {};
     storage = observationFor "storage" storage featureState {};
@@ -786,13 +1263,31 @@ in {
     rootDirectoryView
     principalResolution
     groupResolution
+    scheduledActivation
+    pathActivation
+    mountResource
+    automountResource
+    swapResource
+    activationGroup
+    devicePresence
     producerObservations
     structuredConfigurationSource
     structuredDocumentValid
     lifecycle
     dependencies
+    conditions
+    instantiation
+    supervision
     readiness
     reload
+    termination
+    watchdog
+    startPolicy
+    failurePolicy
+    scheduling
+    resources
+    directories
+    activation
     credentials
     configuration
     storage
