@@ -14,7 +14,17 @@
       pkgs.aos-storage-format-provider
       pkgs.aos-zfs-provider
     ];
-    extraModules = [{aos.filesystems.zfs.enable = true;}];
+    extraModules = [{
+      aos.filesystems.zfs = {
+        enable = true;
+        systemState = false;
+        datasets."srv/data" = {
+          mountPoint = "/srv/data";
+          quota = "16G";
+          compression = "zstd-7";
+        };
+      };
+    }];
   };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
@@ -33,5 +43,8 @@ in
   == resultOf "cryptsetup:encrypted-swap-format" "formatted-path";
   assert !(config.systemd.services ? cryptswap);
   assert requests ? "aos-zfs-provider:pool";
+  assert requests ? "aos-zfs-provider:dataset-${builtins.substring 0 32 (builtins.hashString "sha256" "srv/data")}";
+  assert requests."aos-zfs-provider:dataset-${builtins.substring 0 32 (builtins.hashString "sha256" "srv/data")}".parameters.properties.quota == "16G";
+  assert lib.hasInfix "/dev/disk/by-partlabel/var  /var  ext4" config.environment.etc.fstab.text;
   assert !(config.systemd.services ? "zfs-import");
   assert !(config.systemd.services ? "zfs-mount"); true

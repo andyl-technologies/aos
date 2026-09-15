@@ -1,5 +1,6 @@
 //! OpenZFS-backed storage-pool import resources.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, ensure};
@@ -27,6 +28,7 @@ struct Desired {
     enabled: bool,
     pool: String,
     import_policy: ImportPolicy,
+    properties: BTreeMap<String, String>,
     prerequisites: Vec<ResourceReference>,
 }
 
@@ -56,6 +58,7 @@ struct Marker {
     schema: String,
     revision: RevisionId,
     pool: String,
+    properties: BTreeMap<String, String>,
     pending: bool,
 }
 
@@ -108,8 +111,18 @@ impl Backend for ZfsPoolBackend {
         validate_context(&context)?;
         let marker = read_marker(target)?;
         let imported = is_imported(&context.zpool, &desired_value.pool)?;
-        let (state_name, ready, released) =
-            classify(&desired_value, revision, marker.as_ref(), imported);
+        let properties = inspect_properties(
+            &context.zpool,
+            &desired_value.pool,
+            desired_value.properties.keys().map(String::as_str),
+        )?;
+        let (state_name, ready, released) = classify(
+            &desired_value,
+            revision,
+            marker.as_ref(),
+            imported,
+            &properties,
+        );
         let evidence = ability_value(json!({
             "schema": OBSERVATION_SCHEMA,
             "expected": desired.as_json(),
@@ -154,6 +167,7 @@ impl Backend for ZfsPoolBackend {
             schema: MARKER_SCHEMA.into(),
             revision,
             pool: desired.pool.clone(),
+            properties: desired.properties.clone(),
             pending: true,
         };
         write_marker(target, &pending)?;
@@ -163,6 +177,21 @@ impl Backend for ZfsPoolBackend {
                 &["import", "-N", "-f", "--", &desired.pool],
                 remaining_millis,
             )?;
+        }
+        let observed = inspect_properties(
+            &context.zpool,
+            &desired.pool,
+            desired.properties.keys().map(String::as_str),
+        )?;
+        for (name, value) in &desired.properties {
+            if observed.get(name) != Some(value) {
+                let assignment = format!("{name}={value}");
+                run_success(
+                    &context.zpool,
+                    &["set", &assignment, "--", &desired.pool],
+                    remaining_millis,
+                )?;
+            }
         }
         write_marker(
             target,
@@ -201,10 +230,14 @@ fn classify(
     revision: RevisionId,
     marker: Option<&Marker>,
     imported: bool,
+    properties: &BTreeMap<String, String>,
 ) -> (&'static str, bool, bool) {
-    let exact_marker =
-        marker.is_some_and(|marker| marker.revision == revision && marker.pool == desired.pool);
-    let ready = desired.enabled && imported && exact_marker;
+    let exact_marker = marker.is_some_and(|marker| {
+        marker.revision == revision
+            && marker.pool == desired.pool
+            && marker.properties == desired.properties
+    });
+    let ready = desired.enabled && imported && exact_marker && properties == &desired.properties;
     let released = marker.is_none();
     let state = if ready {
         "ready"
@@ -216,6 +249,60 @@ fn classify(
         "drifted"
     };
     (state, ready, released)
+}
+
+fn inspect_properties<'a>(
+    zpool: &Executable,
+    pool: &str,
+    names: impl Iterator<Item = &'a str>,
+) -> Result<BTreeMap<String, String>> {
+    let names = names.collect::<Vec<_>>();
+    if names.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let fields = names.join(",");
+    let output = zpool.run(
+        &[
+            "get",
+            "-H",
+            "-p",
+            "-o",
+            "property,value",
+            &fields,
+            "--",
+            pool,
+        ],
+        5_000,
+    )?;
+    ensure!(
+        output.status.success(),
+        "zpool property inspection failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).context("decoding zpool property output")?;
+    let mut properties = BTreeMap::new();
+    for line in stdout.lines() {
+        let (name, value) = line
+            .split_once('\t')
+            .context("zpool property output is malformed")?;
+        ensure!(
+            names.contains(&name),
+            "zpool returned an unrequested property"
+        );
+        ensure!(
+            properties
+                .insert(name.to_string(), value.to_string())
+                .is_none(),
+            "zpool repeated a requested property"
+        );
+    }
+    ensure!(
+        properties.len() == names.len(),
+        "zpool omitted requested properties"
+    );
+    Ok(properties)
 }
 
 fn is_imported(zpool: &Executable, pool: &str) -> Result<bool> {
@@ -238,6 +325,26 @@ fn validate_desired(desired: &Desired) -> Result<()> {
         !desired.name.is_empty() && desired.name.len() <= 128,
         "storage-pool request name is invalid"
     );
+    validate_properties(&desired.properties)?;
+    Ok(())
+}
+
+fn validate_properties(properties: &BTreeMap<String, String>) -> Result<()> {
+    ensure!(properties.len() <= 256, "too many storage-pool properties");
+    for (name, value) in properties {
+        ensure!(
+            !name.is_empty()
+                && name.len() <= 255
+                && !name.bytes().any(|byte| byte.is_ascii_control()),
+            "storage-pool property name is invalid"
+        );
+        ensure!(
+            !value.is_empty()
+                && value.len() <= 4096
+                && !value.bytes().any(|byte| byte.is_ascii_control()),
+            "storage-pool property value is invalid"
+        );
+    }
     Ok(())
 }
 
@@ -277,6 +384,7 @@ fn read_marker(target: &ResourceReference) -> Result<Option<Marker>> {
         "unsupported storage-pool marker"
     );
     validate_pool_name(&marker.pool)?;
+    validate_properties(&marker.properties)?;
     Ok(Some(marker))
 }
 
@@ -318,6 +426,7 @@ mod tests {
             enabled: true,
             pool: "aos-pool".into(),
             import_policy: ImportPolicy::Force,
+            properties: BTreeMap::new(),
             prerequisites: vec![],
         }
     }
@@ -325,7 +434,13 @@ mod tests {
     #[test]
     fn ambient_import_is_unmanaged() {
         assert_eq!(
-            classify(&desired(), revision(b"desired"), None, true),
+            classify(
+                &desired(),
+                revision(b"desired"),
+                None,
+                true,
+                &BTreeMap::new()
+            ),
             ("unmanaged", false, true)
         );
     }
@@ -336,11 +451,45 @@ mod tests {
             schema: MARKER_SCHEMA.into(),
             revision: revision(b"desired"),
             pool: "aos-pool".into(),
+            properties: BTreeMap::new(),
             pending: true,
         };
         assert_eq!(
-            classify(&desired(), revision(b"desired"), Some(&marker), true),
+            classify(
+                &desired(),
+                revision(b"desired"),
+                Some(&marker),
+                true,
+                &BTreeMap::new()
+            ),
             ("ready", true, false)
+        );
+    }
+
+    #[test]
+    fn changed_pool_property_requires_reconciliation() {
+        let mut desired = desired();
+        desired
+            .properties
+            .insert("dedup_table_quota".into(), "2G".into());
+        let marker = Marker {
+            schema: MARKER_SCHEMA.into(),
+            revision: revision(b"desired"),
+            pool: "aos-pool".into(),
+            properties: desired.properties.clone(),
+            pending: false,
+        };
+        let observed = BTreeMap::from([("dedup_table_quota".into(), "1G".into())]);
+
+        assert_eq!(
+            classify(
+                &desired,
+                revision(b"desired"),
+                Some(&marker),
+                true,
+                &observed
+            ),
+            ("drifted", false, false)
         );
     }
 }
