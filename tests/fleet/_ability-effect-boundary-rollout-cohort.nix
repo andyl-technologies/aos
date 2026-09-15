@@ -173,7 +173,6 @@ in {
       IP = "${pkgs.iproute2}/sbin/ip"
       SS = "${pkgs.iproute2}/sbin/ss"
       NFT = "${pkgs.nftables}/sbin/nft"
-      PG_ISREADY = "${pkgs.postgresql}/bin/pg_isready"
       KUBECTL = "${pkgs.kubectl}/bin/kubectl"
       OD = "${pkgs.coreutils}/bin/od"
       DATE = "${pkgs.coreutils}/bin/date"

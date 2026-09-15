@@ -328,15 +328,12 @@
       "ability-native-adapter-matrix"
       "ability-native-image-rollout"
       "ability-native-kubernetes"
-      "ability-native-postgresql"
       "ability-native-recovery"
     ]);
   containerExecutionMatrix = import ../../qualification/modules/_container-execution-matrix.nix {inherit lib;};
   nativeAdapterSurface = nativeAdapterMatrix.spec.surface;
   providerContract = adapterName:
     (builtins.head (builtins.filter (adapter: adapter.adapter == adapterName) nativeAdapterSurface.adapters)).provider_contract;
-  postgresqlAbilityContract = import ../../pkgs/storage/_postgresql-ability/contract.nix {inherit lib;};
-  postgresqlExport = postgresqlAbilityContract.postgresqlExport postgresqlAbilityContract.compatibleStateFormat;
   rolloutPackageContract = import ../abilities/reference-image-rollout/package.nix {
     inherit lib;
     mkDerivation = arguments: arguments;
@@ -509,17 +506,6 @@ in
     "object-update-removal-and-retained-owner-evidence"
     "bounded-bootstrap-planning-rejections-before-effect-construction"
   ];
-  assert abilityRequirements.ability-native-postgresql.regressions
-  == ["checks.fleet.ability-native-postgresql"];
-  assert abilityRequirements.ability-native-postgresql.checks
-  == [
-    "authenticated-provider-bindings-and-exact-handler-artifacts"
-    "exact-seven-operation-ten-edge-provisioning-graph"
-    "runtime-output-data-flow-and-schema-valid-observations"
-    "loopback-sql-readiness-and-enforced-non-loopback-denial"
-    "stopped-divergent-and-child-drift-reconciliation"
-    "exact-six-operation-five-edge-teardown-and-persistent-retention"
-  ];
   assert abilityRequirements.ability-native-recovery.regressions
   == [
     "checks.fleet.ability-initrd-activation"
@@ -541,7 +527,6 @@ in
     "checks.fleet.ability-native-foreground-container"
     "checks.fleet.ability-native-image-rollout"
     "checks.fleet.ability-native-kubernetes"
-    "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
@@ -560,13 +545,6 @@ in
   assert builtins.all (id: !builtins.elem id inapplicableNativeIds) applicableNativeIds;
   assert partitionedNativeIds == map (cell: cell.id) nativeCells;
   assert nativeAdapterMatrix.spec.applicability == nativeAdapterMatrix.applicability;
-  assert (providerContract "postgresql")
-  == {
-    resource_lifetime = "persistent";
-    state_format = postgresqlAbilityContract.compatibleStateFormat;
-  };
-  assert postgresqlExport.outputs.clusters.lifetime == "persistent";
-  assert postgresqlExport.state_format == (providerContract "postgresql").state_format;
   assert (providerContract "image-rollout")
   == {
     resource_lifetime = "persistent";
@@ -673,11 +651,6 @@ in
     regressions = abilityRequirements.ability-native-adapter-matrix.regressions ++ ["checks.fleet.foreign"];
   };
   assert rejectsNativeMatrix {
-    regressions =
-      builtins.filter (regression: regression != "checks.fleet.ability-native-postgresql")
-      abilityRequirements.ability-native-adapter-matrix.regressions;
-  };
-  assert rejectsNativeMatrix {
     cells = replaceFirstNativeCell (firstNativeCell
       // {
         interface = firstNativeCell.interface // {abi = 2;};
@@ -778,7 +751,6 @@ in
     "ability-native-adapter-matrix"
     "ability-native-image-rollout"
     "ability-native-kubernetes"
-    "ability-native-postgresql"
     "ability-native-recovery"
     "claim-container-x86_64-linux-functional"
     "claim-container-x86_64-linux-qualified"

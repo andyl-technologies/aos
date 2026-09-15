@@ -8,7 +8,6 @@ mod artifact_consumption_fixture;
 mod foreground_process_fixture;
 mod initrd_contract_fixture;
 mod kubernetes_activation_fixture;
-mod postgresql_activation_fixture;
 mod provider_state_transfer_fixture;
 mod rollout_activation_fixture;
 
@@ -95,10 +94,6 @@ async fn main() -> Result<()> {
         }
         Some("foreground-process") => foreground_process_fixture::run(&arguments[1..]),
         Some("kubernetes-activation") => kubernetes_activation_fixture::generate(&arguments[1..]),
-        Some("postgresql-activation") => postgresql_activation_fixture::generate(&arguments[1..]),
-        Some("postgresql-terminal-activation") => {
-            postgresql_activation_fixture::generate_terminal(&arguments[1..])
-        }
         Some("rollout-activation") => rollout_activation_fixture::generate(&arguments[1..]),
         Some("rollout-foreign-map-audit") => {
             rollout_activation_fixture::audit_foreign_map(&arguments[1..])
@@ -108,9 +103,6 @@ async fn main() -> Result<()> {
         }
         Some("kubernetes-authority-provision") => {
             kubernetes_activation_fixture::provision_authority(&arguments[1..])
-        }
-        Some("postgresql-authority-provision") => {
-            postgresql_activation_fixture::provision_authority(&arguments[1..])
         }
         Some("provider-state-transfer-contract") => {
             provider_state_transfer_fixture::inspect(&arguments[1..])

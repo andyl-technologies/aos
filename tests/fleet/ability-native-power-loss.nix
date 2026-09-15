@@ -13,10 +13,6 @@
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
   };
-  postgresqlFixture = import ./_postgresql-runtime-reference.nix {
-    inherit lib mkSystem pkgs;
-    guestTools = qualificationImage;
-  };
   kubernetesFixture = import ./_kubernetes-runtime-reference.nix {
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
@@ -26,7 +22,6 @@
   };
   selectedPackageEntries =
     fixture.orderedPackages
-    ++ postgresqlFixture.orderedPackages
     ++ kubernetesFixture.orderedPackages
     ++ imageRolloutFixture.orderedPackages;
   selectedPackages = builtins.attrValues (builtins.listToAttrs (map (entry: {

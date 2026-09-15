@@ -121,7 +121,6 @@ in {
       IP = "${pkgs.iproute2}/sbin/ip"
       SS = "${pkgs.iproute2}/sbin/ss"
       NFT = "${pkgs.nftables}/sbin/nft"
-      PG_ISREADY = "${pkgs.postgresql}/bin/pg_isready"
       KUBECTL = "${pkgs.kubectl}/bin/kubectl"
 
       EFFECT_EVIDENCE = types.ModuleType("ability_effect_boundary_evidence")

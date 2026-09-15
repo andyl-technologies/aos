@@ -39,7 +39,6 @@ ORACLE_KINDS = {
     "managed-configuration": "managed-file",
     "network-endpoint": "loopback-listener",
     "nginx-validation": "nginx-association",
-    "postgresql": "postgresql-cluster",
     "systemd-bootstrap": "systemd-unit",
     "systemd-manager": "systemd-unit",
     "service-management": "systemd-unit",

@@ -36,22 +36,12 @@ PROVIDER_ORACLES = {
         "live": "filesystem",
     },
     "network-endpoint": {
-        "roots": [
-            "/var/lib/aos/ability-runtime/endpoints",
-            "/run/aos-ability-postgresql",
-        ],
+        "roots": ["/var/lib/aos/ability-runtime/endpoints"],
         "live": "network",
     },
     "nginx-validation": {
         "roots": ["/var/lib/aos/ability-runtime/nginx"],
         "live": "filesystem",
-    },
-    "postgresql": {
-        "roots": [
-            "/var/lib/aos/ability-runtime/postgresql",
-            "/run/aos-ability-postgresql",
-        ],
-        "live": "postgresql",
     },
     "systemd-bootstrap": {
         "roots": ["/etc/aos/ability-revisions"],
@@ -275,8 +265,6 @@ def live_observation(adapter: str, operation: dict[str, Any]) -> dict[str, Any]:
         return systemd_snapshot(operation, documents)
     if kind == "kubernetes":
         return kubernetes_snapshot(operation)
-    if kind == "postgresql":
-        return postgresql_snapshot(operation, documents)
     if kind == "rollout":
         return rollout_snapshot(operation, documents)
     if kind == "foreground-process":
@@ -320,7 +308,6 @@ def exact_filesystem_snapshot(
     observable_prefixes = (
         "/boot/loader/entries/",
         "/etc/aos/ability-revisions/",
-        "/run/aos-ability-postgresql/",
         "/var/lib/aos/",
         "/var/lib/profiles/image/ability-rollouts/",
     )
@@ -455,47 +442,6 @@ def kubernetes_snapshot(operation: dict[str, Any]) -> dict[str, Any]:
         },
         "api-document-digest": hashlib.sha256(encoded_api_document).hexdigest(),
         "api-document": api_document,
-    }
-
-
-def postgresql_snapshot(
-    operation: dict[str, Any], documents: list[tuple[str, Any]]
-) -> dict[str, Any]:
-    """Reads owned cluster files and asks the live PostgreSQL servers for status."""
-
-    sockets = []
-    for _, document in documents:
-        details = document.get("details") if isinstance(document, dict) else None
-        if not isinstance(details, dict):
-            continue
-        run_path = details.get("run_path")
-        server_port = details.get("server_port")
-        if (
-            isinstance(run_path, str)
-            and run_path.startswith("/run/aos-ability-postgresql/")
-            and isinstance(server_port, int)
-            and 1 <= server_port <= 65535
-        ):
-            sockets.append(f"{run_path}/.s.PGSQL.{server_port}")
-    sockets = sorted(set(sockets))
-    readiness = []
-    for socket in sockets:
-        path = str(PurePosixPath(socket).parent)
-        port = PurePosixPath(socket).name.rsplit(".", 1)[-1]
-        readiness.append(
-            {
-                "socket": socket,
-                "status": runtime.succeed(
-                    f"{PG_ISREADY} -h {shlex.quote(path)} -p {shlex.quote(port)} "
-                    "2>&1 || true"
-                ).strip(),
-            }
-        )
-    return {
-        "kind": "postgresql",
-        "filesystem": exact_filesystem_snapshot(operation, documents),
-        "readiness": readiness,
-        "input-digest": hashlib.sha256(canonical(operation["inputs"])).hexdigest(),
     }
 
 

@@ -441,7 +441,6 @@
     "ability-native-adapter-matrix"
     "ability-native-image-rollout"
     "ability-native-kubernetes"
-    "ability-native-postgresql"
     "ability-native-recovery"
   ];
   qualificationRequirementChecks = scenarioId:
@@ -478,37 +477,11 @@
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/reject-foreign-resource-mutation"
     "service-management/aos.service-management/abi-1/reload/block-dependent-effect"
   ];
-  nativePostgresqlReplacementCohort = import ./tests/fleet/ability-native-postgresql.nix {
-    inherit lib mkSystem pkgs;
-    qualificationImage = true;
-  };
-  nativePostgresqlReplacementCells = [
-    "postgresql/aos.postgresql-effects/abi-1/materialize/adopt-compatible-state"
-    "postgresql/aos.postgresql-effects/abi-1/materialize/reject-unsupported-transfer"
-    "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result"
-    "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target"
-    "postgresql/aos.postgresql-effects/abi-1/materialize/activate-retained-target"
-    "postgresql/aos.postgresql-effects/abi-1/observe/adopt-compatible-state"
-    "postgresql/aos.postgresql-effects/abi-1/observe/activate-retained-target"
-    "postgresql/aos.postgresql-effects/abi-1/restart/adopt-compatible-state"
-    "postgresql/aos.postgresql-effects/abi-1/start/adopt-compatible-state"
-    "postgresql/aos.postgresql-effects/abi-1/stop/adopt-compatible-state"
-    "postgresql/aos.postgresql-effects/abi-1/observe/reject-unsupported-transfer"
-    "postgresql/aos.postgresql-effects/abi-1/restart/reject-unsupported-transfer"
-    "postgresql/aos.postgresql-effects/abi-1/start/reject-unsupported-transfer"
-    "postgresql/aos.postgresql-effects/abi-1/stop/reject-unsupported-transfer"
-    "postgresql/aos.postgresql-effects/abi-1/start/activate-retained-target"
-    "postgresql/aos.postgresql-effects/abi-1/stop/activate-retained-target"
-  ];
   nativeEffectBoundaryCells = import ./tests/fleet/_ability-effect-boundary-cells.nix {
     inherit lib;
     matrix = nativeAdapterMatrix;
   };
   nativeEffectReferenceCohort = import ./tests/fleet/ability-native-effect-boundaries-reference.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
-  nativeEffectPostgresqlCohort = import ./tests/fleet/ability-native-effect-boundaries-postgresql.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
@@ -580,10 +553,6 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-  nativeCancellationPostgresqlCohort = import ./tests/fleet/ability-native-cancellation-postgresql.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
   nativeCancellationSystemdCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
@@ -607,10 +576,6 @@
     matrix = nativeAdapterMatrix;
   };
   nativeProviderNegativeReference = import ./tests/fleet/ability-native-provider-negative-reference.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
-  nativeProviderNegativePostgresql = import ./tests/fleet/ability-native-provider-negative-postgresql.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
@@ -705,16 +670,13 @@
       ++ nativeAdapterRoleCells
       ++ nativeAdapterReplacementCells
       ++ nativeAdapterFailureControlCells
-      ++ nativePostgresqlReplacementCells
       ++ nativeEffectBoundaryCells.groups.reference
       ++ nativeEffectBoundaryCells.groups.systemdManager
-      ++ nativeEffectBoundaryCells.groups.postgresql
       ++ nativeEffectBoundaryCells.groups.kubernetes
       ++ nativeEffectBoundaryCells.groups.rollout
       ++ nativeEffectBoundaryCells.groups.foreground
       ++ nativeProviderStateCells.all
       ++ nativeCancellationKubernetesCells
-      ++ nativeCancellationCells.groups.postgresql
       ++ nativeCancellationSystemdCells
       ++ nativeCancellationCells.groups.reference
       ++ nativeCancellationCells.groups.foreground
@@ -760,22 +722,10 @@
       matrixAdditionalCohorts =
         [
           {
-            id = "postgresql-provider-replacement";
-            qualifiedCells = nativePostgresqlReplacementCells;
-            inherit (nativePostgresqlReplacementCohort) testScript;
-            inherit (nativePostgresqlReplacementCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-          {
             id = "provider-effect-boundaries-reference";
             qualifiedCells = nativeEffectBoundaryCells.groups.reference ++ nativeEffectBoundaryCells.groups.systemdManager;
             inherit (nativeEffectReferenceCohort) testScript;
             inherit (nativeEffectReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-          {
-            id = "provider-effect-boundaries-postgresql";
-            qualifiedCells = nativeEffectBoundaryCells.groups.postgresql;
-            inherit (nativeEffectPostgresqlCohort) testScript;
-            inherit (nativeEffectPostgresqlCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "provider-effect-boundaries-kubernetes";
@@ -832,12 +782,6 @@
             inherit (nativeCancellationKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
-            id = "provider-cancellation-postgresql";
-            qualifiedCells = nativeCancellationCells.groups.postgresql;
-            inherit (nativeCancellationPostgresqlCohort) testScript;
-            inherit (nativeCancellationPostgresqlCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-          {
             id = "provider-cancellation-systemd";
             qualifiedCells = nativeCancellationSystemdCells;
             inherit (nativeCancellationSystemdCohort) testScript;
@@ -869,12 +813,6 @@
             qualifiedCells = nativeProviderNegativeCells.groups.reference;
             inherit (nativeProviderNegativeReference) testScript;
             inherit (nativeProviderNegativeReference.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-          {
-            id = "provider-negative-postgresql";
-            qualifiedCells = nativeProviderNegativeCells.groups.postgresql;
-            inherit (nativeProviderNegativePostgresql) testScript;
-            inherit (nativeProviderNegativePostgresql.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "provider-negative-foreground";
@@ -912,10 +850,6 @@
       mkNativeAbilityScenario
       "ability-native-kubernetes"
       ./tests/fleet/ability-native-kubernetes.nix;
-    ability-native-postgresql =
-      mkNativeAbilityScenario
-      "ability-native-postgresql"
-      ./tests/fleet/ability-native-postgresql.nix;
     ability-native-recovery =
       mkNativeAbilityScenario
       "ability-native-recovery"
@@ -2199,7 +2133,6 @@ in {
         "ability-native-activation"
         "ability-native-image-rollout"
         "ability-native-kubernetes"
-        "ability-native-postgresql"
         "ability-native-power-loss"
         "apm-desired-sequencing"
         "apm-sysroot-lock"

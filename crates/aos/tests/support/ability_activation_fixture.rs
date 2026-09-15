@@ -6,10 +6,10 @@
 //! desired and policy documents used by the VM activation path.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
-use std::io::Write as _;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read as _, Write as _};
 use std::num::NonZeroU32;
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -27,8 +27,8 @@ use aos_ability_model::document::{
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
     ContributionPermission, DesiredStateDocument, EnvironmentDocument, EnvironmentId,
-    ExecutionStage, InstanceId, InterfaceDescriptor, InterfaceDocument,
-    InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor, MethodSemantics,
+    ExecutionStage, InstanceId, InterfaceDescriptor, InterfaceDocument, InterfaceKey,
+    InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor, MethodSemantics,
     OutcomeSemantics, OutputDescriptor, PackageDocument, ProviderImplementation,
     ProviderImplementationReference, RequiredFeature, ResourceId, ResourceLifetime,
     ResourcePermission, RevisionId, ScopePath, StringConstraint, StringSyntax, ValuePhase,
@@ -63,6 +63,8 @@ use aos_package::types::ProfileScope;
 use serde::{Deserialize, Serialize};
 
 const CREDENTIAL_SOURCE_ROOT: &str = "/var/lib/aos/ability-runtime/credential-sources";
+const MAX_CREDENTIAL_RECORD_BYTES: u64 = 64 * 1024;
+const MAX_CREDENTIAL_SECRET_BYTES: u64 = 64 * 1024;
 const MAX_TLS_BUNDLE_BYTES: u64 = 64 * 1024;
 
 const PACKAGE_NAMES: [&str; 6] = [
@@ -383,7 +385,270 @@ pub(super) fn provision_authority(arguments: &[String]) -> Result<()> {
     let staging = path
         .parent()
         .context("operator policy authority record has no staging directory")?;
-    super::postgresql_activation_fixture::provision_credential_authority(staging)
+    provision_credential_authority(staging)
+}
+
+fn provision_credential_authority(staging: &Path) -> Result<()> {
+    let credential_staging = staging.join("credential-sources");
+    if !credential_staging.try_exists()? {
+        return Ok(());
+    }
+
+    ensure_protected_directory(Path::new(CREDENTIAL_SOURCE_ROOT), false)?;
+    for resource_directory in strict_directories(&credential_staging)? {
+        let resource_digest = canonical_hex_name(&resource_directory, "credential resource")?;
+        let destination = Path::new(CREDENTIAL_SOURCE_ROOT).join(&resource_digest);
+        ensure_protected_directory(&destination, true)?;
+        let files = regular_files(&resource_directory)?;
+        let records = files.iter().filter(|path| {
+            path.extension().and_then(|extension| extension.to_str()) == Some("json")
+        });
+
+        for record_path in records {
+            provision_credential_source(record_path, &resource_digest, &destination)?;
+        }
+    }
+    Ok(())
+}
+
+fn provision_credential_source(
+    record_path: &Path,
+    resource_digest: &str,
+    destination: &Path,
+) -> Result<()> {
+    let stem = record_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .context("credential source record has no UTF-8 stem")?;
+    ensure!(
+        canonical_hex(stem),
+        "credential source key is not canonical"
+    );
+
+    let bytes = read_protected_staging_file(record_path, MAX_CREDENTIAL_RECORD_BYTES)?;
+    let record: CredentialSourceRecord =
+        aos_contract::canonical::from_slice(&bytes, "credential source record")?;
+    ensure!(
+        aos_contract::canonical::to_vec(&record)? == bytes,
+        "credential source record is not exact canonical JSON"
+    );
+    let expected_resource =
+        Sha256Digest::of_canonical("aos.ability.native-host-resource/v1", &record.resource)?.hex();
+    ensure!(
+        expected_resource == resource_digest,
+        "credential source resource directory differs from its record"
+    );
+    let expected_source = Sha256Digest::of_canonical(
+        "aos.ability.credential-source-key/v1",
+        &CredentialSourceKey {
+            resource: &record.resource,
+            version: &record.version,
+        },
+    )?
+    .hex();
+    ensure!(
+        expected_source == stem,
+        "credential source key differs from its record"
+    );
+
+    let secret_path = record_path.with_extension("secret");
+    let secret = read_protected_staging_file(&secret_path, MAX_CREDENTIAL_SECRET_BYTES)?;
+    ensure!(
+        !secret.is_empty()
+            && secret.len() <= MAX_CREDENTIAL_SECRET_BYTES as usize
+            && Sha256Digest::of_bytes(&secret) == record.content_digest,
+        "credential source secret differs from its record"
+    );
+    let final_secret = destination.join(format!("{stem}.secret"));
+    ensure!(
+        record.source_path == final_secret.to_string_lossy(),
+        "credential source record names another final secret path"
+    );
+
+    install_immutable(&final_secret, &secret)?;
+    install_immutable(&destination.join(format!("{stem}.json")), &bytes)
+}
+
+fn regular_files(directory: &Path) -> Result<Vec<PathBuf>> {
+    let metadata = fs::symlink_metadata(directory)
+        .with_context(|| format!("reading fixture directory {}", directory.display()))?;
+    ensure!(
+        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+        "fixture path {} is not a direct directory",
+        directory.display()
+    );
+
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        ensure!(
+            metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
+            "fixture directory {} contains a non-file entry",
+            directory.display()
+        );
+        paths.push(path);
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn strict_directories(directory: &Path) -> Result<Vec<PathBuf>> {
+    let metadata = fs::symlink_metadata(directory)
+        .with_context(|| format!("reading fixture directory {}", directory.display()))?;
+    ensure!(
+        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+        "fixture path {} is not a direct directory",
+        directory.display()
+    );
+
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        ensure!(
+            metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+            "fixture directory {} contains a non-directory entry",
+            directory.display()
+        );
+        paths.push(path);
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn canonical_hex_name(path: &Path, label: &str) -> Result<String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("{label} has no UTF-8 name"))?;
+    ensure!(canonical_hex(name), "{label} is not canonical");
+    Ok(name.to_string())
+}
+
+fn canonical_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn ensure_protected_directory(path: &Path, leaf: bool) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("protected authority directory has no parent")?;
+    ensure_trusted_directory_chain(parent)?;
+    if !path.try_exists()? {
+        if leaf {
+            fs::create_dir(path)?;
+        } else {
+            fs::create_dir_all(path)?;
+        }
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.file_type().is_dir()
+            && !metadata.file_type().is_symlink()
+            && metadata.uid() == 0
+            && metadata.gid() == 0
+            && metadata.mode() & 0o777 == 0o700,
+        "protected authority directory {} has invalid metadata",
+        path.display()
+    );
+    Ok(())
+}
+
+fn ensure_trusted_directory_chain(path: &Path) -> Result<()> {
+    let mut current = PathBuf::from("/");
+    for component in path.components().skip(1) {
+        current.push(component.as_os_str());
+        if !current.try_exists()? {
+            fs::create_dir(&current)?;
+            fs::set_permissions(&current, fs::Permissions::from_mode(0o700))?;
+        }
+        let metadata = fs::symlink_metadata(&current)?;
+        ensure!(
+            metadata.file_type().is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == 0
+                && metadata.gid() == 0
+                && metadata.mode() & 0o022 == 0,
+            "authority parent {} is not a trusted root directory",
+            current.display()
+        );
+    }
+    Ok(())
+}
+
+fn read_protected_staging_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+    let mut options = OpenOptions::new();
+    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.file_type().is_file()
+            && metadata.uid() == 0
+            && metadata.gid() == 0
+            && metadata.mode() & 0o777 == 0o600
+            && metadata.nlink() == 1
+            && metadata.len() <= max_bytes,
+        "credential staging file {} has invalid metadata or size",
+        path.display()
+    );
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= max_bytes,
+        "credential staging file {} exceeds its size bound",
+        path.display()
+    );
+    Ok(bytes)
+}
+
+fn install_immutable(path: &Path, bytes: &[u8]) -> Result<()> {
+    ensure!(
+        bytes.len() as u64 <= MAX_CREDENTIAL_RECORD_BYTES,
+        "authority file exceeds its installation bound"
+    );
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            let installed = read_protected_staging_file(path, MAX_CREDENTIAL_RECORD_BYTES)?;
+            ensure!(
+                installed == bytes,
+                "existing authority file {} differs from staged authority",
+                path.display()
+            );
+            return Ok(());
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.file_type().is_file()
+            && metadata.uid() == 0
+            && metadata.gid() == 0
+            && metadata.mode() & 0o777 == 0o600
+            && metadata.nlink() == 1
+            && metadata.len() == bytes.len() as u64,
+        "new authority file {} has invalid metadata",
+        path.display()
+    );
+    File::open(
+        path.parent()
+            .context("authority destination has no parent directory")?,
+    )?
+    .sync_all()?;
+    Ok(())
 }
 
 pub(super) fn write_operator_authority(

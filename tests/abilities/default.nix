@@ -412,7 +412,6 @@
     inherit (lib) abilities;
   };
   effectPlan = effectFixture.normalized;
-  postgresqlReconciliation = import ./reference-postgresql/reconciliation.nix;
   productionKubernetes = import ./production-kubernetes.nix {
     inherit pkgs lib;
   };
@@ -852,8 +851,6 @@ in
   effectFixture.bootstrap.edges;
   assert !(builtins.head effectFixture.kubernetes.operations ? semantics);
   assert effectFixture.omitted == emptyEffects;
-  assert postgresqlReconciliation.reconcile_stopped == ["materialize" "observe" "start" "stop"];
-  assert postgresqlReconciliation.reconcile_divergent == ["materialize" "observe" "restart" "stop"];
   assert productionKubernetes;
   assert serviceManagement;
   assert systemServiceModules;

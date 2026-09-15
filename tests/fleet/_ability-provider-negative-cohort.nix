@@ -116,7 +116,6 @@ in {
       NFT = "${pkgs.nftables}/sbin/nft"
       FIND = "${pkgs.findutils}/bin/find"
       GREP = "${pkgs.grep}/bin/grep"
-      PG_ISREADY = "${pkgs.postgresql}/bin/pg_isready"
       KUBECTL = "${pkgs.kubectl}/bin/kubectl"
       SOCAT = "${pkgs.socat}/bin/socat"
 
