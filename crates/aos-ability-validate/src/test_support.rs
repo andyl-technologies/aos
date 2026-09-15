@@ -293,6 +293,8 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         .clone();
     let handler = key("observe-handler");
     let terminal_implementation = ProviderImplementation {
+        name: key("terminal"),
+        description: "Terminal test implementation.".to_string(),
         interface: terminal_interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
@@ -330,6 +332,8 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         .interface_key()
         .expect("owner interface digest");
     let owner_implementation = ProviderImplementation {
+        name: key("owner"),
+        description: "State-owning test implementation.".to_string(),
         interface: owner_interface_key.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
@@ -385,11 +389,13 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
             ExportDeclaration {
                 name: key("handler"),
                 interface: terminal_interface.clone(),
+                implementation_name: key("terminal"),
                 implementation: terminal_reference.descriptor,
             },
             ExportDeclaration {
                 name: key("owner"),
                 interface: owner_interface_key.clone(),
+                implementation_name: key("owner"),
                 implementation: owner_reference.descriptor,
             },
         ],
@@ -1018,6 +1024,7 @@ fn interface_document() -> InterfaceDocument {
         schema: InterfaceDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
         interface: InterfaceDescriptor {
+            description: "Describes this declaration.".to_string(),
             name: InterfaceName::new("test.service").expect("valid test interface name"),
             abi: NonZeroU32::new(1).expect("positive test ABI"),
             request: ValueSchema::Boolean,
@@ -1026,6 +1033,7 @@ fn interface_document() -> InterfaceDocument {
             methods: BTreeMap::from([(
                 key("observe"),
                 MethodDescriptor {
+                    description: "Describes this declaration.".to_string(),
                     semantics: MethodSemantics::ordinary(AccessMode::Read),
                     parameters: ValueSchema::Boolean,
                     target_resource: InterfaceName::new("test.service")
@@ -1033,6 +1041,7 @@ fn interface_document() -> InterfaceDocument {
                     outputs: BTreeMap::from([(
                         key("ready"),
                         OutputDescriptor {
+                            description: "Describes this declaration.".to_string(),
                             schema: ValueSchema::Boolean,
                             phase: ValuePhase::Observation,
                             visibility: ValueVisibility::Protected,

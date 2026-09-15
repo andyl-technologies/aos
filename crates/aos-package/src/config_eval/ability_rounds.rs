@@ -852,6 +852,7 @@ mod tests {
                     alias: "lower".to_string(),
                     implementation: "provider:recursive".to_string(),
                     requirement: RequirementDeclaration {
+                        description: "Describes this child requirement.".to_string(),
                         alias: LocalKey::new("lower".to_string()).expect("test requirement alias"),
                         accepted_interfaces: Vec::new(),
                         methods: Vec::new(),

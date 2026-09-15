@@ -7,7 +7,7 @@
 in
   assert builtins.attrNames projection.interfaces == [];
   assert builtins.attrNames projection.implementations == [];
-  assert builtins.attrNames projection.requirements
+  assert builtins.attrNames projection.requirementTemplates
   == [
     "configuration-materialization"
     "host-path-view"
@@ -29,5 +29,4 @@ in
   ];
   assert lib.all
   (requirement: requirement.interface != "" && requirement.methods != [])
-  (builtins.attrValues projection.requirements);
-  true
+  (builtins.attrValues projection.requirementTemplates); true

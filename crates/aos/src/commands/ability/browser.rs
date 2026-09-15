@@ -752,6 +752,7 @@ fn projection_title(projection: ProjectionKind) -> &'static str {
 fn node_kind(node: &NodeKey) -> &'static str {
     match node {
         NodeKey::Interface(_) => "Interface",
+        NodeKey::InterfaceSelector(_) => "Interface selector",
         NodeKey::Package(_) => "Package",
         NodeKey::Request(_) => "Request",
         NodeKey::Binding(_) => "Binding",

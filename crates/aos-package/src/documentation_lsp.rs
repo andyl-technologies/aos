@@ -727,7 +727,7 @@ mod tests {
                 semantic_schema_sha256: String::new(),
                 runtime_nar_hash: format!("sha256:{}", "a".repeat(64)),
                 config_module_nar_hash: None,
-                    expose_artifact_nar_hash: None,
+                expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "b".repeat(64)),
             },
             options: vec![OptionDocument {
@@ -785,7 +785,7 @@ mod tests {
             ability_reference: Some(PackageAbilityReference {
                 schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
                 required_features: vec![
-                    RequiredFeature::new("abilities-v1").expect("valid feature name")
+                    RequiredFeature::new("abilities-v1").expect("valid feature name"),
                 ],
                 package: LocalKey::new("nginx").expect("valid package name"),
                 version: "1".to_string(),
@@ -823,21 +823,27 @@ mod tests {
                 .len()
                 == 1
         );
-        assert!(server
-            .hover("nginx.virtualHosts.site.root", 0, 15)
-            .is_some());
-        assert!(server
-            .diagnostics("nginx.virtualHosts.site.root = \"/srv\";")
-            .is_empty());
+        assert!(
+            server
+                .hover("nginx.virtualHosts.site.root", 0, 15)
+                .is_some()
+        );
+        assert!(
+            server
+                .diagnostics("nginx.virtualHosts.site.root = \"/srv\";")
+                .is_empty()
+        );
         let invalid = server.diagnostics("nginx.virtualHosts.site.missing = true;");
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0]["code"], "aos-unknown-option");
-        assert!(server
-            .definition("nginx.virtualHosts.site.root", 0, 15)
-            .unwrap()["uri"]
-            .as_str()
-            .unwrap()
-            .starts_with("aos-source:///"));
+        assert!(
+            server
+                .definition("nginx.virtualHosts.site.root", 0, 15)
+                .unwrap()["uri"]
+                .as_str()
+                .unwrap()
+                .starts_with("aos-source:///")
+        );
         assert_eq!(
             server
                 .document_links("nginx.virtualHosts.<name>.root = \"/srv\";")
@@ -874,11 +880,13 @@ mod tests {
                 .iter()
                 .any(|limit| limit == "authorization-not-evaluated")
         }));
-        assert!(hints[0]["inspectionDiagnostics"]
-            .as_array()
-            .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| {
-                diagnostic["code"] == "deployment-authorization-not-evaluated"
-            })));
+        assert!(
+            hints[0]["inspectionDiagnostics"]
+                .as_array()
+                .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| {
+                    diagnostic["code"] == "deployment-authorization-not-evaluated"
+                }))
+        );
     }
 
     #[test]
@@ -947,9 +955,11 @@ mod tests {
         assert_eq!(virtual_document["uri"], uri);
         assert_eq!(virtual_document["reference"], resolved["reference"]);
         assert_eq!(virtual_document["selector"], resolved["selector"]);
-        assert!(virtual_document["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("Authenticated manifest")));
+        assert!(
+            virtual_document["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Authenticated manifest"))
+        );
     }
 
     #[test]
@@ -969,9 +979,11 @@ mod tests {
         );
         assert_eq!(unknown.len(), 1);
         assert_eq!(unknown[0]["code"], "aos-ability-missing-reference");
-        assert!(unknown[0]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("loaded authenticated ability catalog")));
+        assert!(
+            unknown[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("loaded authenticated ability catalog"))
+        );
 
         let partial = server.diagnostics(
             r#"lib.abilities.request { interface = "aos.systemd-manager"; abi = 1; request = config.value; }"#,
@@ -1034,9 +1046,11 @@ mod tests {
             key.name, key.abi, key.descriptor,
         );
         let cursor = nested.rfind("{  }").unwrap() + 2;
-        assert!(catalog
-            .contextual_completions(&nested, 0, cursor)
-            .is_some_and(|items| items.iter().any(|item| item["label"] == "unit")));
+        assert!(
+            catalog
+                .contextual_completions(&nested, 0, cursor)
+                .is_some_and(|items| items.iter().any(|item| item["label"] == "unit"))
+        );
 
         let value = format!(
             "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = \"demo.service\"; }}; }}",
@@ -1071,8 +1085,8 @@ mod tests {
     }
 
     #[test]
-    fn prose_changes_preserve_semantic_ability_graph_without_reload_signal(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn prose_changes_preserve_semantic_ability_graph_without_reload_signal()
+    -> Result<(), Box<dyn std::error::Error>> {
         let before = loaded_document();
         let mut after = before.clone();
         after.document.options[0].description = vec![ProseBlock::Paragraph {
@@ -1132,10 +1146,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(parsed["method"], "initialize");
-        assert!(read_message(&mut io::Cursor::new(
-            b"Content-Length: 1\r\nContent-Length: 1\r\n\r\n{}".to_vec()
-        ))
-        .is_err());
+        assert!(
+            read_message(&mut io::Cursor::new(
+                b"Content-Length: 1\r\nContent-Length: 1\r\n\r\n{}".to_vec()
+            ))
+            .is_err()
+        );
         let oversized = format!("Content-Length: {}\r\n\r\n", MAX_MESSAGE_BYTES + 1);
         assert!(read_message(&mut io::Cursor::new(oversized.into_bytes())).is_err());
     }

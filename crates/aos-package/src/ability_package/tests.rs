@@ -215,6 +215,8 @@ fn stateful_package() -> PackageDocument {
         descriptor: digest('4'),
     };
     let provider = ProviderImplementation {
+        name: LocalKey::new("stateful").unwrap(),
+        description: "Stateful package test provider.".to_string(),
         interface: interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
@@ -256,6 +258,7 @@ fn stateful_package() -> PackageDocument {
         exports: vec![ExportDeclaration {
             name: LocalKey::new("stateful").unwrap(),
             interface,
+            implementation_name: LocalKey::new("stateful").unwrap(),
             implementation,
         }],
         requirements: Vec::new(),

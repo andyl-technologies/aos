@@ -14,10 +14,10 @@ use std::net::{IpAddr, SocketAddr};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_ability_model::VersionedDocument as _;
 use aos_ability_validate::{
-    validate_ability_contract, AbilityContractData, CheckedAbilityContract,
+    AbilityContractData, CheckedAbilityContract, validate_ability_contract,
 };
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
@@ -30,12 +30,12 @@ use aos_proto_types::{
     GetPackageDocumentationRequest, GetPackageDocumentationSchemaRequest,
     SearchPackageDocumentationRequest,
 };
-use aos_remote::{hub_rpc, HubClient};
+use aos_remote::{HubClient, hub_rpc};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::documentation_lsp;
-use crate::profile::{meta, Profile};
+use crate::profile::{Profile, meta};
 use crate::types::{DocumentationArtifactMeta, ProfileScope};
 use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput, OptionsCommand};
 
@@ -1261,8 +1261,8 @@ fn install_manpage(
 mod tests {
     use super::*;
     use aos_ability_model::{
-        decode_canonical, AbilityActivationMode, InterfaceDocument, LocalKey, RequiredFeature,
-        RequirementDeclaration, RequirementStrength, ValueSchema, ABILITY_LIMITS_V1,
+        ABILITY_LIMITS_V1, AbilityActivationMode, InterfaceDocument, LocalKey, RequiredFeature,
+        RequirementDeclaration, RequirementStrength, ValueSchema, decode_canonical,
     };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
@@ -1287,7 +1287,7 @@ mod tests {
                 semantic_schema_sha256: String::new(),
                 runtime_nar_hash: format!("sha256:{}", "a".repeat(64)),
                 config_module_nar_hash: None,
-                    expose_artifact_nar_hash: None,
+                expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "b".repeat(64)),
             },
             options: vec![OptionDocument {
@@ -1366,8 +1366,9 @@ mod tests {
                 implementation: Sha256Digest::of_bytes("implementation"),
                 interface: interface_key.clone(),
                 requirements: vec![RequirementDeclaration {
+                    description: "Describes this consumed ability.".to_string(),
                     alias: LocalKey::new("service-runtime").unwrap(),
-                    accepted_interfaces: vec![interface_key],
+                    accepted_interfaces: vec![interface_key.into()],
                     methods: Vec::new(),
                     guarantees: Vec::new(),
                     strength: RequirementStrength::Required,
@@ -1461,9 +1462,11 @@ mod tests {
         assert!(!detail.contains("<script"));
 
         let rejected = local_http_response(&[], b"POST / HTTP/1.1\r\n\r\n");
-        assert!(String::from_utf8(rejected)
-            .unwrap()
-            .starts_with("HTTP/1.1 405 Method Not Allowed"));
+        assert!(
+            String::from_utf8(rejected)
+                .unwrap()
+                .starts_with("HTTP/1.1 405 Method Not Allowed")
+        );
     }
 
     #[test]
@@ -1514,19 +1517,23 @@ mod tests {
             .unwrap()
             .interface
             .configuration = None;
-        assert!(without_configuration
-            .render_plain()
-            .unwrap()
-            .contains("no operator-owned provider instance configuration is declared"));
+        assert!(
+            without_configuration
+                .render_plain()
+                .unwrap()
+                .contains("no operator-owned provider instance configuration is declared")
+        );
 
         let canonical_document = rendered_bytes(&loaded, DocumentationOutput::Json).unwrap();
         assert_eq!(
             PackageDocumentation::from_canonical_json(&canonical_document).unwrap(),
             loaded.document
         );
-        assert!(!String::from_utf8(canonical_document)
-            .unwrap()
-            .contains("package-ability-reference"));
+        assert!(
+            !String::from_utf8(canonical_document)
+                .unwrap()
+                .contains("package-ability-reference")
+        );
     }
 
     #[test]

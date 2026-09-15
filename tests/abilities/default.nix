@@ -479,15 +479,17 @@
       })
       .abilities))
     .success;
-  inlineAbilitiesRejected = !(
-    builtins.tryEval (pkgs.mkDerivation {
-      pname = "inline-ability-module";
-      version = "0";
-      src = null;
-      phases = [];
-      abilities = {config.aos.abilities = {};};
-    })
-  ).success;
+  inlineAbilitiesRejected =
+    !(
+      builtins.tryEval (pkgs.mkDerivation {
+        pname = "inline-ability-module";
+        version = "0";
+        src = null;
+        phases = [];
+        abilities = {config.aos.abilities = {};};
+      })
+    )
+    .success;
   authoringConformance = import ./authoring-conformance.nix {
     inherit pkgs lib;
   };
@@ -837,11 +839,10 @@ in
   assert serviceManagement;
   assert systemServiceModules;
   assert compositionDriver;
-  assert map (provider: provider.name) smokeAbilityProjection.implementation.providers == ["default"];
+  assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
-  assert builtins.length smokeAbilityProjection.requirements == 1;
-  assert builtins.length disabledRsyncProjection.requirements > 0;
-  assert disabledRsyncProjection.option_declarations != [];
+  assert builtins.length (builtins.attrNames smokeAbilityProjection.requirementTemplates) == 1;
+  assert builtins.length (builtins.attrNames disabledRsyncProjection.requirementTemplates) > 0;
   assert dockerService;
   assert containerdStaticProjection;
   assert kernelModules;

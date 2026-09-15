@@ -6,23 +6,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 #[cfg(test)]
 use aos_ability_inspect::ReferenceGraphSlice;
 use aos_ability_inspect::{
     GraphQuery, InspectionNode, NodeKey, ReferenceInspectionInput, ReferenceInspectionView,
 };
 use aos_ability_model::{
-    AbilityValue, Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase, InterfaceKey,
-    LocalKey, ValueExpression, ValueSchema, ABILITY_LIMITS_V1,
+    ABILITY_LIMITS_V1, AbilityValue, Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase,
+    InterfaceKey, LocalKey, ValueExpression, ValueSchema,
 };
 use aos_ability_validate::validate_value;
 use aos_doc_model::{AbilityExportReference, PackageAbilityReference};
+use rnix::StrPart;
 use rnix::types::{
     Apply, AttrSet, EntryHolder as _, Ident, KeyValue, List, Str, TokenWrapper as _, TypedNode as _,
 };
-use rnix::StrPart;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::documentation::LoadedDocumentation;
 
@@ -960,9 +960,11 @@ mod tests {
             .expect("fully literal Nix value");
         let errors = validate_value(&schema, &expression).expect_err("syntax must be rejected");
 
-        assert!(errors
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.code == DiagnosticCode::ValueTypeMismatch));
+        assert!(
+            errors
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::ValueTypeMismatch)
+        );
     }
 }

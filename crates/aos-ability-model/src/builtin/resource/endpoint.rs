@@ -40,6 +40,7 @@ pub const NETWORK_ENDPOINT_OBSERVATION_SCHEMA: &str = "aos.ability.network-endpo
 pub fn network_endpoint_interface() -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(NETWORK_ENDPOINT_INTERFACE_NAME)?;
     let endpoint_output = OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema: network_endpoint_value_schema()?,
         phase: ValuePhase::Runtime,
         visibility: ValueVisibility::Protected,

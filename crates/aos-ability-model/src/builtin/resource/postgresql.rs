@@ -52,12 +52,14 @@ pub const POSTGRESQL_IDENTIFIER_MAX_BYTES: u64 = 63;
 pub fn postgresql_effects_interface() -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(POSTGRESQL_EFFECTS_INTERFACE_NAME)?;
     let runtime_revision = OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema: bounded_string(REVISION_MAX_BYTES),
         phase: ValuePhase::Runtime,
         visibility: ValueVisibility::Protected,
         lifetime: ResourceLifetime::Persistent,
     };
     let observed_revision = OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema: ValueSchema::Optional {
             value: Box::new(bounded_string(REVISION_MAX_BYTES)),
         },
@@ -66,6 +68,7 @@ pub fn postgresql_effects_interface() -> Result<InterfaceDocument> {
         lifetime: ResourceLifetime::Attempt,
     };
     let observed_value = |schema| OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema,
         phase: ValuePhase::Observation,
         visibility: ValueVisibility::Protected,

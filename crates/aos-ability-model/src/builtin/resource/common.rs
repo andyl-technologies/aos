@@ -54,6 +54,7 @@ pub(crate) fn resource_method(
     Ok((
         method.clone(),
         MethodDescriptor {
+            description: "Describes this declaration.".to_string(),
             semantics,
             parameters,
             target_resource: interface.clone(),
@@ -81,6 +82,7 @@ pub(crate) fn interface_document(
         schema: InterfaceDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
         interface: InterfaceDescriptor {
+            description: "Describes this declaration.".to_string(),
             name,
             abi: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in ABI"))?,
             request,
@@ -100,6 +102,8 @@ pub(crate) fn terminal_provider(
     artifact: ArtifactReference,
 ) -> Result<ProviderImplementation> {
     Ok(ProviderImplementation {
+        name: handler.clone(),
+        description: "Controls an authenticated provider-owned resource.".to_string(),
         owns_resource_kinds: vec![interface.name.clone()],
         state_format: None,
         interface,

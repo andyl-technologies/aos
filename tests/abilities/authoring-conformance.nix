@@ -299,6 +299,7 @@
     lifetime ? "instance",
     slot ? "resource",
     unrelated ? false,
+    requirementDescription ? "Requires the resource revision conformance fixture.",
   }: let
     implementationName = "authoring:${implementation}";
   in
@@ -313,6 +314,15 @@
               description = "Provides the resource revision conformance fixture.";
               interface = "authoring:resource";
               methods = ["invoke"];
+              requirements.lower = {
+                alias = "lower";
+                description = requirementDescription;
+                accepted_interfaces = [revisionInterfaceIdentity];
+                methods = ["invoke"];
+                guarantees = [];
+                strength = "required";
+                fallback = null;
+              };
               inherit desiredType;
             };
             instances."authoring:provider" = {
@@ -325,61 +335,64 @@
               inherit (revisionInterfaceIdentity) abi descriptor;
               methods = ["invoke"];
             };
-            requests = {
-              "authoring:resource" = {
-                requirement = "authoring:resource";
-                consumer = "authoring:provider";
-                parameters = value;
-              };
-            }
-            // lib.optionalAttrs unrelated {
-              "authoring:unrelated" = {
-                requirement = "authoring:resource";
-                consumer = "authoring:provider";
-                parameters.enabled = false;
-              };
-            };
-            bindings = {
-              "authoring:controller" = {
-                request = "authoring:resource";
-                implementation = implementationName;
-                providerInstance = "authoring:provider";
-                inherit slot;
-              };
-            }
-            // lib.optionalAttrs unrelated {
-              "authoring:unrelated-controller" = {
-                request = "authoring:unrelated";
-                implementation = implementationName;
-                providerInstance = "authoring:provider";
-                slot = "unrelated";
-              };
-            };
-            desiredResources = {
-              "authoring:resource" = {
-                resource = {
-                  provider = revisionProviderIdentity;
-                  key = "resource";
+            requests =
+              {
+                "authoring:resource" = {
+                  requirement = "authoring:resource";
+                  consumer = "authoring:provider";
+                  parameters = value;
                 };
-                kind = revisionInterface.name;
-                controller = "authoring:controller";
-                inherit lifetime;
-                inherit value realization;
-              };
-            }
-            // lib.optionalAttrs unrelated {
-              "authoring:unrelated" = {
-                resource = {
-                  provider = revisionProviderIdentity;
-                  key = "unrelated";
+              }
+              // lib.optionalAttrs unrelated {
+                "authoring:unrelated" = {
+                  requirement = "authoring:resource";
+                  consumer = "authoring:provider";
+                  parameters.enabled = false;
                 };
-                kind = revisionInterface.name;
-                controller = "authoring:unrelated-controller";
-                lifetime = "instance";
-                value.enabled = false;
-                realization = true;
               };
-            };
+            bindings =
+              {
+                "authoring:controller" = {
+                  request = "authoring:resource";
+                  implementation = implementationName;
+                  providerInstance = "authoring:provider";
+                  inherit slot;
+                };
+              }
+              // lib.optionalAttrs unrelated {
+                "authoring:unrelated-controller" = {
+                  request = "authoring:unrelated";
+                  implementation = implementationName;
+                  providerInstance = "authoring:provider";
+                  slot = "unrelated";
+                };
+              };
+            desiredResources =
+              {
+                "authoring:resource" = {
+                  resource = {
+                    provider = revisionProviderIdentity;
+                    key = "resource";
+                  };
+                  kind = revisionInterface.name;
+                  controller = "authoring:controller";
+                  inherit lifetime;
+                  inherit value realization;
+                };
+              }
+              // lib.optionalAttrs unrelated {
+                "authoring:unrelated" = {
+                  resource = {
+                    provider = revisionProviderIdentity;
+                    key = "unrelated";
+                  };
+                  kind = revisionInterface.name;
+                  controller = "authoring:unrelated-controller";
+                  lifetime = "instance";
+                  value.enabled = false;
+                  realization = true;
+                };
+              };
           };
         }
       ];
@@ -394,6 +407,9 @@
   changedLifetimeRevisionEvaluation = revisionEvaluation {lifetime = "persistent";};
   changedControllerRevisionEvaluation = revisionEvaluation {slot = "alternate";};
   unrelatedRevisionEvaluation = revisionEvaluation {unrelated = true;};
+  requirementProseRevisionEvaluation = revisionEvaluation {
+    requirementDescription = "Reworded lower-interface requirement documentation.";
+  };
   invalidRealizationEvaluation = builtins.tryEval (builtins.deepSeq
     (revisionEvaluation {realization = "invalid";}).resolvedResources
     true);
@@ -414,7 +430,10 @@
         enabled = true;
         artifact = semanticArtifact storePath narHash;
       };
-    }).resolvedResources."authoring:resource".revision;
+    })
+    .resolvedResources
+    ."authoring:resource"
+    .revision;
   artifactRevisionA = artifactRevision "/nix/store/aaaaaaaa-source" "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   artifactRevisionRelocated = artifactRevision "/nix/store/dddddddd-source" "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   artifactRevisionChanged = artifactRevision "/nix/store/aaaaaaaa-source" "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
@@ -587,15 +606,21 @@
     semantics = "successful completion proves the authoring fixture contract";
     description = "Documents the authoring fixture guarantee.";
   };
-  proseChangedGuarantee = authoredGuarantee // {
-    description = "Documents the same authoring guarantee with revised prose.";
-  };
-  semanticsChangedGuarantee = authoredGuarantee // {
-    semantics = "successful completion proves a different authoring fixture contract";
-  };
-  guaranteeReferenceDeclaration = implementationInterface // {
-    guarantees = ["authoring"];
-  };
+  proseChangedGuarantee =
+    authoredGuarantee
+    // {
+      description = "Documents the same authoring guarantee with revised prose.";
+    };
+  semanticsChangedGuarantee =
+    authoredGuarantee
+    // {
+      semantics = "successful completion proves a different authoring fixture contract";
+    };
+  guaranteeReferenceDeclaration =
+    implementationInterface
+    // {
+      guarantees = ["authoring"];
+    };
   guaranteeReferenceEvaluation = lib.evalModules {
     modules = [lib.abilities.module];
     packageModules = [
@@ -609,14 +634,15 @@
     ];
   };
   projectAbilityConfig = packageName: evaluation:
-    (import ../../lib/abilities/package-projection.nix {
-      inherit lib;
-      abilities = lib.abilities;
-    }) {
-      inherit packageName;
-      version = "1";
-      evaluated = evaluation.config.aos.abilities;
-    };
+    ((import ../../lib/abilities/package-projection.nix {
+        inherit lib;
+        abilities = lib.abilities;
+      }) {
+        inherit packageName;
+        version = "1";
+        evaluated = evaluation.config.aos.abilities;
+      })
+    .value;
   missingGuaranteeReferenceEvaluation = lib.evalModules {
     modules = [lib.abilities.module];
     packageModules = [
@@ -628,7 +654,8 @@
   };
   missingGuaranteeReference = builtins.tryEval (builtins.deepSeq (
       projectAbilityConfig "missing" missingGuaranteeReferenceEvaluation
-    ) true);
+    )
+    true);
   conflictingGuaranteeCatalog = builtins.tryEval (builtins.deepSeq (
       (lib.evalModules {
         modules = [
@@ -637,8 +664,12 @@
           {config.aos.abilities.guarantees.authoring = proseChangedGuarantee;}
         ];
       })
-      .config.aos.abilities.guarantees
-    ) true);
+      .config
+      .aos
+      .abilities
+      .guarantees
+    )
+    true);
   expectedGuaranteeDescriptor = lib.abilities.descriptorFor "aos.ability.execution-guarantee/v1" {
     name = authoredGuarantee.name;
     version = authoredGuarantee.version;
@@ -656,9 +687,11 @@
     packageModules = [
       {
         name = "authoring";
-        module.config.aos.abilities.implementations.shared = implementation // {
-          interface = sharedInterfaceIdentity;
-        };
+        module.config.aos.abilities.implementations.shared =
+          implementation
+          // {
+            interface = sharedInterfaceIdentity;
+          };
       }
     ];
   };
@@ -677,9 +710,11 @@
       {
         name = "authoring";
         module.config.aos.abilities = {
-          implementations.shared = implementation // {
-            interface = sharedInterfaceIdentity;
-          };
+          implementations.shared =
+            implementation
+            // {
+              interface = sharedInterfaceIdentity;
+            };
           instances.shared = {
             implementation = "shared";
             configuration = true;
@@ -693,10 +728,12 @@
     module.config.aos.abilities = {
       guarantees.authoring = authoredGuarantee;
       interfaces.test = implementationInterface // {guarantees = ["authoring"];};
-      implementations.test = implementation // {
-        guarantees = ["authoring"];
-        provide = context: context;
-      };
+      implementations.test =
+        implementation
+        // {
+          guarantees = ["authoring"];
+          provide = context: context;
+        };
     };
   };
   combinedPackageEvaluation = lib.evalModules {
@@ -844,19 +881,23 @@ in
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".package == "alpha";
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".interface == "alpha:test";
   assert rejectsImplementation (implementation // {artifact = {};});
-  assert rejectsImplementation (implementation // {
-    artifact = "/nix/store/00000000000000000000000000000000-artifact";
-  });
+  assert rejectsImplementation (implementation
+    // {
+      artifact = "/nix/store/00000000000000000000000000000000-artifact";
+    });
   assert rejectsImplementation (implementation // {artifacts = [{}];});
-  assert rejectsImplementation (implementation // {
-    artifact = forgedSelector "bad/package" "out";
-  });
-  assert rejectsImplementation (implementation // {
-    artifact = forgedSelector "self" "bad/output";
-  });
-  assert rejectsImplementation (implementation // {
-    artifact = (forgedSelector "self" "out") // {unknown = true;};
-  });
+  assert rejectsImplementation (implementation
+    // {
+      artifact = forgedSelector "bad/package" "out";
+    });
+  assert rejectsImplementation (implementation
+    // {
+      artifact = forgedSelector "self" "bad/output";
+    });
+  assert rejectsImplementation (implementation
+    // {
+      artifact = (forgedSelector "self" "out") // {unknown = true;};
+    });
   assert rejectsImplementation (handlerImplementation {} "bin/handler");
   assert rejectsImplementation (handlerImplementation selfOutput "/bin/handler");
   assert rejectsImplementation (handlerImplementation selfOutput "");
@@ -868,9 +909,11 @@ in
       handler.arguments = lib.abilities.schemas.boolean;
     });
   assert rejectsAbilityModule {
-    config.aos.abilities.interfaces.test = implementationInterface // {
-      lifecycle = implementationInterface.lifecycle // {unknown = true;};
-    };
+    config.aos.abilities.interfaces.test =
+      implementationInterface
+      // {
+        lifecycle = implementationInterface.lifecycle // {unknown = true;};
+      };
   };
   assert rejectsAbilityModule {
     config.aos.abilities = {
@@ -953,21 +996,26 @@ in
   assert sharedImplementationProjection.interfaces == {};
   assert (builtins.head sharedImplementationProjection.exports).interface == sharedInterfaceIdentity;
   assert sharedImplementationFixedPoint.config.aos.abilities.instances."authoring:shared".configuration;
-  assert (builtins.head guaranteeReferenceProjection.interface_documents).document.interface.guarantees == [{
-    name = authoredGuarantee.name;
-    version = authoredGuarantee.version;
-    descriptor = expectedGuaranteeDescriptor;
-  }];
+  assert (builtins.head guaranteeReferenceProjection.interface_documents).document.interface.guarantees
+  == [
+    {
+      name = authoredGuarantee.name;
+      version = authoredGuarantee.version;
+      descriptor = expectedGuaranteeDescriptor;
+    }
+  ];
   assert !missingGuaranteeReference.success;
   assert !conflictingGuaranteeCatalog.success;
   assert lib.abilities.guaranteeIdentity authoredGuarantee == lib.abilities.guaranteeIdentity proseChangedGuarantee;
   assert lib.abilities.guaranteeIdentity authoredGuarantee != lib.abilities.guaranteeIdentity semanticsChangedGuarantee;
   assert (builtins.head guaranteeReferenceProjection.interface_documents).document.interface.guarantees
-  == [{
-    name = authoredGuarantee.name;
-    version = authoredGuarantee.version;
-    descriptor = expectedGuaranteeDescriptor;
-  }];
+  == [
+    {
+      name = authoredGuarantee.name;
+      version = authoredGuarantee.version;
+      descriptor = expectedGuaranteeDescriptor;
+    }
+  ];
   assert crossTargetEvaluation.config.aos.abilities.interfaces."authoring:source".methods.invoke.targetResource == crossTargetInterface.name;
   assert crossTargetEvaluation.config.aos.abilities.interfaces."authoring:source".methods.invoke.outputs.observed.phase == "observation";
   assert !missingCrossTarget.success;
@@ -996,6 +1044,8 @@ in
   != changedControllerRevisionEvaluation.resolvedResources."authoring:resource".revision;
   assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
   == unrelatedRevisionEvaluation.resolvedResources."authoring:resource".revision;
+  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
+  == requirementProseRevisionEvaluation.resolvedResources."authoring:resource".revision;
   assert !invalidRealizationEvaluation.success;
   assert !missingDesiredTypeEvaluation.success;
   assert artifactRevisionA == artifactRevisionRelocated;

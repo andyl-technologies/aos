@@ -373,12 +373,16 @@ fn plain_requirement(output: &mut String, consumer: &str, requirement: &Requirem
         consumer,
     );
     for accepted in &requirement.accepted_interfaces {
+        let descriptor = accepted.descriptor.map_or_else(
+            || "any compatible descriptor".to_string(),
+            |digest| digest.to_string(),
+        );
         let _ = writeln!(
             output,
             "  accepted interface\t{}\tABI {}\t{}",
             accepted.name.as_str(),
             accepted.abi,
-            accepted.descriptor,
+            descriptor,
         );
     }
     if !requirement.methods.is_empty() {
@@ -407,7 +411,11 @@ fn html_requirement(output: &mut String, consumer: &str, requirement: &Requireme
         output.push_str("<li>Accepted interface <code>");
         escape_html_into(accepted.name.as_str(), output);
         let _ = write!(output, "</code> ABI {} - <code>", accepted.abi);
-        escape_html_into(&accepted.descriptor.to_string(), output);
+        let descriptor = accepted.descriptor.map_or_else(
+            || "any compatible descriptor".to_string(),
+            |digest| digest.to_string(),
+        );
+        escape_html_into(&descriptor, output);
         output.push_str("</code></li>");
     }
     if !requirement.methods.is_empty() {
@@ -473,11 +481,7 @@ const fn requirement_strength(strength: RequirementStrength) -> &'static str {
 }
 
 const fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 fn escape_html_into(value: &str, output: &mut String) {

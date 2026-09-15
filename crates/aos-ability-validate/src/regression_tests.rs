@@ -460,6 +460,7 @@ fn read_only_primary_cannot_authorize_write_recovery() {
     fixture.interfaces[0].interface.methods.insert(
         key("stop"),
         aos_ability_model::MethodDescriptor {
+            description: "Describes this declaration.".to_string(),
             semantics: MethodSemantics::provider_stop(),
             ..primary
         },
@@ -1512,6 +1513,7 @@ fn conditional_ordering_fixture(direct_order: bool) -> PlanFixture {
             output.clone(),
             MergedOutput {
                 descriptor: OutputDescriptor {
+                    description: "Describes this declaration.".to_string(),
                     schema: aos_ability_model::ValueSchema::Boolean,
                     phase: ValuePhase::Observation,
                     visibility: ValueVisibility::Protected,
@@ -1639,6 +1641,8 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
     let binding = &mut fixture.binding_plan.bindings[0];
     let artifact = binding.implementation.artifact.clone();
     let implementation = ProviderImplementation {
+        name: LocalKey::new("pure").expect("valid implementation name"),
+        description: "Pure test implementation.".to_string(),
         interface: binding.interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
@@ -1680,6 +1684,7 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: binding.interface.clone(),
+            implementation_name: key("provider"),
             implementation: descriptor,
         }],
         requirements: Vec::new(),
@@ -1836,6 +1841,7 @@ fn advisory_requirement(
     fallback: AbilityValue,
 ) -> RequirementDeclaration {
     RequirementDeclaration {
+        description: "Describes this declaration.".to_string(),
         alias: key("advisory"),
         accepted_interfaces: vec![interface.clone().into()],
         methods: vec![key("observe")],
@@ -1851,6 +1857,7 @@ fn install_optional_resource_output(fixture: &mut PlanFixture) {
     fixture.interfaces[0].interface.outputs.insert(
         key("ready"),
         OutputDescriptor {
+            description: "Describes this declaration.".to_string(),
             schema: ValueSchema::Optional {
                 value: Box::new(ValueSchema::ResourceReference),
             },
@@ -1865,6 +1872,7 @@ fn install_resource_map_output(fixture: &mut PlanFixture) {
     fixture.interfaces[0].interface.outputs.insert(
         key("ready"),
         OutputDescriptor {
+            description: "Describes this declaration.".to_string(),
             schema: ValueSchema::Map {
                 key: StringConstraint {
                     max_length: 128,
@@ -1886,6 +1894,7 @@ fn install_projection_ports(
     lifetime: ResourceLifetime,
 ) {
     let descriptor = OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema,
         phase: ValuePhase::Planning,
         visibility: ValueVisibility::Public,

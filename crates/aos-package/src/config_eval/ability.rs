@@ -938,6 +938,8 @@ mod tests {
 
     fn implementation_at(store_path: &str, nar_hash: Sha256Digest) -> ProviderImplementation {
         ProviderImplementation {
+            name: LocalKey::new("provider").unwrap(),
+            description: "Ability evaluation test provider.".to_string(),
             interface: InterfaceKey {
                 name: InterfaceName::new("aos.test.provider").unwrap(),
                 abi: 1.try_into().unwrap(),

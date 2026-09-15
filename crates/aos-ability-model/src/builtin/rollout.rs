@@ -51,6 +51,7 @@ pub fn ab_image_rollout_interface() -> Result<InterfaceDocument> {
     let request = ab_image_rollout_request_schema()?;
     let observation = ab_image_rollout_observation_schema()?;
     let output = |lifetime| OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema: observation.clone(),
         phase: ValuePhase::Observation,
         visibility: ValueVisibility::Protected,
@@ -77,6 +78,7 @@ pub fn ab_image_rollout_interface() -> Result<InterfaceDocument> {
             outputs.insert(
                 LocalKey::new("healthy")?,
                 OutputDescriptor {
+                    description: "Describes this declaration.".to_string(),
                     schema: ValueSchema::Boolean,
                     phase: ValuePhase::Observation,
                     visibility: ValueVisibility::Protected,

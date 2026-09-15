@@ -56,6 +56,7 @@ pub fn host_network_policy_interface() -> Result<InterfaceDocument> {
     let egress_enforcement = host_network_policy_loopback_tcp_egress_guarantee()?;
     let enforcement = vec![egress_enforcement.clone(), ingress_enforcement.clone()];
     let active_output = OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema: ValueSchema::Boolean,
         phase: ValuePhase::Runtime,
         visibility: ValueVisibility::Protected,

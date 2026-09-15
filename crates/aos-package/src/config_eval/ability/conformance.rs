@@ -220,6 +220,8 @@ fn diagnostic_code(code: DiagnosticCode) -> &'static str {
 
 fn implementation_at(store_path: &str, nar_hash: Sha256Digest) -> ProviderImplementation {
     ProviderImplementation {
+        name: aos_ability_model::LocalKey::new("provider").unwrap(),
+        description: "Conformance test provider.".to_string(),
         interface: InterfaceKey {
             name: InterfaceName::new("aos.test.authoring-conformance").unwrap(),
             abi: NonZeroU32::new(1).unwrap(),

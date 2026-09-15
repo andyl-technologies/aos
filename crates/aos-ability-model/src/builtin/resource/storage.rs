@@ -47,6 +47,7 @@ pub fn host_storage_interface() -> Result<InterfaceDocument> {
             BTreeMap::from([(
                 LocalKey::new(HOST_STORAGE_PATH_OUTPUT)?,
                 OutputDescriptor {
+                    description: "Describes this declaration.".to_string(),
                     schema: bounded_string(RESOURCE_PATH_MAX_BYTES),
                     phase: ValuePhase::Runtime,
                     visibility: ValueVisibility::Protected,
@@ -63,6 +64,7 @@ pub fn host_storage_interface() -> Result<InterfaceDocument> {
             BTreeMap::from([(
                 LocalKey::new(HOST_STORAGE_PATH_OUTPUT)?,
                 OutputDescriptor {
+                    description: "Describes this declaration.".to_string(),
                     schema: bounded_string(RESOURCE_PATH_MAX_BYTES),
                     phase: ValuePhase::Runtime,
                     visibility: ValueVisibility::Protected,

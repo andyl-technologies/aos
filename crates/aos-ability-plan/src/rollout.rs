@@ -550,6 +550,7 @@ pub fn lower_ab_rollout_fragment(
             state_output.clone(),
             MergedOutput {
                 descriptor: aos_ability_model::OutputDescriptor {
+                    description: "Describes this rollout output.".to_string(),
                     schema: aos_ability_model::builtin::ab_image_rollout_observation_schema()?,
                     phase: aos_ability_model::ValuePhase::Observation,
                     visibility: aos_ability_model::ValueVisibility::Protected,

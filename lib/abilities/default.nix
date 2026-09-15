@@ -100,9 +100,29 @@
   resourceRevision = material:
     descriptorFor "aos.ability.resource-revision/v1" (normalizeSemanticValue material);
 
+  semanticInterfaceDocument = document:
+    document
+    // {
+      interface =
+        (builtins.removeAttrs document.interface ["description"])
+        // {
+          outputs =
+            builtins.mapAttrs (_: output: builtins.removeAttrs output ["description"])
+            document.interface.outputs;
+          methods = builtins.mapAttrs (_: method:
+            (builtins.removeAttrs method ["description"])
+            // {
+              outputs =
+                builtins.mapAttrs (_: output: builtins.removeAttrs output ["description"])
+                method.outputs;
+            })
+          document.interface.methods;
+        };
+    };
+
   interfaceIdentity = document: {
     inherit (document.interface) name abi;
-    descriptor = descriptorFor "aos.ability.interface/v1" document;
+    descriptor = descriptorFor "aos.ability.interface/v1" (semanticInterfaceDocument document);
   };
 
   declareInterface = {
@@ -128,16 +148,10 @@
   };
 
   interfaceDocumentFromDeclaration = declaration: let
-    semanticOutput = output: builtins.removeAttrs output ["description"];
-    semanticMethod = method:
-      (builtins.removeAttrs method ["description"])
-      // {outputs = builtins.mapAttrs (_: semanticOutput) method.outputs;};
-  in
-    makeInterfaceDocument declaration.requiredFeatures (define {
+    document = makeInterfaceDocument declaration.requiredFeatures (define {
       interface = declaration.name;
       inherit (declaration) abi lifecycle guarantees;
-      outputs = builtins.mapAttrs (_: semanticOutput) declaration.outputs;
-      methods = builtins.mapAttrs (_: semanticMethod) declaration.methods;
+      inherit (declaration) outputs methods;
       requestSchema = declaration.requestType;
       configurationSchema = declaration.configurationType;
       aggregation = declaration.aggregation;
@@ -148,6 +162,9 @@
       compose = _: {};
       transition = _: {};
     });
+  in
+    document
+    // {interface = document.interface // {inherit (declaration) description;};};
 
   interfaceDeclarationFromDocument = {
     document,
@@ -272,11 +289,13 @@
 
   canonicalGuarantees = context: values: let
     project = value: let
-      checked = requireAttrs context (
-        if value ? semantics
-        then ["description" "name" "semantics" "version"]
-        else ["descriptor" "name" "version"]
-      ) value;
+      checked =
+        requireAttrs context (
+          if value ? semantics
+          then ["description" "name" "semantics" "version"]
+          else ["descriptor" "name" "version"]
+        )
+        value;
     in
       if value ? semantics
       then guaranteeIdentity checked
@@ -501,18 +520,19 @@
     then fail "requirement '${alias}' must be advisory exactly when it declares fallback outputs"
     else {
       alias = requireLocalKey "requirement alias" alias;
+      inherit (checked) description;
       accepted_interfaces = [
         ({
-          name = checked.interface;
-          inherit (checked) abi;
-        }
-        // (
-          if (checked.descriptor or null) == null
-          then {}
-          else {
-            descriptor = requireDigest "requirement '${alias}' interface descriptor" checked.descriptor;
+            name = checked.interface;
+            inherit (checked) abi;
           }
-        ))
+          // (
+            if (checked.descriptor or null) == null
+            then {}
+            else {
+              descriptor = requireDigest "requirement '${alias}' interface descriptor" checked.descriptor;
+            }
+          ))
       ];
       methods = uniqueSortedStrings "requirement '${alias}' methods" checked.methods;
       guarantees = canonicalGuarantees "requirement '${alias}' guarantees" (checked.guarantees or []);
@@ -539,8 +559,9 @@
   };
 
   normalizeOutput = context: value: let
-    checked = requireAttrs context ["schema" "phase" "visibility" "lifetime"] value;
+    checked = requireAttrs context ["description" "schema" "phase" "visibility" "lifetime"] value;
   in {
+    inherit (checked) description;
     schema = schemaFromType "${context} type" checked.schema;
     phase =
       requireChoice
@@ -598,6 +619,7 @@
   normalizeMethod = name: value: let
     checked =
       requireAttrs "method '${name}'" [
+        "description"
         "semantics"
         "parameters"
         "targetResource"
@@ -609,6 +631,7 @@
       value;
     semantics = requireAttrs "method '${name}' semantics" ["requiredTargetAccess" "stopsProvider"] checked.semantics;
   in {
+    inherit (checked) description;
     semantics = {
       required_target_access =
         requireChoice "method '${name}' required target access"
@@ -823,6 +846,7 @@
     export = requireMarker "export" "aos-ability-export" value;
   in
     {
+      inherit (export._interface_declaration) description;
       inherit (export.interface) name abi;
       request = export.request_schema;
       inherit (export) outputs methods lifecycle guarantees aggregation;

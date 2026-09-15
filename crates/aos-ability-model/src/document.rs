@@ -792,19 +792,112 @@ impl VersionedDocument for InterfaceDocument {
     }
 
     fn validate_structure(&self, limits: &LimitProfile) -> Result<(), DocumentError> {
-        validate_interface_depth(&self.interface, limits)
+        validate_interface_depth(&self.interface, limits)?;
+        validate_interface_prose(&self.interface, limits)
     }
 
     fn content_digest(&self) -> Result<Sha256Digest, DocumentError> {
         #[derive(Serialize)]
+        struct SemanticOutput<'a> {
+            schema: &'a ValueSchema,
+            phase: crate::interface::ValuePhase,
+            visibility: crate::interface::ValueVisibility,
+            lifetime: crate::ResourceLifetime,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticMethod<'a> {
+            semantics: &'a crate::interface::MethodSemantics,
+            parameters: &'a ValueSchema,
+            target_resource: &'a InterfaceName,
+            outputs: BTreeMap<&'a LocalKey, SemanticOutput<'a>>,
+            permitted_operations: &'a [LocalKey],
+            guarantees: &'a [GuaranteeKey],
+            outcome: &'a crate::interface::OutcomeSemantics,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticInterface<'a> {
+            name: &'a InterfaceName,
+            abi: NonZeroU32,
+            request: &'a ValueSchema,
+            configuration: &'a Option<ValueSchema>,
+            outputs: BTreeMap<&'a LocalKey, SemanticOutput<'a>>,
+            methods: BTreeMap<&'a LocalKey, SemanticMethod<'a>>,
+            lifecycle: &'a crate::interface::LifecycleSemantics,
+            aggregation: &'a crate::interface::AggregationContract,
+            guarantees: &'a [GuaranteeKey],
+        }
+
+        #[derive(Serialize)]
+        struct SemanticInterfaceDocument<'a> {
+            schema: &'a str,
+            required_features: &'a [RequiredFeature],
+            interface: SemanticInterface<'a>,
+        }
+
+        #[derive(Serialize)]
         struct DescriptorEnvelope<'a> {
             domain: &'static str,
-            document: &'a InterfaceDocument,
+            document: SemanticInterfaceDocument<'a>,
         }
+
+        fn semantic_output(descriptor: &crate::interface::OutputDescriptor) -> SemanticOutput<'_> {
+            SemanticOutput {
+                schema: &descriptor.schema,
+                phase: descriptor.phase,
+                visibility: descriptor.visibility,
+                lifetime: descriptor.lifetime,
+            }
+        }
+
+        let outputs = self
+            .interface
+            .outputs
+            .iter()
+            .map(|(name, descriptor)| (name, semantic_output(descriptor)))
+            .collect();
+        let methods = self
+            .interface
+            .methods
+            .iter()
+            .map(|(name, method)| {
+                (
+                    name,
+                    SemanticMethod {
+                        semantics: &method.semantics,
+                        parameters: &method.parameters,
+                        target_resource: &method.target_resource,
+                        outputs: method
+                            .outputs
+                            .iter()
+                            .map(|(name, descriptor)| (name, semantic_output(descriptor)))
+                            .collect(),
+                        permitted_operations: &method.permitted_operations,
+                        guarantees: &method.guarantees,
+                        outcome: &method.outcome,
+                    },
+                )
+            })
+            .collect();
 
         let envelope = DescriptorEnvelope {
             domain: Self::SCHEMA,
-            document: self,
+            document: SemanticInterfaceDocument {
+                schema: &self.schema,
+                required_features: &self.required_features,
+                interface: SemanticInterface {
+                    name: &self.interface.name,
+                    abi: self.interface.abi,
+                    request: &self.interface.request,
+                    configuration: &self.interface.configuration,
+                    outputs,
+                    methods,
+                    lifecycle: &self.interface.lifecycle,
+                    aggregation: &self.interface.aggregation,
+                    guarantees: &self.interface.guarantees,
+                },
+            },
         };
         let bytes =
             aos_contract::canonical::to_vec(&envelope).map_err(|source| DocumentError::Decode {
@@ -830,15 +923,36 @@ impl VersionedDocument for PackageDocument {
     fn validate_structure(&self, limits: &LimitProfile) -> Result<(), DocumentError> {
         validate_package_option_declarations(&self.option_declarations, limits)?;
         for provider in &self.implementation.providers {
+            validate_documentation_text(
+                "provider implementation description",
+                &provider.description,
+                limits,
+            )?;
             if let Some(schema) = &provider.desired_schema {
                 ensure_schema_depth(schema, limits)?;
             }
+            for requirement in &provider.requirements {
+                validate_documentation_text(
+                    "provider requirement description",
+                    &requirement.description,
+                    limits,
+                )?;
+            }
+        }
+        for requirement in &self.requirements {
+            validate_documentation_text(
+                "package requirement description",
+                &requirement.description,
+                limits,
+            )?;
         }
         for guarantee in self.guarantees.values() {
             if guarantee.semantics.is_empty()
                 || guarantee.semantics.chars().any(char::is_control)
+                || guarantee.semantics.len() as u64 > limits.max_string_bytes
                 || guarantee.description.is_empty()
                 || guarantee.description.chars().any(char::is_control)
+                || guarantee.description.len() as u64 > limits.max_string_bytes
             {
                 return Err(DocumentError::Decode {
                     label: Self::SCHEMA.to_string(),
@@ -910,9 +1024,36 @@ impl VersionedDocument for PackageDocument {
         }
 
         #[derive(Serialize)]
+        struct SemanticExport<'a> {
+            name: &'a LocalKey,
+            interface: &'a InterfaceKey,
+            implementation: Sha256Digest,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticOptionDeclaration<'a> {
+            path: &'a [String],
+            structured_type: &'a crate::OptionType,
+            default: Option<&'a AbilityValue>,
+            visibility: crate::OptionVisibility,
+            read_only: bool,
+            contributable: bool,
+        }
+
+        #[derive(Serialize)]
         struct SemanticQualification<'a> {
             conformance_families: &'a [LocalKey],
             observer: SemanticHandler<'a>,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticRequirement<'a> {
+            alias: &'a LocalKey,
+            accepted_interfaces: &'a [crate::InterfaceSelector],
+            methods: &'a [LocalKey],
+            guarantees: &'a [GuaranteeKey],
+            strength: crate::interface::RequirementStrength,
+            fallback: &'a Option<crate::interface::RequirementFallback>,
         }
 
         #[derive(Serialize)]
@@ -925,9 +1066,9 @@ impl VersionedDocument for PackageDocument {
             interfaces: &'a BTreeMap<LocalKey, InterfaceKey>,
             guarantees: BTreeMap<LocalKey, SemanticGuarantee<'a>>,
             package_module: SemanticModuleLocator<'a>,
-            option_declarations: &'a [PackageOptionDeclaration],
-            exports: &'a [ExportDeclaration],
-            requirements: &'a [RequirementDeclaration],
+            option_declarations: Vec<SemanticOptionDeclaration<'a>>,
+            exports: Vec<SemanticExport<'a>>,
+            requirements: Vec<SemanticRequirement<'a>>,
             implementation: SemanticPackageImplementation<'a>,
         }
 
@@ -1011,9 +1152,42 @@ impl VersionedDocument for PackageDocument {
                 artifact: self.package_module.artifact.identity(),
                 path: &self.package_module.path,
             },
-            option_declarations: &self.option_declarations,
-            exports: &self.exports,
-            requirements: &self.requirements,
+            option_declarations: self
+                .option_declarations
+                .iter()
+                .map(|declaration| SemanticOptionDeclaration {
+                    path: &declaration.path,
+                    structured_type: &declaration.structured_type,
+                    default: match &declaration.default {
+                        Some(crate::DocumentedValue::Literal { value }) => Some(value),
+                        Some(crate::DocumentedValue::Text { .. }) | None => None,
+                    },
+                    visibility: declaration.visibility,
+                    read_only: declaration.read_only,
+                    contributable: declaration.contributable,
+                })
+                .collect(),
+            exports: self
+                .exports
+                .iter()
+                .map(|export| SemanticExport {
+                    name: &export.name,
+                    interface: &export.interface,
+                    implementation: export.implementation,
+                })
+                .collect(),
+            requirements: self
+                .requirements
+                .iter()
+                .map(|requirement| SemanticRequirement {
+                    alias: &requirement.alias,
+                    accepted_interfaces: &requirement.accepted_interfaces,
+                    methods: &requirement.methods,
+                    guarantees: &requirement.guarantees,
+                    strength: requirement.strength,
+                    fallback: &requirement.fallback,
+                })
+                .collect(),
             implementation: SemanticPackageImplementation {
                 providers,
                 handlers,
@@ -1093,6 +1267,46 @@ fn validate_interface_depth(
         for output in method.outputs.values() {
             ensure_schema_depth(&output.schema, limits)?;
         }
+    }
+    Ok(())
+}
+
+fn validate_interface_prose(
+    interface: &InterfaceDescriptor,
+    limits: &LimitProfile,
+) -> Result<(), DocumentError> {
+    validate_documentation_text("interface description", &interface.description, limits)?;
+    for output in interface.outputs.values() {
+        validate_documentation_text("interface output description", &output.description, limits)?;
+    }
+    for method in interface.methods.values() {
+        validate_documentation_text("interface method description", &method.description, limits)?;
+        for output in method.outputs.values() {
+            validate_documentation_text(
+                "interface method output description",
+                &output.description,
+                limits,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_documentation_text(
+    label: &'static str,
+    value: &str,
+    limits: &LimitProfile,
+) -> Result<(), DocumentError> {
+    if value.is_empty()
+        || value.len() as u64 > limits.max_string_bytes
+        || value.chars().any(char::is_control)
+    {
+        return Err(DocumentError::Decode {
+            label: "ability document".to_string(),
+            source: anyhow::anyhow!(
+                "{label} must be nonempty, control-free, and within the string limit"
+            ),
+        });
     }
     Ok(())
 }
@@ -1185,6 +1399,7 @@ mod tests {
             schema: InterfaceDocument::SCHEMA.to_string(),
             required_features: Vec::new(),
             interface: InterfaceDescriptor {
+                description: "Describes this declaration.".to_string(),
                 name: crate::identity::InterfaceName::new("test.echo")
                     .expect("valid test interface name"),
                 abi: NonZeroU32::new(1).expect("positive test ABI"),
@@ -1193,6 +1408,7 @@ mod tests {
                 outputs: BTreeMap::from([(
                     LocalKey::new("accepted").expect("valid test output name"),
                     crate::interface::OutputDescriptor {
+                        description: "Describes this declaration.".to_string(),
                         schema: ValueSchema::Boolean,
                         phase: crate::interface::ValuePhase::Evaluation,
                         visibility: ValueVisibility::Public,
@@ -1234,6 +1450,64 @@ mod tests {
                 .and_then(serde_json::Value::as_object)
                 .is_some_and(|interface| !interface.contains_key("configuration"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn interface_prose_changes_signed_bytes_without_changing_identity() -> Result<(), DocumentError>
+    {
+        let mut original = interface_document();
+        original.interface.methods.insert(
+            LocalKey::new("observe").expect("valid method name"),
+            crate::interface::MethodDescriptor {
+                description: "Observes the test resource.".to_string(),
+                semantics: crate::interface::MethodSemantics::ordinary(
+                    crate::plan::AccessMode::Read,
+                ),
+                parameters: ValueSchema::Boolean,
+                target_resource: original.interface.name.clone(),
+                outputs: BTreeMap::from([(
+                    LocalKey::new("observed").expect("valid output name"),
+                    crate::interface::OutputDescriptor {
+                        description: "Reports the observed value.".to_string(),
+                        schema: ValueSchema::Boolean,
+                        phase: crate::interface::ValuePhase::Observation,
+                        visibility: ValueVisibility::Public,
+                        lifetime: ResourceLifetime::Instance,
+                    },
+                )]),
+                permitted_operations: Vec::new(),
+                guarantees: Vec::new(),
+                outcome: crate::interface::OutcomeSemantics {
+                    completion_evidence: ValueSchema::Boolean,
+                    observation_evidence: ValueSchema::Boolean,
+                    supports_rejected_before_effect: true,
+                    indeterminate: crate::interface::IndeterminateSemantics::Reconcile,
+                },
+            },
+        );
+        let mut edited = original.clone();
+        edited.interface.description = "Reworded interface documentation.".to_string();
+        edited
+            .interface
+            .outputs
+            .get_mut(&LocalKey::new("accepted").expect("valid output name"))
+            .expect("interface output")
+            .description = "Reworded aggregate output documentation.".to_string();
+        let method = edited
+            .interface
+            .methods
+            .get_mut(&LocalKey::new("observe").expect("valid method name"))
+            .expect("interface method");
+        method.description = "Reworded method documentation.".to_string();
+        method
+            .outputs
+            .get_mut(&LocalKey::new("observed").expect("valid output name"))
+            .expect("method output")
+            .description = "Reworded method output documentation.".to_string();
+
+        assert_eq!(original.interface_key()?, edited.interface_key()?);
+        assert_ne!(encode_canonical(&original)?, encode_canonical(&edited)?);
         Ok(())
     }
 

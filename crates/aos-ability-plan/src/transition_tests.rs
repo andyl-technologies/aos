@@ -1786,6 +1786,8 @@ fn pure_service_package(
     payload: ArtifactReference,
 ) -> PackageDocument {
     let implementation = ProviderImplementation {
+        name: key("service"),
+        description: "Pure service test implementation.".to_string(),
         interface: interface.clone(),
         artifact: module.clone(),
         requirements: Vec::new(),
@@ -1823,6 +1825,7 @@ fn pure_service_package(
         exports: vec![ExportDeclaration {
             name: key("service"),
             interface: interface.clone(),
+            implementation_name: key("service"),
             implementation: descriptor,
         }],
         requirements: Vec::new(),
@@ -1868,6 +1871,7 @@ fn terminal_package(
         exports: vec![ExportDeclaration {
             name: key("manager"),
             interface: interface.clone(),
+            implementation_name: key("manager"),
             implementation: descriptor,
         }],
         requirements: Vec::new(),
@@ -1979,6 +1983,7 @@ fn lifecycle_planning_snapshot(
     if operator_enabled {
         let implementation = &mut pure_package.implementation.providers[0];
         implementation.requirements = vec![RequirementDeclaration {
+            description: "Describes this consumed ability.".to_string(),
             alias: manager_alias.clone(),
             accepted_interfaces: vec![interface.clone().into()],
             methods: vec![key("observe"), key("start")],
@@ -2586,6 +2591,8 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         .artifact
         .clone();
     let pure_implementation = ProviderImplementation {
+        name: key("pure"),
+        description: "Pure pipeline test implementation.".to_string(),
         interface: interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
@@ -2625,6 +2632,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
+            implementation_name: key("provider"),
             implementation: pure_descriptor,
         }],
         requirements: Vec::new(),
@@ -2639,6 +2647,8 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         .expect("pure pipeline package must have a digest");
     let handler_key = key("observe-handler");
     let terminal_implementation = ProviderImplementation {
+        name: key("terminal"),
+        description: "Terminal pipeline test implementation.".to_string(),
         interface: interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
@@ -2679,6 +2689,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
+            implementation_name: key("terminal"),
             implementation: terminal_reference.descriptor,
         }],
         requirements: Vec::new(),
