@@ -5,7 +5,6 @@
   buildPackages,
   gnumake,
   runc,
-  kmod,
   lib,
 }: let
   version = "2.3.5";
@@ -60,12 +59,8 @@
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin $out/lib/systemd/system
+          mkdir -p $out/bin
           install -m 755 bin/* $out/bin/
-          sed \
-            -e 's|/usr/local/bin/containerd|'"$out/bin/containerd"'|g' \
-            -e 's|/sbin/modprobe|${kmod}/sbin/modprobe|g' \
-            containerd.service > $out/lib/systemd/system/containerd.service
         '';
       }
     ];
@@ -76,7 +71,7 @@ in
     inherit version;
 
     src = null;
-    runtimeDeps = [payload runc kmod];
+    runtimeDeps = [payload runc];
     propagatedDeps = [];
 
     abilities = ./_containerd-config/module.nix;
