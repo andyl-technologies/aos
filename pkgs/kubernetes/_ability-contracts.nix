@@ -171,6 +171,11 @@
   };
   systemdBootstrap = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] systemdDefinition);
   kubernetesEffects = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] kubernetesDefinition);
+  k3sProvider = bootstrapMatrix:
+    import ./_k3s-ability-provider/default.nix {
+      inherit bootstrapMatrix systemdBootstrap kubernetesEffects;
+      inherit (lib.abilities) resourceRevision;
+    };
 
   k3sDefinition = {
     bootstrapMatrix ? false,
@@ -199,13 +204,13 @@
       composeEntry = "compose";
       transitionEntry = "transition";
       ownsResourceKinds = [k3sInterfaceName];
-      inherit (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}) compose;
+      inherit (k3sProvider bootstrapMatrix) compose;
       transition = transitionTransform (
         if providerStateQualification
-        then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}).providerStateQualificationTransition
+        then (k3sProvider bootstrapMatrix).providerStateQualificationTransition
         else if effectQualification
-        then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}).effectQualificationTransition
-        else (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix systemdBootstrap kubernetesEffects;}).transition
+        then (k3sProvider bootstrapMatrix).effectQualificationTransition
+        else (k3sProvider bootstrapMatrix).transition
       );
     };
   k3sInterface = lib.abilities.interfaceIdentity (lib.abilities.interfaceDocument [] (k3sDefinition {}));

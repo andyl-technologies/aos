@@ -1,6 +1,7 @@
 ##! Pure K3s aggregate provider for the Kubernetes activation fixture.
 {
   bootstrapMatrix ? false,
+  resourceRevision,
   systemdBootstrap,
   kubernetesEffects,
 }: let
@@ -28,10 +29,8 @@
     inherit key;
   };
 
-  revisionFor = value: "sha256:${builtins.hashString "sha256" (builtins.toJSON value)}";
-
   objectFor = context: contribution: let
-    revision = revisionFor contribution.value;
+    revision = resourceRevision contribution.value;
     resource = resourceFor context "${contribution.slot}-helmchart";
     owner = "sha256:${builtins.hashString "sha256" "aos.ability.kubernetes-object-owner/v1\u0000${builtins.toJSON resource}"}";
     forbiddenClusterRole = contribution.value.chart == "__aos_forbidden_cluster_role__";
@@ -105,7 +104,7 @@
     resources = builtins.sort (left: right: left.resource.key < right.resource.key) (
       (map (service: {
           inherit (service) resource;
-          revision = revisionFor service.value;
+          revision = resourceRevision service.value;
         })
         serviceValues)
       ++ builtins.map (object: {

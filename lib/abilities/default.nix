@@ -1589,6 +1589,7 @@ in rec {
     interfaceSelectorMatches
     canonicalizePackageOutputSelectors
     normalizePackageOutputSelectors
+    resourceRevision
     ;
   types = abilityTypes;
   interfaces = rec {
