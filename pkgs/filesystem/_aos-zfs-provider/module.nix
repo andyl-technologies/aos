@@ -7,6 +7,7 @@
 }: let
   storage = lib.abilities.interfaces.blockStorage.interfaces;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  abilityTypes = lib.abilities.types;
   artifact = lib.abilities.packageOutput {};
   cfg = config.aos.filesystems.zfs;
   consumerInstance = "zfs-storage";
@@ -113,6 +114,28 @@
     prerequisites = [];
   };
   datasetKey = name: "dataset-${builtins.substring 0 32 (builtins.hashString "sha256" name)}";
+  datasetConfiguration = abilityTypes.record {
+    fields = {
+      mountpoint = {
+        type = abilityTypes.optional abilityTypes.executionPath;
+        optional = true;
+        description = "Absolute mountpoint, defaulting to the dataset name below root.";
+      };
+      properties = {
+        type = abilityTypes.map {
+          keyMaxLength = 255;
+          keySyntax = null;
+          maxEntries = 256;
+          value = abilityTypes.string {
+            maxLength = 4096;
+            syntax = null;
+          };
+        };
+        default = {};
+        description = "Exact provider-neutral property values applied to the dataset.";
+      };
+    };
+  };
   datasetEntries =
     lib.mapAttrsToList (name: attributes: let
       key = datasetKey name;
@@ -125,7 +148,7 @@
         pool = resultOf "pool" "pool-name";
         dataset = name;
         inherit mountpoint;
-        properties = builtins.removeAttrs attributes ["mountpoint"];
+        inherit (attributes) properties;
         prerequisites = [(resultOf "pool" "readiness-resource")];
       };
       readiness = qualifiedResultOf key "readiness-resource";
@@ -150,7 +173,12 @@ in {
       description = "Name of the storage pool for persistent data.";
     };
     datasets = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
+      type = abilityTypes.map {
+        keyMaxLength = 1024;
+        keySyntax = null;
+        maxEntries = 1024;
+        value = datasetConfiguration;
+      };
       default = {};
       description = "Datasets and their exact desired properties.";
     };

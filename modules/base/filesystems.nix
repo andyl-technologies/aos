@@ -184,19 +184,25 @@ in {
     aos.filesystems.zfs.datasets = {
       "var" = {
         mountpoint = "/var";
-        compression = "zstd-3";
-        atime = "off";
+        properties = {
+          compression = "zstd-3";
+          atime = "off";
+        };
       };
       "var/log" = {
         mountpoint = "/var/log";
-        compression = "zstd-3";
-        atime = "off";
-        logbias = "throughput";
+        properties = {
+          compression = "zstd-3";
+          atime = "off";
+          logbias = "throughput";
+        };
       };
       "var/lib" = {
         mountpoint = "/var/lib";
-        compression = "zstd-3";
-        atime = "off";
+        properties = {
+          compression = "zstd-3";
+          atime = "off";
+        };
       };
     };
 
