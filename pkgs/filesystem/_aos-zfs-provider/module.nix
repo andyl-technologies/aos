@@ -280,7 +280,10 @@
   fragments = [pool] ++ datasets;
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
-  imports = [./policy.nix];
+  imports = [
+    ./maintenance.nix
+    ./policy.nix
+  ];
 
   options.aos.filesystems.zfs = {
     enable = lib.mkOption {
@@ -368,7 +371,7 @@ in {
           message = "allowDeduplication requires a bounded deduplicationTableQuota";
         }
         {
-          assertion = !cfg.reservedSpace.enable || !(builtins.hasAttr cfg.reservedSpace.dataset cfg.datasets);
+          assertion = !cfg.reservedSpace.enable || !(builtins.hasAttr reservedDatasetName cfg.datasets);
           message = "the ZFS reservation dataset must not collide with a data-bearing declared dataset";
         }
       ];
