@@ -10,6 +10,18 @@
   serviceTypes = serviceManagement.types;
   inherit (lib.abilities) resultOf;
 
+  state = serviceManagement.forProducer {
+    consumerInstance = "apm-systemd-client-test";
+    key = "state";
+    interface = serviceManagement.interfaces.persistentStorageAllocation;
+    parameters = {
+      name = "state";
+      purpose = "state";
+      mode = "0750";
+    };
+  };
+  statePath = resultOf "state" "storage-path";
+
   command = package: entryPoint: arguments: {
     executable = {
       artifact = lib.abilities.packageOutput {inherit package;};
@@ -93,7 +105,7 @@
       description = "Notification-aware service with signal-based reload";
       execution_model = "foreground";
       start = [
-        (command "apm-systemd-client-test" "bin/apm-test-notify-reload" [])
+        (command "apm-systemd-client-test" "bin/apm-test-notify-reload" [statePath])
       ];
       restart = "never";
       restart_delay_millis = 0;
@@ -114,6 +126,13 @@
         signal = "SIGHUP";
         completion = "notification";
       };
+      storage.mounts = [
+        {
+          name = "state";
+          source = statePath;
+          access = "read-write";
+        }
+      ];
     };
   timeout = service "timeout" {
     description = "Oneshot service whose start operation times out";
@@ -149,6 +168,7 @@
     remain_after_exit = false;
   } {};
   services = [ok fail slow reload notifyReload timeout dependency autorestart];
+  fragments = [state] ++ services;
 in {
   options.apm-systemd-client-test.enable = lib.mkOption {
     type = abilityTypes.boolean;
@@ -160,14 +180,14 @@ in {
     {
       aos.abilities = lib.mkMerge (builtins.map
         (fragment: (serviceManagement.splitContribution fragment).declarations)
-        services);
+        fragments);
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
         [{instances.apm-systemd-client-test = {};}]
         ++ builtins.map
         (fragment: (serviceManagement.splitContribution fragment).configured)
-        services
+        fragments
       );
     })
   ];

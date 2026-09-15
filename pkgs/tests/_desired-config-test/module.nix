@@ -10,6 +10,16 @@
   serviceTypes = serviceManagement.types;
   inherit (lib.abilities) resultOf;
 
+  token = abilityTypes.refined {
+    name = "desired-state test token";
+    description = "a non-empty environment value containing letters, digits, dots, underscores, or dashes";
+    type = abilityTypes.string {
+      maxLength = 256;
+      syntax = null;
+    };
+    predicate = value: builtins.match "[A-Za-z0-9_.-]+" value != null;
+  };
+
   state = serviceManagement.forProducer {
     consumerInstance = "desired-config-test";
     key = "state";
@@ -99,10 +109,7 @@ in {
       description = "Enable the desired-state configuration sequencing fixture.";
     };
     token = lib.mkOption {
-      type = abilityTypes.string {
-        maxLength = 256;
-        syntax = null;
-      };
+      type = token;
       default = "desired-token";
       description = "Token written into the managed test configuration.";
     };

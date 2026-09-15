@@ -37,7 +37,7 @@ in
     abilities = ./_aos-test-agent/module.nix;
 
     meta = {
-      description = "AOS exposed package for the VM test guest agent";
+      description = "AOS package for the VM test guest agent";
       license = "Apache-2.0";
     };
   }

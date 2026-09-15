@@ -7,7 +7,7 @@
   notifyReloadHelper = writeShellScriptBin "apm-test-notify-reload" ''
     set -euo pipefail
 
-    state_dir=/var/lib/aos-pkg-apm-systemd-client-test
+    state_dir=$1
     state=$state_dir/apm-test-notify-reload.count
     notify=${systemd}/bin/systemd-notify
 
@@ -60,7 +60,7 @@ in
     abilities = ./_apm-systemd-client-test/module.nix;
 
     meta = {
-      description = "AOS exposed package for apm systemd-client integration tests";
+      description = "Manager-neutral service-client integration test package";
       license = "Apache-2.0";
     };
   }
