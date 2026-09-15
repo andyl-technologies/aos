@@ -82,6 +82,7 @@ in
   assert output.phase == "planning";
   assert output.visibility == "protected";
   assert output.lifetime == "instance";
+  assert output.value._type == "aos-resource-reference";
   assert output.value.interface == filesystemEntry.identity;
   assert output.value.resource == resource.resource;
   assert output.value.operations == ["observe"];

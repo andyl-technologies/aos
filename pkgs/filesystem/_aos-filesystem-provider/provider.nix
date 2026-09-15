@@ -24,7 +24,10 @@
     provider = instance.id;
     key = binding.slot;
   };
+  # Provider contexts already contain normalized wire identities, so only the
+  # enclosing reference marker remains to be attached here.
   referenceFor = interface: lifetime: resource: {
+    _type = "aos-resource-reference";
     interface = interface.identity;
     inherit resource lifetime;
     operations = ["observe"];
