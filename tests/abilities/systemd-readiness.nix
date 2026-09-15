@@ -12,9 +12,24 @@
     strength = "required";
     fallback = null;
   };
-  evaluation = lib.evalModules {
-    inherit lib;
-    modules = [
+  baseBindings = {
+    "test:network" = {
+      request = "consumer:network";
+      implementation = "systemd:network-readiness";
+      providerInstance = "systemd:manager";
+      slot = "network";
+    };
+    "test:filesystems" = {
+      request = "consumer:filesystems";
+      implementation = "systemd:filesystem-readiness";
+      providerInstance = "systemd:manager";
+      slot = "filesystems";
+    };
+  };
+  evaluate = bindings:
+    lib.evalModules {
+      inherit lib;
+      modules = [
       lib.abilities.module
       ../../modules/systemd/system.nix
       {
@@ -24,24 +39,11 @@
             key = "systemd-readiness";
             stage = "host";
           };
-          bindings = {
-            "test:network" = {
-              request = "consumer:network";
-              implementation = "systemd:network-readiness";
-              providerInstance = "systemd:manager";
-              slot = "network";
-            };
-            "test:filesystems" = {
-              request = "consumer:filesystems";
-              implementation = "systemd:filesystem-readiness";
-              providerInstance = "systemd:manager";
-              slot = "filesystems";
-            };
-          };
+          inherit bindings;
         };
       }
-    ];
-    packageModules = [
+      ];
+      packageModules = [
       {
         name = "systemd";
         module = {
@@ -79,16 +81,39 @@
           };
         };
       }
-    ];
-    specialArgs = {
-      inherit pkgs;
-      packageName = "systemd";
-      provenance = {
-        dependencyOwnersOfAttr = _: _: [];
-        ownerOfListAttr = _: _: _: "@test";
+      ];
+      specialArgs = {
+        inherit pkgs;
+        packageName = "systemd";
+        provenance = {
+          dependencyOwnersOfAttr = _: _: [];
+          ownerOfListAttr = _: _: _: "@test";
+        };
       };
     };
-  };
+  pending = evaluate baseBindings;
+  pendingChildren = builtins.attrValues pending.config.aos.abilities.compositionPendingRequests;
+  networkChild = builtins.head (builtins.filter
+    (child: child.declaration.parameters ? address_families)
+    pendingChildren);
+  filesystemChild = builtins.head (builtins.filter
+    (child: !(child.declaration.parameters ? address_families))
+    pendingChildren);
+  evaluation = evaluate (baseBindings
+    // {
+      "test:network-effects" = {
+        request = networkChild.request;
+        implementation = "systemd:systemd-network-readiness-effects";
+        providerInstance = "systemd:manager";
+        slot = networkChild.slot;
+      };
+      "test:filesystem-effects" = {
+        request = filesystemChild.request;
+        implementation = "systemd:systemd-filesystem-readiness-effects";
+        providerInstance = "systemd:manager";
+        slot = filesystemChild.slot;
+      };
+    });
   abilities = evaluation.config.aos.abilities;
   networkOutput = abilities.compositionOutputs."consumer:network".readiness-resource;
   filesystemOutput = abilities.compositionOutputs."consumer:filesystems".readiness-resource;
@@ -105,5 +130,7 @@ in
   assert filesystems.controller == null;
   assert filesystems.realization == null;
   assert filesystems.value.scope == "local-filesystems";
-  assert abilities.implementations."systemd:network-readiness".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
-  assert abilities.implementations."systemd:filesystem-readiness".handlerDescriptor.entryPoint == "bin/aos-systemd-provider"; true
+  assert abilities.implementations."systemd:network-readiness".handlerDescriptor == null;
+  assert abilities.implementations."systemd:filesystem-readiness".handlerDescriptor == null;
+  assert abilities.implementations."systemd:systemd-network-readiness-effects".providerModule == null;
+  assert abilities.implementations."systemd:systemd-filesystem-readiness-effects".providerModule == null; true

@@ -260,7 +260,8 @@
     entries = builtins.map (requestName: let
       binding = bindingFor context.bindings requestName;
     in {
-      inherit requestName;
+      inherit requestName binding;
+      parameters = context.requests.${requestName}.parameters;
       reference = {
         _type = "aos-resource-reference";
         interface = selected.identity;
@@ -276,6 +277,15 @@
     emptyResult
     // {
       resourceFragments = {};
+      requests = builtins.listToAttrs (builtins.map (entry: {
+          name = entry.binding.slot;
+          value = {
+            requirement = "readiness-effects";
+            scope = [selected.alias];
+            slot = entry.binding.slot;
+            parameters = entry.parameters;
+          };
+        }) entries);
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
           value.${outputName} = entry.reference;
@@ -727,10 +737,38 @@
     })
     serviceImplementationNames);
   readinessProviderImplementations = {
-    ${networkReadinessAlias}.provide =
-      provideReadiness serviceInterfaces.networkReadiness "readiness-resource";
-    ${filesystemReadinessAlias}.provide =
-      provideReadiness serviceInterfaces.filesystemReadiness "readiness-resource";
+    ${networkReadinessAlias} = {
+      provide = provideReadiness serviceInterfaces.networkReadiness "readiness-resource";
+      transition = _: {
+        schema = "aos.ability.transition-fragment/v1";
+        operations = [];
+        decisions = [];
+        merges = [];
+        edges = [];
+        exports = [];
+        imports = [];
+        links = [];
+        handoffs = [];
+        provider_readiness = [];
+        obligations = [];
+      };
+    };
+    ${filesystemReadinessAlias} = {
+      provide = provideReadiness serviceInterfaces.filesystemReadiness "readiness-resource";
+      transition = _: {
+        schema = "aos.ability.transition-fragment/v1";
+        operations = [];
+        decisions = [];
+        merges = [];
+        edges = [];
+        exports = [];
+        imports = [];
+        links = [];
+        handoffs = [];
+        provider_readiness = [];
+        obligations = [];
+      };
+    };
   };
   identityProviderImplementations = import ./_systemd-identity-provider.nix {
     inherit config lib packageName;

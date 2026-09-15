@@ -5,9 +5,18 @@
 }: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   filesystemEntry = serviceManagement.interfaces.filesystemEntry;
-  evaluation = lib.evalModules {
-    inherit lib;
-    modules = [
+  baseBindings = {
+    "test:entry" = {
+      request = "consumer:entry";
+      implementation = "aos-filesystem-provider:filesystem-entry";
+      providerInstance = "aos-filesystem-provider:filesystem";
+      slot = "entry";
+    };
+  };
+  evaluate = bindings:
+    lib.evalModules {
+      inherit lib;
+      modules = [
       lib.abilities.module
       {
         config.aos.abilities = {
@@ -16,16 +25,11 @@
             key = "filesystem-entry";
             stage = "host";
           };
-          bindings."test:entry" = {
-            request = "consumer:entry";
-            implementation = "aos-filesystem-provider:filesystem-entry";
-            providerInstance = "aos-filesystem-provider:filesystem";
-            slot = "entry";
-          };
+          inherit bindings;
         };
       }
-    ];
-    packageModules = [
+      ];
+      packageModules = [
       {
         name = "aos-filesystem-provider";
         module = {
@@ -62,16 +66,27 @@
           };
         };
       }
-    ];
-    specialArgs = {
-      inherit pkgs;
-      packageName = "aos-filesystem-provider";
-      provenance = {
-        dependencyOwnersOfAttr = _: _: [];
-        ownerOfListAttr = _: _: _: "@test";
+      ];
+      specialArgs = {
+        inherit pkgs;
+        packageName = "aos-filesystem-provider";
+        provenance = {
+          dependencyOwnersOfAttr = _: _: [];
+          ownerOfListAttr = _: _: _: "@test";
+        };
       };
     };
-  };
+  pending = evaluate baseBindings;
+  effectsChild = builtins.head (builtins.attrValues pending.config.aos.abilities.compositionPendingRequests);
+  evaluation = evaluate (baseBindings
+    // {
+      "test:entry-effects" = {
+        request = effectsChild.request;
+        implementation = "aos-filesystem-provider:filesystem-entry-effects";
+        providerInstance = "aos-filesystem-provider:filesystem";
+        slot = effectsChild.slot;
+      };
+    });
   abilities = evaluation.config.aos.abilities;
   output = abilities.compositionOutputs."consumer:entry".entry-resource;
   resources = builtins.attrValues abilities.resolvedResources;
@@ -88,4 +103,6 @@ in
   assert output.value.operations == ["observe"];
   assert resource.value.destination == "/run/example";
   assert resource.realization.path == "/run/example";
+  assert abilities.implementations."aos-filesystem-provider:filesystem-entry".handlerDescriptor == null;
+  assert abilities.implementations."aos-filesystem-provider:filesystem-entry-effects".providerModule == null;
   true

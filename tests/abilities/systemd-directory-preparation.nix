@@ -160,6 +160,26 @@
     (candidate: candidate.requirement == "service-effects")
     pendingChildren);
   childRequestKey = child.request;
+  preparedEvaluation = evaluate {
+    includeFilesystemProvider = true;
+    bindings =
+      baseBindings
+      // {
+        "test:directory-preparation" = {
+          request = childRequestKey;
+          implementation = "aos-filesystem-provider:filesystem-entry";
+          providerInstance = "aos-filesystem-provider:filesystem";
+          slot = child.slot;
+        };
+        "test:service-effects" = {
+          request = effectsChild.request;
+          implementation = "systemd:systemd-service-effects";
+          providerInstance = "systemd:manager";
+          slot = effectsChild.slot;
+        };
+      };
+  };
+  filesystemEffectsChild = builtins.head (builtins.attrValues preparedEvaluation.config.aos.abilities.compositionPendingRequests);
   resolvedEvaluation = evaluate {
     includeFilesystemProvider = true;
     bindings =
@@ -176,6 +196,12 @@
           implementation = "systemd:systemd-service-effects";
           providerInstance = "systemd:manager";
           slot = effectsChild.slot;
+        };
+        "test:filesystem-effects" = {
+          request = filesystemEffectsChild.request;
+          implementation = "aos-filesystem-provider:filesystem-entry-effects";
+          providerInstance = "aos-filesystem-provider:filesystem";
+          slot = filesystemEffectsChild.slot;
         };
       };
   };

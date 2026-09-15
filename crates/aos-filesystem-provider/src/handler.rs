@@ -110,7 +110,7 @@ impl FilesystemProvider {
     fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
-        let interface = request.method.interface.name.as_str();
+        let interface = request.resource_spec.kind.as_str();
         let desired = request.resource_spec.value.clone();
         let (path, observation, revision) = match interface {
             STORAGE_ALLOCATION_INTERFACE | PERSISTENT_STORAGE_ALLOCATION_INTERFACE => {
@@ -211,7 +211,7 @@ impl FilesystemProvider {
             schema: ADMISSION_SCHEMA.into(),
             disposition: AdmissionDisposition::Admitted,
             revision,
-            incarnation: None,
+            incarnation: Some(request.assignment.incarnation),
             observation,
             native_context,
             supported_purposes: SupportedPurposes::from_ordered(vec![
@@ -253,7 +253,7 @@ impl FilesystemProvider {
             "unsupported filesystem context schema"
         );
 
-        let interface = invocation.method.interface.name.as_str();
+        let interface = bound.resource_spec.kind.as_str();
         let observation_before = self.observe_request(interface, &bound, &request.resources)?;
         let (disposition, evidence, mut outputs) = match invocation.purpose {
             InvocationPurpose::Effect if invocation.method.method.as_str() == "observe" => (

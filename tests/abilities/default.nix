@@ -540,6 +540,9 @@
   systemdManagerWatchdog = import ./systemd-manager-watchdog.nix {
     inherit pkgs lib;
   };
+  providerTerminalSeparation = import ./provider-terminal-separation.nix {
+    inherit pkgs lib;
+  };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokeArtifactSelectors = pkgs.ability-package-smoke.contract.selectors;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
@@ -960,6 +963,7 @@ in
   assert securityPolkitNative;
   assert securitySshNative;
   assert systemdManagerWatchdog;
+  assert providerTerminalSeparation;
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
   assert builtins.length (builtins.attrNames smokeAbilityProjection.requirementTemplates) == 1;

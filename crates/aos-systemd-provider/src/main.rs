@@ -700,7 +700,7 @@ mod tests {
     fn method(name: &str) -> MethodReference {
         serde_json::from_value(serde_json::json!({
             "interface": {
-                "name": "aos.systemd.packaged-unit",
+                "name": "aos.systemd.packaged-unit-effects",
                 "abi": 1,
                 "descriptor": Sha256Digest::from_bytes([1; 32]).to_string(),
             },
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn methods_require_their_exact_declared_semantics() {
-        let apply = method("apply");
+        let apply = method("create");
         let observe = method("observe");
         let remove = method("remove");
 
