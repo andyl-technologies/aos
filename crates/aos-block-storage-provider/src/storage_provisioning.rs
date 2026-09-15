@@ -33,11 +33,26 @@ const SCRATCH_ROOT: &str = "/run/aos/storage-provisioning";
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Desired {
+    request: ProvisioningRequest,
+    plan: DesiredPlan,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProvisioningRequest {
     name: String,
     enabled: bool,
-    plan: DesiredPlan,
     root_device: String,
+    measured_boot: bool,
+    policy: ProvisioningPolicy,
     prerequisites: Vec<ResourceReference>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProvisioningPolicy {
+    initialize: String,
+    committed_divergence: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -146,6 +161,21 @@ impl Backend for StorageProvisioningBackend {
         "committed-source"
     }
 
+    fn invocation_desired(
+        &self,
+        admitted: &AbilityValue,
+        inputs: &AbilityValue,
+    ) -> Result<AbilityValue> {
+        let desired: Desired = decode(inputs)?;
+        let request: ProvisioningRequest = decode(admitted)?;
+        ensure!(
+            desired.request == request,
+            "runtime request differs from the admitted provisioning intent"
+        );
+        validate_desired(&desired)?;
+        ability_value(serde_json::to_value(desired)?)
+    }
+
     fn admit_context(
         &self,
         desired: &AbilityValue,
@@ -154,7 +184,7 @@ impl Backend for StorageProvisioningBackend {
         _revision: RevisionId,
         _resources: &[ResourceContext],
     ) -> Result<AbilityValue> {
-        validate_desired(&decode(desired)?)?;
+        validate_request(&decode(desired)?)?;
         let realization: Realization = decode(realization)?;
         ensure!(
             realization.schema == REALIZATION_SCHEMA,
@@ -168,6 +198,24 @@ impl Backend for StorageProvisioningBackend {
             sfdisk: realization.sfdisk.resolve()?,
             udevadm: realization.udevadm.resolve()?,
         })?)
+    }
+
+    fn observe_admission(
+        &self,
+        desired: &AbilityValue,
+        _realization: &AbilityValue,
+        _target: &ResourceReference,
+        _revision: RevisionId,
+        _context: &AbilityValue,
+    ) -> Result<BackendObservation> {
+        let request: ProvisioningRequest = decode(desired)?;
+        Ok(BackendObservation {
+            evidence: observation(&request, None, "absent")?,
+            ready: false,
+            released: false,
+            path: None,
+            unknown: false,
+        })
     }
 
     fn observe(
@@ -189,12 +237,7 @@ impl Backend for StorageProvisioningBackend {
             DiskState::Pending => ("pending", None, false, true),
             DiskState::Unknown => ("unknown", None, false, true),
         };
-        let evidence = ability_value(json!({
-            "schema": OBSERVATION_SCHEMA,
-            "expected": desired.as_json(),
-            "committed_source": committed_source.map(Source::name),
-            "state": state_name,
-        }))?;
+        let evidence = observation(&desired_value.request, committed_source, state_name)?;
         Ok(BackendObservation {
             evidence,
             ready,
@@ -218,7 +261,7 @@ impl Backend for StorageProvisioningBackend {
         validate_desired(&desired)?;
         validate_context(&context)?;
         ensure!(
-            desired.enabled,
+            desired.request.enabled,
             "disabled provisioning request cannot commit"
         );
 
@@ -234,7 +277,7 @@ impl Backend for StorageProvisioningBackend {
 
         let deadline = operation_deadline(remaining_millis)?;
         let rendered = render(&desired, target)?;
-        let root_disk = root_disk(&context.lsblk, &desired.root_device)?;
+        let root_disk = root_disk(&context.lsblk, &desired.request.root_device)?;
         let targets = rendered_targets(&rendered, &root_disk)?;
 
         for target in &targets {
@@ -314,7 +357,7 @@ fn inspect_state(
     }
 
     let rendered = render(desired, target)?;
-    let root_disk = root_disk(&context.lsblk, &desired.root_device)?;
+    let root_disk = root_disk(&context.lsblk, &desired.request.root_device)?;
     let targets = rendered_targets(&rendered, &root_disk)?;
     for target in &targets {
         match run_repart(context, target, true, true, 15_000) {
@@ -538,17 +581,44 @@ fn partition_number(device: &Path) -> Result<String> {
 }
 
 fn validate_desired(desired: &Desired) -> Result<()> {
+    validate_request(&desired.request)?;
     ensure!(
-        !desired.name.is_empty() && desired.name.len() <= 128,
-        "storage-provisioning request name is invalid"
+        desired.request.measured_boot == desired.plan.measured_boot,
+        "provisioning plan measured-boot policy differs from the admitted request"
     );
-    validate_device_path(&desired.root_device)?;
     ensure!(
         desired.plan.schema == "aos.storage.provisioning-plan/v1",
         "unsupported storage-provisioning plan schema"
     );
     normalize_marker_uuid(&desired.plan.marker_uuid)?;
     validate_provisioning_plan(&shared_plan(&desired.plan), desired.plan.measured_boot)
+}
+
+fn validate_request(request: &ProvisioningRequest) -> Result<()> {
+    ensure!(
+        !request.name.is_empty() && request.name.len() <= 128,
+        "storage-provisioning request name is invalid"
+    );
+    validate_device_path(&request.root_device)?;
+    ensure!(
+        request.policy.initialize == "if-unprovisioned"
+            && request.policy.committed_divergence == "require-factory-reset",
+        "unsupported storage-provisioning policy"
+    );
+    Ok(())
+}
+
+fn observation(
+    request: &ProvisioningRequest,
+    committed_source: Option<Source>,
+    state: &str,
+) -> Result<AbilityValue> {
+    ability_value(json!({
+        "schema": OBSERVATION_SCHEMA,
+        "expected": request,
+        "committed_source": committed_source.map(Source::name),
+        "state": state,
+    }))
 }
 
 fn validate_context(context: &Context) -> Result<()> {
@@ -623,8 +693,17 @@ mod tests {
 
     fn desired() -> Desired {
         Desired {
-            name: "first-boot".into(),
-            enabled: true,
+            request: ProvisioningRequest {
+                name: "first-boot".into(),
+                enabled: true,
+                root_device: "/dev/disk/by-partlabel/root-a".into(),
+                measured_boot: false,
+                policy: ProvisioningPolicy {
+                    initialize: "if-unprovisioned".into(),
+                    committed_divergence: "require-factory-reset".into(),
+                },
+                prerequisites: Vec::new(),
+            },
             plan: DesiredPlan {
                 schema: "aos.storage.provisioning-plan/v1".into(),
                 source: Source::Operator,
@@ -647,8 +726,6 @@ mod tests {
                     },
                 )]),
             },
-            root_device: "/dev/disk/by-partlabel/root-a".into(),
-            prerequisites: Vec::new(),
         }
     }
 
@@ -660,6 +737,29 @@ mod tests {
         let plan = shared_plan(&desired.plan);
         assert_eq!(plan.storage.partitions["var"].device, None);
         assert_eq!(plan.storage.partitions["var"].label, "var");
+    }
+
+    #[test]
+    fn runtime_plan_must_bind_the_exact_admitted_request() {
+        let backend = StorageProvisioningBackend;
+        let desired = desired();
+        let admitted = ability_value(serde_json::to_value(&desired.request).expect("request JSON"))
+            .expect("request value");
+        let inputs = ability_value(serde_json::to_value(&desired).expect("input JSON"))
+            .expect("input value");
+
+        assert_eq!(
+            backend
+                .invocation_desired(&admitted, &inputs)
+                .expect("bound runtime plan"),
+            inputs
+        );
+
+        let mut different = desired;
+        different.request.name = "another-transaction".into();
+        let different = ability_value(serde_json::to_value(different).expect("different JSON"))
+            .expect("different value");
+        assert!(backend.invocation_desired(&admitted, &different).is_err());
     }
 
     #[test]

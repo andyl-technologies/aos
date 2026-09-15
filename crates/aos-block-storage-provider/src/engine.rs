@@ -24,6 +24,20 @@ pub trait Backend {
     /// Returns the runtime path output name.
     fn path_output(&self) -> &'static str;
 
+    /// Resolves the runtime method input against the admitted resource value.
+    ///
+    /// Most block-storage terminals consume the resource value verbatim. A
+    /// controller may instead pass a checked runtime result alongside that
+    /// value when its terminal method declares a distinct parameter schema.
+    fn invocation_desired(
+        &self,
+        admitted: &AbilityValue,
+        inputs: &AbilityValue,
+    ) -> Result<AbilityValue> {
+        ensure!(admitted == inputs, "bound inputs differ");
+        Ok(admitted.clone())
+    }
+
     /// Validates one desired request and its selected realization.
     fn admit_context(
         &self,
@@ -43,6 +57,21 @@ pub trait Backend {
         revision: aos_ability_model::RevisionId,
         context: &AbilityValue,
     ) -> Result<BackendObservation>;
+
+    /// Observes the resource during admission before runtime results exist.
+    ///
+    /// Terminals whose desired value is available only at runtime override
+    /// this hook and report an absent revision until transition inputs resolve.
+    fn observe_admission(
+        &self,
+        desired: &AbilityValue,
+        realization: &AbilityValue,
+        target: &ResourceReference,
+        revision: aos_ability_model::RevisionId,
+        context: &AbilityValue,
+    ) -> Result<BackendObservation> {
+        self.observe(desired, realization, target, revision, context)
+    }
 
     /// Applies the exact desired resource.
     fn apply(
@@ -145,7 +174,7 @@ impl<B: Backend> Provider<B> {
             request.resource_spec.revision,
             &request.resources,
         )?;
-        let observation = self.backend.observe(
+        let observation = self.backend.observe_admission(
             &request.resource_spec.value,
             &request.resource_spec.realization,
             &request.target,
@@ -216,10 +245,6 @@ impl<B: Backend> Provider<B> {
                 .is_ok(),
             "invocation method is outside the target resource authority"
         );
-        ensure!(
-            bound.resource_spec.value == invocation.request.inputs,
-            "bound inputs differ"
-        );
         require_prerequisites(&bound.resource_spec.value, &invocation.request.resources)?;
         let expected_context = self.backend.admit_context(
             &bound.resource_spec.value,
@@ -232,11 +257,14 @@ impl<B: Backend> Provider<B> {
             expected_context == bound.provider_context,
             "provider context differs from admission"
         );
+        let desired = self
+            .backend
+            .invocation_desired(&bound.resource_spec.value, &invocation.request.inputs)?;
 
         let observing = invocation.request.method.method.as_str() == "observe";
         let removing = invocation.request.method.method.as_str() == "release";
         let before = self.backend.observe(
-            &bound.resource_spec.value,
+            &desired,
             &bound.resource_spec.realization,
             &invocation.request.target,
             bound.resource_spec.revision,
@@ -257,7 +285,7 @@ impl<B: Backend> Provider<B> {
                 if invocation.method.method.as_str() == self.backend.action_method() =>
             {
                 self.backend.apply(
-                    &bound.resource_spec.value,
+                    &desired,
                     &bound.resource_spec.realization,
                     &invocation.request.target,
                     target.revision,
@@ -265,7 +293,7 @@ impl<B: Backend> Provider<B> {
                     invocation.control.attempt_remaining_millis,
                 )?;
                 self.backend.observe(
-                    &bound.resource_spec.value,
+                    &desired,
                     &bound.resource_spec.realization,
                     &invocation.request.target,
                     bound.resource_spec.revision,
@@ -274,14 +302,14 @@ impl<B: Backend> Provider<B> {
             }
             InvocationPurpose::Effect if invocation.method.method.as_str() == "release" => {
                 self.backend.release(
-                    &bound.resource_spec.value,
+                    &desired,
                     &bound.resource_spec.realization,
                     &invocation.request.target,
                     &expected_context,
                     invocation.control.attempt_remaining_millis,
                 )?;
                 self.backend.observe(
-                    &bound.resource_spec.value,
+                    &desired,
                     &bound.resource_spec.realization,
                     &invocation.request.target,
                     bound.resource_spec.revision,
