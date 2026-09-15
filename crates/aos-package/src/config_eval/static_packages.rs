@@ -61,12 +61,11 @@ pub(super) fn load() -> Result<BTreeMap<String, LocalRuntimePackage>> {
         let package = LocalRuntimePackage {
             version: selected.version().to_string(),
             store_path: selected.payload().store_path.clone(),
+            nar_hash: selected.payload().nar_hash.to_string(),
             contract: Some(ContractOrigin::EmbeddedStatic {
                 contract: contract.clone(),
                 package: selected.name().clone(),
             }),
-            document: Some(document.clone()),
-            ability_store_path: selected.manifest().store_path().to_string(),
             closure: std::cell::RefCell::new(None),
         };
         ensure!(

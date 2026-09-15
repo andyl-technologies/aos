@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::registry::{RegistrySet, store_path_hash};
@@ -44,12 +44,10 @@ pub struct LocalRuntimePackage {
     pub version: String,
     /// Exact runtime output in the immutable image closure.
     pub store_path: String,
+    /// Authenticated NAR identity of the runtime output.
+    pub nar_hash: String,
     /// Authenticated package contract retained in the image.
     pub contract: Option<ContractOrigin>,
-    /// Retains the checked package document during the current fixed point.
-    pub document: Option<aos_ability_model::PackageDocument>,
-    /// Retains the authenticated companion root containing that document.
-    pub ability_store_path: String,
     /// Lazily verified closure reused across outer fixpoint iterations.
     pub(super) closure: RefCell<Option<Vec<RuntimeClosurePin>>>,
 }
@@ -328,6 +326,10 @@ pub fn resolve_runtime_with_local(
             .find(|member| member.store_path_hash == root_hash)
             .and_then(|member| member.realisations.first())
             .context("image-local closure omitted its runtime output NAR identity")?;
+        ensure!(
+            package.nar_hash == root_realization.nar_hash,
+            "image-local runtime output differs from its authenticated static contract"
+        );
         packages.insert(
             name,
             RuntimePackagePin {
@@ -513,9 +515,8 @@ mod tests {
             LocalRuntimePackage {
                 version: "1.2.3".to_string(),
                 store_path: store_path.to_string(),
+                nar_hash: format!("sha256:{FIX_NAR}"),
                 contract: None,
-                document: None,
-                ability_store_path: String::new(),
                 closure: RefCell::new(Some(vec![RuntimeClosurePin {
                     store_path_hash: store_path_hash(store_path).to_string(),
                     store_path: Some(store_path.to_string()),
