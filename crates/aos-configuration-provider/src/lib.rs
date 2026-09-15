@@ -417,16 +417,34 @@ fn validate_realization(
 fn target_realization(
     invocation: &Invocation,
 ) -> Result<ConfigurationRealization, ConfigurationProviderError> {
-    let context = invocation
-        .request
-        .resources
+    target_realization_from_contexts(
+        &invocation.request.target,
+        &invocation.request.inputs,
+        &invocation.request.resources,
+    )
+}
+
+fn target_realization_from_contexts(
+    target: &ResourceReference,
+    inputs: &AbilityValue,
+    resources: &[ResourceContext],
+) -> Result<ConfigurationRealization, ConfigurationProviderError> {
+    let mut matches = resources
         .iter()
-        .find(|context| context.reference.resource == invocation.request.target.resource)
+        .filter(|context| context.reference == *target);
+    let context = matches
+        .next()
         .ok_or_else(|| invalid("target resource has no exact runtime context"))?;
+    if matches.next().is_some() {
+        return Err(invalid(
+            "target resource has multiple exact runtime contexts",
+        ));
+    }
     let native: aos_provider_protocol::BoundNativeContext = decode_value(&context.native_context)?;
     if native.schema != aos_provider_protocol::RESOURCE_CONTEXT_SCHEMA
-        || native.resource_spec.resource != invocation.request.target.resource
-        || native.resource_spec.value != invocation.request.inputs
+        || native.resource_spec.resource != target.resource
+        || native.resource_spec.value != *inputs
+        || native.resource_spec.revision != context.revision
     {
         return Err(invalid(
             "target context differs from the durable checked request",
@@ -891,6 +909,88 @@ mod tests {
                 .expect("native context fixture is bounded"),
             native_context_digest: digest('3'),
         }
+    }
+
+    fn target_context(
+        reference: ResourceReference,
+        inputs: AbilityValue,
+        revision: RevisionId,
+        path: &str,
+    ) -> ResourceContext {
+        let native_context = ability_value(serde_json::json!({
+            "schema": aos_provider_protocol::RESOURCE_CONTEXT_SCHEMA,
+            "resource_spec": {
+                "resource": reference.resource,
+                "value": inputs,
+                "realization": {
+                    "schema": REALIZATION_SCHEMA,
+                    "path": path,
+                },
+                "revision": revision,
+            },
+            "provider_context": {
+                "schema": PROVIDER_CONTEXT_SCHEMA,
+                "path": path,
+            },
+        }))
+        .expect("target native context is bounded");
+        let native_context_digest = native_context_digest(&native_context)
+            .expect("target native context digest is canonical");
+
+        ResourceContext {
+            reference,
+            revision,
+            observation: ability_value(serde_json::json!({
+                "schema": OBSERVATION_SCHEMA,
+                "expected": inputs,
+                "materialized": path,
+                "state": "materialized",
+            }))
+            .expect("target observation is bounded"),
+            native_context,
+            native_context_digest,
+        }
+    }
+
+    #[test]
+    fn target_realization_requires_one_full_authority_and_matching_revision() {
+        let target = resource_reference();
+        let inputs = ability_value(serde_json::json!({
+            "name": "server",
+            "source": {"kind": "inline-text", "content": "ready=true\n"},
+            "mode": "0444",
+            "owner": null,
+        }))
+        .expect("target inputs are bounded");
+        let revision = RevisionId(digest('7'));
+        let path = "/run/aos/configurations/server-deadbeef";
+        let context = target_context(target.clone(), inputs.clone(), revision, path);
+
+        let realization =
+            target_realization_from_contexts(&target, &inputs, std::slice::from_ref(&context))
+                .expect("one exact target context is accepted");
+        assert_eq!(realization.path, path);
+
+        let mut weaker_target = target.clone();
+        weaker_target.operations.clear();
+        assert!(
+            target_realization_from_contexts(
+                &weaker_target,
+                &inputs,
+                std::slice::from_ref(&context),
+            )
+            .is_err()
+        );
+        assert!(
+            target_realization_from_contexts(&target, &inputs, &[context.clone(), context.clone()])
+                .is_err()
+        );
+
+        let mut mismatched_revision = context;
+        mismatched_revision.revision = RevisionId(digest('8'));
+        assert!(
+            target_realization_from_contexts(&target, &inputs, &[mismatched_revision]).is_err()
+        );
     }
 
     #[test]
