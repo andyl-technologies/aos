@@ -16,8 +16,7 @@
 }: {
   platform ? null,
   packageRegistry ? null,
-  packageRoots ? null,
-  packages ? [],
+  packageRoots ? [],
   runtimeRoots ? [],
   contracts ? [],
   pname ? "aos-container-static-ability-contract",
@@ -34,24 +33,22 @@
     if artifactClass == "container"
     then "application/vnd.aos.container.static-abilities.v1+json"
     else "application/vnd.aos.boot.static-abilities.v1+json";
-  selectedPackages =
-    if packageRoots == null
-    then packages
-    else
-      map (package: {
-        payload = package;
-        manifest = {
-          value = package.abilities;
-          inherit (package._aosAbilityCarrier) document interfaces artifactOutputs;
-        };
-      })
-      (builtins.filter (
-          package:
-            builtins.isAttrs package
-            && package ? abilities
-            && package ? _aosAbilityCarrier
-        )
-        packageRoots);
+  abilityPackageRoots = builtins.filter (
+    package:
+      builtins.isAttrs package
+      && (package ? abilities || package ? _aosAbilityCarrier)
+  ) packageRoots;
+  selectedPackages = map (package:
+    if package ? abilities && package ? _aosAbilityCarrier
+    then {
+      payload = package;
+      manifest = {
+        value = package.abilities;
+        inherit (package._aosAbilityCarrier) document interfaces artifactOutputs;
+      };
+    }
+    else common.fail "static ability contract package roots must expose one complete native ability carrier")
+  abilityPackageRoots;
   packagePaths =
     map (entry: {
       payload = builtins.toString entry.payload;
@@ -89,10 +86,6 @@
       == embedded.descriptor
       && retained.value == embedded.document)
     (builtins.genList (index: index) (builtins.length projection.interfaces));
-  checkedPackageInputs =
-    if packageRoots == null || packages == []
-    then true
-    else common.fail "static ability contract accepts packageRoots or packages, never both";
   resolvePackageOutput = payload: selector: let
     package =
       if selector.package == "self"
@@ -254,7 +247,6 @@
         checkedPackages
         checkedRuntimeRoots
         checkedContracts
-        checkedPackageInputs
       ]
       true
     else common.fail "static ability contract requires exactly one platform package set or a non-empty contract set";

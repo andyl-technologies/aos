@@ -7,7 +7,7 @@
   version,
   evaluated,
   packageModuleLocator ? null,
-  optionDeclarations,
+  optionDeclarations ? [],
 }: let
   packagePrefix = "${packageName}:";
   localName = name:
