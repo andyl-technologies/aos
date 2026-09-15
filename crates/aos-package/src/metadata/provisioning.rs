@@ -11,6 +11,9 @@ use std::process::Command;
 use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
+use aos_storage_provisioning::{
+    CanonicalProvisioningPlan, CanonicalProvisioningSource, canonicalize_provisioning_plan,
+};
 use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 
@@ -249,6 +252,62 @@ fn authorize_inner(stash: &Stash, opts: &AuthorizeOptions) -> Result<Option<Prov
 /// Returns an error when the restricted evaluator fails, emits malformed JSON,
 /// or the strict Rust validation or renderer rejects the projection.
 pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<ProvisioningPlan> {
+    let EvaluatedProvisioning {
+        mut plan,
+        source,
+        marker_uuid,
+    } = evaluate_provisioning(opts)?;
+    let marker_label = opts
+        .committed_source
+        .map_or(PENDING_LABEL, ProvisioningSource::committed_label);
+    render_provisioning_plan(
+        &opts.stash_dir,
+        &mut plan,
+        opts.measured_boot,
+        marker_label,
+        &marker_uuid,
+    )?;
+    std::fs::write(
+        opts.stash_dir.join("provisioning-source"),
+        format!("{}\n", source.as_str()),
+    )
+    .context("writing provisioning source")?;
+    Ok(plan)
+}
+
+/// Evaluates one authenticated provisioning intent into the canonical ability plan.
+///
+/// Unlike the legacy initrd compatibility command, this function returns the
+/// typed runtime value directly and does not materialize repart definitions or
+/// a cross-provider plan file.
+///
+/// # Errors
+///
+/// Returns an error when restricted evaluation fails, the intent violates the
+/// closed storage policy, or marker-derived UUID normalization fails.
+pub fn evaluate_canonical_provisioning_plan(
+    opts: &EvalProvisioningOptions,
+) -> Result<CanonicalProvisioningPlan> {
+    let EvaluatedProvisioning {
+        plan,
+        source,
+        marker_uuid,
+    } = evaluate_provisioning(opts)?;
+    let source = match source {
+        ProvisioningSource::Operator => CanonicalProvisioningSource::Operator,
+        ProvisioningSource::Fallback => CanonicalProvisioningSource::Fallback,
+    };
+
+    canonicalize_provisioning_plan(plan, source, opts.measured_boot, &marker_uuid)
+}
+
+struct EvaluatedProvisioning {
+    plan: ProvisioningPlan,
+    source: ProvisioningSource,
+    marker_uuid: String,
+}
+
+fn evaluate_provisioning(opts: &EvalProvisioningOptions) -> Result<EvaluatedProvisioning> {
     std::fs::create_dir_all(&opts.eval_root)
         .with_context(|| format!("creating eval root {}", opts.eval_root.display()))?;
     let host_path = opts.stash_dir.join("host.nix");
@@ -296,7 +355,7 @@ pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<Provision
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    let mut plan: ProvisioningPlan =
+    let plan: ProvisioningPlan =
         serde_json::from_slice(&output.stdout).context("parsing evaluated provisioning plan")?;
     let source = if host_path.is_file() {
         ProvisioningSource::Operator
@@ -312,27 +371,17 @@ pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<Provision
             committed.as_str()
         );
     }
-    let marker_label = opts
-        .committed_source
-        .map_or(PENDING_LABEL, ProvisioningSource::committed_label);
     let marker_uuid = match opts.marker_uuid.as_deref() {
         Some(value) => normalize_marker_uuid(value)
             .with_context(|| format!("parsing committed provisioning marker UUID '{value}'"))?,
         None => generate_marker_uuid(),
     };
-    render_provisioning_plan(
-        &opts.stash_dir,
-        &mut plan,
-        opts.measured_boot,
-        marker_label,
-        &marker_uuid,
-    )?;
-    std::fs::write(
-        opts.stash_dir.join("provisioning-source"),
-        format!("{}\n", source.as_str()),
-    )
-    .context("writing provisioning source")?;
-    Ok(plan)
+
+    Ok(EvaluatedProvisioning {
+        plan,
+        source,
+        marker_uuid,
+    })
 }
 
 /// Verifies that stage 2 is consuming the exact host bytes accepted in initrd.
