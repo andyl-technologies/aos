@@ -50,6 +50,9 @@ struct ExportedGraphMember {
     path: String,
     nar_hash: String,
     nar_size: u64,
+    closure_size: u64,
+    valid: bool,
+    ca: Option<String>,
     references: Vec<String>,
 }
 
@@ -497,6 +500,8 @@ fn resolve_selected_artifact(
     for member in &members {
         require_store_root(&member.path)?;
         if member.nar_size == 0
+            || !member.valid
+            || member.ca.as_ref().is_some_and(String::is_empty)
             || member
                 .references
                 .iter()
@@ -505,6 +510,31 @@ fn resolve_selected_artifact(
             bail!(
                 "exported Nix graph '{}' is malformed or incomplete",
                 selected.graph
+            );
+        }
+
+        let mut member_closure = BTreeSet::from([member.path.as_str()]);
+        loop {
+            let next = member_closure
+                .iter()
+                .flat_map(|path| by_path[path].references.iter().map(String::as_str))
+                .collect::<BTreeSet<_>>();
+            let before = member_closure.len();
+            member_closure.extend(next);
+            if member_closure.len() == before {
+                break;
+            }
+        }
+        let expected_closure_size = member_closure.iter().try_fold(0_u64, |total, path| {
+            total
+                .checked_add(by_path[path].nar_size)
+                .context("exported Nix graph closure size exceeds the supported integer range")
+        })?;
+        if member.closure_size != expected_closure_size {
+            bail!(
+                "exported Nix graph '{}' records an incorrect closure size for {}",
+                selected.graph,
+                member.path
             );
         }
     }
@@ -778,18 +808,25 @@ mod tests {
                     "path": ROOT,
                     "narHash": format!("sha256:{}", "11".repeat(32)),
                     "narSize": 10,
+                    "closureSize": 30,
+                    "valid": true,
+                    "ca": "fixed:r:sha256:fixture",
                     "references": [DEPENDENCY],
                 },
                 {
                     "path": DEPENDENCY,
                     "narHash": format!("sha256:{}", "22".repeat(32)),
                     "narSize": 20,
+                    "closureSize": 20,
+                    "valid": true,
                     "references": [DEPENDENCY],
                 },
                 {
                     "path": DISCONNECTED,
                     "narHash": format!("sha256:{}", "33".repeat(32)),
                     "narSize": 30,
+                    "closureSize": 30,
+                    "valid": true,
                     "references": [],
                 },
             ],
@@ -825,6 +862,28 @@ mod tests {
             .expect_err("an absent referenced member must fail closed");
 
         assert!(error.to_string().contains("malformed or incomplete"));
+    }
+
+    #[test]
+    fn exported_artifact_rejects_closure_smaller_than_its_nar() {
+        let mut graph = exported_graph();
+        graph["runtimeGraph"][0]["closureSize"] = json!(9);
+
+        let error = resolve_selected_artifact(&selected_root(), &graph)
+            .expect_err("closure size below the member NAR must fail closed");
+
+        assert!(error.to_string().contains("incorrect closure size"));
+    }
+
+    #[test]
+    fn exported_artifact_rejects_invalid_or_empty_content_address_metadata() {
+        let mut invalid = exported_graph();
+        invalid["runtimeGraph"][0]["valid"] = json!(false);
+        assert!(resolve_selected_artifact(&selected_root(), &invalid).is_err());
+
+        let mut empty_content_address = exported_graph();
+        empty_content_address["runtimeGraph"][0]["ca"] = json!("");
+        assert!(resolve_selected_artifact(&selected_root(), &empty_content_address).is_err());
     }
 
     #[test]
