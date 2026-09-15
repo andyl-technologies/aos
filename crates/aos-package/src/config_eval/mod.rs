@@ -1763,12 +1763,7 @@ fn enrich_manifest(
         )
     };
 
-    if ability_activation.is_some() {
-        object.insert(
-            "schema".into(),
-            serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V3.to_string()),
-        );
-    } else if runtime_modules.is_some() {
+    if ability_activation.is_some() || runtime_modules.is_some() {
         object.insert(
             "schema".into(),
             serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
@@ -2616,12 +2611,7 @@ pub fn reeval_cross_abi(
                 .context("transactional re-evaluation requires the active generation snapshot")?,
         );
     }
-    if inputs.ability_activation.is_some() {
-        object.insert(
-            "schema".into(),
-            serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V3.to_string()),
-        );
-    } else if inputs.runtime_modules.is_some() {
+    if inputs.ability_activation.is_some() || inputs.runtime_modules.is_some() {
         object.insert(
             "schema".into(),
             serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
