@@ -411,22 +411,21 @@ fn verified_package_identities(manifest: &ConfigManifest) -> Result<Vec<Verified
         .iter()
         .filter_map(|(name, package)| {
             package.contract.as_ref().map(|contract| -> Result<_> {
-                let coordinate = PackageContractCoordinate {
+                let resolved = super::static_packages::resolve(
                     name,
-                    version: &package.version,
-                    platform: &package.platform,
-                    store_path: &package.store_path,
-                    nar_hash: &package.nar_hash,
-                };
-                let (document, _) =
-                    crate::package_contract::resolve_pinned_package_document(coordinate, contract)?;
+                    &package.version,
+                    &package.platform,
+                    &package.store_path,
+                    &package.nar_hash,
+                    contract,
+                )?;
 
                 Ok(VerifiedPackageIdentity {
                     name: name.clone(),
                     version: package.version.clone(),
                     platform: package.platform.clone(),
-                    manifest_sha256: contract.document.document_sha256.clone(),
-                    package_digest: document.content_digest()?.to_string(),
+                    manifest_sha256: resolved.manifest_digest.to_string(),
+                    package_digest: resolved.document.content_digest()?.to_string(),
                 })
             })
         })
