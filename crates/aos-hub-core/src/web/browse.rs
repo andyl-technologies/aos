@@ -2424,7 +2424,13 @@ pub async fn api_documentation_schema(svc: &RpcService, slug: &str) -> Rendered 
     if registry(svc, slug).await.is_none() {
         return Rendered::NotFound;
     }
-    Rendered::Json(aos_doc_model::DOCUMENT_JSON_SCHEMA.to_string())
+    let Ok(schema) = aos_doc_model::document_json_schema() else {
+        return Rendered::ServiceUnavailable;
+    };
+    match String::from_utf8(schema) {
+        Ok(schema) => Rendered::Json(schema),
+        Err(_) => Rendered::ServiceUnavailable,
+    }
 }
 
 /// `GET /{slug}/-/api/channels` — the channel list (JSON).

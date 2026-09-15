@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
 
 use anyhow::{Context, Result, bail};
-use aos_doc_model::{DOCUMENT_JSON_SCHEMA, OptionDocument, PackageDocumentation, PathSegment};
+use aos_doc_model::{OptionDocument, PackageDocumentation, PathSegment, document_json_schema};
 use serde_json::{Value, json};
 
 use crate::documentation::LoadedDocumentation;
@@ -192,7 +192,7 @@ impl Server {
                 respond(output, id, self.workspace_symbols(query))?;
             }
             "aos/packageDocumentation/schema" => {
-                let schema: Value = serde_json::from_str(DOCUMENT_JSON_SCHEMA)
+                let schema: Value = serde_json::from_slice(&document_json_schema()?)
                     .context("decoding checked documentation JSON Schema")?;
                 respond(output, id, schema)?;
             }

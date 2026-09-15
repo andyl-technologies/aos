@@ -254,7 +254,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-4G8waM8fsmqSjIgkaitrG3HmPy2e6KShpDDJn7THqZc=";
+    hash = "sha256-lvkZgQzjwYN8S2eTOquQ3VxyZI0K/OoSNoLbLZitfGM=";
   };
   cargoArtifactContract = {
     family = "aos-native-release-and-test";

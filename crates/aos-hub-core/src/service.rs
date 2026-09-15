@@ -12443,7 +12443,8 @@ impl RpcService {
     ///
     /// # Errors
     ///
-    /// This method has no expected error conditions.
+    /// Returns an internal error if the authoritative documentation model
+    /// cannot generate its JSON Schema.
     pub async fn get_package_documentation_schema(
         &self,
         _auth: Option<&str>,
@@ -12452,7 +12453,7 @@ impl RpcService {
         Ok(pb::GetPackageDocumentationSchemaResponse {
             schema: aos_doc_model::DOCUMENT_SCHEMA.to_string(),
             media_type: aos_doc_model::DOCUMENT_FORMAT.to_string(),
-            json_schema: aos_doc_model::DOCUMENT_JSON_SCHEMA.as_bytes().to_vec(),
+            json_schema: aos_doc_model::document_json_schema().map_err(RpcError::internal)?,
         })
     }
 
