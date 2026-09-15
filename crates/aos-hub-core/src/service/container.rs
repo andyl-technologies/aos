@@ -6,16 +6,16 @@
 //! verified release root.
 
 use aos_oci_types::{
-    to_canonical_json, ContainerRelease, Descriptor, RepositoryName, Sha256Digest, Tag,
+    ContainerRelease, Descriptor, RepositoryName, Sha256Digest, Tag, to_canonical_json,
 };
 use aos_proto_types as pb;
 
-use super::{clock, Permission, RpcError, RpcService};
+use super::{Permission, RpcError, RpcService, clock};
 use crate::db::{
-    oci_blob_object_key, oci_catalog_declaration_digest, oci_publication_confirmation_hash,
-    AddOciPublicationObject, BeginOciPublication, ContainerReleaseDescriptorRole, OciCatalogObject,
-    OciCatalogProjection, OciPublicationRecord, OciPublicationRequiredPlacement,
-    OCI_MAX_SESSION_SECONDS,
+    AddOciPublicationObject, BeginOciPublication, ContainerReleaseDescriptorRole,
+    OCI_MAX_SESSION_SECONDS, OciCatalogObject, OciCatalogProjection, OciPublicationRecord,
+    OciPublicationRequiredPlacement, oci_blob_object_key, oci_catalog_declaration_digest,
+    oci_publication_confirmation_hash,
 };
 
 impl RpcService {
@@ -449,19 +449,16 @@ fn validate_initial_release(release: &ContainerRelease) -> Result<(), RpcError> 
 }
 
 fn release_roots(release: &ContainerRelease) -> Vec<Descriptor> {
-    let mut roots = vec![
+    vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
+        release.evidence.abilities.clone(),
         release.evidence.sbom.clone(),
         release.evidence.source.clone(),
         release.evidence.license.clone(),
         release.evidence.provenance.clone(),
         release.evidence.signature.clone(),
-    ];
-    if let Some(abilities) = &release.evidence.abilities {
-        roots.push(abilities.clone());
-    }
-    roots
+    ]
 }
 
 fn validate_release_graph(
@@ -538,12 +535,7 @@ fn descriptor_role(
         ContainerReleaseDescriptorRole::PlatformManifest
     } else if descriptor.digest == release.nix.closure.digest {
         ContainerReleaseDescriptorRole::NixClosure
-    } else if release
-        .evidence
-        .abilities
-        .as_ref()
-        .is_some_and(|abilities| descriptor.digest == abilities.digest)
-    {
+    } else if descriptor.digest == release.evidence.abilities.digest {
         ContainerReleaseDescriptorRole::Abilities
     } else if descriptor.digest == release.evidence.sbom.digest {
         ContainerReleaseDescriptorRole::Sbom

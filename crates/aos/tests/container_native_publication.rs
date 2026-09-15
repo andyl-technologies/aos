@@ -405,19 +405,16 @@ fn signed_container_envelope(
 }
 
 fn release_roots(release: &ContainerRelease) -> Vec<aos_oci_types::Descriptor> {
-    let mut roots = vec![
+    vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
+        release.evidence.abilities.clone(),
         release.evidence.sbom.clone(),
         release.evidence.source.clone(),
         release.evidence.license.clone(),
         release.evidence.provenance.clone(),
         release.evidence.signature.clone(),
-    ];
-    if let Some(abilities) = &release.evidence.abilities {
-        roots.push(abilities.clone());
-    }
-    roots
+    ]
 }
 
 async fn assert_local_publication_rejections(
