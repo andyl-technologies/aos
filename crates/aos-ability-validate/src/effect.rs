@@ -9,13 +9,13 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::{
-    AbilityActivationMode, AccessMode, ArtifactReference, AuthorityGrant, AuthorityRole, Binding,
-    BindingId, BranchMembership, DecisionNode, DecisionPredicate, DependencyKind, Diagnostic,
-    DiagnosticClass, DiagnosticCode, DiagnosticPhase, EffectPlanDocument, LocalKey, MergeNode,
-    Operation, OperationResultReference, OutputDescriptor, PlanId, PlanNodeKey, ResourceId,
-    ResourceReference, ResultProducerKey, RetryPolicy, ScopedOperationKey, ValueExpression,
-    ValueSchema, ValueVisibility, VersionedDocument, compare_edges, compare_operation_keys,
-    compare_plan_node_keys, compare_resource_ids,
+    AccessMode, ArtifactReference, AuthorityGrant, AuthorityRole, Binding, BranchMembership,
+    DecisionNode, DecisionPredicate, DependencyKind, Diagnostic, DiagnosticClass, DiagnosticCode,
+    DiagnosticPhase, EffectPlanDocument, LocalKey, MergeNode, Operation, OperationResultReference,
+    OutputDescriptor, PlanId, PlanNodeKey, ResourceId, ResourceReference, ResultProducerKey,
+    RetryPolicy, ScopedOperationKey, ValueExpression, ValueSchema, ValueVisibility,
+    VersionedDocument, compare_edges, compare_operation_keys, compare_plan_node_keys,
+    compare_resource_ids,
 };
 use serde_json::Value;
 
@@ -148,10 +148,7 @@ pub(crate) fn validate_effect_document(
         &operation_indices,
         &merge_indices,
     );
-    let activation_modes = binding_activation_modes(&binding_plan);
-
     for (index, operation) in document.operations.iter().enumerate() {
-        validate_operation_activation_mode(&activation_modes, operation, index, &mut diagnostics);
         validate_operation(
             context,
             &document,
@@ -228,49 +225,6 @@ pub(crate) fn validate_effect_document(
     } else {
         Err(ValidationErrors::new(diagnostics))
     }
-}
-
-fn validate_operation_activation_mode(
-    activation_modes: &BTreeMap<BindingId, AbilityActivationMode>,
-    operation: &Operation,
-    index: usize,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    if activation_modes.get(&operation.binding) == Some(&AbilityActivationMode::ContractsOnly) {
-        let mut item = planning_diagnostic(
-            DiagnosticCode::ResourceScopeEscape,
-            DiagnosticClass::Unauthorized,
-            vec!["operations".to_string(), index.to_string()],
-            "effect operation is attributed to a contracts-only package".to_string(),
-        );
-        item.operation = Some(operation.key.clone());
-        push_diagnostic(diagnostics, item);
-    }
-}
-
-fn binding_activation_modes(
-    binding_plan: &CheckedBindingPlan,
-) -> BTreeMap<BindingId, AbilityActivationMode> {
-    let packages: BTreeMap<_, _> = binding_plan
-        .packages()
-        .iter()
-        .filter_map(|package| {
-            package
-                .content_digest()
-                .ok()
-                .map(|digest| (digest, package.activation_mode))
-        })
-        .collect();
-    binding_plan
-        .bindings()
-        .iter()
-        .filter_map(|binding| {
-            binding
-                .provider_package
-                .and_then(|digest| packages.get(&digest).copied())
-                .map(|mode| (binding.id.clone(), mode))
-        })
-        .collect()
 }
 
 fn validate_state_provenance(

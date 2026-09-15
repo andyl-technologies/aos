@@ -20,8 +20,8 @@ use std::io::{self, Write};
 
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, AccessMode, AggregateId, ArtifactReference, AuthorityRole,
-    BindingId, BindingSource, DependencyKind, InstanceId, InterfaceDescriptor, InterfaceKey,
+    AbilityValue, AccessMode, AggregateId, ArtifactReference, AuthorityRole, BindingId,
+    BindingSource, DependencyKind, InstanceId, InterfaceDescriptor, InterfaceKey,
     InterfaceSelector, LocalKey, MethodSemantics, OperationPhase, PlanId, PlanNodeKey,
     RecoveryContract, RequestId, RequiredFeature, ResourceId, ResourceLifetime, ResultProducerKey,
     RevisionId, ScopedOperationKey, ValueExpression, ValueSchema, ValueVisibility,
@@ -177,8 +177,6 @@ pub enum InspectionNode {
         name: LocalKey,
         /// Retains the authored package version.
         version: String,
-        /// States whether the package may author structured effects.
-        activation_mode: AbilityActivationMode,
     },
     /// Describes one typed consumer request.
     Request {
@@ -560,7 +558,6 @@ fn build_view(
                 digest,
                 name: package.package.name.clone(),
                 version: package.package.version.clone(),
-                activation_mode: package.activation_mode,
             },
         );
         for export in &package.exports {

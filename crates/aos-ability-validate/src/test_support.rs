@@ -358,7 +358,6 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
             RequiredFeature::new("abilities-v1").expect("base abilities feature"),
             RequiredFeature::new(PROVIDER_STATE_FORMAT_V1).expect("state-format feature"),
         ],
-        activation_mode: AbilityActivationMode::StructuredEffects,
         package: aos_ability_model::document::PackageSubject {
             name: key("stateful-owner-provider"),
             version: "1.0.0".to_string(),

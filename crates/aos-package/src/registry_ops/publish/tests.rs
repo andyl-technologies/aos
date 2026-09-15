@@ -1,13 +1,13 @@
 //! Tests for package publication orchestration and its exclusive authoring-clone lock.
 
 use super::{
-    apply_publish_sb_policy, publish_canonical_ability_output, required_publish_metadata,
+    apply_publish_sb_policy, publish_package_contract, required_publish_metadata,
     validate_release_publish_metadata, validate_release_publish_signing_identity,
 };
-use crate::ability_package::{
+use crate::config::ApmConfig;
+use crate::package_contract::{
     collect_distinct_artifacts, decode_package_manifest, read_package_manifest,
 };
-use crate::config::ApmConfig;
 use crate::registry::parse::ImageVerificationState;
 use crate::registry::release::RegistryReleaseEntry;
 use crate::registry::sb_certs::{RevokedSbCert, SbCert, SbCertsToml};
@@ -39,14 +39,14 @@ async fn package_contract_publication_requires_the_committed_roster_binding() {
     crate::testutil::git(registry.path(), &["add", "keys.toml"]);
     crate::testutil::git(registry.path(), &["commit", "-m", "revoke publisher"]);
 
-    let error = publish_canonical_ability_output(
+    let error = publish_package_contract(
         registry.path(),
         "test",
         "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo-contract",
         "demo",
         "1.0.0",
         "x86_64-linux",
-        &crate::registry_ops::AbilitySelectorRegistry::new(&[]),
+        &crate::registry_ops::PackageContractSelectorRegistry::new(&[]),
         &mut signer.signer,
         &Printer::new(0, true, false),
     )
@@ -103,7 +103,7 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
 
     let entries = [
         release_entry("out", &payload_path),
-        release_entry(crate::types::ABILITY_MANIFEST_OUTPUT, &companion_path),
+        release_entry(crate::types::PACKAGE_CONTRACT_OUTPUT, &companion_path),
         RegistryReleaseEntry {
             id: "provider".to_string(),
             name: "ability-package-smoke-provider".to_string(),
@@ -113,9 +113,9 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
             store_path: provider_path.clone(),
         },
     ];
-    let selectors = crate::registry_ops::AbilitySelectorRegistry::new(&entries);
+    let selectors = crate::registry_ops::PackageContractSelectorRegistry::new(&entries);
     let mut signer = test_provenance_signer();
-    publish_canonical_ability_output(
+    publish_package_contract(
         registry.path(),
         "test",
         &companion_path,
@@ -137,7 +137,7 @@ async fn ability_publication_accepts_a_transitive_self_referencing_closure() {
         .unwrap();
     assert_eq!(
         parsed.versions[0].platforms["x86_64-linux"].named_outputs
-            [crate::types::ABILITY_MANIFEST_OUTPUT],
+            [crate::types::PACKAGE_CONTRACT_OUTPUT],
         companion_path
     );
     let manifest = read_package_manifest(&ability.store_path).unwrap();

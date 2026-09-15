@@ -671,8 +671,8 @@ fn structured_runtime_retains_config_bytes_without_legacy_unit_actions() {
         RuntimeRealisationPin, RuntimeResolution,
     };
     use crate::types::{
-        AbilityPackageMeta, ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy,
-        ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta,
+        ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy, ExposeArtifactMeta,
+        ExposeConfigMeta, ExposeMeta, PackageContractMeta,
     };
 
     let config_for = |unit: &str| ExposeConfigMeta {
@@ -745,7 +745,7 @@ fn structured_runtime_retains_config_bytes_without_legacy_unit_actions() {
                 config_nar_hash: format!("sha256:{}", "8".repeat(52)),
                 config: config.clone(),
             }),
-            ability: Some(AbilityPackageMeta {
+            ability: Some(PackageContractMeta {
                 store_path: format!("/nix/store/{ability_hash}-{name}-abilities"),
                 nar_hash: format!("sha256:{}", "5".repeat(64)),
                 nar_size: 1,
@@ -1041,7 +1041,7 @@ fn ability_activation_input_survives_removal_of_the_last_structured_package() {
 #[test]
 fn legacy_host_selection_cannot_activate_a_structured_package_without_owned_input() {
     use super::runtime::{RuntimePackageOrigin, RuntimePackagePin, RuntimeResolution};
-    use crate::types::AbilityPackageMeta;
+    use crate::types::PackageContractMeta;
 
     let runtime = RuntimeResolution {
         packages: BTreeMap::from([(
@@ -1059,7 +1059,7 @@ fn legacy_host_selection_cannot_activate_a_structured_package_without_owned_inpu
                 expose: None,
                 expose_artifact: None,
                 config_projection: None,
-                ability: Some(AbilityPackageMeta {
+                ability: Some(PackageContractMeta {
                     store_path: "/nix/store/0000000000000000000000000000000b-web-abilities"
                         .to_string(),
                     nar_hash: format!("sha256:{}", "5".repeat(64)),
@@ -1097,7 +1097,7 @@ fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
     use super::runtime::{
         RuntimeExposeConfigPin, RuntimePackageOrigin, RuntimePackagePin, RuntimeResolution,
     };
-    use crate::types::{AbilityPackageMeta, ExposeConfigMeta};
+    use crate::types::{ExposeConfigMeta, PackageContractMeta};
 
     let documentation = |prose: &str, config_hash: char| {
         let mut document = PackageDocumentation {
@@ -1137,7 +1137,7 @@ fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
         documentation_after.identity.semantic_schema_sha256
     );
 
-    let ability = AbilityPackageMeta {
+    let ability = PackageContractMeta {
         store_path: "/nix/store/0000000000000000000000000000000b-web-abilities".to_string(),
         nar_hash: format!("sha256:{}", "5".repeat(52)),
         nar_size: 2,

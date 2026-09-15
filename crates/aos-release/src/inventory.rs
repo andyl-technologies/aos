@@ -412,9 +412,9 @@ impl PackageInventoryV1 {
                             .collect::<Vec<_>>();
                         if let Some(contract) = &evaluated.contract {
                             artifacts.push(PlannedArtifact {
-                                id: format!("package/{}/{}/abilities", package.name, cell.platform),
+                                id: format!("package/{}/{}/contract", package.name, cell.platform),
                                 derivation: Some(contract.document.derivation.clone()),
-                                output: Some("abilities".to_owned()),
+                                output: Some("contract".to_owned()),
                                 store_path: Some(contract.document.store_path.clone()),
                                 source_store_paths: evaluated.source_store_paths.clone(),
                             });
@@ -664,7 +664,7 @@ mod tests {
         assert_eq!(artifact.artifacts.len(), 3);
         assert_eq!(
             artifact.artifacts[0].id,
-            "package/example/x86_64-linux/abilities"
+            "package/example/x86_64-linux/contract"
         );
         assert_eq!(artifact.artifacts[0].output.as_deref(), Some("abilities"));
         assert_eq!(

@@ -5,13 +5,13 @@
 //! through the production indexer and object verifier.
 
 use anyhow::{Context as _, Result};
-use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, ArtifactReference, DocumentedValue, LocalKey,
-    ModuleLocator, OptionEnumValue, OptionSource, OptionType, OptionVisibility, PackageDocument,
-    PackageImplementation, PackageOptionDeclaration, PackageQualification, RequiredFeature,
-    VersionedDocument, encode_canonical,
-};
 use aos_ability_model::document::PackageSubject;
+use aos_ability_model::{
+    AbilityValue, ArtifactReference, DocumentedValue, LocalKey, ModuleLocator, OptionEnumValue,
+    OptionSource, OptionType, OptionVisibility, PackageDocument, PackageImplementation,
+    PackageOptionDeclaration, PackageQualification, RequiredFeature, VersionedDocument,
+    encode_canonical,
+};
 use aos_contract::Sha256Digest;
 use aos_doc_model::PackageDocumentation;
 use sha2::{Digest as _, Sha256};
@@ -97,7 +97,6 @@ pub(super) fn write(root: &Path) -> Result<String> {
     let package_document = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: vec![RequiredFeature::new("abilities-v1")?],
-        activation_mode: AbilityActivationMode::ContractsOnly,
         package: PackageSubject {
             name: LocalKey::new("config-demo")?,
             version: "1.0.0".to_string(),
@@ -108,7 +107,7 @@ pub(super) fn write(root: &Path) -> Result<String> {
         interfaces: Default::default(),
         guarantees: Default::default(),
         package_module: Some(ModuleLocator {
-            artifact: payload,
+            artifact: payload.clone(),
             path: aos_ability_model::RelativePath::new("module.nix")?,
         }),
         option_declarations,
@@ -121,7 +120,7 @@ pub(super) fn write(root: &Path) -> Result<String> {
         qualification: PackageQualification::default(),
     };
     let package_document_bytes = encode_canonical(&package_document)?;
-    let ability_nar = package_ability_nar(&package_document_bytes);
+    let ability_nar = regular_nar(&package_document_bytes);
     let ability_nar_digest = hex::encode(Sha256::digest(&ability_nar));
     let ability_store_hash = "f".repeat(32);
     let ability_store_path = format!("/nix/store/{ability_store_hash}-config-demo-abilities");
@@ -130,23 +129,39 @@ pub(super) fn write(root: &Path) -> Result<String> {
     std::fs::write(
         root.join(format!("{ability_store_hash}.narinfo")),
         format!(
-            "StorePath: {ability_store_path}\nURL: {ability_nar_key}\nCompression: none\nFileHash: sha256:{ability_nar_digest}\nFileSize: {}\nNarHash: sha256:{ability_nar_digest}\nNarSize: {}\nReferences: {}-config-demo\n",
+            "StorePath: {ability_store_path}\nURL: {ability_nar_key}\nCompression: none\nFileHash: sha256:{ability_nar_digest}\nFileSize: {}\nNarHash: sha256:{ability_nar_digest}\nNarSize: {}\nReferences: \n",
             ability_nar.len(),
             ability_nar.len(),
-            "c".repeat(32),
         ),
     )?;
-    let ability = aos_registry_surface::manifest::AbilityPackageMeta {
-        store_path: ability_store_path,
-        nar_hash: format!("sha256:{ability_nar_digest}"),
-        nar_size: u64::try_from(ability_nar.len())?,
-        references: vec!["c".repeat(32)],
-        manifest_sha256: Sha256Digest::of_bytes(&package_document_bytes).to_string(),
-        manifest_size: u64::try_from(package_document_bytes.len())?,
-        package_digest: package_document.content_digest()?.to_string(),
-        activation_mode: "contracts-only".to_string(),
-        artifacts: Vec::new(),
-        provenance: "provenance/config-demo.ability.intoto.jsonl".to_string(),
+    let artifact = aos_registry_surface::manifest::PackageContractArtifactMeta {
+        content: payload.content.to_string(),
+        store_path: payload.store_path.clone(),
+        nar_hash: payload.nar_hash.to_string(),
+        nar_size: 10,
+        closure_digest: payload.closure.to_string(),
+        closure: vec![
+            aos_registry_surface::manifest::PackageContractClosureMemberMeta {
+                store_path: payload.store_path.clone(),
+                nar_hash: payload.nar_hash.to_string(),
+                nar_size: 10,
+                references: Vec::new(),
+            },
+        ],
+    };
+    let contract = aos_registry_surface::manifest::PackageContractMeta {
+        document: aos_registry_surface::manifest::PackageContractDocumentMeta {
+            store_path: ability_store_path,
+            nar_hash: format!("sha256:{ability_nar_digest}"),
+            nar_size: u64::try_from(ability_nar.len())?,
+            document_sha256: Sha256Digest::of_bytes(&package_document_bytes).to_string(),
+            document_size: u64::try_from(package_document_bytes.len())?,
+            references: Vec::new(),
+        },
+        payload: artifact.clone(),
+        source: artifact,
+        selectors: Vec::new(),
+        provenance: "provenance/config-demo.contract.intoto.jsonl".to_string(),
     };
 
     let mut document = PackageDocumentation {
@@ -176,8 +191,14 @@ pub(super) fn write(root: &Path) -> Result<String> {
     let nar_key = format!("nar/{store_hash}.nar");
     std::fs::create_dir_all(root.join("nar"))?;
     std::fs::write(root.join(&nar_key), &nar)?;
-    std::fs::write(root.join(format!("{store_hash}.narinfo")), format!(
-        "StorePath: {store_path}\nURL: {nar_key}\nCompression: none\nFileHash: sha256:{nar_digest}\nFileSize: {}\nNarHash: sha256:{nar_digest}\nNarSize: {}\nReferences: \n", nar.len(), nar.len()))?;
+    std::fs::write(
+        root.join(format!("{store_hash}.narinfo")),
+        format!(
+            "StorePath: {store_path}\nURL: {nar_key}\nCompression: none\nFileHash: sha256:{nar_digest}\nFileSize: {}\nNarHash: sha256:{nar_digest}\nNarSize: {}\nReferences: \n",
+            nar.len(),
+            nar.len()
+        ),
+    )?;
     let metadata = aos_registry_surface::manifest::DocumentationArtifactMeta {
         format: aos_doc_model::DOCUMENT_FORMAT.into(),
         store_path,
@@ -190,7 +211,11 @@ pub(super) fn write(root: &Path) -> Result<String> {
     };
     let mut package: toml::Value = toml::from_str(&format!(
         "[package]\nname = \"config-demo\"\ndescription = \"Demo service configuration\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\n\n[[versions]]\nversion = \"1.0.0\"\n[versions.platforms.x86_64-linux]\nstore_path = \"/nix/store/{}-config-demo\"\nnar_hash = \"sha256:{}\"\nnar_size = 10\nclosure_size = 10\nsource_drv = \"/nix/store/{}-config-demo.drv\"\nsource_nar_hash = \"sha256:{}\"\nreferences = []\n",
-        "c".repeat(32), "1".repeat(64), "e".repeat(32), "2".repeat(64)))?;
+        "c".repeat(32),
+        "1".repeat(64),
+        "e".repeat(32),
+        "2".repeat(64)
+    ))?;
     package
         .get_mut("versions")
         .and_then(toml::Value::as_array_mut)
@@ -208,7 +233,7 @@ pub(super) fn write(root: &Path) -> Result<String> {
         .and_then(|platforms| platforms.get_mut("x86_64-linux"))
         .and_then(toml::Value::as_table_mut)
         .context("seed documentation platform is missing")?
-        .insert("ability".into(), toml::Value::try_from(ability)?);
+        .insert("contract".into(), toml::Value::try_from(contract)?);
     Ok(toml::to_string(&package)?)
 }
 
@@ -231,47 +256,4 @@ fn regular_nar(contents: &[u8]) -> Vec<u8> {
         }
     }
     bytes
-}
-
-/// Encodes the strict signed package ability publication shape used by the indexer.
-fn package_ability_nar(package: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for value in [
-        b"nix-archive-1".as_slice(),
-        b"(",
-        b"type",
-        b"directory",
-        b"entry",
-        b"(",
-        b"name",
-        b"interfaces",
-        b"node",
-        b"(",
-        b"type",
-        b"directory",
-        b")",
-        b")",
-        b"entry",
-        b"(",
-        b"name",
-        b"package.json",
-        b"node",
-        b"(",
-        b"type",
-        b"regular",
-        b"contents",
-        package,
-        b")",
-        b")",
-        b")",
-    ] {
-        nar_field(&mut bytes, value);
-    }
-    bytes
-}
-
-fn nar_field(output: &mut Vec<u8>, value: &[u8]) {
-    output.extend_from_slice(&(value.len() as u64).to_le_bytes());
-    output.extend_from_slice(value);
-    output.resize(output.len().div_ceil(8) * 8, 0);
 }

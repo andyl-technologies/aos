@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_ability_model::document::Contribution;
 use aos_ability_model::identity::compare_request_ids;
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityActivationMode, AbilityValue, AggregateOutput, ArtifactReference,
-    Binding, BindingRequest, ControllerAssignment, DesiredStateDocument, InstanceId, InterfaceKey,
-    LocalKey, PackageDocument, ProviderImplementation, ProviderImplementationReference,
-    ResourceRevision, ValuePhase, compare_resource_ids,
+    ABILITY_LIMITS_V1, AbilityValue, AggregateOutput, ArtifactReference, Binding, BindingRequest,
+    ControllerAssignment, DesiredStateDocument, InstanceId, InterfaceKey, LocalKey,
+    PackageDocument, ProviderImplementation, ProviderImplementationReference, ResourceRevision,
+    ValuePhase, compare_resource_ids,
 };
 use aos_ability_validate::{ValidationContext, validate_value};
 use aos_contract::Sha256Digest;
@@ -129,7 +129,6 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
             module,
             compose_entry,
             aggregation_group,
-            activation_mode,
         }) = pure_implementation(
             context,
             &provider,
@@ -253,7 +252,6 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
                 bindings,
                 implementation,
                 aggregation_group,
-                activation_mode,
                 root: group.root,
             },
             &fragment,
@@ -314,7 +312,6 @@ struct PureImplementation<'a> {
     module: &'a aos_ability_model::ModuleLocator,
     compose_entry: LocalKey,
     aggregation_group: Option<&'a LocalKey>,
-    activation_mode: AbilityActivationMode,
 }
 
 fn pure_implementation<'a>(
@@ -378,7 +375,6 @@ fn pure_implementation<'a>(
                 }
             })?,
             aggregation_group,
-            activation_mode: package.activation_mode,
         })),
         None => Ok(None),
     }
@@ -392,7 +388,6 @@ struct FragmentValidation<'a> {
     bindings: &'a [Binding],
     implementation: &'a ProviderImplementation,
     aggregation_group: Option<&'a LocalKey>,
-    activation_mode: AbilityActivationMode,
     root: Option<&'a EnabledProviderSelection>,
 }
 
@@ -409,7 +404,6 @@ fn validate_fragment(
         bindings,
         implementation,
         aggregation_group,
-        activation_mode,
         root,
     } = validation;
     let invalid = |reason: &str| CompositionError::InvalidFragment {
@@ -418,13 +412,6 @@ fn validate_fragment(
     };
     if fragment.schema != "aos.ability.composition-fragment/v1" {
         return Err(invalid("unsupported fragment schema"));
-    }
-    if activation_mode == AbilityActivationMode::ContractsOnly
-        && (!fragment.resources.is_empty() || !fragment.controllers.is_empty())
-    {
-        return Err(invalid(
-            "contracts-only provider emits resource ownership or lifecycle controllers",
-        ));
     }
     if incoming
         .iter()
@@ -680,41 +667,6 @@ pub(super) fn validate_desired_outputs(
                     reason,
                 }
             })?;
-    }
-    Ok(())
-}
-
-pub(super) fn validate_desired_activation_modes(
-    desired_state: &DesiredStateDocument,
-    packages: &[PackageDocument],
-    package_index: &BTreeMap<Sha256Digest, usize>,
-) -> Result<(), CompositionError> {
-    for provider in desired_state
-        .resources
-        .iter()
-        .map(|revision| &revision.resource.provider)
-        .chain(
-            desired_state
-                .controllers
-                .iter()
-                .map(|assignment| &assignment.controller.provider),
-        )
-    {
-        let package = desired_state
-            .instances
-            .iter()
-            .find(|desired| desired.instance == *provider)
-            .and_then(|desired| package_index.get(&desired.package))
-            .map(|position| &packages[*position]);
-        if package
-            .is_some_and(|package| package.activation_mode == AbilityActivationMode::ContractsOnly)
-        {
-            return Err(CompositionError::InvalidFragment {
-                provider: provider.clone(),
-                reason: "desired resource or controller is attributed to a contracts-only package"
-                    .to_string(),
-            });
-        }
     }
     Ok(())
 }

@@ -1,14 +1,14 @@
 //! Config-module interface derivation and validation of builder-authored claims.
 
 use crate::registry_ops::store_paths::{
-    introspect_store_path, nix_command, StorePathInfo, TARGET_PLATFORM_RELATIVE_PATH,
+    StorePathInfo, TARGET_PLATFORM_RELATIVE_PATH, introspect_store_path, nix_command,
 };
 use crate::types::{
-    validate_config_module_meta, validate_config_output_meta, validate_package_name,
     ConfigModuleMeta, ConfigOptionDeclaration, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot,
-    RootContribution,
+    RootContribution, validate_config_module_meta, validate_config_output_meta,
+    validate_package_name,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};

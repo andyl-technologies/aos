@@ -20,9 +20,9 @@ use super::config::ApmConfig;
 use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_profile};
 use super::platform::native_platform;
 use super::profile::Profile;
-use super::profile::meta::{self, list_meta, validate_ordinary_profile_ability_state};
+use super::profile::meta::{self, list_meta};
 use super::registry::RegistrySet;
-use super::types::{AbilityPackageMeta, ConfigGeneration, ProfileScope, ReactivationPlan};
+use super::types::{ConfigGeneration, PackageContractMeta, ProfileScope, ReactivationPlan};
 use aos_core::output::{OutputMode, Printer};
 
 /// List user package profile generations.
@@ -146,8 +146,6 @@ pub async fn run(
 ) -> Result<()> {
     let json_mode = printer.mode() == OutputMode::Json;
     let inspect_profile = Profile::open_readonly(config.scope);
-    let installed = list_meta(&inspect_profile)?;
-    validate_ordinary_profile_ability_state(&installed)?;
 
     // Must have a current generation to roll back from.
     let current = match inspect_profile.current_generation()? {
@@ -178,7 +176,6 @@ pub async fn run(
             None => bail!("no previous generation to roll back to"),
         }
     };
-    validate_ordinary_generation_ability_state(target)?;
 
     // Show what we are about to do.
     if !json_mode {
@@ -238,7 +235,7 @@ pub async fn run(
 
     let profile = Profile::open(config.scope)?;
     let registries = load_registries(config)?;
-    verify_target_ability_packages(config, target, &registries)?;
+    verify_target_package_contracts(config, target, &registries)?;
 
     // Switch to the target generation.
     profile.switch_to(target)?;
@@ -272,21 +269,7 @@ pub async fn run(
     Ok(())
 }
 
-/// Validates retained package snapshots before a generation can be selected.
-fn validate_ordinary_generation_ability_state(
-    generation: &super::profile::Generation,
-) -> Result<()> {
-    let mut retained = Vec::new();
-    for (hash, _) in generation.roots()? {
-        if let Some(installed) = meta::read_generation_meta(generation, &hash)? {
-            retained.push(installed);
-        }
-    }
-
-    validate_ordinary_profile_ability_state(&retained)
-}
-
-fn verify_target_ability_packages(
+fn verify_target_package_contracts(
     config: &ApmConfig,
     target: &super::profile::Generation,
     registries: &RegistrySet,
@@ -305,7 +288,7 @@ fn verify_target_ability_packages(
             .iter()
             .find(|registry| registry.config.name == installed.registry);
         let Some(registry) = registry else {
-            if installed.ability.is_none() {
+            if installed.contract.is_none() {
                 continue;
             }
             bail!(
@@ -317,7 +300,7 @@ fn verify_target_ability_packages(
         };
         let package = registry.get_by_hash(hash);
         let Some(package) = package else {
-            if installed.ability.is_none() {
+            if installed.contract.is_none() {
                 continue;
             }
             return Err(anyhow::anyhow!(
@@ -331,8 +314,8 @@ fn verify_target_ability_packages(
             &installed.name,
             &installed.version,
             &installed.registry,
-            installed.ability.as_ref(),
-            package.ability.as_ref(),
+            installed.contract.as_ref(),
+            package.contract.as_ref(),
         )?;
         if !requires_verification {
             continue;
@@ -351,7 +334,7 @@ fn verify_target_ability_packages(
         entries.push((registry.config.name.as_str(), package));
     }
 
-    super::install::verify_ability_packages_from_cache_with_store(config, entries)?;
+    super::install::verify_package_contracts_from_cache_with_store(config, entries)?;
     Ok(())
 }
 
@@ -360,8 +343,8 @@ fn require_rollback_ability_metadata(
     name: &str,
     version: &str,
     registry: &str,
-    snapshot: Option<&AbilityPackageMeta>,
-    current: Option<&AbilityPackageMeta>,
+    snapshot: Option<&PackageContractMeta>,
+    current: Option<&PackageContractMeta>,
 ) -> Result<bool> {
     match (snapshot, current) {
         (None, None) => Ok(false),
@@ -589,7 +572,7 @@ mod tests {
     use crate::profile::Profile;
     use crate::profile::meta::{snapshot_profile_meta_to_generation, write_meta};
     use crate::types::{
-        AbilityPackageMeta, ApmMeta, ConfigGeneration, FEATURE_ABILITY_EFFECTS_V1, InstalledMeta,
+        ApmMeta, ConfigGeneration, FEATURE_ABILITY_EFFECTS_V1, InstalledMeta, PackageContractMeta,
         ProfileScope, ReactivationPlan,
     };
     use tempfile::TempDir;
@@ -598,8 +581,8 @@ mod tests {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
     }
 
-    fn ability_meta(store_path: &str) -> AbilityPackageMeta {
-        AbilityPackageMeta {
+    fn ability_meta(store_path: &str) -> PackageContractMeta {
+        PackageContractMeta {
             store_path: store_path.to_string(),
             nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
             nar_size: 1,
@@ -617,7 +600,7 @@ mod tests {
         }
     }
 
-    fn installed_meta_with_ability(ability: AbilityPackageMeta) -> InstalledMeta {
+    fn installed_meta_with_ability(contract: PackageContractMeta) -> InstalledMeta {
         InstalledMeta {
             store_path: "/nix/store/11111111111111111111111111111111-owner".to_string(),
             pushed_at: 1,
@@ -639,7 +622,7 @@ mod tests {
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
-                ability: Some(ability),
+                contract: Some(ability),
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

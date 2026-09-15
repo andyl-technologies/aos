@@ -184,9 +184,9 @@ pub struct PlatformEntry {
     /// Canonical RFC-0016 package documentation store object.
     #[serde(default)]
     pub documentation: Option<DocumentationArtifactMeta>,
-    /// Authenticated RFC-0022 ability package companion.
+    /// Authenticated package contract and its exact selector bindings.
     #[serde(default)]
-    pub ability: Option<AbilityPackageMeta>,
+    pub contract: Option<PackageContractMeta>,
 }
 
 impl PlatformEntry {
@@ -1221,9 +1221,11 @@ nar_size = 1
     fn delivery_contract_rejects_path_traversal_and_tampering() {
         let mut traversal = delivery("raw");
         traversal.filename = "../server.img".to_string();
-        assert!(traversal
-            .validate("raw", "2026.08", "x86_64-linux")
-            .is_err());
+        assert!(
+            traversal
+                .validate("raw", "2026.08", "x86_64-linux")
+                .is_err()
+        );
 
         let mut tampered = delivery("raw");
         tampered.sha256 = "A".repeat(64);
@@ -1231,32 +1233,42 @@ nar_size = 1
 
         let mut wrong_target = delivery("qcow2");
         wrong_target.compatible_targets = vec![ImageTarget::BareMetal];
-        assert!(wrong_target
-            .validate("qcow2", "2026.08", "x86_64-linux")
-            .is_err());
+        assert!(
+            wrong_target
+                .validate("qcow2", "2026.08", "x86_64-linux")
+                .is_err()
+        );
 
         let mut uncompressed_raw = delivery("raw");
         uncompressed_raw.compression = ImageCompression::None;
-        assert!(uncompressed_raw
-            .validate("raw", "2026.08", "x86_64-linux")
-            .is_err());
+        assert!(
+            uncompressed_raw
+                .validate("raw", "2026.08", "x86_64-linux")
+                .is_err()
+        );
 
         let mut compressed_qcow2 = delivery("qcow2");
         compressed_qcow2.compression = ImageCompression::Zstd;
-        assert!(compressed_qcow2
-            .validate("qcow2", "2026.08", "x86_64-linux")
-            .is_err());
+        assert!(
+            compressed_qcow2
+                .validate("qcow2", "2026.08", "x86_64-linux")
+                .is_err()
+        );
     }
 
     #[test]
     fn delivery_contract_rejects_parent_identity_drift() {
         let contract = delivery("vmdk");
-        assert!(contract
-            .validate("vmdk", "2026.09", "x86_64-linux")
-            .is_err());
-        assert!(contract
-            .validate("vmdk", "2026.08", "aarch64-linux")
-            .is_err());
+        assert!(
+            contract
+                .validate("vmdk", "2026.09", "x86_64-linux")
+                .is_err()
+        );
+        assert!(
+            contract
+                .validate("vmdk", "2026.08", "aarch64-linux")
+                .is_err()
+        );
     }
 
     #[test]
@@ -2024,7 +2036,7 @@ impl SyscallProfile {
 // Committed root config (`registry.toml`)
 // ---------------------------------------------------------------------------
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::stack::{self, StackNode};
 
@@ -2418,8 +2430,7 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
                     );
                     anyhow::ensure!(
                         delivery.uki == first.uki
-                            && image.sb_signer_cert_sha256
-                                == first_image.sb_signer_cert_sha256
+                            && image.sb_signer_cert_sha256 == first_image.sb_signer_cert_sha256
                             && image.sbat == first_image.sbat
                             && image.expected_pcr11 == first_image.expected_pcr11
                             && image.recovery_ukis == first_image.recovery_ukis,
@@ -2556,43 +2567,58 @@ pub struct DocumentationArtifactMeta {
     pub references: Vec<String>,
 }
 
-/// Authenticated metadata for one RFC-0022 package ability manifest.
-///
-/// The companion output contains canonical `aos.ability.package/v1` JSON. The
-/// registry entry binds both its exact bytes and its semantic document digest,
-/// then retains a complete realization catalog for every artifact the manifest
-/// may execute or re-evaluate.
+/// Authenticated metadata for one symbolic package contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AbilityPackageMeta {
-    /// Store path of the `abilities` companion output.
-    pub store_path: String,
-    /// Hash of the uncompressed companion-output NAR.
-    pub nar_hash: String,
-    /// Uncompressed companion-output NAR size in bytes.
-    pub nar_size: u64,
-    /// Direct store-path hash references of the companion output.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub references: Vec<String>,
-    /// SHA-256 digest of the exact canonical `package.json` bytes.
-    pub manifest_sha256: String,
-    /// Exact canonical `package.json` byte length.
-    pub manifest_size: u64,
-    /// Domain-separated `aos.ability.package/v1` semantic digest.
-    pub package_digest: String,
-    /// Declared activation ownership: `contracts-only` or `structured-effects`.
-    pub activation_mode: String,
-    /// Exact retained closure catalogs for every manifest artifact.
-    pub artifacts: Vec<AbilityArtifactRetentionMeta>,
-    /// Registry-relative dedicated DSSE statement for this companion.
+pub struct PackageContractMeta {
+    /// Exact reference-free regular file containing the canonical projection.
+    pub document: PackageContractDocumentMeta,
+    /// Exact primary package artifact supplied to the projection resolver.
+    pub payload: PackageContractArtifactMeta,
+    /// Exact build-source artifact supplied to the projection resolver.
+    pub source: PackageContractArtifactMeta,
+    /// Exact release output bindings for every symbolic selector.
+    pub selectors: Vec<PackageContractSelectorMeta>,
+    /// Registry-relative dedicated DSSE statement for this contract.
     pub provenance: String,
 }
 
-/// Retains one exact ability artifact and its complete authenticated closure.
+/// Authenticates the exact regular file carrying a symbolic package contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AbilityArtifactRetentionMeta {
-    /// Domain-specific content identity copied from the package manifest.
+pub struct PackageContractDocumentMeta {
+    /// Store path of the regular-file contract object.
+    pub store_path: String,
+    /// Hash of the uncompressed regular-file NAR.
+    pub nar_hash: String,
+    /// Uncompressed NAR size in bytes.
+    pub nar_size: u64,
+    /// SHA-256 digest of the exact canonical document bytes.
+    pub document_sha256: String,
+    /// Exact canonical document byte length.
+    pub document_size: u64,
+    /// Direct references; package contract documents require an empty set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
+}
+
+/// Binds one symbolic package output selector to an authenticated artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageContractSelectorMeta {
+    /// Package name, or `self` for the contract owner.
+    pub package: String,
+    /// Selected package output name.
+    pub output: String,
+    /// Exact selected artifact and its complete authenticated closure.
+    pub artifact: PackageContractArtifactMeta,
+}
+
+/// Retains one selected package artifact and its complete authenticated closure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageContractArtifactMeta {
+    /// Domain-specific content identity derived from the selected artifact.
     pub content: String,
     /// Exact store path copied from the package manifest.
     pub store_path: String,
@@ -2603,13 +2629,13 @@ pub struct AbilityArtifactRetentionMeta {
     /// Domain-separated digest of the complete ordered closure catalog.
     pub closure_digest: String,
     /// Complete sorted closure, including the artifact root.
-    pub closure: Vec<AbilityClosureMemberMeta>,
+    pub closure: Vec<PackageContractClosureMemberMeta>,
 }
 
-/// Describes one exact realized member of an ability artifact closure.
+/// Describes one exact realized member of a selected artifact closure.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AbilityClosureMemberMeta {
+pub struct PackageContractClosureMemberMeta {
     /// Exact realized Nix store path.
     pub store_path: String,
     /// Hash of the member's uncompressed NAR.

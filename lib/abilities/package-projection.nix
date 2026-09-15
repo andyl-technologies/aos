@@ -242,11 +242,8 @@
         (name: evaluated.implementations.${name}.state_format != null)
         implementationNames)
       "provider-state-format-v1"
+      ++ lib.optional structuredEffects "ability-effects-v1"
     ));
-    activation_mode =
-      if structuredEffects
-      then "structured-effects"
-      else "contracts-only";
     package = {
       name = packageName;
       inherit version;

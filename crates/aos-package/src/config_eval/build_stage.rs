@@ -23,7 +23,7 @@ use super::ability_activation::{ActivationDesiredInputDocument, AuthenticatedPol
 use super::ability_rounds::resolve_ability_rounds;
 use super::stock::{StockAbilityRoundEvaluator, StockAbilityRoundResolver, StockNixEvaluator};
 use super::{EvalAttempt, PackageOutputs, WorkingSetMember};
-use crate::ability_package::VerifiedAbilityPlanningCatalog;
+use crate::package_contract::VerifiedPackagePlanningCatalog;
 
 const BUILD_STAGE_SPEC_SCHEMA: &str = "aos.ability.build-stage-resolution/v1";
 const BUILD_STAGE_PLAN_SCHEMA: &str = "aos.ability.build-stage-plan/v1";
@@ -97,7 +97,7 @@ pub fn plan_build_stage(spec_path: &Path, output_path: &Path) -> Result<()> {
     validate_environment(&desired, spec.stage, &spec.authority, &spec.key)?;
 
     let LoadedPackages { documents, .. } = load_packages(&spec.packages)?;
-    let catalog = VerifiedAbilityPlanningCatalog::from_authenticated_documents(documents)?;
+    let catalog = VerifiedPackagePlanningCatalog::from_authenticated_documents(documents)?;
     let mut composition_evaluator = super::native_activation::production_evaluator()?;
     let outcome = catalog.composer().compose(
         &policies.policies,
@@ -180,7 +180,7 @@ pub fn resolve_build_stage(spec_path: &Path, output_path: &Path, eval_root: &Pat
         documents,
         artifact_locators,
     } = load_packages(&spec.packages)?;
-    let catalog = VerifiedAbilityPlanningCatalog::from_authenticated_documents(documents)?;
+    let catalog = VerifiedPackagePlanningCatalog::from_authenticated_documents(documents)?;
     let mut composition_evaluator = super::native_activation::production_evaluator()?;
     let verified = planning.replay_with(
         &catalog.composer(),

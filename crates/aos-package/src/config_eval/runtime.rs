@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::registry::{RegistrySet, store_path_hash};
-use crate::types::{AbilityPackageMeta, ExposeArtifactMeta, ExposeMeta};
+use crate::types::PackageContractMeta;
 
 /// An exact image-bundled package available from the active system profile.
 #[derive(Debug, Clone)]
@@ -25,12 +25,8 @@ pub struct LocalRuntimePackage {
     pub version: String,
     /// Exact runtime output in the immutable image closure.
     pub store_path: String,
-    /// Signed service exposure contract retained in the image seed.
-    pub expose: Option<ExposeMeta>,
-    /// Rendered expose artifact retained in the image seed.
-    pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Authenticated ability companion retained in the image seed.
-    pub ability: Option<AbilityPackageMeta>,
+    /// Authenticated package contract retained in the image.
+    pub contract: Option<PackageContractMeta>,
     /// Lazily verified closure reused across outer fixpoint iterations.
     pub(super) closure: RefCell<Option<Vec<RuntimeClosurePin>>>,
 }
@@ -68,24 +64,9 @@ pub struct RuntimePackagePin {
     pub nar_size: u64,
     /// Complete authenticated closure, keyed by input-addressed store hash.
     pub closure: Vec<RuntimeClosurePin>,
-    /// Signed service exposure contract for this package.
+    /// Exact authenticated package contract selected with this package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expose: Option<ExposeMeta>,
-    /// Exact rendered unit artifact authenticated by the selected registry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Exact authenticated ability companion selected with this package.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ability: Option<AbilityPackageMeta>,
-}
-
-impl RuntimePackagePin {
-    /// Returns whether the authenticated ability graph owns package effects.
-    pub(super) fn uses_structured_effects(&self) -> bool {
-        self.ability
-            .as_ref()
-            .is_some_and(|ability| ability.activation_mode == "structured-effects")
-    }
+    pub contract: Option<PackageContractMeta>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -135,9 +116,8 @@ pub struct RuntimeRealisationPin {
 
 /// Resolves package names to exact authenticated runtime pins.
 ///
-/// Package-level `expose.requires` and capability-provider dependencies are
-/// recursively included by [`resolve_multiple`]. Registries without a
-/// published `store/` graph are refused: their narinfo fallback cannot pin and
+/// Registries without a published `store/` graph are refused: their narinfo
+/// fallback cannot pin and
 /// authenticate every anonymous closure member, so it is insufficient for a
 /// transactional configuration generation.
 ///
@@ -183,18 +163,9 @@ pub fn resolve_runtime_with_local(
             Ok(Some(_)) => {
                 let closure = crate::resolve::resolve_closure(registries, &name, None)
                     .with_context(|| format!("resolving package '{name}'"))?;
-                if let Some(expose) = &closure.root.expose {
-                    pending.extend(expose.requires.iter().cloned());
-                    pending.extend(expose.uses.iter().map(|route| route.provider.clone()));
-                }
                 closures.push(closure);
             }
             Ok(None) | Err(_) if local.contains_key(&name) => {
-                let package = &local[&name];
-                if let Some(expose) = &package.expose {
-                    pending.extend(expose.requires.iter().cloned());
-                    pending.extend(expose.uses.iter().map(|route| route.provider.clone()));
-                }
                 local_names.insert(name);
             }
             Err(error) => {
@@ -232,19 +203,8 @@ pub fn resolve_runtime_with_local(
                 closure.root.name
             );
         }
-        if closure.root.expose.is_some() != closure.root.expose_artifact.is_some() {
-            bail!(
-                "package '{}@{}' must publish signed expose metadata and its rendered artifact together",
-                closure.root.name,
-                closure.root.version
-            );
-        }
-
         let root_hash = store_path_hash(&closure.root.store_path);
         let mut member_hashes = store.reachable(root_hash);
-        if let Some(artifact) = &closure.root.expose_artifact {
-            member_hashes.extend(store.reachable(store_path_hash(&artifact.store_path)));
-        }
         member_hashes.sort();
         member_hashes.dedup();
         let mut members = Vec::with_capacity(member_hashes.len());
@@ -268,14 +228,9 @@ pub fn resolve_runtime_with_local(
                     closure.root.name
                 );
             }
-            let mut store_path = registries
+            let store_path = registries
                 .resolve_hash_in(&closure.registry_name, &member_hash)
                 .map(|meta| meta.store_path.clone());
-            if let Some(artifact) = &closure.root.expose_artifact
-                && member_hash == store_path_hash(&artifact.store_path)
-            {
-                store_path = Some(artifact.store_path.clone());
-            }
             members.push(RuntimeClosurePin {
                 store_path_hash: member_hash,
                 store_path,
@@ -301,25 +256,6 @@ pub fn resolve_runtime_with_local(
                 closure.registry_name
             );
         }
-        if let Some(artifact) = &closure.root.expose_artifact {
-            let artifact_hash = store_path_hash(&artifact.store_path);
-            let artifact_pin = members
-                .iter()
-                .find(|member| member.store_path_hash == artifact_hash)
-                .context("authenticated closure omitted its expose artifact root")?;
-            if !artifact_pin.realisations.iter().any(|pin| {
-                crate::registry::store::NarBytes::from_hash(&artifact.nar_hash, artifact.nar_size)
-                    .is_ok_and(|nar| pin.nar_hash == nar.nar_hash() && pin.nar_size == nar.size)
-            }) {
-                bail!(
-                    "package '{}@{}' expose artifact NAR disagrees with registry '{}' store graph",
-                    closure.root.name,
-                    closure.root.version,
-                    closure.registry_name
-                );
-            }
-        }
-
         let mut dependencies = BTreeSet::new();
         for hash in store.direct_deps(root_hash) {
             if let Some(package) = selected_roots.get(&hash)
@@ -327,16 +263,6 @@ pub fn resolve_runtime_with_local(
             {
                 dependencies.insert(package.clone());
             }
-        }
-        if let Some(expose) = closure.root.expose.as_ref() {
-            dependencies.extend(
-                expose
-                    .requires
-                    .iter()
-                    .chain(expose.uses.iter().map(|route| &route.provider))
-                    .filter(|package| *package != &closure.root.name)
-                    .cloned(),
-            );
         }
         edges.insert(
             closure.root.name.clone(),
@@ -357,9 +283,7 @@ pub fn resolve_runtime_with_local(
                 .nar_hash(),
                 nar_size: closure.root.nar_size,
                 closure: members,
-                expose: closure.root.expose.clone(),
-                expose_artifact: closure.root.expose_artifact.clone(),
-                ability: closure.root.ability.clone(),
+                contract: closure.root.contract.clone(),
             },
         );
     }
@@ -368,41 +292,9 @@ pub fn resolve_runtime_with_local(
         let package = local
             .get(&name)
             .with_context(|| format!("image-local package '{name}' disappeared"))?;
-        if package.expose.is_some() != package.expose_artifact.is_some() {
-            bail!(
-                "image-local package '{}@{}' must retain expose metadata and its artifact together",
-                name,
-                package.version
-            );
-        }
         let closure = local_closure(package)
             .with_context(|| format!("validating image-local closure for '{name}'"))?;
-
-        let expose_artifact = package
-            .expose_artifact
-            .as_ref()
-            .map(|artifact| {
-                let member = closure
-                    .iter()
-                    .find(|member| member.store_path_hash == store_path_hash(&artifact.store_path))
-                    .context("image-local closure omitted its expose artifact")?;
-                let realization = member
-                    .realisations
-                    .first()
-                    .context("image-local expose artifact has no NAR identity")?;
-                let mut exact = artifact.clone();
-                exact.nar_hash = realization.nar_hash.clone();
-                exact.nar_size = realization.nar_size;
-                Ok::<_, anyhow::Error>(exact)
-            })
-            .transpose()?;
-        let mut dependencies = BTreeSet::new();
-        if let Some(expose) = &package.expose {
-            dependencies.extend(expose.requires.iter().cloned());
-            dependencies.extend(expose.uses.iter().map(|route| route.provider.clone()));
-            dependencies.remove(&name);
-        }
-        edges.insert(name.clone(), dependencies.into_iter().collect());
+        edges.insert(name.clone(), Vec::new());
         let root_hash = store_path_hash(&package.store_path);
         let root_realization = closure
             .iter()
@@ -420,9 +312,7 @@ pub fn resolve_runtime_with_local(
                 nar_hash: root_realization.nar_hash.clone(),
                 nar_size: root_realization.nar_size,
                 closure,
-                expose: package.expose.clone(),
-                expose_artifact,
-                ability: package.ability.clone(),
+                contract: package.contract.clone(),
             },
         );
     }
@@ -434,10 +324,7 @@ fn local_closure(package: &LocalRuntimePackage) -> Result<Vec<RuntimeClosurePin>
     if let Some(cached) = package.closure.borrow().as_ref() {
         return Ok(cached.clone());
     }
-    let mut roots = vec![package.store_path.as_str()];
-    if let Some(artifact) = &package.expose_artifact {
-        roots.push(&artifact.store_path);
-    }
+    let roots = [package.store_path.as_str()];
     let output = Command::new("nix-store")
         .args(["--query", "--requisites"])
         .args(&roots)
@@ -601,7 +488,7 @@ mod tests {
                 store_path: store_path.to_string(),
                 expose: None,
                 expose_artifact: None,
-                ability: None,
+                contract: None,
                 closure: RefCell::new(Some(vec![RuntimeClosurePin {
                     store_path_hash: store_path_hash(store_path).to_string(),
                     store_path: Some(store_path.to_string()),

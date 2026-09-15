@@ -26,7 +26,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{Generation, Profile, atomic_write};
 use crate::registry::{RegistrySet, store_path_hash};
-use crate::types::{ApmMeta, FEATURE_ABILITY_EFFECTS_V1, InstalledMeta};
+use crate::types::{ApmMeta, InstalledMeta};
 
 // ---------------------------------------------------------------------------
 // Write / read / delete individual metadata entries
@@ -207,45 +207,6 @@ pub fn list_meta(profile: &Profile) -> Result<Vec<InstalledMeta>> {
     }
 
     Ok(results)
-}
-
-/// Validates persisted ability metadata before an ordinary profile mutation.
-///
-/// Ordinary package commands do not own structured lifecycle effects. This
-/// retained-state gate prevents them from carrying, replacing, or removing a
-/// package whose activation belongs to the native ability dispatcher.
-///
-/// # Errors
-///
-/// Returns an error when retained ability metadata is malformed or requires
-/// structured effect activation.
-pub(crate) fn validate_ordinary_profile_ability_state(installed: &[InstalledMeta]) -> Result<()> {
-    for installed_meta in installed {
-        let Some(apm) = &installed_meta.apm else {
-            continue;
-        };
-        let Some(ability) = &apm.ability else {
-            continue;
-        };
-
-        if ability.activation_mode == "structured-effects" {
-            bail!(
-                "installed package '{}@{}' requires unsupported registry feature '{}'; refusing ordinary package mutation",
-                apm.name,
-                apm.version,
-                FEATURE_ABILITY_EFFECTS_V1,
-            );
-        }
-
-        crate::ability_package::validate_ability_package_meta(ability).with_context(|| {
-            format!(
-                "validating retained ability metadata for installed package '{}@{}'",
-                apm.name, apm.version
-            )
-        })?;
-    }
-
-    Ok(())
 }
 
 /// Find all metadata entries from a specific registry.
@@ -441,7 +402,7 @@ pub fn rebuild_meta(
                     expose_artifact: pkg.expose_artifact.clone(),
                     config_module: pkg.config_module.clone(),
                     documentation: pkg.documentation.clone(),
-                    ability: pkg.ability.clone(),
+                    contract: pkg.contract.clone(),
                     permissions: pkg.permissions.clone(),
                     bpf_lsm: pkg.bpf_lsm.clone(),
                     attestation: pkg.attestation.clone(),
@@ -489,7 +450,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    use crate::types::{AbilityPackageMeta, ProfileScope};
+    use crate::types::{PackageContractMeta, ProfileScope};
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
@@ -517,7 +478,7 @@ mod tests {
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
-                ability: None,
+                contract: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -525,8 +486,8 @@ mod tests {
         }
     }
 
-    fn ability_meta(activation_mode: &str) -> AbilityPackageMeta {
-        AbilityPackageMeta {
+    fn ability_meta(activation_mode: &str) -> PackageContractMeta {
+        PackageContractMeta {
             store_path: "/nix/store/123456789abcdfghijklmnpqrsvwxyz0-demo-abilities".to_string(),
             nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
@@ -541,7 +502,7 @@ mod tests {
                     .to_string(),
             activation_mode: activation_mode.to_string(),
             artifacts: Vec::new(),
-            provenance: "provenance/demo.ability.intoto.jsonl".to_string(),
+            provenance: "provenance/demo.contract.intoto.jsonl".to_string(),
         }
     }
 
@@ -585,7 +546,7 @@ mod tests {
     #[test]
     fn ordinary_profile_mutations_accept_contracts_only_ability_state() {
         let mut installed = sample_meta("demo", "aos-core", true, false);
-        installed.apm.as_mut().unwrap().ability = Some(ability_meta("contracts-only"));
+        installed.apm.as_mut().unwrap().contract = Some(ability_meta("contracts-only"));
 
         validate_ordinary_profile_ability_state(&[installed])
             .expect("contracts-only metadata has no lifecycle owner");
@@ -594,7 +555,7 @@ mod tests {
     #[test]
     fn ordinary_profile_mutations_reject_structured_effect_state() {
         let mut installed = sample_meta("demo", "aos-core", true, false);
-        installed.apm.as_mut().unwrap().ability = Some(ability_meta("structured-effects"));
+        installed.apm.as_mut().unwrap().contract = Some(ability_meta("structured-effects"));
 
         let error = validate_ordinary_profile_ability_state(&[installed])
             .expect_err("ordinary package mutations must not bypass structured activation");

@@ -329,11 +329,9 @@ pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
             })?;
         }
 
-        if let Some(ability) = &meta.ability {
-            for store_path in std::iter::once(&ability.store_path).chain(
-                ability
-                    .artifacts
-                    .iter()
+        if let Some(ability) = &meta.contract {
+            for store_path in std::iter::once(&ability.document.store_path).chain(
+                crate::package_contract::retained_artifacts(ability)
                     .map(|artifact| &artifact.store_path),
             ) {
                 let artifact_hash = store_path_hash(store_path);
@@ -785,7 +783,7 @@ mod tests {
             expose_artifact: None,
             config_module: None,
             documentation: None,
-            ability: None,
+            contract: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),

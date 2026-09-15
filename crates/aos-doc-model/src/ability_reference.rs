@@ -7,12 +7,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::{
-    decode_canonical, encode_canonical, validate_package_option_declarations,
-    AbilityActivationMode, GuaranteeDeclaration, HandlerDescriptor, InterfaceDocument,
-    InterfaceKey, LocalKey, OptionVisibility, PackageOptionDeclaration, ProviderImplementation,
-    RequiredFeature, RequirementDeclaration, ValueSchema, VersionedDocument, ABILITY_LIMITS_V1,
+    ABILITY_LIMITS_V1, GuaranteeDeclaration, HandlerDescriptor, InterfaceDocument, InterfaceKey,
+    LocalKey, OptionVisibility, PackageOptionDeclaration, ProviderImplementation, RequiredFeature,
+    RequirementDeclaration, ValueSchema, VersionedDocument, decode_canonical, encode_canonical,
+    validate_package_option_declarations,
 };
-use aos_ability_validate::{package_source_supported_features, CheckedPackageContract};
+use aos_ability_validate::{CheckedPackageContract, package_source_supported_features};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
@@ -95,8 +95,6 @@ pub struct PackageAbilityReference {
     pub manifest_sha256: Sha256Digest,
     /// Domain-separated semantic identity of the package manifest.
     pub package_digest: Sha256Digest,
-    /// States whether the package may author structured activation effects.
-    pub activation_mode: AbilityActivationMode,
     /// Maps every package-local interface alias to its exact retained document.
     pub interfaces: BTreeMap<LocalKey, InterfaceDocument>,
     /// Retains every package-authored guarantee semantic and description once.
@@ -211,7 +209,6 @@ impl PackageAbilityReference {
             version: package.package.version.clone(),
             manifest_sha256,
             package_digest,
-            activation_mode: package.activation_mode,
             interfaces,
             guarantees: package.guarantees.clone(),
             option_declarations: package.option_declarations.clone(),
@@ -544,13 +541,12 @@ mod tests {
         PackageAbilityReference {
             schema: ABILITY_REFERENCE_SCHEMA.to_string(),
             required_features: vec![
-                RequiredFeature::new("abilities-v1").expect("valid feature name")
+                RequiredFeature::new("abilities-v1").expect("valid feature name"),
             ],
             package: LocalKey::new("demo").expect("valid package name"),
             version: "1.0.0".to_string(),
             manifest_sha256: Sha256Digest::of_bytes("manifest"),
             package_digest: Sha256Digest::of_bytes("package"),
-            activation_mode: AbilityActivationMode::ContractsOnly,
             interfaces: BTreeMap::new(),
             guarantees: BTreeMap::new(),
             option_declarations: Vec::new(),
@@ -642,8 +638,8 @@ mod tests {
                 .as_object_mut()
                 .expect("reference object")
                 .remove(field);
-            let bytes = aos_contract::canonical::to_vec(&value)
-                .expect("encode incomplete reference");
+            let bytes =
+                aos_contract::canonical::to_vec(&value).expect("encode incomplete reference");
 
             assert!(PackageAbilityReference::from_canonical_json(&bytes, &supported).is_err());
         }

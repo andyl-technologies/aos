@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::identity::compare_request_ids;
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, DeploymentObligation, ExportDeclaration,
-    HandlerDescriptor, InterfaceName, LocalKey, ModuleLocator, ObligationKind, PackageDocument,
-    PackageImplementation, ProviderImplementation, ProviderStateFormat, RelativePath,
-    RequiredFeature, TransactionId, ValueExpression, ValueSchema, VersionedDocument,
+    AbilityValue, DeploymentObligation, ExportDeclaration, HandlerDescriptor, InterfaceName,
+    LocalKey, ModuleLocator, ObligationKind, PackageDocument, PackageImplementation,
+    ProviderImplementation, ProviderStateFormat, RelativePath, RequiredFeature, TransactionId,
+    ValueExpression, ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_ability_validate::test_support::{
@@ -156,7 +156,6 @@ fn install_package_with_feature(
     let package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: vec![feature],
-        activation_mode: AbilityActivationMode::StructuredEffects,
         package: PackageSubject {
             name: LocalKey::new("feature-provider")?,
             version: "1.0.0".to_string(),

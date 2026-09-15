@@ -8,8 +8,7 @@ use std::fmt::Write as _;
 
 use anyhow::Result;
 use aos_ability_model::{
-    AbilityActivationMode, OptionVisibility, RequirementDeclaration, RequirementStrength,
-    ValueSchema,
+    OptionVisibility, RequirementDeclaration, RequirementStrength, ValueSchema,
 };
 use aos_doc_model::PackageAbilityReference;
 
@@ -22,11 +21,6 @@ const SCOPE_NOTICE: &str = concat!(
 pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
     let mut output = String::from("\nDECLARED ABILITIES\n------------------\n");
     let _ = writeln!(output, "{SCOPE_NOTICE}");
-    let _ = writeln!(
-        output,
-        "declared activation mode\t{}",
-        activation_mode(reference.activation_mode)
-    );
     let _ = writeln!(output, "manifest identity\t{}", reference.manifest_sha256);
     let _ = writeln!(
         output,
@@ -284,9 +278,7 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
     let mut output =
         String::from("<section id=\"declared-abilities\"><h2>Declared abilities</h2><p>");
     escape_html_into(SCOPE_NOTICE, &mut output);
-    output.push_str("</p><dl><dt>Declared activation mode</dt><dd>");
-    escape_html_into(activation_mode(reference.activation_mode), &mut output);
-    output.push_str("</dd><dt>Manifest identity</dt><dd><code>");
+    output.push_str("</p><dl><dt>Manifest identity</dt><dd><code>");
     escape_html_into(&reference.manifest_sha256.to_string(), &mut output);
     output.push_str("</code></dd><dt>Package contract identity</dt><dd><code>");
     escape_html_into(&reference.package_digest.to_string(), &mut output);
@@ -694,13 +686,6 @@ fn safe_plain_text(value: &str) -> String {
     safe
 }
 
-const fn activation_mode(mode: AbilityActivationMode) -> &'static str {
-    match mode {
-        AbilityActivationMode::ContractsOnly => "contracts only",
-        AbilityActivationMode::StructuredEffects => "structured effects",
-    }
-}
-
 const fn requirement_strength(strength: RequirementStrength) -> &'static str {
     match strength {
         RequirementStrength::Required => "required",
@@ -709,11 +694,7 @@ const fn requirement_strength(strength: RequirementStrength) -> &'static str {
 }
 
 const fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 fn escape_html_into(value: &str, output: &mut String) {

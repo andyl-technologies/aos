@@ -3,7 +3,7 @@
 //! Registry metadata records the exact canonical package manifest and a full
 //! Nix closure catalog for every distinct artifact reference. This module
 //! validates that untrusted catalog before signature and live-store checks
-//! construct the opaque [`VerifiedAbilityPackage`] consumed by native runtime
+//! construct the opaque [`VerifiedPackageContract`] consumed by native runtime
 //! adapters.
 //!
 //! A realized companion stores its canonical manifest and descriptor-addressed
@@ -21,7 +21,7 @@
 //! digest values are placeholders:
 //!
 //! ```json
-//! {"manifest_sha256":"sha256:<64 hex digits>","package_digest":"sha256:<64 hex digits>","artifacts":[{"content":"sha256:<64 hex digits>","closure_digest":"sha256:<64 hex digits>"}],"provenance":"provenance/<package>.ability.intoto.jsonl"}
+//! {"manifest_sha256":"sha256:<64 hex digits>","package_digest":"sha256:<64 hex digits>","artifacts":[{"content":"sha256:<64 hex digits>","closure_digest":"sha256:<64 hex digits>"}],"provenance":"provenance/<package>.contract.intoto.jsonl"}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,26 +33,29 @@ use std::path::Path;
 use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::document::PlatformIdentity;
 use aos_ability_model::{
-    AbilityActivationMode, ArtifactClosureMemberInput, ArtifactReference, HandlerDescriptor,
-    LocalKey, PackageDocument, ProviderImplementation, VersionedDocument,
-    artifact_closure_identity,
+    ArtifactClosureMemberInput, ArtifactReference, HandlerDescriptor, InterfaceDocument, LocalKey,
+    PackageDocument, ProviderImplementation, VersionedDocument, artifact_closure_identity,
 };
-use aos_ability_validate::package_source_supported_features;
+use aos_ability_validate::{
+    PackageOutputSelector, decode_package_projection, package_source_supported_features,
+    resolve_package_projection,
+};
 use aos_contract::Sha256Digest;
 use serde::Serialize;
 
 use crate::types::{
-    AbilityArtifactRetentionMeta, AbilityClosureMemberMeta, AbilityPackageMeta, PackageMeta,
-    validate_attestation_provenance_ref,
+    PackageContractArtifactMeta, PackageContractClosureMemberMeta, PackageContractMeta,
+    PackageContractSelectorMeta, PackageMeta, validate_attestation_provenance_ref,
+    validate_package_name,
 };
 
 pub(crate) mod catalog;
 pub(crate) mod retention;
 
-pub use catalog::VerifiedAbilityPlanningCatalog;
-pub use retention::NativeAbilityRetentionVerifier;
+pub use catalog::VerifiedPackagePlanningCatalog;
+pub use retention::NativePackageContractRetentionVerifier;
 
-const RETENTION_DIGEST_DOMAIN: &str = "aos.ability.retention/v1";
+const RETENTION_DIGEST_DOMAIN: &str = "aos.contract.retention/v1";
 const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
 const PREDICATE_TYPE: &str = "https://andyl.com/aos/ability-package-provenance/v1";
 const BUILD_TYPE: &str = "https://andyl.com/aos/apr-ability-publish/v1";
@@ -63,8 +66,17 @@ fn artifact_semantic_key(
     (artifact.content, artifact.nar_hash, artifact.closure)
 }
 
+/// Iterates every exact artifact retained by a registry package contract.
+pub(crate) fn retained_artifacts(
+    contract: &PackageContractMeta,
+) -> impl Iterator<Item = &PackageContractArtifactMeta> {
+    std::iter::once(&contract.payload)
+        .chain(std::iter::once(&contract.source))
+        .chain(contract.selectors.iter().map(|selector| &selector.artifact))
+}
+
 /// Borrows the primary package identity bound by ability provenance.
-pub(crate) struct AbilityPackageCoordinate<'a> {
+pub(crate) struct PackageContractCoordinate<'a> {
     pub(crate) name: &'a str,
     pub(crate) version: &'a str,
     pub(crate) platform: &'a str,
@@ -73,7 +85,7 @@ pub(crate) struct AbilityPackageCoordinate<'a> {
 }
 
 /// Verifies the actual store objects retained by ability metadata.
-pub(crate) trait AbilityRetentionVerifier {
+pub(crate) trait PackageContractRetentionVerifier {
     /// Checks the companion and every complete artifact closure against the
     /// live Nix store.
     ///
@@ -81,47 +93,47 @@ pub(crate) trait AbilityRetentionVerifier {
     ///
     /// Returns an error when any object, NAR identity, size, direct reference,
     /// transitive member, or closure edge differs from the signed catalog.
-    fn verify_retention(&self, retention: &VerifiedAbilityRetentionManifest) -> Result<()>;
+    fn verify_retention(&self, retention: &VerifiedPackageContractRetentionManifest) -> Result<()>;
 }
 
 /// Holds one structurally verified retention catalog.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VerifiedAbilityRetentionManifest {
-    companion_store_path: String,
-    companion_nar_hash: Sha256Digest,
-    companion_nar_size: u64,
-    companion_references: Vec<String>,
-    artifacts: Vec<AbilityArtifactRetentionMeta>,
+pub struct VerifiedPackageContractRetentionManifest {
+    document_store_path: String,
+    document_nar_hash: Sha256Digest,
+    document_nar_size: u64,
+    document_references: Vec<String>,
+    artifacts: Vec<PackageContractArtifactMeta>,
 }
 
-impl VerifiedAbilityRetentionManifest {
-    /// Returns the exact ability companion store path.
+impl VerifiedPackageContractRetentionManifest {
+    /// Returns the exact package contract document store path.
     #[must_use]
-    pub fn companion_store_path(&self) -> &str {
-        &self.companion_store_path
+    pub fn document_store_path(&self) -> &str {
+        &self.document_store_path
     }
 
     /// Returns the companion output's exact NAR identity.
     #[must_use]
-    pub const fn companion_nar_hash(&self) -> Sha256Digest {
-        self.companion_nar_hash
+    pub const fn document_nar_hash(&self) -> Sha256Digest {
+        self.document_nar_hash
     }
 
     /// Returns the companion output's uncompressed NAR size.
     #[must_use]
-    pub const fn companion_nar_size(&self) -> u64 {
-        self.companion_nar_size
+    pub const fn document_nar_size(&self) -> u64 {
+        self.document_nar_size
     }
 
     /// Returns the companion output's sorted direct store references.
     #[must_use]
-    pub fn companion_references(&self) -> &[String] {
-        &self.companion_references
+    pub fn document_references(&self) -> &[String] {
+        &self.document_references
     }
 
     /// Returns exact artifact catalogs in canonical content order.
     #[must_use]
-    pub fn artifacts(&self) -> &[AbilityArtifactRetentionMeta] {
+    pub fn artifacts(&self) -> &[PackageContractArtifactMeta] {
         &self.artifacts
     }
 }
@@ -153,16 +165,16 @@ impl<'a> VerifiedTerminalHandler<'a> {
 /// provenance verification and live-store equality checks are the only paths
 /// that may construct this type.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VerifiedAbilityPackage {
+pub struct VerifiedPackageContract {
     package: PackageDocument,
+    interfaces: Vec<InterfaceDocument>,
     manifest_sha256: Sha256Digest,
     package_digest: Sha256Digest,
     package_name: String,
     package_version: String,
     platform: String,
-    activation_mode: AbilityActivationMode,
     artifacts: Vec<ArtifactReference>,
-    retention: VerifiedAbilityRetentionManifest,
+    retention: VerifiedPackageContractRetentionManifest,
 }
 
 /// Owns the complete authenticated ability catalog admitted to one runtime session.
@@ -172,13 +184,13 @@ pub struct VerifiedAbilityPackage {
 /// callers can therefore resolve packages and artifacts without falling back
 /// to unauthenticated plan-bundle documents.
 #[derive(Clone, Debug, Default)]
-pub struct VerifiedAbilityPackageSet {
-    packages: Vec<VerifiedAbilityPackage>,
+pub struct VerifiedPackageContractSet {
+    packages: Vec<VerifiedPackageContract>,
     coordinates: BTreeMap<(String, String, String), usize>,
     artifacts: BTreeMap<(Sha256Digest, Sha256Digest, Sha256Digest), ArtifactReference>,
 }
 
-impl VerifiedAbilityPackageSet {
+impl VerifiedPackageContractSet {
     /// Constructs one deterministic set from independently verified packages.
     ///
     /// Equivalent duplicate seals are coalesced. A coordinate or artifact
@@ -189,7 +201,7 @@ impl VerifiedAbilityPackageSet {
     ///
     /// Returns an error when duplicate package coordinates or artifact content
     /// identities carry conflicting commitments.
-    pub fn from_verified(mut packages: Vec<VerifiedAbilityPackage>) -> Result<Self> {
+    pub fn from_verified(mut packages: Vec<VerifiedPackageContract>) -> Result<Self> {
         packages.sort_by(|left, right| {
             left.package_name
                 .cmp(&right.package_name)
@@ -197,7 +209,7 @@ impl VerifiedAbilityPackageSet {
                 .then_with(|| left.platform.cmp(&right.platform))
         });
 
-        let mut canonical = Vec::<VerifiedAbilityPackage>::with_capacity(packages.len());
+        let mut canonical = Vec::<VerifiedPackageContract>::with_capacity(packages.len());
         let mut coordinates = BTreeMap::new();
         let mut artifacts = BTreeMap::new();
         for package in packages {
@@ -242,7 +254,7 @@ impl VerifiedAbilityPackageSet {
     }
 
     /// Returns packages in canonical coordinate order.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &VerifiedAbilityPackage> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &VerifiedPackageContract> {
         self.packages.iter()
     }
 
@@ -267,7 +279,7 @@ impl VerifiedAbilityPackageSet {
         name: &str,
         version: &str,
         platform: &str,
-    ) -> Option<&VerifiedAbilityPackage> {
+    ) -> Option<&VerifiedPackageContract> {
         let coordinate = (name.to_string(), version.to_string(), platform.to_string());
         self.coordinates
             .get(&coordinate)
@@ -341,7 +353,7 @@ impl VerifiedAbilityPackageSet {
     /// longer matches its authenticated catalog.
     pub(crate) fn verify_live_retention(
         &self,
-        verifier: &impl AbilityRetentionVerifier,
+        verifier: &impl PackageContractRetentionVerifier,
     ) -> Result<()> {
         for package in &self.packages {
             verifier.verify_retention(&package.retention)?;
@@ -359,11 +371,11 @@ impl VerifiedAbilityPackageSet {
     /// Returns an error when any companion or retained artifact closure no
     /// longer matches its authenticated catalog.
     pub fn reverify_live_retention(&self) -> Result<()> {
-        self.verify_live_retention(&NativeAbilityRetentionVerifier::new())
+        self.verify_live_retention(&NativePackageContractRetentionVerifier::new())
     }
 }
 
-impl VerifiedAbilityPackage {
+impl VerifiedPackageContract {
     /// Returns the exact canonical package document.
     #[must_use]
     pub const fn package(&self) -> &PackageDocument {
@@ -400,12 +412,6 @@ impl VerifiedAbilityPackage {
         &self.platform
     }
 
-    /// Returns the signed activation ownership mode.
-    #[must_use]
-    pub const fn activation_mode(&self) -> AbilityActivationMode {
-        self.activation_mode
-    }
-
     /// Returns every distinct package artifact in canonical content order.
     #[must_use]
     pub fn artifacts(&self) -> &[ArtifactReference] {
@@ -414,7 +420,7 @@ impl VerifiedAbilityPackage {
 
     /// Returns the exact companion and complete artifact closure catalogs.
     #[must_use]
-    pub const fn retention_manifest(&self) -> &VerifiedAbilityRetentionManifest {
+    pub const fn retention_manifest(&self) -> &VerifiedPackageContractRetentionManifest {
         &self.retention
     }
 
@@ -459,15 +465,15 @@ impl VerifiedAbilityPackage {
 /// package association, dedicated provenance verification, artifact catalog
 /// equality, or live-store retention verification fails.
 #[cfg(test)]
-pub(crate) fn verify_ability_package(
+pub(crate) fn verify_package_contract(
     package_meta: &PackageMeta,
     manifest_bytes: &[u8],
     provenance_jsonl: &str,
     registry_name: &str,
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
-    retention_verifier: &impl AbilityRetentionVerifier,
-) -> Result<VerifiedAbilityPackage> {
-    verify_ability_package_inner(
+    retention_verifier: &impl PackageContractRetentionVerifier,
+) -> Result<VerifiedPackageContract> {
+    verify_package_contract_inner(
         package_meta,
         manifest_bytes,
         provenance_jsonl,
@@ -479,16 +485,16 @@ pub(crate) fn verify_ability_package(
 }
 
 /// Verifies one registry package at its authenticated publication sequence.
-pub(crate) fn verify_ability_package_at_sequence(
+pub(crate) fn verify_package_contract_at_sequence(
     package_meta: &PackageMeta,
     manifest_bytes: &[u8],
     provenance_jsonl: &str,
     registry_name: &str,
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
     publication_sequence: u64,
-    retention_verifier: &impl AbilityRetentionVerifier,
-) -> Result<VerifiedAbilityPackage> {
-    verify_ability_package_inner(
+    retention_verifier: &impl PackageContractRetentionVerifier,
+) -> Result<VerifiedPackageContract> {
+    verify_package_contract_inner(
         package_meta,
         manifest_bytes,
         provenance_jsonl,
@@ -499,29 +505,29 @@ pub(crate) fn verify_ability_package_at_sequence(
     )
 }
 
-fn verify_ability_package_inner(
+fn verify_package_contract_inner(
     package_meta: &PackageMeta,
     manifest_bytes: &[u8],
     provenance_jsonl: &str,
     registry_name: &str,
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
     publication_sequence: Option<u64>,
-    retention_verifier: &impl AbilityRetentionVerifier,
-) -> Result<VerifiedAbilityPackage> {
-    let ability = package_meta
-        .ability
+    retention_verifier: &impl PackageContractRetentionVerifier,
+) -> Result<VerifiedPackageContract> {
+    let contract = package_meta
+        .contract
         .as_ref()
-        .context("package does not declare ability metadata")?;
-    let coordinate = AbilityPackageCoordinate {
+        .context("package does not declare a contract")?;
+    let coordinate = PackageContractCoordinate {
         name: &package_meta.name,
         version: &package_meta.version,
         platform: &package_meta.platform,
         store_path: &package_meta.store_path,
         nar_hash: &package_meta.nar_hash,
     };
-    verify_pinned_ability_package_inner(
+    verify_pinned_package_contract_inner(
         coordinate,
-        ability,
+        contract,
         manifest_bytes,
         provenance_jsonl,
         registry_name,
@@ -532,18 +538,18 @@ fn verify_ability_package_inner(
 }
 
 /// Verifies one manifest from an exact generation-pinned registry coordinate.
-pub(crate) fn verify_pinned_ability_package(
-    coordinate: AbilityPackageCoordinate<'_>,
-    ability: &AbilityPackageMeta,
+pub(crate) fn verify_pinned_package_contract(
+    coordinate: PackageContractCoordinate<'_>,
+    contract: &PackageContractMeta,
     manifest_bytes: &[u8],
     provenance_jsonl: &str,
     registry_name: &str,
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
-    retention_verifier: &impl AbilityRetentionVerifier,
-) -> Result<VerifiedAbilityPackage> {
-    verify_pinned_ability_package_inner(
+    retention_verifier: &impl PackageContractRetentionVerifier,
+) -> Result<VerifiedPackageContract> {
+    verify_pinned_package_contract_inner(
         coordinate,
-        ability,
+        contract,
         manifest_bytes,
         provenance_jsonl,
         registry_name,
@@ -553,52 +559,52 @@ pub(crate) fn verify_pinned_ability_package(
     )
 }
 
-fn verify_pinned_ability_package_inner(
-    coordinate: AbilityPackageCoordinate<'_>,
-    ability: &AbilityPackageMeta,
+fn verify_pinned_package_contract_inner(
+    coordinate: PackageContractCoordinate<'_>,
+    contract: &PackageContractMeta,
     manifest_bytes: &[u8],
     provenance_jsonl: &str,
     registry_name: &str,
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
     publication_sequence: Option<u64>,
-    retention_verifier: &impl AbilityRetentionVerifier,
-) -> Result<VerifiedAbilityPackage> {
+    retention_verifier: &impl PackageContractRetentionVerifier,
+) -> Result<VerifiedPackageContract> {
     let BoundAbilityManifest {
         package,
+        interfaces,
         manifest_sha256,
         package_digest,
         artifacts,
-    } = bind_ability_manifest(&coordinate, ability, manifest_bytes)?;
+    } = bind_ability_manifest(&coordinate, contract, manifest_bytes)?;
     verify_ability_provenance_coordinate(
         &coordinate,
-        ability,
+        contract,
         provenance_jsonl,
         registry_name,
         trusted_keys,
         publication_sequence,
     )?;
 
-    let retention = VerifiedAbilityRetentionManifest {
-        companion_store_path: ability.store_path.clone(),
-        companion_nar_hash: validate_sha256_identity(
-            "ability companion NAR hash",
-            &ability.nar_hash,
+    let retention = VerifiedPackageContractRetentionManifest {
+        document_store_path: contract.document.store_path.clone(),
+        document_nar_hash: validate_sha256_identity(
+            "package contract document NAR hash",
+            &contract.document.nar_hash,
         )?,
-        companion_nar_size: ability.nar_size,
-        companion_references: ability.references.clone(),
-        artifacts: ability.artifacts.clone(),
+        document_nar_size: contract.document.nar_size,
+        document_references: contract.document.references.clone(),
+        artifacts: contract_artifacts(contract),
     };
     retention_verifier.verify_retention(&retention)?;
 
-    let activation_mode = package.activation_mode;
-    Ok(VerifiedAbilityPackage {
+    Ok(VerifiedPackageContract {
         package,
+        interfaces,
         manifest_sha256,
         package_digest,
         package_name: coordinate.name.to_string(),
         package_version: coordinate.version.to_string(),
         platform: coordinate.platform.to_string(),
-        activation_mode,
         artifacts,
         retention,
     })
@@ -606,84 +612,149 @@ fn verify_pinned_ability_package_inner(
 
 struct BoundAbilityManifest {
     package: PackageDocument,
+    interfaces: Vec<InterfaceDocument>,
     manifest_sha256: Sha256Digest,
     package_digest: Sha256Digest,
     artifacts: Vec<ArtifactReference>,
 }
 
 fn bind_ability_manifest(
-    coordinate: &AbilityPackageCoordinate<'_>,
-    ability: &AbilityPackageMeta,
+    coordinate: &PackageContractCoordinate<'_>,
+    contract: &PackageContractMeta,
     manifest_bytes: &[u8],
 ) -> Result<BoundAbilityManifest> {
-    validate_ability_package_meta(ability)?;
+    validate_package_contract_meta(contract)?;
 
-    if manifest_bytes.len() as u64 != ability.manifest_size {
+    if manifest_bytes.len() as u64 != contract.document.document_size {
         bail!(
-            "ability manifest byte length {} does not match signed size {}",
+            "package contract byte length {} does not match signed size {}",
             manifest_bytes.len(),
-            ability.manifest_size
+            contract.document.document_size
         );
     }
     let manifest_sha256 = Sha256Digest::of_bytes(manifest_bytes);
-    let recorded_manifest =
-        validate_sha256_identity("ability manifest_sha256", &ability.manifest_sha256)?;
+    let recorded_manifest = validate_sha256_identity(
+        "package contract document_sha256",
+        &contract.document.document_sha256,
+    )?;
     if manifest_sha256 != recorded_manifest {
-        bail!("ability manifest exact-byte digest does not match registry metadata");
+        bail!("package contract exact-byte digest does not match registry metadata");
     }
 
-    let package = decode_package_manifest(manifest_bytes)?;
-    if package.package.name.as_str() != coordinate.name {
+    let projection = decode_package_projection(manifest_bytes)?;
+    if projection.package.name.as_str() != coordinate.name {
         bail!(
-            "ability manifest package '{}' does not match registry package '{}'",
-            package.package.name.as_str(),
+            "package contract names '{}' but registry package is '{}'",
+            projection.package.name.as_str(),
             coordinate.name
         );
     }
-    if package.package.version != coordinate.version {
+    if projection.package.version != coordinate.version {
         bail!(
-            "ability manifest version '{}' does not match registry version '{}'",
-            package.package.version,
+            "package contract version '{}' does not match registry version '{}'",
+            projection.package.version,
             coordinate.version
         );
     }
     let primary_nar_hash = canonical_nar_hash(coordinate.nar_hash)?;
-    if package.package.payload.store_path != coordinate.store_path
-        || package.package.payload.nar_hash.to_string() != primary_nar_hash
+    if contract.payload.store_path != coordinate.store_path
+        || contract.payload.nar_hash != primary_nar_hash
     {
         bail!(
-            "ability manifest payload does not match primary package {}",
+            "package contract payload does not match primary package {}",
             coordinate.store_path
         );
     }
+    let interfaces = projection
+        .interface_documents
+        .iter()
+        .map(|entry| entry.document.clone())
+        .collect();
+    let bindings = contract
+        .selectors
+        .iter()
+        .map(|selector| {
+            Ok((
+                PackageOutputSelector {
+                    package: LocalKey::new(&selector.package)?,
+                    output: LocalKey::new(&selector.output)?,
+                },
+                artifact_reference(&selector.artifact)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let package = resolve_package_projection(
+        projection,
+        artifact_reference(&contract.payload)?,
+        artifact_reference(&contract.source)?,
+        |selector| {
+            bindings.get(selector).cloned().with_context(|| {
+                format!(
+                    "package contract selector {}:{} has no authenticated binding",
+                    selector.package.as_str(),
+                    selector.output.as_str()
+                )
+            })
+        },
+    )?;
     let package_digest = package
         .content_digest()
-        .context("computing ability package semantic digest")?;
-    let recorded_package =
-        validate_sha256_identity("ability package_digest", &ability.package_digest)?;
-    if package_digest != recorded_package {
-        bail!("ability package semantic digest does not match registry metadata");
-    }
-    if activation_mode_name(package.activation_mode) != ability.activation_mode {
-        bail!("ability package activation mode does not match registry metadata");
-    }
+        .context("computing resolved package contract digest")?;
 
     let artifacts = collect_distinct_artifacts(&package)?;
-    verify_artifact_catalog(&artifacts, &ability.artifacts)?;
+    verify_artifact_catalog(&artifacts, &contract_artifacts(contract))?;
 
     Ok(BoundAbilityManifest {
         package,
+        interfaces,
         manifest_sha256,
         package_digest,
         artifacts,
     })
 }
 
-/// Resolves the canonical package document from signed ability metadata.
+/// Resolves one exact signed projection into its package and interface documents.
+pub(crate) fn resolve_pinned_package_document(
+    coordinate: PackageContractCoordinate<'_>,
+    contract: &PackageContractMeta,
+) -> Result<(PackageDocument, Vec<InterfaceDocument>)> {
+    let bytes = read_package_manifest(&contract.document.store_path)?;
+    let bound = bind_ability_manifest(&coordinate, contract, &bytes)?;
+    Ok((bound.package, bound.interfaces))
+}
+
+fn artifact_reference(artifact: &PackageContractArtifactMeta) -> Result<ArtifactReference> {
+    Ok(ArtifactReference {
+        content: validate_sha256_identity("package contract artifact content", &artifact.content)?,
+        store_path: artifact.store_path.clone(),
+        nar_hash: validate_sha256_identity(
+            "package contract artifact NAR hash",
+            &artifact.nar_hash,
+        )?,
+        closure: validate_sha256_identity(
+            "package contract artifact closure digest",
+            &artifact.closure_digest,
+        )?,
+    })
+}
+
+fn contract_artifacts(contract: &PackageContractMeta) -> Vec<PackageContractArtifactMeta> {
+    let mut artifacts = vec![contract.payload.clone(), contract.source.clone()];
+    artifacts.extend(
+        contract
+            .selectors
+            .iter()
+            .map(|selector| selector.artifact.clone()),
+    );
+    artifacts.sort_by(|left, right| left.content.cmp(&right.content));
+    artifacts.dedup_by(|left, right| left == right);
+    artifacts
+}
+
+/// Resolves the canonical package document from signed contract metadata.
 ///
 /// The exact manifest bytes, semantic digest, package coordinate, payload
-/// binding, and artifact catalog are checked before the document is returned.
-/// Legacy `config_module` metadata does not participate in this authority.
+/// binding, and selector catalog are checked before the document is returned.
 ///
 /// # Errors
 ///
@@ -692,18 +763,18 @@ fn bind_ability_manifest(
 pub(crate) fn resolve_package_document(
     package_meta: &PackageMeta,
 ) -> Result<Option<PackageDocument>> {
-    let Some(ability) = package_meta.ability.as_ref() else {
+    let Some(contract) = package_meta.contract.as_ref() else {
         return Ok(None);
     };
-    let manifest_bytes = read_package_manifest(&ability.store_path)?;
-    let coordinate = AbilityPackageCoordinate {
+    let manifest_bytes = read_package_manifest(&contract.document.store_path)?;
+    let coordinate = PackageContractCoordinate {
         name: &package_meta.name,
         version: &package_meta.version,
         platform: &package_meta.platform,
         store_path: &package_meta.store_path,
         nar_hash: &package_meta.nar_hash,
     };
-    let bound = bind_ability_manifest(&coordinate, ability, &manifest_bytes)?;
+    let bound = bind_ability_manifest(&coordinate, contract, &manifest_bytes)?;
     let Some(module) = bound.package.package_module.as_ref() else {
         return Ok(None);
     };
@@ -720,7 +791,7 @@ pub(crate) fn resolve_package_document(
 
 /// Seals a package document for sibling-module tests without registry I/O.
 #[cfg(test)]
-pub(crate) fn seal_test_package(package: PackageDocument) -> Result<VerifiedAbilityPackage> {
+pub(crate) fn seal_test_package(package: PackageDocument) -> Result<VerifiedPackageContract> {
     let manifest = aos_ability_model::encode_canonical(&package)
         .context("encoding test ability package manifest")?;
     let package_digest = package
@@ -729,23 +800,21 @@ pub(crate) fn seal_test_package(package: PackageDocument) -> Result<VerifiedAbil
     let artifacts = collect_distinct_artifacts(&package)?;
     let package_name = package.package.name.as_str().to_string();
     let package_version = package.package.version.clone();
-    let activation_mode = package.activation_mode;
-
-    Ok(VerifiedAbilityPackage {
+    Ok(VerifiedPackageContract {
         package,
+        interfaces: Vec::new(),
         manifest_sha256: Sha256Digest::of_bytes(&manifest),
         package_digest,
         package_name,
         package_version,
         platform: "x86_64-linux".to_string(),
-        activation_mode,
         artifacts,
-        retention: VerifiedAbilityRetentionManifest {
-            companion_store_path: "/nix/store/00000000000000000000000000000000-test-abilities"
+        retention: VerifiedPackageContractRetentionManifest {
+            document_store_path: "/nix/store/00000000000000000000000000000000-test-abilities"
                 .to_string(),
-            companion_nar_hash: Sha256Digest::of_bytes(&[]),
-            companion_nar_size: 1,
-            companion_references: Vec::new(),
+            document_nar_hash: Sha256Digest::of_bytes(&[]),
+            document_nar_size: 1,
+            document_references: Vec::new(),
             artifacts: Vec::new(),
         },
     })
@@ -754,28 +823,28 @@ pub(crate) fn seal_test_package(package: PackageDocument) -> Result<VerifiedAbil
 /// Validates and seals retention metadata for native live-store tests.
 #[cfg(test)]
 pub(crate) fn seal_test_retention_manifest(
-    ability: &AbilityPackageMeta,
-) -> Result<VerifiedAbilityRetentionManifest> {
-    validate_ability_package_meta(ability)?;
-    Ok(VerifiedAbilityRetentionManifest {
-        companion_store_path: ability.store_path.clone(),
-        companion_nar_hash: validate_sha256_identity(
-            "ability companion NAR hash",
-            &ability.nar_hash,
+    contract: &PackageContractMeta,
+) -> Result<VerifiedPackageContractRetentionManifest> {
+    validate_package_contract_meta(contract)?;
+    Ok(VerifiedPackageContractRetentionManifest {
+        document_store_path: contract.document.store_path.clone(),
+        document_nar_hash: validate_sha256_identity(
+            "package contract document NAR hash",
+            &contract.document.nar_hash,
         )?,
-        companion_nar_size: ability.nar_size,
-        companion_references: ability.references.clone(),
-        artifacts: ability.artifacts.clone(),
+        document_nar_size: contract.document.nar_size,
+        document_references: contract.document.references.clone(),
+        artifacts: contract_artifacts(contract),
     })
 }
 
 pub(crate) fn verify_artifact_catalog(
     artifacts: &[ArtifactReference],
-    retention: &[AbilityArtifactRetentionMeta],
+    retention: &[PackageContractArtifactMeta],
 ) -> Result<()> {
     if artifacts.len() != retention.len() {
         bail!(
-            "ability retention catalog has {} artifacts, expected {}",
+            "package contract retention catalog has {} artifacts, expected {}",
             retention.len(),
             artifacts.len()
         );
@@ -793,7 +862,7 @@ pub(crate) fn verify_artifact_catalog(
                 )?
         {
             bail!(
-                "ability retention catalog does not match artifact {}",
+                "package contract retention catalog does not match artifact {}",
                 artifact.content
             );
         }
@@ -803,7 +872,7 @@ pub(crate) fn verify_artifact_catalog(
 
 pub(crate) fn decode_package_manifest(bytes: &[u8]) -> Result<PackageDocument> {
     let supported_features = package_source_supported_features()
-        .context("constructing supported package ability features")?;
+        .context("constructing supported package contract features")?;
     aos_ability_model::decode_canonical::<PackageDocument>(
         bytes,
         aos_ability_model::ABILITY_LIMITS_V1,
@@ -812,31 +881,30 @@ pub(crate) fn decode_package_manifest(bytes: &[u8]) -> Result<PackageDocument> {
     .context("decoding canonical ability package manifest")
 }
 
-/// Reads the bounded regular `package.json` from an exact companion store root.
+/// Reads one bounded regular package contract document.
 ///
 /// # Errors
 ///
-/// Returns an error when the companion path is not canonical, `package.json`
-/// is absent, is a symlink or another non-regular file, or its size is outside
-/// the RFC-0022 document bound.
+/// Returns an error when the path is not canonical, is absent, is a symlink or
+/// another non-regular file, or its size is outside the document bound.
 pub(crate) fn read_package_manifest(store_path: &str) -> Result<Vec<u8>> {
-    validate_store_root(store_path, "ability companion store path")?;
-    let path = Path::new(store_path).join("package.json");
+    validate_store_root(store_path, "package contract document store path")?;
+    let path = Path::new(store_path);
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&path)
-        .with_context(|| format!("opening ability manifest {}", path.display()))?;
+        .with_context(|| format!("opening package contract {}", path.display()))?;
     let metadata = file
         .metadata()
-        .with_context(|| format!("reading ability manifest metadata {}", path.display()))?;
+        .with_context(|| format!("reading package contract metadata {}", path.display()))?;
     if !metadata.is_file() {
-        bail!("ability manifest is not a regular file: {}", path.display());
+        bail!("package contract is not a regular file: {}", path.display());
     }
     let limit = aos_ability_model::ABILITY_LIMITS_V1.max_document_bytes;
     if metadata.len() == 0 || metadata.len() > limit {
         bail!(
-            "ability manifest size {} is outside 1..={limit}",
+            "package contract size {} is outside 1..={limit}",
             metadata.len()
         );
     }
@@ -844,80 +912,69 @@ pub(crate) fn read_package_manifest(store_path: &str) -> Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(limit + 1)
         .read_to_end(&mut bytes)
-        .with_context(|| format!("reading ability manifest {}", path.display()))?;
+        .with_context(|| format!("reading package contract {}", path.display()))?;
     if bytes.len() as u64 != metadata.len() {
         bail!(
-            "ability manifest changed while it was read: {}",
+            "package contract changed while it was read: {}",
             path.display()
         );
     }
     Ok(bytes)
 }
 
-pub(crate) fn activation_mode_name(mode: AbilityActivationMode) -> &'static str {
-    match mode {
-        AbilityActivationMode::ContractsOnly => "contracts-only",
-        AbilityActivationMode::StructuredEffects => "structured-effects",
-    }
-}
-
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
-struct AbilityRetentionBinding<'a> {
-    store_path: &'a str,
-    nar_hash: &'a str,
-    nar_size: u64,
-    references: &'a [String],
-    artifacts: &'a [AbilityArtifactRetentionMeta],
+struct PackageContractRetentionBinding<'a> {
+    document: &'a crate::types::PackageContractDocumentMeta,
+    payload: &'a PackageContractArtifactMeta,
+    source: &'a PackageContractArtifactMeta,
+    selectors: &'a [PackageContractSelectorMeta],
 }
 
-pub(crate) fn ability_retention_digest(ability: &AbilityPackageMeta) -> Result<Sha256Digest> {
-    validate_ability_package_meta(ability)?;
+pub(crate) fn contract_retention_digest(contract: &PackageContractMeta) -> Result<Sha256Digest> {
+    validate_package_contract_meta(contract)?;
     Sha256Digest::of_canonical(
         RETENTION_DIGEST_DOMAIN,
-        &AbilityRetentionBinding {
-            store_path: &ability.store_path,
-            nar_hash: &ability.nar_hash,
-            nar_size: ability.nar_size,
-            references: &ability.references,
-            artifacts: &ability.artifacts,
+        &PackageContractRetentionBinding {
+            document: &contract.document,
+            payload: &contract.payload,
+            source: &contract.source,
+            selectors: &contract.selectors,
         },
     )
-    .context("computing ability retention digest")
+    .context("computing package contract retention digest")
 }
 
 pub(crate) fn ability_provenance_statement(
-    coordinate: &AbilityPackageCoordinate<'_>,
-    ability: &AbilityPackageMeta,
+    coordinate: &PackageContractCoordinate<'_>,
+    contract: &PackageContractMeta,
     registry_name: &str,
     key_id: &str,
 ) -> Result<serde_json::Value> {
-    validate_ability_package_meta(ability)?;
+    validate_package_contract_meta(contract)?;
     if key_id.is_empty() {
-        bail!("ability provenance key id cannot be empty");
+        bail!("package contract provenance key id cannot be empty");
     }
     let primary_nar_hash = canonical_nar_hash(coordinate.nar_hash)?;
-    let retention_digest = ability_retention_digest(ability)?;
-    let manifest_subject = format!(
-        "aos:ability-manifest:{}:{}:{}",
-        coordinate.name, coordinate.version, coordinate.platform
-    );
-    let package_subject = format!(
-        "aos:ability-package:{}:{}:{}",
+    let retention_digest = contract_retention_digest(contract)?;
+    let document_subject = format!(
+        "aos:package-contract:{}:{}:{}",
         coordinate.name, coordinate.version, coordinate.platform
     );
     let retention_subject = format!(
-        "aos:ability-retention:{}:{}:{}",
+        "aos:package-contract-retention:{}:{}:{}",
         coordinate.name, coordinate.version, coordinate.platform
     );
-    let dependencies = ability
-        .artifacts
+    let dependencies = contract
+        .selectors
         .iter()
-        .map(|artifact| {
+        .map(|selector| {
             serde_json::json!({
-                "uri": artifact.store_path,
-                "digest": crate::provenance::digest_map(&artifact.nar_hash),
-                "closureDigest": crate::provenance::digest_map(&artifact.closure_digest),
+                "uri": selector.artifact.store_path,
+                "digest": crate::provenance::digest_map(&selector.artifact.nar_hash),
+                "closureDigest": crate::provenance::digest_map(&selector.artifact.closure_digest),
+                "package": selector.package,
+                "output": selector.output,
             })
         })
         .collect::<Vec<_>>();
@@ -930,16 +987,12 @@ pub(crate) fn ability_provenance_statement(
                 "digest": crate::provenance::digest_map(&primary_nar_hash),
             },
             {
-                "name": ability.store_path,
-                "digest": crate::provenance::digest_map(&ability.nar_hash),
+                "name": contract.document.store_path,
+                "digest": crate::provenance::digest_map(&contract.document.nar_hash),
             },
             {
-                "name": manifest_subject,
-                "digest": crate::provenance::digest_map(&ability.manifest_sha256),
-            },
-            {
-                "name": package_subject,
-                "digest": crate::provenance::digest_map(&ability.package_digest),
+                "name": document_subject,
+                "digest": crate::provenance::digest_map(&contract.document.document_sha256),
             },
             {
                 "name": retention_subject,
@@ -955,9 +1008,8 @@ pub(crate) fn ability_provenance_statement(
                     "version": coordinate.version,
                     "platform": coordinate.platform,
                     "storePath": coordinate.store_path,
-                    "abilityStorePath": ability.store_path,
-                    "activationMode": ability.activation_mode,
-                    "provenance": ability.provenance,
+                    "contractDocument": contract.document.store_path,
+                    "provenance": contract.provenance,
                 },
                 "resolvedDependencies": dependencies,
             },
@@ -978,12 +1030,12 @@ pub(crate) fn ability_provenance_statement(
 /// or retention binding differs from authenticated registry metadata.
 pub(crate) fn verify_ability_provenance(
     package_meta: &PackageMeta,
-    ability: &AbilityPackageMeta,
+    contract: &PackageContractMeta,
     provenance_jsonl: &str,
     registry_name: &str,
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
 ) -> Result<String> {
-    let coordinate = AbilityPackageCoordinate {
+    let coordinate = PackageContractCoordinate {
         name: &package_meta.name,
         version: &package_meta.version,
         platform: &package_meta.platform,
@@ -992,7 +1044,7 @@ pub(crate) fn verify_ability_provenance(
     };
     verify_ability_provenance_coordinate(
         &coordinate,
-        ability,
+        contract,
         provenance_jsonl,
         registry_name,
         trusted_keys,
@@ -1001,8 +1053,8 @@ pub(crate) fn verify_ability_provenance(
 }
 
 fn verify_ability_provenance_coordinate(
-    coordinate: &AbilityPackageCoordinate<'_>,
-    ability: &AbilityPackageMeta,
+    coordinate: &PackageContractCoordinate<'_>,
+    contract: &PackageContractMeta,
     provenance_jsonl: &str,
     registry_name: &str,
     trusted_keys: &[crate::provenance::TrustedProvenanceKey],
@@ -1021,138 +1073,142 @@ fn verify_ability_provenance_coordinate(
         .iter()
         .any(|trusted| trusted.key_id == key_id && trusted.retired_before_sequence.is_some())
     {
-        bail!("ability provenance key '{key_id}' is retired without a publication sequence");
+        bail!(
+            "package contract provenance key '{key_id}' is retired without a publication sequence"
+        );
     }
-    let expected = ability_provenance_statement(coordinate, ability, registry_name, &key_id)?;
+    let expected = ability_provenance_statement(coordinate, contract, registry_name, &key_id)?;
     if statement != expected {
         bail!("ability provenance statement does not exactly match registry metadata");
     }
     Ok(key_id)
 }
 
-/// Validates authenticated metadata for an RFC-0022 ability companion.
+/// Validates authenticated metadata for an RFC-0022 package contract document.
 ///
 /// This structural validation checks the signed catalog itself. The package
 /// verifier separately compares each catalog with the live Nix store closure
-/// before constructing [`VerifiedAbilityPackage`].
+/// before constructing [`VerifiedPackageContract`].
 ///
 /// # Errors
 ///
 /// Returns an error when a digest, store path, size, feature mode, provenance
 /// reference, ordering invariant, aggregate bound, or artifact closure catalog
 /// is malformed or internally inconsistent.
-pub fn validate_ability_package_meta(ability: &AbilityPackageMeta) -> Result<()> {
-    validate_store_root(&ability.store_path, "ability companion store path")?;
-    validate_sha256_identity("ability companion NAR hash", &ability.nar_hash)?;
-    if ability.nar_size == 0 {
+pub fn validate_package_contract_meta(contract: &PackageContractMeta) -> Result<()> {
+    let document = &contract.document;
+    validate_store_root(&document.store_path, "package contract document store path")?;
+    validate_sha256_identity("package contract document NAR hash", &document.nar_hash)?;
+    if document.nar_size == 0 {
         bail!(
-            "ability companion '{}' has zero NAR size",
-            ability.store_path
+            "package contract document '{}' has zero NAR size",
+            document.store_path
         );
     }
-
-    validate_aggregate_catalog_bound(ability)?;
-    validate_sorted_store_hashes(&ability.store_path, &ability.references)?;
-    validate_sha256_identity("ability manifest_sha256", &ability.manifest_sha256)?;
-    validate_sha256_identity("ability package_digest", &ability.package_digest)?;
-    if ability.manifest_size == 0
-        || ability.manifest_size > aos_ability_model::ABILITY_LIMITS_V1.max_document_bytes
+    if !document.references.is_empty() {
+        bail!("package contract document must be reference-free");
+    }
+    validate_sha256_identity(
+        "package contract document SHA-256",
+        &document.document_sha256,
+    )?;
+    if document.document_size == 0
+        || document.document_size > aos_ability_model::ABILITY_LIMITS_V1.max_document_bytes
     {
         bail!(
-            "ability manifest size {} is outside 1..={}",
-            ability.manifest_size,
+            "package contract document size {} is outside 1..={}",
+            document.document_size,
             aos_ability_model::ABILITY_LIMITS_V1.max_document_bytes
         );
     }
-    if !matches!(
-        ability.activation_mode.as_str(),
-        "contracts-only" | "structured-effects"
-    ) {
-        bail!(
-            "ability activation mode '{}' is unsupported",
-            ability.activation_mode
-        );
+    validate_attestation_provenance_ref(&contract.provenance)
+        .context("validating package contract provenance reference")?;
+
+    validate_contract_artifact(&contract.payload)?;
+    validate_contract_artifact(&contract.source)?;
+    let mut previous_selector: Option<(&str, &str)> = None;
+    for selector in &contract.selectors {
+        if selector.package != "self" {
+            validate_package_name(&selector.package)?;
+        }
+        LocalKey::new(&selector.output)?;
+        let key = (selector.package.as_str(), selector.output.as_str());
+        if previous_selector.is_some_and(|previous| previous >= key) {
+            bail!("package contract selectors are not in unique canonical order");
+        }
+        previous_selector = Some(key);
+        validate_contract_artifact(&selector.artifact)?;
     }
-    validate_attestation_provenance_ref(&ability.provenance)
-        .context("validating ability provenance reference")?;
 
-    let mut previous_content = None;
-    let mut artifact_paths = BTreeSet::new();
-    for artifact in &ability.artifacts {
-        let content = validate_sha256_identity("ability artifact content", &artifact.content)?;
-        if previous_content.is_some_and(|previous| previous >= content) {
-            bail!("ability artifacts are not in unique canonical content order");
-        }
-        previous_content = Some(content);
-
-        validate_store_root(&artifact.store_path, "ability artifact store path")?;
-        if !artifact_paths.insert(&artifact.store_path) {
-            bail!(
-                "ability artifact store path '{}' appears more than once",
-                artifact.store_path
-            );
-        }
-        validate_sha256_identity("ability artifact NAR hash", &artifact.nar_hash)?;
-        if artifact.nar_size == 0 {
-            bail!(
-                "ability artifact '{}' has zero NAR size",
-                artifact.store_path
-            );
-        }
-        let recorded_closure =
-            validate_sha256_identity("ability artifact closure digest", &artifact.closure_digest)?;
-
-        validate_ability_closure(artifact)?;
-        let semantic_closure = artifact
-            .closure
-            .iter()
-            .map(|member| {
-                Ok(ArtifactClosureMemberInput {
-                    key: crate::registry::store_path_hash(&member.store_path).to_string(),
-                    nar_hash: Sha256Digest::parse(&member.nar_hash)?,
-                    references: member.references.clone(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let computed_closure = artifact_closure_identity(
-            crate::registry::store_path_hash(&artifact.store_path),
-            &semantic_closure,
-        )
-        .context("computing ability artifact closure digest")?;
-        if recorded_closure != computed_closure {
-            bail!(
-                "ability artifact '{}' closure digest does not match its catalog",
-                artifact.store_path
-            );
-        }
-    }
+    validate_aggregate_catalog_bound(contract)?;
 
     Ok(())
 }
 
-fn validate_aggregate_catalog_bound(ability: &AbilityPackageMeta) -> Result<()> {
-    let mut items = ability.references.len();
+fn validate_contract_artifact(artifact: &PackageContractArtifactMeta) -> Result<()> {
+    validate_sha256_identity("package contract artifact content", &artifact.content)?;
+    validate_store_root(&artifact.store_path, "package contract artifact store path")?;
+    validate_sha256_identity("package contract artifact NAR hash", &artifact.nar_hash)?;
+    if artifact.nar_size == 0 {
+        bail!(
+            "package contract artifact '{}' has zero NAR size",
+            artifact.store_path
+        );
+    }
+    let recorded_closure = validate_sha256_identity(
+        "package contract artifact closure digest",
+        &artifact.closure_digest,
+    )?;
+    validate_ability_closure(artifact)?;
+    let semantic_closure = artifact
+        .closure
+        .iter()
+        .map(|member| {
+            Ok(ArtifactClosureMemberInput {
+                key: crate::registry::store_path_hash(&member.store_path).to_string(),
+                nar_hash: Sha256Digest::parse(&member.nar_hash)?,
+                references: member.references.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let computed_closure = artifact_closure_identity(
+        crate::registry::store_path_hash(&artifact.store_path),
+        &semantic_closure,
+    )?;
+    if recorded_closure != computed_closure {
+        bail!(
+            "package contract artifact '{}' closure digest does not match its catalog",
+            artifact.store_path
+        );
+    }
+    Ok(())
+}
+
+fn validate_aggregate_catalog_bound(contract: &PackageContractMeta) -> Result<()> {
+    let artifacts = contract_artifacts(contract);
+    let mut items = contract.document.references.len();
     items = items
-        .checked_add(ability.artifacts.len())
-        .context("ability retention catalog item count overflowed")?;
-    for artifact in &ability.artifacts {
+        .checked_add(contract.selectors.len())
+        .and_then(|count| count.checked_add(artifacts.len()))
+        .context("package contract retention catalog item count overflowed")?;
+    for artifact in &artifacts {
         items = items
             .checked_add(artifact.closure.len())
-            .context("ability retention catalog item count overflowed")?;
+            .context("package contract retention catalog item count overflowed")?;
         for member in &artifact.closure {
             items = items
                 .checked_add(member.references.len())
-                .context("ability retention catalog item count overflowed")?;
+                .context("package contract retention catalog item count overflowed")?;
         }
     }
     let limit = aos_ability_model::ABILITY_LIMITS_V1.max_collection_items as usize;
     if items > limit {
-        bail!("ability retention catalog has {items} items, exceeding the limit {limit}");
+        bail!("package contract retention catalog has {items} items, exceeding the limit {limit}");
     }
     Ok(())
 }
 
-fn validate_ability_closure(artifact: &AbilityArtifactRetentionMeta) -> Result<()> {
+fn validate_ability_closure(artifact: &PackageContractArtifactMeta) -> Result<()> {
     if artifact.closure.is_empty() {
         bail!(
             "ability artifact '{}' has an empty closure",
@@ -1160,7 +1216,7 @@ fn validate_ability_closure(artifact: &AbilityArtifactRetentionMeta) -> Result<(
         );
     }
 
-    let mut previous_member: Option<&AbilityClosureMemberMeta> = None;
+    let mut previous_member: Option<&PackageContractClosureMemberMeta> = None;
     let mut member_paths = BTreeSet::new();
     let mut member_hashes = BTreeSet::new();
     let mut root_matches = 0_u8;
@@ -1259,10 +1315,10 @@ fn validate_sorted_store_hashes(owner: &str, references: &[String]) -> Result<()
                 .bytes()
                 .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
         {
-            bail!("ability companion '{owner}' has invalid reference '{reference}'");
+            bail!("package contract document '{owner}' has invalid reference '{reference}'");
         }
         if previous.is_some_and(|prior| prior >= reference.as_str()) {
-            bail!("ability companion '{owner}' references are not sorted and unique");
+            bail!("package contract document '{owner}' references are not sorted and unique");
         }
         previous = Some(reference);
     }
@@ -1314,5 +1370,5 @@ pub(crate) fn collect_distinct_artifacts(
 }
 
 #[cfg(test)]
-#[path = "ability_package/tests.rs"]
+#[path = "package_contract/tests.rs"]
 mod tests;

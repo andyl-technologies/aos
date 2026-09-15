@@ -3,8 +3,7 @@
 use std::fmt::Write as _;
 
 use aos_ability_model::{
-    AbilityActivationMode, OptionVisibility, RequirementDeclaration, RequirementStrength,
-    ValueSchema,
+    OptionVisibility, RequirementDeclaration, RequirementStrength, ValueSchema,
 };
 
 use super::console_render::urlencode;
@@ -86,10 +85,6 @@ pub fn section(
     };
 
     let reference = &panel.reference;
-    let activation = match reference.activation_mode {
-        AbilityActivationMode::ContractsOnly => "contracts only",
-        AbilityActivationMode::StructuredEffects => "structured effects",
-    };
     let _ = write!(
         html,
         "<p>Public contract for <strong>{}</strong> <code>{}</code> on <code>{}</code>, authenticated by release <a href=\"/{}/-/releases/{}\">{}</a>.</p>",
@@ -102,7 +97,7 @@ pub fn section(
     );
     let _ = write!(
         html,
-        "<dl class=\"meta\"><dt>Activation</dt><dd>{activation}</dd><dt>Supported environment</dt><dd>{}</dd><dt>Release commit</dt><dd>{}</dd><dt>Manifest</dt><dd>{}</dd><dt>Package contract</dt><dd>{}</dd></dl>",
+        "<dl class=\"meta\"><dt>Supported environment</dt><dd>{}</dd><dt>Release commit</dt><dd>{}</dd><dt>Manifest</dt><dd>{}</dd><dt>Package contract</dt><dd>{}</dd></dl>",
         escape(&panel.platform),
         hash_value(&panel.indexed_commit),
         hash_value(&reference.manifest_sha256.to_string()),
@@ -536,11 +531,7 @@ fn scalar(value: &impl serde::Serialize) -> String {
 }
 
 const fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 #[cfg(test)]
@@ -548,10 +539,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use aos_ability_model::{
-        AbilityActivationMode, AggregationContract, AggregationScope, ArtifactReference,
-        EnvironmentId, ExecutionStage, InstanceId, InterfaceDescriptor, InterfaceDocument,
-        InterfaceName, LifecycleSemantics, LocalKey, PlanId, ProviderImplementation,
-        RequiredFeature, RequirementDeclaration, RevisionId,
+        AggregationContract, AggregationScope, ArtifactReference, EnvironmentId, ExecutionStage,
+        InstanceId, InterfaceDescriptor, InterfaceDocument, InterfaceName, LifecycleSemantics,
+        LocalKey, PlanId, ProviderImplementation, RequiredFeature, RequirementDeclaration,
+        RevisionId,
     };
     use aos_contract::Sha256Digest;
 
@@ -674,7 +665,6 @@ mod tests {
             version: "1.2.3".into(),
             manifest_sha256: Sha256Digest::of_bytes(b"manifest"),
             package_digest: Sha256Digest::of_bytes(b"package"),
-            activation_mode: AbilityActivationMode::StructuredEffects,
             interfaces: BTreeMap::from([
                 (key("internal-interface"), unexported_interface),
                 (key("service-interface"), interface),

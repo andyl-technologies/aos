@@ -11,13 +11,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityActivationMode, ArtifactReference, AuthorityRole, Binding,
-    ControllerAssignment, DecisionNode, DependencyEdge, DependencyKind, DeploymentObligation,
-    EffectPlanDocument, InstanceId, LocalKey, MergeNode, Operation, OperationResultReference,
-    PackageDocument, PlanNodeKey, ProviderAdoptionAuthorization, ProviderAdoptionEndpoint,
-    ProviderImplementation, ProviderImplementationReference, ProviderReadiness, ResourceId,
-    ResourceLifetime, ScopePath, ValueExpression, VersionedDocument, compare_edges,
-    compare_operation_keys,
+    ABILITY_LIMITS_V1, ArtifactReference, AuthorityRole, Binding, ControllerAssignment,
+    DecisionNode, DependencyEdge, DependencyKind, DeploymentObligation, EffectPlanDocument,
+    InstanceId, LocalKey, MergeNode, Operation, OperationResultReference, PackageDocument,
+    PlanNodeKey, ProviderAdoptionAuthorization, ProviderAdoptionEndpoint, ProviderImplementation,
+    ProviderImplementationReference, ProviderReadiness, ResourceId, ResourceLifetime, ScopePath,
+    ValueExpression, VersionedDocument, compare_edges, compare_operation_keys,
 };
 use aos_ability_validate::{CheckedBindingPlan, CheckedTransitionAuthority, ValidationContext};
 use aos_contract::Sha256Digest;
@@ -140,20 +139,6 @@ pub struct TransitionFragment {
     pub provider_readiness: Vec<ProviderReadiness>,
     /// Carries explicit unresolved transition inputs that prohibit execution.
     pub obligations: Vec<DeploymentObligation>,
-}
-
-impl TransitionFragment {
-    fn is_effect_free(&self) -> bool {
-        self.operations.is_empty()
-            && self.decisions.is_empty()
-            && self.merges.is_empty()
-            && self.edges.is_empty()
-            && self.exports.is_empty()
-            && self.imports.is_empty()
-            && self.links.is_empty()
-            && self.handoffs.is_empty()
-            && self.provider_readiness.is_empty()
-    }
 }
 
 #[derive(Clone)]
@@ -435,7 +420,6 @@ pub(super) fn validate_fragment(
     provider: &InstanceId,
     operation_scope: &ScopePath,
     implementation_descriptor: Sha256Digest,
-    activation_mode: AbilityActivationMode,
     outgoing: &[&Binding],
     fragment: &TransitionFragment,
     limits: TransitionLimits,
@@ -464,11 +448,6 @@ pub(super) fn validate_fragment(
         return Err(TransitionError::Limit {
             limit: "transition graph node or edge",
         });
-    }
-    if activation_mode == AbilityActivationMode::ContractsOnly && !fragment.is_effect_free() {
-        return Err(invalid(
-            "contracts-only provider authored transition effects through a lower implementation",
-        ));
     }
     if fragment
         .operations

@@ -33,6 +33,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
+use aos_ability_model::VersionedDocument as _;
 
 use super::config::ApmConfig;
 use super::download::{
@@ -49,8 +50,7 @@ use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
-    delete_meta, list_meta, snapshot_profile_meta_to_generation,
-    validate_ordinary_profile_ability_state, write_meta,
+    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
 };
 use super::provenance;
 use super::registry::{RegistrySet, keys, store_path_hash};
@@ -196,8 +196,6 @@ async fn run_inner(
 
     let inspect_profile = Profile::open_readonly(config.scope);
     let installed = list_meta(&inspect_profile)?;
-    validate_ordinary_profile_ability_state(&installed)
-        .context("admitting retained package state for install")?;
     if require_installed || reinstall {
         ensure_reinstall_targets_installed(packages, &installed)?;
     }
@@ -504,7 +502,7 @@ async fn run_inner(
         }
     }
 
-    let _verified_ability_packages = verify_ability_packages_from_cache_with_store(
+    let _verified_package_contracts = verify_package_contracts_from_cache_with_store(
         config,
         closures.iter().flat_map(|closure| {
             closure
@@ -600,7 +598,7 @@ async fn run_inner(
                     expose_artifact: meta.expose_artifact.clone(),
                     config_module: meta.config_module.clone(),
                     documentation: meta.documentation.clone(),
-                    ability: meta.ability.clone(),
+                    contract: meta.contract.clone(),
                     permissions: meta.permissions.clone(),
                     bpf_lsm: meta.bpf_lsm.clone(),
                     attestation: meta.attestation.clone(),
@@ -777,17 +775,17 @@ fn collect_expose_artifacts(
                     true,
                 )?;
             }
-            if let Some(ability) = &package.ability {
+            if let Some(ability) = &package.contract {
                 push_secondary_artifact(
                     &mut artifacts,
                     &mut seen,
                     &closure.registry_name,
-                    &ability.store_path,
-                    &ability.nar_hash,
+                    &ability.document.store_path,
+                    &ability.document.nar_hash,
                     true,
                     false,
                 )?;
-                for artifact in &ability.artifacts {
+                for artifact in crate::package_contract::retained_artifacts(ability) {
                     push_secondary_artifact(
                         &mut artifacts,
                         &mut seen,
@@ -955,19 +953,19 @@ pub(crate) fn verify_package_provenance_entries_from_cache_with_policy<'a>(
 /// Returns an error when a registry key or provenance artifact is unavailable,
 /// a manifest differs from its package coordinate, or any retained live-store
 /// object differs from the authenticated closure catalog.
-pub(crate) fn verify_ability_packages_from_cache_with_store<'a>(
+pub(crate) fn verify_package_contracts_from_cache_with_store<'a>(
     config: &ApmConfig,
     entries: impl IntoIterator<Item = (&'a str, &'a PackageMeta)>,
-) -> Result<Vec<crate::ability_package::VerifiedAbilityPackage>> {
+) -> Result<Vec<crate::package_contract::VerifiedPackageContract>> {
     let cache_root = config.cache_path();
     let mut trusted_keys = BTreeMap::<String, Vec<provenance::TrustedProvenanceKey>>::new();
     let mut transparency_logs = BTreeMap::<String, String>::new();
     let mut seen = BTreeMap::new();
     let mut verified = Vec::new();
-    let retention_verifier = crate::ability_package::NativeAbilityRetentionVerifier::new();
+    let retention_verifier = crate::package_contract::NativePackageContractRetentionVerifier::new();
 
     for (registry_name, meta) in entries {
-        let Some(ability) = &meta.ability else {
+        let Some(ability) = &meta.contract else {
             continue;
         };
         if !admit_ability_coordinate(&mut seen, registry_name, meta)? {
@@ -994,20 +992,31 @@ pub(crate) fn verify_ability_packages_from_cache_with_store<'a>(
                 entry.insert(content)
             }
         };
-        let retention_digest = crate::ability_package::ability_retention_digest(ability)?;
+        let retention_digest = crate::package_contract::contract_retention_digest(ability)?;
+        let coordinate = crate::package_contract::PackageContractCoordinate {
+            name: &meta.name,
+            version: &meta.version,
+            platform: &meta.platform,
+            store_path: &meta.store_path,
+            nar_hash: &meta.nar_hash,
+        };
+        let (resolved_document, _) =
+            crate::package_contract::resolve_pinned_package_document(coordinate, ability)?;
+        let package_digest = resolved_document.content_digest()?.to_string();
         let publication_sequence = crate::registry_ops::package_contract_transparency_sequence(
             transparency_log.as_bytes(),
             crate::registry_ops::PACKAGE_CONTRACT_TRANSPARENCY_LOG,
             &meta.name,
             &meta.version,
             &meta.platform,
-            &ability.package_digest,
+            &package_digest,
             &retention_digest.to_string(),
             &ability.provenance,
             provenance_jsonl.as_bytes(),
         )?;
-        let manifest_bytes = crate::ability_package::read_package_manifest(&ability.store_path)?;
-        let package = crate::ability_package::verify_ability_package_at_sequence(
+        let manifest_bytes =
+            crate::package_contract::read_package_manifest(&ability.document.store_path)?;
+        let package = crate::package_contract::verify_package_contract_at_sequence(
             meta,
             &manifest_bytes,
             &provenance_jsonl,
@@ -1143,10 +1152,10 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
         enforce_root_owner_signer(meta, registry_name, &key_id, root_owner_signers)?;
         verified += 1;
 
-        if let Some(ability) = &meta.ability {
+        if let Some(ability) = &meta.contract {
             let (ability_path, ability_jsonl) =
                 read_provenance_artifact(registry_cache_root, registry_name, &ability.provenance)?;
-            crate::ability_package::verify_ability_provenance(
+            crate::package_contract::verify_ability_provenance(
                 meta,
                 ability,
                 &ability_jsonl,
@@ -1746,12 +1755,10 @@ fn obsolete_installed_hashes(
         if let Some(documentation) = &apm.documentation {
             hashes.insert(store_path_hash(&documentation.store_path).to_string());
         }
-        if let Some(ability) = &apm.ability {
-            hashes.insert(store_path_hash(&ability.store_path).to_string());
+        if let Some(ability) = &apm.contract {
+            hashes.insert(store_path_hash(&ability.document.store_path).to_string());
             hashes.extend(
-                ability
-                    .artifacts
-                    .iter()
+                crate::package_contract::retained_artifacts(ability)
                     .map(|artifact| store_path_hash(&artifact.store_path).to_string()),
             );
         }
@@ -2156,7 +2163,7 @@ mod tests {
             expose_artifact: None,
             config_module: None,
             documentation: None,
-            ability: None,
+            contract: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
@@ -2280,7 +2287,7 @@ mod tests {
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
-                ability: None,
+                contract: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

@@ -18,7 +18,7 @@ use git2::{Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::parse::{parse_package_file, parse_registry_matching_for_ability_aware_consumer};
+use super::parse::{parse_package_file, parse_registry_matching};
 use super::store::StoreMap;
 use crate::config::ApmConfig;
 use crate::provenance::ProvenanceSigner;
@@ -74,7 +74,7 @@ pub struct CanonicalRegistryEntryAuthor<'a> {
     config: &'a ApmConfig,
     registry: &'a str,
     publications: &'a BTreeMap<String, RegistryPackagePublication>,
-    selectors: crate::registry_ops::AbilitySelectorRegistry,
+    selectors: crate::registry_ops::PackageContractSelectorRegistry,
     signer: &'a mut dyn ProvenanceSigner,
     printer: &'a aos_core::output::Printer,
 }
@@ -94,7 +94,7 @@ impl<'a> CanonicalRegistryEntryAuthor<'a> {
             config,
             registry,
             publications,
-            selectors: crate::registry_ops::AbilitySelectorRegistry::new(entries),
+            selectors: crate::registry_ops::PackageContractSelectorRegistry::new(entries),
             signer,
             printer,
         }
@@ -108,8 +108,8 @@ impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
         isolated_registry: &Path,
         entry: &RegistryReleaseEntry,
     ) -> Result<()> {
-        if entry.output == crate::types::ABILITY_MANIFEST_OUTPUT {
-            return crate::registry_ops::publish_canonical_ability_output(
+        if entry.output == crate::types::PACKAGE_CONTRACT_OUTPUT {
+            return crate::registry_ops::publish_package_contract(
                 isolated_registry,
                 self.registry,
                 &entry.store_path,
@@ -1134,9 +1134,8 @@ fn validate_materialized_entries(directory: &Path, entries: &[RegistryReleaseEnt
         .map(|entry| entry.platform.as_str())
         .collect::<BTreeSet<_>>();
     for platform in platforms {
-        let (_, _, versions) =
-            parse_registry_matching_for_ability_aware_consumer(directory, platform, None)
-                .with_context(|| format!("validating prepared {platform} catalog"))?;
+        let (_, _, versions) = parse_registry_matching(directory, platform, None)
+            .with_context(|| format!("validating prepared {platform} catalog"))?;
         for entry in entries
             .iter()
             .filter(|entry| entry.platform == platform && entry.output == "out")
@@ -1565,7 +1564,7 @@ mod tests {
                 return Ok(());
             }
 
-            if entry.output != crate::types::ABILITY_MANIFEST_OUTPUT {
+            if entry.output != crate::types::PACKAGE_CONTRACT_OUTPUT {
                 bail!("unexpected test output '{}'", entry.output);
             }
 
@@ -1574,7 +1573,7 @@ mod tests {
                 .join(&entry.name[..1])
                 .join(format!("{}.toml", entry.name));
             let existing = fs::read_to_string(&path)?;
-            let ability = crate::types::AbilityPackageMeta {
+            let ability = crate::types::PackageContractMeta {
                 store_path: entry.store_path.clone(),
                 nar_hash: format!("sha256:{}", "1".repeat(64)),
                 nar_size: 1,
@@ -1674,7 +1673,7 @@ mod tests {
                     name: "alpha".to_string(),
                     version: "1.0.0".to_string(),
                     platform: "x86_64-linux".to_string(),
-                    output: crate::types::ABILITY_MANIFEST_OUTPUT.to_string(),
+                    output: crate::types::PACKAGE_CONTRACT_OUTPUT.to_string(),
                     store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-alpha-abilities"
                         .to_string(),
                 },

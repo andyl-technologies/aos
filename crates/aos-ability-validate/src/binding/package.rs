@@ -113,22 +113,26 @@ pub(super) fn validate_package_document(
         );
     }
 
-    let declares_effects =
-        !package.implementation.handlers.is_empty()
-            || package.implementation.providers.iter().any(|provider| {
-                !provider.owns_resource_kinds.is_empty() || provider.handler.is_some()
-            });
-    if package.activation_mode == aos_ability_model::AbilityActivationMode::ContractsOnly
-        && declares_effects
-    {
+    let declares_effects = !package.implementation.handlers.is_empty()
+        || package.implementation.providers.iter().any(|provider| {
+            provider.provider_module.is_some()
+                || !provider.owns_resource_kinds.is_empty()
+                || provider.handler.is_some()
+        });
+    let declares_effect_feature = package
+        .required_features
+        .iter()
+        .any(|feature| feature.as_str() == aos_ability_model::FEATURE_ABILITY_EFFECTS_V1);
+    if declares_effect_feature != declares_effects {
         push_diagnostic(
             diagnostics,
             diagnostic(
-                DiagnosticCode::ResourceScopeEscape,
-                DiagnosticClass::Unauthorized,
+                DiagnosticCode::UnsupportedRequiredFeature,
+                DiagnosticClass::InvalidContract,
                 DiagnosticPhase::Binding,
-                root.child("activation_mode").components().to_vec(),
-                "contracts-only package declares terminal effect handlers".to_string(),
+                root.child("required_features").components().to_vec(),
+                "package effect declarations and ability-effects-v1 must appear together"
+                    .to_string(),
             ),
         );
     }

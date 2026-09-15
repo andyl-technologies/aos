@@ -56,7 +56,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::types::{PackageMeta, RegistryConfig, TrackingMode};
-use parse::{parse_registry_matching, parse_registry_matching_for_ability_aware_consumer};
+use parse::parse_registry_matching;
 use store::StoreMap;
 
 /// Cache-local receipt for the signed release tag that authenticated the
@@ -147,12 +147,7 @@ impl Registry {
     /// `packages/` directory cannot be read, any package TOML file inside
     /// it fails to parse, or a present `store/` graph is malformed.
     pub fn load(cache_dir: &Path, config: &RegistryConfig, platform: &str) -> Result<Self> {
-        Self::load_with_profile(
-            cache_dir,
-            config,
-            platform,
-            RegistryMetadataProfile::OrdinaryPackage,
-        )
+        Self::load_with_profile(cache_dir, config, platform)
     }
 
     fn load_for_config_evaluation(
@@ -160,37 +155,20 @@ impl Registry {
         config: &RegistryConfig,
         platform: &str,
     ) -> Result<Self> {
-        Self::load_with_profile(
-            cache_dir,
-            config,
-            platform,
-            RegistryMetadataProfile::AbilityAware,
-        )
+        Self::load_with_profile(cache_dir, config, platform)
     }
 
     fn load_with_profile(
         cache_dir: &Path,
         config: &RegistryConfig,
         platform: &str,
-        profile: RegistryMetadataProfile,
     ) -> Result<Self> {
         let registry_dir = cache_dir.join(&config.name);
         let version_req = match config.tracking_mode()? {
             TrackingMode::Version(req) => Some(req),
             _ => None,
         };
-        let parsed = match profile {
-            RegistryMetadataProfile::OrdinaryPackage => {
-                parse_registry_matching(&registry_dir, platform, version_req.as_ref())
-            }
-            RegistryMetadataProfile::AbilityAware => {
-                parse_registry_matching_for_ability_aware_consumer(
-                    &registry_dir,
-                    platform,
-                    version_req.as_ref(),
-                )
-            }
-        };
+        let parsed = parse_registry_matching(&registry_dir, platform, version_req.as_ref());
         let (mut packages, mut hash_index, mut versions) = parsed.with_context(|| {
             format!(
                 "loading registry '{}' from {}",
@@ -285,12 +263,6 @@ impl Registry {
             })
             .collect()
     }
-}
-
-#[derive(Clone, Copy)]
-enum RegistryMetadataProfile {
-    OrdinaryPackage,
-    AbilityAware,
 }
 
 /// Multi-registry resolver that wraps multiple registries sorted by priority.
@@ -811,7 +783,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn write_ability_package(tmp: &TempDir, registry: &str, package: &str, activation_mode: &str) {
+    fn write_package_contract(tmp: &TempDir, registry: &str, package: &str, activation_mode: &str) {
         let directory = tmp
             .path()
             .join(registry)
@@ -823,7 +795,7 @@ pub(crate) mod tests {
         let content = format!(
             "[package]\nname = \"{package}\"\ndescription = \"test ability package\"\nlicense = \"MIT\"\nmaintainer = \"AOS test\"\n\n[[versions]]\nversion = \"1.0.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/nix/store/0000000000000000000000000000000a-{package}\"\nclosure_size = 1\nsource_drv = \"\"\nsource_nar_hash = \"\"\nmin-format = 1\nrequires-features = [\"attestation-v1\"]\nprovenance = \"provenance/a/{package}/x86_64-linux/package.intoto.jsonl\"\n\n[versions.platforms.x86_64-linux.references]\nhashes = []\nmin-format = 1\nrequires-features = [\"attestation-v1\"]\n"
         );
-        let ability = crate::types::AbilityPackageMeta {
+        let ability = crate::types::PackageContractMeta {
             store_path: format!("/nix/store/0000000000000000000000000000000b-{package}-abilities"),
             nar_hash: format!("sha256:{}", "1".repeat(64)),
             nar_size: 1,
@@ -853,7 +825,7 @@ pub(crate) mod tests {
         package: &str,
         units: &[&str],
     ) {
-        write_ability_package(tmp, registry, package, "structured-effects");
+        write_package_contract(tmp, registry, package, "structured-effects");
 
         let path = tmp
             .path()
@@ -976,7 +948,7 @@ pub(crate) mod tests {
     fn config_evaluation_loads_ability_metadata_without_broadening_package_readers() {
         let tmp = TempDir::new().unwrap();
         let config = registry_config("aos-core", 500);
-        write_ability_package(&tmp, &config.name, "ability-web", "structured-effects");
+        write_package_contract(&tmp, &config.name, "ability-web", "structured-effects");
 
         let package_error = Registry::load(tmp.path(), &config, "x86_64-linux").unwrap_err();
         assert!(
@@ -1038,7 +1010,7 @@ pub(crate) mod tests {
     fn ordinary_loading_accepts_contracts_only_ability_metadata() {
         let tmp = TempDir::new().unwrap();
         let config = registry_config("aos-core", 500);
-        write_ability_package(&tmp, &config.name, "ability-reference", "contracts-only");
+        write_package_contract(&tmp, &config.name, "ability-reference", "contracts-only");
 
         let registries =
             RegistrySet::load_for_package_operations(tmp.path(), &[&config], "x86_64-linux")
@@ -1056,7 +1028,7 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let higher = registry_config("structured", 600);
         let lower = registry_config("legacy", 500);
-        write_ability_package(&tmp, &higher.name, "curl", "structured-effects");
+        write_package_contract(&tmp, &higher.name, "curl", "structured-effects");
         let _ = make_registry(&tmp, &lower.name, lower.priority, &[("curl", CURL_TOML)]);
 
         let error = RegistrySet::load_for_package_operations(
@@ -1087,7 +1059,7 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let higher = registry_config("higher", 500);
         let lower = registry_config("lower", 400);
-        write_ability_package(&tmp, &lower.name, "ability-web", "structured-effects");
+        write_package_contract(&tmp, &lower.name, "ability-web", "structured-effects");
 
         let invalid_directory = tmp.path().join(&higher.name).join("packages").join("a");
         fs::create_dir_all(&invalid_directory).unwrap();

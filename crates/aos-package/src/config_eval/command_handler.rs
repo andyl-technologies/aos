@@ -36,7 +36,7 @@ use aos_provider_protocol::{
 use serde::{Deserialize, Serialize};
 
 use super::handler_process::{DescendantPolicy, FixedBudgetControl, run_bounded};
-use crate::ability_package::{VerifiedAbilityPackage, VerifiedAbilityPackageSet};
+use crate::package_contract::{VerifiedPackageContract, VerifiedPackageContractSet};
 
 #[derive(Clone, Debug)]
 /// Retains one checked fixed-point resource for provider admission.
@@ -112,7 +112,7 @@ impl CommandHandlerResourceEntry {
     /// Returns an error when the assignment does not resolve the exact terminal
     /// handler or canonical interface document.
     pub(crate) fn new(
-        package: &VerifiedAbilityPackage,
+        package: &VerifiedPackageContract,
         assignment: ProviderAssignment,
         handler_interface: InterfaceDocument,
         resource_interface: InterfaceDocument,
@@ -168,7 +168,7 @@ impl CommandHandlerResourceCatalog {
     /// provider binding, package, interface, or live assignment.
     pub(crate) fn for_operation(
         plan: &CheckedEffectPlan,
-        packages: &VerifiedAbilityPackageSet,
+        packages: &VerifiedPackageContractSet,
         operation: &Operation,
         mut assignment_for: impl FnMut(&Operation) -> Result<ProviderAssignment, io::Error>,
     ) -> Result<Self, io::Error> {
@@ -564,7 +564,7 @@ pub(crate) struct CommandHandlerAdapter {
 /// Returns an error when the package does not contain the exact implementation,
 /// handler, artifact, and executable selected by the assignment.
 pub(crate) fn preflight_command_handler(
-    package: &VerifiedAbilityPackage,
+    package: &VerifiedPackageContract,
     assignment: &ProviderAssignment,
 ) -> Result<(), io::Error> {
     authenticate(package, &assignment.interface, &assignment.implementation).map(|_| ())
@@ -577,7 +577,7 @@ pub(crate) fn preflight_command_handler(
 /// Returns an error when the signed package does not bind the exact interface,
 /// implementation, handler, artifact, and executable.
 pub(crate) fn preflight_selected_handler(
-    package: &VerifiedAbilityPackage,
+    package: &VerifiedPackageContract,
     interface: &aos_ability_model::InterfaceKey,
     implementation: &ProviderImplementationReference,
 ) -> Result<(), io::Error> {
@@ -591,7 +591,7 @@ impl CommandHandlerAdapter {
     ///
     /// Returns an error when either descriptor differs from the assignment.
     pub(crate) fn new(
-        package: &VerifiedAbilityPackage,
+        package: &VerifiedPackageContract,
         assignment: ProviderAssignment,
         interface: InterfaceDocument,
     ) -> Result<Self, io::Error> {
@@ -1074,7 +1074,7 @@ fn method_semantics_for(
 }
 
 fn authenticate(
-    package: &VerifiedAbilityPackage,
+    package: &VerifiedPackageContract,
     interface: &aos_ability_model::InterfaceKey,
     implementation: &ProviderImplementationReference,
 ) -> Result<AuthenticatedCommandHandler, io::Error> {

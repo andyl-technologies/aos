@@ -42,8 +42,8 @@ use serde::{Deserialize, Serialize};
 
 use super::activation::{SwitchLockGuard, acquire_switch_lock_pub, default_switch_lock_path};
 use super::protected_fs::RootedDirectory;
-pub use crate::ability_package::NativeAbilityRetentionVerifier;
-use crate::ability_package::VerifiedAbilityPackageSet;
+pub use crate::package_contract::NativePackageContractRetentionVerifier;
+use crate::package_contract::VerifiedPackageContractSet;
 use crate::store::create_config_gc_roots;
 use crate::types::ProfileScope;
 
@@ -344,8 +344,8 @@ impl RetainedAbilityDiagnosticSource {
         let journal = journal_file
             .open_read_only()
             .map_err(|source| io_error("opening execution journal", &journal_path, source))?;
-        let bundle =
-            ReloadablePlanBundle::decode(&bytes).map_err(GenerationTransactionStoreError::Bundle)?;
+        let bundle = ReloadablePlanBundle::decode(&bytes)
+            .map_err(GenerationTransactionStoreError::Bundle)?;
         let plan_bundle = bundle
             .digest()
             .map_err(GenerationTransactionStoreError::Bundle)?;
@@ -354,7 +354,6 @@ impl RetainedAbilityDiagnosticSource {
         let plan = bundle
             .revalidate(supported_features)
             .map_err(GenerationTransactionStoreError::Bundle)?;
-
 
         Ok(Self {
             generation,
@@ -557,7 +556,7 @@ impl<'plan> AbilityTransactionSession<'plan> {
         generation: impl Into<PathBuf>,
         supported_features: BTreeSet<RequiredFeature>,
         bundle: ReloadablePlanBundle,
-        packages: VerifiedAbilityPackageSet,
+        packages: VerifiedPackageContractSet,
     ) -> Result<Self, GenerationTransactionStoreError> {
         let generation = generation.into();
         let expected_profile = ProfileScope::System.profile_path();
@@ -606,7 +605,7 @@ impl<'plan> AbilityTransactionSession<'plan> {
         generation: impl Into<PathBuf>,
         supported_features: BTreeSet<RequiredFeature>,
         bundle: ReloadablePlanBundle,
-        packages: VerifiedAbilityPackageSet,
+        packages: VerifiedPackageContractSet,
         switch_lock: Arc<SwitchLockGuard>,
     ) -> Result<Self, GenerationTransactionStoreError> {
         let generation = generation.into();
@@ -631,7 +630,7 @@ impl<'plan> AbilityTransactionSession<'plan> {
             )
             .map_err(GenerationTransactionStoreError::Artifact)?;
         packages
-            .verify_live_retention(&NativeAbilityRetentionVerifier::new())
+            .verify_live_retention(&NativePackageContractRetentionVerifier::new())
             .map_err(GenerationTransactionStoreError::Artifact)?;
         let verifier = NativeAbilityArtifactVerifier {
             authenticated: packages,
@@ -656,7 +655,7 @@ impl<'plan> AbilityTransactionSession<'plan> {
         limits: JournalLimits,
         supported_features: BTreeSet<RequiredFeature>,
         bundle: ReloadablePlanBundle,
-        packages: VerifiedAbilityPackageSet,
+        packages: VerifiedPackageContractSet,
         paths: SessionPaths,
     ) -> Result<Self, GenerationTransactionStoreError> {
         let SessionPaths {
@@ -673,7 +672,7 @@ impl<'plan> AbilityTransactionSession<'plan> {
             )
             .map_err(GenerationTransactionStoreError::Artifact)?;
         packages
-            .verify_live_retention(&NativeAbilityRetentionVerifier::new())
+            .verify_live_retention(&NativePackageContractRetentionVerifier::new())
             .map_err(GenerationTransactionStoreError::Artifact)?;
         let verifier = NativeAbilityArtifactVerifier {
             authenticated: packages,
@@ -698,7 +697,7 @@ impl<'plan> AbilityTransactionSession<'plan> {
         plan: &'plan CheckedEffectPlan,
         transaction: TransactionId,
         generation: impl Into<PathBuf>,
-        packages: VerifiedAbilityPackageSet,
+        packages: VerifiedPackageContractSet,
     ) -> Result<Self, GenerationTransactionStoreError> {
         struct TestRetentionStore;
 
@@ -1309,7 +1308,8 @@ impl<Verifier> GenerationTransactionStore<Verifier> {
         &self,
         transaction: &TransactionId,
         plan: &CheckedEffectPlan,
-    ) -> Result<(ReloadablePlanBundle, Vec<u8>, Sha256Digest), GenerationTransactionStoreError> {
+    ) -> Result<(ReloadablePlanBundle, Vec<u8>, Sha256Digest), GenerationTransactionStoreError>
+    {
         let path = self.bundle_path(transaction);
         let bundle = if path.is_file() {
             ReloadablePlanBundle::decode(&read_file(&path)?)

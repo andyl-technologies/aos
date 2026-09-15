@@ -5,13 +5,13 @@ use std::num::NonZeroU32;
 
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, AccessMode, AggregationContract, AggregationScope,
-    ArtifactReference, AuthorityGrant, BindingRequest, DeploymentObligation, DesiredStateDocument,
-    ExportDeclaration, GuaranteeDeclaration, HandlerDescriptor, InstanceId, InterfaceName,
-    LocalKey, ModuleLocator, ObligationKind, PackageDocument, PackageImplementation,
-    ProviderImplementation, ProviderImplementationReference, RelativePath, RequestId,
-    RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceLifetime,
-    ResourcePermission, ScopePath, ValueSchema, VersionedDocument,
+    AbilityValue, AccessMode, AggregationContract, AggregationScope, ArtifactReference,
+    AuthorityGrant, BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
+    GuaranteeDeclaration, HandlerDescriptor, InstanceId, InterfaceName, LocalKey, ModuleLocator,
+    ObligationKind, PackageDocument, PackageImplementation, ProviderImplementation,
+    ProviderImplementationReference, RelativePath, RequestId, RequirementDeclaration,
+    RequirementFallback, RequirementStrength, ResourceLifetime, ResourcePermission, ScopePath,
+    ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -1275,7 +1275,6 @@ fn planner_fixture_with_contract(
     let package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
-        activation_mode: AbilityActivationMode::StructuredEffects,
         package: PackageSubject {
             name: key("shared-provider"),
             version: "1.0.0".to_string(),

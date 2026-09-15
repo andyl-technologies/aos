@@ -1,12 +1,14 @@
 //! Authenticated public ability-reference extraction for registry indexing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
-use aos_ability_model::VersionedDocument as _;
+use aos_ability_model::ArtifactReference;
 use aos_ability_validate::{
-    AbilityContractData, CheckedAbilityContract, validate_ability_contract,
+    AbilityContractData, CheckedAbilityContract, PackageOutputSelector, decode_package_projection,
+    resolve_package_projection, validate_ability_contract,
 };
+use aos_contract::Sha256Digest;
 use sha2::{Digest, Sha256};
 
 use crate::db::IndexedPackageAbilityReference;
@@ -33,14 +35,15 @@ pub async fn fetch_package_ability_reference(
     platform: &str,
     primary_store_path: &str,
     primary_nar_hash: &str,
-    ability: &aos_registry_surface::manifest::AbilityPackageMeta,
+    contract: &aos_registry_surface::manifest::PackageContractMeta,
 ) -> Result<aos_doc_model::PackageAbilityReference> {
+    let document = &contract.document;
     anyhow::ensure!(
-        ability.nar_size > 0
-            && ability.nar_size as usize <= aos_doc_model::MAX_PACKAGE_ABILITY_NAR_BYTES,
+        document.nar_size > 0
+            && document.nar_size as usize <= aos_doc_model::MAX_PACKAGE_ABILITY_NAR_BYTES,
         "package signed package ability publication exceeds the Hub reference bound"
     );
-    let store_hash = aos_registry_surface::store::store_path_hash(&ability.store_path)?;
+    let store_hash = aos_registry_surface::store::store_path_hash(&document.store_path)?;
     let narinfo_key = format!("{store_hash}.narinfo");
     let narinfo_bytes = fetch
         .fetch_bounded(&narinfo_key, MAX_IMAGE_NARINFO_BYTES)
@@ -60,18 +63,18 @@ pub async fn fetch_package_ability_reference(
                 .context("package ability narinfo contains an invalid reference")
         })
         .collect::<Result<BTreeSet<_>>>()?;
-    let expected_references = ability
+    let expected_references = document
         .references
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     anyhow::ensure!(
-        narinfo.store_path == ability.store_path
+        narinfo.store_path == document.store_path
             && narinfo.compression == "none"
-            && narinfo.nar_size == ability.nar_size
+            && narinfo.nar_size == document.nar_size
             && actual_references == expected_references
             && aos_registry_surface::store::normalize_digest(&narinfo.nar_hash)?
-                == aos_registry_surface::store::normalize_digest(&ability.nar_hash)?,
+                == aos_registry_surface::store::normalize_digest(&document.nar_hash)?,
         "package ability narinfo disagrees with signed metadata for {package_name}/{package_version}/{platform}"
     );
     anyhow::ensure!(
@@ -94,22 +97,57 @@ pub async fn fetch_package_ability_reference(
         "package ability cache-file identity mismatch"
     );
     anyhow::ensure!(
-        nar_bytes.len() as u64 == ability.nar_size
+        nar_bytes.len() as u64 == document.nar_size
             && hex::encode(Sha256::digest(&nar_bytes))
-                == aos_registry_surface::store::canonical_digest_hex(&ability.nar_hash)?,
+                == aos_registry_surface::store::canonical_digest_hex(&document.nar_hash)?,
         "package ability NAR identity mismatch"
     );
 
-    let documents = aos_doc_model::decode_package_ability_nar(&nar_bytes)?;
+    let projection_bytes = aos_doc_model::decode_single_file_nar(&nar_bytes)?;
     anyhow::ensure!(
-        documents.package.len() as u64 == ability.manifest_size
-            && hex::encode(Sha256::digest(&documents.package))
-                == aos_registry_surface::store::canonical_digest_hex(&ability.manifest_sha256)?,
-        "package ability manifest identity mismatch"
+        projection_bytes.len() as u64 == document.document_size
+            && hex::encode(Sha256::digest(projection_bytes))
+                == aos_registry_surface::store::canonical_digest_hex(&document.document_sha256)?,
+        "package contract document identity mismatch"
     );
-    let retained_interfaces = documents.interfaces.values().cloned().collect::<Vec<_>>();
+    let projection = decode_package_projection(projection_bytes)?;
+    anyhow::ensure!(
+        projection.package.name.as_str() == package_name
+            && projection.package.version == package_version,
+        "package contract coordinate mismatch"
+    );
+    let retained_interfaces = projection
+        .interface_documents
+        .iter()
+        .map(|entry| aos_ability_model::encode_canonical(&entry.document))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let bindings = contract
+        .selectors
+        .iter()
+        .map(|selector| {
+            Ok((
+                PackageOutputSelector {
+                    package: aos_ability_model::LocalKey::new(&selector.package)?,
+                    output: aos_ability_model::LocalKey::new(&selector.output)?,
+                },
+                contract_artifact_reference(&selector.artifact)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let package = resolve_package_projection(
+        projection,
+        contract_artifact_reference(&contract.payload)?,
+        contract_artifact_reference(&contract.source)?,
+        |selector| {
+            bindings
+                .get(selector)
+                .cloned()
+                .with_context(|| format!("package contract selector {selector:?} is unbound"))
+        },
+    )?;
+    let package_bytes = aos_ability_model::encode_canonical(&package)?;
     let checked = validate_ability_contract(AbilityContractData::PackageSource {
-        manifest: &documents.package,
+        manifest: &package_bytes,
         retained_interfaces: &retained_interfaces,
     })
     .context("checking authenticated package signed package ability publication")?;
@@ -125,45 +163,23 @@ pub async fn fetch_package_ability_reference(
         package.package.name.as_str() == package_name
             && package.package.version == package_version
             && package.package.payload.store_path == primary_store_path
-            && package.package.payload.nar_hash.to_string() == primary_nar_hash
-            && package.content_digest()?.to_string() == ability.package_digest
-            && match package.activation_mode {
-                aos_ability_model::AbilityActivationMode::ContractsOnly => {
-                    ability.activation_mode == "contracts-only"
-                }
-                aos_ability_model::AbilityActivationMode::StructuredEffects => {
-                    ability.activation_mode == "structured-effects"
-                }
-            },
+            && package.package.payload.nar_hash.to_string() == primary_nar_hash,
         "package ability selection identity mismatch for {package_name}/{package_version}/{platform}"
     );
 
-    let expected_interface_files = package
-        .interfaces
-        .values()
-        .map(|interface| format!("{}.json", interface.descriptor.hex()))
-        .collect::<BTreeSet<_>>();
-    anyhow::ensure!(
-        expected_interface_files == documents.interfaces.keys().cloned().collect(),
-        "package signed package ability publication interface inventory does not exactly match its package-owned declarations"
-    );
-    for file_name in expected_interface_files {
-        let bytes = documents
-            .interfaces
-            .get(&file_name)
-            .context("authenticated interface inventory changed during indexing")?;
-        let interface = aos_ability_model::decode_canonical::<aos_ability_model::InterfaceDocument>(
-            bytes,
-            aos_ability_model::ABILITY_LIMITS_V1,
-            checked.validation_context().supported_features(),
-        )?;
-        anyhow::ensure!(
-            format!("{}.json", interface.interface_key()?.descriptor.hex()) == file_name,
-            "package ability interface identity mismatch"
-        );
-    }
     aos_doc_model::PackageAbilityReference::from_checked_contract(&checked)
         .context("generating authenticated package ability reference")
+}
+
+fn contract_artifact_reference(
+    artifact: &aos_registry_surface::manifest::PackageContractArtifactMeta,
+) -> Result<ArtifactReference> {
+    Ok(ArtifactReference {
+        content: Sha256Digest::parse(&artifact.content)?,
+        store_path: artifact.store_path.clone(),
+        nar_hash: Sha256Digest::parse(&artifact.nar_hash)?,
+        closure: Sha256Digest::parse(&artifact.closure_digest)?,
+    })
 }
 
 pub(super) async fn verify_package_ability_references(
@@ -174,7 +190,7 @@ pub(super) async fn verify_package_ability_references(
     for package in packages {
         for version in &package.versions {
             for (platform, entry) in &version.platforms {
-                let Some(ability) = &entry.ability else {
+                let Some(ability) = &entry.contract else {
                     continue;
                 };
                 let reference = fetch_package_ability_reference(
@@ -213,9 +229,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use aos_ability_model::{
-        AbilityActivationMode, ArtifactReference, ExportDeclaration, ModuleLocator,
-        PackageDocument, PackageImplementation, ProviderImplementation, RelativePath,
-        RequiredFeature, VersionedDocument, decode_canonical, encode_canonical,
+        ArtifactReference, ExportDeclaration, ModuleLocator, PackageDocument,
+        PackageImplementation, ProviderImplementation, RelativePath, RequiredFeature,
+        VersionedDocument, decode_canonical, encode_canonical,
     };
     use aos_contract::Sha256Digest;
 
@@ -242,50 +258,17 @@ mod tests {
         output.resize(output.len().div_ceil(8) * 8, 0);
     }
 
-    fn package_ability_nar(package: &[u8], interface_name: &str, interface: &[u8]) -> Vec<u8> {
+    fn regular_nar(contents: &[u8]) -> Vec<u8> {
         let mut nar = Vec::new();
-        for value in [b"nix-archive-1".as_slice(), b"(", b"type", b"directory"] {
-            nar_field(&mut nar, value);
-        }
         for value in [
-            b"entry".as_slice(),
-            b"(",
-            b"name",
-            b"interfaces",
-            b"node",
-            b"(",
-            b"type",
-            b"directory",
-            b"entry",
-            b"(",
-            b"name",
-        ] {
-            nar_field(&mut nar, value);
-        }
-        nar_field(&mut nar, interface_name.as_bytes());
-        for value in [b"node".as_slice(), b"(", b"type", b"regular", b"contents"] {
-            nar_field(&mut nar, value);
-        }
-        nar_field(&mut nar, interface);
-        for value in [
-            b")".as_slice(),
-            b")",
-            b")",
-            b")",
-            b"entry",
-            b"(",
-            b"name",
-            b"package.json",
-            b"node",
+            b"nix-archive-1".as_slice(),
             b"(",
             b"type",
             b"regular",
             b"contents",
+            contents,
+            b")",
         ] {
-            nar_field(&mut nar, value);
-        }
-        nar_field(&mut nar, package);
-        for value in [b")".as_slice(), b")", b")"] {
             nar_field(&mut nar, value);
         }
         nar
@@ -293,11 +276,16 @@ mod tests {
 
     fn signed_fixture() -> (
         AbilityFetch,
-        aos_registry_surface::manifest::AbilityPackageMeta,
+        aos_registry_surface::manifest::PackageContractMeta,
+        Sha256Digest,
+        Sha256Digest,
         Sha256Digest,
     ) {
-        let features =
-            BTreeSet::from([RequiredFeature::new("abilities-v1").expect("valid feature")]);
+        let features = BTreeSet::from([
+            RequiredFeature::new("abilities-v1").expect("valid feature"),
+            RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+                .expect("valid effect feature"),
+        ]);
         let interface_bytes = include_bytes!("../../../../tests/abilities/fixtures/interface.json");
         let interface = decode_canonical::<aos_ability_model::InterfaceDocument>(
             interface_bytes,
@@ -332,7 +320,6 @@ mod tests {
         let package = PackageDocument {
             schema: PackageDocument::SCHEMA.into(),
             required_features: features.into_iter().collect(),
-            activation_mode: AbilityActivationMode::ContractsOnly,
             package: aos_ability_model::document::PackageSubject {
                 name: aos_ability_model::LocalKey::new("demo").expect("valid package"),
                 version: "1.0.0".into(),
@@ -376,30 +363,71 @@ mod tests {
             qualification: aos_ability_model::PackageQualification::default(),
         };
         let package_bytes = encode_canonical(&package).expect("encode package");
-        let interface_name = format!("{}.json", interface_key.descriptor.hex());
-        let nar = package_ability_nar(&package_bytes, &interface_name, interface_bytes);
+        let selector = serde_json::json!({"package": "self", "output": "out"});
+        let mut projection = serde_json::to_value(&package).expect("serialize package projection");
+        let projection = projection.as_object_mut().expect("package object");
+        projection.insert(
+            "schema".into(),
+            serde_json::Value::String(aos_ability_validate::PACKAGE_PROJECTION_SCHEMA.into()),
+        );
+        let subject = projection
+            .get_mut("package")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("package subject");
+        subject.remove("payload");
+        subject.remove("source");
+        projection.insert("artifacts".into(), serde_json::json!([selector.clone()]));
+        projection["package_module"]["artifact"] = selector.clone();
+        projection["implementation"]["providers"][0]["artifact"] = selector.clone();
+        projection["implementation"]["providers"][0]["provider_module"]["artifact"] = selector;
+        projection.insert(
+            "interface_documents".into(),
+            serde_json::json!([{"descriptor": interface_key.descriptor, "document": interface}]),
+        );
+        let projection_bytes =
+            aos_contract::canonical::to_vec(&projection).expect("encode symbolic package contract");
+        let nar = regular_nar(&projection_bytes);
         let nar_digest = hex::encode(Sha256::digest(&nar));
         let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo-abilities";
         let nar_url = format!("nar/{nar_digest}.nar");
         let narinfo = format!(
-            "StorePath: {store_path}\nURL: {nar_url}\nCompression: none\nFileHash: sha256:{nar_digest}\nFileSize: {}\nNarHash: sha256:{nar_digest}\nNarSize: {}\nReferences: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-demo\n",
+            "StorePath: {store_path}\nURL: {nar_url}\nCompression: none\nFileHash: sha256:{nar_digest}\nFileSize: {}\nNarHash: sha256:{nar_digest}\nNarSize: {}\nReferences: \n",
             nar.len(),
             nar.len(),
         );
-        let ability = aos_registry_surface::manifest::AbilityPackageMeta {
-            store_path: store_path.into(),
-            nar_hash: format!("sha256:{nar_digest}"),
-            nar_size: nar.len() as u64,
-            references: vec!["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()],
-            manifest_sha256: Sha256Digest::of_bytes(&package_bytes).to_string(),
-            manifest_size: package_bytes.len() as u64,
-            package_digest: package
-                .content_digest()
-                .expect("package digest")
-                .to_string(),
-            activation_mode: "contracts-only".into(),
-            artifacts: Vec::new(),
-            provenance: "provenance/demo.ability.intoto.jsonl".into(),
+        let closure_member = aos_registry_surface::manifest::PackageContractClosureMemberMeta {
+            store_path: artifact.store_path.clone(),
+            nar_hash: artifact.nar_hash.to_string(),
+            nar_size: 10,
+            references: Vec::new(),
+        };
+        let retained = aos_registry_surface::manifest::PackageContractArtifactMeta {
+            content: artifact.content.to_string(),
+            store_path: artifact.store_path.clone(),
+            nar_hash: artifact.nar_hash.to_string(),
+            nar_size: 10,
+            closure_digest: artifact.closure.to_string(),
+            closure: vec![closure_member],
+        };
+        let ability = aos_registry_surface::manifest::PackageContractMeta {
+            document: aos_registry_surface::manifest::PackageContractDocumentMeta {
+                store_path: store_path.into(),
+                nar_hash: format!("sha256:{nar_digest}"),
+                nar_size: nar.len() as u64,
+                document_sha256: Sha256Digest::of_bytes(&projection_bytes).to_string(),
+                document_size: projection_bytes.len() as u64,
+                references: Vec::new(),
+            },
+            payload: retained.clone(),
+            source: retained.clone(),
+            selectors: vec![
+                aos_registry_surface::manifest::PackageContractSelectorMeta {
+                    package: "self".into(),
+                    output: "out".into(),
+                    artifact: retained,
+                },
+            ],
+            provenance: "provenance/demo.contract.intoto.jsonl".into(),
         };
         let fetch = AbilityFetch {
             objects: BTreeMap::from([
@@ -410,12 +438,18 @@ mod tests {
                 (nar_url, nar),
             ]),
         };
-        (fetch, ability, interface_key.descriptor)
+        (
+            fetch,
+            ability,
+            interface_key.descriptor,
+            Sha256Digest::of_bytes(&package_bytes),
+            package.content_digest().expect("package digest"),
+        )
     }
 
     #[tokio::test]
     async fn derives_reference_only_from_exact_signed_package_bytes() {
-        let (fetch, ability, interface_digest) = signed_fixture();
+        let (fetch, ability, interface_digest, manifest_digest, package_digest) = signed_fixture();
 
         let reference = fetch_package_ability_reference(
             &fetch,
@@ -431,17 +465,20 @@ mod tests {
 
         assert_eq!(
             reference.manifest_sha256.to_string(),
-            ability.manifest_sha256
+            manifest_digest.to_string()
         );
-        assert_eq!(reference.package_digest.to_string(), ability.package_digest);
+        assert_eq!(
+            reference.package_digest.to_string(),
+            package_digest.to_string()
+        );
         assert_eq!(reference.exports.len(), 2);
         assert_eq!(reference.exports[0].interface.descriptor, interface_digest);
     }
 
     #[tokio::test]
     async fn rejects_a_signed_locator_with_different_manifest_identity() {
-        let (fetch, mut ability, _) = signed_fixture();
-        ability.manifest_sha256 = Sha256Digest::from_bytes([9; 32]).to_string();
+        let (fetch, mut ability, _, _, _) = signed_fixture();
+        ability.document.document_sha256 = Sha256Digest::from_bytes([9; 32]).to_string();
 
         assert!(
             fetch_package_ability_reference(
@@ -460,7 +497,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_signed_package_projection_for_a_different_primary_payload() {
-        let (fetch, ability, _) = signed_fixture();
+        let (fetch, ability, _, _, _) = signed_fixture();
 
         let error = fetch_package_ability_reference(
             &fetch,

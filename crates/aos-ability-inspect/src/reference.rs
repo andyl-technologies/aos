@@ -16,11 +16,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
-use aos_ability_model::{RequiredFeature, ABILITY_LIMITS_V1};
-use aos_contract::limits::JsonLimits;
+use aos_ability_model::{ABILITY_LIMITS_V1, RequiredFeature};
 use aos_contract::Sha256Digest;
+use aos_contract::limits::JsonLimits;
 use aos_doc_model::{
-    ability_reference_supported_features, PackageAbilityReference, MAX_ABILITY_REFERENCE_BYTES,
+    MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference, ability_reference_supported_features,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -314,7 +314,6 @@ impl ReferenceInspectionView {
                 digest: reference.manifest_sha256,
                 name: reference.package.clone(),
                 version: reference.version.clone(),
-                activation_mode: reference.activation_mode,
             },
         )]);
         let mut edges = BTreeSet::new();
@@ -609,17 +608,17 @@ mod tests {
     use std::num::NonZeroU32;
 
     use aos_ability_model::{
-        AbilityActivationMode, AggregationContract, AggregationScope, ArtifactReference,
-        InterfaceDescriptor, InterfaceDocument, InterfaceName, LifecycleSemantics, LocalKey,
-        ProviderImplementation, RequiredFeature, ValueSchema,
+        AggregationContract, AggregationScope, ArtifactReference, InterfaceDescriptor,
+        InterfaceDocument, InterfaceName, LifecycleSemantics, LocalKey, ProviderImplementation,
+        RequiredFeature, ValueSchema,
     };
     use aos_doc_model::AbilityExportReference;
 
     use super::*;
 
     #[test]
-    fn public_reference_query_retains_shared_identity_relations_and_limits(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn public_reference_query_retains_shared_identity_relations_and_limits()
+    -> Result<(), Box<dyn std::error::Error>> {
         let reference = reference();
         let input = ReferenceInspectionInput::new(reference.clone())?;
         let input_bytes = input.canonical_bytes()?;
@@ -660,8 +659,8 @@ mod tests {
     }
 
     #[test]
-    fn canonical_reference_query_matches_the_cross_frontend_golden_slice(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn canonical_reference_query_matches_the_cross_frontend_golden_slice()
+    -> Result<(), Box<dyn std::error::Error>> {
         let input_bytes =
             include_bytes!("../../../tests/abilities/fixtures/reference-inspection-input.json");
         let query_bytes =
@@ -736,7 +735,6 @@ mod tests {
             version: "1.0.0".to_string(),
             manifest_sha256: Sha256Digest::of_bytes(b"manifest"),
             package_digest: Sha256Digest::of_bytes(b"package"),
-            activation_mode: AbilityActivationMode::ContractsOnly,
             interfaces: BTreeMap::from([(
                 LocalKey::new("service").expect("interface alias"),
                 interface.clone(),

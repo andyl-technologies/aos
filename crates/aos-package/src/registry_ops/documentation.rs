@@ -1,15 +1,15 @@
 //! Package documentation derivation and publication.
 
 use crate::registry_ops::attestation::documentation_nar_identity;
-use crate::registry_ops::store_paths::{introspect_store_path, nix_command, StorePathInfo};
+use crate::registry_ops::store_paths::{StorePathInfo, introspect_store_path, nix_command};
 use crate::registry_ops::uki::sha256_hex;
 use crate::types::{
-    validate_documentation_artifact_meta, ConfigModuleMeta, DocumentationArtifactMeta,
+    ConfigModuleMeta, DocumentationArtifactMeta, validate_documentation_artifact_meta,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_doc_model::{
-    DocumentationIdentity, DocumentedPackage, PackageDocumentation, DOCUMENT_FORMAT,
-    DOCUMENT_SCHEMA,
+    DOCUMENT_FORMAT, DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage,
+    PackageDocumentation,
 };
 use std::fs;
 use std::fs::OpenOptions;

@@ -10,9 +10,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
 
-use anyhow::{bail, Context, Result};
-use aos_doc_model::{document_json_schema, OptionDocument, PathSegment};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, bail};
+use aos_doc_model::{OptionDocument, PathSegment, document_json_schema};
+use serde_json::{Value, json};
 
 use crate::documentation::LoadedDocumentation;
 
@@ -705,8 +705,8 @@ fn write_message(output: &mut impl Write, value: &Value) -> Result<()> {
 mod tests {
     use super::*;
     use aos_ability_model::{
-        AbilityActivationMode, ArtifactReference, LocalKey, OptionSource, OptionVisibility,
-        PackageOptionDeclaration, ProviderImplementation, RelativePath, RequiredFeature,
+        ArtifactReference, LocalKey, OptionSource, OptionVisibility, PackageOptionDeclaration,
+        ProviderImplementation, RelativePath, RequiredFeature,
     };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
@@ -765,13 +765,12 @@ mod tests {
         let reference = PackageAbilityReference {
             schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
             required_features: vec![
-                RequiredFeature::new("abilities-v1").expect("valid feature name")
+                RequiredFeature::new("abilities-v1").expect("valid feature name"),
             ],
             package: LocalKey::new("nginx").expect("valid package name"),
             version: "1".to_string(),
             manifest_sha256: Sha256Digest::of_bytes("manifest"),
             package_digest: Sha256Digest::of_bytes("package"),
-            activation_mode: AbilityActivationMode::ContractsOnly,
             interfaces: BTreeMap::from([(
                 LocalKey::new("systemd-manager-interface").expect("interface alias"),
                 interface,
@@ -903,11 +902,13 @@ mod tests {
                 .iter()
                 .any(|limit| limit == "authorization-not-evaluated")
         }));
-        assert!(hints[0]["inspectionDiagnostics"]
-            .as_array()
-            .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| {
-                diagnostic["code"] == "deployment-authorization-not-evaluated"
-            })));
+        assert!(
+            hints[0]["inspectionDiagnostics"]
+                .as_array()
+                .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| {
+                    diagnostic["code"] == "deployment-authorization-not-evaluated"
+                }))
+        );
     }
 
     #[test]
@@ -976,9 +977,11 @@ mod tests {
         assert_eq!(virtual_document["uri"], uri);
         assert_eq!(virtual_document["reference"], resolved["reference"]);
         assert_eq!(virtual_document["selector"], resolved["selector"]);
-        assert!(virtual_document["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("Authenticated manifest")));
+        assert!(
+            virtual_document["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Authenticated manifest"))
+        );
     }
 
     #[test]
@@ -998,9 +1001,11 @@ mod tests {
         );
         assert_eq!(unknown.len(), 1);
         assert_eq!(unknown[0]["code"], "aos-ability-missing-reference");
-        assert!(unknown[0]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("loaded authenticated ability catalog")));
+        assert!(
+            unknown[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("loaded authenticated ability catalog"))
+        );
 
         let partial = server.diagnostics(
             r#"lib.abilities.request { interface = "aos.systemd-manager"; abi = 1; request = config.value; }"#,
@@ -1102,8 +1107,8 @@ mod tests {
     }
 
     #[test]
-    fn prose_changes_preserve_semantic_ability_graph_without_reload_signal(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn prose_changes_preserve_semantic_ability_graph_without_reload_signal()
+    -> Result<(), Box<dyn std::error::Error>> {
         let before = loaded_document();
         let mut after = before.clone();
         after.document.package.summary =
@@ -1160,10 +1165,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(parsed["method"], "initialize");
-        assert!(read_message(&mut io::Cursor::new(
-            b"Content-Length: 1\r\nContent-Length: 1\r\n\r\n{}".to_vec()
-        ))
-        .is_err());
+        assert!(
+            read_message(&mut io::Cursor::new(
+                b"Content-Length: 1\r\nContent-Length: 1\r\n\r\n{}".to_vec()
+            ))
+            .is_err()
+        );
         let oversized = format!("Content-Length: {}\r\n\r\n", MAX_MESSAGE_BYTES + 1);
         assert!(read_message(&mut io::Cursor::new(oversized.into_bytes())).is_err());
     }

@@ -44,8 +44,7 @@
 //! dumb-HTTP object store metadata is refreshed so plain-file origins stay
 //! cloneable.
 
-mod ability_artifacts;
-pub(crate) use ability_artifacts::AbilitySelectorRegistry;
+pub(crate) use package_contract::PackageContractSelectorRegistry;
 mod attestation;
 mod cache_validation;
 mod channels;
@@ -58,6 +57,7 @@ mod images;
 mod lifecycle;
 mod mac;
 mod metadata;
+mod package_contract;
 mod package_contract_transparency;
 mod provenance;
 mod publish;
@@ -81,15 +81,14 @@ pub use distribution::{run_cache, run_origin, run_web};
 pub(crate) use git::{refresh_registry_object_store, validate_canonical_release_registry_index};
 pub use lifecycle::{LocalRegistry, authoring_clone_precious, create, local_registries};
 #[cfg(test)]
-pub(crate) use metadata::{record_ability_output, record_named_output};
+pub(crate) use metadata::{record_named_output, record_package_contract};
 pub(crate) use package_contract_transparency::{
     PACKAGE_CONTRACT_TRANSPARENCY_LOG, package_contract_transparency_sequence,
 };
 pub(crate) use provenance::require_active_registry_key;
 pub use publish::publish;
 pub(crate) use publish::{
-    publish_canonical_ability_output, publish_canonical_named_output,
-    publish_canonical_release_entry,
+    publish_canonical_named_output, publish_canonical_release_entry, publish_package_contract,
 };
 pub use query::{packages, show, unpublish, verify};
 pub use release::{

@@ -10,8 +10,8 @@
 //! The two sidecar document shapes are:
 //!
 //! ```json
-//! {"environment":{"schema":"aos.ability.environment/v1","...":"..."},"schema":"aos.ability.activation-desired/v1","seed":{"schema":"aos.ability.desired-state/v1","...":"..."}}
-//! {"platform_policy":{"bindings":[...],"policy_revision":"sha256:...","required_features":[],"schema":"aos.ability.platform-policy/v1"},"policies":[{"schema":"aos.ability.resolution-policy/v1","...":"..."}],"schema":"aos.ability.authenticated-policy-set/v1","transition_authority":null}
+//! {"environment":{"schema":"aos.contract.environment/v1","...":"..."},"schema":"aos.contract.activation-desired/v1","seed":{"schema":"aos.contract.desired-state/v1","...":"..."}}
+//! {"platform_policy":{"bindings":[...],"policy_revision":"sha256:...","required_features":[],"schema":"aos.contract.platform-policy/v1"},"policies":[{"schema":"aos.contract.resolution-policy/v1","...":"..."}],"schema":"aos.contract.authenticated-policy-set/v1","transition_authority":null}
 //! ```
 
 use std::collections::BTreeSet;
@@ -41,20 +41,20 @@ use super::ability::RestrictedAbilityEvaluator;
 use super::ability_policy::{CurrentAbilityAuthorityDocument, CurrentPlatformPolicyDocument};
 use super::ability_policy_authority::OperatorPolicyAuthorityStore;
 use super::materialize::{
-    AbilityActivationInput, AbilityPackageCoordinate as PinnedAbilityPackageCoordinate,
-    ConfigManifest, PinnedAbilitySidecar,
+    AbilityActivationInput, ConfigManifest,
+    PackageContractCoordinate as PinnedPackageContractCoordinate, PinnedAbilitySidecar,
 };
 use super::runtime::{RuntimePackageOrigin, RuntimeResolution};
-use crate::ability_package::{
-    AbilityPackageCoordinate, NativeAbilityRetentionVerifier, VerifiedAbilityPackageSet,
-};
 use crate::config::ApmConfig;
+use crate::package_contract::{
+    NativePackageContractRetentionVerifier, PackageContractCoordinate, VerifiedPackageContractSet,
+};
 
 /// Canonical desired-state input supplied to native composition.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActivationDesiredInputDocument {
-    /// Carries `aos.ability.activation-desired/v1`.
+    /// Carries `aos.contract.activation-desired/v1`.
     pub schema: String,
     /// Supplies the original normalized desired-state composition seed.
     pub seed: DesiredStateDocument,
@@ -64,7 +64,7 @@ pub struct ActivationDesiredInputDocument {
 
 impl ActivationDesiredInputDocument {
     /// Current activation desired-input schema.
-    pub const SCHEMA: &'static str = "aos.ability.activation-desired/v1";
+    pub const SCHEMA: &'static str = "aos.contract.activation-desired/v1";
 
     /// Validates the desired seed and its exact environment commitment.
     ///
@@ -110,7 +110,7 @@ pub struct AuthenticatedPolicySetDocument {
 
 impl AuthenticatedPolicySetDocument {
     /// Current authenticated policy-set schema.
-    pub const SCHEMA: &'static str = "aos.ability.authenticated-policy-set/v1";
+    pub const SCHEMA: &'static str = "aos.contract.authenticated-policy-set/v1";
 
     /// Constructs a canonical execution-eligible policy-set document.
     ///
@@ -195,7 +195,7 @@ pub struct VerifiedAbilityActivationInputs {
     desired: ActivationDesiredInputDocument,
     policy_set: AuthenticatedPolicySetDocument,
     policy_sidecar: PinnedAbilitySidecar,
-    packages: Vec<PinnedAbilityPackageCoordinate>,
+    packages: Vec<PinnedPackageContractCoordinate>,
     fixed_point: Option<super::ability_rounds::AbilityFixedPointProjection>,
 }
 
@@ -421,7 +421,7 @@ fn validate_policy_feature_binding(
 pub fn specialize_activation(
     desired: &VerifiedAbilityActivationInputs,
     current: Option<&VerifiedAbilityActivationInputs>,
-    packages: &VerifiedAbilityPackageSet,
+    packages: &VerifiedPackageContractSet,
     evaluator: &mut RestrictedAbilityEvaluator,
 ) -> Result<SpecializedAbilityActivation> {
     specialize_activation_with_reconciliation(desired, current, packages, evaluator, None)
@@ -441,7 +441,7 @@ pub fn specialize_activation(
 pub fn specialize_reconciliation(
     desired: &VerifiedAbilityActivationInputs,
     current: &VerifiedAbilityActivationInputs,
-    packages: &VerifiedAbilityPackageSet,
+    packages: &VerifiedPackageContractSet,
     evaluator: &mut RestrictedAbilityEvaluator,
     source: &SpecializedAbilityActivation,
     reconciliation: TransitionReconciliation,
@@ -475,7 +475,7 @@ pub fn specialize_reconciliation(
 fn specialize_reconciliation_inner(
     desired: &VerifiedAbilityActivationInputs,
     current: &VerifiedAbilityActivationInputs,
-    packages: &VerifiedAbilityPackageSet,
+    packages: &VerifiedPackageContractSet,
     evaluator: &mut RestrictedAbilityEvaluator,
     source: &SpecializedAbilityActivation,
     reconciliation: TransitionReconciliation,
@@ -579,7 +579,7 @@ fn validate_reconciliation_authority_source(
 fn specialize_activation_with_reconciliation(
     desired: &VerifiedAbilityActivationInputs,
     current: Option<&VerifiedAbilityActivationInputs>,
-    packages: &VerifiedAbilityPackageSet,
+    packages: &VerifiedPackageContractSet,
     evaluator: &mut RestrictedAbilityEvaluator,
     reconciliation: Option<&TransitionReconciliation>,
 ) -> Result<SpecializedAbilityActivation> {
@@ -689,8 +689,8 @@ fn validate_runtime_reconciliation(
 
 fn packages_for_inputs(
     inputs: &VerifiedAbilityActivationInputs,
-    packages: &VerifiedAbilityPackageSet,
-) -> Result<VerifiedAbilityPackageSet> {
+    packages: &VerifiedPackageContractSet,
+) -> Result<VerifiedPackageContractSet> {
     let mut selected = Vec::with_capacity(inputs.packages.len());
     for coordinate in &inputs.packages {
         let package = packages
@@ -702,7 +702,7 @@ fn packages_for_inputs(
                 )
             })?;
         ensure!(
-            package.manifest_sha256().to_string() == coordinate.manifest_sha256
+            package.manifest_sha256().to_string() == coordinate.contract_document_sha256
                 && package.package_digest().to_string() == coordinate.package_digest,
             "ability package {}@{} ({}) seal differs from its generation coordinate",
             coordinate.name,
@@ -711,12 +711,12 @@ fn packages_for_inputs(
         );
         selected.push(package.clone());
     }
-    VerifiedAbilityPackageSet::from_verified(selected)
+    VerifiedPackageContractSet::from_verified(selected)
 }
 
 pub(crate) fn specialize_planning(
     inputs: &VerifiedAbilityActivationInputs,
-    catalog: &crate::ability_package::VerifiedAbilityPlanningCatalog,
+    catalog: &crate::package_contract::VerifiedPackagePlanningCatalog,
     evaluator: &mut RestrictedAbilityEvaluator,
 ) -> Result<VerifiedPlanningSnapshot> {
     let outcome = catalog.composer().compose(
@@ -751,7 +751,7 @@ pub(crate) fn specialize_planning(
 
 fn authenticate_transition_authority(
     desired: &VerifiedAbilityActivationInputs,
-    catalog: &crate::ability_package::VerifiedAbilityPlanningCatalog,
+    catalog: &crate::package_contract::VerifiedPackagePlanningCatalog,
     desired_planning: &VerifiedPlanningSnapshot,
     current_planning: Option<&VerifiedPlanningSnapshot>,
 ) -> Result<Option<CheckedTransitionAuthority>> {
@@ -794,7 +794,7 @@ fn authenticate_transition_authority(
 pub fn verify_generation_packages(
     config: &ApmConfig,
     manifests: &[&ConfigManifest],
-) -> Result<VerifiedAbilityPackageSet> {
+) -> Result<VerifiedPackageContractSet> {
     let mut packages = Vec::new();
     for manifest in manifests {
         manifest.validate()?;
@@ -817,7 +817,7 @@ pub fn verify_generation_packages(
                 pinned.name
             );
             let ability = package
-                .ability
+                .contract
                 .as_ref()
                 .context("ability coordinate has no authenticated package metadata")?;
             let (_, provenance) = crate::install::read_provenance_artifact(
@@ -830,22 +830,22 @@ pub fn verify_generation_packages(
                 &pinned.registry,
             )?;
             let manifest_bytes =
-                crate::ability_package::read_package_manifest(&pinned.ability_store_path)?;
-            let coordinate = AbilityPackageCoordinate {
+                crate::package_contract::read_package_manifest(&pinned.contract_store_path)?;
+            let coordinate = PackageContractCoordinate {
                 name: &pinned.name,
                 version: &pinned.version,
                 platform: &pinned.platform,
                 store_path: &pinned.runtime_store_path,
                 nar_hash: &pinned.runtime_nar_hash,
             };
-            let verified = crate::ability_package::verify_pinned_ability_package(
+            let verified = crate::package_contract::verify_pinned_package_contract(
                 coordinate,
                 ability,
                 &manifest_bytes,
                 &provenance,
                 &pinned.registry,
                 &trusted_keys,
-                &NativeAbilityRetentionVerifier::new(),
+                &NativePackageContractRetentionVerifier::new(),
             )
             .with_context(|| {
                 format!(
@@ -856,7 +856,7 @@ pub fn verify_generation_packages(
             packages.push(verified);
         }
     }
-    VerifiedAbilityPackageSet::from_verified(packages)
+    VerifiedPackageContractSet::from_verified(packages)
 }
 
 /// Verifies structured ability companions directly from registry resolution.
@@ -874,10 +874,10 @@ pub fn verify_generation_packages(
 pub fn verify_runtime_packages(
     config: &ApmConfig,
     runtime: &RuntimeResolution,
-) -> Result<VerifiedAbilityPackageSet> {
+) -> Result<VerifiedPackageContractSet> {
     let mut packages = Vec::new();
     for (name, package) in &runtime.packages {
-        let Some(ability) = &package.ability else {
+        let Some(ability) = &package.contract else {
             continue;
         };
         ensure!(
@@ -893,22 +893,23 @@ pub fn verify_runtime_packages(
             &config.cache_path(),
             &package.registry,
         )?;
-        let manifest_bytes = crate::ability_package::read_package_manifest(&ability.store_path)?;
-        let coordinate = AbilityPackageCoordinate {
+        let manifest_bytes =
+            crate::package_contract::read_package_manifest(&ability.document.store_path)?;
+        let coordinate = PackageContractCoordinate {
             name,
             version: &package.version,
             platform: &package.platform,
             store_path: &package.store_path,
             nar_hash: &package.nar_hash,
         };
-        let verified = crate::ability_package::verify_pinned_ability_package(
+        let verified = crate::package_contract::verify_pinned_package_contract(
             coordinate,
             ability,
             &manifest_bytes,
             &provenance,
             &package.registry,
             &trusted_keys,
-            &NativeAbilityRetentionVerifier::new(),
+            &NativePackageContractRetentionVerifier::new(),
         )
         .with_context(|| {
             format!(
@@ -918,7 +919,7 @@ pub fn verify_runtime_packages(
         })?;
         packages.push(verified);
     }
-    VerifiedAbilityPackageSet::from_verified(packages)
+    VerifiedPackageContractSet::from_verified(packages)
 }
 
 fn load_sidecar(sidecar: &PinnedAbilitySidecar, label: &str) -> Result<Vec<u8>> {
@@ -926,7 +927,7 @@ fn load_sidecar(sidecar: &PinnedAbilitySidecar, label: &str) -> Result<Vec<u8>> 
         .with_context(|| format!("decoding ability {label} NAR identity"))?;
     let nar_hash = Sha256Digest::parse(&format!("sha256:{nar_hex}"))
         .with_context(|| format!("decoding ability {label} NAR identity"))?;
-    crate::ability_package::retention::verify_store_object(
+    crate::package_contract::retention::verify_store_object(
         &sidecar.store_path,
         nar_hash,
         sidecar.nar_size,
@@ -1057,10 +1058,8 @@ mod tests {
     fn descriptor_relative_reader_rejects_symlink_escape() {
         let root = tempfile::tempdir().expect("temporary sidecar root");
         let outside = tempfile::tempdir().expect("temporary outside directory");
-        fs::write(outside.path().join("desired.json"), b"{}")
-            .expect("write outside document");
-        symlink(outside.path(), root.path().join("mutable"))
-            .expect("create intermediate symlink");
+        fs::write(outside.path().join("desired.json"), b"{}").expect("write outside document");
+        symlink(outside.path(), root.path().join("mutable")).expect("create intermediate symlink");
 
         let error = read_regular_file_beneath(root.path(), Path::new("mutable/desired.json"), 2)
             .expect_err("sidecar reader must reject an intermediate symlink");
