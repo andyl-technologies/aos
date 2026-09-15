@@ -34,58 +34,19 @@
     then "application/vnd.aos.container.static-abilities.v1+json"
     else "application/vnd.aos.boot.static-abilities.v1+json";
   abilityPackageRoots = builtins.filter (
-    package:
-      builtins.isAttrs package
-      && (package ? abilities || package ? _aosAbilityCarrier)
+    package: builtins.isAttrs package && package ? abilities
   ) packageRoots;
-  selectedPackages = map (package:
-    if package ? abilities && package ? _aosAbilityCarrier
+  selectedPackages = map (package: let
+    artifactOutputs = package.abilities._artifact_outputs or {};
+  in
+    if artifactOutputs ? projection && artifactOutputs ? selectors
     then {
       payload = package;
-      manifest = {
-        value = package.abilities;
-        inherit (package._aosAbilityCarrier) document interfaces artifactOutputs;
-      };
+      inherit (artifactOutputs) projection selectors;
     }
-    else common.fail "static ability contract package roots must expose one complete native ability carrier")
+    else common.fail "static ability contract package roots must expose one complete native ability projection")
   abilityPackageRoots;
-  packagePaths =
-    map (entry: {
-      payload = builtins.toString entry.payload;
-      manifest = builtins.toString entry.manifest.document;
-    })
-    selectedPackages;
-  validInterfaceProjection = interface:
-    builtins.isAttrs interface
-    && interface ? descriptor
-    && interface ? document
-    && interface ? value
-    && builtins.isString interface.descriptor
-    && builtins.isString interface.document
-    && builtins.isAttrs interface.value;
-  validPackageProjection = projection:
-    builtins.isAttrs projection
-    && projection ? document
-    && projection ? interfaces
-    && projection ? value
-    && builtins.isString projection.document
-    && builtins.isList projection.interfaces
-    && builtins.isAttrs projection.value
-    && builtins.isAttrs (projection.value.interfaces or null)
-    && builtins.isAttrs (projection.value.guarantees or null)
-    && lib.all validInterfaceProjection projection.interfaces
-    && builtins.isList (projection.value.artifacts or null)
-    && builtins.isList (projection.value.interface_documents or null)
-    && builtins.length projection.interfaces
-    == builtins.length projection.value.interface_documents
-    && lib.all (index: let
-      retained = builtins.elemAt projection.interfaces index;
-      embedded = builtins.elemAt projection.value.interface_documents index;
-    in
-      retained.descriptor
-      == embedded.descriptor
-      && retained.value == embedded.document)
-    (builtins.genList (index: index) (builtins.length projection.interfaces));
+  payloadPaths = map (entry: builtins.toString entry.payload) selectedPackages;
   resolvePackageOutput = payload: selector: let
     package =
       if selector.package == "self"
@@ -93,14 +54,22 @@
       else if builtins.isAttrs packageRegistry && builtins.hasAttr selector.package packageRegistry
       then builtins.getAttr selector.package packageRegistry
       else common.fail "ability selector names unknown package '${selector.package}'";
-    projectedOutputs = package._aosAbilityCarrier.artifactOutputs or {};
-    selectedProjection = projectedOutputs.${selector.output} or null;
-    outputs = lib.unique ((package.outputs or ["out"]) ++ builtins.attrNames projectedOutputs);
+    artifactOutputs =
+      if package ? abilities
+      then package.abilities._artifact_outputs or {}
+      else {};
+    selectableArtifactOutputs = builtins.removeAttrs artifactOutputs ["projection" "selectors"];
+    selectedArtifact = selectableArtifactOutputs.${selector.output} or null;
+    outputs =
+      lib.unique (
+        (package.outputs or ["out"])
+        ++ builtins.attrNames selectableArtifactOutputs
+      );
   in
     if !(builtins.elem selector.output outputs)
     then common.fail "ability selector names missing output '${selector.output}' on package '${selector.package}'"
-    else if selectedProjection != null
-    then selectedProjection.output
+    else if selectedArtifact != null
+    then selectedArtifact
     else if selector.output == "out"
     then package.out or package
     else builtins.getAttr selector.output package;
@@ -122,34 +91,27 @@
     then common.validatePlatform platform
     else null;
   checkedPackages =
-    if
-      lib.all (entry:
-        builtins.isAttrs entry
-        && validPackageProjection entry.manifest)
-      selectedPackages
-      && builtins.isAttrs packageRegistry
-      && lib.all (entry:
-        entry.manifest.value.package.name
-        == entry.payload.pname
-        && entry.manifest.value.package.version == entry.payload.version)
-      selectedPackages
-      && lib.all (entry: builtins.elem (builtins.toString entry.payload) runtimeRootPaths) selectedPackages
-      && builtins.length packagePaths == builtins.length (lib.unique (map (entry: entry.manifest) packagePaths))
-    then packagePaths
-    else common.fail "static ability contract packages must name unique AOS ability companions";
+    if !platformMode
+    then []
+    else if
+      builtins.isAttrs packageRegistry
+      && lib.all (path: builtins.elem path runtimeRootPaths) payloadPaths
+      && builtins.length payloadPaths == builtins.length (lib.unique payloadPaths)
+    then selectedPackages
+    else common.fail "static ability contract package roots must be unique runtime roots resolved through a package registry";
   packageResolutions = builtins.genList (packageIndex: let
     entry = builtins.elemAt selectedPackages packageIndex;
     selectorArtifacts = builtins.genList (selectorIndex: let
-      selector = builtins.elemAt entry.manifest.value.artifacts selectorIndex;
+      selector = builtins.elemAt entry.selectors selectorIndex;
       selected = resolvePackageOutput entry.payload selector;
     in {
       inherit (selector) package output;
       path = builtins.toString selected;
       graph = "abilityResolution${toString packageIndex}Selector${toString selectorIndex}";
       graphPath = selected;
-    }) (builtins.length entry.manifest.value.artifacts);
+    }) (builtins.length entry.selectors);
   in {
-    manifest = builtins.toString entry.manifest.document;
+    projection = builtins.toString entry.projection;
     resolution = {
       payload = {
         path = builtins.toString entry.payload;
@@ -181,10 +143,9 @@
   resolvedPackageContracts = builtins.genList (packageIndex: let
     entry = builtins.elemAt selectedPackages packageIndex;
     resolution = builtins.elemAt packageResolutions packageIndex;
-    resolutionSpec =
-      builtins.toFile
+    resolutionSpec = builtins.toFile
       "${pname}-selector-resolution-${toString packageIndex}.json"
-      (builtins.toJSON resolution.resolution);
+      (builtins.unsafeDiscardStringContext (builtins.toJSON resolution.resolution));
   in
     mkDerivation {
       pname = "${pname}-resolved-package-${toString packageIndex}";
@@ -202,7 +163,7 @@
           script = ''
             ${abilityContractValidator}/bin/aos-ability-contract-validator \
               resolve-package-projection \
-              ${lib.escapeShellArg (builtins.toString entry.manifest.document)} \
+              ${lib.escapeShellArg (builtins.toString entry.projection)} \
               ${lib.escapeShellArg (builtins.toString resolutionSpec)} \
               "$NIX_ATTRS_JSON_FILE" \
               "$out"
@@ -251,16 +212,18 @@
       true
     else common.fail "static ability contract requires exactly one platform package set or a non-empty contract set";
   assemblyPackages = builtins.genList (index: {
-    payload = (builtins.elemAt packagePaths index).payload;
+    payload = builtins.toString (builtins.elemAt selectedPackages index).payload;
     manifest = builtins.toString (builtins.elemAt resolvedPackageContracts index);
-  }) (builtins.length packagePaths);
-  assemblySpec = builtins.toFile "${pname}-static-ability-assembly.json" (builtins.toJSON {
-    inherit schema artifactClass executionStage;
-    mediaType = mediaType;
-    platform = checkedPlatform;
-    packages = assemblyPackages;
-    contracts = checkedContracts;
-  });
+  }) (builtins.length selectedPackages);
+  assemblySpec = builtins.toFile
+    "${pname}-static-ability-assembly.json"
+    (builtins.unsafeDiscardStringContext (builtins.toJSON {
+      inherit schema artifactClass executionStage;
+      mediaType = mediaType;
+      platform = checkedPlatform;
+      packages = assemblyPackages;
+      contracts = checkedContracts;
+    }));
 in
   builtins.deepSeq validated (mkDerivation {
     inherit pname;
@@ -292,7 +255,7 @@ in
       inherit mediaType schema artifactClass executionStage checkedPlatform runtimeRootPaths;
       inherit packageAbilityContracts;
       inputContractPaths = contractPaths;
-      selectedPayloadPaths = map (entry: entry.payload) packagePaths;
+      selectedPayloadPaths = payloadPaths;
     };
 
     meta.description = "Closed static ability contract for an AOS OCI artifact";

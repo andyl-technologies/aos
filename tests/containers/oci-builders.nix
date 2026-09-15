@@ -120,6 +120,13 @@
     maxDevelopmentPayloadMiB = 1;
     allowTestArtifacts = true;
   };
+  abilityPackageSmokeProvider = import ../../pkgs/tests/_ability-package-smoke-provider.nix {
+    inherit (pkgs) mkDerivation;
+  };
+  abilityPackageRegistry = {
+    ability-package-smoke = pkgs.ability-package-smoke;
+    ability-package-smoke-provider = abilityPackageSmokeProvider;
+  };
   abilityContractFor = {
     architecture,
     applicationRoot ? application,
@@ -130,15 +137,13 @@
         inherit architecture;
         os = "linux";
       };
-      packages = [
-        {
-          payload = pkgs.ability-package-smoke;
-          manifest = pkgs.ability-package-smoke.abilities.contract;
-        }
-      ];
+      packageRegistry = abilityPackageRegistry;
+      packageRoots = [pkgs.ability-package-smoke];
       runtimeRoots = [applicationRoot pkgs.ability-package-smoke];
     };
   amd64AbilityContract = abilityContractFor {architecture = "amd64";};
+  resolvedSmokePackageDocument =
+    builtins.head amd64AbilityContract.passthru.packageAbilityContracts;
   changedAmd64AbilityContract = abilityContractFor {
     architecture = "amd64";
     applicationRoot = changedApplication;
@@ -425,53 +430,14 @@
     references = ["aos-fixture:latest"];
   };
   tryBuilder = value: builtins.tryEval (builtins.deepSeq value true);
-  uncheckedAbilityCompanion =
-    pkgs.ability-package-smoke.abilities.contract
-    // {
-      passthru = builtins.removeAttrs pkgs.ability-package-smoke.abilities.contract.passthru [
-        "abilitySemanticValidator"
-      ];
-    };
-  omittedSemanticValidation = tryBuilder (oci.mkStaticAbilityContract {
-    pname = "oci-omitted-semantic-validation-eval";
-    platform = {
-      architecture = "amd64";
-      os = "linux";
-    };
-    packages = [
-      {
-        payload = pkgs.ability-package-smoke;
-        manifest = uncheckedAbilityCompanion;
-      }
-    ];
-    runtimeRoots = [application pkgs.ability-package-smoke];
-  });
-  swappedAbilityCompanion = tryBuilder (oci.mkStaticAbilityContract {
-    pname = "oci-swapped-ability-companion-eval";
-    platform = {
-      architecture = "amd64";
-      os = "linux";
-    };
-    packages = [
-      {
-        payload = application;
-        manifest = pkgs.ability-package-smoke.abilities.contract;
-      }
-    ];
-    runtimeRoots = [application];
-  });
   absentAbilityPayload = tryBuilder (oci.mkStaticAbilityContract {
     pname = "oci-absent-ability-payload-eval";
     platform = {
       architecture = "amd64";
       os = "linux";
     };
-    packages = [
-      {
-        payload = pkgs.ability-package-smoke;
-        manifest = pkgs.ability-package-smoke.abilities.contract;
-      }
-    ];
+    packageRegistry = abilityPackageRegistry;
+    packageRoots = [pkgs.ability-package-smoke];
     runtimeRoots = [application];
   });
   wrongPlatformContract = tryBuilder (mkPlatformImage {
@@ -585,8 +551,6 @@
   assert !missingFilePayload.success;
   assert !ambiguousFilePayload.success;
   assert !hostFileSource.success;
-  assert !omittedSemanticValidation.success;
-  assert !swappedAbilityCompanion.success;
   assert !absentAbilityPayload.success;
   assert !wrongPlatformContract.success;
   assert !aggregateContractMismatch.success;
@@ -699,10 +663,11 @@ in
           ${oci.common.realizedStorePolicyScript}
 
           mkdir -p invalid-ability/interfaces
-          cp ${pkgs.ability-package-smoke.abilities.contract}/interfaces/*.json invalid-ability/interfaces/
+          cp ${resolvedSmokePackageDocument}/interfaces/*.json \
+            invalid-ability/interfaces/
           jq -cS \
             '.exports[0].implementation = "sha256:0000000000000000000000000000000000000000000000000000000000000000"' \
-            ${pkgs.ability-package-smoke.abilities.contract}/package.json \
+            ${resolvedSmokePackageDocument}/package.json \
             > invalid-ability/package.with-newline.json
           invalid_size=$(stat -c %s invalid-ability/package.with-newline.json)
           truncate -s "$((invalid_size - 1))" invalid-ability/package.with-newline.json
@@ -759,7 +724,7 @@ in
               || fail "descriptor size mismatch for $blob"
           }
 
-          # Derivation names do not enter layer identity or companion metadata.
+          # Derivation names do not enter layer or package-document identity.
           diff -r ${baseLayerA} ${baseLayerB} \
             || fail "equivalent closure layers differ by derivation name"
           diff -r ${amd64Image} ${equivalentAmd64Image} \
