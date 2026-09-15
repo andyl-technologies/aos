@@ -9,6 +9,4 @@ anyhow.workspace = true
 aos-ability-model.workspace = true
 aos-contract.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
