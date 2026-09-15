@@ -68,6 +68,9 @@ impl HandlerRole {
             .ok_or_else(|| anyhow::anyhow!("handler entry point is not valid UTF-8"))?;
 
         match name {
+            "aos-systemd-activation-group-effects" => Ok(Self::NativeResource(
+                native_resource::NativeResourceRole::ActivationGroup,
+            )),
             "aos-systemd-device-presence" => Ok(Self::DevicePresence),
             "aos-systemd-group-effects" => Ok(Self::Identity(identity::IdentityRole::Group)),
             "aos-systemd-group-membership-effects" => {
@@ -801,6 +804,13 @@ mod tests {
 
     #[test]
     fn entry_points_select_closed_semantic_roles() {
+        assert_eq!(
+            HandlerRole::from_entry_point(OsStr::new(
+                "aos-systemd-activation-group-effects"
+            ))
+            .expect("activation-group role parses"),
+            HandlerRole::NativeResource(NativeResourceRole::ActivationGroup)
+        );
         assert_eq!(
             HandlerRole::from_entry_point(OsStr::new(
                 "/nix/store/provider/bin/aos-systemd-group-effects"

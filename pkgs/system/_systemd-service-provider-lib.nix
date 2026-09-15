@@ -32,6 +32,11 @@
     unit_name = "${checkedLocalKey "systemd public service name" name}.service";
   };
 
+  publicTemplateUnitIdentity = name: {
+    kind = "unit";
+    unit_name = "${checkedLocalKey "systemd public service template name" name}@.service";
+  };
+
   templateUnitIdentityForResource = resource: template: let
     normalized = normalizedResourceId resource;
     readableTemplate = checkedLocalKey "systemd service template key" template;
@@ -64,6 +69,7 @@
 in {
   inherit
     normalizedResourceId
+    publicTemplateUnitIdentity
     publicUnitIdentity
     socketUnitNameForResource
     templateInstanceIdentity

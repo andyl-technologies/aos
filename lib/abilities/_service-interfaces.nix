@@ -1315,6 +1315,10 @@
       outputName = "activation-resource";
       outputDescription = "References the retained activation membership group.";
       outputType = serviceTypes.resourceReference;
+      interfaceOutputs.activation-resource =
+        output "planning" "instance"
+        "References the exact activation group selected for realization."
+        serviceTypes.resourceReference;
     };
     devicePresence = observer {
       alias = "device-presence";

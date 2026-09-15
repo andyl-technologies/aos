@@ -1354,6 +1354,14 @@
         element = types.deferredResult types.resourceReference;
         maxItems = 256;
       };
+      after = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      required_members = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
     };
   };
   devicePresence = types.record {

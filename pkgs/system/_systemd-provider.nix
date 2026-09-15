@@ -64,6 +64,7 @@
     serviceInterfaces.runtimeEntryPopulation
   ];
   nativeResourceInterfaces = [
+    serviceInterfaces.activationGroup
     serviceInterfaces.mountResource
     serviceInterfaces.scheduledActivation
     serviceInterfaces.swapResource
@@ -862,6 +863,7 @@
   };
   nativeResourceProviderImplementations = import ./_systemd-native-resource-provider.nix {
     inherit config lib packageName;
+    unitIdentityForReference = unitIdentityForReference;
   };
 in {
   config.aos.abilities.implementations =

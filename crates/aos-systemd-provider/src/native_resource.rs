@@ -1,4 +1,4 @@
-//! Native systemd realization of provider-neutral mount, swap, and device resources.
+//! Native systemd realization of activation groups, mounts, swaps, and devices.
 
 use std::path::{Component, Path};
 use std::time::{Duration, Instant};
@@ -23,7 +23,9 @@ use crate::materialize::{
     service_paths_for,
 };
 use crate::model::{PROVIDER_CONTEXT_SCHEMA, ProviderContext, ServiceUnitIdentity};
-use crate::render::{RenderedService, RenderedServiceLink, RenderedServiceUnit};
+use crate::render::{
+    RenderedService, RenderedServiceLink, RenderedServiceUnit, validate_unit_name,
+};
 use crate::semantic::resolve_unit_identity;
 use crate::{decode_value, empty_outputs, provider_context, target_context, value};
 
@@ -31,11 +33,13 @@ const ETC_ROOT: &str = "/etc";
 const MOUNT_RESOURCE_KIND: &str = "aos.filesystem.mount";
 const SCHEDULED_ACTIVATION_RESOURCE_KIND: &str = "aos.activation.schedule";
 const SWAP_RESOURCE_KIND: &str = "aos.memory.swap";
+const ACTIVATION_GROUP_RESOURCE_KIND: &str = "aos.activation.group";
 const REALIZATION_SCHEMA: &str = "aos.systemd.native-resource-realization/v1";
 const MOUNT_OBSERVATION_SCHEMA: &str = "aos.ability.mount-resource-observation/v1";
 const SCHEDULED_ACTIVATION_OBSERVATION_SCHEMA: &str =
     "aos.ability.scheduled-activation-observation/v1";
 const SWAP_OBSERVATION_SCHEMA: &str = "aos.ability.swap-resource-observation/v1";
+const ACTIVATION_GROUP_OBSERVATION_SCHEMA: &str = "aos.ability.activation-group-observation/v1";
 const DEVICE_OBSERVATION_SCHEMA: &str = "aos.ability.device-presence-observation/v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -90,6 +94,17 @@ struct ScheduledActivationDesired {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+struct ActivationGroupDesired {
+    name: String,
+    enabled: bool,
+    description: String,
+    after: Vec<ResourceReference>,
+    members: Vec<ResourceReference>,
+    required_members: Vec<ResourceReference>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct DeviceDesired {
     name: String,
     device: String,
@@ -99,6 +114,12 @@ struct DeviceDesired {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "backend", rename_all = "kebab-case", deny_unknown_fields)]
 enum NativeRealization {
+    ActivationGroupTarget {
+        schema: String,
+        after_units: Vec<ServiceUnitIdentity>,
+        member_units: Vec<ServiceUnitIdentity>,
+        required_member_units: Vec<ServiceUnitIdentity>,
+    },
     MountUnit {
         schema: String,
     },
@@ -122,6 +143,7 @@ pub(crate) struct StaticNativeResource {
 }
 
 enum Desired {
+    ActivationGroup(ActivationGroupDesired),
     Mount(MountDesired),
     ScheduledActivation(ScheduledActivationDesired),
     Swap(SwapDesired),
@@ -130,6 +152,7 @@ enum Desired {
 impl Desired {
     fn enabled(&self) -> bool {
         match self {
+            Self::ActivationGroup(desired) => desired.enabled,
             Self::Mount(desired) => desired.enabled,
             Self::ScheduledActivation(desired) => desired.enabled,
             Self::Swap(desired) => desired.enabled,
@@ -138,6 +161,7 @@ impl Desired {
 
     fn resource_kind(&self) -> &'static str {
         match self {
+            Self::ActivationGroup(_) => ACTIVATION_GROUP_RESOURCE_KIND,
             Self::Mount(_) => MOUNT_RESOURCE_KIND,
             Self::ScheduledActivation(_) => SCHEDULED_ACTIVATION_RESOURCE_KIND,
             Self::Swap(_) => SWAP_RESOURCE_KIND,
@@ -146,6 +170,7 @@ impl Desired {
 
     fn observation_schema(&self) -> &'static str {
         match self {
+            Self::ActivationGroup(_) => ACTIVATION_GROUP_OBSERVATION_SCHEMA,
             Self::Mount(_) => MOUNT_OBSERVATION_SCHEMA,
             Self::ScheduledActivation(_) => SCHEDULED_ACTIVATION_OBSERVATION_SCHEMA,
             Self::Swap(_) => SWAP_OBSERVATION_SCHEMA,
@@ -155,6 +180,7 @@ impl Desired {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NativeResourceRole {
+    ActivationGroup,
     Mount,
     ScheduledActivation,
     Swap,
@@ -172,11 +198,11 @@ pub(crate) async fn admit(
     require_method(&request.method, &request.semantics)?;
 
     let desired = desired_from_value(role, &request.resource_spec.value)?;
-    require_realization(&desired, &request.resource_spec.realization)?;
+    let realization = require_realization(&desired, &request.resource_spec.realization)?;
     if request.resource_spec.kind.as_str() != desired.resource_kind() {
         bail!("native-resource desired value differs from its resource kind");
     }
-    let rendered = render(&desired, &request.resource_spec.realization)?;
+    let rendered = render(&desired, &realization)?;
     let paths = service_paths_for(
         Path::new(ETC_ROOT),
         &rendered.primary_unit,
@@ -245,7 +271,7 @@ pub(crate) async fn invoke(
     let bound = validate_resource_context(target_context(&invocation)?)?;
     let desired = desired_from_value(role, &bound.resource_spec.value)?;
     require_inputs(&desired, &invocation.request.inputs)?;
-    require_realization(&desired, &bound.resource_spec.realization)?;
+    let realization = require_realization(&desired, &bound.resource_spec.realization)?;
     if bound.resource_spec.kind.as_str() != desired.resource_kind() {
         bail!("native-resource desired value differs from its resource kind");
     }
@@ -254,7 +280,7 @@ pub(crate) async fn invoke(
         bail!("unsupported native-resource provider context schema");
     }
 
-    let rendered = render(&desired, &bound.resource_spec.realization)?;
+    let rendered = render(&desired, &realization)?;
     let paths = service_paths_for(
         Path::new(ETC_ROOT),
         &rendered.primary_unit,
@@ -477,6 +503,7 @@ fn require_device_method(method: &MethodReference, semantics: &MethodSemantics) 
 
 fn desired_from_value(role: NativeResourceRole, value: &AbilityValue) -> Result<Desired> {
     match role {
+        NativeResourceRole::ActivationGroup => Ok(Desired::ActivationGroup(decode_value(value)?)),
         NativeResourceRole::Mount => Ok(Desired::Mount(decode_value(value)?)),
         NativeResourceRole::ScheduledActivation => {
             Ok(Desired::ScheduledActivation(decode_value(value)?))
@@ -487,6 +514,9 @@ fn desired_from_value(role: NativeResourceRole, value: &AbilityValue) -> Result<
 
 fn require_inputs(desired: &Desired, inputs: &AbilityValue) -> Result<()> {
     let matches = match desired {
+        Desired::ActivationGroup(value) => {
+            decode_value::<EffectRequest<ActivationGroupDesired>>(inputs)?.desired == *value
+        }
         Desired::Mount(value) => {
             decode_value::<EffectRequest<MountDesired>>(inputs)?.desired == *value
         }
@@ -503,10 +533,11 @@ fn require_inputs(desired: &Desired, inputs: &AbilityValue) -> Result<()> {
     Ok(())
 }
 
-fn require_realization(desired: &Desired, value: &AbilityValue) -> Result<()> {
+fn require_realization(desired: &Desired, value: &AbilityValue) -> Result<NativeRealization> {
     let realization: NativeRealization = decode_value(value)?;
-    let matches = match (desired, realization) {
-        (Desired::Mount(_), NativeRealization::MountUnit { schema })
+    let matches = match (desired, &realization) {
+        (Desired::ActivationGroup(_), NativeRealization::ActivationGroupTarget { schema, .. })
+        | (Desired::Mount(_), NativeRealization::MountUnit { schema })
         | (Desired::Swap(_), NativeRealization::SwapUnit { schema }) => {
             schema == REALIZATION_SCHEMA
         }
@@ -518,7 +549,7 @@ fn require_realization(desired: &Desired, value: &AbilityValue) -> Result<()> {
     if !matches {
         bail!("native resource uses an unsupported realization");
     }
-    Ok(())
+    Ok(realization)
 }
 
 pub(crate) fn render_static(input: StaticNativeResource) -> Result<RenderedService> {
@@ -526,6 +557,7 @@ pub(crate) fn render_static(input: StaticNativeResource) -> Result<RenderedServi
         bail!("unsupported static native-resource input schema");
     }
     let desired = match input.kind.as_str() {
+        ACTIVATION_GROUP_RESOURCE_KIND => Desired::ActivationGroup(decode_value(&input.desired)?),
         MOUNT_RESOURCE_KIND => Desired::Mount(decode_value(&input.desired)?),
         SCHEDULED_ACTIVATION_RESOURCE_KIND => {
             Desired::ScheduledActivation(decode_value(&input.desired)?)
@@ -533,12 +565,46 @@ pub(crate) fn render_static(input: StaticNativeResource) -> Result<RenderedServi
         SWAP_RESOURCE_KIND => Desired::Swap(decode_value(&input.desired)?),
         _ => bail!("static native-resource input selects an unsupported resource kind"),
     };
-    require_realization(&desired, &input.realization)?;
-    render(&desired, &input.realization)
+    let realization = require_realization(&desired, &input.realization)?;
+    render(&desired, &realization)
 }
 
-fn render(desired: &Desired, realization: &AbilityValue) -> Result<RenderedService> {
+fn render(desired: &Desired, realization: &NativeRealization) -> Result<RenderedService> {
     let (unit_name, bytes, target) = match desired {
+        Desired::ActivationGroup(group) => {
+            reject_line_break(&group.description, "activation group description")?;
+            let unit_name = format!("{}.target", group.name);
+            validate_unit_name(&unit_name)?;
+            let NativeRealization::ActivationGroupTarget {
+                after_units,
+                member_units,
+                required_member_units,
+                ..
+            } = realization
+            else {
+                bail!("activation group requires an activation-group-target realization");
+            };
+            let members = realized_unit_names(member_units)?;
+            let ordered_after = realized_unit_names(after_units)?;
+            let required_members = realized_unit_names(required_member_units)?;
+            let mut after = ordered_after;
+            after.extend(members.iter().cloned());
+            after.extend(required_members.iter().cloned());
+            after.sort();
+            after.dedup();
+
+            let mut document = format!("[Unit]\nDescription={}\n", group.description);
+            if !after.is_empty() {
+                document.push_str(&format!("After={}\n", after.join(" ")));
+            }
+            if !members.is_empty() {
+                document.push_str(&format!("Wants={}\n", members.join(" ")));
+            }
+            if !required_members.is_empty() {
+                document.push_str(&format!("Requires={}\n", required_members.join(" ")));
+            }
+            (unit_name, document.into_bytes(), "")
+        }
         Desired::Mount(mount) => {
             validate_absolute_path(&mount.source, "mount source")?;
             validate_absolute_path(&mount.destination, "mount destination")?;
@@ -574,7 +640,7 @@ fn render(desired: &Desired, realization: &AbilityValue) -> Result<RenderedServi
                 systemd_unit,
                 target,
                 ..
-            } = decode_value(realization)?
+            } = realization
             else {
                 bail!("scheduled activation requires a timer-unit realization");
             };
@@ -611,7 +677,7 @@ fn render(desired: &Desired, realization: &AbilityValue) -> Result<RenderedServi
                 activation.randomized_delay_millis,
             );
             (
-                systemd_unit.unit_name,
+                systemd_unit.unit_name.clone(),
                 document.into_bytes(),
                 "timers.target",
             )
@@ -630,7 +696,7 @@ fn render(desired: &Desired, realization: &AbilityValue) -> Result<RenderedServi
             (unit_name, document.into_bytes(), "swap.target")
         }
     };
-    let links = if desired.enabled() {
+    let links = if desired.enabled() && !target.is_empty() {
         vec![RenderedServiceLink {
             path: format!("{target}.wants/{unit_name}"),
             target: format!("../{unit_name}"),
@@ -646,6 +712,17 @@ fn render(desired: &Desired, realization: &AbilityValue) -> Result<RenderedServi
         }],
         links,
     })
+}
+
+fn realized_unit_names(identities: &[ServiceUnitIdentity]) -> Result<Vec<String>> {
+    let mut units = identities
+        .iter()
+        .map(resolve_unit_identity)
+        .map(|result| result.map(|(unit, _)| unit))
+        .collect::<Result<Vec<_>>>()?;
+    units.sort();
+    units.dedup();
+    Ok(units)
 }
 
 async fn apply(
@@ -990,15 +1067,21 @@ fn path_unit_name(path: &str, suffix: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Desired, MountDesired, REALIZATION_SCHEMA, SwapDesired, path_unit_name, render, value,
+        ActivationGroupDesired, Desired, MountDesired, NativeRealization, REALIZATION_SCHEMA,
+        SwapDesired, path_unit_name, render,
     };
+    use crate::model::ServiceUnitIdentity;
 
-    fn realization(backend: &str) -> aos_ability_model::AbilityValue {
-        value(&serde_json::json!({
-            "schema": REALIZATION_SCHEMA,
-            "backend": backend,
-        }))
-        .expect("realization is valid")
+    fn realization(backend: &str) -> NativeRealization {
+        match backend {
+            "mount-unit" => NativeRealization::MountUnit {
+                schema: REALIZATION_SCHEMA.to_string(),
+            },
+            "swap-unit" => NativeRealization::SwapUnit {
+                schema: REALIZATION_SCHEMA.to_string(),
+            },
+            _ => panic!("unsupported test backend"),
+        }
     }
 
     #[test]
@@ -1057,5 +1140,37 @@ mod tests {
             timeout_millis: None,
         });
         assert!(render(&mount, &realization("mount-unit")).is_err());
+    }
+
+    #[test]
+    fn activation_group_renders_typed_member_dependencies() {
+        let group = Desired::ActivationGroup(ActivationGroupDesired {
+            name: "aos-config".to_string(),
+            enabled: true,
+            description: "AOS on-host config applied".to_string(),
+            after: Vec::new(),
+            members: Vec::new(),
+            required_members: Vec::new(),
+        });
+        let realization = NativeRealization::ActivationGroupTarget {
+            schema: REALIZATION_SCHEMA.to_string(),
+            after_units: vec![ServiceUnitIdentity::Unit {
+                unit_name: "aos-fetch.target".to_string(),
+            }],
+            member_units: vec![ServiceUnitIdentity::Unit {
+                unit_name: "aos-config-render.target".to_string(),
+            }],
+            required_member_units: vec![ServiceUnitIdentity::Unit {
+                unit_name: "aos-activate.service".to_string(),
+            }],
+        };
+
+        let rendered = render(&group, &realization).expect("activation group renders");
+        assert_eq!(rendered.primary_unit, "aos-config.target");
+        assert!(rendered.links.is_empty());
+        assert_eq!(
+            String::from_utf8(rendered.units[0].bytes.clone()).expect("unit is utf-8"),
+            "[Unit]\nDescription=AOS on-host config applied\nAfter=aos-activate.service aos-config-render.target aos-fetch.target\nWants=aos-config-render.target\nRequires=aos-activate.service\n"
+        );
     }
 }

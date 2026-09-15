@@ -1,8 +1,9 @@
-##! Pure systemd composition for mount, swap, and device-presence resources.
+##! Pure systemd composition for provider-neutral native resources.
 {
   config,
   lib,
   packageName,
+  unitIdentityForReference,
 }: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
@@ -19,17 +20,26 @@
     then builtins.head matches
     else throw "a systemd native-resource request must have exactly one selected binding";
   kinds = {
+    activation-group = {
+      selected = interfaces.activationGroup;
+      resourceKind = "aos.activation.group";
+      effectsAlias = "systemd-activation-group-effects";
+      backend = "activation-group-target";
+      outputName = "activation-resource";
+    };
     mount = {
       selected = interfaces.mountResource;
       resourceKind = "aos.filesystem.mount";
       effectsAlias = "systemd-mount-effects";
       backend = "mount-unit";
+      outputName = null;
     };
     swap = {
       selected = interfaces.swapResource;
       resourceKind = "aos.memory.swap";
       effectsAlias = "systemd-swap-effects";
       backend = "swap-unit";
+      outputName = null;
     };
     schedule = {
       selected = interfaces.scheduledActivation;
@@ -73,6 +83,22 @@
     in
       emptyProvision
       // {
+        outputs =
+          if (specification.outputName or null) == null
+          then {}
+          else
+            builtins.listToAttrs (builtins.map (entry: {
+              name = entry.requestName;
+              value.${specification.outputName} = {
+                interface = specification.selected.identity;
+                resource = {
+                  provider = context.instance.id;
+                  key = entry.binding.slot;
+                };
+                operations = ["observe"];
+                lifetime = "instance";
+              };
+            }) entries);
         resourceFragments = builtins.listToAttrs (builtins.map (entry: {
             name = entry.binding.slot;
             value = {
@@ -92,7 +118,12 @@
       in {
         systemd_unit = scheduleUnitFor resource;
         target = trigger.realization.systemd_unit;
-      });
+      })
+      // lib.optionalAttrs (kind == "activation-group") {
+        after_units = builtins.map unitIdentityForReference resource.value.after;
+        member_units = builtins.map unitIdentityForReference resource.value.members;
+        required_member_units = builtins.map unitIdentityForReference resource.value.required_members;
+      };
     compose = {resources, ...}: {
       outputs = {};
       requests = builtins.mapAttrs (key: resource: {

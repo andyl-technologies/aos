@@ -36,34 +36,5 @@ in {
         printf 'disable *\n' > "$out/99-aos-default.preset"
       '';
 
-    systemd.services.aos-preset = {
-      description = "Apply AOS package preset policy";
-      wantedBy = ["multi-user.target"];
-      wants = ["aos-graph-compile.service"];
-      after = ["aos-graph-compile.service" "aos-activate.service"];
-      before = ["multi-user.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
-      script = ''
-        ${pkgs.systemd}/bin/systemctl preset-all --preset-mode=enable-only
-
-        targets="$(
-          ${pkgs.systemd}/bin/systemctl list-unit-files 'aos-pkg-*.target' \
-            --type=target \
-            --state=enabled \
-            --no-legend \
-            --no-pager 2>/dev/null \
-            | while read -r unit _rest; do
-                [ -n "$unit" ] && printf '%s\n' "$unit"
-              done
-        )"
-
-        if [ -n "$targets" ]; then
-          ${pkgs.systemd}/bin/systemctl start --no-block $targets
-        fi
-      '';
-    };
   };
 }

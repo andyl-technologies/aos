@@ -260,7 +260,10 @@
       managerIdentity
       == null
       || (
-        (instantiation == null || instantiation.kind == "singleton")
+        (
+          instantiation == null
+          || builtins.elem instantiation.kind ["singleton" "template"]
+        )
         && !(builtins.elem managerIdentity.name managerIdentity.aliases)
         && builtins.length managerIdentity.aliases
         == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map
