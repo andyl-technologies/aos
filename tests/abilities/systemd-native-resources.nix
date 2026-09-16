@@ -201,13 +201,13 @@
     builtins.head (builtins.filter (resource: resource.value.name == name) activationGroups);
   activationGroup = activationGroupByName "ready";
   dependentGroup = activationGroupByName "dependent";
-  declaredRoleEntryPoints = builtins.sort builtins.lessThan (lib.unique (lib.concatMap (
+  declaredHandlerEntryPoints = builtins.sort builtins.lessThan (lib.unique (lib.concatMap (
       implementation: let
         handler = implementation.handlerDescriptor;
       in
         lib.optional
         (handler != null && handler.artifact.package == "aos-systemd-provider")
-        (lib.removePrefix "bin/" handler.entryPoint)
+        handler.entryPoint
     )
     (builtins.attrValues abilities.implementations)));
 in
@@ -260,9 +260,8 @@ in
   assert abilities.implementations."systemd:mount-resource".handlerDescriptor == null;
   assert builtins.isFunction abilities.implementations."systemd:mount-resource".transition;
   assert abilities.implementations."systemd:systemd-mount-effects".providerModule == null;
-  assert abilities.implementations."systemd:systemd-mount-effects".handlerDescriptor.entryPoint == "bin/aos-systemd-mount-effects";
+  assert abilities.implementations."systemd:systemd-mount-effects".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
   assert abilities.implementations."systemd:device-presence".providerModule == null;
-  assert abilities.implementations."systemd:device-presence".handlerDescriptor.entryPoint == "bin/aos-systemd-device-presence";
-  assert declaredRoleEntryPoints == pkgs.aos-systemd-provider.roleEntryPoints;
-  assert builtins.length declaredRoleEntryPoints == 16;
+  assert abilities.implementations."systemd:device-presence".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
+  assert declaredHandlerEntryPoints == ["bin/aos-systemd-provider"];
   assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 4; true

@@ -9,6 +9,7 @@
   handlerArtifact = lib.abilities.packageOutput {
     package = "aos-systemd-provider";
   };
+  handlerEntryPoint = "bin/aos-systemd-provider";
   serviceEffectsQualification = {
     adapter = "service-management";
     observationKind = "systemd";
@@ -23,7 +24,7 @@
     ];
     observer = lib.qualification.abilityObserver {
       artifact = handlerArtifact;
-      entryPoint = "bin/aos-systemd-service-effects-observer";
+      entryPoint = handlerEntryPoint;
     };
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
@@ -905,7 +906,7 @@
         guarantees = [];
         handlerDescriptor = {
           artifact = handlerArtifact;
-          entryPoint = "bin/aos-${selected.effectsAlias}";
+          entryPoint = handlerEntryPoint;
           arguments = identityEffectsRequest selected;
           result = identityEffectsObservation selected;
         };
@@ -1101,7 +1102,7 @@
         guarantees = [];
         handlerDescriptor = {
           artifact = handlerArtifact;
-          entryPoint = "bin/aos-${selected.effectsAlias}";
+          entryPoint = handlerEntryPoint;
           arguments = nativeEffectsRequest selected;
           result = nativeEffectsObservation selected;
         };
@@ -1118,7 +1119,7 @@
       guarantees = [];
       handlerDescriptor = {
         artifact = handlerArtifact;
-        entryPoint = "bin/aos-systemd-device-presence";
+        entryPoint = handlerEntryPoint;
         arguments = serviceInterfaces.devicePresence.requestType;
         result = serviceInterfaces.devicePresence.observationType;
       };
@@ -1243,7 +1244,7 @@
         guarantees = [];
         handlerDescriptor = {
           artifact = handlerArtifact;
-          entryPoint = "bin/aos-${readinessEffectsAlias selected}";
+          entryPoint = handlerEntryPoint;
           arguments = readinessEffectsRequest selected;
           result = selected.observationType;
         };
@@ -1326,7 +1327,7 @@ in {
           guarantees = [];
           handlerDescriptor = {
             artifact = handlerArtifact;
-            entryPoint = "bin/aos-systemd-manager-watchdog-effects";
+            entryPoint = handlerEntryPoint;
             arguments = managerWatchdogEffectsRequest;
             result = managerWatchdogEffectsObservation;
           };
@@ -1355,7 +1356,7 @@ in {
           guarantees = [];
           handlerDescriptor = {
             artifact = handlerArtifact;
-            entryPoint = "bin/aos-systemd-network-configuration-effects";
+            entryPoint = handlerEntryPoint;
             arguments = networkConfigurationEffects.requestType;
             result = networkConfigurationEffects.observationType;
           };
@@ -1370,7 +1371,7 @@ in {
           guarantees = [];
           handlerDescriptor = {
             artifact = handlerArtifact;
-            entryPoint = "bin/aos-systemd-service-effects";
+            entryPoint = handlerEntryPoint;
             arguments = serviceEffectsRequest;
             result = serviceEffectsObservation;
           };
@@ -1400,7 +1401,7 @@ in {
           guarantees = [];
           handlerDescriptor = {
             artifact = handlerArtifact;
-            entryPoint = "bin/aos-systemd-packaged-unit-effects";
+            entryPoint = handlerEntryPoint;
             arguments = packagedUnitEffectsRequest;
             result = packagedUnitEffectsObservation;
           };
