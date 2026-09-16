@@ -21,13 +21,10 @@
     lib.abilities.interfaceIdentity (
       lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:${alias}-effects"
     );
-  realizationSchemaFor = alias: let
-    implementation = config.aos.abilities.implementations."${packageName}:${alias}";
-    values = implementation.desiredType._abilitySchema.fields.schema.values or [];
-  in
-    if builtins.length values == 1
-    then builtins.head values
-    else throw "the filesystem ${alias} declaration must own one realization schema";
+  realizationSchemaFor = alias:
+    lib.abilities.singletonSchemaDiscriminator
+    "filesystem ${alias} realization"
+    config.aos.abilities.implementations."${packageName}:${alias}".desiredType;
   withEffects = alias: resources: realizations:
     emptyComposition
     // {

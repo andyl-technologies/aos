@@ -12,12 +12,9 @@
     lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
   );
   controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
-  realizationSchema = let
-    values = controller.desiredType._abilitySchema.fields.schema.values or [];
-  in
-    if builtins.length values == 1
-    then builtins.head values
-    else throw "the D-Bus registration controller declaration must own one realization schema";
+  realizationSchema = lib.abilities.singletonSchemaDiscriminator
+    "D-Bus registration controller realization"
+    controller.desiredType;
   emptyResult = {
     requests = {};
     outputs = {};
@@ -204,6 +201,7 @@ in {
       transition = import ./registration-transition.nix {
         configurationInterface = lib.abilities.interfaces.serviceManagement.interfaces.managedConfiguration.identity;
         reloadInterface = lib.abilities.interfaces.serviceManagement.interfaces.reload.identity;
+        inherit (lib.abilities) transitionFragment;
       };
     };
     ${contributionAlias}.provide = provideContribution;

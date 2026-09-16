@@ -478,19 +478,13 @@
       ++ bootstrapEdges;
     };
     fragments = builtins.map fragmentFor activeChanges;
-  in {
-    schema = "aos.ability.transition-fragment/v1";
-    operations = builtins.concatMap (fragment: fragment.operations) fragments;
-    decisions = builtins.concatMap (fragment: fragment.decisions) fragments;
-    merges = builtins.concatMap (fragment: fragment.merges) fragments;
-    edges = builtins.concatMap (fragment: fragment.edges) fragments;
-    exports = [];
-    imports = [];
-    links = [];
-    handoffs = [];
-    provider_readiness = [];
-    obligations = [];
-  };
+  in
+    lib.abilities.transitionFragment {
+      operations = builtins.concatMap (fragment: fragment.operations) fragments;
+      decisions = builtins.concatMap (fragment: fragment.decisions) fragments;
+      merges = builtins.concatMap (fragment: fragment.merges) fragments;
+      edges = builtins.concatMap (fragment: fragment.edges) fragments;
+    };
 in {
   config.aos.abilities.implementations.${alias} = {inherit provide compose transition;};
 }

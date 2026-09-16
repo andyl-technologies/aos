@@ -166,19 +166,7 @@
     attempt_timeout_millis = 120000;
     total_recovery_millis = 120000;
   };
-  emptyTransition = {
-    schema = "aos.ability.transition-fragment/v1";
-    operations = [];
-    decisions = [];
-    merges = [];
-    edges = [];
-    exports = [];
-    imports = [];
-    links = [];
-    handoffs = [];
-    provider_readiness = [];
-    obligations = [];
-  };
+  emptyTransition = lib.abilities.transitionFragment {};
   selectedRevision = context: change: let
     revisions =
       if change.desired != null
