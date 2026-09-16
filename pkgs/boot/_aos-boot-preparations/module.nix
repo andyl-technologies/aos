@@ -547,17 +547,7 @@
         source_stage = "initrd";
         receiver_stage = "host";
         completion = initrdFilesystemsReadiness;
-        preparations = [
-          (serviceResource "aos-ability-initrd-controller")
-          (serviceResource "aos-ability-initrd-handoff-barrier")
-          (serviceResource "aos-config-seed")
-          (serviceResource "aos-machine-id")
-          (serviceResource "aos-seed-profiles")
-          (serviceResource "etc-overlay-setup")
-          (serviceResource "mount-var")
-          (serviceResource "nix-overlay-setup")
-          (serviceResource "run-etc-setup")
-        ];
+        preparations = handoffPreparationResources;
         preserved_mounts = [
           {
             initrd_path = "/run";
@@ -645,6 +635,25 @@
   ];
   handoffInitrdFragments = [initrdController initrdHandoffBarrier];
   handoffHostFragments = [hostReceiver];
+  lifecycleResourceFor = fragment: let
+    requests = (serviceManagement.splitContribution fragment).configured.requests or {};
+    lifecycleRequests = builtins.filter
+      (requestName: requests.${requestName}.requirement == interfaces.lifecycle.alias)
+      (builtins.attrNames requests);
+  in
+    if lifecycleRequests == []
+    then null
+    else if builtins.length lifecycleRequests == 1
+    then resultOf (builtins.head lifecycleRequests) "service-resource"
+    else throw "one package-owned service fragment emitted several lifecycle requests";
+  handoffPreparationResources =
+    builtins.sort
+    (left: right: builtins.toJSON left < builtins.toJSON right)
+    (builtins.filter
+      (resource: resource != null)
+      (builtins.map lifecycleResourceFor (
+        baseFragments ++ substrateFragments ++ handoffInitrdFragments
+      )));
   substrateContributions = builtins.map serviceManagement.splitContribution substrateFragments;
   handoffInitrdContributions = builtins.map serviceManagement.splitContribution handoffInitrdFragments;
   handoffHostContributions = builtins.map serviceManagement.splitContribution handoffHostFragments;
