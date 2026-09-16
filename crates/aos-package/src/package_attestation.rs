@@ -392,7 +392,7 @@ pub(crate) struct PackageMeasurementCatalogEntry {
 
 /// Files produced by the local TPM quote agent primitive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct PackageQuoteArtifacts {
+pub struct PackageQuoteArtifacts {
     /// Verifier-supplied nonce, normalized to lowercase hex.
     pub nonce: String,
     /// PCR bank and selection quoted by the TPM.
@@ -427,7 +427,7 @@ pub(crate) struct PackageQuoteArtifacts {
 /// SHA-256 fingerprints of the quote bundle's AK/EK identity artifacts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PackageQuoteIdentityDigests {
+pub struct PackageQuoteIdentityDigests {
     /// Digest of `ek.pub`.
     pub ek_public_sha256: String,
     /// Digest of `ek.name`.
