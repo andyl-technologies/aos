@@ -19,15 +19,14 @@
 //!   special privileges are required.
 //! - **System** — selected by `--system` on `install`, `upgrade`,
 //!   `rollback`, and `registry`. Operates on the system sysroot under
-//!   `/var/lib/profiles/system/` with numbered generations, activation
-//!   scripts, and kernel/boot-loader handling (see [`sysroot`]).
+//!   `/var/lib/profiles/system/` with numbered generations and
+//!   kernel/boot-loader handling (see [`sysroot`]).
 //!
 //! # Module map
 //!
 //! - [`install`] / [`remove`] / [`upgrade`] / [`rollback`] — user-scope
 //!   profile mutations (resolve, download, verify, import, generation switch).
-//! - [`sysroot`] — system-scope generations, activation, and kernel upgrade
-//!   modes; also hosts the hidden `activate-{pre,post}-etc-swap` reconciler.
+//! - [`sysroot`] — system-scope generations and kernel upgrade modes.
 //! - [`update`] / [`query`] / [`deps`] / [`hold`] / [`clean`] / [`verify`] /
 //!   [`source`] — registry sync and read-only or maintenance commands.
 //! - [`registry`] / [`registry_ops`] — registry data model and the `apr`
@@ -60,7 +59,6 @@ pub mod environment;
 /// [`registry::porcelain`]) and never exec `git`.
 #[cfg(test)]
 pub(crate) mod gitcmd;
-pub mod graph_compile;
 pub mod hold;
 pub mod images;
 pub mod install;
@@ -148,9 +146,7 @@ pub mod sshkey;
 pub mod store;
 pub mod sysroot;
 pub mod sysroot_lock;
-pub mod test_systemd_client;
 pub mod types;
-pub mod unit_diff;
 pub mod update;
 pub mod upgrade;
 pub mod verify;
@@ -174,6 +170,12 @@ use types::{
     ProfileScope, RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
     validate_commit_hash, validate_git_ref_name, validate_registry_name,
 };
+
+/// Returns the SHA-256 identity of a value in the canonical AOS JSON dialect.
+fn canonical_json_digest(value: &serde_json::Value) -> Result<String> {
+    let canonical = aos_contract::canonical::canonical_json(value)?;
+    Ok(aos_contract::Sha256Digest::of_bytes(canonical).to_string())
+}
 
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
@@ -520,58 +522,9 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: ApmRegistryCommand,
     },
-    /// Hidden: pre-/etc-swap daemon reconcile planning.
-    ///
-    /// Called only from the toplevel's `activate` script while it holds the
-    /// switch lock. Diffs live `/etc` against the candidate overlay, stops
-    /// units that must be torn down under their old definitions, and prints a
-    /// race-free plan path for the post-swap phase.
-    #[command(name = "activate-pre-etc-swap", hide = true)]
-    ActivatePreEtcSwap {
-        /// Generation number being activated
-        #[arg(long = "gen")]
-        generation: u32,
-        /// Path to the candidate /etc overlay to diff against live /etc
-        #[arg(long)]
-        candidate_etc: PathBuf,
-    },
-    /// Hidden: post-/etc-swap daemon reconcile apply.
-    ///
-    /// Called only from the toplevel's `activate` script while it holds the
-    /// switch lock. Reads the pre-swap plan, reloads systemd against the new
-    /// `/etc`, applies reload/restart/start actions, and runs the health gate.
-    #[command(name = "activate-post-etc-swap", hide = true)]
-    ActivatePostEtcSwap {
-        /// Path to the pre-swap plan file printed by activate-pre-etc-swap
-        #[arg(long)]
-        plan: PathBuf,
-    },
-    /// Hidden: idempotently restore routed sources from an activation plan.
-    #[command(name = "activate-restore-routed-sources", hide = true)]
-    ActivateRestoreRoutedSources {
-        /// Path to the pre-swap activation plan
-        #[arg(long)]
-        plan: PathBuf,
-        /// Restore candidate-eligible sources instead of the old active set
-        #[arg(long)]
-        candidate: bool,
-    },
     /// Hidden: recover an interrupted credential publication transaction.
     #[command(name = "recover-credential-transactions", hide = true)]
     RecoverCredentialTransactions,
-    /// Hidden: exercise the `aos_systemd::SystemdClient` directly.
-    ///
-    /// Test vehicle for the fleet test at
-    /// `tests/fleet/apm-systemd-client.nix`. The `_` prefix marks it
-    /// internal — hidden from `--help`, no stability promise, may break
-    /// between versions. It talks to systemd over D-Bus and needs no apm
-    /// config, so `run()` dispatches it before `ApmConfig::load`.
-    #[command(name = "_test-systemd-client", hide = true)]
-    TestSystemdClient {
-        /// The systemd client operation to exercise
-        #[command(subcommand)]
-        op: TestSystemdClientOp,
-    },
     /// Hidden: produce the host package-attestation quote for the service controller.
     #[command(name = "__attest-service", hide = true)]
     AttestService,
@@ -703,23 +656,24 @@ pub enum PackageCommand {
         )]
         job_scripts_runtime_dir: String,
     },
-    /// Hidden: commit a converged manifest as a configuration generation.
-    ///
-    /// Called by `aos-activate.service` after the soft fetch/render wing has
-    /// settled. Re-projects the manifest onto successfully materialized
-    /// packages, prepares a content-addressed generation, invokes the atomic
-    /// toplevel activation script, and publishes the generation only after
-    /// the `/etc` swap succeeds.
-    #[command(name = "__activate-config", hide = true)]
-    ActivateConfig {
+    /// Hidden: authenticate and preflight a checked ability activation plan.
+    #[command(name = "__ability-activation-preflight", hide = true)]
+    AbilityActivationPreflight {
         /// The evaluator-produced source manifest
-        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        #[arg(long, default_value = "/run/aos/manifest.json")]
         manifest: PathBuf,
-        /// The evaluator-produced package dependency graph
-        #[arg(long, default_value = graph_compile::DEFAULT_GRAPH_PATH)]
-        graph: PathBuf,
-        /// Root containing package fetch and render completion markers
-        #[arg(long = "marker-root", default_value = graph_compile::subverbs::MARKER_ROOT)]
+        /// System-generation profile directory
+        #[arg(long, default_value = "/var/lib/profiles/system")]
+        profile: PathBuf,
+    },
+    /// Hidden: execute a checked ability activation plan.
+    #[command(name = "__ability-activate", hide = true)]
+    AbilityActivate {
+        /// The evaluator-produced source manifest
+        #[arg(long, default_value = "/run/aos/manifest.json")]
+        manifest: PathBuf,
+        /// Root containing durable activation evidence
+        #[arg(long = "marker-root", default_value = "/run/aos")]
         marker_root: PathBuf,
         /// System-generation profile directory
         #[arg(long, default_value = "/var/lib/profiles/system")]
@@ -776,70 +730,13 @@ pub enum PackageCommand {
         #[arg(long = "require-signed-host-nix")]
         require_signed_host_nix: bool,
         /// Where a real (non-dry-run) switch publishes the committed manifest
-        #[arg(long = "live-manifest", default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        #[arg(long = "live-manifest", default_value = "/run/aos/manifest.json")]
         live_manifest: PathBuf,
     },
     /// Manage the persistent runtime configuration-module worktree.
     Config {
         #[command(subcommand)]
         command: RuntimeConfigCommand,
-    },
-    /// Materialize one package's pinned NAR closure into the store.
-    ///
-    /// Backs the `aos-pkg-fetch@.service` template's `ExecStart=`. Reads the
-    /// resolved closure for `<pkg>` from `/run/aos/manifest.json`, realises it
-    /// via the configured substituters, and writes `/run/aos/fetch/<pkg>.ok` on
-    /// success. Idempotent; safe to run concurrently for distinct packages.
-    #[command(hide = true)]
-    Fetch {
-        /// Package whose closure to fetch
-        package: String,
-        /// The eval-produced manifest pinning the closure
-        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
-        manifest: PathBuf,
-        /// Root holding the per-package completion markers
-        #[arg(long = "marker-root", default_value = graph_compile::subverbs::MARKER_ROOT)]
-        marker_root: PathBuf,
-    },
-    /// Render one package's configuration artifacts into the staging area.
-    ///
-    /// Backs the `aos-pkg-install@.service` template's `ExecStart=`. Validates
-    /// the package's typed configuration and credential declarations, stages
-    /// the artifacts (never touching live `/etc`), and writes
-    /// `/run/aos/render/<pkg>.ok`. Exits 2 on a config error.
-    #[command(name = "render-one", hide = true)]
-    RenderOne {
-        /// Package whose config to render
-        package: String,
-        /// The eval-produced manifest carrying the package's config block
-        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
-        manifest: PathBuf,
-        /// Root holding the per-package completion markers
-        #[arg(long = "marker-root", default_value = graph_compile::subverbs::MARKER_ROOT)]
-        marker_root: PathBuf,
-        /// Root the rendered artifacts are staged under
-        #[arg(long = "staging-root", default_value = graph_compile::subverbs::STAGING_ROOT)]
-        staging_root: PathBuf,
-    },
-    /// Hidden: compile the eval output into a runtime systemd unit graph.
-    ///
-    /// Called only by `aos-graph-compile.service` (`After=aos-eval`,
-    /// `ConditionPathExists=/run/aos/manifest.json`). Reads `manifest.json` +
-    /// `graph.json`, writes per-instance dropins and `.wants` symlinks under
-    /// `/run/systemd/system`, then `daemon-reload`s, awaits activation, and
-    /// publishes `aos-config.target`. Talks to systemd over D-Bus and needs no
-    /// apm config.
-    #[command(name = "__graph-compile", hide = true)]
-    GraphCompile {
-        /// The eval-produced data contract
-        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
-        manifest: PathBuf,
-        /// The eval-produced cross-package DAG
-        #[arg(long, default_value = graph_compile::DEFAULT_GRAPH_PATH)]
-        graph: PathBuf,
-        /// Override the `/run/systemd/system` root (development only)
-        #[arg(long = "run-root")]
-        run_root: Option<PathBuf>,
     },
     /// Hidden: produce one authenticated build-stage planning snapshot.
     #[command(name = "__ability-plan-build-stage", hide = true)]
@@ -1201,81 +1098,12 @@ pub enum CredentialCommand {
     },
 }
 
-/// Operations for the private package-runtime systemd test command. Each maps
-/// one-for-one onto a [`aos_systemd::SystemdClient`] method; the handler in
-/// [`test_systemd_client`] serialises the result to JSON on stdout.
-#[derive(Subcommand)]
-pub enum TestSystemdClientOp {
-    /// Start a unit (mode "replace") and wait for its job to settle.
-    Start {
-        /// Unit name (e.g. "foo.service")
-        unit: String,
-    },
-    /// Stop a unit and wait for its job to settle.
-    Stop {
-        /// Unit name (e.g. "foo.service")
-        unit: String,
-    },
-    /// Restart a unit and wait for its job to settle.
-    Restart {
-        /// Unit name (e.g. "foo.service")
-        unit: String,
-    },
-    /// Reload a unit (runs `ExecReload=`) and wait for its job to settle.
-    Reload {
-        /// Unit name (e.g. "foo.service")
-        unit: String,
-    },
-    /// Start a unit in "isolate" mode and wait for its job to settle.
-    Isolate {
-        /// Unit name (e.g. "rescue.target")
-        unit: String,
-    },
-    /// `Manager.Reload()` — the D-Bus equivalent of `systemctl daemon-reload`.
-    DaemonReload,
-    /// Clear the failed state of a single unit (`--unit`) or all units.
-    ResetFailed {
-        /// Unit whose failed state to clear (all units if omitted)
-        #[arg(long)]
-        unit: Option<String>,
-    },
-    /// Whether a unit's `ActiveState == "active"`.
-    IsActive {
-        /// Unit name (e.g. "foo.service")
-        unit: String,
-    },
-    /// List units matching an optional glob `--pattern` / `--state` filter.
-    ListUnits {
-        /// Glob pattern to match unit names against
-        #[arg(long)]
-        pattern: Option<String>,
-        /// Filter by ActiveState (e.g. "active", "failed")
-        #[arg(long)]
-        state: Option<String>,
-    },
-    /// Read a single `org.freedesktop.systemd1.Unit` property.
-    Property {
-        /// Unit name (e.g. "foo.service")
-        unit: String,
-        /// Property name (e.g. "ActiveState")
-        name: String,
-    },
-    /// Scan for failed (and failed-and-auto-restarting) units.
-    FailedUnits,
-    /// Drain late `JobRemoved` signals until the bus goes quiet.
-    Settle,
-}
-
 impl PackageCommand {
     /// Returns whether the command belongs to the private on-host runtime.
     pub fn is_runtime_internal(&self) -> bool {
         matches!(
             self,
-            PackageCommand::ActivatePreEtcSwap { .. }
-                | PackageCommand::ActivatePostEtcSwap { .. }
-                | PackageCommand::ActivateRestoreRoutedSources { .. }
-                | PackageCommand::RecoverCredentialTransactions
-                | PackageCommand::TestSystemdClient { .. }
+            PackageCommand::RecoverCredentialTransactions
                 | PackageCommand::AttestService
                 | PackageCommand::Attest {
                     command: AttestCommand::VerifyBootCommit { .. }
@@ -1287,10 +1115,8 @@ impl PackageCommand {
                 | PackageCommand::EvalRetained { .. }
                 | PackageCommand::EvalService { .. }
                 | PackageCommand::Materialize { .. }
-                | PackageCommand::ActivateConfig { .. }
-                | PackageCommand::Fetch { .. }
-                | PackageCommand::RenderOne { .. }
-                | PackageCommand::GraphCompile { .. }
+                | PackageCommand::AbilityActivationPreflight { .. }
+                | PackageCommand::AbilityActivate { .. }
                 | PackageCommand::AbilityPlanBuildStage { .. }
                 | PackageCommand::AbilityBuildStage { .. }
                 | PackageCommand::AbilityStageRun { .. }
@@ -1308,16 +1134,11 @@ impl PackageCommand {
         }
 
         match self {
-            PackageCommand::ActivatePreEtcSwap { .. }
-            | PackageCommand::ActivatePostEtcSwap { .. }
-            | PackageCommand::ActivateRestoreRoutedSources { .. }
-            | PackageCommand::LoadEbpfLsmPolicies { .. }
+            PackageCommand::LoadEbpfLsmPolicies { .. }
             | PackageCommand::EvalRetained { .. }
             | PackageCommand::EvalService { .. }
-            | PackageCommand::ActivateConfig { .. }
-            | PackageCommand::Fetch { .. }
-            | PackageCommand::RenderOne { .. }
-            | PackageCommand::GraphCompile { .. } => LiveAos,
+            | PackageCommand::AbilityActivationPreflight { .. }
+            | PackageCommand::AbilityActivate { .. } => LiveAos,
             PackageCommand::AbilityStageRun { .. }
             | PackageCommand::AbilityPlanBuildStage { .. }
             | PackageCommand::AbilityBuildStage { .. }
@@ -1356,7 +1177,6 @@ impl PackageCommand {
             | PackageCommand::Rollback { .. }
             | PackageCommand::Credential(..)
             | PackageCommand::Registry { .. }
-            | PackageCommand::TestSystemdClient { .. }
             | PackageCommand::AttestService
             | PackageCommand::Eval { .. }
             | PackageCommand::Materialize { .. }
@@ -3428,7 +3248,7 @@ async fn apply_runtime_worktree(
         base_manifest,
         base_label: "current".to_string(),
         dry_run,
-        live_manifest: PathBuf::from(graph_compile::DEFAULT_MANIFEST_PATH),
+        live_manifest: PathBuf::from("/run/aos/manifest.json"),
         json_out: printer.mode() == OutputMode::Json,
     })
     .await?;
@@ -3501,11 +3321,10 @@ fn exit_for_eval_failure(error: &anyhow::Error, verbose: u8) {
 ///
 /// Loads the [`config::ApmConfig`] for the scope implied by the command
 /// (`--system` selects [`ProfileScope::System`]) and dispatches to the
-/// matching module. The hidden `_test-systemd-client` and
-/// `activate-{pre,post}-etc-swap` subcommands are dispatched *before* config
-/// loading; the activate pair terminates the process directly via
-/// `std::process::exit` so its 0/1/2 exit-code contract reaches the caller
-/// unflattened.
+/// matching module. Private configuration evaluation, materialization,
+/// checked activation, and stage commands are dispatched before generic
+/// package configuration loading because they authenticate and load their
+/// own scoped runtime inputs.
 ///
 /// # Errors
 ///
@@ -3524,14 +3343,6 @@ pub async fn run(
 ) -> Result<()> {
     runtime_boundary::validate(command)?;
     command.runtime_requirement().validate()?;
-
-    // The hidden systemd-client test vehicle talks to systemd over D-Bus and
-    // needs no apm config or profile. Dispatch it before `ApmConfig::load`
-    // below so it works on a system with no apm state (mirrors how `main.rs`
-    // early-returns `Completions`/`Serve` before building the NixRunner).
-    if let PackageCommand::TestSystemdClient { op } = command {
-        return test_systemd_client::run(op, printer).await;
-    }
 
     if let PackageCommand::LoadEbpfLsmPolicies { system } = command {
         if !*system {
@@ -3576,7 +3387,7 @@ pub async fn run(
 
     // The on-host config-eval driver needs no apm config or profile: it reads
     // the registry index and host.nix from disk and shells out to stock nix.
-    // Dispatch it before `ApmConfig::load` (mirrors the systemd-client vehicle).
+    // Dispatch it before `ApmConfig::load`.
     if let PackageCommand::Eval {
         host_nix,
         runtime_module,
@@ -3661,9 +3472,7 @@ pub async fn run(
         return result;
     }
 
-    // Apply a converged manifest through the private package runtime.
-    // /etc tree into a per-generation lower. Called by `activate` on the new
-    // path after the configuration fixpoint has converged.
+    // Materialize a converged manifest through the private package runtime.
     if let PackageCommand::Materialize {
         manifest,
         etc_root,
@@ -3707,11 +3516,24 @@ pub async fn run(
         };
     }
 
-    // The activation commit owns generation metadata and invokes the image's
-    // switch script; it intentionally does not load registry/profile config.
-    if let PackageCommand::ActivateConfig {
+    if let PackageCommand::AbilityActivationPreflight { manifest, profile } = command {
+        let manifest_path = manifest.clone();
+        let manifest = config_eval::activation::load_config_manifest(&manifest_path)?;
+        return config_eval::preflight_retained_manifest(
+            &config_eval::activation::ActivateConfigParams {
+                manifest: manifest_path,
+                profile: profile.clone(),
+                ..Default::default()
+            },
+            &manifest,
+        )
+        .map_err(anyhow::Error::new);
+    }
+
+    // Checked activation owns generation metadata and dispatches only through
+    // the providers selected by the authenticated ability plan.
+    if let PackageCommand::AbilityActivate {
         manifest,
-        graph,
         marker_root,
         profile,
         module_abi,
@@ -3721,7 +3543,6 @@ pub async fn run(
         return match config_eval::activation::activate_config(
             &config_eval::activation::ActivateConfigParams {
                 manifest: manifest.clone(),
-                graph: graph.clone(),
                 marker_root: marker_root.clone(),
                 profile: profile.clone(),
                 module_abi: *module_abi,
@@ -3847,64 +3668,6 @@ pub async fn run(
         return result;
     }
 
-    // The graph compiler (`aos-graph-compile.service`) drives systemd
-    // over D-Bus and reads the eval output from /run/aos; it needs no apm
-    // config. Dispatch it before `ApmConfig::load` (like the eval driver).
-    if let PackageCommand::GraphCompile {
-        manifest,
-        graph,
-        run_root,
-    } = command
-    {
-        return graph_compile::run_graph_compile_command(manifest, graph, run_root.as_deref())
-            .await;
-    }
-
-    // The per-package fetch/render subverbs back the template `ExecStart=`s and
-    // run as system services. They own their own exit codes (fetch: 0/1;
-    // render-one: 0/1/2), so they exit directly rather than returning `Err`
-    // (which `main.rs` would flatten to 1) — mirroring the activate split.
-    if let PackageCommand::Fetch {
-        package,
-        manifest,
-        marker_root,
-    } = command
-    {
-        let config = config::ApmConfig::load(ProfileScope::System)?;
-        let json_out = printer.mode() == OutputMode::Json;
-        let code = graph_compile::subverbs::run_fetch(
-            &config,
-            package,
-            manifest,
-            marker_root,
-            json_out,
-            printer,
-        )
-        .await;
-        std::process::exit(code);
-    }
-    if let PackageCommand::RenderOne {
-        package,
-        manifest,
-        marker_root,
-        staging_root,
-    } = command
-    {
-        let config = config::ApmConfig::load(ProfileScope::System)?;
-        let json_out = printer.mode() == OutputMode::Json;
-        let code = graph_compile::subverbs::run_render_one(
-            &config,
-            package,
-            manifest,
-            marker_root,
-            staging_root,
-            json_out,
-            printer,
-        )
-        .await;
-        std::process::exit(code);
-    }
-
     if let PackageCommand::AttestService = command {
         return run_package_attestation_service();
     }
@@ -3991,27 +3754,6 @@ pub async fn run(
         return Ok(());
     }
 
-    // The hidden activate split runs during the activate script while that
-    // script holds the switch lock. These paths talk to systemd over D-Bus,
-    // need no apm config, and must return their own 0/1/2 exit codes (which
-    // `main.rs` would otherwise flatten to 1).
-    if let PackageCommand::ActivatePreEtcSwap {
-        generation,
-        candidate_etc,
-    } = command
-    {
-        let code =
-            sysroot::activate_pre_etc_swap(*generation, candidate_etc, dry_run, printer).await;
-        std::process::exit(code);
-    }
-    if let PackageCommand::ActivatePostEtcSwap { plan } = command {
-        let code = sysroot::activate_post_etc_swap(plan, printer).await;
-        std::process::exit(code);
-    }
-    if let PackageCommand::ActivateRestoreRoutedSources { plan, candidate } = command {
-        let code = sysroot::activate_restore_routed_sources(plan, *candidate, printer).await;
-        std::process::exit(code);
-    }
     if let PackageCommand::RecoverCredentialTransactions = command {
         return credential_artifact::recover_credential_transactions(
             &credential_artifact::aos_root_path(),
@@ -4349,19 +4091,6 @@ pub async fn run(
         PackageCommand::Registry { command, .. } => {
             run_apm_registry(&config, command, printer).await
         }
-        // Dispatched by the early-return above, before `ApmConfig::load`.
-        PackageCommand::TestSystemdClient { .. } => {
-            unreachable!("TestSystemdClient is handled before ApmConfig::load")
-        }
-        PackageCommand::ActivatePreEtcSwap { .. } => {
-            unreachable!("ActivatePreEtcSwap is handled before ApmConfig::load")
-        }
-        PackageCommand::ActivatePostEtcSwap { .. } => {
-            unreachable!("ActivatePostEtcSwap is handled before ApmConfig::load")
-        }
-        PackageCommand::ActivateRestoreRoutedSources { .. } => {
-            unreachable!("ActivateRestoreRoutedSources is handled before ApmConfig::load")
-        }
         PackageCommand::RecoverCredentialTransactions => {
             unreachable!("RecoverCredentialTransactions is handled before ApmConfig::load")
         }
@@ -4380,8 +4109,11 @@ pub async fn run(
         PackageCommand::Materialize { .. } => {
             unreachable!("Materialize is handled before ApmConfig::load")
         }
-        PackageCommand::ActivateConfig { .. } => {
-            unreachable!("ActivateConfig is handled before ApmConfig::load")
+        PackageCommand::AbilityActivationPreflight { .. } => {
+            unreachable!("AbilityActivationPreflight is handled before ApmConfig::load")
+        }
+        PackageCommand::AbilityActivate { .. } => {
+            unreachable!("AbilityActivate is handled before ApmConfig::load")
         }
         PackageCommand::Switch { .. } => {
             unreachable!("Switch is handled before ApmConfig::load")
@@ -4397,9 +4129,6 @@ pub async fn run(
         }
         PackageCommand::Schema { .. } => {
             unreachable!("Schema is handled before ApmConfig::load")
-        }
-        PackageCommand::GraphCompile { .. } => {
-            unreachable!("GraphCompile is handled before ApmConfig::load")
         }
         PackageCommand::AbilityPlanBuildStage { .. } => {
             unreachable!("AbilityPlanBuildStage is handled before ApmConfig::load")
@@ -4418,12 +4147,6 @@ pub async fn run(
         }
         PackageCommand::AttestService => {
             unreachable!("AttestService is handled before ApmConfig::load")
-        }
-        PackageCommand::Fetch { .. } => {
-            unreachable!("Fetch is handled before ApmConfig::load")
-        }
-        PackageCommand::RenderOne { .. } => {
-            unreachable!("RenderOne is handled before ApmConfig::load")
         }
     }
 }
@@ -4920,7 +4643,7 @@ fn hash_rederived_manifest(path: &Path) -> Result<String> {
         &fs::read(path).with_context(|| format!("reading {}", path.display()))?,
     )
     .with_context(|| format!("parsing {}", path.display()))?;
-    Ok(graph_compile::reproject::hash_cjson(&value))
+    canonical_json_digest(&value)
 }
 
 pub(crate) fn verify_local_boot_commit(
@@ -5147,8 +4870,7 @@ fn verify_generation_release_snapshot(
             .unwrap_or_default()
             .cmp(right[0].as_str().unwrap_or_default())
     });
-    let realization =
-        graph_compile::reproject::hash_cjson(&serde_json::Value::Array(realization_members));
+    let realization = canonical_json_digest(&serde_json::Value::Array(realization_members))?;
     Ok((
         roster,
         revoked,
@@ -5269,9 +4991,9 @@ fn signed_store_subset_hash(repo: &Path, commit: &str, root: &str) -> Result<Str
         pending.extend(entry.dep_ias());
         members.insert(ia, registry::store::serialize_entry(&entry));
     }
-    Ok(graph_compile::reproject::hash_cjson(
+    canonical_json_digest(
         &serde_json::to_value(members).context("serializing signed store subset")?,
-    ))
+    )
 }
 
 fn run_package_attestation_catalog(

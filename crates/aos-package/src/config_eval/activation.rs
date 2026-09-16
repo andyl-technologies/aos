@@ -1,17 +1,13 @@
 //! Transactional activation of an evaluated host configuration.
 //!
 //! This module is the commit half of the on-host configuration pipeline.
-//! Evaluation and package rendering are deliberately side-effect free; once the soft
-//! fetch/render wing settles, [`activate_config`] re-projects the manifest onto
-//! the packages that actually materialized, creates or reuses a
-//! content-addressed configuration generation, invokes the image's atomic
-//! `activate` script, and only then publishes the generation pointer.
+//! Evaluation is side-effect free. Activation authenticates the checked
+//! ability plan, retains its exact manifest as a content-addressed generation,
+//! and lets the selected provider handlers converge the requested resources.
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::{error::Error, fmt};
 
 use anyhow::{Context, Result, bail};
@@ -20,14 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::materialize::ConfigManifest;
-use crate::graph_compile::ConfigGraph;
-use crate::graph_compile::reproject::{
-    manifest_packages, materialized_subset, merge_staged_projection, reproject_manifest,
-};
 use crate::store::create_config_gc_roots;
 use crate::sysroot::{
-    clear_activation_intent_pub, commit_current_generation_pub, recover_generation_state_pub,
-    save_generation_state_pub, write_activation_intent_pub,
+    commit_current_generation_pub, recover_generation_state_pub, save_generation_state_pub,
 };
 use crate::types::{ConfigGeneration, ImageGeneration, ProfileScope};
 
@@ -161,10 +152,7 @@ pub(crate) fn required_native_recovery_generations(
         {
             bail!("structured recovery record is incomplete");
         }
-        let Some(prior) = record
-            .native_ability_prior_generation
-            .map(NonZeroU32::get)
-        else {
+        let Some(prior) = record.native_ability_prior_generation.map(NonZeroU32::get) else {
             break;
         };
         if prior == generation {
@@ -234,9 +222,7 @@ fn manifest_has_structured_activation(path: &Path) -> Result<bool> {
 pub struct ActivateConfigParams {
     /// Evaluator-produced manifest; retained unchanged as the source intent.
     pub manifest: PathBuf,
-    /// Evaluator-produced dependency graph. Absence means independent packages.
-    pub graph: PathBuf,
-    /// Root containing `fetch/` and `render/` completion markers.
+    /// Root containing durable activation evidence.
     pub marker_root: PathBuf,
     /// System-generation profile root.
     pub profile: PathBuf,
@@ -260,7 +246,6 @@ impl Default for ActivateConfigParams {
     fn default() -> Self {
         Self {
             manifest: PathBuf::from("/run/aos/manifest.json"),
-            graph: PathBuf::from("/run/aos/graph.json"),
             marker_root: PathBuf::from("/run/aos"),
             profile: ProfileScope::System.profile_path(),
             module_abi: 1,
@@ -273,7 +258,7 @@ impl Default for ActivateConfigParams {
     }
 }
 
-/// A classified failure from the atomic activation script.
+/// A classified failure from checked ability activation.
 #[derive(Debug)]
 pub struct ActivationFailure {
     exit_code: i32,
@@ -307,9 +292,7 @@ impl Error for ActivationFailure {}
 ///
 /// A byte-identical manifest reuses its existing generation. A new manifest
 /// creates `gen-N`, pins its runtime and source closures, and records the exact
-/// manifest and degraded drop set before invoking `<toplevel>/activate N`.
-/// The profile pointer is committed only after activation returns an exit code
-/// whose contract says the `/etc` swap stands (`0`, `5`, or `6`).
+/// checked manifest before the selected provider handlers run.
 ///
 /// # Errors
 ///
@@ -432,28 +415,119 @@ pub(crate) fn commit_structured_config_while_locked(
     transaction: &aos_ability_model::TransactionId,
     prior_generation: Option<u32>,
 ) -> Result<u32> {
-    let mut locked = params.clone();
-    locked.switch_lock_held = true;
-    activate_config_with_reconciliation_mode(
-        &locked,
+    require_native_transaction_context(manifest, true)?;
+
+    let running_image = params
+        .running_image
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(crate::sysroot::running_image_generation)?;
+    if manifest.module_abi != params.module_abi || manifest.module_abi != running_image.module_abi {
+        bail!(
+            "manifest module_abi {} does not match running image ABI {}",
+            manifest.module_abi,
+            params.module_abi
+        );
+    }
+    verify_manifest_store_paths_realized(manifest)?;
+
+    let manifest_value =
+        serde_json::to_value(manifest).context("serializing checked configuration manifest")?;
+    let generation_id = crate::canonical_json_digest(&manifest_value)?;
+    let drop_record = serde_json::json!({
+        "projected": false,
+        "source_manifest_hash": generation_id,
+        "dropped": [],
+    });
+
+    std::fs::create_dir_all(&params.profile)
+        .with_context(|| format!("creating {}", params.profile.display()))?;
+    let mut state = recover_generation_state_pub(&params.profile)?;
+    if manifest.inputs.runtime_modules.is_some() {
+        let expected = manifest
+            .inputs
+            .expected_current_generation
+            .context("runtime-module manifest has no expected current generation")?;
+        if state.current != expected {
+            bail!(
+                "stale configuration candidate: evaluated from generation {expected}, but generation {} is current",
+                state.current
+            );
+        }
+    }
+
+    let image_parent = running_image.number;
+    let existing = state.generations.iter().find(|generation| {
+        generation.manifest_hash == generation_id
+            && generation.module_abi_pinned == params.module_abi
+            && generation.image_gen_parent == image_parent
+            && params
+                .profile
+                .join(format!("gen-{}", generation.number))
+                .is_dir()
+    });
+    let number = match existing {
+        Some(generation) => {
+            validate_retained_manifest(
+                &params.profile.join(format!("gen-{}", generation.number)),
+                &generation_id,
+            )?;
+            generation.number
+        }
+        None => {
+            let number = state.next;
+            prepare_generation(
+                params,
+                &manifest_value,
+                &drop_record,
+                &generation_id,
+                &running_image,
+                number,
+            )?;
+            let record = config_generation_record(
+                &running_image,
+                number,
+                params.module_abi,
+                &generation_id,
+                manifest,
+            )?;
+            state.next = number.saturating_add(1);
+            state.generations.push(record);
+            if params.image_profile.join("state.json").is_file() {
+                let images =
+                    crate::sysroot::load_image_generation_state_pub(&params.image_profile)?;
+                crate::store::reconcile_image_gc_roots(&params.image_profile, &images, &state)?;
+            }
+            save_generation_state_pub(&params.profile, &state)?;
+            number
+        }
+    };
+
+    let transaction_manifest = crate::canonical_json_digest(&manifest_value)?;
+    publish_activation_record(
+        params,
+        &generation_id,
+        &transaction_manifest,
+        number,
+        transaction,
+        prior_generation,
+    )?;
+    crate::attestation::persist_generation_attestation(
+        &params.profile.join(format!("gen-{number}")),
+        &generation_id,
+        &generation_id,
+        manifest,
+        &running_image,
+        params.require_attestation_quote,
         true,
-        true,
-        true,
-        run_activation_with_credential_barrier,
-        |reconciliation, plan| {
-            reconciliation
-                .publish_with(|units| {
-                    if units.is_empty() {
-                        Ok(())
-                    } else {
-                        crate::sysroot::augment_reconcile_plan_with_credential_units(plan, units)
-                    }
-                })
-                .map(|_| ())
-        },
-        Some(manifest),
-        Some((transaction, prior_generation)),
-    )
+    )?;
+    commit_current_generation_pub(&params.profile, &mut state, number)?;
+    publish_runtime_activation_marker(params, number)?;
+
+    Err(ActivationFailure::degraded(format!(
+        "configuration generation {number} is committed pending native ability convergence"
+    ))
+    .into())
 }
 
 /// Requires structured manifests to carry an authenticated native transaction context.
@@ -474,602 +548,23 @@ pub(crate) fn require_native_transaction_context(
     Ok(())
 }
 
-const CREDENTIAL_STAGED_VIEW_READY: &str = "AOS_CREDENTIAL_STAGED_VIEW_READY ";
-const CREDENTIAL_STAGED_VIEW_CONTINUE: &[u8] = b"AOS_CREDENTIAL_STAGED_VIEW_CONTINUE\n";
-const CREDENTIAL_BARRIER_READY: &str = "AOS_CREDENTIAL_BARRIER_READY ";
-const CREDENTIAL_BARRIER_CONTINUE: &[u8] = b"AOS_CREDENTIAL_BARRIER_CONTINUE\n";
-
-/// A credential checkpoint emitted by the activation script.
-pub(crate) enum CredentialBarrier<'a> {
-    /// The fully composed candidate `/etc`, before any live unit is stopped.
-    StagedView(&'a Path),
-    /// The post-swap daemon plan, immediately before credential publication.
-    Publish(&'a Path),
-}
-
-/// Runs an activation script and services its credential validation and
-/// publication barriers.
-///
-/// # Errors
-///
-/// Returns an error if the script cannot be started, barrier communication or
-/// credential publication fails, or a successful script omits the barrier.
-pub(crate) fn run_activation_with_credential_barrier(
-    activate: &Path,
-    number: u32,
-    nonce: &str,
-    barrier: &mut dyn FnMut(CredentialBarrier<'_>) -> Result<()>,
-) -> Result<Option<i32>> {
-    let mut child = Command::new(activate)
-        .arg(number.to_string())
-        .env("AOS_SWITCH_LOCK_HELD", "1")
-        .env("AOS_ACTIVATION_NONCE", nonce)
-        .env("AOS_CREDENTIAL_BARRIER", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .with_context(|| format!("running {}", activate.display()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("activation stdout was not piped")?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("activation stdin was not piped")?;
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    let mut validated_staged_view = false;
-    let mut crossed_barrier = false;
-    loop {
-        line.clear();
-        let read = match reader.read_line(&mut line) {
-            Ok(read) => read,
-            Err(error) => {
-                drop(stdin);
-                drop(reader);
-                let _ = child.wait();
-                return Err(ActivationFailure {
-                    exit_code: 4,
-                    message: format!(
-                        "activation barrier communication failed: {error}; /etc state is indeterminate and rescue mode is required"
-                    ),
-                }
-                .into());
-            }
-        };
-        if read == 0 {
-            break;
-        }
-        if let Some(candidate) = line.trim_end().strip_prefix(CREDENTIAL_STAGED_VIEW_READY) {
-            if validated_staged_view || crossed_barrier || candidate.is_empty() {
-                drop(stdin);
-                drop(reader);
-                let _ = child.wait();
-                return Err(ActivationFailure {
-                    exit_code: 2,
-                    message:
-                        "activation emitted an invalid pre-swap credential staged-view barrier"
-                            .to_string(),
-                }
-                .into());
-            }
-            if let Err(error) = barrier(CredentialBarrier::StagedView(Path::new(candidate))) {
-                drop(stdin);
-                drop(reader);
-                let _ = child.wait();
-                return Err(error)
-                    .context("validating credentials in the staged configuration view");
-            }
-            if let Err(error) = stdin
-                .write_all(CREDENTIAL_STAGED_VIEW_CONTINUE)
-                .and_then(|()| stdin.flush())
-            {
-                drop(stdin);
-                drop(reader);
-                let _ = child.wait();
-                return Err(error).context("acknowledging credential staged-view validation");
-            }
-            validated_staged_view = true;
-        } else if let Some(plan) = line.trim_end().strip_prefix(CREDENTIAL_BARRIER_READY) {
-            if !validated_staged_view || crossed_barrier || plan.is_empty() {
-                drop(stdin);
-                drop(reader);
-                let _ = child.wait();
-                return Err(ActivationFailure {
-                    exit_code: 4,
-                    message: "activation emitted an invalid post-swap credential barrier; rescue mode is required".to_string(),
-                }
-                .into());
-            }
-            if let Err(error) = barrier(CredentialBarrier::Publish(Path::new(plan))) {
-                drop(stdin);
-                drop(reader);
-                let _ = child.wait();
-                return Err(error).context(
-                    "configuration activation swapped /etc but credential publication failed; rescue mode is required",
-                );
-            }
-            if let Err(error) = stdin
-                .write_all(CREDENTIAL_BARRIER_CONTINUE)
-                .and_then(|()| stdin.flush())
-            {
-                drop(stdin);
-                drop(reader);
-                let _ = child.wait();
-                return Err(ActivationFailure {
-                    exit_code: 4,
-                    message: format!(
-                        "activation credential acknowledgement failed: {error}; rescue mode is required"
-                    ),
-                }
-                .into());
-            }
-            crossed_barrier = true;
-        } else {
-            if let Err(error) = std::io::stdout().write_all(line.as_bytes()) {
-                drop(stdin);
-                drop(reader);
-                let _ = child.wait();
-                return Err(ActivationFailure {
-                    exit_code: 4,
-                    message: format!(
-                        "forwarding activation output failed: {error}; /etc state is indeterminate and rescue mode is required"
-                    ),
-                }
-                .into());
-            }
-        }
-    }
-    drop(stdin);
-    let status = child.wait().map_err(|error| ActivationFailure {
-        exit_code: 4,
-        message: format!(
-            "waiting for activation after barrier communication failed: {error}; rescue mode is required"
-        ),
-    })?;
-    if matches!(status.code(), Some(0 | 5 | 6)) && (!validated_staged_view || !crossed_barrier) {
-        return Err(ActivationFailure {
-            exit_code: 4,
-            message: "activation succeeded without crossing the credential publication barrier; rescue mode is required".to_string(),
-        }
-        .into());
-    }
-    Ok(status.code())
-}
-
-#[cfg(test)]
-fn activate_config_with<F>(
-    params: &ActivateConfigParams,
-    verify_realized_paths: bool,
-    resolve_credentials: bool,
-    detect_tpm: bool,
-    run_activate: F,
-) -> Result<u32>
-where
-    F: FnOnce(
-        &Path,
-        u32,
-        &str,
-        &mut dyn FnMut(CredentialBarrier<'_>) -> Result<()>,
-    ) -> Result<Option<i32>>,
-{
-    activate_config_with_reconciliation(
-        params,
-        verify_realized_paths,
-        resolve_credentials,
-        detect_tpm,
-        run_activate,
-        |reconciliation, plan| {
-            reconciliation
-                .publish_with(|units| {
-                    if units.is_empty() {
-                        Ok(())
-                    } else {
-                        crate::sysroot::augment_reconcile_plan_with_credential_units(plan, units)
-                    }
-                })
-                .map(|_| ())
-        },
-    )
-}
-
-#[cfg(test)]
-fn activate_config_with_reconciliation<F, G>(
-    params: &ActivateConfigParams,
-    verify_realized_paths: bool,
-    resolve_credentials: bool,
-    detect_tpm: bool,
-    run_activate: F,
-    apply_credentials: G,
-) -> Result<u32>
-where
-    F: FnOnce(
-        &Path,
-        u32,
-        &str,
-        &mut dyn FnMut(CredentialBarrier<'_>) -> Result<()>,
-    ) -> Result<Option<i32>>,
-    G: FnOnce(crate::credential_artifact::CredentialReconciliation, &Path) -> Result<()>,
-{
-    activate_config_with_reconciliation_mode(
-        params,
-        verify_realized_paths,
-        resolve_credentials,
-        detect_tpm,
-        run_activate,
-        apply_credentials,
-        None,
-        None,
-    )
-}
-
-fn activate_config_with_reconciliation_mode<F, G>(
-    params: &ActivateConfigParams,
-    verify_realized_paths: bool,
-    resolve_credentials: bool,
-    detect_tpm: bool,
-    run_activate: F,
-    apply_credentials: G,
-    provided_manifest: Option<&ConfigManifest>,
-    structured_transaction: Option<(&aos_ability_model::TransactionId, Option<u32>)>,
-) -> Result<u32>
-where
-    F: FnOnce(
-        &Path,
-        u32,
-        &str,
-        &mut dyn FnMut(CredentialBarrier<'_>) -> Result<()>,
-    ) -> Result<Option<i32>>,
-    G: FnOnce(crate::credential_artifact::CredentialReconciliation, &Path) -> Result<()>,
-{
-    let _switch_lock = if params.switch_lock_held {
-        None
-    } else {
-        Some(acquire_switch_lock(&params.switch_lock)?)
-    };
-    let running_image = params
-        .running_image
-        .clone()
-        .map(Ok)
-        .unwrap_or_else(crate::sysroot::running_image_generation)?;
-    let manifest = match provided_manifest {
-        Some(manifest) => manifest.clone(),
-        None => load_config_manifest(&params.manifest)?,
-    };
-    require_native_transaction_context(&manifest, structured_transaction.is_some())?;
-    if manifest.module_abi != params.module_abi || manifest.module_abi != running_image.module_abi {
-        bail!(
-            "manifest module_abi {} does not match running image ABI {}",
-            manifest.module_abi,
-            params.module_abi
-        );
-    }
-    let graph = if params.graph.exists() {
-        read_graph(&params.graph)?
-    } else {
-        ConfigGraph {
-            edges: manifest.graph.edges.clone(),
-        }
-    };
-    if graph.edges != manifest.graph.edges {
-        bail!(
-            "{} disagrees with the dependency graph embedded in {}",
-            params.graph.display(),
-            params.manifest.display()
-        );
-    }
-    let full = serde_json::to_value(&manifest).context("serializing validated config manifest")?;
-    let packages = manifest_packages(&full);
-    let (fetched, rendered) = materialized_subset(&packages, &params.marker_root);
-    let mut projection = reproject_manifest(&full, &graph, &fetched, &rendered)?;
-    merge_staged_projection(
-        &manifest,
-        &params.marker_root.join("staging"),
-        &mut projection,
-    )?;
-    let projected_manifest: ConfigManifest = serde_json::from_value(projection.manifest.clone())
-        .context("parsing projected configuration manifest")?;
-    projected_manifest
-        .validate()
-        .context("validating projected configuration manifest")?;
-    if verify_realized_paths {
-        // A soft-failed package is deliberately absent from the local store.
-        // Requiring every path from the source intent here would turn the
-        // package wing's bounded fetch failure into a hard activation failure
-        // and make degraded re-projection impossible. The source manifest was
-        // structurally validated above; realization is required only for the
-        // dependency-closed manifest that will actually be committed.
-        verify_manifest_store_paths_realized(&projected_manifest)?;
-    }
-    let credential_reconciliation = if resolve_credentials {
-        let config = crate::config::ApmConfig::load(ProfileScope::System)
-            .context("loading system credential encryption settings")?;
-        crate::credential_artifact::reconcile_secret_refs(
-            &config.settings,
-            &crate::credential_artifact::aos_root_path(),
-            &projected_manifest.credentials,
-        )
-        .context("resolving configuration credential references")?
-    } else {
-        crate::credential_artifact::CredentialReconciliation::default()
-    };
-
-    // Keep the evaluator output immutable. The exact projection consumed by
-    // the activation script lives in gen-N/manifest.json, so an activation
-    // failure cannot alter either the source intent or the active generation.
-    if projection.projected {
-        let source = params.marker_root.join("source-manifest.json");
-        write_json_atomic(&source, &full)?;
-    }
-
-    std::fs::create_dir_all(&params.profile)
-        .with_context(|| format!("creating {}", params.profile.display()))?;
-    let mut state = recover_generation_state_pub(&params.profile)?;
-    if manifest.inputs.runtime_modules.is_some() {
-        let expected = manifest
-            .inputs
-            .expected_current_generation
-            .context("runtime-module manifest has no expected current generation")?;
-        if state.current != expected {
-            bail!(
-                "stale configuration candidate: evaluated from generation {expected}, but generation {} is current",
-                state.current
-            );
-        }
-    }
-    let image_parent = running_image.number;
-
-    let existing = state.generations.iter().find(|generation| {
-        generation.manifest_hash == projection.generation_id
-            && generation.module_abi_pinned == params.module_abi
-            && generation.image_gen_parent == image_parent
-            && params
-                .profile
-                .join(format!("gen-{}", generation.number))
-                .is_dir()
-    });
-    let (number, newly_prepared) = match existing {
-        Some(generation) => {
-            validate_retained_manifest(
-                &params.profile.join(format!("gen-{}", generation.number)),
-                &projection.generation_id,
-            )?;
-            (generation.number, false)
-        }
-        None => {
-            let number = state.next;
-            prepare_generation(
-                params,
-                &projection.manifest,
-                &projection.drop_record(),
-                &projection.generation_id,
-                &running_image,
-                number,
-            )?;
-            let record = config_generation_record(
-                &running_image,
-                number,
-                params.module_abi,
-                &projection.generation_id,
-                &projected_manifest,
-            )?;
-            state.next = number.saturating_add(1);
-            state.generations.push(record);
-            if params.image_profile.join("state.json").is_file() {
-                let images =
-                    crate::sysroot::load_image_generation_state_pub(&params.image_profile)?;
-                crate::store::reconcile_image_gc_roots(&params.image_profile, &images, &state)?;
-            }
-            // Make the prepared generation discoverable for crash recovery;
-            // `current` remains unchanged until the swap succeeds.
-            save_generation_state_pub(&params.profile, &state)?;
-            (number, true)
-        }
-    };
-
-    if let Some((transaction, prior_generation)) = structured_transaction {
-        // Select recovery identity before the activation script can swap /etc.
-        // A projected candidate is already known to be degraded, while a
-        // complete candidate remains pending until its native effects settle.
-        publish_activation_record(
-            params,
-            &projection,
-            number,
-            6,
-            !projection.projected,
-            Some(transaction),
-            prior_generation,
-            false,
-        )?;
-    }
-
-    let activate = Path::new(&running_image.toplevel).join("activate");
-    let nonce = write_activation_intent_pub(&params.profile, &state, number)?;
-    let mut credential_reconciliation = Some(credential_reconciliation);
-    let mut apply_credentials = Some(apply_credentials);
-    let mut barrier = |event: CredentialBarrier<'_>| match event {
-        CredentialBarrier::StagedView(candidate_etc) => credential_reconciliation
-            .as_mut()
-            .context("activation validated credentials after publication")?
-            .validate_staged_view(candidate_etc),
-        CredentialBarrier::Publish(plan) => {
-            let reconciliation = credential_reconciliation
-                .take()
-                .context("activation crossed the credential publication barrier more than once")?;
-            let apply = apply_credentials
-                .take()
-                .context("activation crossed the credential publication barrier more than once")?;
-            apply(reconciliation, plan).map_err(|error| {
-                ActivationFailure {
-                    exit_code: 4,
-                    message: format!(
-                        "configuration activation swapped /etc but credential publication failed: {error:#}; rescue mode is required"
-                    ),
-                }
-                .into()
-            })
-        }
-    };
-    let status = run_activate(&activate, number, &nonce, &mut barrier)?;
-
-    match status {
-        Some(activation_exit @ (0 | 5 | 6)) => {
-            let generation_dir = params.profile.join(format!("gen-{number}"));
-            crate::attestation::persist_generation_attestation(
-                &generation_dir,
-                &projection.generation_id,
-                &projection.generation_id,
-                &serde_json::from_value(projection.manifest.clone())
-                    .context("parsing projected manifest for generation attestation")?,
-                &running_image,
-                params.require_attestation_quote,
-                detect_tpm,
-            )
-            .map_err(|error| ActivationFailure {
-                exit_code: 4,
-                message: format!(
-                    "configuration activation swapped /etc but generation attestation failed: {error:#}; rescue mode is required"
-                ),
-            })?;
-            if credential_reconciliation.is_some() {
-                return Err(ActivationFailure {
-                    exit_code: 4,
-                    message: "configuration activation crossed /etc swap without credential publication; rescue mode is required".to_string(),
-                }
-                .into());
-            }
-            let native_pending = structured_transaction.is_some()
-                && !projection.projected
-                && matches!(activation_exit, 0 | 5);
-            let recorded_exit = if projection.projected || native_pending {
-                6
-            } else {
-                activation_exit
-            };
-            if structured_transaction.is_some() && !native_pending && !projection.projected {
-                let native_transaction = structured_transaction.map(|(transaction, _)| transaction);
-                let native_prior_generation =
-                    structured_transaction.and_then(|(_, prior_generation)| prior_generation);
-                publish_activation_record(
-                    params,
-                    &projection,
-                    number,
-                    recorded_exit,
-                    false,
-                    native_transaction,
-                    native_prior_generation,
-                    false,
-                )?;
-            }
-            commit_current_generation_pub(&params.profile, &mut state, number).map_err(|error| {
-                ActivationFailure {
-                    exit_code: 4,
-                    message: format!(
-                        "configuration activation swapped /etc but publishing the current generation failed: {error:#}; rescue mode is required"
-                    ),
-                }
-            })?;
-            if structured_transaction.is_some() {
-                publish_runtime_activation_marker(params, number).map_err(|error| {
-                    ActivationFailure {
-                        exit_code: 4,
-                        message: format!(
-                            "configuration activation committed generation {number} but its runtime activation marker failed: {error:#}; retry is required"
-                        ),
-                    }
-                })?;
-            } else {
-                publish_activation_record(
-                    params,
-                    &projection,
-                    number,
-                    recorded_exit,
-                    false,
-                    None,
-                    None,
-                    true,
-                )
-                .map_err(|error| ActivationFailure {
-                    exit_code: 4,
-                    message: format!(
-                        "configuration activation committed generation {number} but its activation record failed: {error:#}; rescue mode is required"
-                    ),
-                })?;
-            }
-            if recorded_exit == 6 {
-                return Err(ActivationFailure {
-                    exit_code: 6,
-                    message: format!(
-                        "configuration generation {number} was committed in degraded state"
-                    ),
-                }
-                .into());
-            }
-            Ok(number)
-        }
-        Some(code @ 1..=3) => {
-            clear_activation_intent_pub(&params.profile)?;
-            if newly_prepared {
-                // Preserve state for diagnosis, but never publish the pointer;
-                // the activation contract guarantees the old `/etc` is live.
-                eprintln!(
-                    "config activation: prepared gen-{number} retained after pre-commit failure"
-                );
-            }
-            Err(ActivationFailure {
-                exit_code: code,
-                message: format!(
-                    "configuration activation failed before commit (exit {code}); the previous generation remains current"
-                ),
-            }
-            .into())
-        }
-        Some(4) | None => Err(ActivationFailure {
-            exit_code: 4,
-            message: format!(
-                "configuration activation stopped with an indeterminate /etc swap (exit {status:?}); rescue mode is required"
-            ),
-        }
-        .into()),
-        Some(code) => {
-            bail!("configuration activation returned unsupported exit code {code}")
-        }
-    }
-}
-
 fn publish_activation_record(
     params: &ActivateConfigParams,
-    projection: &crate::graph_compile::reproject::Reprojection,
+    generation_id: &str,
+    transaction_manifest: &str,
     generation: u32,
-    activation_exit: i32,
-    native_pending: bool,
-    native_transaction: Option<&aos_ability_model::TransactionId>,
+    native_transaction: &aos_ability_model::TransactionId,
     native_prior_generation: Option<u32>,
-    publish_runtime_marker: bool,
 ) -> Result<()> {
-    let transaction = crate::graph_compile::read_transaction(&params.marker_root)?
-        .context("graph transaction state disappeared before activation commit")?;
     let record = ActivationRecord {
         schema: "aos.config-activation/v1",
         generation,
-        generation_id: &projection.generation_id,
-        transaction_manifest: &transaction.manifest,
-        dropped_packages: projection
-            .dropped
-            .iter()
-            .map(|record| record.package.as_str())
-            .collect(),
-        status: if native_pending {
-            "native-pending"
-        } else if activation_exit == 6 || projection.projected {
-            "degraded"
-        } else {
-            "complete"
-        },
-        activation_exit,
-        native_ability_transaction: native_transaction.map(|transaction| transaction.0.as_str()),
+        generation_id,
+        transaction_manifest,
+        dropped_packages: Vec::new(),
+        status: "native-pending",
+        activation_exit: 6,
+        native_ability_transaction: Some(native_transaction.0.as_str()),
         native_ability_prior_generation: native_prior_generation,
     };
     let value = serde_json::to_value(record).context("serializing activation record")?;
@@ -1078,9 +573,6 @@ fn publish_activation_record(
         .join(format!("gen-{generation}"))
         .join(ACTIVATION_RECORD);
     write_json_atomic(&generation_path, &value)?;
-    if publish_runtime_marker {
-        write_json_atomic(&params.marker_root.join(ACTIVATION_RECORD), &value)?;
-    }
     Ok(())
 }
 
@@ -1162,15 +654,6 @@ fn acquire_switch_lock(path: &Path) -> Result<SwitchLockGuard> {
 /// Returns an error when the lock cannot be created or another switch owns it.
 pub(crate) fn acquire_switch_lock_pub(path: &Path) -> Result<SwitchLockGuard> {
     acquire_switch_lock(path)
-}
-
-fn read_graph(path: &Path) -> Result<ConfigGraph> {
-    if !path.exists() {
-        return Ok(ConfigGraph::default());
-    }
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    ConfigGraph::from_json(&text)
 }
 
 fn prepare_generation(
@@ -1255,7 +738,7 @@ fn validate_retained_manifest(generation_dir: &Path, expected_hash: &str) -> Res
         .validate()
         .with_context(|| format!("validating retained manifest {}", path.display()))?;
     let value = serde_json::to_value(&manifest)?;
-    let actual = crate::graph_compile::reproject::hash_cjson(&value);
+    let actual = crate::canonical_json_digest(&value)?;
     if actual != expected_hash {
         bail!(
             "retained manifest {} hash mismatch: recorded {expected_hash}, actual {actual}",
@@ -1344,15 +827,10 @@ fn sync_tree_directories(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::os::unix::fs::MetadataExt as _;
-
     use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
-    use crate::graph_compile::reproject::hash_cjson;
-    use crate::sysroot::load_generation_state_pub;
     use crate::types::ConfigGenerationState;
 
     #[test]
@@ -1435,7 +913,6 @@ mod tests {
         let toplevel = root.path().join("toplevel");
         std::fs::create_dir_all(&profile).unwrap();
         std::fs::create_dir_all(&toplevel).unwrap();
-        std::fs::write(toplevel.join("activate"), b"test").unwrap();
         let current = ConfigGeneration {
             number: 1,
             created_at: "1970-01-01T00:00:00Z".to_string(),
@@ -1554,14 +1031,8 @@ mod tests {
         });
         let manifest_path = root.path().join("manifest.json");
         write_json_atomic(&manifest_path, &manifest).unwrap();
-        write_json_atomic(
-            &root.path().join("graph.json"),
-            &json!({"edges": {"web": ["firewall"], "firewall": []}}),
-        )
-        .unwrap();
         let params = ActivateConfigParams {
             manifest: manifest_path,
-            graph: root.path().join("graph.json"),
             marker_root: root.path().join("markers"),
             profile,
             module_abi: 7,
@@ -1593,52 +1064,6 @@ mod tests {
         };
         (root, params, manifest)
     }
-
-    fn mark(params: &ActivateConfigParams, package: &str) {
-        let manifest: ConfigManifest =
-            serde_json::from_slice(&std::fs::read(&params.manifest).unwrap()).unwrap();
-        let mut transaction = crate::graph_compile::graph_transaction(&manifest).unwrap();
-        transaction.completed = true;
-        std::fs::create_dir_all(&params.marker_root).unwrap();
-        std::fs::write(
-            crate::graph_compile::transaction_state_path(&params.marker_root),
-            serde_json::to_vec(&transaction).unwrap(),
-        )
-        .unwrap();
-        let pin = transaction.packages.get(package).unwrap();
-        let marker = format!("{} {pin}\n", transaction.manifest);
-        for wing in ["fetch", "render"] {
-            let dir = params.marker_root.join(wing);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join(format!("{package}.ok")), &marker).unwrap();
-        }
-        let stage_dir = crate::graph_compile::subverbs::staging_package_dir(
-            &params.marker_root.join("staging"),
-            &manifest,
-            package,
-        )
-        .unwrap();
-        let stage = json!({
-            "schema": "aos.render-stage/v1",
-            "manifest": transaction.manifest,
-            "package_pin": pin,
-            "package": package,
-            "artifacts": [],
-            "credentials": manifest
-                .credentials
-                .get(package)
-                .cloned()
-                .unwrap_or(Value::Null),
-        });
-        crate::config_eval::materialize::write_bytes_beneath(
-            &stage_dir,
-            "stage.json",
-            &serde_json::to_vec(&stage).unwrap(),
-            "0600",
-        )
-        .unwrap();
-    }
-
     #[test]
     fn production_activation_requires_a_checked_plan_before_prepare() {
         let (_root, params, _manifest) = setup();
@@ -1650,617 +1075,5 @@ mod tests {
             "{error}"
         );
         assert!(!params.profile.join("gen-2").exists());
-    }
-
-    #[test]
-    fn internal_commit_rejects_checked_plan_without_transaction() {
-        let (_root, params, mut manifest) = setup();
-        manifest["schema"] = json!(ConfigManifest::SCHEMA);
-        manifest["inputs"]["expected_current_generation"] = json!(1);
-        manifest["inputs"]["ability_activation"] = json!({
-            "schema": "aos.contract.activation-input/v1",
-            "required_features": [
-                "abilities-v1",
-                "ability-effects-v1",
-                "native-platform-policy-v1",
-                "native-resource-map-v1"
-            ],
-            "desired_state": {
-                "store_path": "/nix/store/99999999999999999999999999999999-desired",
-                "nar_hash": format!("sha256:{}", "0".repeat(52)),
-                "nar_size": 1,
-                "document": "desired.json",
-                "document_sha256": format!("sha256:{}", "a".repeat(64)),
-                "document_size": 1
-            },
-            "authenticated_policy_set": {
-                "store_path": "/nix/store/88888888888888888888888888888888-policy",
-                "nar_hash": format!("sha256:{}", "0".repeat(52)),
-                "nar_size": 1,
-                "document": "policy.json",
-                "document_sha256": format!("sha256:{}", "b".repeat(64)),
-                "document_size": 1
-            },
-            "fixed_point": {
-                "bindings": {},
-                "resolvedResources": {},
-                "bindingPlan": format!("sha256:{}", "c".repeat(64)),
-                "checkedBindings": []
-            }
-        });
-        for package in ["firewall", "web"] {
-            let nar_hash = format!("sha256:{}", "0".repeat(52));
-            manifest["packageOutputs"][package]["nar_hash"] = json!(nar_hash);
-            manifest["packageOutputs"][package]["nar_size"] = json!(1);
-            manifest["packageOutputs"][package]["closure"][0]["realisations"][0]["nar_hash"] =
-                json!(nar_hash);
-        }
-        let validated: ConfigManifest = serde_json::from_value(manifest.clone()).unwrap();
-        validated.validate().unwrap();
-        write_json_atomic(&params.manifest, &manifest).unwrap();
-
-        let error = activate_config_with(
-            &params,
-            false,
-            false,
-            false,
-            |_activate, _number, _nonce, _barrier| {
-                panic!("unauthorized internal commit must not execute structured effects")
-            },
-        )
-        .unwrap_err();
-
-        assert!(
-            error.to_string().contains("without its native transaction"),
-            "{error:#}"
-        );
-        let state = load_generation_state_pub(&params.profile).unwrap();
-        assert_eq!(state.current, 1);
-        assert!(!params.profile.join("gen-2").exists());
-    }
-
-    #[test]
-    fn successful_activation_commits_exact_generation() {
-        let (_root, params, manifest) = setup();
-        mark(&params, "firewall");
-        mark(&params, "web");
-
-        let number = activate_config_with(
-            &params,
-            false,
-            false,
-            false,
-            |activate, number, _nonce, barrier| {
-                assert!(activate.ends_with("activate"));
-                assert_eq!(number, 2);
-                barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
-                barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
-                Ok(Some(0))
-            },
-        )
-        .unwrap();
-
-        assert_eq!(number, 2);
-        let state = load_generation_state_pub(&params.profile).unwrap();
-        assert_eq!(state.current, 2);
-        let expected_hash = hash_cjson(&manifest);
-        assert_eq!(state.generations[1].manifest_hash, expected_hash);
-        assert_eq!(
-            state.generations[1]
-                .package_modules
-                .iter()
-                .map(|module| module.store_path.clone())
-                .collect::<Vec<_>>(),
-            vec!["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config".to_string()]
-        );
-        assert_eq!(
-            state.generations[1].facts_ref,
-            "/nix/store/ffffffffffffffffffffffffffffffff-facts.json"
-        );
-        assert_eq!(
-            std::fs::read_link(params.profile.join("current")).unwrap(),
-            PathBuf::from("gen-2")
-        );
-        assert_eq!(
-            serde_json::from_str::<Value>(
-                &std::fs::read_to_string(params.profile.join("gen-2/manifest.json")).unwrap()
-            )
-            .unwrap(),
-            manifest
-        );
-        let activation: Value = serde_json::from_slice(
-            &std::fs::read(params.profile.join("gen-2/activation.json")).unwrap(),
-        )
-        .unwrap();
-        let runtime_activation: Value = serde_json::from_slice(
-            &std::fs::read(params.marker_root.join("activation.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(activation, runtime_activation);
-        assert_eq!(activation["schema"], "aos.config-activation/v1");
-        assert_eq!(activation["generation"], 2);
-        let attestation: Value = serde_json::from_slice(
-            &std::fs::read(params.profile.join("gen-2/gen-attestation.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(attestation["schema"], "aos.gen-attestation/v1");
-        assert_eq!(attestation["generation_id"], expected_hash);
-        assert_eq!(attestation["manifest_hash"], expected_hash);
-        assert_eq!(attestation["quote_status"], "unquoted-tpm-unavailable");
-        for field in ["registry", "release_tag", "tag_signer_key", "realization"] {
-            assert_eq!(
-                attestation["inputs"]["package_modules"][field],
-                manifest["inputs"]["package_modules"][field],
-                "package-module release field {field} must survive manifest-to-attestation projection"
-            );
-        }
-        assert_eq!(
-            attestation["inputs"]["package_modules"]["modules"],
-            manifest["inputs"]["package_modules"]["modules"],
-            "typed package-module identities must survive manifest-to-attestation projection"
-        );
-        assert_eq!(
-            attestation["inputs"]["host_nix"]["content_hash"],
-            manifest["inputs"]["host_nix"]["content_hash"]
-        );
-        assert_eq!(
-            attestation["inputs"]["instance_facts"]["facts_hash"],
-            manifest["inputs"]["instance_facts"]["facts_hash"]
-        );
-        assert_eq!(activation["generation_id"], expected_hash);
-        assert_eq!(activation["status"], "complete");
-        assert_eq!(activation["activation_exit"], 0);
-        assert_eq!(activation["dropped_packages"], json!([]));
-        let rooted = std::fs::read_dir(params.profile.join("gen-2/cfgsrc"))
-            .unwrap()
-            .map(|entry| std::fs::read_link(entry.unwrap().path()).unwrap())
-            .collect::<Vec<_>>();
-        for input in [
-            "/nix/store/dddddddddddddddddddddddddddddddd-base-lib",
-            "/nix/store/gggggggggggggggggggggggggggggggg-evaluator",
-            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config",
-            "/nix/store/cccccccccccccccccccccccccccccccc-host.nix",
-            "/nix/store/ffffffffffffffffffffffffffffffff-facts.json",
-        ] {
-            assert!(
-                rooted.contains(&PathBuf::from(input)),
-                "missing GC root for {input}"
-            );
-        }
-    }
-
-    #[test]
-    fn runtime_candidate_rejects_a_stale_generation_base_under_the_switch_lock() {
-        let (_root, params, mut manifest) = setup();
-        manifest["schema"] = json!(ConfigManifest::SCHEMA);
-        manifest["inputs"]["runtime_modules"] = json!({
-            "schema": "aos.runtime-module-set/v1",
-            "trust_mode": "local-root",
-            "store_path": "/nix/store/99999999999999999999999999999999-runtime-modules",
-            "nar_hash": format!("sha256:{}", "a".repeat(64)),
-            "entrypoints": ["module.nix"]
-        });
-        manifest["inputs"]["expected_current_generation"] = json!(0);
-        write_json_atomic(&params.manifest, &manifest).unwrap();
-        mark(&params, "firewall");
-        mark(&params, "web");
-
-        let error = activate_config_with(
-            &params,
-            false,
-            false,
-            false,
-            |_activate, _number, _nonce, _barrier| {
-                panic!("stale candidate must fail before invoking activation")
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("stale configuration candidate"));
-        let state = load_generation_state_pub(&params.profile).unwrap();
-        assert_eq!(state.current, 1);
-        assert!(!params.profile.join("gen-2").exists());
-    }
-
-    #[test]
-    fn credential_reconciliation_failure_refuses_pointer_and_proof() {
-        let (_root, params, _manifest) = setup();
-        mark(&params, "firewall");
-        mark(&params, "web");
-
-        let error = activate_config_with_reconciliation(
-            &params,
-            false,
-            false,
-            false,
-            |_activate, number, _nonce, barrier| {
-                assert_eq!(number, 2);
-                barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
-                barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
-                Ok(Some(0))
-            },
-            |_reconciliation, _plan| bail!("injected credential publication failure"),
-        )
-        .unwrap_err();
-
-        assert!(
-            error.to_string().contains("credential publication failed"),
-            "{error:#}"
-        );
-        assert_eq!(
-            error
-                .downcast_ref::<ActivationFailure>()
-                .expect("credential failure is classified post-swap")
-                .exit_code(),
-            4
-        );
-        assert_eq!(
-            load_generation_state_pub(&params.profile).unwrap().current,
-            1
-        );
-        assert!(!params.marker_root.join(ACTIVATION_RECORD).exists());
-    }
-
-    #[test]
-    fn required_quote_fails_closed_before_pointer_publication_without_tpm() {
-        let (_root, mut params, _manifest) = setup();
-        params.require_attestation_quote = true;
-        mark(&params, "firewall");
-        mark(&params, "web");
-
-        let error = activate_config_with(
-            &params,
-            false,
-            false,
-            false,
-            |_activate, _number, _nonce, barrier| {
-                barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
-                barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
-                Ok(Some(0))
-            },
-        )
-        .expect_err("measured activation must require TPM evidence");
-        let failure = error
-            .downcast_ref::<ActivationFailure>()
-            .expect("classified activation failure");
-        assert_eq!(failure.exit_code(), 4);
-        assert_eq!(
-            load_generation_state_pub(&params.profile).unwrap().current,
-            1
-        );
-        assert!(!params.profile.join("gen-2/gen-attestation.json").exists());
-    }
-
-    #[test]
-    fn identical_manifest_is_not_reused_across_image_parents() {
-        let (_root, mut params, _manifest) = setup();
-        mark(&params, "firewall");
-        mark(&params, "web");
-        assert_eq!(
-            activate_config_with(
-                &params,
-                false,
-                false,
-                false,
-                |_activate, _number, _nonce, barrier| {
-                    barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
-                    barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
-                    Ok(Some(0))
-                }
-            )
-            .unwrap(),
-            2
-        );
-
-        let mut state = load_generation_state_pub(&params.profile).unwrap();
-        let mut next_image = state.generations[1].clone();
-        next_image.number = 3;
-        next_image.image_gen_parent = 3;
-        next_image.manifest_hash = "sha256:not-the-current-manifest".to_string();
-        std::fs::create_dir_all(params.profile.join("gen-3")).unwrap();
-        state.next = 4;
-        state.generations.push(next_image);
-        save_generation_state_pub(&params.profile, &state).unwrap();
-        commit_current_generation_pub(&params.profile, &mut state, 3).unwrap();
-        params
-            .running_image
-            .as_mut()
-            .expect("test running image")
-            .number = 3;
-
-        assert_eq!(
-            activate_config_with(
-                &params,
-                false,
-                false,
-                false,
-                |_activate, number, _nonce, barrier| {
-                    assert_eq!(number, 4);
-                    barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
-                    barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
-                    Ok(Some(0))
-                }
-            )
-            .unwrap(),
-            4
-        );
-        let state = load_generation_state_pub(&params.profile).unwrap();
-        assert_eq!(state.current, 4);
-        assert_eq!(state.generations[3].image_gen_parent, 3);
-    }
-
-    #[test]
-    fn identical_manifest_refuses_tampered_retained_generation() {
-        let (_root, params, _manifest) = setup();
-        mark(&params, "firewall");
-        mark(&params, "web");
-        assert_eq!(
-            activate_config_with(
-                &params,
-                false,
-                false,
-                false,
-                |_activate, _number, _nonce, barrier| {
-                    barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
-                    barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
-                    Ok(Some(0))
-                }
-            )
-            .unwrap(),
-            2
-        );
-
-        let retained = params.profile.join("gen-2/manifest.json");
-        let mut tampered: Value =
-            serde_json::from_slice(&std::fs::read(&retained).unwrap()).unwrap();
-        tampered["config"]["web"]["tampered"] = json!(true);
-        write_json_atomic(&retained, &tampered).unwrap();
-
-        let error = activate_config_with(
-            &params,
-            false,
-            false,
-            false,
-            |_activate, _number, _nonce, _barrier| {
-                panic!("tampered generation must be rejected before activation")
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("hash mismatch"));
-    }
-
-    #[test]
-    fn preswap_failure_never_changes_current_or_source_manifest() {
-        let (_root, params, manifest) = setup();
-        mark(&params, "firewall");
-        mark(&params, "web");
-
-        let error = activate_config_with(
-            &params,
-            false,
-            false,
-            false,
-            |_activate, _number, _nonce, _barrier| Ok(Some(2)),
-        )
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("previous generation remains current")
-        );
-        let state = load_generation_state_pub(&params.profile).unwrap();
-        assert_eq!(state.current, 1);
-        assert_eq!(
-            std::fs::read_link(params.profile.join("current")).unwrap(),
-            PathBuf::from("gen-1")
-        );
-        assert_eq!(
-            serde_json::from_str::<Value>(&std::fs::read_to_string(&params.manifest).unwrap())
-                .unwrap(),
-            manifest
-        );
-    }
-
-    #[test]
-    fn orphaned_durable_generation_is_reused_after_prepublication_crash() {
-        let (_root, params, _manifest) = setup();
-        mark(&params, "firewall");
-        mark(&params, "web");
-        activate_config_with(
-            &params,
-            false,
-            false,
-            false,
-            |_activate, _number, _nonce, _barrier| Ok(Some(2)),
-        )
-        .unwrap_err();
-
-        let mut state = load_generation_state_pub(&params.profile).unwrap();
-        state
-            .generations
-            .retain(|generation| generation.number != 2);
-        state.next = 2;
-        save_generation_state_pub(&params.profile, &state).unwrap();
-
-        assert_eq!(
-            activate_config_with(
-                &params,
-                false,
-                false,
-                false,
-                |_activate, number, _nonce, barrier| {
-                    assert_eq!(number, 2);
-                    barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
-                    barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
-                    Ok(Some(0))
-                }
-            )
-            .unwrap(),
-            2
-        );
-        let recovered = load_generation_state_pub(&params.profile).unwrap();
-        assert_eq!(recovered.current, 2);
-        assert_eq!(
-            recovered
-                .generations
-                .iter()
-                .filter(|generation| generation.number == 2)
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn degraded_activation_commits_dependency_closed_projection() {
-        let (_root, params, manifest) = setup();
-        mark(&params, "web");
-
-        let number = activate_config_with(
-            &params,
-            false,
-            false,
-            false,
-            // The /etc reconcile itself is healthy. The missing package
-            // markers alone must classify the committed projection as
-            // degraded and surface exit 6.
-            |_activate, _number, _nonce, barrier| {
-                barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
-                barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
-                Ok(Some(0))
-            },
-        )
-        .unwrap_err();
-        assert!(number.to_string().contains("was committed"));
-        let state = load_generation_state_pub(&params.profile).unwrap();
-        assert_eq!(state.current, 2);
-        let projected: Value = serde_json::from_str(
-            &std::fs::read_to_string(params.profile.join("gen-2/manifest.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(projected["packages"], json!([]));
-        assert_eq!(
-            serde_json::from_str::<Value>(&std::fs::read_to_string(&params.manifest).unwrap())
-                .unwrap(),
-            manifest
-        );
-        let drops: Value = serde_json::from_str(
-            &std::fs::read_to_string(params.profile.join("gen-2/drop-set.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(drops["projected"], true);
-        assert_eq!(drops["dropped"].as_array().unwrap().len(), 2);
-        let activation: Value = serde_json::from_slice(
-            &std::fs::read(params.marker_root.join("activation.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(activation["status"], "degraded");
-        assert_eq!(activation["activation_exit"], 6);
-        assert_eq!(activation["dropped_packages"], json!(["firewall", "web"]));
-    }
-
-    #[test]
-    fn structured_recovery_identity_is_durable_before_the_swap() {
-        let (_root, params, _) = setup();
-        mark(&params, "firewall");
-        mark(&params, "web");
-        let manifest: ConfigManifest =
-            serde_json::from_slice(&std::fs::read(&params.manifest).unwrap()).unwrap();
-        let transaction = aos_ability_model::TransactionId(
-            aos_ability_model::LocalKey::new("native-crash-window").unwrap(),
-        );
-
-        let error = activate_config_with_reconciliation_mode(
-            &params,
-            false,
-            false,
-            false,
-            |_activate, number, _nonce, _barrier| {
-                let record: Value = serde_json::from_slice(
-                    &std::fs::read(params.profile.join(format!("gen-{number}/activation.json")))
-                        .unwrap(),
-                )
-                .unwrap();
-                assert_eq!(record["status"], "native-pending");
-                assert_eq!(record["native_ability_transaction"], "native-crash-window");
-                assert_eq!(record["native_ability_prior_generation"], 1);
-                assert!(
-                    !params.marker_root.join(ACTIVATION_RECORD).exists(),
-                    "the runtime marker must continue to describe the current generation"
-                );
-                anyhow::bail!("injected crash before activation-script dispatch")
-            },
-            |_reconciliation, _plan| Ok(()),
-            Some(&manifest),
-            Some((&transaction, Some(1))),
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("injected crash"));
-        let state = load_generation_state_pub(&params.profile).unwrap();
-        assert_eq!(state.current, 1, "pre-swap crash must not move current");
-    }
-
-    #[test]
-    fn structured_commit_preserves_the_prepublished_recovery_identity() {
-        let (_root, params, _) = setup();
-        mark(&params, "firewall");
-        mark(&params, "web");
-        let manifest: ConfigManifest =
-            serde_json::from_slice(&std::fs::read(&params.manifest).unwrap()).unwrap();
-        let transaction = aos_ability_model::TransactionId(
-            aos_ability_model::LocalKey::new("native-published-window").unwrap(),
-        );
-        let prepublished = RefCell::new(None);
-
-        let error = activate_config_with_reconciliation_mode(
-            &params,
-            false,
-            false,
-            false,
-            |_activate, number, _nonce, barrier| {
-                let record_path = params.profile.join(format!("gen-{number}/activation.json"));
-                let bytes = std::fs::read(&record_path).unwrap();
-                let inode = std::fs::metadata(&record_path).unwrap().ino();
-                prepublished.replace(Some((bytes, inode)));
-                assert!(
-                    !params.marker_root.join(ACTIVATION_RECORD).exists(),
-                    "the candidate must not become the runtime marker before current changes"
-                );
-
-                barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
-                barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
-                Ok(Some(0))
-            },
-            |_reconciliation, _plan| Ok(()),
-            Some(&manifest),
-            Some((&transaction, Some(1))),
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("was committed"));
-        let state = load_generation_state_pub(&params.profile).unwrap();
-        assert_eq!(state.current, 2);
-
-        let record_path = params.profile.join("gen-2/activation.json");
-        let (expected_bytes, expected_inode) = prepublished.into_inner().unwrap();
-        assert_eq!(std::fs::read(&record_path).unwrap(), expected_bytes);
-        assert_eq!(
-            std::fs::metadata(&record_path).unwrap().ino(),
-            expected_inode
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(
-                &std::fs::read(params.marker_root.join(ACTIVATION_RECORD)).unwrap()
-            )
-            .unwrap(),
-            serde_json::from_slice::<Value>(&expected_bytes).unwrap()
-        );
-
-        let record: Value = serde_json::from_slice(&expected_bytes).unwrap();
-        assert_eq!(record["status"], "native-pending");
-        assert_eq!(
-            record["native_ability_transaction"],
-            "native-published-window"
-        );
-        assert_eq!(record["native_ability_prior_generation"], 1);
     }
 }

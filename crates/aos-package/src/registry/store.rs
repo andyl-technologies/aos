@@ -241,9 +241,9 @@ impl StoreMap {
                 members.insert(ia, serialize_entry(entry));
             }
         }
-        Ok(crate::graph_compile::reproject::hash_cjson(
+        crate::canonical_json_digest(
             &serde_json::to_value(members).context("serializing signed store subset")?,
-        ))
+        )
     }
 }
 
