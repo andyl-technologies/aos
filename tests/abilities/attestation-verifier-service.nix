@@ -19,6 +19,11 @@
       ];
       packageModules = [
         {
+          name = "systemd";
+          version = pkgs.systemd.version;
+          module = pkgs.systemd.module + "/module.nix";
+        }
+        {
           name = "aos";
           version = pkgs.aos.version;
           module = pkgs.aos.module + "/module.nix";
