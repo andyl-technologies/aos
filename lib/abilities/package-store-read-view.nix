@@ -43,14 +43,6 @@
         output "observation" "attempt"
         "Reports whether the selected package-store read view is available."
         observationType;
-      locator =
-        output "planning" "persistent"
-        "Returns the authenticated locator for the selected immutable package-store view."
-        locatorType;
-      read-view-resource =
-        output "planning" "persistent"
-        "References the selected immutable package-store read view."
-        types.resourceReference;
     };
     outcome = {
       completionEvidence = observationType;
@@ -65,7 +57,16 @@
     abi = 1;
     inherit requestType;
     methods = {inherit observe;};
-    outputs = {};
+    outputs = {
+      locator =
+        output "planning" "persistent"
+        "Returns the authenticated locator for the selected immutable package-store view."
+        locatorType;
+      read-view-resource =
+        output "planning" "persistent"
+        "References the selected immutable package-store read view."
+        types.resourceReference;
+    };
     lifecycle.persistentDeleteMethod = null;
     aggregation = {
       scope = "provider-instance";
