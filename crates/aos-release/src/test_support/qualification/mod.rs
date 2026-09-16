@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
+use aos_ability_model::{AccessMode, LifecycleSemantics, ResourceLifetime};
 use aos_release::digest::Sha256Digest;
 use aos_release::qualification::capabilities::{
     CapabilityEvidence, ImageCapabilities, StageCapabilities,
@@ -13,13 +14,144 @@ use aos_release::qualification::claims::{AssessmentReference, CompatibilityAsses
 use aos_release::qualification::environment::{
     Backend, CpuIdentity, DeviceInventory, EnvironmentInventory, LayerInventory,
 };
-use aos_release::qualification_evidence::QualificationCase;
+use aos_release::qualification_evidence::{
+    NativeAdapterClaimHandler, NativeAdapterDispositionPolicy, NativeAdapterImplementationClaim,
+    NativeAdapterPostconditionPolicy, NativeAdapterProviderContract,
+    NativeAdapterScenarioApplicability, NativeAdapterSurfaceAdapter, NativeAdapterSurfaceLimits,
+    NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario, NativeAdapterSurfaceSpec,
+    QualificationCase,
+};
 use serde_json::{Value, json};
 
-#[path = "qualification_contract.rs"]
-mod qualification_contract;
+mod contract;
 
-pub use qualification_contract::contract;
+pub use contract::contract;
+
+/// Builds a small semantic native-adapter surface for verifier rejection tests.
+pub(crate) fn native_adapter_surface() -> NativeAdapterSurfaceSpec {
+    let digest = |label: &str| Sha256Digest::of_bytes(label);
+    let artifact = |package: &str| {
+        serde_json::json!({
+            "path": format!("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{package}"),
+            "selector": {
+                "_type": "aos-package-output-selector",
+                "package": package,
+                "output": "out",
+            },
+        })
+    };
+    let adapter = |descriptor: Sha256Digest, adapter: &str, interface_name: &str| {
+        NativeAdapterSurfaceAdapter {
+            adapter: adapter.into(),
+            conformance_families: vec!["durability-recovery".into()],
+            interface_abi: 1,
+            interface_descriptor: descriptor,
+            interface_name: interface_name.into(),
+            methods: vec![NativeAdapterSurfaceMethod {
+                required_target_access: AccessMode::ExclusiveWrite,
+                method: "apply".into(),
+            }],
+            observation_kind: "fixture-observation".into(),
+            provider_contract: NativeAdapterProviderContract {
+                lifecycle: LifecycleSemantics {
+                    persistent_delete_method: None,
+                },
+                resource_lifetimes: vec![ResourceLifetime::Persistent],
+                state_format: Some(digest("state format")),
+            },
+            provider_implementation: NativeAdapterImplementationClaim {
+                contract: format!(
+                    "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{adapter}-abilities"
+                ),
+                implementation: format!("{adapter}-implementation"),
+                observer: NativeAdapterClaimHandler {
+                    artifact: artifact(&format!("{adapter}-observer")),
+                    entry_point: "bin/fixture-observer".into(),
+                    arguments: serde_json::json!({"kind": "record"}),
+                    result: serde_json::json!({"kind": "record"}),
+                },
+            },
+            scope: "host-resource".into(),
+        }
+    };
+    let probe_kind = |postcondition: &str| match postcondition {
+        "durable-attempt-state-classified" => "journal-timeline",
+        "at-most-one-resource-owner" => "ownership-inventory",
+        "foreign-resources-unchanged" => "foreign-resource-snapshot",
+        "dependent-effects-not-executed" => "dependency-barrier",
+        _ => panic!("fixture postcondition has no probe kind"),
+    };
+    let disposition = |scenario: &str| match scenario {
+        "interrupt-before-acquisition" => "rejected-before-acquisition",
+        "lose-external-result" => "reconciled-completed",
+        _ => panic!("fixture scenario has no disposition"),
+    };
+    let scenario = |id: &str, boundary: &str, failure: &str| {
+        let postconditions = [
+            "durable-attempt-state-classified",
+            "at-most-one-resource-owner",
+            "foreign-resources-unchanged",
+            "dependent-effects-not-executed",
+        ]
+        .into_iter()
+        .map(|name| NativeAdapterPostconditionPolicy {
+            evidence_kind: probe_kind(name).into(),
+            name: name.into(),
+        })
+        .collect();
+
+        NativeAdapterSurfaceScenario {
+            applicability: NativeAdapterScenarioApplicability {
+                required_resource_lifetimes: Vec::new(),
+                requires_state_format: false,
+            },
+            boundary: boundary.into(),
+            candidate: "same".into(),
+            disposition: NativeAdapterDispositionPolicy::Exact {
+                value: disposition(id).into(),
+            },
+            failure: failure.into(),
+            family: "durability-recovery".into(),
+            id: id.into(),
+            postconditions,
+            predecessor: "same".into(),
+        }
+    };
+
+    NativeAdapterSurfaceSpec {
+        adapters: vec![
+            adapter(digest("interface a"), "fixture-a", "aos.fixture-a-effects"),
+            adapter(digest("interface z"), "fixture-z", "aos.fixture-z-effects"),
+        ],
+        families: vec!["durability-recovery".into()],
+        invalidation_dimensions: vec![
+            "subject".into(),
+            "policy".into(),
+            "executor".into(),
+            "environment".into(),
+        ],
+        limits: NativeAdapterSurfaceLimits {
+            max_adapters: 2,
+            max_methods: 2,
+            max_scenarios: 2,
+        },
+        matrix_schema: "aos.qualification.native-adapter-matrix/v1".into(),
+        scenarios: vec![
+            scenario(
+                "interrupt-before-acquisition",
+                "before-acquisition",
+                "injected-interruption",
+            ),
+            scenario(
+                "lose-external-result",
+                "after-external-return",
+                "lost-result",
+            ),
+        ],
+        schema: "aos.qualification.native-adapter-surface/v1".into(),
+        subject_schema: "aos.qualification.native-adapter-subject/v1".into(),
+    }
+}
 
 pub fn metadata() -> Result<Value> {
     let capabilities = ImageCapabilities {

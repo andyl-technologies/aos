@@ -706,10 +706,10 @@ pub(crate) mod tests {
         let envelope: ManifestEnvelopeV1 =
             canonical::from_slice(&fixture.envelope, "fixture manifest")?;
         let mut manifest = envelope.payload;
-        let mut policy = crate::qualification_fixture::contract()?;
+        let mut policy = crate::test_support::qualification::contract()?;
         let native_matrix_spec =
             crate::qualification_evidence::native_adapter_matrix_spec_from_surface(
-                crate::native_adapter_matrix_tests::fixture_surface(),
+                crate::test_support::qualification::native_adapter_surface(),
             )?;
         let native_matrix_digest = Sha256Digest::of_bytes(canonical::to_vec(&native_matrix_spec)?);
         let native_matrix_check = format!(
@@ -764,7 +764,7 @@ pub(crate) mod tests {
         )?;
         manifest.artifacts.push(value);
         let metadata =
-            crate::canonical::canonical_json(&crate::qualification_fixture::metadata()?)?;
+            crate::canonical::canonical_json(&crate::test_support::qualification::metadata()?)?;
         for artifact in manifest
             .artifacts
             .iter_mut()
@@ -788,13 +788,13 @@ pub(crate) mod tests {
                 let assessment_only = case.claim.as_ref().is_some_and(|claim| {
                     claim.minimum_assurance == crate::qualification::claims::AssuranceLevel::A1
                 });
-                let assessment = crate::qualification_fixture::assessment(&case)?;
+                let assessment = crate::test_support::qualification::assessment(&case)?;
                 let environment = if assessment_only {
                     None
                 } else {
-                    crate::qualification_fixture::environment(&case)?
+                    crate::test_support::qualification::environment(&case)?
                 };
-                let capabilities = crate::qualification_fixture::capabilities(&case)?;
+                let capabilities = crate::test_support::qualification::capabilities(&case)?;
                 let mut environment_digest = environment
                     .as_ref()
                     .map(|environment| environment.digest())
@@ -805,7 +805,7 @@ pub(crate) mod tests {
                             .map(|assessment| assessment.scope_digest)
                     })
                     .unwrap_or(digest("environment"));
-                let mut operations = crate::qualification_fixture::measurements();
+                let mut operations = crate::test_support::qualification::measurements();
                 if case.target.is_none() {
                     operations = BTreeMap::from([("requests".into(), 1)]);
                 }
@@ -828,7 +828,7 @@ pub(crate) mod tests {
                 let native_adapter_matrix = if case.requirement_id
                     == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT
                 {
-                    let surface = crate::native_adapter_matrix_tests::fixture_surface();
+                    let surface = crate::test_support::qualification::native_adapter_surface();
                     let spec = crate::qualification_evidence::native_adapter_matrix_spec_from_surface(
                         surface,
                     )?;

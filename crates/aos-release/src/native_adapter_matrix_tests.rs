@@ -10,15 +10,11 @@ use crate::evidence::GateResult;
 use crate::qualification::{QualificationMethod, QualificationPhase};
 use crate::qualification_evidence::{
     CheckObservation, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
-    NativeAdapterCellObservation, NativeAdapterClaimHandler, NativeAdapterDispositionPolicy,
-    NativeAdapterImplementationClaim, NativeAdapterMatrixComponentIdentity,
+    NativeAdapterCellObservation, NativeAdapterMatrixComponentIdentity,
     NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
-    NativeAdapterMatrixObservation, NativeAdapterPostconditionPolicy,
-    NativeAdapterPostconditionProbe, NativeAdapterProviderContract,
-    NativeAdapterScenarioApplicability, NativeAdapterSurfaceAdapter, NativeAdapterSurfaceLimits,
-    NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario, NativeAdapterSurfaceSpec,
-    QualificationCase, QualificationObservation, QualificationPredecessor,
-    native_adapter_inapplicable_reason, native_adapter_matrix_check,
+    NativeAdapterMatrixObservation, NativeAdapterPostconditionProbe, NativeAdapterProviderContract,
+    NativeAdapterScenarioApplicability, QualificationCase, QualificationObservation,
+    QualificationPredecessor, native_adapter_inapplicable_reason, native_adapter_matrix_check,
     native_adapter_matrix_spec_from_surface, validate_matrix_for_case,
     validate_native_adapter_matrix_observation, validate_native_adapter_matrix_spec,
 };
@@ -28,142 +24,12 @@ fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::of_bytes(label)
 }
 
-fn probe_kind(postcondition: &str) -> &'static str {
-    match postcondition {
-        "durable-attempt-state-classified" => "journal-timeline",
-        "at-most-one-resource-owner" => "ownership-inventory",
-        "foreign-resources-unchanged" => "foreign-resource-snapshot",
-        "dependent-effects-not-executed" => "dependency-barrier",
-        _ => panic!("fixture postcondition has no probe kind"),
-    }
-}
-
-fn disposition(scenario: &str) -> &'static str {
-    match scenario {
-        "interrupt-before-acquisition" => "rejected-before-acquisition",
-        "lose-external-result" => "reconciled-completed",
-        _ => panic!("fixture scenario has no disposition"),
-    }
-}
-
-pub(crate) fn fixture_surface() -> NativeAdapterSurfaceSpec {
-    let method = |descriptor: Sha256Digest, adapter: &str, interface_name: &str| {
-        let artifact = |package: &str| {
-            serde_json::json!({
-                "path": format!("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{package}"),
-                "selector": {
-                    "_type": "aos-package-output-selector",
-                    "package": package,
-                    "output": "out",
-                },
-            })
-        };
-        NativeAdapterSurfaceAdapter {
-            adapter: adapter.into(),
-            conformance_families: vec!["durability-recovery".into()],
-            interface_abi: 1,
-            interface_descriptor: descriptor,
-            interface_name: interface_name.into(),
-            methods: vec![NativeAdapterSurfaceMethod {
-                required_target_access: AccessMode::ExclusiveWrite,
-                method: "apply".into(),
-            }],
-            observation_kind: "fixture-observation".into(),
-            provider_contract: NativeAdapterProviderContract {
-                lifecycle: LifecycleSemantics {
-                    persistent_delete_method: None,
-                },
-                resource_lifetimes: vec![ResourceLifetime::Persistent],
-                state_format: Some(digest("state format")),
-            },
-            provider_implementation: NativeAdapterImplementationClaim {
-                contract: format!(
-                    "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{adapter}-abilities"
-                ),
-                implementation: format!("{adapter}-implementation"),
-                observer: NativeAdapterClaimHandler {
-                    artifact: artifact(&format!("{adapter}-observer")),
-                    entry_point: "bin/fixture-observer".into(),
-                    arguments: serde_json::json!({"kind": "record"}),
-                    result: serde_json::json!({"kind": "record"}),
-                },
-            },
-            scope: "host-resource".into(),
-        }
-    };
-    let scenario = |id: &str, boundary: &str, failure: &str| {
-        let postconditions = [
-            "durable-attempt-state-classified",
-            "at-most-one-resource-owner",
-            "foreign-resources-unchanged",
-            "dependent-effects-not-executed",
-        ]
-        .into_iter()
-        .map(|name| NativeAdapterPostconditionPolicy {
-            evidence_kind: probe_kind(name).into(),
-            name: name.into(),
-        })
-        .collect();
-
-        NativeAdapterSurfaceScenario {
-            applicability: NativeAdapterScenarioApplicability {
-                required_resource_lifetimes: Vec::new(),
-                requires_state_format: false,
-            },
-            boundary: boundary.into(),
-            candidate: "same".into(),
-            disposition: NativeAdapterDispositionPolicy::Exact {
-                value: disposition(id).into(),
-            },
-            failure: failure.into(),
-            family: "durability-recovery".into(),
-            id: id.into(),
-            postconditions,
-            predecessor: "same".into(),
-        }
-    };
-
-    NativeAdapterSurfaceSpec {
-        adapters: vec![
-            method(digest("interface a"), "fixture-a", "aos.fixture-a-effects"),
-            method(digest("interface z"), "fixture-z", "aos.fixture-z-effects"),
-        ],
-        families: vec!["durability-recovery".into()],
-        invalidation_dimensions: vec![
-            "subject".into(),
-            "policy".into(),
-            "executor".into(),
-            "environment".into(),
-        ],
-        limits: NativeAdapterSurfaceLimits {
-            max_adapters: 2,
-            max_methods: 2,
-            max_scenarios: 2,
-        },
-        matrix_schema: "aos.qualification.native-adapter-matrix/v1".into(),
-        scenarios: vec![
-            scenario(
-                "interrupt-before-acquisition",
-                "before-acquisition",
-                "injected-interruption",
-            ),
-            scenario(
-                "lose-external-result",
-                "after-external-return",
-                "lost-result",
-            ),
-        ],
-        schema: "aos.qualification.native-adapter-surface/v1".into(),
-        subject_schema: "aos.qualification.native-adapter-subject/v1".into(),
-    }
-}
-
 fn fixture() -> Result<(
     QualificationCase,
     Sha256Digest,
     NativeAdapterMatrixObservation,
 )> {
-    let surface = fixture_surface();
+    let surface = crate::test_support::qualification::native_adapter_surface();
     let spec = native_adapter_matrix_spec_from_surface(surface)?;
     let spec_digest = Sha256Digest::of_bytes(crate::canonical::to_vec(&spec)?);
     let component =
@@ -195,11 +61,6 @@ fn fixture() -> Result<(
         .iter()
         .map(|cell| {
             let cell_digest = Sha256Digest::of_bytes(crate::canonical::to_vec(cell)?);
-            let scenario = cell
-                .id
-                .rsplit('/')
-                .next()
-                .expect("fixture cell has a scenario");
             let cohort_subject = serde_json::json!({
                 "schema": "aos.release.native-adapter-cell-cohort-subject/v1",
                 "cell_id": cell.id,
@@ -215,6 +76,14 @@ fn fixture() -> Result<(
             });
             let cohort_subject_digest =
                 Sha256Digest::of_bytes(crate::canonical::to_vec(&cohort_subject)?);
+            let disposition = match &cell.disposition {
+                crate::qualification_evidence::NativeAdapterDispositionPolicy::Exact {
+                    value,
+                } => value,
+                crate::qualification_evidence::NativeAdapterDispositionPolicy::CancellationRoute {
+                    ..
+                } => panic!("semantic fixture does not declare a cancellation route"),
+            };
             let probes = cell
                 .postconditions
                 .iter()
@@ -230,10 +99,10 @@ fn fixture() -> Result<(
                         NativeAdapterPostconditionProbe {
                             schema_version: "aos.release.native-adapter-postcondition-probe/v1"
                                 .into(),
-                            kind: probe_kind(name).into(),
+                            kind: cell.postcondition_kinds[name].clone(),
                             cell_id: cell.id.clone(),
                             cell_digest,
-                            disposition: disposition(scenario).into(),
+                            disposition: disposition.clone(),
                             subject_digest: digest("subjects"),
                             cohort_subject_digest,
                             observation_digest,
@@ -493,6 +362,31 @@ fn committed_identities_and_postconditions_are_exact() -> Result<()> {
             .is_err()
         );
     }
+    Ok(())
+}
+
+#[test]
+fn authenticated_policy_rejects_a_self_consistent_foreign_surface() -> Result<()> {
+    let (case, _, mut observation) = fixture()?;
+    let mut foreign_surface = observation.spec.surface.clone();
+    foreign_surface.adapters[0].interface_descriptor = digest("foreign interface");
+    observation.spec = native_adapter_matrix_spec_from_surface(foreign_surface)?;
+    observation.spec_digest = Sha256Digest::of_bytes(crate::canonical::to_vec(&observation.spec)?);
+    observation.environment.spec_digest = observation.spec_digest;
+    let environment = recommit_environment(&mut observation)?;
+
+    let error = validate_native_adapter_matrix_observation(
+        &case,
+        environment,
+        digest("executor"),
+        &observation,
+    )
+    .expect_err("a rederived foreign surface must not replace release policy");
+    assert!(
+        error
+            .to_string()
+            .contains("specification differs from release policy")
+    );
     Ok(())
 }
 
@@ -1029,7 +923,7 @@ fn central_phase_rejects_failed_cells_and_prepared_environment_mutation() -> Res
     const NOW: &str = "2026-09-01T00:00:02Z";
 
     let (mut plan, manifest) = qualification_fixture()?;
-    let surface = fixture_surface();
+    let surface = crate::test_support::qualification::native_adapter_surface();
     let matrix_spec = native_adapter_matrix_spec_from_surface(surface)?;
     let matrix_digest = Sha256Digest::of_bytes(crate::canonical::to_vec(&matrix_spec)?);
     let contract = plan

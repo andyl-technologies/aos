@@ -87,7 +87,7 @@ fn cpu_family_scope_and_exact_sku_scope_have_distinct_membership() -> Result<()>
         })
         .unwrap();
     let mut scope = case.target.as_ref().unwrap().environment.clone().unwrap();
-    let mut inventory = crate::qualification_fixture::environment(&case)?.unwrap();
+    let mut inventory = crate::test_support::qualification::environment(&case)?.unwrap();
     let required = &mut scope.layers.last_mut().unwrap().cpu;
     required.vendors = vec!["AMD".into()];
     required.features = vec!["sse2".into()];
@@ -121,7 +121,7 @@ fn cloud_instance_and_region_are_recorded_scope_dimensions() -> Result<()> {
         })
         .unwrap();
     let mut scope = case.target.as_ref().unwrap().environment.clone().unwrap();
-    let mut inventory = crate::qualification_fixture::environment(&case)?.unwrap();
+    let mut inventory = crate::test_support::qualification::environment(&case)?.unwrap();
     scope.layers.remove(0);
     inventory.layers.remove(0);
     let backend = Backend::Cloud {
