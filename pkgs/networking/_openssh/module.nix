@@ -32,11 +32,6 @@
     };
     ignore_failure = false;
   };
-  shellCommand = script:
-    command
-    (lib.abilities.packageOutput {package = "bash";})
-    "bin/bash"
-    ["-c" script];
   serviceLifecycle = {
     description,
     executionModel,
@@ -267,15 +262,10 @@
         executionModel = "oneshot";
         remainAfterExit = true;
         start = [
-          (shellCommand ''
-            set -eu
-            install -d -m 0755 -o root -g root /var/etc/ssh
-            key=/var/etc/ssh/ssh_host_ed25519_key
-            if [ ! -s "$key" ]; then
-              echo "sshd-keygen: generating ed25519 host key at $key"
-              ssh-keygen -q -t ed25519 -N "" -f "$key" </dev/null
-            fi
-          '')
+          (command
+            (lib.abilities.packageOutput {})
+            "libexec/aos-openssh-host-key"
+            [])
         ];
       };
       dependencies = {
@@ -291,10 +281,7 @@
       };
       environment = {
         variables = {};
-        search_path = [
-          (lib.abilities.packageOutput {package = "coreutils";})
-          (lib.abilities.packageOutput {})
-        ];
+        search_path = [];
       };
     };
   };
@@ -308,17 +295,10 @@
         executionModel = "oneshot";
         remainAfterExit = true;
         start = [
-          (shellCommand ''
-            attempts=0
-            while [ ! -e /run/aos/host-policy-live ] && [ "$attempts" -lt 150 ]; do
-              sleep 0.1
-              attempts=$((attempts + 1))
-            done
-
-            if [ ! -e /run/aos/host-policy-live ]; then
-              echo "aos-ssh-ready: host policy did not activate within 15 seconds; allowing recovery SSH startup" >&2
-            fi
-          '')
+          (command
+            (lib.abilities.packageOutput {})
+            "libexec/aos-openssh-host-policy-wait"
+            [])
         ];
       };
       readiness = {
@@ -328,7 +308,7 @@
       };
       environment = {
         variables = {};
-        search_path = [(lib.abilities.packageOutput {package = "coreutils";})];
+        search_path = [];
       };
     };
   };

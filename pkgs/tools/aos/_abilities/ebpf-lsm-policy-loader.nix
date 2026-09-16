@@ -25,21 +25,6 @@
     };
     ignore_failure = false;
   };
-  prepareBpffs =
-    command
-    (lib.abilities.packageOutput {package = "bash";})
-    "bin/bash"
-    [
-      "-c"
-      ''
-        set -eu
-        mkdir -p /sys/fs/bpf
-        if ! mountpoint -q /sys/fs/bpf; then
-          mount -t bpf bpf /sys/fs/bpf
-        fi
-        mkdir -p /sys/fs/bpf/aos/lsm
-      ''
-    ];
   loadPolicies =
     command
     (lib.abilities.packageOutput {output = "packageRuntime";})
@@ -55,7 +40,8 @@
         execution_model = "oneshot";
         environment_files = [];
         condition = [];
-        pre_start = [prepareBpffs];
+        # The compiled loader verifies and mounts bpffs before creating its pin tree.
+        pre_start = [];
         start = [loadPolicies];
         post_start = [];
         stop = [];
@@ -88,10 +74,7 @@
       };
       environment = {
         variables = {};
-        search_path = [
-          (lib.abilities.packageOutput {package = "coreutils";})
-          (lib.abilities.packageOutput {package = "util-linux";})
-        ];
+        search_path = [];
       };
       isolation = {
         privilege = "privileged";
