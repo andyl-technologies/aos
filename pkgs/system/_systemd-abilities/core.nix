@@ -1520,6 +1520,7 @@ in {
   config.aos.abilities = {
     instances = lib.mkMerge [
       (lib.mkIf dbusRegistrationAvailable {manager = {};})
+      (lib.mkIf measurementEnabled {image-measurement-index = {};})
       (lib.mkIf hostPlatformAvailable {
         boot-artifact-storage.implementation = "boot-artifact-storage";
         boot-selection.implementation = "boot-selection";

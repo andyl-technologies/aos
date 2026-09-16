@@ -25,22 +25,10 @@
           };
         }
       ];
-      packageModules = [
-        {
-          name = "aos";
-          version = pkgs.aos.version;
-          module = pkgs.aos.module + "/module.nix";
-        }
-        {
-          name = "aos-nix-store-provider";
-          version = pkgs.aos-nix-store-provider.version;
-          module = pkgs.aos-nix-store-provider.module + "/module.nix";
-        }
-        {
-          name = "aos-systemd-provider";
-          version = pkgs.aos-systemd-provider.version;
-          module = pkgs.aos-systemd-provider.module + "/module.nix";
-        }
+      packageModules = builtins.map lib.abilities.authenticatedPackageModuleRecordFor [
+        pkgs.aos
+        pkgs.aos-nix-store-provider
+        pkgs.systemd
       ];
     };
   pcrPublicKey = "/nix/store/00000000000000000000000000000000-aos-pcr-pubkey/pcr.pem";
@@ -64,11 +52,11 @@
   dependencies = requests."aos:configuration-evaluation-dependencies".parameters;
   bootCommitLifecycle = requests."aos:image-boot-commit-lifecycle".parameters;
   bootCommitDependencies = requests."aos:image-boot-commit-dependencies".parameters;
-  measurementLifecycle = requests."aos-systemd-provider:image-measurement-index-lifecycle".parameters;
-  measurementDependencies = requests."aos-systemd-provider:image-measurement-index-dependencies".parameters;
+  measurementLifecycle = requests."systemd:image-measurement-index-lifecycle".parameters;
+  measurementDependencies = requests."systemd:image-measurement-index-dependencies".parameters;
 in
   assert !(disabled.config.aos.abilities.requests ? "aos:configuration-evaluation-lifecycle");
-  assert !(unmeasured.config.aos.abilities.requests ? "aos-systemd-provider:image-measurement-index-lifecycle");
+  assert !(unmeasured.config.aos.abilities.requests ? "systemd:image-measurement-index-lifecycle");
   assert !missingMeasurementKey.success;
   assert lifecycle.service == "configuration-evaluation";
   assert registryLifecycle.service == "registry-synchronization";
@@ -117,17 +105,19 @@ in
   ];
   assert dependencies.prerequisites
   == [
-    (resultOf "aos:nix-store-database" "readiness-resource")
     (resultOf "aos:package-store-read-view" "read-view-resource")
+    (resultOf "aos:nix-store-database" "readiness-resource")
   ];
   assert dependencies.after
   == [
+    (resultOf "aos:host-stage-received" "readiness-resource")
     (resultOf "aos:local-filesystems" "readiness-resource")
     (resultOf "aos:network-readiness" "readiness-resource")
     (resultOf "aos:registry-synchronization-lifecycle" "service-resource")
   ];
   assert dependencies.requires
   == [
+    (resultOf "aos:host-stage-received" "readiness-resource")
     (resultOf "aos:local-filesystems" "readiness-resource")
   ];
   assert dependencies.wanted_by
@@ -173,9 +163,9 @@ in
     {
       executable = {
         artifact = lib.abilities.packageOutput {
-          package = "aos-systemd-provider";
+          package = "systemd";
         };
-        entry_point = "bin/aos-systemd-provider";
+        entry_point = "libexec/aos-systemd-provider";
         arguments = ["measurement-index" "--pcr-public-key" pcrPublicKey];
       };
       ignore_failure = false;
@@ -192,5 +182,4 @@ in
     (resultOf "aos:configuration-evaluation-lifecycle" "service-resource")
     (resultOf "aos:multi-user" "readiness-resource")
   ];
-  assert measurementDependencies.requires == measurementDependencies.after;
-  assert !(enabled.config ? systemd); true
+  assert measurementDependencies.requires == measurementDependencies.after; true
