@@ -9,20 +9,7 @@
   lib,
   initrdAbilityEvaluation ? null,
   ...
-}: let
-  resolutionInputType = lib.types.submodule {
-    options = {
-      desiredInput = lib.mkOption {
-        type = lib.types.path;
-        description = "Canonical aos.ability.activation-desired/v1 build input.";
-      };
-      authenticatedPolicySet = lib.mkOption {
-        type = lib.types.path;
-        description = "Canonical aos.ability.authenticated-policy-set/v1 build input.";
-      };
-    };
-  };
-in {
+}: {
   options = {
     aos.abilities.stages.initrd = {
       modules = lib.mkOption {
@@ -32,30 +19,6 @@ in {
         description = ''
           Ordinary modules evaluated in the authenticated initrd ability
           environment after the parent system selects its package modules.
-        '';
-      };
-
-      intent = lib.mkOption {
-        type = lib.types.listOf lib.types.attrs;
-        default = [];
-        internal = true;
-        description = ''
-          Data-only initrd module configurations retained as the hermetic
-          build-stage evaluator input. Each contributor remains a separate
-          module value so the initrd fixed point performs ordinary typed merges
-          and conflict checks. Package modules remain authoritative for their
-          declarations, implementations, and composition behavior.
-        '';
-      };
-
-      resolutionInput = lib.mkOption {
-        type = lib.types.nullOr resolutionInputType;
-        default = null;
-        internal = true;
-        description = ''
-          Existing authenticated desired-state and operator policy documents
-          from which the build-stage planner retains the checked initrd
-          PlanningSnapshot. This option defines no provider policy vocabulary.
         '';
       };
     };

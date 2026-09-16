@@ -32,7 +32,6 @@ const INITRD_TRANSACTION_ROOT: &str = "initrd";
 const JOURNAL_FILE: &str = "execution.journal";
 const RETAINED_CHECKPOINT_FILE: &str = "release-checkpoint.json";
 const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
-const INITRD_STATIC_CONTRACT_PATH: &str = "/usr/lib/aos/initrd/static-ability-contract.json";
 const INITRD_CHECKPOINT_PATH: &str = "/run/aos/ability-stage-handoff/initrd.json";
 const TRANSACTION_STORAGE_INTERFACE: &str = "aos.boot.transaction-storage-view";
 const TRANSACTION_STORAGE_PURPOSE: &str = "initrd-stage-journal";
@@ -53,7 +52,13 @@ const DOCUMENT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// malformed, noncanonical, or inconsistent, the running image cannot be
 /// authenticated, required execution has no supported typed executor, or any
 /// journal/checkpoint durability operation fails.
-pub fn run_initrd_stage(stage: &str, root: &Path, resolved_stage: &Path) -> Result<()> {
+pub fn run_initrd_stage(
+    stage: &str,
+    root: &Path,
+    source_stage_bundle: &Path,
+    static_contract_identity: &str,
+    static_contract: &Path,
+) -> Result<()> {
     ensure!(
         stage == "initrd",
         "ability stage runner supports only initrd"
@@ -64,24 +69,30 @@ pub fn run_initrd_stage(stage: &str, root: &Path, resolved_stage: &Path) -> Resu
         .context("authenticating the pre-/var initrd target image")?;
     let boot_id = read_boot_id(Path::new(BOOT_ID_PATH))?;
     let contract_bytes = read_trusted_file(
-        Path::new(INITRD_STATIC_CONTRACT_PATH),
+        static_contract,
         DOCUMENT_MAX_BYTES,
         "initrd static ability contract",
     )?;
-    let resolved_stage_bytes = read_trusted_file(
-        resolved_stage,
+    let source_stage_bytes = read_trusted_file(
+        source_stage_bundle,
         DOCUMENT_MAX_BYTES,
-        "resolved initrd ability stage",
+        "initrd source stage bundle",
     )?;
-    let transaction_storage = selected_transaction_storage(&resolved_stage_bytes)?;
+    validate_source_contract_binding(
+        &source_stage_bytes,
+        static_contract_identity,
+        &contract_bytes,
+    )?;
+    let transaction_storage = selected_transaction_storage(&source_stage_bytes)?;
 
     run_initrd_stage_with(
         &transaction_storage,
         Path::new(INITRD_CHECKPOINT_PATH),
         &contract_bytes,
+        static_contract_identity,
         &boot_id,
         image,
-        &resolved_stage_bytes,
+        &source_stage_bytes,
     )
 }
 
@@ -92,7 +103,13 @@ pub fn run_initrd_stage(stage: &str, root: &Path, resolved_stage: &Path) -> Resu
 /// Returns an error when the source stage is not `initrd`, the checkpoint or
 /// journal is absent, unsafe, malformed, torn, or inconsistent, the current
 /// boot/image/static-contract identity differs, or durable receipt fails.
-pub fn receive_initrd_stage(from_stage: &str, image_profile: &Path) -> Result<()> {
+pub fn receive_initrd_stage(
+    from_stage: &str,
+    image_profile: &Path,
+    source_stage_bundle: &Path,
+    static_contract_identity: &str,
+    static_contract: &Path,
+) -> Result<()> {
     ensure!(
         from_stage == "initrd",
         "ability stage receiver supports only initrd"
@@ -103,15 +120,27 @@ pub fn receive_initrd_stage(from_stage: &str, image_profile: &Path) -> Result<()
         .context("authenticating the host running image")?;
     let boot_id = read_boot_id(Path::new(BOOT_ID_PATH))?;
     let contract_bytes = read_trusted_file(
-        Path::new(INITRD_STATIC_CONTRACT_PATH),
+        static_contract,
         DOCUMENT_MAX_BYTES,
         "host copy of the initrd static ability contract",
+    )?;
+    let source_stage_bytes = read_trusted_file(
+        source_stage_bundle,
+        DOCUMENT_MAX_BYTES,
+        "host copy of the initrd source stage bundle",
+    )?;
+    validate_source_contract_binding(
+        &source_stage_bytes,
+        static_contract_identity,
+        &contract_bytes,
     )?;
 
     receive_initrd_stage_with(
         image_profile,
         Path::new(INITRD_CHECKPOINT_PATH),
         &contract_bytes,
+        static_contract_identity,
+        &source_stage_bytes,
         &boot_id,
         ImageIdentity::from_generation(&image),
     )
@@ -128,7 +157,13 @@ pub fn receive_initrd_stage(from_stage: &str, image_profile: &Path) -> Result<()
 /// Returns an error when the source stage is not `initrd`, the checkpoint or
 /// journal is absent, unsafe, malformed, torn, already received, or
 /// inconsistent, or the boot, target image, or static contract differs.
-pub fn validate_initrd_stage(from_stage: &str, root: &Path) -> Result<()> {
+pub fn validate_initrd_stage(
+    from_stage: &str,
+    root: &Path,
+    source_stage_bundle: &Path,
+    static_contract_identity: &str,
+    static_contract: &Path,
+) -> Result<()> {
     ensure!(
         from_stage == "initrd",
         "ability stage validator supports only initrd"
@@ -139,14 +174,26 @@ pub fn validate_initrd_stage(from_stage: &str, root: &Path) -> Result<()> {
         .context("authenticating the pre-/var initrd target image for stage release")?;
     let boot_id = read_boot_id(Path::new(BOOT_ID_PATH))?;
     let contract_bytes = read_trusted_file(
-        Path::new(INITRD_STATIC_CONTRACT_PATH),
+        static_contract,
         DOCUMENT_MAX_BYTES,
         "initrd static ability contract",
+    )?;
+    let source_stage_bytes = read_trusted_file(
+        source_stage_bundle,
+        DOCUMENT_MAX_BYTES,
+        "initrd source stage bundle",
+    )?;
+    validate_source_contract_binding(
+        &source_stage_bytes,
+        static_contract_identity,
+        &contract_bytes,
     )?;
 
     validate_initrd_stage_with(
         Path::new(INITRD_CHECKPOINT_PATH),
         &contract_bytes,
+        static_contract_identity,
+        &source_stage_bytes,
         &boot_id,
         image,
     )
@@ -214,8 +261,9 @@ struct StageCheckpoint {
     transaction_storage: ResourceReference,
     transaction_root: String,
     image: ImageIdentity,
+    static_ability_contract_identity: String,
     static_ability_contract_sha256: Sha256Digest,
-    resolved_stage_sha256: Sha256Digest,
+    source_stage_bundle_sha256: Sha256Digest,
     execution_sha256: Sha256Digest,
     journal_head: Sha256Digest,
     status: CheckpointStatus,
@@ -265,8 +313,9 @@ enum StageEvent {
         transaction_storage: ResourceReference,
         transaction_root: String,
         image: ImageIdentity,
+        static_ability_contract_identity: String,
         static_ability_contract_sha256: Sha256Digest,
-        resolved_stage_sha256: Sha256Digest,
+        source_stage_bundle_sha256: Sha256Digest,
     },
     SourceCompleted {
         schema: String,
@@ -279,6 +328,7 @@ enum StageEvent {
         checkpoint_sha256: Sha256Digest,
         released_journal_head: Sha256Digest,
         image: ImageIdentity,
+        static_ability_contract_identity: String,
         static_ability_contract_sha256: Sha256Digest,
         execution: StageExecutionEvidence,
     },
@@ -464,9 +514,9 @@ struct TransactionStorageRealization {
 }
 
 fn selected_transaction_storage(
-    resolved_stage_bytes: &[u8],
+    source_stage_bundle_bytes: &[u8],
 ) -> Result<TransactionStorageSelection> {
-    let checked = super::source_stage::decode_source_stage(resolved_stage_bytes)?;
+    let checked = super::source_stage::decode_source_stage(source_stage_bundle_bytes)?;
     ensure!(
         checked
             .plan()
@@ -548,6 +598,26 @@ fn selected_transaction_storage(
     Ok(TransactionStorageSelection { resource, root })
 }
 
+fn validate_source_contract_binding(
+    source_stage_bundle_bytes: &[u8],
+    static_contract_identity: &str,
+    contract_bytes: &[u8],
+) -> Result<()> {
+    let checked = super::source_stage::decode_source_stage(source_stage_bundle_bytes)?;
+    let bound = checked.bundle().static_contract();
+    ensure!(
+        bound.identity == static_contract_identity,
+        "source stage bundle names another static contract identity"
+    );
+    ensure!(
+        bound.sha256 == sha256_digest(contract_bytes),
+        "source stage bundle names other static contract content"
+    );
+    super::static_packages::verified_initrd_packages(contract_bytes)
+        .context("authenticating source stage static contract")?;
+    Ok(())
+}
+
 fn validate_transaction_storage_reference(resource: &ResourceReference) -> Result<()> {
     ensure!(
         resource.interface.name.as_str() == TRANSACTION_STORAGE_INTERFACE
@@ -587,9 +657,10 @@ fn run_initrd_stage_with(
     transaction_storage: &TransactionStorageSelection,
     checkpoint_path: &Path,
     contract_bytes: &[u8],
+    static_contract_identity: &str,
     boot_id: &str,
     image: ImageIdentity,
-    resolved_stage_bytes: &[u8],
+    source_stage_bundle_bytes: &[u8],
 ) -> Result<()> {
     validate_boot_id(boot_id)?;
     super::static_packages::verified_initrd_packages(contract_bytes)
@@ -602,7 +673,7 @@ fn run_initrd_stage_with(
         .to_str()
         .context("selected transaction-storage path is not UTF-8")?
         .to_string();
-    let resolved_stage_sha256 = sha256_digest(resolved_stage_bytes);
+    let source_stage_bundle_sha256 = sha256_digest(source_stage_bundle_bytes);
     let prepared = StageEvent::Prepared {
         schema: JOURNAL_EVENT_SCHEMA.to_string(),
         source_stage: ExecutionStage::Initrd,
@@ -612,8 +683,9 @@ fn run_initrd_stage_with(
         transaction_storage: transaction_storage.resource.clone(),
         transaction_root: transaction_root.clone(),
         image: image.clone(),
+        static_ability_contract_identity: static_contract_identity.to_string(),
         static_ability_contract_sha256: contract_digest,
-        resolved_stage_sha256,
+        source_stage_bundle_sha256,
     };
     let transaction_dir = prepare_transaction_directory(&transaction_storage.root, &transaction)?;
     let journal_path = transaction_dir.join(JOURNAL_FILE);
@@ -629,8 +701,8 @@ fn run_initrd_stage_with(
                 None,
                 &transaction,
                 || {
-                    execute_resolved_initrd_stage(
-                        resolved_stage_bytes,
+                    execute_source_initrd_stage(
+                        source_stage_bundle_bytes,
                         contract_bytes,
                         &transaction_storage.root,
                         transaction.clone(),
@@ -647,8 +719,8 @@ fn run_initrd_stage_with(
                 None,
                 &transaction,
                 || {
-                    execute_resolved_initrd_stage(
-                        resolved_stage_bytes,
+                    execute_source_initrd_stage(
+                        source_stage_bundle_bytes,
                         contract_bytes,
                         &transaction_storage.root,
                         transaction.clone(),
@@ -665,7 +737,7 @@ fn run_initrd_stage_with(
                 &transaction,
                 || bail!("settled initrd stage attempted to invoke handlers again"),
                 |execution| {
-                    validate_resolved_initrd_stage_evidence(resolved_stage_bytes, execution)
+                    validate_source_initrd_stage_evidence(source_stage_bundle_bytes, execution)
                 },
             )?;
             (second.digest(), completed)
@@ -676,7 +748,7 @@ fn run_initrd_stage_with(
                 &transaction,
                 || bail!("received initrd stage attempted to invoke handlers again"),
                 |execution| {
-                    validate_resolved_initrd_stage_evidence(resolved_stage_bytes, execution)
+                    validate_source_initrd_stage_evidence(source_stage_bundle_bytes, execution)
                 },
             )?;
             bail!("initrd stage journal ownership was already received by the host")
@@ -699,8 +771,9 @@ fn run_initrd_stage_with(
         transaction_storage: transaction_storage.resource.clone(),
         transaction_root,
         image,
+        static_ability_contract_identity: static_contract_identity.to_string(),
         static_ability_contract_sha256: contract_digest,
-        resolved_stage_sha256,
+        source_stage_bundle_sha256,
         execution_sha256: completed.execution_digest()?,
         journal_head: released_head,
         status: CheckpointStatus::OwnershipReleased,
@@ -748,11 +821,11 @@ where
     })
 }
 
-fn validate_resolved_initrd_stage_evidence(
-    resolved_stage_bytes: &[u8],
+fn validate_source_initrd_stage_evidence(
+    source_stage_bundle_bytes: &[u8],
     execution: &StageExecutionEvidence,
 ) -> Result<()> {
-    let checked = super::source_stage::decode_source_stage(resolved_stage_bytes)?;
+    let checked = super::source_stage::decode_source_stage(source_stage_bundle_bytes)?;
     ensure!(
         checked
             .plan()
@@ -792,13 +865,13 @@ fn validate_resolved_initrd_stage_evidence(
     execution.validate()
 }
 
-fn execute_resolved_initrd_stage(
-    resolved_stage_bytes: &[u8],
+fn execute_source_initrd_stage(
+    source_stage_bundle_bytes: &[u8],
     contract_bytes: &[u8],
     transaction_root: &Path,
     transaction: TransactionId,
 ) -> Result<StageExecutionEvidence> {
-    let checked = super::source_stage::decode_source_stage(resolved_stage_bytes)?;
+    let checked = super::source_stage::decode_source_stage(source_stage_bundle_bytes)?;
     ensure!(
         checked
             .plan()
@@ -881,10 +954,19 @@ fn receive_initrd_stage_with(
     image_profile: &Path,
     checkpoint_path: &Path,
     contract_bytes: &[u8],
+    static_contract_identity: &str,
+    source_stage_bundle_bytes: &[u8],
     boot_id: &str,
     image: ImageIdentity,
 ) -> Result<()> {
-    let release = load_validated_release(checkpoint_path, contract_bytes, boot_id, &image)?;
+    let release = load_validated_release(
+        checkpoint_path,
+        contract_bytes,
+        static_contract_identity,
+        source_stage_bundle_bytes,
+        boot_id,
+        &image,
+    )?;
     let ownership = read_journal_ownership(&release, &image)?;
     if ownership == JournalOwnership::Received {
         return retain_host_handoff_evidence(image_profile, &release);
@@ -915,6 +997,10 @@ fn receive_initrd_stage_with(
         checkpoint_sha256: sha256_digest(&release.checkpoint_bytes),
         released_journal_head: release.checkpoint.journal_head,
         image,
+        static_ability_contract_identity: release
+            .checkpoint
+            .static_ability_contract_identity
+            .clone(),
         static_ability_contract_sha256: release.contract_digest,
         execution,
     };
@@ -956,10 +1042,19 @@ fn retain_host_handoff_evidence(image_profile: &Path, release: &ValidatedRelease
 fn validate_initrd_stage_with(
     checkpoint_path: &Path,
     contract_bytes: &[u8],
+    static_contract_identity: &str,
+    source_stage_bundle_bytes: &[u8],
     boot_id: &str,
     image: ImageIdentity,
 ) -> Result<()> {
-    let release = load_validated_release(checkpoint_path, contract_bytes, boot_id, &image)?;
+    let release = load_validated_release(
+        checkpoint_path,
+        contract_bytes,
+        static_contract_identity,
+        source_stage_bundle_bytes,
+        boot_id,
+        &image,
+    )?;
     let ownership = read_journal_ownership(&release, &image)?;
     ensure!(
         ownership == JournalOwnership::Released,
@@ -993,6 +1088,8 @@ fn read_journal_ownership(
 fn load_validated_release(
     checkpoint_path: &Path,
     contract_bytes: &[u8],
+    static_contract_identity: &str,
+    source_stage_bundle_bytes: &[u8],
     boot_id: &str,
     image: &ImageIdentity,
 ) -> Result<ValidatedRelease> {
@@ -1021,8 +1118,16 @@ fn load_validated_release(
     );
     let contract_digest = sha256_digest(contract_bytes);
     ensure!(
+        checkpoint.static_ability_contract_identity == static_contract_identity,
+        "stage checkpoint names another initrd static contract identity"
+    );
+    ensure!(
         checkpoint.static_ability_contract_sha256 == contract_digest,
         "stage checkpoint names another initrd static ability contract"
+    );
+    ensure!(
+        checkpoint.source_stage_bundle_sha256 == sha256_digest(source_stage_bundle_bytes),
+        "stage checkpoint names another initrd source stage bundle"
     );
 
     let transaction_root = Path::new(&checkpoint.transaction_root);
@@ -1096,8 +1201,9 @@ fn validate_source_records(
         transaction_storage,
         transaction_root,
         image,
+        static_ability_contract_identity,
         static_ability_contract_sha256,
-        resolved_stage_sha256,
+        source_stage_bundle_sha256,
         ..
     } = prepared
     else {
@@ -1111,8 +1217,9 @@ fn validate_source_records(
             && transaction_storage == &checkpoint.transaction_storage
             && transaction_root == &checkpoint.transaction_root
             && image == &checkpoint.image
+            && static_ability_contract_identity == &checkpoint.static_ability_contract_identity
             && *static_ability_contract_sha256 == checkpoint.static_ability_contract_sha256
-            && *resolved_stage_sha256 == checkpoint.resolved_stage_sha256,
+            && *source_stage_bundle_sha256 == checkpoint.source_stage_bundle_sha256,
         "initrd stage journal preparation differs from the released checkpoint"
     );
     let StageEvent::SourceCompleted {
@@ -1148,6 +1255,7 @@ fn validate_received_record(
         checkpoint_sha256,
         released_journal_head,
         image: received_image,
+        static_ability_contract_identity,
         static_ability_contract_sha256,
         execution,
         ..
@@ -1160,6 +1268,7 @@ fn validate_received_record(
             && *checkpoint_sha256 == sha256_digest(checkpoint_bytes)
             && *released_journal_head == checkpoint.journal_head
             && received_image == image
+            && static_ability_contract_identity == &checkpoint.static_ability_contract_identity
             && *static_ability_contract_sha256 == contract_digest,
         "retained host receipt differs from the current handoff evidence"
     );

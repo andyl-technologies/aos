@@ -205,6 +205,9 @@
           cp ${system.config.system.build.initrdStaticAbilityContract}/contract.json \
             rootfs/usr/lib/aos/initrd/static-ability-contract.json
           chmod 0444 rootfs/usr/lib/aos/initrd/static-ability-contract.json
+          cp ${system.config.system.build.initrdSourceStageBundle} \
+            rootfs/usr/lib/aos/initrd/source-stage-bundle.json
+          chmod 0444 rootfs/usr/lib/aos/initrd/source-stage-bundle.json
         ''}
 
         ${lib.optionalString sb.enable ''

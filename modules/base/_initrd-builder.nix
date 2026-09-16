@@ -38,8 +38,8 @@
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
 ##!   keepBinutils — retain current binutils for signed UKI section inspection
 ##!                  in recovery-enabled normal initrds.
-##!   abilityResolutionInput — authenticated desired-state and operator policy
-##!                  documents used by the checked build-stage planner.
+##!   initrdSourceStageBundle — direct checked plan from the completed initrd
+##!                  module fixed point.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
@@ -51,15 +51,12 @@
   loadModules,
   initrdUnits,
   initrdPackages,
-  initrdStaticAbilityContractBuild,
   initrdNetworkDir ? null,
   renderedUnits,
   renderedNetworks,
   handoff,
-  abilityResolutionInput ? null,
-  abilityEnvironment,
-  abilityIntent ? [],
-  baseLib,
+  initrdSourceStageBundle,
+  initrdStaticContract,
   maskedUnits ? [],
   validateBootIdentity ? false,
   keepBinutils ? false,
@@ -85,41 +82,6 @@
     zstd
     ;
   uniqueInitrdPackages = lib.unique initrdPackages;
-  initrdStaticAbilityContract = initrdStaticAbilityContractBuild.artifact;
-
-  initrdIntentModuleRoot = buildPkgs.writeTextFile {
-    name = "aos-initrd-ability-intent";
-    destination = "/module.nix";
-    text = ''
-      { ... }: {
-        imports = builtins.map
-          (intent: { config = intent; })
-          (builtins.fromJSON ${builtins.toJSON (builtins.toJSON abilityIntent)});
-      }
-    '';
-  };
-  initrdAbilityStage =
-    if abilityResolutionInput == null
-    then null
-    else
-      import ../../lib/build/ability-stage.nix {
-        inherit lib;
-        inherit (buildPkgs) mkDerivation;
-        packageRuntime = buildPkgs.aos.packageRuntime;
-      } {
-        pname = "aos-initrd";
-        stage = abilityEnvironment.stage;
-        authority = abilityEnvironment.authority;
-        key = abilityEnvironment.key;
-        inherit baseLib;
-        intentModule = "${initrdIntentModuleRoot}/module.nix";
-        inherit (abilityResolutionInput) desiredInput authenticatedPolicySet;
-        packageContracts = initrdStaticAbilityContractBuild.retainedPackageContractArtifacts;
-      };
-  resolvedAbilityStage =
-    if initrdAbilityStage == null
-    then null
-    else initrdAbilityStage.resolvedStage;
 
   dependencyRoots =
     [
@@ -467,7 +429,7 @@
       findutils
       gawk
       jq
-    ] ++ lib.optional (resolvedAbilityStage != null) resolvedAbilityStage;
+    ];
 
     # `exportReferencesGraph` writes one file per package/name pair
     # containing that package's transitive runtime closure. Nix
@@ -620,14 +582,12 @@
           OSREL
           cp root/etc/os-release root/etc/initrd-release
 
-          cp ${initrdStaticAbilityContract}/contract.json \
+          cp ${initrdStaticContract.path} \
             root/lib/aos/initrd/static-ability-contract.json
           chmod 0444 root/lib/aos/initrd/static-ability-contract.json
 
-          ${lib.optionalString (resolvedAbilityStage != null) ''
-            cp ${resolvedAbilityStage} root/lib/aos/initrd/resolved-ability-stage.json
-            chmod 0444 root/lib/aos/initrd/resolved-ability-stage.json
-          ''}
+          cp ${initrdSourceStageBundle} root/lib/aos/initrd/source-stage-bundle.json
+          chmod 0444 root/lib/aos/initrd/source-stage-bundle.json
 
           # Make the interactive stage-1 recovery shells usable:
           cat > root/etc/profile <<PROFILE
@@ -997,7 +957,7 @@
           [ "$contract_size" -gt 1 ]
           truncate -s $((contract_size - 1)) "$out/initrd-stage-contract.json.tmp"
           mv "$out/initrd-stage-contract.json.tmp" "$out/initrd-stage-contract.json"
-          cp ${initrdStaticAbilityContract}/contract.json \
+          cp ${initrdStaticContract.path} \
             "$out/initrd-static-ability-contract.json"
 
           echo "==> $archive_size bytes written to $out/initrd.img"
@@ -1005,21 +965,9 @@
       }
     ];
 
-    passthru = {
-      staticAbilityContract = initrdStaticAbilityContract;
-      inherit resolvedAbilityStage;
-      planningSnapshot =
-        if initrdAbilityStage == null
-        then null
-        else initrdAbilityStage.planningSnapshot;
-    };
-
     meta = {
       description = "AOS initrd (zstd-compressed cpio, systemd PID 1)";
     };
   };
 in
   initrdArtifact
-  // {
-    staticAbilityContract = initrdStaticAbilityContract;
-  }
