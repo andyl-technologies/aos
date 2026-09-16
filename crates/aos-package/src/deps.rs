@@ -1235,7 +1235,6 @@ references = ["llllllllllllllllllllllllllllllll"]
                 source_nar_hash: String::new(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         }];
@@ -1278,7 +1277,6 @@ references = ["llllllllllllllllllllllllllllllll"]
                 source_nar_hash: String::new(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         }];
@@ -1309,7 +1307,6 @@ references = ["llllllllllllllllllllllllllllllll"]
                 source_nar_hash: String::new(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         }];
@@ -1336,7 +1333,6 @@ references = ["llllllllllllllllllllllllllllllll"]
             requires_features: Vec::new(),
             documentation: None,
             contract: None,
-            bpf_lsm: None,
             attestation: Default::default(),
         };
         let low_candidate = PackageMeta {
@@ -1362,7 +1358,6 @@ references = ["llllllllllllllllllllllllllllllll"]
             requires_features: Vec::new(),
             documentation: None,
             contract: None,
-            bpf_lsm: None,
             attestation: Default::default(),
         };
 
@@ -1429,7 +1424,6 @@ references = []
                     source_nar_hash: String::new(),
                     documentation: None,
                     contract: None,
-                    bpf_lsm: None,
                     attestation: Default::default(),
                 }),
             },
@@ -1452,7 +1446,6 @@ references = []
                     source_nar_hash: String::new(),
                     documentation: None,
                     contract: None,
-                    bpf_lsm: None,
                     attestation: Default::default(),
                 }),
             },

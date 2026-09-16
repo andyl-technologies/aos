@@ -400,7 +400,6 @@ pub fn rebuild_meta(
                     source_nar_hash: pkg.source_nar_hash.clone(),
                     documentation: pkg.documentation.clone(),
                     contract: pkg.contract.clone(),
-                    bpf_lsm: pkg.bpf_lsm.clone(),
                     attestation: pkg.attestation.clone(),
                 }),
             }
@@ -472,7 +471,6 @@ mod tests {
                 source_nar_hash: String::new(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         }

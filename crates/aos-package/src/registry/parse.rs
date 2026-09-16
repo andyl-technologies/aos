@@ -340,15 +340,9 @@ fn package_metas_for_platform(
                 requires_features,
                 documentation: plat.documentation.clone(),
                 contract: plat.contract.clone(),
-                bpf_lsm: plat.bpf_lsm.clone(),
                 attestation,
             };
-            if (meta
-                .bpf_lsm
-                .as_ref()
-                .is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
-                || meta.contract.is_some()
-                || !meta.attestation.is_empty())
+            if (meta.contract.is_some() || !meta.attestation.is_empty())
                 && !plat.references.is_gate()
             {
                 bail!(
@@ -484,42 +478,6 @@ closure_size = 524288
 source_drv = "/var/lib/store/s5t2n3lq9w4y-zlib-1.3.1.drv"
 source_nar_hash = "sha256:789abc"
 references = []
-"#;
-
-#[cfg(test)]
-const BPF_LSM_TOML: &str = r#"
-[package]
-name = "aos-ebpf-lsm-policy"
-description = "Fleet BPF-LSM policy"
-license = "MIT"
-maintainer = "aos-team"
-
-[[versions]]
-version = "0"
-
-[versions.platforms.x86_64-linux]
-store_path = "/var/lib/store/bpflsmhash12-aos-ebpf-lsm-policy-0"
-nar_hash = "sha256:abc123"
-nar_size = 1024
-closure_size = 1024
-source_drv = ""
-source_nar_hash = ""
-root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-provenance = "attestation/aos-ebpf-lsm-policy.provenance.jsonl"
-measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-[versions.platforms.x86_64-linux.references]
-hashes = []
-min-format = 1
-requires-features = ["attestation-v1", "bpf-lsm-policy-v1"]
-
-[versions.platforms.x86_64-linux.bpf_lsm]
-
-[[versions.platforms.x86_64-linux.bpf_lsm.policies]]
-name = "aos-lsm-task-audit"
-policy = "share/aos/ebpf-lsm/aos-task-audit.json"
-object = "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
-programs = ["aos_lsm_file_mprotect"]
 "#;
 
 #[cfg(test)]
@@ -824,53 +782,6 @@ sha256 = "{info_sha256}"
         assert_eq!(meta.name, "zlib");
         assert!(meta.references.is_empty());
     }
-    #[test]
-    fn parse_bpf_lsm_policy_metadata() {
-        let meta = parse_package_toml(BPF_LSM_TOML, "x86_64-linux")
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(meta.min_format, Some(1));
-        assert_eq!(
-            meta.requires_features,
-            vec!["attestation-v1", "bpf-lsm-policy-v1"]
-        );
-        let bpf_lsm = meta.bpf_lsm.as_ref().unwrap();
-        assert_eq!(bpf_lsm.policies.len(), 1);
-        assert_eq!(bpf_lsm.policies[0].name, "aos-lsm-task-audit");
-        assert_eq!(
-            bpf_lsm.policies[0].object,
-            "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
-        );
-        assert_eq!(bpf_lsm.policies[0].programs, vec!["aos_lsm_file_mprotect"]);
-    }
-
-    #[test]
-    fn parse_bpf_lsm_metadata_requires_structural_gate() {
-        let content = BPF_LSM_TOML.replace(
-            r#"[versions.platforms.x86_64-linux.references]
-hashes = []
-min-format = 1
-requires-features = ["attestation-v1", "bpf-lsm-policy-v1"]
-"#,
-            r#"references = []
-min-format = 1
-requires-features = ["attestation-v1", "bpf-lsm-policy-v1"]
-"#,
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("structural references gate"));
-    }
-
-    #[test]
-    fn parse_bpf_lsm_metadata_requires_own_feature_gate() {
-        let content = BPF_LSM_TOML.replace("bpf-lsm-policy-v1", "ebpf-net-policy-v1");
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("bpf-lsm-policy-v1"));
-    }
-
     #[test]
     fn parse_attestation_metadata() {
         let meta = parse_package_toml(ATTESTATION_TOML, "x86_64-linux")

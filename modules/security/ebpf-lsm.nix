@@ -4,6 +4,6 @@
   pkgs,
   ...
 }: {
-  environment.systemPackages = [pkgs.aos];
+  environment.systemPackages = [pkgs.aos-ebpf-lsm-policy];
   aos.security.ebpfLsm.enable = lib.mkDefault true;
 }

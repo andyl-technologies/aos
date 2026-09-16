@@ -695,7 +695,6 @@ priority = 500
                 source_nar_hash: String::new(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         };
@@ -855,7 +854,6 @@ references = []
                 source_nar_hash: String::new(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         };
@@ -887,7 +885,6 @@ references = []
                 source_nar_hash: "sha256:source".into(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         };
@@ -924,7 +921,6 @@ references = []
                 source_nar_hash: "sha256:source".into(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         }];

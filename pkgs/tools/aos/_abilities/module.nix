@@ -5,7 +5,6 @@
     ./configuration-evaluation.nix
     ./configuration-provider/module.nix
     ./control-plane/module.nix
-    ./ebpf-lsm-policy-loader.nix
     ./package-attestation-quote.nix
     ./package-profile-convergence.nix
     ./provisioning-metadata.nix

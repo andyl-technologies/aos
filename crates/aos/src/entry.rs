@@ -136,7 +136,6 @@ fn install_panic_hook(program: &'static str) {
 fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
     const COMMANDS: &[&str] = &[
         "__verify-boot-commit",
-        "_load-ebpf-lsm-policies",
         "__eval",
         "__eval-retained",
         "__materialize",

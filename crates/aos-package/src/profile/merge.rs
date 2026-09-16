@@ -365,7 +365,6 @@ mod tests {
                 source_nar_hash: String::new(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         };

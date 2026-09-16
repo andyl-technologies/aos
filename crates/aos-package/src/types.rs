@@ -32,9 +32,6 @@ use serde::{Deserialize, Serialize};
 /// Current registry package metadata format understood by this crate.
 pub const PACKAGE_META_FORMAT: u32 = 1;
 
-/// Registry feature flag for RFC-0001 fleet-managed BPF-LSM policy packages.
-pub const FEATURE_BPF_LSM_POLICY_V1: &str = "bpf-lsm-policy-v1";
-
 /// Registry feature flag for RFC-0001 package attestation metadata.
 pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
 
@@ -60,7 +57,6 @@ pub const FEATURE_ABILITY_EFFECTS_V1: &str = "ability-effects-v1";
 pub const PACKAGE_CONTRACT_OUTPUT: &str = "contract";
 
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
-    FEATURE_BPF_LSM_POLICY_V1,
     FEATURE_ATTESTATION_V1,
     FEATURE_PACKAGE_DOCUMENTATION_V1,
     FEATURE_UKI_SLOTS_V1,
@@ -504,9 +500,6 @@ pub struct PackageMeta {
     /// Authenticated RFC-0022 ability package companion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<PackageContractMeta>,
-    /// Signed fleet BPF-LSM policy artifact metadata.
-    #[serde(default, rename = "bpf_lsm", skip_serializing_if = "Option::is_none")]
-    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
     /// Runtime integrity, attestation, and provenance facts for this package.
     #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
     pub attestation: AttestationMeta,
@@ -514,9 +507,7 @@ pub struct PackageMeta {
 
 // Shared package metadata schemas live in the wasm-clean registry-surface
 // crate so the registry hub and package client consume one contract.
-pub use aos_registry_surface::manifest::{
-    AttestationMeta, BpfLsmPolicyArtifactMeta, BpfLsmPolicyMeta,
-};
+pub use aos_registry_surface::manifest::AttestationMeta;
 
 pub use aos_registry_surface::manifest::{
     DocumentationArtifactMeta, PackageContractArtifactMeta, PackageContractClosureMemberMeta,
@@ -533,14 +524,9 @@ pub fn option_path_root(path: &str) -> &str {
 
 /// Returns whether package metadata must be backed by DSSE provenance.
 ///
-/// BPF-LSM policy, package documentation, and package contracts require
-/// provenance.
+/// Package documentation and package contracts require provenance.
 pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
-    meta.bpf_lsm
-        .as_ref()
-        .is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
-        || meta.documentation.is_some()
-        || meta.contract.is_some()
+    meta.documentation.is_some() || meta.contract.is_some()
 }
 
 /// Validate that a package metadata entry can be safely consumed.
@@ -589,13 +575,6 @@ pub fn validate_supported_package_meta_with(
         }
     }
 
-    if let Some(bpf_lsm) = &meta.bpf_lsm {
-        if !bpf_lsm.is_empty() {
-            require_feature(meta, FEATURE_BPF_LSM_POLICY_V1)?;
-            validate_bpf_lsm_policy_meta(bpf_lsm)
-                .with_context(|| format!("invalid BPF-LSM policy metadata for '{}'", meta.name))?;
-        }
-    }
     if !meta.attestation.is_empty() {
         require_feature(meta, FEATURE_ATTESTATION_V1)?;
         validate_attestation_meta(&meta.attestation)
@@ -747,42 +726,6 @@ fn validate_account_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate signed BPF-LSM policy artifact metadata.
-///
-/// # Errors
-///
-/// Returns an error when names are malformed, artifact paths are not safe
-/// package-relative paths, or program names are not BPF C identifiers.
-pub fn validate_bpf_lsm_policy_meta(meta: &BpfLsmPolicyMeta) -> Result<()> {
-    let mut seen = std::collections::BTreeSet::new();
-    for policy in &meta.policies {
-        validate_policy_artifact_name(&policy.name)?;
-        validate_relative_artifact_path("BPF-LSM policy", &policy.policy, ".json")?;
-        validate_relative_artifact_path("BPF-LSM object", &policy.object, ".bpf.o")?;
-        if !seen.insert(&policy.name) {
-            bail!("duplicate BPF-LSM policy '{}'", policy.name);
-        }
-        if policy.programs.is_empty() {
-            bail!(
-                "BPF-LSM policy '{}' must name at least one program",
-                policy.name
-            );
-        }
-        let mut programs = std::collections::BTreeSet::new();
-        for program in &policy.programs {
-            validate_bpf_program_name(program)?;
-            if !programs.insert(program) {
-                bail!(
-                    "BPF-LSM policy '{}' contains duplicate program '{}'",
-                    policy.name,
-                    program
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Validate runtime integrity, attestation, and provenance metadata.
 ///
 /// # Errors
@@ -868,17 +811,6 @@ fn canonical_sha256_digest(digest: &str) -> Option<String> {
     None
 }
 
-fn validate_policy_artifact_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
-    {
-        bail!("invalid BPF-LSM policy name '{name}'");
-    }
-    Ok(())
-}
-
 fn validate_relative_artifact_path(kind: &str, path: &str, suffix: &str) -> Result<()> {
     if !path.ends_with(suffix) {
         bail!("{kind} path '{path}' must be a relative *{suffix} path");
@@ -900,19 +832,6 @@ fn validate_relative_artifact_member_path(kind: &str, path: &str) -> Result<()> 
             std::path::Component::Normal(part) if !part.is_empty() => {}
             _ => bail!("{kind} path '{path}' must not contain '.', '..', or prefixes"),
         }
-    }
-    Ok(())
-}
-
-fn validate_bpf_program_name(program: &str) -> Result<()> {
-    let mut chars = program.chars();
-    let Some(first) = chars.next() else {
-        bail!("BPF program name must not be empty");
-    };
-    if !(first == '_' || first.is_ascii_alphabetic())
-        || !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-    {
-        bail!("invalid BPF program name '{program}'");
     }
     Ok(())
 }
@@ -1332,9 +1251,6 @@ pub struct ApmMeta {
     /// Authenticated ability companion captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<PackageContractMeta>,
-    /// Fleet BPF-LSM policy metadata captured at install time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
     /// Runtime integrity, attestation, and provenance facts captured at install time.
     #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
     pub attestation: AttestationMeta,
@@ -3287,7 +3203,6 @@ last_update = "2026-02-13T10:30:00Z"
                 source_nar_hash: "sha256:source".into(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         };
@@ -3322,77 +3237,6 @@ last_update = "2026-02-13T10:30:00Z"
         assert!(meta.apm.is_none());
         assert_eq!(meta.access_count, 42);
     }
-    fn bpf_lsm_package_meta(requires_features: Vec<&str>) -> PackageMeta {
-        PackageMeta {
-            name: "aos-ebpf-lsm-policy".into(),
-            version: "0".into(),
-            description: "Fleet BPF-LSM policy".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/bpflsmhash12-aos-ebpf-lsm-policy-0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: requires_features.into_iter().map(str::to_string).collect(),
-            documentation: None,
-            contract: None,
-            bpf_lsm: Some(BpfLsmPolicyMeta {
-                policies: vec![BpfLsmPolicyArtifactMeta {
-                    name: "aos-lsm-task-audit".into(),
-                    policy: "share/aos/ebpf-lsm/aos-task-audit.json".into(),
-                    object: "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o".into(),
-                    programs: vec!["aos_lsm_file_mprotect".into()],
-                }],
-            }),
-            attestation: AttestationMeta {
-                root_digest: Some(
-                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                        .into(),
-                ),
-                root_hash: None,
-                root_hash_sig: None,
-                provenance: Some("attestation/aos-ebpf-lsm-policy.provenance.jsonl".into()),
-                measurement: Some(
-                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                        .into(),
-                ),
-            },
-        }
-    }
-
-    #[test]
-    fn package_meta_requires_bpf_lsm_policy_feature_gate() {
-        let mut meta = bpf_lsm_package_meta(vec![FEATURE_ATTESTATION_V1, FEATURE_ABILITIES_V1]);
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains(FEATURE_BPF_LSM_POLICY_V1));
-
-        meta.requires_features = vec![
-            FEATURE_ATTESTATION_V1.into(),
-            FEATURE_BPF_LSM_POLICY_V1.into(),
-        ];
-        validate_supported_package_meta(&meta).unwrap();
-    }
-
-    #[test]
-    fn package_meta_rejects_invalid_bpf_lsm_artifacts() {
-        let mut meta =
-            bpf_lsm_package_meta(vec![FEATURE_ATTESTATION_V1, FEATURE_BPF_LSM_POLICY_V1]);
-        meta.bpf_lsm.as_mut().unwrap().policies[0].object = "../escape.bpf.o".into();
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(format!("{err:#}").contains("BPF-LSM object path"));
-    }
-
     fn attestation_package_meta(requires_features: Vec<&str>) -> PackageMeta {
         PackageMeta {
             name: "verity-app".into(),
@@ -3416,7 +3260,6 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: requires_features.into_iter().map(str::to_string).collect(),
             documentation: None,
             contract: None,
-            bpf_lsm: None,
             attestation: AttestationMeta {
                 root_digest: Some(
                     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -4060,7 +3903,6 @@ pin = "v2026.02"
             source_nar_hash: meta.source_nar_hash.clone(),
             documentation: meta.documentation.clone(),
             contract: None,
-            bpf_lsm: None,
             attestation: meta.attestation.clone(),
         };
         let encoded = serde_json::to_vec(&installed).expect("installed metadata");
@@ -4124,7 +3966,6 @@ pin = "v2026.02"
             requires_features: vec![],
             documentation: None,
             contract: None,
-            bpf_lsm: None,
             attestation: AttestationMeta::default(),
         }
     }

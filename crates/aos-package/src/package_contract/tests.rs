@@ -373,7 +373,6 @@ impl TestFixture {
             requires_features: Vec::new(),
             documentation: None,
             contract: Some(ability),
-            bpf_lsm: None,
             attestation: AttestationMeta::default(),
         };
 

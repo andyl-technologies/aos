@@ -151,9 +151,6 @@ pub struct PlatformEntry {
     /// Feature flags a consumer must understand before installing this entry.
     #[serde(default, rename = "requires-features")]
     pub requires_features: Vec<String>,
-    /// Signed fleet BPF-LSM policy metadata.
-    #[serde(default)]
-    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
     /// Digest used as the package-root input to TPM measurements.
     #[serde(default)]
     pub root_digest: Option<String>,
@@ -1443,22 +1440,6 @@ pub struct SysrootImageEntry {
     pub root_hash_sig: Option<String>,
 }
 
-/// Signed metadata for fleet-managed BPF-LSM policy artifacts.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BpfLsmPolicyMeta {
-    /// BPF-LSM policies carried by this package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub policies: Vec<BpfLsmPolicyArtifactMeta>,
-}
-
-impl BpfLsmPolicyMeta {
-    /// Returns whether the package declares no BPF-LSM policies.
-    pub fn is_empty(&self) -> bool {
-        self.policies.is_empty()
-    }
-}
-
 /// Registry-published runtime integrity, attestation, and provenance facts.
 ///
 /// These are catalog facts, not runtime authority. The registry distributes
@@ -1494,21 +1475,6 @@ impl AttestationMeta {
             && self.provenance.is_none()
             && self.measurement.is_none()
     }
-}
-
-/// One BPF-LSM policy artifact carried by a signed package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BpfLsmPolicyArtifactMeta {
-    /// Stable policy name used for host policy selection and bpffs pins.
-    pub name: String,
-    /// Relative JSON policy path inside the package root.
-    pub policy: String,
-    /// Relative BPF object path inside the package root.
-    pub object: String,
-    /// BPF program names expected in the object and policy JSON.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub programs: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

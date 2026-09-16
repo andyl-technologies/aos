@@ -773,7 +773,6 @@ mod tests {
             requires_features: Vec::new(),
             documentation: None,
             contract: None,
-            bpf_lsm: None,
             attestation: Default::default(),
         }
     }

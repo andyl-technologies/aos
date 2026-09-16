@@ -2663,7 +2663,6 @@ mod tests {
                     selectors: Vec::new(),
                     provenance: "provenance/web.contract.intoto.jsonl".into(),
                 }),
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         }
@@ -2700,7 +2699,6 @@ mod tests {
             requires_features: vec!["attestation-v1".into()],
             documentation: None,
             contract: None,
-            bpf_lsm: None,
             attestation: AttestationMeta {
                 root_digest: Some(root_hash.into()),
                 root_hash: Some(root_hash.into()),
