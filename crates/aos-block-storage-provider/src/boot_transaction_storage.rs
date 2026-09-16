@@ -10,9 +10,7 @@ use serde_json::json;
 
 use crate::engine::{Backend, BackendObservation, ability_value};
 
-const REALIZATION_SCHEMA: &str = "aos.boot.transaction-storage-realization/v1";
 const CONTEXT_SCHEMA: &str = "aos.boot.transaction-storage-context/v1";
-const OBSERVATION_SCHEMA: &str = "aos.boot.transaction-storage-observation/v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -30,7 +28,8 @@ enum Purpose {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Realization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     path: String,
 }
 
@@ -63,10 +62,6 @@ impl Backend for BootTransactionStorageBackend {
     ) -> Result<AbilityValue> {
         validate_desired(&decode(desired)?)?;
         let realization: Realization = decode(realization)?;
-        ensure!(
-            realization.schema == REALIZATION_SCHEMA,
-            "unsupported boot transaction-storage realization"
-        );
         validate_path(&realization.path)?;
 
         ability_value(serde_json::to_value(Context {
@@ -77,6 +72,7 @@ impl Backend for BootTransactionStorageBackend {
 
     fn observe(
         &self,
+        observation_schema: &str,
         desired: &AbilityValue,
         _realization: &AbilityValue,
         _target: &ResourceReference,
@@ -95,7 +91,7 @@ impl Backend for BootTransactionStorageBackend {
         let ready = Path::new(&context.path).is_dir();
         Ok(BackendObservation {
             evidence: ability_value(json!({
-                "schema": OBSERVATION_SCHEMA,
+                "schema": observation_schema,
                 "expected": desired,
                 "realized": ready.then_some(context.path.clone()),
                 "state": if ready { "ready" } else { "absent" },
