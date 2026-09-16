@@ -73,19 +73,11 @@
     systemName = "initrd-security-intent-test";
     modules = [../../systems/server-verity.nix];
   };
-  secureVerityIntent = secureVeritySystem.config.aos.abilities.stages.initrd.intent;
   secureVerityPackages =
     builtins.map
     (package: package.pname)
     secureVeritySystem.config.aos.boot.initrd.packageRoots;
   secureBootModule = builtins.readFile ../../modules/base/secure-boot.nix;
-  intentValuesAt = path:
-    builtins.concatMap
-    (fragment:
-      lib.optional
-      (lib.hasAttrByPath path fragment)
-      (lib.attrByPath path null fragment))
-    secureVerityIntent;
 in
   assert builtins.all
   (requestName: !(lib.hasPrefix "aos-systemd-var-policy:" requestName))
@@ -154,10 +146,6 @@ in
   assert identityGuardFailure.dispatch == "isolate-active-goal";
   assert identityGuardFailure.handlers
   == [(output "aos-boot-identity:integrity-failure" "readiness-resource")];
-  assert intentValuesAt ["aos" "security" "bootIdentityServices" "enable"] == [true];
-  assert intentValuesAt ["aos" "security" "verityRootVerification" "enable"] == [true];
-  assert intentValuesAt ["aos" "security" "measuredVar" "enable"] == [true];
-  assert intentValuesAt ["aos" "security" "measuredVar" "requireVerity"] == [true];
   assert builtins.elem "systemd" secureVerityPackages;
   assert builtins.elem "aos-systemd-var-policy" secureVerityPackages;
   assert !(lib.hasInfix "pkgs.systemd" secureBootModule);

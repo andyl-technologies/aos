@@ -376,7 +376,7 @@ in
             grep -Fx "OnFailure=emergency.target" "$initrd_fs_target" >/dev/null
             grep -Fx "OnFailureJobMode=replace-irreversibly" \
               "$initrd_fs_target" >/dev/null
-            grep -Fx "lib/aos/initrd/resolved-ability-stage.json" archive-files >/dev/null
+            grep -Fx "lib/aos/initrd/source-stage-bundle.json" archive-files >/dev/null
             if grep -E 'etc/aos/initrd.*activation.*\.json' archive-files >/dev/null; then
               echo "legacy initrd activation selection remains in the archive" >&2
               exit 1
@@ -390,7 +390,7 @@ in
             initrd_controller_script=$(resolve_archived_store_path unit-graph/nix \
               "$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$initrd_controller")")
             grep -F "__ability-stage-run" "$initrd_controller_script" >/dev/null
-            grep -F -- "--resolved-stage /lib/aos/initrd/resolved-ability-stage.json" \
+            grep -F -- "--source-stage-bundle /lib/aos/initrd/source-stage-bundle.json" \
               "$initrd_controller_script" >/dev/null
             initrd_barrier=$(resolve_archived_store_path unit-graph/nix \
               "$(readlink unit-graph/etc/systemd/system/aos-ability-initrd-handoff-barrier.service)")
