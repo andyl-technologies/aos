@@ -83,6 +83,7 @@
           entry = null;
         })
         (child "boot-success" "boot-success" request.parameters)
+        (child "image-health" "health-observation" request.parameters)
         (child "host-restart" "host-restart" {reason = "activate-image";})
       ])
       (builtins.attrNames requests));
@@ -167,9 +168,8 @@
     outputs = {};
     conditionalRequirements = [];
     realizations =
-      builtins.mapAttrs (_: resource: {
+      builtins.mapAttrs (_: _: {
         schema = "aos.image-rollout.realization/v1";
-        health-command = "${resource.value.candidate.toplevel}/health";
       })
       resources;
   };
@@ -378,7 +378,9 @@
     mutate = key: method: phase: branchContext:
       terminal key method phase branchContext "exclusive-write" {} "planning";
     observe = key: method: phase:
-      terminal key method phase [] "read" {} "planning";
+      terminal key method phase [] "read" (
+        lib.optionalAttrs (method == "observe-health") {health = literal null;}
+      ) "planning";
     platform = key: requestPrefix: selected: method: targetOperation: phase: branchContext: mode: inputs: inputPhase: let
       binding = rolloutBinding context change requestPrefix selected.identity method;
     in
@@ -394,7 +396,8 @@
           compensate = null;
         };
       };
-    storageRetain = platform
+    storageRetain =
+      platform
       "retain-boot-payloads"
       "artifact-storage"
       imagePlatform.artifactStorage
@@ -408,7 +411,8 @@
     drain = mutate "drain" "drain" "converging" [];
     holdFallback = mutate "hold-fallback" "hold" "recovering" (branch "fallback");
     holdHealthy = mutate "hold-healthy" "hold" "recovering" (branch "healthy");
-    markFallbackBoot = platform
+    markFallbackBoot =
+      platform
       "mark-fallback-boot-success"
       "boot-success"
       imagePlatform.success
@@ -419,7 +423,8 @@
       "exclusive-write"
       (literal revision.value)
       "planning";
-    markHealthyBoot = platform
+    markHealthyBoot =
+      platform
       "mark-healthy-boot-success"
       "boot-success"
       imagePlatform.success
@@ -431,12 +436,27 @@
       (literal revision.value)
       "planning";
     observeBoot = observe "observe-boot" "observe-boot" "converging";
-    observeHealth = observe "observe-health" "observe-health" "converging";
+    observeCandidateHealth =
+      platform
+      "observe-candidate-health"
+      "image-health"
+      imagePlatform.healthObservation
+      "observe"
+      "observe-health"
+      "converging"
+      []
+      "read"
+      (literal revision.value)
+      "planning";
+    observeHealth = terminal "observe-health" "observe-health" "converging" [] "read" {
+      health = operationResult "observe-candidate-health" "observation";
+    } "runtime";
     prepare = mutate "prepare" "prepare" "preparing" [];
     retain = terminal "retain" "retain" "preparing" [] "exclusive-write" {
       platform = operationResult "retain-boot-payloads" "observation";
     } "runtime";
-    resolveSelection = platform
+    resolveSelection =
+      platform
       "resolve-boot-entry"
       "boot-selection"
       imagePlatform.selection
@@ -453,7 +473,8 @@
     select = terminal "select" "select" "publishing" [] "exclusive-write" {
       entry = operationResult "resolve-boot-entry" "entry";
     } "runtime";
-    publishSelection = platform
+    publishSelection =
+      platform
       "publish-boot-selection"
       "boot-selection"
       imagePlatform.selection
@@ -467,7 +488,8 @@
         entry = operationResult "resolve-boot-entry" "entry";
       })
       "runtime";
-    restartCandidate = platform
+    restartCandidate =
+      platform
       "restart-for-candidate"
       "host-restart"
       imagePlatform.hostRestart
@@ -484,7 +506,8 @@
       mutate "settle-hold-healthy" "hold" "recovering" (branch "healthy");
     settleObserveHealth = observe "settle-observe-health" "observe-health" "converging";
     withdraw = mutate "withdraw" "withdraw" "recovering" (branch "fallback");
-    restartFallback = platform
+    restartFallback =
+      platform
       "restart-for-fallback"
       "host-restart"
       imagePlatform.hostRestart
@@ -495,7 +518,8 @@
       "exclusive-write"
       (literal {reason = "restore-image";})
       "planning";
-    releaseStorage = platform
+    releaseStorage =
+      platform
       "release-boot-payloads"
       "artifact-storage"
       imagePlatform.artifactStorage
@@ -521,6 +545,7 @@
           markFallbackBoot
           markHealthyBoot
           observeBoot
+          observeCandidateHealth
           observeHealth
           prepare
           retain
@@ -585,7 +610,8 @@
           (edge (operationNode "select") (operationNode "publish-boot-selection") "required-success")
           (edge (operationNode "publish-boot-selection") (operationNode "restart-for-candidate") "required-success")
           (edge (operationNode "restart-for-candidate") (operationNode "observe-boot") "required-success")
-          (edge (operationNode "observe-boot") (operationNode "observe-health") "required-success")
+          (edge (operationNode "observe-boot") (operationNode "observe-candidate-health") "required-success")
+          (edge (operationNode "observe-candidate-health") (operationNode "observe-health") "data")
           (edge (operationNode "observe-health") (operationNode "settle-observe-health") "required-success")
           (edge (operationNode "settle-observe-health") (decisionNode "health-decision") "data")
           (edge (decisionNode "health-decision") (operationNode "hold-fallback") "branch-guard")

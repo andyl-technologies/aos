@@ -1,127 +1,48 @@
 //! Checked-plan lookup for the package-owned image rollout backend.
 //!
 //! The generic validators authenticate the complete package, binding, and
-//! effect graph. This module identifies the package-owned native rollout
-//! handler from those checked records and extracts its one exact request.
-
-use std::collections::BTreeSet;
+//! effect graph. This module extracts the rollout request from the exact
+//! resource revision selected by that fixed point. It does not rediscover the
+//! selected implementation through a copied handler-path catalog.
 
 use anyhow::{Context as _, Result, ensure};
-use aos_ability_model::{AbilityValue, BindingId, Operation, ValueExpression, VersionedDocument};
+use aos_ability_model::AbilityValue;
 use aos_ability_validate::CheckedEffectPlan;
 
 use super::ImageRolloutRequest;
 
-const ROLLOUT_HANDLER_ENTRY_POINT: &str = "libexec/aos-image-rollout-provider";
+const ROLLOUT_RESOURCE_KIND: &str = "aos.image-rollout";
 
 /// Extracts the native rollout request from one fully checked effect plan.
 ///
 /// # Errors
 ///
-/// Returns an error unless exactly one checked binding selects the authenticated
-/// package handler, every operation for its resource uses that binding, and all
-/// of those operations carry the same literal rollout value. Typed lower
-/// provider results may occupy sibling fields in the terminal input object.
+/// Returns an error unless the checked fixed point contains exactly one desired
+/// image-rollout revision and at least one checked operation targets it.
 pub(crate) fn authenticate_single_image_rollout_fragment(
     plan: &CheckedEffectPlan,
 ) -> Result<ImageRolloutRequest> {
-    let rollout_operations = plan
+    let revisions = plan
+        .document()
+        .desired_revisions
+        .iter()
+        .filter(|revision| revision.kind.as_str() == ROLLOUT_RESOURCE_KIND)
+        .collect::<Vec<_>>();
+    let [revision] = revisions.as_slice() else {
+        anyhow::bail!("retained transaction must contain one exact image-rollout revision")
+    };
+
+    let operations = plan
         .operations()
         .iter()
-        .filter_map(|operation| {
-            operation_uses_rollout_handler(plan, operation)
-                .transpose()
-                .map(|result| result.map(|_| operation))
-        })
-        .collect::<Result<Vec<_>>>()?;
+        .filter(|operation| operation.target.resource == revision.resource)
+        .collect::<Vec<_>>();
     ensure!(
-        !rollout_operations.is_empty(),
-        "retained transaction contains no authenticated rollout handler operation"
+        !operations.is_empty(),
+        "retained transaction contains no operation for its image-rollout revision"
     );
 
-    let bindings = rollout_operations
-        .iter()
-        .map(|operation| operation.binding.clone())
-        .collect::<BTreeSet<_>>();
-    ensure!(
-        bindings.len() == 1,
-        "retained transaction contains ambiguous rollout handler bindings"
-    );
-    let resources = rollout_operations
-        .iter()
-        .map(|operation| operation.target.resource.clone())
-        .collect::<BTreeSet<_>>();
-    ensure!(
-        resources.len() == 1,
-        "rollout handler operations do not target exactly one resource"
-    );
-    let resource = resources
-        .first()
-        .context("rollout handler operations have no target resource")?;
-    ensure!(
-        plan.operations().iter().all(|operation| {
-            operation.target.resource != *resource || bindings.contains(&operation.binding)
-        }),
-        "rollout handler resource is shared with another binding"
-    );
-
-    let mut request = None;
-    for operation in rollout_operations {
-        let value = rollout_input(&operation.inputs)?;
-        let operation_request = decode_request(value)?;
-        if let Some(expected) = &request {
-            ensure!(
-                expected == &operation_request,
-                "rollout handler operations carry different requests"
-            );
-        } else {
-            request = Some(operation_request);
-        }
-    }
-
-    request.context("retained transaction contains no rollout handler request")
-}
-
-fn rollout_input(inputs: &ValueExpression) -> Result<&AbilityValue> {
-    let ValueExpression::Object { fields } = inputs else {
-        anyhow::bail!("rollout handler input is not a closed terminal request")
-    };
-    let ValueExpression::Literal { value } = fields
-        .get("rollout")
-        .context("rollout handler input has no exact rollout value")?
-    else {
-        anyhow::bail!("rollout handler rollout value is not an exact literal")
-    };
-    Ok(value)
-}
-
-fn operation_uses_rollout_handler(
-    plan: &CheckedEffectPlan,
-    operation: &Operation,
-) -> Result<Option<BindingId>> {
-    let binding = plan
-        .binding_plan()
-        .binding(&operation.binding)
-        .context("checked rollout operation has no checked binding")?;
-    let Some(package_digest) = binding.provider_package else {
-        return Ok(None);
-    };
-    let Some(handler_key) = &binding.implementation.handler else {
-        return Ok(None);
-    };
-    let package = plan
-        .binding_plan()
-        .packages()
-        .iter()
-        .find(|package| package.content_digest().ok() == Some(package_digest))
-        .context("checked rollout binding package is absent")?;
-    let handler = package
-        .implementation
-        .handlers
-        .get(handler_key)
-        .context("checked rollout binding handler is absent from its package")?;
-
-    Ok((handler.entry_point == ROLLOUT_HANDLER_ENTRY_POINT).then(|| operation.binding.clone()))
+    decode_request(&revision.value)
 }
 
 fn decode_request(value: &AbilityValue) -> Result<ImageRolloutRequest> {

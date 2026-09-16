@@ -5,7 +5,6 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Read as _, Write as _};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, ensure};
@@ -20,8 +19,10 @@ use aos_provider_protocol::{
 };
 
 use super::ability::{AbilityRolloutOutcome, AbilityRolloutPhase, AbilityRolloutState};
-use super::process::run_bounded_command;
-use super::{ImageRolloutRequest, ImageRolloutTerminalRequest, NativeImageRolloutBackend};
+use super::{
+    ImageHealthObservation, ImageRolloutRequest, ImageRolloutTerminalRequest,
+    NativeImageRolloutBackend,
+};
 
 const OBSERVATION_SCHEMA: &str = "aos.ability.image-rollout-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.image-rollout.provider-context/v1";
@@ -32,8 +33,6 @@ const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
 #[serde(deny_unknown_fields)]
 struct RolloutRealization {
     schema: String,
-    #[serde(rename = "health-command")]
-    health_command: String,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -41,7 +40,6 @@ struct RolloutRealization {
 struct ProviderContext {
     schema: String,
     image_profile: String,
-    health_command: String,
 }
 
 /// Runs one image-rollout provider request from process arguments and streams.
@@ -123,7 +121,6 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
         native_context: ability_value(serde_json::to_value(ProviderContext {
             schema: PROVIDER_CONTEXT_SCHEMA.into(),
             image_profile: IMAGE_PROFILE.into(),
-            health_command: realization.health_command,
         })?)?,
         supported_purposes: SupportedPurposes::from_ordered(vec![
             InvocationPurpose::Effect,
@@ -162,8 +159,7 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
     ensure!(
         realization.schema == REALIZATION_SCHEMA
             && provider.schema == PROVIDER_CONTEXT_SCHEMA
-            && provider.image_profile == IMAGE_PROFILE
-            && provider.health_command == realization.health_command,
+            && provider.image_profile == IMAGE_PROFILE,
         "rollout provider context differs from the checked realization"
     );
     let terminal: ImageRolloutTerminalRequest = decode_value(&invocation.request.inputs)?;
@@ -202,13 +198,16 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
             &desired,
             terminal.entry.as_deref(),
             terminal.platform.as_ref(),
+            terminal.health.as_ref(),
             original_method,
-            &provider,
+        ),
+        InvocationPurpose::Reconcile => reconcile(
+            &invocation,
+            &desired,
+            terminal.health.as_ref(),
+            original_method,
             &control,
         ),
-        InvocationPurpose::Reconcile => {
-            reconcile(&invocation, &desired, original_method, &provider, &control)
-        }
         InvocationPurpose::Cancel => cancel(&invocation, &desired, original_method, &control),
         InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation => {
             anyhow::bail!("image-rollout provider does not implement compensation")
@@ -221,9 +220,8 @@ fn execute(
     request: &ImageRolloutRequest,
     entry: Option<&str>,
     platform: Option<&serde_json::Value>,
+    health: Option<&ImageHealthObservation>,
     method: &str,
-    provider: &ProviderContext,
-    control: &dyn RuntimeControl,
 ) -> Result<InvocationResult> {
     let backend = backend();
     backend
@@ -245,7 +243,7 @@ fn execute(
             entry.context("rollout selection lacks a provider-resolved boot entry")?,
         ),
         "observe-boot" => backend.reconcile(request),
-        "observe-health" => observe_health(&backend, request, &provider.health_command, control),
+        "observe-health" => observe_health(&backend, request, health),
         "withdraw" => backend.withdraw(request),
         "hold" => backend.hold(request),
         "retire" => {
@@ -263,8 +261,8 @@ fn execute(
 fn reconcile(
     invocation: &Invocation,
     request: &ImageRolloutRequest,
+    health: Option<&ImageHealthObservation>,
     method: &str,
-    provider: &ProviderContext,
     control: &dyn RuntimeControl,
 ) -> Result<InvocationResult> {
     if control.attempt_remaining_millis() == 0 || control.recovery_remaining_millis() == 0 {
@@ -277,7 +275,7 @@ fn reconcile(
     }
     let backend = backend();
     let state = if method == "observe-health" {
-        observe_health(&backend, request, &provider.health_command, control)?
+        observe_health(&backend, request, health)?
     } else {
         backend.observe_operation(request, method)?
     };
@@ -435,14 +433,17 @@ fn observed_health(state: &AbilityRolloutState) -> Option<bool> {
 fn observe_health(
     backend: &NativeImageRolloutBackend,
     request: &ImageRolloutRequest,
-    health_command: &str,
-    control: &dyn RuntimeControl,
+    observation: Option<&ImageHealthObservation>,
 ) -> Result<AbilityRolloutState> {
     if let Some(state) = backend.health_assessment_if_recorded(request)? {
         return Ok(state);
     }
-    let healthy = SystemRolloutPlatform::new(health_command).health(control)?;
-    backend.record_health(request, healthy)
+    let observation = observation.context("rollout health observation is absent")?;
+    ensure!(
+        observation.schema == "aos.ability.image-health-observation/v1",
+        "unsupported rollout health observation schema"
+    );
+    backend.record_health(request, observation.healthy)
 }
 
 fn validate_method(method: &aos_ability_model::MethodReference) -> Result<()> {
@@ -517,25 +518,6 @@ impl RuntimeControl for WireControl<'_> {
 
     fn recovery_remaining_millis(&self) -> u64 {
         self.0.recovery_remaining_millis
-    }
-}
-
-struct SystemRolloutPlatform<'a> {
-    health_command: &'a str,
-}
-
-impl<'a> SystemRolloutPlatform<'a> {
-    fn new(health_command: &'a str) -> Self {
-        Self { health_command }
-    }
-
-    fn health(self, control: &dyn RuntimeControl) -> Result<bool> {
-        let status = run_bounded_command(&mut Command::new(self.health_command), control)?;
-        match status.code() {
-            Some(0) => Ok(true),
-            Some(1) => Ok(false),
-            _ => anyhow::bail!("assessing rollout health failed with {status}"),
-        }
     }
 }
 

@@ -43,10 +43,7 @@
   rolloutMethods = rolloutDeclaration.methods;
   rolloutObservation = imagePlatformInterfaces.rollout.observationType;
   rolloutRealizationType = abilityTypes.record {
-    fields = {
-      schema = abilityTypes.enum ["aos.image-rollout.realization/v1"];
-      health-command = abilityTypes.executionPath;
-    };
+    fields.schema = abilityTypes.enum ["aos.image-rollout.realization/v1"];
   };
   rolloutTerminalDeclaration = lib.abilities.declareInterface {
     name = "aos.apm.ab-image-rollout-terminal";
@@ -66,6 +63,11 @@
             }
             // lib.optionalAttrs (name == "select") {
               entry = abilityTypes.deferredResult abilityTypes.runtimeString;
+            }
+            // lib.optionalAttrs (name == "observe-health") {
+              health = abilityTypes.optional (
+                abilityTypes.deferredResult imagePlatformInterfaces.healthObservation.observationType
+              );
             };
         };
       })
@@ -173,6 +175,12 @@ in {
           "Publishes running-boot success through the selected boot provider."
           imagePlatformInterfaces.success.identity
           imagePlatformInterfaces.success.methods;
+        health-observation =
+          terminalRequirement
+          "health-observation"
+          "Observes candidate health through the selected image provider."
+          imagePlatformInterfaces.healthObservation.identity
+          imagePlatformInterfaces.healthObservation.methods;
         host-restart =
           terminalRequirement
           "host-restart"
