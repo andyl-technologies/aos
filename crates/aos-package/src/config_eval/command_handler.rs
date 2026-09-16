@@ -989,6 +989,9 @@ struct AuthenticatedCommandHandler {
     result: ValueSchema,
 }
 
+mod bound;
+pub(in crate::config_eval) use bound::BoundCommandHandler;
+
 fn authenticate_method_contract(
     authenticated: &AuthenticatedCommandHandler,
     interface: &InterfaceDocument,
@@ -1721,6 +1724,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use aos_ability_model::{
         AggregationContract, AggregationScope, IndeterminateSemantics, InterfaceDescriptor,
@@ -2113,6 +2117,34 @@ mod tests {
         );
         assert!(
             target_observation(&resource_reference("other", &["observe"]), &resources).is_err()
+        );
+    }
+
+    #[test]
+    fn handler_executable_never_uses_ambient_or_escaping_paths() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let artifact_root = temporary.path().join("artifact");
+        std::fs::create_dir(&artifact_root).expect("artifact directory");
+        let ambient = temporary.path().join("ambient-handler");
+        std::fs::write(&ambient, b"handler").expect("ambient executable");
+        std::fs::set_permissions(&ambient, std::fs::Permissions::from_mode(0o700))
+            .expect("executable mode");
+        let artifact = aos_ability_model::ArtifactReference {
+            content: Sha256Digest::of_bytes("content"),
+            store_path: artifact_root.display().to_string(),
+            nar_hash: Sha256Digest::of_bytes("nar"),
+            closure: Sha256Digest::of_bytes("closure"),
+        };
+
+        assert!(
+            authenticate_handler_executable(&artifact, "ambient-handler", "test").is_err(),
+            "a bare signed name must resolve only below its artifact"
+        );
+
+        symlink(&ambient, artifact_root.join("escaping-handler")).expect("escaping symlink");
+        assert!(
+            authenticate_handler_executable(&artifact, "escaping-handler", "test").is_err(),
+            "an artifact entry point must not escape through a symlink"
         );
     }
 }

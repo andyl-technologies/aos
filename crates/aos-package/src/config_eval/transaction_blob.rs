@@ -105,6 +105,11 @@ impl TransactionBlobStore {
         create_private_directory(&input)?;
         create_private_directory(&output)?;
 
+        // A retry reuses the request namespace. Discard output files left by
+        // an interrupted process before admitting a fresh handler result.
+        retain_only(&output, std::iter::empty())?;
+        sync_directory(&output)?;
+
         let references = collect_references(request.inputs.as_json())?;
         retain_only(
             &input,
@@ -116,6 +121,36 @@ impl TransactionBlobStore {
         sync_directory(&input)?;
 
         Ok(TransactionBlobInvocation { output, input })
+    }
+
+    /// Publishes caller bytes into this transaction's authenticated blob set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the payload exceeds the blob bound or immutable
+    /// publication fails.
+    pub(crate) fn publish_bytes(
+        &self,
+        slot: &LocalKey,
+        bytes: &[u8],
+    ) -> std::io::Result<TransactionBlobReference> {
+        if bytes.len() as u64 > MAX_TRANSACTION_BLOB_BYTES {
+            return Err(invalid("transaction blob exceeds its size bound"));
+        }
+        self.commit_bytes(slot, bytes)
+    }
+
+    /// Reads one exact reference after rechecking its transaction and content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reference belongs to another transaction or
+    /// its retained bytes differ from the authenticated size or digest.
+    pub(crate) fn read_reference(
+        &self,
+        reference: &TransactionBlobReference,
+    ) -> std::io::Result<Vec<u8>> {
+        self.validate_reference(reference)
     }
 
     /// Replaces handler output-slot markers with runtime-derived blob references.
@@ -175,7 +210,17 @@ impl TransactionBlobStore {
         require_real_directory(output)?;
         let source = output.join(slot.as_str());
         let bytes = read_bounded_regular(&source)?;
-        let content_sha256 = Sha256Digest::of_bytes(&bytes);
+        let reference = self.commit_bytes(slot, &bytes)?;
+        remove_regular_if_present(&source)?;
+        Ok(reference)
+    }
+
+    fn commit_bytes(
+        &self,
+        slot: &LocalKey,
+        bytes: &[u8],
+    ) -> std::io::Result<TransactionBlobReference> {
+        let content_sha256 = Sha256Digest::of_bytes(bytes);
         let size_bytes = u64::try_from(bytes.len()).map_err(invalid)?;
         let handle_digest = Sha256Digest::of_canonical(
             HANDLE_DOMAIN,
@@ -189,8 +234,7 @@ impl TransactionBlobStore {
         .map_err(invalid)?;
         let handle = LocalKey::new(format!("blob-{}", handle_digest.hex())).map_err(invalid)?;
         let destination = self.root.join(OBJECT_DIRECTORY).join(handle.as_str());
-        publish_immutable(&destination, &bytes)?;
-        remove_regular_if_present(&source)?;
+        publish_immutable(&destination, bytes)?;
 
         Ok(TransactionBlobReference {
             kind: TRANSACTION_BLOB_REFERENCE_TYPE.into(),
@@ -207,6 +251,13 @@ impl TransactionBlobStore {
         reference: &TransactionBlobReference,
     ) -> std::io::Result<()> {
         require_real_directory(input)?;
+        let bytes = self.validate_reference(reference)?;
+        let destination = input.join(reference.handle.as_str());
+        remove_regular_if_present(&destination)?;
+        publish_immutable(&destination, &bytes)
+    }
+
+    fn validate_reference(&self, reference: &TransactionBlobReference) -> std::io::Result<Vec<u8>> {
         if reference.kind != TRANSACTION_BLOB_REFERENCE_TYPE
             || reference.transaction != self.transaction
             || reference.size_bytes > MAX_TRANSACTION_BLOB_BYTES
@@ -227,9 +278,7 @@ impl TransactionBlobStore {
                 "transaction blob bytes differ from their reference",
             ));
         }
-        let destination = input.join(reference.handle.as_str());
-        remove_regular_if_present(&destination)?;
-        publish_immutable(&destination, &bytes)
+        Ok(bytes)
     }
 }
 
