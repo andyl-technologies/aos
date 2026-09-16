@@ -636,6 +636,112 @@
         "failure"
       ],
       "predecessor": "same"
+    },
+    {
+      "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "unsettled-after-acquisition"
+      },
+      "failure": "injected-interruption",
+      "family": "rollout-durability",
+      "id": "interrupt-after-acquisition",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
+      "predecessor": "same"
+    },
+    {
+      "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
+      "boundary": "after-durable-intent",
+      "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "reconciled-after-interruption"
+      },
+      "failure": "injected-interruption",
+      "family": "rollout-durability",
+      "id": "interrupt-after-durable-intent",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
+      "predecessor": "same"
+    },
+    {
+      "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
+      "boundary": "after-external-return",
+      "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "reconciled-completed"
+      },
+      "failure": "lost-result",
+      "family": "rollout-durability",
+      "id": "lose-external-result",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
+      "predecessor": "same"
+    },
+    {
+      "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
+      "boundary": "after-durable-outcome",
+      "candidate": "same",
+      "disposition": {
+        "kind": "exact",
+        "value": "completed-before-interruption"
+      },
+      "failure": "injected-interruption",
+      "family": "rollout-durability",
+      "id": "interrupt-after-durable-outcome",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
+      "predecessor": "same"
+    },
+    {
+      "additional_postconditions": [],
+      "applicability": {
+        "required_resource_lifetimes": [],
+        "requires_state_format": false
+      },
+      "boundary": "cancellation",
+      "candidate": "same",
+      "disposition": {
+        "kind": "cancellation-route",
+        "supported": "cancelled-after-reconciliation",
+        "unsupported": "unsupported-cancellation-retains-ownership"
+      },
+      "failure": "route-dependent",
+      "family": "rollout-durability",
+      "id": "cancel-unsettled-attempt",
+      "postcondition_groups": [
+        "baseline",
+        "failure"
+      ],
+      "predecessor": "same"
     }
   ],
   "subject_schema": "aos.qualification.native-adapter-subject/v1"

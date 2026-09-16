@@ -90,7 +90,7 @@
   };
   projectedHandler = owner: handler: {
     artifact = resolvedArtifact owner handler.artifact;
-    inherit (handler) entry_point;
+    entry_point = handler.entryPoint;
     inherit (handler) arguments result;
   };
   interfaceIdentity = interface: lib.abilities.interfaceIdentity interface;
@@ -102,7 +102,7 @@
   in {
     lifecycle = interface.lifecycle;
     resource_lifetimes = builtins.sort builtins.lessThan (lib.unique (map (output: output.lifetime) outputs));
-    state_format = entry.implementation.state_format;
+    state_format = entry.implementation.state_format or null;
   };
   adapterFor = entry: let
     implementation = entry.implementation;

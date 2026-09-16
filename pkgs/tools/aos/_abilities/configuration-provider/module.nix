@@ -193,6 +193,7 @@
     "incarnation-replacement"
     "provider-state-transfer"
   ];
+  rolloutConformanceFamilies = ["rollout-durability"];
 in {
   config.aos.abilities = {
     interfaces.configuration-materialization-terminal = configurationTerminalDeclaration;
@@ -259,7 +260,7 @@ in {
         adapter = "image-rollout";
         observationKind = "rollout";
         scope = "host-machine";
-        inherit conformanceFamilies;
+        conformanceFamilies = rolloutConformanceFamilies;
         observer = qualificationObserver "libexec/aos-image-rollout-observer";
       };
     };
