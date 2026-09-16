@@ -60,18 +60,25 @@ in
   assert assembly != null;
   assert securityDisabledInitrdServices ? aos-ability-initrd-controller;
   assert securityDisabledInitrdServices ? aos-ability-initrd-handoff-barrier;
-  assert securityDisabledInitrdServices ? mount-var;
-  assert securityDisabledInitrdServices ? nix-overlay-setup;
-  assert securityDisabledInitrdServices ? aos-seed-profiles;
   assert securityDisabledInitrdServices.aos-ability-initrd-controller.requiredBy
   == ["initrd-fs.target"];
+  assert securityDisabledInitrdServices.aos-ability-initrd-controller.requires
+  == [
+    "sysroot.mount"
+    "aos-boot-transaction-storage.service"
+  ];
+  assert builtins.elem "mount-var.service"
+  securityDisabledInitrdServices.aos-ability-initrd-controller.before;
   assert securityDisabledInitrdServices.aos-ability-initrd-controller.serviceConfig.RemainAfterExit;
   assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.requires
   == ["aos-ability-initrd-controller.service"];
   assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.after
   == ["aos-ability-initrd-controller.service"];
   assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.requiredBy
-  == ["initrd-fs.target"];
+  == [
+    "mount-var.service"
+    "initrd-fs.target"
+  ];
   assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.serviceConfig.RemainAfterExit;
   assert securityDisabledHostServices ? aos-ability-host-receiver;
   assert securityDisabledHostServices.aos-ability-host-receiver.requiredBy
@@ -370,7 +377,7 @@ in
 
             initrd_controller=$(resolve_archived_store_path unit-graph/nix \
               "$(readlink unit-graph/etc/systemd/system/aos-ability-initrd-controller.service)")
-            grep -F "Before=initrd-fs.target initrd-switch-root.target" \
+            grep -F "Before=mount-var.service initrd-fs.target initrd-switch-root.target" \
               "$initrd_controller" >/dev/null
             grep -F "RemainAfterExit=true" "$initrd_controller" >/dev/null
             initrd_controller_script=$(resolve_archived_store_path unit-graph/nix \
@@ -384,7 +391,7 @@ in
               "$initrd_barrier" >/dev/null
             grep -F "After=aos-ability-initrd-controller.service" \
               "$initrd_barrier" >/dev/null
-            grep -F "Before=initrd-fs.target initrd-switch-root.target" \
+            grep -F "Before=mount-var.service initrd-fs.target initrd-switch-root.target" \
               "$initrd_barrier" >/dev/null
             grep -F "RemainAfterExit=true" "$initrd_barrier" >/dev/null
             initrd_barrier_script=$(resolve_archived_store_path unit-graph/nix \
@@ -392,8 +399,10 @@ in
             grep -F "__ability-stage-validate" "$initrd_barrier_script" >/dev/null
             grep -F -- "--from-stage initrd" "$initrd_barrier_script" >/dev/null
             grep -F -- "--root /sysroot" "$initrd_barrier_script" >/dev/null
-            grep -F -- "--image-profile /sysroot/var/lib/profiles/image" \
-              "$initrd_barrier_script" >/dev/null
+            if grep -F -- "--image-profile" "$initrd_barrier_script" >/dev/null; then
+              echo "initrd stage validation still depends on the post-mount image profile" >&2
+              exit 1
+            fi
             ${pkgs.erofs-utils}/bin/fsck.erofs \
               --extract=root-tree --xattrs --preserve \
               ${assembly}/inputs/root.img >/dev/null

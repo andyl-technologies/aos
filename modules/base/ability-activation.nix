@@ -102,18 +102,15 @@ in {
       description = "Execute and release initrd-stage ability ownership";
       requiredBy = ["initrd-fs.target"];
       requires = [
-        "mount-var.service"
-        "nix-overlay-setup.service"
-        "aos-seed-profiles.service"
-        "aos-credential-recovery.service"
+        "sysroot.mount"
+        "aos-boot-transaction-storage.service"
       ];
       after = [
-        "mount-var.service"
-        "nix-overlay-setup.service"
-        "aos-seed-profiles.service"
-        "aos-credential-recovery.service"
+        "sysroot.mount"
+        "aos-boot-transaction-storage.service"
       ];
       before = [
+        "mount-var.service"
         "initrd-fs.target"
         "initrd-switch-root.target"
       ];
@@ -129,7 +126,6 @@ in {
           __ability-stage-run \
           --stage initrd \
           --root /sysroot \
-          --image-profile /sysroot/var/lib/profiles/image \
           --resolved-stage /lib/aos/initrd/resolved-ability-stage.json
       '';
     };
@@ -140,10 +136,14 @@ in {
     # before udev cleanup instead of retaining both sides of that transaction.
     boot.initrd.systemd.services.aos-ability-initrd-handoff-barrier = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable {
       description = "Authenticate released initrd ability ownership";
-      requiredBy = ["initrd-fs.target"];
+      requiredBy = [
+        "mount-var.service"
+        "initrd-fs.target"
+      ];
       requires = ["aos-ability-initrd-controller.service"];
       after = ["aos-ability-initrd-controller.service"];
       before = [
+        "mount-var.service"
         "initrd-fs.target"
         "initrd-switch-root.target"
       ];
@@ -158,8 +158,7 @@ in {
         exec ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped \
           __ability-stage-validate \
           --from-stage initrd \
-          --root /sysroot \
-          --image-profile /sysroot/var/lib/profiles/image
+          --root /sysroot
       '';
     };
 

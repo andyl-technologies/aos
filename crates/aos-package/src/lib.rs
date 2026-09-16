@@ -770,9 +770,6 @@ pub enum PackageCommand {
         /// Mounted root that will become the host root.
         #[arg(long)]
         root: PathBuf,
-        /// Durable image profile beneath the mounted host root.
-        #[arg(long = "image-profile")]
-        image_profile: PathBuf,
         /// Checked build-stage projection carrying the exact executable plan.
         #[arg(long = "resolved-stage")]
         resolved_stage: PathBuf,
@@ -786,9 +783,6 @@ pub enum PackageCommand {
         /// Mounted root that will become the host root.
         #[arg(long)]
         root: PathBuf,
-        /// Durable image profile beneath the mounted host root.
-        #[arg(long = "image-profile")]
-        image_profile: PathBuf,
     },
     /// Hidden: revalidate and receive an initrd ability journal.
     #[command(name = "__ability-stage-receive", hide = true)]
@@ -3773,24 +3767,13 @@ pub async fn run(
     if let PackageCommand::AbilityStageRun {
         stage,
         root,
-        image_profile,
         resolved_stage,
     } = command
     {
-        return config_eval::stage_handoff::run_initrd_stage(
-            stage,
-            root,
-            image_profile,
-            resolved_stage,
-        );
+        return config_eval::stage_handoff::run_initrd_stage(stage, root, resolved_stage);
     }
-    if let PackageCommand::AbilityStageValidate {
-        from_stage,
-        root,
-        image_profile,
-    } = command
-    {
-        return config_eval::stage_handoff::validate_initrd_stage(from_stage, root, image_profile);
+    if let PackageCommand::AbilityStageValidate { from_stage, root } = command {
+        return config_eval::stage_handoff::validate_initrd_stage(from_stage, root);
     }
     if let PackageCommand::AbilityStageReceive {
         from_stage,
