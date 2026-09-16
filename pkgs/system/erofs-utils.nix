@@ -177,10 +177,14 @@ in
           # target libselinux. Treat its absence as a packaging failure: the
           # immutable root builders must never silently emit unlabeled EROFS
           # inodes because an optional feature probe changed.
-          run_check_target "$out/bin/${checkMkfsProgram}" --help 2>&1 \
-            | grep -F -- '--file-contexts=X'
-          run_check_target "$out/bin/dump.erofs" --help 2>&1 \
-            | grep -F -- '--get-xattr=X'
+          # erofs-utils 1.9.4 returns failure after printing help. Capture the
+          # output separately so pipefail does not mask a successful feature
+          # assertion with the command's informational exit status.
+          mkfs_help="$(run_check_target "$out/bin/${checkMkfsProgram}" --help 2>&1 || true)"
+          printf '%s\n' "$mkfs_help" | grep -F -- '--file-contexts=X'
+
+          dump_help="$(run_check_target "$out/bin/dump.erofs" --help 2>&1 || true)"
+          printf '%s\n' "$dump_help" | grep -F -- '--get-xattr=X'
 
           mkdir -p "$TMPDIR/erofs-smoke/root"
           dd if=/dev/zero of="$TMPDIR/erofs-smoke/root/worker-payload" \
