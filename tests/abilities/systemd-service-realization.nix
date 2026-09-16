@@ -478,7 +478,8 @@ in
   assert templates "SocketMode" socketSection == ["0660"];
   assert templates "SocketGroup" socketSection != [];
   assert templates "RemoveOnStop" socketSection == ["yes"];
-  assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 1;
+  assert builtins.length evaluation.config.systemd.providerUnitPlans == 1;
+  assert builtins.isAttrs (builtins.fromJSON (builtins.head evaluation.config.systemd.providerUnitPlans).input);
   assert guarantees."core:service-template-exact-reuse".name == "aos.guarantee.service-template-exact-reuse";
   assert lifecycleImplementation.guarantees == ["core:service-template-exact-reuse"];
   assert lifecycleImplementation.handlerDescriptor == null;

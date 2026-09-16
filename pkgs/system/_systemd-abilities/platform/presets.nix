@@ -5,10 +5,18 @@
 ##! default-deny preset file, while host-specific and runtime `apm` layers add
 ##! earlier `enable aos-pkg-<name>.target` rules.
 {
+  abilitySelection ? null,
   config,
   lib,
   ...
 }: let
+  managerBindings =
+    if abilitySelection == null
+    then []
+    else abilitySelection.bindingsForImplementation "system-manager";
+  selected =
+    builtins.length managerBindings == 1
+    && (builtins.head managerBindings).binding.request == "system:manager";
   imagePresetRules = config.systemd.systemPresetRules;
   imagePresetText =
     lib.optionalString (imagePresetRules != [])
@@ -21,7 +29,7 @@ in {
     description = "Ordered systemd preset rules selected for this system.";
   };
 
-  config.system.build.systemdPresetText = imagePresetText;
+  config.system.build.systemdPresetText = lib.mkIf selected imagePresetText;
 
   options.system.build.systemdPresetText = lib.mkOption {
     type = lib.types.lines;

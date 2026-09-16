@@ -41,7 +41,14 @@
       type = "system";
       inherit (config.system.build.systemdMaterializationData) etc jobScripts;
     };
-    providerArtifacts = config.systemd.providerUnitArtifacts;
+    renderPlan = plan:
+      runCommand plan.name {
+        realization = plan.input;
+        passAsFile = ["realization"];
+      } ''
+        ${providerPackage}/bin/aos-systemd-provider render
+      '';
+    providerArtifacts = builtins.map renderPlan config.systemd.providerUnitPlans;
     providerArtifactsJson = builtins.toJSON providerArtifacts;
     units =
       if providerArtifacts == []
@@ -64,11 +71,21 @@
       fi
       printf 'disable *\n' > "$out/99-aos-default.preset"
     '';
+    managerConfigurations =
+      builtins.map renderPlan config.systemd.providerManagerConfigurationPlans;
+    networkConfigurations =
+      builtins.map renderPlan config.systemd.providerNetworkConfigurationPlans;
   in
     runCommand "systemd-manager-configuration" {} ''
       mkdir -p "$out"
       ln -s ${units} "$out/systemd-units"
       ln -s ${presets} "$out/systemd-presets"
+      ${lib.optionalString (managerConfigurations != []) ''
+        ln -s ${builtins.head managerConfigurations} "$out/systemd-manager-configuration"
+      ''}
+      ${lib.optionalString (networkConfigurations != []) ''
+        ln -s ${builtins.head networkConfigurations} "$out/systemd-network-configuration"
+      ''}
     '';
   buildInitrd = import ./platform/build-initrd.nix {
     inherit config initrdAbilityEvaluation initrdStaticContract lib packageArtifactFor;
@@ -98,7 +115,10 @@
     then authoredManager
     else throw "selected system manager projection differs from its checked planning output";
 in {
-  imports = lib.optionals selected [
+  # Package imports are a static ownership declaration. Exact binding
+  # selection gates their contributed values without making import discovery
+  # depend on the module fixed point.
+  imports = [
     ./platform/system.nix
     ./platform/initrd.nix
     ./platform/presets.nix

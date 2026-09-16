@@ -40,9 +40,17 @@
     type = "initrd";
     inherit (plan) etc jobScripts;
   };
-  providerArtifactsJson = builtins.toJSON plan.providerArtifacts;
+  renderProviderPlan = providerPlan:
+    buildContext.runCommand providerPlan.name {
+      realization = providerPlan.input;
+      passAsFile = ["realization"];
+    } ''
+      ${providerPackage}/bin/aos-systemd-provider render
+    '';
+  providerArtifacts = builtins.map renderProviderPlan plan.providerPlans;
+  providerArtifactsJson = builtins.toJSON providerArtifacts;
   initrdUnits =
-    if plan.providerArtifacts == []
+    if providerArtifacts == []
     then baseUnits
     else
       buildContext.runCommand "systemd-initrd-units-with-provider-artifacts" {

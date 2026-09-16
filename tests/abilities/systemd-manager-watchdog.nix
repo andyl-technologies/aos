@@ -111,4 +111,4 @@ in
   assert controller.handlerDescriptor == null;
   assert terminal.providerModule == null;
   assert terminal.handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
-  assert builtins.length resolved.config.systemd.providerManagerConfigurationArtifacts == 1; true
+  assert builtins.length resolved.config.systemd.providerManagerConfigurationPlans == 1; true

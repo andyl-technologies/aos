@@ -12,12 +12,20 @@
 ##! the thin `materializeUnits` adapter reconstructs the builder-side unit
 ##! directory from that manifest for `system.build.toplevel`.
 {
+  abilitySelection ? null,
   config,
   lib,
   packageArtifactFor,
   provenance,
   ...
 }: let
+  managerBindings =
+    if abilitySelection == null
+    then []
+    else abilitySelection.bindingsForImplementation "system-manager";
+  selected =
+    builtins.length managerBindings == 1
+    && (builtins.head managerBindings).binding.request == "system:manager";
   packageOutput = package: lib.abilities.packageOutput {inherit package;};
   rendererPackages = {
     bash = packageArtifactFor (packageOutput "bash");
@@ -39,6 +47,19 @@
   };
 
   cfg = config.systemd;
+  providerRenderPlanType = lib.types.submodule {
+    config._module.strict = true;
+    options = {
+      input = lib.mkOption {
+        type = lib.types.str;
+        description = "Canonical JSON input for the authenticated systemd renderer.";
+      };
+      name = lib.mkOption {
+        type = lib.types.nonEmptyStr;
+        description = "Stable diagnostic name for the rendered artifact.";
+      };
+    };
+  };
 
   # --- globalEnvironment pre-merge (spec §4.2) --------------------------
   #
@@ -77,43 +98,41 @@
     // lib.listToAttrs (builtins.map (withName systemdLib.automountToUnit) cfg.automounts);
 in {
   options.systemd = {
-    providerUnitArtifacts = lib.mkOption {
-      type = lib.types.listOf lib.types.path;
+    providerUnitPlans = lib.mkOption {
+      type = lib.types.listOf providerRenderPlanType;
       default = [];
       internal = true;
       contributable = true;
       description = ''
-        Unit trees and manifests produced by authenticated provider renderers.
-        The compiled systemd assembler validates each manifest and rejects all
-        collisions before adding its entries to the boot unit tree.
+        Pure render plans produced by authenticated provider modules. The
+        selected manager materializes and collision-checks them once.
       '';
     };
 
-    providerManagerConfigurationArtifacts = lib.mkOption {
-      type = lib.types.listOf lib.types.path;
+    providerManagerConfigurationPlans = lib.mkOption {
+      type = lib.types.listOf providerRenderPlanType;
       default = [];
       internal = true;
       contributable = true;
-      description = "Manager configuration trees produced by authenticated systemd providers.";
+      description = "Pure manager-configuration plans from authenticated systemd providers.";
     };
 
-    providerNetworkConfigurationArtifacts = lib.mkOption {
+    providerNetworkConfigurationPlans = lib.mkOption {
       type = lib.types.listOf (lib.types.submodule {
+        config._module.strict = true;
         options = {
-          root = lib.mkOption {
-            type = lib.types.path;
-            description = "Authenticated network configuration tree rendered by the selected systemd provider.";
-          };
-          resolver_enabled = lib.mkOption {
+          input = lib.mkOption {type = lib.types.str;};
+          name = lib.mkOption {type = lib.types.nonEmptyStr;};
+          resolverEnabled = lib.mkOption {
             type = lib.types.bool;
-            description = "Whether the rendered tree contains authoritative resolver configuration.";
+            description = "Whether the plan owns authoritative resolver configuration.";
           };
         };
       });
       default = [];
       internal = true;
       contributable = true;
-      description = "Network configuration trees produced by the authenticated systemd network controller.";
+      description = "Pure network-configuration plans from the authenticated systemd controller.";
     };
 
     globalEnvironment = lib.mkOption {
@@ -300,7 +319,7 @@ in {
     description = "Pure per-unit reconcile records for the config manifest.";
   };
 
-  config = let
+  config = lib.mkIf selected (let
     # --- X-* contract eval-time guards (spec §7.3) ---------------------
     #
     # The activation reconciler honours the X-* knobs added
@@ -518,11 +537,11 @@ in {
       ++ targetReloadTriggerAsserts
       ++ [
         {
-          assertion = builtins.length config.systemd.providerManagerConfigurationArtifacts <= 1;
+          assertion = builtins.length config.systemd.providerManagerConfigurationPlans <= 1;
           message = "systemd manager configuration must have at most one authenticated provider owner";
         }
         {
-          assertion = builtins.length config.systemd.providerNetworkConfigurationArtifacts <= 1;
+          assertion = builtins.length config.systemd.providerNetworkConfigurationPlans <= 1;
           message = "systemd network configuration must have at most one authenticated provider owner";
         }
       ];
@@ -585,27 +604,5 @@ in {
     # branch recurses — spec v12 §5.2). At runtime, this directory
     # merges with the per-generation config lower's `/etc/systemd/system/`
     # without one side shadowing the other.
-    environment.etc."systemd/system.conf.d/50-aos-watchdog.conf" = lib.mkIf (
-      config.systemd.providerManagerConfigurationArtifacts != []
-    ) {
-      source = "${builtins.head config.systemd.providerManagerConfigurationArtifacts}/systemd/system.conf.d/50-aos-watchdog.conf";
-    };
-    environment.etc."systemd/network" = lib.mkIf (
-      config.systemd.providerNetworkConfigurationArtifacts != []
-    ) {
-      source = "${(builtins.head config.systemd.providerNetworkConfigurationArtifacts).root}/etc/systemd/network";
-    };
-    environment.etc."systemd/resolved.conf" = lib.mkIf (
-      config.systemd.providerNetworkConfigurationArtifacts != []
-      && (builtins.head config.systemd.providerNetworkConfigurationArtifacts).resolver_enabled
-    ) {
-      source = "${(builtins.head config.systemd.providerNetworkConfigurationArtifacts).root}/etc/systemd/resolved.conf";
-    };
-    environment.etc."tmpfiles.d/aos-resolved.conf" = lib.mkIf (
-      config.systemd.providerNetworkConfigurationArtifacts != []
-      && (builtins.head config.systemd.providerNetworkConfigurationArtifacts).resolver_enabled
-    ) {
-      source = "${(builtins.head config.systemd.providerNetworkConfigurationArtifacts).root}/etc/tmpfiles.d/aos-resolved.conf";
-    };
-  };
+  });
 }

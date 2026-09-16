@@ -174,6 +174,7 @@ in {
         default = [];
         apply = lib.unique;
         internal = true;
+        contributable = true;
         description = ''
           Exact packages whose closures and authenticated declarations form
           the initrd. Anything an initrd unit references by store path must be

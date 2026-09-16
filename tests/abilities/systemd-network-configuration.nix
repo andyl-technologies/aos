@@ -226,4 +226,4 @@ in
   assert applyOperation.target.interface == networkInterface.identity;
   assert applyOperation.inputs.value == {bootstrap = null;};
   assert removeOperation.method == "remove";
-  assert pending.config.systemd.providerNetworkConfigurationArtifacts == []; true
+  assert pending.config.systemd.providerNetworkConfigurationPlans == []; true

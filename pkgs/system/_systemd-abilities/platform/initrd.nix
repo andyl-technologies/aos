@@ -27,12 +27,20 @@
 ##!   * `system.build.initrd` — the final gzip+cpio initramfs
 ##!     derivation produced by `../base/initrd-builder.nix`.
 {
+  abilitySelection ? null,
   config,
   initrdAbilityEvaluation ? null,
   lib,
   packageArtifactFor,
   ...
 }: let
+  managerBindings =
+    if abilitySelection == null
+    then []
+    else abilitySelection.bindingsForImplementation "system-manager";
+  selected =
+    builtins.length managerBindings == 1
+    && (builtins.head managerBindings).binding.request == "system:manager";
   packageOutput = package: lib.abilities.packageOutput {inherit package;};
   rendererPackages = {
     bash = packageArtifactFor (packageOutput "bash");
@@ -54,6 +62,13 @@
   };
 
   cfg = config.boot.initrd.systemd;
+  providerRenderPlanType = lib.types.submodule {
+    config._module.strict = true;
+    options = {
+      input = lib.mkOption {type = lib.types.str;};
+      name = lib.mkOption {type = lib.types.nonEmptyStr;};
+    };
+  };
 
   # Render each initrd unit category through its stage-1 *-ToUnit
   # renderer and key the result by unit file name (e.g. "foo.service").
@@ -82,10 +97,10 @@
       name = job.scriptName;
     })
   (lib.concatLists (lib.mapAttrsToList (_: service: service.jobScripts) cfg.services)));
-  initrdProviderArtifacts =
+  initrdProviderPlans =
     if initrdAbilityEvaluation == null
     then []
-    else initrdAbilityEvaluation.config.systemd.providerUnitArtifacts or [];
+    else initrdAbilityEvaluation.config.systemd.providerUnitPlans or [];
   initrdNetworkFiles = lib.mapAttrs (_: systemdLib.networkToText) cfg.network;
 in {
   options.boot.initrd.systemd = {
@@ -181,7 +196,9 @@ in {
         etc = lib.mkOption {type = lib.types.attrsOf lib.types.attrs;};
         jobScripts = lib.mkOption {type = lib.types.attrsOf lib.types.attrs;};
         networkFiles = lib.mkOption {type = lib.types.attrsOf lib.types.lines;};
-        providerArtifacts = lib.mkOption {type = lib.types.listOf lib.types.path;};
+        providerPlans = lib.mkOption {
+          type = lib.types.listOf providerRenderPlanType;
+        };
         renderedNetworks = lib.mkOption {type = lib.types.listOf lib.types.str;};
         renderedUnits = lib.mkOption {type = lib.types.listOf lib.types.str;};
       };
@@ -191,7 +208,7 @@ in {
     description = "Pure package-owned rendering plan for the selected systemd initrd.";
   };
 
-  config = {
+  config = lib.mkIf selected {
     # The selected initrd manager owns its package implementations. Security
     # policy contributes only provider-neutral intent; it does not select a
     # manager or a TPM token format from the generic secure-boot module.
@@ -256,7 +273,7 @@ in {
       etc = systemdLib.unitsToEtc pureInitrdUnits;
       jobScripts = initrdJobScripts;
       networkFiles = initrdNetworkFiles;
-      providerArtifacts = initrdProviderArtifacts;
+      providerPlans = initrdProviderPlans;
       renderedUnits = builtins.attrNames renderedInitrdUnits;
       renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);
     };
