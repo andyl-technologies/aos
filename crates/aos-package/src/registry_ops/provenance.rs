@@ -29,7 +29,7 @@ use crate::registry_ops::trust::{derive_trust_key, load_committed_roster, valida
 use crate::registry_ops::uki::sha256_hex;
 use crate::security::parse_signing_key;
 use crate::types::{
-    AttestationMeta, BpfLsmPolicyMeta, DocumentationArtifactMeta, package_name_bucket,
+    AttestationMeta, DocumentationArtifactMeta, package_name_bucket,
     validate_attestation_meta, validate_package_name, validate_platform_name,
 };
 use anyhow::{Context, Result, bail};
@@ -159,12 +159,6 @@ pub(in crate::registry_ops) struct PackageTomlPlatformKey {
     pub(in crate::registry_ops) package: String,
     pub(in crate::registry_ops) version: String,
     pub(in crate::registry_ops) platform: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(in crate::registry_ops) struct StagedPackageRfc0001Meta {
-    #[serde(default, rename = "bpf_lsm")]
-    pub(in crate::registry_ops) bpf_lsm: Option<BpfLsmPolicyMeta>,
 }
 
 #[allow(clippy::too_many_arguments)]

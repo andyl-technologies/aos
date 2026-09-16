@@ -51,7 +51,6 @@ pub mod desired;
 pub mod documentation;
 mod documentation_lsp;
 pub mod download;
-pub(crate) mod ebpf_lsm;
 pub mod environment;
 /// Test-only helpers that shell out to the host `git` to set up fixtures; the
 /// production registry paths use libgit2 ([`registry::repo`],
@@ -126,7 +125,6 @@ pub mod platform {
         }
     }
 }
-pub mod policy;
 pub mod profile;
 pub(crate) mod provenance;
 #[doc(hidden)]
@@ -523,13 +521,6 @@ pub enum PackageCommand {
     /// Hidden: produce the host package-attestation quote for the service controller.
     #[command(name = "__attest-service", hide = true)]
     AttestService,
-    /// Hidden: load fleet BPF-LSM policies selected by host policy.
-    #[command(name = "_load-ebpf-lsm-policies", hide = true)]
-    LoadEbpfLsmPolicies {
-        /// Use the system package profile
-        #[arg(long)]
-        system: bool,
-    },
     /// Hidden: drive the on-host resolve/evaluate configuration fixpoint.
     ///
     /// Called only by `aos-eval.service`. Renders the working set into
@@ -1089,7 +1080,6 @@ impl PackageCommand {
                         | AttestCommand::VerifyRolloutBootCommit { .. }
                         | AttestCommand::ReadUkiIdentitySection { .. },
                 }
-                | PackageCommand::LoadEbpfLsmPolicies { .. }
                 | PackageCommand::Eval { .. }
                 | PackageCommand::EvalRetained { .. }
                 | PackageCommand::EvalService { .. }
@@ -1113,8 +1103,7 @@ impl PackageCommand {
         }
 
         match self {
-            PackageCommand::LoadEbpfLsmPolicies { .. }
-            | PackageCommand::EvalRetained { .. }
+            PackageCommand::EvalRetained { .. }
             | PackageCommand::EvalService { .. }
             | PackageCommand::AbilityActivationPreflight { .. }
             | PackageCommand::AbilityActivate { .. } => LiveAos,
@@ -3307,13 +3296,6 @@ pub async fn run(
     runtime_boundary::validate(command)?;
     command.runtime_requirement().validate()?;
 
-    if let PackageCommand::LoadEbpfLsmPolicies { system } = command {
-        if !*system {
-            bail!("_load-ebpf-lsm-policies requires --system");
-        }
-        return ebpf_lsm::load_system_policies();
-    }
-
     if let PackageCommand::Config { command } = command {
         return run_runtime_config_command(command, printer).await;
     }
@@ -4042,9 +4024,6 @@ pub async fn run(
         }
         PackageCommand::Registry { command, .. } => {
             run_apm_registry(&config, command, printer).await
-        }
-        PackageCommand::LoadEbpfLsmPolicies { .. } => {
-            unreachable!("LoadEbpfLsmPolicies is handled before ApmConfig::load")
         }
         PackageCommand::Eval { .. } => {
             unreachable!("Eval is handled before ApmConfig::load")
@@ -6813,7 +6792,6 @@ mod tests {
             requires_features: vec!["attestation-v1".into()],
             documentation: None,
             contract: None,
-            bpf_lsm: None,
             attestation: AttestationMeta {
                 root_digest: Some(root_digest.into()),
                 root_hash: Some(root_digest.into()),

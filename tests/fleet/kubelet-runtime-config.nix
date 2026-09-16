@@ -29,10 +29,6 @@ in {
     metadata."host.nix" = ''
       {
         aos.networking.hostName = "standalone-kubelet";
-        environment.etc."aos/policy.toml" = {
-          text = "tier = \"privileged\"\n";
-          mode = "0644";
-        };
       }
     '';
   };

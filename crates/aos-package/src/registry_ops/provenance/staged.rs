@@ -10,7 +10,7 @@ use crate::registry_ops::provenance::statement::{
 };
 use crate::registry_ops::provenance::{
     PACKAGE_PROVENANCE_TRANSPARENCY_LOG, PackageProvenanceTransparencyLogEntry,
-    PackageTomlPlatformKey, StagedPackageProvenanceMeta, StagedPackageRfc0001Meta,
+    PackageTomlPlatformKey, StagedPackageProvenanceMeta,
     ensure_package_provenance_transparency_bytes_extend_head,
     head_package_provenance_transparency_log, package_provenance_trusted_keys,
     parse_package_provenance_transparency_log,
@@ -177,9 +177,7 @@ pub(in crate::registry_ops) fn validate_staged_package_toml_provenance_requireme
             .with_context(|| format!("decoding staged package metadata {path} as UTF-8"))?;
         let value: toml::Value = toml::from_str(text)
             .with_context(|| format!("parsing staged package metadata {path}"))?;
-        for (key, platform_entry) in package_toml_platform_entries(&path, &value, "staged")? {
-            ensure_staged_package_rfc0001_provenance(&path, &key, platform_entry)?;
-        }
+        package_toml_platform_entries(&path, &value, "staged")?;
     }
     Ok(())
 }
@@ -374,41 +372,6 @@ fn package_toml_provenance_entries_from_paths(
         }
     }
     Ok(metas)
-}
-
-fn ensure_staged_package_rfc0001_provenance(
-    path: &str,
-    key: &PackageTomlPlatformKey,
-    entry: &toml::Value,
-) -> Result<()> {
-    let meta: StagedPackageRfc0001Meta = entry.clone().try_into().with_context(|| {
-        format!(
-            "parsing staged package metadata {path} {} {} {} RFC-0001 fields",
-            key.package, key.version, key.platform
-        )
-    })?;
-    let requires_provenance = meta
-        .bpf_lsm
-        .as_ref()
-        .is_some_and(|bpf_lsm| !bpf_lsm.is_empty());
-    if !requires_provenance {
-        return Ok(());
-    }
-    match entry.get("provenance") {
-        Some(provenance) if provenance.is_str() => Ok(()),
-        Some(_) => bail!(
-            "staged package metadata {path} {} {} {} provenance must be a string",
-            key.package,
-            key.version,
-            key.platform
-        ),
-        None => bail!(
-            "staged package metadata {path} {} {} {} uses BPF-LSM metadata without attestation provenance",
-            key.package,
-            key.version,
-            key.platform
-        ),
-    }
 }
 
 fn ensure_staged_package_provenance_not_downgraded(

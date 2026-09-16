@@ -554,7 +554,6 @@ async fn run_inner(
                     source_nar_hash: meta.source_nar_hash.clone(),
                     documentation: meta.documentation.clone(),
                     contract: meta.contract.clone(),
-                    bpf_lsm: meta.bpf_lsm.clone(),
                     attestation: meta.attestation.clone(),
                 }),
             };
@@ -2028,7 +2027,6 @@ mod tests {
             requires_features: Vec::new(),
             documentation: None,
             contract: None,
-            bpf_lsm: None,
             attestation: Default::default(),
         }
     }
@@ -2094,7 +2092,6 @@ mod tests {
                 source_nar_hash: String::new(),
                 documentation: None,
                 contract: None,
-                bpf_lsm: None,
                 attestation: Default::default(),
             }),
         }

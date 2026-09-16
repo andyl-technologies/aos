@@ -17,7 +17,6 @@
   aos-selinux-run,
   aos-verity-root-guard,
   aos-ebpf-net-policy,
-  aos-ebpf-lsm-policy,
   aos-systemd-provider,
   checkpolicy,
   cmake,
@@ -112,7 +111,6 @@
     aos-selinux-run
     aos-verity-root-guard
     aos-ebpf-net-policy
-    aos-ebpf-lsm-policy
     checkpolicy
     policycoreutils
     semodule-utils
@@ -137,7 +135,6 @@
     export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
     export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
     export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
-    export AOS_EBPF_LSM_POLICY="${aos-ebpf-lsm-policy}/bin/aos-ebpf-lsm-policy"
     export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
     export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
     export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"

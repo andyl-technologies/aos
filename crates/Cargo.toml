@@ -40,6 +40,7 @@ members = [
     "aos-filesystem-provider",
     "aos-kubernetes-provider",
     "aos-kernel-tunable-provider",
+    "aos-ebpf-lsm-provider",
     "aos-nix-store-provider",
     "aos-systemd-provider",
     "aos-boot-preparation-provider",
