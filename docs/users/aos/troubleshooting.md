@@ -88,9 +88,10 @@ readlink /var/lib/profiles/system/current
 ```
 
 The manifest is an intermediate result. A complete transaction must also
-compile the package graph, fetch and render authenticated projections, resolve
-credential references, materialize a numbered EROFS lower, switch `/etc`,
-and publish a matching activation record. The journal's
+authenticate and preflight the checked activation plan, fetch and render its
+authenticated projections, resolve credential references, materialize a
+numbered EROFS lower, switch `/etc`, and publish a matching activation record.
+The journal's
 `config-eval.class=...` tag distinguishes assertion, undefined-option,
 conflict, provider, ABI, fetch, resource-limit, and convergence failures.
 

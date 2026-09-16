@@ -136,7 +136,7 @@ host.nix + facts + ABI-pinned base library
   -> secretRef resolution
   -> EROFS /etc lower in gen-N
   -> atomic pointer and /etc switch
-  -> unit reconciliation and activation record
+  -> provider resource convergence and activation record
 ```
 
 The resolver imports only authenticated package `config` outputs compatible

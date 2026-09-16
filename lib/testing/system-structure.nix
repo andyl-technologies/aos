@@ -3,7 +3,7 @@
 # This check deliberately avoids committed snapshots of rendered systems.
 # Nix derivation references carry their output context, so realization resolves
 # the exact store paths and retains their closures without copying generated
-# units, activation scripts, or package identities into source control.
+# units or package identities into source control.
 {
   pkgs,
   lib,
@@ -16,7 +16,6 @@
   contextualOutputs = [
     systemdUnits
     config.system.build.etcDump
-    config.system.build.activateScript
     config.environment.etc."os-release".source
     config.aos.config.evalAtBoot.baseLib
   ];

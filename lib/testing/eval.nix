@@ -458,18 +458,13 @@
     then throw "package presets must run after host configuration activation"
     else if
       !(containsStr
-        "__activate-config"
+        "__ability-activate"
         system.config.systemd.services.aos-activate.script)
-    then throw "aos-activate.service must invoke the configuration-generation commit"
+    then throw "aos-activate.service must invoke checked native activation"
     else if
       system.config.systemd.services.aos-activate.serviceConfig.RestartPreventExitStatus
       != "4"
     then throw "aos-activate.service must reserve failure status for indeterminate commits"
-    else if
-      !(containsStr
-        ''if [ "$rc" -eq 6 ]; then''
-        system.config.systemd.services.aos-activate.script)
-    then throw "aos-activate.service must settle after a committed degraded transaction"
     else if !(builtins.hasAttr "aos-metadata-fetch" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-metadata-fetch.service"
     else if !(builtins.hasAttr "aos-metadata-authorize" system.config.boot.initrd.systemd.services)
