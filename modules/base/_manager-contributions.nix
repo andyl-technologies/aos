@@ -1,5 +1,50 @@
 ##! Exact package-selected system manager projection.
 {lib, ...}: let
+  textEntryType = lib.types.submodule {
+    options = {
+      kind = lib.mkOption {
+        type = lib.types.enum ["text"];
+        description = "Filesystem-entry representation.";
+      };
+      mode = lib.mkOption {
+        type = lib.types.strMatching "[0-7]{3,4}";
+        description = "Octal mode for the emitted file.";
+      };
+      text = lib.mkOption {
+        type = lib.types.lines;
+        description = "Exact emitted file contents.";
+      };
+    };
+  };
+  symlinkEntryType = lib.types.submodule {
+    options = {
+      kind = lib.mkOption {
+        type = lib.types.enum ["symlink"];
+        description = "Filesystem-entry representation.";
+      };
+      target = lib.mkOption {
+        type = lib.types.str;
+        description = "Exact symlink target.";
+      };
+    };
+  };
+  filesystemEntryType = lib.types.either textEntryType symlinkEntryType;
+  executableScriptType = lib.types.submodule {
+    options = {
+      mode = lib.mkOption {
+        type = lib.types.strMatching "[0-7]{3,4}";
+        description = "Octal mode for the executable script.";
+      };
+      name = lib.mkOption {
+        type = lib.types.nonEmptyStr;
+        description = "Stable script name used for diagnostics.";
+      };
+      text = lib.mkOption {
+        type = lib.types.lines;
+        description = "Exact executable script contents.";
+      };
+    };
+  };
   ownershipType = lib.types.submodule {
     options = {
       executableScripts = lib.mkOption {
@@ -12,18 +57,18 @@
       };
     };
   };
-  configurationType = lib.types.submodule {
+  configurationType = lib.types.addCheck (lib.types.submodule {
     options = {
       buildOutput = lib.mkOption {
         type = lib.types.functionTo lib.types.package;
         description = "Opaque package-owned manager configuration builder.";
       };
       executableScripts = lib.mkOption {
-        type = lib.types.attrsOf lib.types.attrs;
+        type = lib.types.attrsOf executableScriptType;
         description = "Executable scripts emitted by the selected manager.";
       };
       filesystemEntries = lib.mkOption {
-        type = lib.types.attrsOf lib.types.attrs;
+        type = lib.types.attrsOf filesystemEntryType;
         description = "Filesystem entries emitted by the selected manager.";
       };
       ownership = lib.mkOption {
@@ -31,7 +76,11 @@
         description = "Authenticated ownership of the selected configuration artifacts.";
       };
     };
-  };
+  }) (value:
+    builtins.attrNames value.filesystemEntries
+    == builtins.attrNames value.ownership.filesystemEntries
+    && builtins.attrNames value.executableScripts
+    == builtins.attrNames value.ownership.executableScripts);
   selectedManagerType = lib.types.submodule {
     options = {
       _type = lib.mkOption {
@@ -47,7 +96,7 @@
         description = "Human-readable selected manager name.";
       };
       package = lib.mkOption {
-        type = lib.types.package;
+        type = lib.types.pathInStore;
         description = "Authenticated package output that owns the selected manager.";
       };
     };
