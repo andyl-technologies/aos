@@ -15,6 +15,13 @@
     config.aos.abilities.environment
     != null
     && config.aos.abilities.environment.stage == "host";
+  packageProfileConverged = serviceManagement.forProducer {
+    inherit consumerInstance;
+    key = "package-profile-converged";
+    interface = serviceManagement.interfaces.systemMilestoneReadiness;
+    parameters.milestone = serviceManagement.milestones.packageProfileConverged;
+  };
+  packageProfileConvergedReadiness = resultOf "package-profile-converged" "readiness-resource";
 
   specification = serviceManagement.forConfiguration {
     inherit serviceTypes consumerInstance;
@@ -125,9 +132,10 @@
           [evaluationReadiness]
           ++ lib.optional cfg.enable specificationResource;
         after = [];
-        before = [];
+        before = [packageProfileConvergedReadiness];
         requires = [];
         wants = [];
+        required_by = [packageProfileConvergedReadiness];
       };
       conditions.all = lib.optionals cfg.enable [
         {
@@ -175,7 +183,7 @@
       };
     };
   };
-  fragments = [specification service];
+  fragments = [specification packageProfileConverged service];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.aos.packageRuntime.packageProfile = {

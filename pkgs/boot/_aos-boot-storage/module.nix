@@ -20,12 +20,6 @@
     then null
     else config.aos.abilities.environment.stage;
 
-  bootCommit = {
-    _type = "aos-request-output-reference";
-    request = "aos:image-boot-commit-lifecycle";
-    output = "service-resource";
-  };
-
   command = entryPoint: arguments: {
     executable = {
       artifact = lib.abilities.packageOutput {};
@@ -54,6 +48,8 @@
   kernelModules = systemMilestone "kernel-modules" milestones.kernelModules;
   bootIdentity = systemMilestone "boot-identity" milestones.bootIdentityValidated;
   initrdStage = systemMilestone "initrd-stage" milestones.initrdStageExecuted;
+  espReady = systemMilestone "esp-ready" milestones.espReady;
+  imageBootCommitted = systemMilestone "image-boot-committed" milestones.imageBootCommitted;
   localFilesystemsReadiness = resultOf "local-filesystems" "readiness-resource";
   multiUserReadiness = resultOf "multi-user" "readiness-resource";
   sysrootReadiness = resultOf "sysroot" "readiness-resource";
@@ -61,6 +57,8 @@
   kernelModulesReadiness = resultOf "kernel-modules" "readiness-resource";
   bootIdentityReadiness = resultOf "boot-identity" "readiness-resource";
   initrdStageReadiness = resultOf "initrd-stage" "readiness-resource";
+  espReadyReadiness = resultOf "esp-ready" "readiness-resource";
+  imageBootCommittedReadiness = resultOf "image-boot-committed" "readiness-resource";
   service = {
     key,
     description,
@@ -115,7 +113,7 @@
     dependencies = {
       prerequisites = [];
       after = [];
-      before = [localFilesystemsReadiness bootCommit];
+      before = [localFilesystemsReadiness espReadyReadiness];
       requires = [];
       wants = [];
       requisite = [];
@@ -123,7 +121,7 @@
       binds_to = [];
       part_of = [];
       upholds = [];
-      required_by = [];
+      required_by = [espReadyReadiness];
       wanted_by = [localFilesystemsReadiness];
       required_mounts = [];
       implicit_dependencies = false;
@@ -143,9 +141,9 @@
     entryPoint = "aos-sync-esps";
     dependencies = {
       prerequisites = [];
-      after = [bootCommit];
+      after = [imageBootCommittedReadiness];
       before = [];
-      requires = [bootCommit];
+      requires = [imageBootCommittedReadiness];
       wants = [];
       requisite = [];
       conflicts = [];
@@ -281,6 +279,8 @@
     kernelModules
     bootIdentity
     initrdStage
+    espReady
+    imageBootCommitted
     mountEsp
     syncEsps
     zfsUnlock
