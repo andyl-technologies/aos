@@ -29,6 +29,7 @@
 {
   system ? builtins.currentSystem,
   crossSystem ? null,
+  releasePlatforms ? null,
   containerPublicationInputsOverride ? null,
 }: let
   lib = import ./lib {
@@ -42,6 +43,14 @@
     if crossSystem != null
     then lib.mkPlatform crossSystem
     else buildPlatform;
+  selectedReleasePlatforms =
+    if releasePlatforms == null
+    then [hostPlatform]
+    else releasePlatforms;
+  requireReleasePlatforms = value:
+    if releasePlatforms == null
+    then throw "release evaluation requires an explicit releasePlatforms selection"
+    else value;
 
   # The native stdenv and package set provide tools that execute on the build
   # machine. A cross stdenv uses those tools while producing hostPlatform
@@ -120,6 +129,7 @@
   # dependencies, and ordinary package arguments for host libraries.
   pkgs = import ./pkgs {
     inherit lib stdenv buildPackages firmwarePackages;
+    releasePlatforms = selectedReleasePlatforms;
   };
 
   # Auto-discovered module list.
@@ -374,7 +384,7 @@
         platform
         pkgs.allPackageNames;
     })
-    pkgs.platformSupport.canonicalSystems
+    pkgs.platformSupport.platforms
   );
   qualificationPackageNames =
     pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
@@ -1639,13 +1649,16 @@ in {
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
-  releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
+  releasePackageInventory = requireReleasePlatforms (
+    pkgs.platformSupport.releaseInventory pkgs.allPackageNames
+  );
   inherit releaseQualification;
-  releasePackageDerivations =
+  releasePackageDerivations = requireReleasePlatforms (
     pkgs.platformSupport.releaseDerivations
     hostPlatform.system
     pkgs
-    pkgs.allPackageNames;
+    pkgs.allPackageNames
+  );
 
   # Pure package-maintenance content. Git and local-clone identities are added
   # only by the local controller after strict canonical evaluation.

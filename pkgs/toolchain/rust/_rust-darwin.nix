@@ -8,6 +8,7 @@
 {
   mkDerivation,
   pname,
+  platformSupport,
   version,
   src,
   changeId,
@@ -51,7 +52,7 @@
   isFinal = builtins.elem "dev" outputs;
 in
   mkDerivation {
-    inherit pname version src outputs qualification;
+    inherit pname version src outputs qualification platformSupport;
 
     buildDeps =
       [

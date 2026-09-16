@@ -6,6 +6,12 @@
   stdenv,
   buildPackages,
 }: let
+  platformSupport = {
+    build = [{abi = ["gnu"]; os = ["linux"];}];
+    host = [{abi = ["gnu"]; cpu = ["x86_64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64"]; os = ["darwin"];}];
+    target = [{abi = ["gnu"]; cpu = ["x86_64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64"]; os = ["darwin"];}];
+    role = "public-package";
+  };
   pname = "go-1_4";
   qualification.packageProbe = lib.qualification.commandProbe {
     "primary" = {
@@ -72,7 +78,7 @@ in
   if stdenv.hostPlatform.isDarwin
   then
     import ./_go-darwin.nix {
-      inherit mkDerivation pname version src stdenv qualification;
+      inherit mkDerivation pname version src stdenv qualification platformSupport;
       nativeGo = buildPackages.go-1_4;
       nativeCc = buildPackages.cc;
       legacyCBootstrap = true;
@@ -80,7 +86,7 @@ in
     }
   else
     mkDerivation {
-      inherit pname version src qualification;
+      inherit pname version src qualification platformSupport;
 
       buildDeps = [];
       runtimeDeps = [];

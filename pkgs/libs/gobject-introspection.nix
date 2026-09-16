@@ -26,6 +26,12 @@
   pythonPath = "${setuptools}/${sitePackages}:${python3-mako}/${sitePackages}:${python3-markdown}/${sitePackages}";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "gobject-introspection";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

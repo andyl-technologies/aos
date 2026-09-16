@@ -4,8 +4,15 @@
   fetchurl,
   stdenv,
   buildPackages,
+  declarationOnly ? false,
 }: let
   version = "80";
+  platformSupport = {
+    build = [{abi = ["gnu"]; os = ["linux"];}];
+    host = [{abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+    target = [];
+    role = "public-package";
+  };
   revision = "9718a5a15549857d1cbc1289ee4ba0591e1393b9";
 
   # Apple published JavaNativeFoundation as open source, but the former
@@ -30,7 +37,15 @@
     hash = "sha256-O8Pcqh+dEJ7ZkTnhEIppGWTGitkDdSFKhB/RUiqjgpw=";
   };
 in
+  if declarationOnly
+  then {
+    pname = "java-native-foundation";
+    inherit platformSupport;
+    unavailable = true;
+  }
+  else
   mkDerivation {
+    inherit platformSupport;
     pname = "java-native-foundation";
     inherit version;
 

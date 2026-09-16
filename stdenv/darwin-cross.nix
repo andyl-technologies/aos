@@ -17,7 +17,8 @@
   cargoTargetArVariable = "CARGO_TARGET_${cargoTargetPrefix}_AR";
 
   sdk = import ../pkgs/darwin/darwin-sdk.nix {
-    inherit (buildStdenv) mkDerivation fetchurl;
+    inherit lib;
+    inherit (buildPackages) mkDerivation fetchurl;
     inherit buildPackages;
   };
 

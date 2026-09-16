@@ -13,6 +13,12 @@
   version = "29.6.2";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "docker";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

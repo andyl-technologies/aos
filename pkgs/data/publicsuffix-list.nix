@@ -8,6 +8,12 @@
   revision = "e452c7058d6946bd76952b128c12f5ce87a5acb8";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "publicsuffix-list";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

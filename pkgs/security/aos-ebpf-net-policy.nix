@@ -70,6 +70,12 @@
   loaderSource = ./aos-ebpf-net-policy.c;
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-ebpf-net-policy";
     qualification.packageProbe = lib.qualification.providerExecutableProbe {
       name = "aos-ebpf-net-policy-provider";

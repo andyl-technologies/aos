@@ -39,6 +39,7 @@
   version,
   srcHash,
   vendorDepsHash,
+  platformSupport,
   update ? null,
   qualification ? null,
   # Major version string for the version check test (e.g. "7.7", "8.6", "9.0")
@@ -1208,6 +1209,7 @@
 in
   mkDerivation {
     pname = "bazel";
+    inherit platformSupport;
     inherit version qualification;
     inherit update;
 

@@ -10,6 +10,12 @@
   version = "1.0.1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "libnetfilter_cttimeout";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

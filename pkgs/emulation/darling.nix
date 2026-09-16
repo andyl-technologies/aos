@@ -28,6 +28,12 @@
   sourceManifest = map (source: builtins.removeAttrs source ["archive"]) sources.submodules;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "darling";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

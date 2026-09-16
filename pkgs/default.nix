@@ -8,6 +8,7 @@
   buildPackages ? null,
   firmwarePackages ? null,
   targetPackages ? null,
+  releasePlatforms ? [stdenv.hostPlatform],
 }: let
   fetchurl = lib.fetchurl;
   mkUpstream = import ./build-support/_upstream.nix {
@@ -20,7 +21,17 @@
   mkManualUpstream = import ./build-support/_manual-upstream.nix {
     platform = stdenv.hostPlatform.system;
   };
-  platformSupport = import ./_platform-support.nix;
+  declarationPackages =
+    if buildPackages != null
+    then buildPackages
+    else self;
+  platformSupport = import ./_target-policy.nix {
+    inherit lib releasePlatforms;
+    # Package declarations are invariant across splices. Reading them from
+    # the native package set avoids evaluating an unsupported cross package
+    # merely to decide that its host constraint excludes it.
+    packages = declarationPackages;
+  };
 
   # Cross package-set roles. `self` is the host package set: its outputs run
   # on stdenv.hostPlatform. Build tools must be selected from buildPackages so
@@ -129,7 +140,10 @@
     };
   withDefaultMaintainers = withDistributionMeta {};
   withContractFrom = declaration: package:
-    package // {inherit (declaration) contract;};
+    package
+    // {
+      inherit (declaration) contract platformSupport;
+    };
 
   cargoArtifactsSupport = import ./build-support/_cargo-artifacts.nix {
     inherit lib mkDerivation;
@@ -191,8 +205,13 @@
     packageName,
     version,
     packageProbe,
-  }:
-    package:
+    platformSupport ? null,
+  }: package: let
+    normalizedPlatformSupport =
+      if platformSupport == null
+      then null
+      else lib.packagePlatform.normalize "package '${packageName}' platformSupport" platformSupport;
+  in
       package
       // {
         pname = packageName;
@@ -200,6 +219,9 @@
         contract = probeOnlyPackageContract {
           inherit packageName version packageProbe;
         };
+      }
+      // lib.optionalAttrs (normalizedPlatformSupport != null) {
+        platformSupport = normalizedPlatformSupport;
       };
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
@@ -499,25 +521,23 @@
         };
     platformAttrs = lib.optionalAttrs (packagePlatformSupport != null) {
       platformSupport = packagePlatformSupport;
-      meta =
-        (drv.meta or {})
-        // {
-          aos =
-            (drv.meta.aos or {})
-            // {platformSupport = packagePlatformSupport;};
-        };
     };
     secondaryOutputAttrs = builtins.listToAttrs (
       builtins.map (outputName: {
         name = outputName;
         value =
-          (builtins.getAttr outputName drv)
-          // {
-            pname = args.pname or packageName;
-            meta = drv.meta or {};
-          }
-          // lib.optionalAttrs (args ? version) {inherit (args) version;}
-          // platformAttrs;
+          addBuilderOverrides
+          (updatedArgs: builtins.getAttr outputName (mkDerivation updatedArgs))
+          args
+          (
+            (builtins.getAttr outputName drv)
+            // {
+              pname = args.pname or packageName;
+              meta = drv.meta or {};
+            }
+            // lib.optionalAttrs (args ? version) {inherit (args) version;}
+            // platformAttrs
+          );
       }) (builtins.filter (outputName: outputName != drv.outputName) drv.outputs)
     );
     result = drv // secondaryOutputAttrs // abilityAttrs // platformAttrs;
@@ -1283,6 +1303,12 @@
       license = "GPL-3.0-or-later WITH GCC-exception-3.1";
     };
   };
+  darwinRuntimePlatformSupport = lib.packagePlatform.normalize "package 'darwin-runtimes' platformSupport" {
+    build = [{abi = ["gnu"]; os = ["linux"];}];
+    host = [{abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+    target = [];
+    role = "public-package";
+  };
   darwinDtraceCompiler = import ./darwin/_darwin-dtrace-compiler.nix {
     inherit mkDerivation fetchurl;
     llvm = resolvedBuildPackages.llvm;
@@ -1492,7 +1518,7 @@
             system:
               builtins.all (member: platformSupport.supportsTarget system member) declared.members
           )
-          platformSupport.canonicalSystems);
+          platformSupport.platforms);
       in
         declared // {platforms = eligiblePlatforms;}
     )
@@ -1547,6 +1573,12 @@
       # into buildDeps automatically via the wrapped mkDerivation above.
       nuke-references = withProbeOnlyPackageContract {
         packageName = "nuke-references";
+        platformSupport = {
+          build = [{abi = ["gnu"]; os = ["linux"];}];
+          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+          target = [];
+          role = "build-input";
+        };
         version = "0";
         packageProbe = lib.qualification.commandProbe {
             "primary" = {
@@ -1816,6 +1848,7 @@
         then
           withProbeOnlyPackageContract {
             packageName = "darwin-runtimes";
+            platformSupport = darwinRuntimePlatformSupport;
             version = stdenv.darwinRuntimes.version or "0";
             packageProbe = lib.qualification.commandProbe {
               "primary" = {
@@ -1868,16 +1901,26 @@
             };
           }
           (withDefaultMaintainers stdenv.darwinRuntimes)
-        else null;
+        else {
+          pname = "darwin-runtimes";
+          platformSupport = darwinRuntimePlatformSupport;
+          unavailable = true;
+        };
       darwinRuntimes = self.darwin-runtimes;
       java-native-foundation =
         if stdenv.hostPlatform.isDarwin
         then discoveredPackages.java-native-foundation
-        else null;
+        else callPackage ./toolchain/java/java-native-foundation.nix {declarationOnly = true;};
 
       # --- stdenv packages (linked, not rebuilt) ---
       gcc = withProbeOnlyPackageContract {
         packageName = "gcc";
+        platformSupport = {
+          build = [{abi = ["gnu"]; os = ["linux"];}];
+          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          role = "public-package";
+        };
         version = "16.2.0";
         packageProbe = lib.qualification.commandProbe {
             "primary" = {
@@ -1959,6 +2002,12 @@
       );
       glibc = withProbeOnlyPackageContract {
         packageName = "glibc";
+        platformSupport = {
+          build = [{abi = ["gnu"]; os = ["linux"];}];
+          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+          target = [];
+          role = "public-package";
+        };
         version = "2.39.0";
         packageProbe = lib.qualification.commandProbe {
             "primary" = {
@@ -2059,6 +2108,12 @@
       );
       binutils = withProbeOnlyPackageContract {
         packageName = "binutils";
+        platformSupport = {
+          build = [{abi = ["gnu"]; os = ["linux"];}];
+          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          role = "public-package";
+        };
         version = "2.41.0";
         packageProbe = lib.qualification.commandProbe {
             "primary" = {
@@ -2129,6 +2184,12 @@
       inherit darwinCctoolsLinker;
       cc = withProbeOnlyPackageContract {
         packageName = "cc";
+        platformSupport = {
+          build = [{abi = ["gnu"]; os = ["linux"];}];
+          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          role = "public-package";
+        };
         version = "0.1.0";
         packageProbe = lib.qualification.commandProbe {
             "primary" = {
@@ -2214,6 +2275,12 @@
       # records via specs/PATH.
       gccUnwrapped = withProbeOnlyPackageContract {
         packageName = "gccUnwrapped";
+        platformSupport = {
+          build = [{abi = ["gnu"]; os = ["linux"];}];
+          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          role = "public-package";
+        };
         version = "16.2.0";
         packageProbe = lib.qualification.commandProbe {
             "primary" = {
@@ -2295,14 +2362,21 @@
           ))
         // {version = "16.2.0";}
       );
-      gcc-libs =
+      gcc-libs = withContractFrom discoveredPackages.gcc-libs (
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
         else if stdenv.isCross && stdenv.hostPlatform.isLinux
         then withDefaultMaintainers linuxTargetGccLibs
-        else discoveredPackages.gcc-libs;
+        else discoveredPackages.gcc-libs
+      );
       getent = withProbeOnlyPackageContract {
         packageName = "getent";
+        platformSupport = {
+          build = [{abi = ["gnu"]; os = ["linux"];}];
+          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+          target = [];
+          role = "public-package";
+        };
         version = "2.39.0";
         packageProbe = lib.qualification.commandProbe {
             "primary" = {

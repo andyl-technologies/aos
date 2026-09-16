@@ -15,10 +15,12 @@
   declarationKeys = [
     "build"
     "host"
-    "requires"
-    "roles"
-    "stages"
+    "role"
     "target"
+  ];
+  packageRoles = [
+    "build-input"
+    "public-package"
   ];
 
   invalid = context: message:
@@ -57,6 +59,10 @@
     if !builtins.isList constraints
     then invalid context "must be a list of constraint sets"
     else builtins.map (normalizeConstraint context) constraints;
+  normalizeRole = context: role:
+    if !builtins.isString role || !(builtins.elem role packageRoles)
+    then invalid context "must be one of ${builtins.toJSON packageRoles}"
+    else role;
 in rec {
   schema = "aos.package-platform-support/v1";
 
@@ -78,9 +84,7 @@ in rec {
       build = normalizeConstraints "${context}.build" declaration.build;
       host = normalizeConstraints "${context}.host" declaration.host;
       target = normalizeConstraints "${context}.target" declaration.target;
-      roles = normalizeStrings "${context}.roles" declaration.roles;
-      stages = normalizeStrings "${context}.stages" declaration.stages;
-      requires = normalizeStrings "${context}.requires" declaration.requires;
+      role = normalizeRole "${context}.role" declaration.role;
     };
 
   supports = platformIdentity: constraints: let

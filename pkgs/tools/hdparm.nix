@@ -8,6 +8,12 @@
   version = "9.65";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "hdparm";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

@@ -46,6 +46,10 @@
     constraintsCompatible
     ;
   hardening = import ./hardening.nix;
+  packagePlatform = import ./package-platform.nix {
+    lists = import ./lists.nix;
+    platform = import ./platform.nix;
+  };
 
   # Attach evaluation-only fixed-output identity without changing the
   # derivation's builder environment or store identity.
@@ -718,8 +722,13 @@
     #   outputChecks = { out = { disallowedReferences = [ gcc ]; }; };
     # When null (default), behaves identically to historical mkDerivation.
     outputChecks ? null,
+    platformSupport ? null,
     ...
   }: let
+    normalizedPlatformSupport =
+      if platformSupport == null
+      then null
+      else packagePlatform.normalize "package '${effectivePname}' platformSupport" platformSupport;
     useStructuredAttrs = outputChecks != null;
     # Accept either `name` (direct) or `pname` (computed as pname-version).
     name =
@@ -837,6 +846,7 @@
       "passthru"
       "update"
       "checks"
+      "platformSupport"
       "hardeningEnable"
       "hardeningDisable"
       "defaultHardeningFlags"
@@ -1054,7 +1064,8 @@
     # Named outputs are fresh derivation attrsets. Preserve the package-level
     # dependency and execution contract when consumers select one directly.
     outputMetadata = {
-      inherit meta version runtimeDeps propagatedDeps;
+      inherit meta;
+      inherit version runtimeDeps propagatedDeps;
       pname = effectivePname;
       platforms = derivationPlatforms;
       constraints = {
@@ -1065,7 +1076,12 @@
           then codeTargetPlatform.constraints
           else null;
       };
-    };
+    }
+    // (
+      if normalizedPlatformSupport == null
+      then {}
+      else {platformSupport = normalizedPlatformSupport;}
+    );
     annotatedOutputs = builtins.listToAttrs (
       builtins.map (output: {
         name = output;
