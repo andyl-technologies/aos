@@ -657,11 +657,8 @@ fn execute_native_transition(
         CURRENT_AUTHORITY_MAX_AGE_MILLIS,
         transaction_linked,
     );
-    let fixed_point = desired_inputs
-        .fixed_point()
-        .context("native activation has no retained final module fixed point")?;
     let mut boundary_observer =
-        AbilityExecutionBoundaryObserver::load(fixed_point.execution_observer.as_ref())
+        AbilityExecutionBoundaryObserver::load(desired_inputs.execution_observer())
             .context("opening protected native execution observation channel")?;
     let terminal = dispatcher.run_to_terminal(
         &mut session,
