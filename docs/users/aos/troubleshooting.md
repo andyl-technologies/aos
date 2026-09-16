@@ -88,14 +88,14 @@ readlink /var/lib/profiles/system/current
 ```
 
 The manifest is an intermediate result. A complete transaction must also
-compile the package graph, fetch and render authenticated projections, resolve
-credential references, materialize a numbered EROFS lower, switch `/etc`,
-and publish a matching activation record. The journal's
+authenticate and preflight the checked activation plan, resolve its typed
+package resources, materialize a numbered EROFS lower, switch `/etc`, and
+publish a matching activation record. The journal's
 `config-eval.class=...` tag distinguishes assertion, undefined-option,
 conflict, provider, ABI, fetch, resource-limit, and convergence failures.
 
 If the activation record is `degraded`, inspect its dropped packages and
-failed units. Re-running the same transaction retries it; the graph compiler
+failed units. Re-running the same transaction retries it; activation preflight
 does not treat degraded or stale evidence as complete. If no new current
 pointer was committed, the previous configuration remains live.
 
