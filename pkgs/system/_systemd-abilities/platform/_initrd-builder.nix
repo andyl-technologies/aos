@@ -32,6 +32,8 @@
 ##!   loadModules — list of module names for /etc/modules-load.d/initrd.conf
 ##!   initrdUnits   — derivation whose output is the rendered
 ##!                   /etc/systemd/system directory (from generateUnits)
+##!   initrdRuntimeRoots — canonical store paths whose closures are copied
+##!                   into the initrd and exposed on its interactive PATH.
 ##!   initrdNetworkDir — derivation whose output is a directory of rendered
 ##!                   systemd-networkd `.network` files (from the typed
 ##!                   `boot.initrd.systemd.network` tree); copied into
@@ -51,7 +53,7 @@
   firmwarePackages ? [],
   loadModules,
   initrdUnits,
-  initrdPackages,
+  initrdRuntimeRoots,
   initrdNetworkDir ? null,
   renderedUnits,
   renderedNetworks,
@@ -81,8 +83,6 @@
     util-linux
     zstd
     ;
-  uniqueInitrdPackages = lib.unique initrdPackages;
-
   dependencyRoots =
     [
       {
@@ -106,7 +106,7 @@
       store_path = "${package}";
       available_stage = "initrd";
     })
-    uniqueInitrdPackages
+    initrdRuntimeRoots
     ++ map (package: {
       kind = "kernel-module-package";
       store_path = "${package}";
@@ -416,8 +416,8 @@
     requiredUnits;
 
   interactivePath = lib.concatStringsSep ":" (
-    (map (p: "${p}/bin") initrdPackages)
-    ++ (map (p: "${p}/sbin") initrdPackages)
+    (map (p: "${p}/bin") initrdRuntimeRoots)
+    ++ (map (p: "${p}/sbin") initrdRuntimeRoots)
     ++ ["/bin" "/sbin"]
   );
   initrdArtifact = mkDerivation {
@@ -446,7 +446,7 @@
     # directory" for each initrd service.
     exportReferencesGraph =
       lib.concatLists
-      (lib.imap (i: p: ["closure-${toString i}" p]) initrdPackages)
+      (lib.imap (i: p: ["closure-${toString i}" p]) initrdRuntimeRoots)
       ++ [
         "closure-initrd-units"
         initrdUnits

@@ -36,12 +36,13 @@ in {
     aos.metadata.storageProvisioning = {inherit authorizationConfiguration;};
 
     aos.boot.initrd.packageRoots = [
-      configTrustAnchors
-      config.aos.config.evalAtBoot.baseLib
       pkgs.aos-metadata-provider
       pkgs.aos-nix-store-provider
       pkgs.nix
     ];
-
+    aos.boot.initrd.nonPackageRuntimeArtifacts = [
+      (builtins.toString configTrustAnchors)
+      (builtins.toString config.aos.config.evalAtBoot.baseLib)
+    ];
   };
 }
