@@ -68,7 +68,7 @@
   debugInitrdPackageNames =
     builtins.map
     (package: package.pname or package.name)
-    debugConfig.aos.abilities.stages.initrd.packages;
+    debugConfig.aos.boot.initrd.packageRoots;
   debugHostRequests = debugConfig.aos.abilities.requests;
   debugInitrdRequests = debugConfig.system.build.initrdAbilityGraph.requests;
   debugAutologinIntent =

@@ -108,7 +108,7 @@
   '';
   predecessorHealthScript = "${predecessorHealthScriptPackage}/bin/aos-fleet-predecessor-health-hook";
   initrdControlFallback = {
-    aos.boot.initrd.extraPackages = [pkgs.aos-test-agent];
+    aos.boot.initrd.packageRoots = [pkgs.aos-test-agent];
     boot.initrd.systemd.services.aos-test-agent-initrd-fallback = {
       description = "Expose test control for stalled initrd boots";
       requiredBy = ["initrd-fs.target"];

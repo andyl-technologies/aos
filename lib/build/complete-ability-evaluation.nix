@@ -43,19 +43,35 @@
     else builtins.map (name: builtins.head grouped.${name}) (builtins.attrNames grouped);
 
   hostSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.environment.systemPackages;
-  initrdSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.aos.abilities.stages.initrd.packages;
+  initrdSelectedAbilityPackages = selectedAbilityPackagesFrom selectionEvaluation.config.aos.boot.initrd.packageRoots;
   allSelectedAbilityPackages = selectedAbilityPackagesFrom (
     hostSelectedAbilityPackages ++ initrdSelectedAbilityPackages
   );
-  callerPackageNames = builtins.map (record: record.name) packageModules;
-  nativeAbilityPackageModulesFor = selectedPackages:
-    builtins.map
-    lib.abilities.authenticatedPackageModuleRecordFor
-    (builtins.filter
-      (package: !(builtins.elem package.contract.value.package.name callerPackageNames))
-      selectedPackages);
-  finalPackageModules = packageModules ++ nativeAbilityPackageModulesFor hostSelectedAbilityPackages;
-  allPackageModules = packageModules ++ nativeAbilityPackageModulesFor allSelectedAbilityPackages;
+  callerPackageModules = lib.abilities.canonicalizeAuthenticatedModuleRecords packageModules;
+  authenticatedModuleRecordFor = package: let
+    name = package.contract.value.package.name;
+    callerRecords = builtins.filter (record: record.name == name) callerPackageModules;
+  in
+    if callerRecords == []
+    then lib.abilities.authenticatedPackageModuleRecordFor package
+    else builtins.head (lib.abilities.selectAuthenticatedPackageModuleRecords [package] callerRecords);
+  authenticatedModuleRecordsFor = selectedPackages:
+    lib.abilities.canonicalizeAuthenticatedModuleRecords (
+      builtins.map authenticatedModuleRecordFor selectedPackages
+    );
+  selectedPackageNamesFor = packages:
+    builtins.map (package: package.contract.value.package.name) packages;
+  withSelectedPackageRecords = selectedPackages: let
+    selectedNames = selectedPackageNamesFor selectedPackages;
+    unrelatedCallerRecords = builtins.filter
+      (record: !(builtins.elem record.name selectedNames))
+      callerPackageModules;
+  in
+    lib.abilities.canonicalizeAuthenticatedModuleRecords (
+      unrelatedCallerRecords ++ authenticatedModuleRecordsFor selectedPackages
+    );
+  finalPackageModules = withSelectedPackageRecords hostSelectedAbilityPackages;
+  allPackageModules = withSelectedPackageRecords allSelectedAbilityPackages;
   initrdPackageModules = lib.abilities.selectAuthenticatedPackageModuleRecords
     initrdSelectedAbilityPackages
     allPackageModules;

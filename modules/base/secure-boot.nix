@@ -139,7 +139,7 @@
   # sealing of /var reads it pre-switch-root. The initrd copies a fixed
   # package set, not the whole toplevel closure, so the measured-boot branch
   # registers a minimal image-fixed artifact and adds it via
-  # aos.boot.initrd.extraPackages. The frozen artifact path keeps this module
+  # aos.boot.initrd.packageRoots. The frozen artifact path keeps this module
   # evaluable on-host without exposing a derivation builder.
   pcrKeyForInitrd = config.aos.config.artifacts.pcr-public-key;
 in {
@@ -445,7 +445,7 @@ in {
       # First-boot recovery seeding authenticates the ESP copy before it
       # records any retention evidence. The initrd copies an explicit package
       # closure, so both PE verification tools must be named here.
-      aos.boot.initrd.extraPackages = lib.mkIf config.aos.boot.recovery.enable [
+      aos.boot.initrd.packageRoots = lib.mkIf config.aos.boot.recovery.enable [
         pkgs.binutils
         pkgs.sbsigntools
       ];
@@ -529,7 +529,7 @@ in {
       ];
 
       # Ship the PCR public key into the initrd for first-boot sealing.
-      aos.boot.initrd.extraPackages = [pcrKeyForInitrd];
+      aos.boot.initrd.packageRoots = [pcrKeyForInitrd];
       environment.etc."aos/pcr-sign.pem".source = "${pcrKeyForInitrd}/pcr.pem";
     })
 

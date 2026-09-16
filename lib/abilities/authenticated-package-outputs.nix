@@ -205,6 +205,59 @@
     checkedSelector = checkedPackageOutputSelector selector;
   in
     checkedProjection.origin.packageArtifactFor checkedSelector;
+  authenticatedModuleRecordIdentity = record: let
+    exactRecordShape =
+      builtins.isAttrs record
+      && builtins.attrNames record
+      == [
+        "configRoot"
+        "module"
+        "name"
+        "outputs"
+        "version"
+      ];
+    exactOutputsShape =
+      exactRecordShape
+      && builtins.isAttrs record.outputs
+      && builtins.attrNames record.outputs == ["dependencies" "self"];
+    dependencies =
+      if exactOutputsShape
+      then record.outputs.dependencies
+      else null;
+  in
+    if
+      !exactRecordShape
+      || !exactOutputsShape
+      || !builtins.isAttrs dependencies
+      || !builtins.isString record.name
+      || !builtins.isString record.version
+    then throw "authenticated module record has a non-canonical shape"
+    else {
+      inherit (record) name version;
+      configRoot = builtins.toString record.configRoot;
+      module = builtins.toString record.module;
+      outputs = {
+        self = builtins.toString record.outputs.self;
+        dependencies = builtins.mapAttrs (_: builtins.toString) dependencies;
+      };
+    };
+
+  canonicalizeAuthenticatedModuleRecords = records: let
+    grouped =
+      builtins.groupBy
+      (record: (authenticatedModuleRecordIdentity record).name)
+      records;
+  in
+    builtins.map
+    (name: let
+      candidates = grouped.${name};
+      identities = builtins.map authenticatedModuleRecordIdentity candidates;
+      expected = builtins.head identities;
+    in
+      if !builtins.all (identity: identity == expected) identities
+      then throw "authenticated module records conflict for package '${name}'"
+      else builtins.head candidates)
+    (builtins.attrNames grouped);
 
   selectAuthenticatedPackageModuleRecords = packages: records:
     builtins.map (package: let
@@ -232,6 +285,8 @@ in {
     authenticatedPackageProjectionFor
     checkedAuthenticatedPackageProjection
     authenticatedProjectionOutputFor
+    authenticatedModuleRecordIdentity
+    canonicalizeAuthenticatedModuleRecords
     selectAuthenticatedPackageModuleRecords
     ;
 }

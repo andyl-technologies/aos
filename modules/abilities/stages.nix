@@ -35,17 +35,6 @@ in {
         '';
       };
 
-      packages = lib.mkOption {
-        type = lib.types.listOf lib.types.package;
-        default = [];
-        internal = true;
-        description = ''
-          Parent-selected packages whose authenticated native modules participate
-          in the initrd fixed point. Selection does not add payload dependency
-          edges beyond the package's existing initrd inclusion.
-        '';
-      };
-
       intent = lib.mkOption {
         type = lib.types.listOf lib.types.attrs;
         default = [];

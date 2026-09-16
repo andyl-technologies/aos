@@ -35,7 +35,7 @@ in {
   config = {
     aos.metadata.storageProvisioning = {inherit authorizationConfiguration;};
 
-    aos.boot.initrd.extraPackages = [
+    aos.boot.initrd.packageRoots = [
       configTrustAnchors
       config.aos.config.evalAtBoot.baseLib
       pkgs.aos-metadata-provider
@@ -43,8 +43,5 @@ in {
       pkgs.nix
     ];
 
-    aos.abilities.stages.initrd = {
-      packages = [pkgs.aos pkgs.aos-metadata-provider pkgs.aos-nix-store-provider];
-    };
   };
 }

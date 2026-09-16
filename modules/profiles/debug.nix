@@ -44,8 +44,8 @@ in {
 
       # Stage 1 evaluates the same authenticated package module with an explicit
       # initrd identity and data-only enable intent.
+      aos.boot.initrd.packageRoots = [pkgs.util-linux];
       aos.abilities.stages.initrd = {
-        packages = [pkgs.util-linux pkgs.systemd];
         intent = [
           {
             aos.services.getty.autologin = {

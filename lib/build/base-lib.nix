@@ -62,11 +62,10 @@
 }: let
   freeze = import ./freeze-pkgs.nix {inherit lib;};
 
-  uniqueRecords = records: lib.unique records;
-  checkedHostPackageModules = uniqueRecords hostPackageModules;
-  checkedHostProviderModules = uniqueRecords hostProviderModules;
-  checkedInitrdPackageModules = uniqueRecords initrdPackageModules;
-  checkedInitrdProviderModules = uniqueRecords initrdProviderModules;
+  checkedHostPackageModules = lib.abilities.canonicalizeAuthenticatedModuleRecords hostPackageModules;
+  checkedHostProviderModules = lib.abilities.canonicalizeAuthenticatedModuleRecords hostProviderModules;
+  checkedInitrdPackageModules = lib.abilities.canonicalizeAuthenticatedModuleRecords initrdPackageModules;
+  checkedInitrdProviderModules = lib.abilities.canonicalizeAuthenticatedModuleRecords initrdProviderModules;
 
   evaluationFor = {
     environment,
