@@ -1147,7 +1147,7 @@ renders storage. With no host input, that same projection supplies defaults.
 ## 1. Command surface
 
 ```text
-aos metadata detect      # DMI/SMBIOS/ISO → /run/aos-metadata/platform.env (+ need-network, +cidata mount)
+aos metadata detect      # DMI/SMBIOS/ISO → /run/aos-metadata/platform.env (+cidata mount)
 aos metadata fetch       # platform → exact host.nix transport + facts
 aos metadata authorize   # platform|signed policy → exact accepted host.nix
 aos metadata eval-provisioning # restricted Nix → validated transient repart.d
@@ -1156,7 +1156,7 @@ aos metadata cache-runtime       # cache only an input that produced a manifest
 aos metadata restore-runtime     # hash-check and restore last evaluated input
 ```
 
-- `detect` absorbs `pkgs/boot/aos-platform-detect.nix` verbatim (the asset-tag → vendor → bios → product table at lines 64–123) into `std::fs` reads of `/sys/class/dmi/id/*`. It writes `platform.env` and, for network-dependent platforms, touches the `need-network` flag the `aos-metadata-network` gate keys off (replacing today's `/run/ignition/need-network`).
+- `detect` absorbs `pkgs/boot/aos-platform-detect.nix` verbatim (the asset-tag → vendor → bios → product table at lines 64–123) into `std::fs` reads of `/sys/class/dmi/id/*`. It writes `platform.env`; the typed detection result carries the network requirement to the selected network-readiness provider.
 - `detect` also performs the **config-drive probe** (the net-new mount helper, [§8](#8-net-new-pieces)) so that an offline ISO/vfat channel short-circuits the cloud path exactly as `aos-platform-detect.nix:51` does today for the `aos-metadata` label.
 - `fetch` selects a `Box<dyn PlatformFetcher>` from `PLATFORM_ID` and writes only under `/run/aos-metadata`.
 - `authorize` accepts platform delivery by default or verifies exact
@@ -1264,7 +1264,7 @@ All offline channels resolve to a **mounted directory** under `/run/aos-metadata
 
 ### 3.1 `aos-metadata` ISO (AOS-native channel)
 
-- **Detect:** `blkid -L aos-metadata` (already done by `aos-platform-detect.nix:51`); mount read-only at `/run/aos-metadata/media`. Sets `PLATFORM_ID=aos-metadata`, `METADATA_DIR=/run/aos-metadata/media`. Never sets `need-network`.
+- **Detect:** `blkid -L aos-metadata` (already done by `aos-platform-detect.nix:51`); mount read-only at `/run/aos-metadata/media`. Sets `PLATFORM_ID=aos-metadata`, `METADATA_DIR=/run/aos-metadata/media`, and reports no network requirement through the typed detection result.
 - **`fetch_user_data`:** read `${METADATA_DIR}/host.nix` plus optional
   `${METADATA_DIR}/host.nix.sig` as exact operator input.
 - **`fetch_facts`:** read optional `${METADATA_DIR}/facts.json` if the operator pre-baked it; else `Facts::default()`.
@@ -1328,7 +1328,7 @@ The stash is a child of the initrd `/run` so it survives `mount --move /run /sys
 
 ```text
 /run/aos-metadata/
-├── platform.env            # PLATFORM_ID=<id>  [+ METADATA_DIR=<path>]  [need-network adjacent]
+├── platform.env            # PLATFORM_ID=<id>  [+ METADATA_DIR=<path>] [+ NEED_NETWORK=1]
 ├── user-data               # exact acquired input bytes
 ├── user-data.sig           # detached whole-input SSHSIG, when supplied
 ├── host.nix                # exact policy-accepted operator config

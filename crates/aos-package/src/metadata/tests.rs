@@ -769,6 +769,23 @@ fn platform_env_roundtrip() {
 }
 
 #[test]
+fn platform_handoff_does_not_publish_an_ambient_network_flag() {
+    let stash_dir = tempdir().unwrap();
+    let stash = Stash::open(stash_dir.path()).unwrap();
+
+    stash
+        .write_platform_env(&PlatformEnv {
+            platform_id: "aws".into(),
+            metadata_dir: None,
+            need_network: true,
+        })
+        .unwrap();
+
+    assert!(stash_dir.path().join("platform.env").is_file());
+    assert!(!stash_dir.path().join("need-network").exists());
+}
+
+#[test]
 fn run_fetch_offline_writes_full_stash() {
     let stash_dir = tempdir().unwrap();
     let media = tempdir().unwrap();
