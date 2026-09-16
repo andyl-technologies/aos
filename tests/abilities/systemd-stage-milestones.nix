@@ -38,7 +38,7 @@
       kernel-modules = "systemd-modules-load.service";
       boot-identity-validated = "aos-boot-identity-guard.service";
       boot-storage-unlocked = "aos-zfs-unlock.service";
-      boot-integrity-failure = "aos-boot-identity-failure.target";
+      boot-integrity-failure = "aos-boot-integrity-failure.target";
       initrd-stage-executed = "aos-ability-initrd-controller.service";
       root-a-device = "dev-disk-by\\x2dpartlabel-root\\x2da.device";
       verity-root-mapping-ready = "aos-systemd-verity-root-setup.service";

@@ -635,13 +635,16 @@ fn validate_platform(
 ) -> Result<()> {
     match expectation.artifact_class {
         StaticAbilityArtifactClass::Container => ensure!(
-            expectation.execution_stage.is_none() && stage.execution_stage.is_none(),
-            "container static contracts cannot declare a boot execution stage"
+            expectation.execution_stage.is_none()
+                && stage.execution_stage.is_none()
+                && stage.target.is_none(),
+            "container static contracts cannot declare a boot execution stage or AOS target"
         ),
         StaticAbilityArtifactClass::Bootable => ensure!(
             expectation.execution_stage.is_some()
-                && stage.execution_stage == expectation.execution_stage,
-            "boot static contract has the wrong execution stage"
+                && stage.execution_stage == expectation.execution_stage
+                && stage.target.is_some(),
+            "boot static contract has the wrong execution stage or omits its exact AOS target"
         ),
     }
     ensure!(
