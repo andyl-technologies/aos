@@ -45,6 +45,15 @@ in {
       assert checkpoint["resolved_stage_sha256"].startswith("sha256:"), checkpoint
       assert checkpoint["execution_sha256"].startswith("sha256:"), checkpoint
       assert checkpoint["status"] == "ownership-released", checkpoint
+      assert checkpoint["transaction_root"] == (
+          "/run/aos-boot-transaction-storage/aos/initrd-stage-journal"
+      ), checkpoint
+      transaction_storage = checkpoint["transaction_storage"]
+      assert transaction_storage["interface"]["name"] == (
+          "aos.boot.transaction-storage-view"
+      ), transaction_storage
+      assert transaction_storage["operations"] == ["observe"], transaction_storage
+      assert transaction_storage["lifetime"] == "transaction", transaction_storage
 
       boot_id = target.succeed(
           "cat /proc/sys/kernel/random/boot_id"
@@ -62,6 +71,8 @@ in {
           '"event":"source-completed"',
           '"terminal":"succeeded"',
           '"retained_resources"',
+          '"name":"aos.boot.transaction-storage-view"',
+          '"output":"retained-resource"',
           '"event":"host-received"',
       ):
           assert marker.encode().hex() in journal_hex, marker
