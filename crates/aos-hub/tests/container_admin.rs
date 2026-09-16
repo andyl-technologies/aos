@@ -346,7 +346,8 @@ async fn spawn_hub_with_rollout(
 #[tokio::test]
 async fn direct_connect_requests_cannot_bypass_container_rollout_gates() {
     let hub =
-        spawn_hub_with_rollout(aos_hub_core::container_rollout::ContainerRollout::default()).await;
+        spawn_hub_with_rollout(aos_hub_core::container_rollout::ContainerRollout::all_disabled())
+            .await;
     let owner = hub
         .bearer("rollout-owner@example.test", "rollout-owner")
         .await;
@@ -598,7 +599,8 @@ async fn direct_connect_requests_cannot_bypass_container_rollout_gates() {
 #[tokio::test]
 async fn gc_apply_masks_actor_and_registry_authorization_before_disabled_rollout() {
     let hub =
-        spawn_hub_with_rollout(aos_hub_core::container_rollout::ContainerRollout::default()).await;
+        spawn_hub_with_rollout(aos_hub_core::container_rollout::ContainerRollout::all_disabled())
+            .await;
     let owner = hub.bearer("gc-owner@example.test", "gc-owner-token").await;
     let other = hub.bearer("gc-other@example.test", "gc-other-token").await;
     let reader = hub
@@ -659,7 +661,8 @@ async fn gc_apply_masks_actor_and_registry_authorization_before_disabled_rollout
 #[tokio::test]
 async fn purge_fence_apply_masks_actor_and_registry_authorization_before_disabled_rollout() {
     let hub =
-        spawn_hub_with_rollout(aos_hub_core::container_rollout::ContainerRollout::default()).await;
+        spawn_hub_with_rollout(aos_hub_core::container_rollout::ContainerRollout::all_disabled())
+            .await;
     let owner = hub
         .bearer("purge-owner@example.test", "purge-owner-token")
         .await;

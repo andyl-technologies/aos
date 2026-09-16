@@ -1,5 +1,5 @@
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index bc4b818a5..216b4e5f9 100644
+index 07f7292a1..142100e1a 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -8887,7 +8887,6 @@ static guint node_memory_retry_key_hash(gconstpointer opaque)

@@ -328,9 +328,8 @@ static void tcg_exec(unsigned int cpu_index, uint64_t icount, void *opaque)
     poll_events();
 }
 
-static void at_exit(qemu_plugin_id_t id, void *opaque)
+static void at_exit(void *opaque)
 {
-    (void)id;
     (void)opaque;
     poll_events();
     if (!finished) {
@@ -435,9 +434,9 @@ static void initialize_hardware(void)
     memset(command.binding_hash, 0x71, 32);
 }
 
-static void vcpu_initialized(qemu_plugin_id_t id, unsigned int vcpu_index)
+static void vcpu_initialized(unsigned int vcpu_index, void *userdata)
 {
-    (void)id;
+    (void)userdata;
     if (vcpu_index == 0) {
         initialize_hardware();
     }
@@ -468,6 +467,6 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     guest_ready = g_byte_array_new();
     qemu_plugin_register_tcg_exec_cb(tcg_exec, NULL);
     qemu_plugin_register_atexit_cb(id, at_exit, NULL);
-    qemu_plugin_register_vcpu_init_cb(id, vcpu_initialized);
+    qemu_plugin_register_vcpu_init_cb(id, vcpu_initialized, NULL);
     return 0;
 }

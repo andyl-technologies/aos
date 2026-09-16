@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **76 patches**. This count is checked against
+The carried series contains **113 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -1661,6 +1661,22 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   policy, and sources outside read-error state follow their prior read path.
 - **Risk:** F.
 
+### crucible-qemu-11-api-port — use the current QEMU integration APIs
+
+- **Patch:** `0116-crucible-qemu-11-api-port.patch`.
+- **Enforces:** [DET-1], [QEMU-43].
+- **Mechanism:** Crucible's accelerator, fault, migration, timer, and plugin
+  integrations use the QEMU 11 public header locations and current callback,
+  atomic, TCG, error, and VMState APIs. The port preserves the existing
+  protocol boundary and deterministic scheduling behavior.
+- **Micro-test:** patch regeneration proves the committed bytes match the
+  signed branch commit, the full QEMU 11 series builds, and the drop-one
+  negative control requires this patch for the QEMU 11 build.
+- **Inertness:** the patch only adapts Crucible integration points to upstream
+  QEMU 11 interfaces. It adds no independently selectable behavior or protocol
+  fields.
+- **Risk:** D.
+
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate
 
 - **Patch:** `0091-crucible-canonical-rr-genesis-cursor.patch`.
@@ -2313,7 +2329,7 @@ time-control primitives the whole design rests on.
   scaffolding in the series. — satisfies [PATCH-6], [PATCH-7], [PATCH-9],
   [PATCH-40], [PATCH-43]; spec §11.1.3, §11.1.4, §11.4, §11.10.
   - Completed by `checks.crucible.phase2.qemuPatchSeries`: the carried stack is
-    pinned to QEMU 10.0.0, uses stable `NNNN-crucible-*.patch` filenames, records
+    pinned to QEMU 11.1.1, uses stable `NNNN-crucible-*.patch` filenames, records
     per-patch class/invariant metadata, checks package wiring, and rejects added
     record/replay-start scaffolding.
 - [x] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
@@ -2339,7 +2355,7 @@ time-control primitives the whole design rests on.
   guest-visible behavior. — satisfies [PATCH-1], [PATCH-2], [PATCH-3]; spec
   §11.1.1, routes [INV-7], [DET-36].
   - Completed by `checks.crucible.phase2.gates.qemuInert`. The gate builds an
-    unpatched reference QEMU from the same pinned 10.0.0 source and
+    unpatched reference QEMU from the same pinned 11.1.1 source and
     configuration, then runs it against patched `qemu-crucible` with no plugin,
     sim accelerator, or sim flags. Its curated upstream-equivalent corpus covers
     raw boot serial and block/9p/virtio-rng output under upstream TCG
@@ -2577,7 +2593,7 @@ time-control primitives the whole design rests on.
     `checks.crucible.phase0.s5VirtualMemory`, the existing Phase 0 I/O-trap
     plugin evidence, `checks.crucible.phase2.qemuPatchSeries`, and
     `checks.crucible.phase2.gates.patchMicrotests`: no QEMU patch was added,
-    for the doorbell path. The pinned QEMU 10.0 plugin header already exposes
+    for the doorbell path. The pinned QEMU 11.1 plugin header exposes
     `qemu_plugin_register_vcpu_tb_trans_cb`,
     `qemu_plugin_register_vcpu_mem_cb`, `qemu_plugin_get_hwaddr`,
     `qemu_plugin_hwaddr_is_io`, `qemu_plugin_read_register`, and
@@ -2651,7 +2667,7 @@ time-control primitives the whole design rests on.
   [PATCH-39]; spec §11.9.
   - Completed by `checks.crucible.phase2.qemuPatchRegeneration` and consumed by
     `gate:patch-microtests`: the gate rebuilds the ordered patch stack from the
-    checked-in `crucible/qemu-10.0.0` thin git bundle, requires the pinned QEMU
+    checked-in `crucible/qemu-11.1.1` thin git bundle, requires the pinned QEMU
     base commit as its prerequisite, verifies the base/head commits and each
     per-patch commit/tree entry, and requires exactly one DCO `Signed-off-by`
     trailer matching the manifest's authorized human contributor on every patch
@@ -2667,7 +2683,7 @@ time-control primitives the whole design rests on.
   capability set; fail the build loudly if a required capability is missing. —
   satisfies [PATCH-40], [PATCH-42]; spec §11.10.
   - Completed by `checks.crucible.phase2.qemuPatchSeries` and consumed by
-    `gate:patch-microtests`: the QEMU patch manifest pins QEMU 10.0.0 and its
+    `gate:patch-microtests`: the QEMU patch manifest pins QEMU 11.1.1 and its
     source hash, every carried patch records its capability/invariant in the
     checked series catalog, the shipped package applies the manifest-generated
     series, and the aggregate gate now consumes

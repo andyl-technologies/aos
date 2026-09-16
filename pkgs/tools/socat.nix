@@ -9,7 +9,7 @@
   openssl,
   buildPackages,
 }: let
-  version = "1.8.0.3";
+  version = "1.8.1.3";
 in
   mkDerivation {
     pname = "socat";
@@ -19,7 +19,7 @@ in
       urls = [
         "http://www.dest-unreach.org/socat/download/socat-${version}.tar.bz2"
       ];
-      hash = "sha256-AesBc2HZW7OmlB6EC1nkRjo/q/kt9BVO0CsWou1qAJU=";
+      hash = "sha256-JbxkdikrLmFCIJicd7C2/Kh7slJdl0ezGmY5sftgJBg=";
     };
 
     buildDeps = [gnumake];
@@ -41,6 +41,12 @@ in
         script = ''
           tar xf $src
           cd socat-${version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          patch -p1 < ${./socat-openssl-4.patch}
         '';
       }
       {

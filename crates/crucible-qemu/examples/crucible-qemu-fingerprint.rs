@@ -599,15 +599,15 @@ fn validate_digest_text(label: &str, text: &str) -> Result<(), String> {
 
 fn decode_digest(label: &str, text: &str) -> Result<Vec<u8>, String> {
     validate_digest_text(label, text)?;
-    text.as_bytes()
-        .chunks_exact(2)
-        .map(|pair| {
-            let digits = std::str::from_utf8(pair)
-                .map_err(|error| format!("invalid UTF-8 in {label}: {error}"))?;
-            u8::from_str_radix(digits, 16)
-                .map_err(|error| format!("invalid hexadecimal {label}: {error}"))
-        })
-        .collect()
+    let mut decoded = Vec::with_capacity(text.len() / 2);
+    for pair in text.as_bytes().as_chunks::<2>().0 {
+        let digits = std::str::from_utf8(pair)
+            .map_err(|error| format!("invalid UTF-8 in {label}: {error}"))?;
+        let byte = u8::from_str_radix(digits, 16)
+            .map_err(|error| format!("invalid hexadecimal {label}: {error}"))?;
+        decoded.push(byte);
+    }
+    Ok(decoded)
 }
 
 fn emit_mismatch(mismatch: &crucible_qemu::SingleVmFingerprintMismatch) {

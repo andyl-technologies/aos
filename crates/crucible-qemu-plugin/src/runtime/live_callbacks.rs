@@ -249,7 +249,6 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         let callback_state = state
             .as_mut()
             .prepare_live_vcpu_time_state(
-                self.plugin_id,
                 self.execution_model.smp_vcpus(),
                 args.slot(),
                 args.fault_node_hash(),
@@ -283,7 +282,11 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 )
             })?;
 
-        (capabilities.register_vcpu_init)(self.plugin_id, crucible_qemu_plugin_live_vcpu_init_cb);
+        (capabilities.register_vcpu_init)(
+            self.plugin_id,
+            crucible_qemu_plugin_live_vcpu_init_cb,
+            callback_state.cast(),
+        );
         (capabilities.register_vcpu_idle_resume)(
             Some(crucible_qemu_plugin_live_vcpu_idle_cb),
             Some(crucible_qemu_plugin_live_vcpu_resume_cb),
@@ -371,6 +374,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             (capabilities.register_vcpu_init)(
                 self.plugin_id,
                 crucible_qemu_plugin_live_vcpu_and_whitebox_init_cb,
+                callback_state.cast(),
             );
             mask = mask.with_whitebox();
         }
@@ -617,7 +621,6 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     quiescence: Arc<LiveCallbackQuiescence>,
     teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     shared_shutdown_signaled: AtomicBool,
-    plugin_id: QemuPluginId,
     icount_raw: QemuIcountRawFn,
     force_vcpu_exit: QemuForceVcpuExitFn,
     request_vmstop: crate::QemuRequestVmstopFn,
@@ -695,7 +698,6 @@ impl LiveVcpuTimeCallbackState {
         reason = "the constructor binds one fixed QEMU identity, clock, mapping header, and node slot"
     )]
     pub(super) fn new(
-        plugin_id: QemuPluginId,
         icount_raw: QemuIcountRawFn,
         force_vcpu_exit: QemuForceVcpuExitFn,
         request_vmstop: crate::QemuRequestVmstopFn,
@@ -739,7 +741,6 @@ impl LiveVcpuTimeCallbackState {
             quiescence,
             teardown_sender,
             shared_shutdown_signaled: AtomicBool::new(false),
-            plugin_id,
             icount_raw,
             force_vcpu_exit,
             request_vmstop,
@@ -925,17 +926,7 @@ impl LiveVcpuTimeCallbackState {
         self.pending_idle_advance_active.load(Ordering::Acquire)
     }
 
-    fn on_vcpu_init(
-        &self,
-        plugin_id: QemuPluginId,
-        vcpu_index: u32,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        if plugin_id != self.plugin_id {
-            return Err(LiveVcpuTimeCallbackError::PluginIdMismatch {
-                expected: self.plugin_id,
-                observed: plugin_id,
-            });
-        }
+    fn on_vcpu_init(&self, vcpu_index: u32) -> Result<(), LiveVcpuTimeCallbackError> {
         self.initialize_fault_commands()?;
         let initialized = self.vcpu_flag(vcpu_index)?;
         initialized.store(true, Ordering::Release);
@@ -2153,24 +2144,24 @@ impl Drop for NetworkRxDeliveryActiveGuard<'_> {
 }
 
 pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_init_cb(
-    plugin_id: QemuPluginId,
     vcpu_index: c_uint,
+    userdata: *mut c_void,
 ) {
-    let state = live_vcpu_time_state_or_abort();
+    let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
     };
-    if let Err(error) = state.on_vcpu_init(plugin_id, vcpu_index) {
+    if let Err(error) = state.on_vcpu_init(vcpu_index) {
         abort_live_callback(error);
     }
 }
 
 extern "C" fn crucible_qemu_plugin_live_vcpu_and_whitebox_init_cb(
-    plugin_id: QemuPluginId,
     vcpu_index: c_uint,
+    userdata: *mut c_void,
 ) {
-    crucible_qemu_plugin_live_vcpu_init_cb(plugin_id, vcpu_index);
-    crucible_qemu_plugin_live_whitebox_vcpu_init_cb(plugin_id, vcpu_index);
+    crucible_qemu_plugin_live_vcpu_init_cb(vcpu_index, userdata);
+    crucible_qemu_plugin_live_whitebox_vcpu_init_cb(vcpu_index, std::ptr::null_mut());
 }
 
 pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_idle_cb(
@@ -2310,17 +2301,6 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_network_tx_cb(
         abort_live_callback(error);
     }
     0
-}
-
-fn live_vcpu_time_state_or_abort() -> &'static LiveVcpuTimeCallbackState {
-    let state = LIVE_VCPU_TIME_STATE.load(Ordering::Acquire);
-    if state.is_null() {
-        abort_live_callback(LiveVcpuTimeCallbackError::CallbackStateUnavailable);
-    }
-    // SAFETY: registration release-publishes a pointer into a pinned allocation
-    // before QEMU can invoke the init callback. Partial registration retains the
-    // allocation, and a successful runtime owns it for process lifetime.
-    unsafe { &*state }
 }
 
 fn callback_userdata_or_abort(userdata: *mut c_void) -> &'static LiveVcpuTimeCallbackState {

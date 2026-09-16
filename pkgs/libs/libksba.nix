@@ -7,7 +7,7 @@
   bash,
   stdenv,
 }: let
-  version = "1.8.0";
+  version = "1.8.1";
 in
   mkDerivation {
     pname = "libksba";
@@ -18,7 +18,7 @@ in
         "https://gnupg.org/ftp/gcrypt/libksba/libksba-${version}.tar.bz2"
         "https://mirrors.dotsrc.org/gcrypt/libksba/libksba-${version}.tar.bz2"
       ];
-      hash = "sha256-KWuduQlXSfKqEEIC16t/0JrRBxDgB4CnCcl1SxodkpI=";
+      hash = "sha256-wvhDkwEYJyGa4RcTHbqOdoTCvtCWHu0RsGQsKsukQLU=";
     };
 
     buildDeps = [gnumake];

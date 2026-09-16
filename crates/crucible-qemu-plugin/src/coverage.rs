@@ -77,14 +77,17 @@ pub struct QemuPluginU64 {
 }
 
 /// QEMU callback invoked when one translation block is created.
-pub type QemuVcpuTbTransCbFn = extern "C" fn(plugin_id: QemuPluginId, tb: *mut QemuPluginTb);
+pub type QemuVcpuTbTransCbFn = extern "C" fn(tb: *mut QemuPluginTb, userdata: *mut c_void);
 /// QEMU callback invoked when one translated block executes.
 pub type QemuVcpuTbExecCbFn = extern "C" fn(vcpu_index: c_uint, userdata: *mut c_void);
 /// QEMU callback invoked after dynamic callbacks have been removed for a flush.
-pub type QemuPluginSimpleCbFn = extern "C" fn(plugin_id: QemuPluginId);
+pub type QemuPluginSimpleCbFn = extern "C" fn(userdata: *mut c_void);
 /// QEMU function that registers the plugin-wide translation callback.
-pub type QemuRegisterVcpuTbTransCbFn =
-    extern "C" fn(plugin_id: QemuPluginId, callback: Option<QemuVcpuTbTransCbFn>);
+pub type QemuRegisterVcpuTbTransCbFn = extern "C" fn(
+    plugin_id: QemuPluginId,
+    callback: Option<QemuVcpuTbTransCbFn>,
+    userdata: *mut c_void,
+);
 /// QEMU function that registers a conditionally executed block callback.
 pub type QemuRegisterVcpuTbExecCondCbFn = extern "C" fn(
     tb: *mut QemuPluginTb,
@@ -97,7 +100,7 @@ pub type QemuRegisterVcpuTbExecCondCbFn = extern "C" fn(
 );
 /// QEMU function that registers a plugin-wide translation-cache flush callback.
 pub type QemuRegisterFlushCbFn =
-    extern "C" fn(plugin_id: QemuPluginId, callback: QemuPluginSimpleCbFn);
+    extern "C" fn(plugin_id: QemuPluginId, callback: QemuPluginSimpleCbFn, userdata: *mut c_void);
 /// QEMU function that reads a translated block's start address.
 pub type QemuTbVaddrFn = extern "C" fn(tb: *const QemuPluginTb) -> u64;
 /// QEMU function that reads a translated block's instruction count.
@@ -554,7 +557,6 @@ impl CoverageSink for LiveCoverageShmemProducer {
 #[derive(Debug)]
 struct LiveCoverageInner {
     quiescence: Arc<LiveCallbackQuiescence>,
-    plugin_id: QemuPluginId,
     apis: QemuBasicBlockCoverageApis,
     callback: CoverageCallback,
     map: CoverageMap,
@@ -613,7 +615,6 @@ impl LiveBasicBlockCoverage {
         }
         let mut state = Box::pin(LiveCoverageInner {
             quiescence,
-            plugin_id,
             apis,
             callback,
             map,
@@ -638,8 +639,12 @@ impl LiveBasicBlockCoverage {
             (apis.scoreboard_free)(novelty_scoreboard);
             return Err(CoverageError::LiveRegistrationAlreadyExists { plugin_id });
         }
-        (apis.register_flush_cb)(plugin_id, live_coverage_flush);
-        (apis.register_tb_trans_cb)(plugin_id, Some(live_coverage_tb_translate));
+        (apis.register_flush_cb)(plugin_id, live_coverage_flush, state_ptr.cast());
+        (apis.register_tb_trans_cb)(
+            plugin_id,
+            Some(live_coverage_tb_translate),
+            state_ptr.cast(),
+        );
         Ok(Self { state })
     }
 
@@ -684,12 +689,12 @@ impl Drop for LiveBasicBlockCoverage {
     }
 }
 
-extern "C" fn live_coverage_tb_translate(plugin_id: QemuPluginId, tb: *mut QemuPluginTb) {
+extern "C" fn live_coverage_tb_translate(tb: *mut QemuPluginTb, userdata: *mut c_void) {
     if tb.is_null() {
         abort_live_coverage_callback(CoverageError::NullTranslatedBlock);
     }
-    let state = LIVE_COVERAGE_STATE.load(Ordering::Acquire);
-    if state.is_null() {
+    let state = userdata.cast::<LiveCoverageInner>();
+    if state.is_null() || LIVE_COVERAGE_STATE.load(Ordering::Acquire) != state {
         return;
     }
     // SAFETY: registration publishes a fully initialized pinned state and the
@@ -699,12 +704,6 @@ extern "C" fn live_coverage_tb_translate(plugin_id: QemuPluginId, tb: *mut QemuP
         // Teardown closed callback admission before this translation began.
         return;
     };
-    if state.plugin_id != plugin_id {
-        abort_live_coverage_callback(CoverageError::PluginIdMismatch {
-            expected: state.plugin_id,
-            actual: plugin_id,
-        });
-    }
     let instruction_count = (state.apis.tb_n_insns)(tb.cast_const());
     if instruction_count == 0 {
         abort_live_coverage_callback(CoverageError::EmptyTranslatedBlock);
@@ -779,7 +778,7 @@ extern "C" fn live_coverage_tb_exec(vcpu_index: c_uint, userdata: *mut c_void) {
         return;
     };
     (state.apis.u64_set)(block.seen_entry, vcpu_index, 1);
-    // QEMU 10 emits the standard TB execution callback after `gen_tb_start`
+    // QEMU 11 emits the standard TB execution callback after `gen_tb_start`
     // subtracts the full TB reservation. The helper observes
     // `committed + budget - remaining` without committing it, then subtracts
     // this TB's instruction count to recover the exact entry boundary.
@@ -803,12 +802,12 @@ extern "C" fn live_coverage_tb_exec(vcpu_index: c_uint, userdata: *mut c_void) {
     }
 }
 
-extern "C" fn live_coverage_flush(plugin_id: QemuPluginId) {
-    let state = LIVE_COVERAGE_STATE.load(Ordering::Acquire);
-    if state.is_null() {
+extern "C" fn live_coverage_flush(userdata: *mut c_void) {
+    let state = userdata.cast::<LiveCoverageInner>();
+    if state.is_null() || LIVE_COVERAGE_STATE.load(Ordering::Acquire) != state {
         return;
     }
-    // SAFETY: QEMU 10's `plugins/core.c:qemu_plugin_flush_cb` removes and resets
+    // SAFETY: QEMU 11's `plugins/core.c:qemu_plugin_flush_cb` removes and resets
     // the dynamic-callback array table before `QEMU_PLUGIN_EV_FLUSH`, while
     // `accel/tcg/tb-maint.c:tb_flush` runs the operation in a serial context or
     // dispatches it through `async_safe_run_on_cpu`. Consequently no generated
@@ -821,12 +820,6 @@ extern "C" fn live_coverage_flush(plugin_id: QemuPluginId) {
         // without unpublishing or freeing callback-addressable state.
         return;
     };
-    if state.plugin_id != plugin_id {
-        abort_live_coverage_callback(CoverageError::PluginIdMismatch {
-            expected: state.plugin_id,
-            actual: plugin_id,
-        });
-    }
     state.translated_blocks.clear();
 }
 
@@ -1045,14 +1038,6 @@ pub enum CoverageError {
     /// QEMU invoked the translation callback without a translated-block handle.
     #[error("QEMU invoked coverage translation with a null block handle")]
     NullTranslatedBlock,
-    /// QEMU invoked the singleton translation callback for another plugin ID.
-    #[error("coverage callback plugin ID mismatch: expected {expected}, got {actual}")]
-    PluginIdMismatch {
-        /// Registered QEMU plugin identifier.
-        expected: QemuPluginId,
-        /// Identifier supplied to the callback.
-        actual: QemuPluginId,
-    },
     /// QEMU supplied a translation block without instructions.
     #[error("QEMU supplied an empty translated block")]
     EmptyTranslatedBlock,

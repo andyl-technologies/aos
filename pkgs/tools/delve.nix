@@ -4,14 +4,14 @@
   fetchGoModules,
   fetchurl,
 }: let
-  version = "1.26.3";
+  version = "1.27.1";
   src = fetchurl {
     urls = ["https://github.com/go-delve/delve/archive/refs/tags/v${version}.tar.gz"];
-    hash = "sha256-xavQIDPXYBpBu2dIWJwL5CCA3E+Rx+SPyMu39VjMh0g=";
+    hash = "sha256-3Knsbyw5KgBEmtdIs6Ip6Suk76Z/TnWC8sxFl0Qpko8=";
   };
   goModules = fetchGoModules {
     inherit src;
-    hash = "sha256-qIUppugEqvc/VftMQL/Jz9HdGhxEkrGFHH8s2gxju8U=";
+    hash = "sha256-0duSFR3yiYQzjQc4UzZHPpELaIEf/hE4t/9rPb0TBXo=";
   };
 in
   mkGoPackage {

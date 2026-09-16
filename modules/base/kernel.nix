@@ -41,33 +41,22 @@ in {
     ## - `aos.security.hardening.sysctl` (security sysctls)
     sysctl = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = {
-        # -- Network performance --
-        "net.core.somaxconn" = "32768";
-        "net.core.netdev_max_backlog" = "16384";
-        # Socket buffer ceilings for high-throughput network services.
-        "net.core.rmem_max" = "7500000";
-        "net.core.wmem_max" = "7500000";
-
-        # -- Virtual memory --
-        "vm.swappiness" = "10";
-        # Raise the mmap region ceiling so apps that map many regions
-        # (modern games, large JVMs, container runtimes) don't hit
-        # ENOMEM from the default 65530 limit.
-        "vm.max_map_count" = "1048576";
-
-        # -- Filesystem watches (IDEs, file sync, container runtimes) --
-        "fs.inotify.max_user_instances" = "8192";
-        "fs.inotify.max_user_watches" = "524288";
-
-        # -- Process limits --
-        "kernel.pid_max" = "4194304";
-      };
+      # The base set is contributed as a `config` def (`baseSysctl` below)
+      # rather than as this option's `default`. A `default` is used only when
+      # nothing defines the option at all, so a single key set by any other
+      # module would otherwise drop the entire base set — silently losing
+      # swappiness, the mmap ceiling, the inotify limits, and the network
+      # tuning on exactly the hosts that tune something.
+      default = {};
       description = ''
         Kernel sysctl parameters for system performance tuning. Written to
         /etc/sysctl.d/10-aos-kernel.conf and applied at boot by
         systemd-sysctl.service. These are functional/performance settings;
         security hardening sysctls are in modules/security/hardening.nix.
+
+        Modules add keys here and the definitions merge. The base set is
+        contributed at default priority, so naming one of its keys overrides
+        just that key.
       '';
     };
 
@@ -122,6 +111,31 @@ in {
     system.build.kernel = lib.mkIf (cfg._extraConfigFragments != []) (
       lib.mkForce (pkgs.linuxWith extraConfig)
     );
+
+    # Base performance tunables, contributed at default priority so any other
+    # module can override an individual key while the rest survive.
+    aos.kernel.sysctl = lib.mkDefault {
+      # -- Network performance --
+      "net.core.somaxconn" = "32768";
+      "net.core.netdev_max_backlog" = "16384";
+      # Socket buffer ceilings for high-throughput network services.
+      "net.core.rmem_max" = "7500000";
+      "net.core.wmem_max" = "7500000";
+
+      # -- Virtual memory --
+      "vm.swappiness" = "10";
+      # Raise the mmap region ceiling so apps that map many regions
+      # (modern games, large JVMs, container runtimes) don't hit
+      # ENOMEM from the default 65530 limit.
+      "vm.max_map_count" = "1048576";
+
+      # -- Filesystem watches (IDEs, file sync, container runtimes) --
+      "fs.inotify.max_user_instances" = "8192";
+      "fs.inotify.max_user_watches" = "524288";
+
+      # -- Process limits --
+      "kernel.pid_max" = "4194304";
+    };
 
     # /etc/sysctl.d/10-aos-kernel.conf — performance sysctl settings.
     # Priority 10 so security settings in 80-aos-hardening.conf take precedence.

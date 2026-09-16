@@ -171,7 +171,7 @@ in
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^qemu_sim_capability_marker=${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^qemu_plugin_header=${packages.qemu-crucible}/include/qemu/qemu-plugin.h$' \
+            grep -q '^qemu_plugin_header=${packages.qemu-crucible}/include/qemu-plugin.h$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^qemu_plugin_api_version=4$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
@@ -190,7 +190,7 @@ in
             grep -q '^plugin_abi=crucible-shmem-abi-v17$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
 
-            test -f ${packages.qemu-crucible}/include/qemu/qemu-plugin.h
+            test -f ${packages.qemu-crucible}/include/qemu-plugin.h
             grep -q '^standalone_release=false$' \
               ${packages.qemu-crucible}/nix-support/aos-release-policy
             grep -q '^corresponding_source_identity=${packages.qemu-crucible.passthru.qemuBuildIdentity}$' \
@@ -207,7 +207,7 @@ in
             grep -q '^qemu_shmem_header_license_option=MIT$' \
               ${packages.qemu-crucible}/share/aos/crucible/qemu-build-identity.env
             grep -q 'qemu_plugin_crucible_rr_switch_quantum' \
-              ${packages.qemu-crucible}/include/qemu/qemu-plugin.h
+              ${packages.qemu-crucible}/include/qemu-plugin.h
             test -f ${packages.qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h
             grep -q '#define CRUCIBLE_SHMEM_ABI_VERSION 17u' \
               ${packages.qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h

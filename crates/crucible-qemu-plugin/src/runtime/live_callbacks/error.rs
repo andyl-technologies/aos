@@ -331,14 +331,6 @@ pub enum LiveVcpuTimeCallbackError {
     /// QEMU supplied null userdata to a registered live callback.
     #[error("live production callback userdata is null")]
     NullCallbackUserdata,
-    /// A standard lifecycle callback named another plugin instance.
-    #[error("vCPU lifecycle callback plugin id {observed} does not match {expected}")]
-    PluginIdMismatch {
-        /// Plugin identifier captured at registration.
-        expected: QemuPluginId,
-        /// Plugin identifier supplied by QEMU.
-        observed: QemuPluginId,
-    },
     /// QEMU named a vCPU outside the validated execution model.
     #[error("vCPU callback index {vcpu_index} is outside configured count {vcpu_count}")]
     VcpuOutOfRange {

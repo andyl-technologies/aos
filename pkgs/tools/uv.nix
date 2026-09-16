@@ -4,15 +4,15 @@
   fetchCargoDeps,
   fetchurl,
 }: let
-  # 0.11.16 is the newest release whose workspace supports AOS Rust 1.93.
-  version = "0.11.16";
+  # uv 0.12 requires the Rust 1.98 toolchain selected by this package set.
+  version = "0.12.10";
   src = fetchurl {
     urls = ["https://github.com/astral-sh/uv/archive/refs/tags/${version}.tar.gz"];
-    hash = "sha256-Zwjj9cEnWbwtfJqdLGCIe9ZLyOhV8TOOOyDlpE8Ann4=";
+    hash = "sha256-kvD2ePERyzRTX83//pjsx1yY8eNJCMwfgPTCE/vLU3w=";
   };
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-XpMKd/c+YuZ16dm/rN9I64tGkOPV984KMwtd89srUUA=";
+    hash = "sha256-MRhYmZKQkY0cNtaz+OoMcaY7bkpT5F3q1Wg++lfkuBs=";
   };
 in
   mkCargoPackage {

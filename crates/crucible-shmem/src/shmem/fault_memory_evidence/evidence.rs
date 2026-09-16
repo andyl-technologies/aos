@@ -245,6 +245,10 @@ impl MemoryMutationEvidenceV1 {
     ///
     /// Returns [`MemoryMutationEvidenceError`] for bad framing, unknown tags,
     /// invalid records, mismatched digests, or inconsistent inline bytes.
+    #[expect(
+        clippy::chunks_exact_to_as_chunks,
+        reason = "the fixed-width ABI row decoders intentionally share one slice-based signature"
+    )]
     pub fn decode(bytes: &[u8]) -> Result<Self, MemoryMutationEvidenceError> {
         if bytes.len() < MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES
             || bytes[0..8] != MEMORY_MUTATION_EVIDENCE_MAGIC_V1

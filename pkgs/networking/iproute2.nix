@@ -8,7 +8,7 @@
   bison,
   flex,
 }: let
-  version = "6.18.0";
+  version = "7.2.0";
 in
   mkDerivation {
     pname = "iproute2";
@@ -18,7 +18,7 @@ in
       urls = [
         "https://mirrors.kernel.org/pub/linux/utils/net/iproute2/iproute2-${version}.tar.xz"
       ];
-      hash = "sha256-a6Ug4ZdeTFDckx7q6R6jfBmLihc3RIhfiJW4QyX51FY=";
+      hash = "sha256-TC+hJMLPCv18o00e6sumugSKVvY3Tiqrk9r729TuqcA=";
     };
 
     buildDeps = [

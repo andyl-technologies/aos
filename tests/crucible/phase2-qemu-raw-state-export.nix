@@ -6,7 +6,7 @@
 }: let
   patchSource = builtins.readFile ../../pkgs/emulation/qemu-patches/0036-crucible-raw-state-export.patch;
   incomingSetupSealBeforeMutation = builtins.concatStringsSep "\n" [
-    "@@ -697,6 +701,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)"
+    "@@ -632,6 +636,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)"
     " {"
     "     MigrationStatus current = mis->state;"
     " "
@@ -28,7 +28,7 @@
     "VM resume rejected after terminal Crucible VMState export"
     "VM reset rejected after terminal Crucible VMState export"
     "vCPU execution rejected after terminal Crucible VMState export"
-    "int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis)"
+    "int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,"
     "migration_crucible_raw_state_export_admit()"
     "crucible_active_loaders != 0 || migration_is_running()"
     "migration_crucible_load_begin()"

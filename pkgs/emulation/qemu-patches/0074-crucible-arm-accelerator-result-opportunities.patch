@@ -1,5 +1,5 @@
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 225e893f4..bb261cab9 100644
+index 6dc377911..1a11e4b63 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -151,6 +151,7 @@ typedef int (*QemuCrucibleFaultImpulseFn)(
@@ -521,7 +521,7 @@ index 9867870b1..4b4f5caff 100644
          CRUCIBLE_FAULT_COMMAND_ACCELERATOR_MEMORY_EVENT,
          CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR, boundary | device,
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 8cd248a98..eadb40432 100644
+index f23debdcc..b1a469f38 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -2306,6 +2306,7 @@ static bool node_operation_valid(uint16_t command_kind, uint16_t operation)

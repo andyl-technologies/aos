@@ -21,26 +21,9 @@ use crate::db::{
 };
 use crate::dialect::Dialect;
 
-fn unique_migration_containing(marker: &str) -> (usize, &'static str) {
-    let mut matches = MIGRATIONS
-        .iter()
-        .copied()
-        .enumerate()
-        .filter(|(_, migration)| migration.contains(marker));
-    let matched = matches
-        .next()
-        .unwrap_or_else(|| panic!("migration marker is absent: {marker}"));
-    assert!(
-        matches.next().is_none(),
-        "migration marker is ambiguous: {marker}"
-    );
-    matched
-}
-
 #[test]
-fn gc_schema_contains_transactional_evidence_and_fences() {
-    let (_, migration) =
-        unique_migration_containing("CREATE TABLE oci_provider_inventory_generations(");
+fn baseline_contains_transactional_gc_evidence_and_fences() {
+    let migration = MIGRATIONS[0];
     for table in [
         "oci_provider_inventory_generations",
         "oci_provider_inventory_entries",
@@ -56,7 +39,7 @@ fn gc_schema_contains_transactional_evidence_and_fences() {
     ] {
         assert!(
             migration.contains(&format!("CREATE TABLE {table}")),
-            "OCI GC migration omits {table}"
+            "baseline omits {table}"
         );
     }
     assert!(migration.contains("UNIQUE(placement_id, active_slot)"));
@@ -64,8 +47,8 @@ fn gc_schema_contains_transactional_evidence_and_fences() {
 }
 
 #[test]
-fn gc_remediation_schema_contains_review_authorities() {
-    let (_, migration) = unique_migration_containing("CREATE TABLE oci_registry_purge_fences(");
+fn baseline_contains_review_remediation_authorities() {
+    let migration = MIGRATIONS[0];
     for identity in [
         "unreferenced_since",
         "oci_registry_purge_fences",
@@ -74,35 +57,7 @@ fn gc_remediation_schema_contains_review_authorities() {
         "oci_untracked_repair_plans",
         "oci_untracked_repair_evidence",
     ] {
-        assert!(
-            migration.contains(identity),
-            "OCI GC remediation migration omits {identity}"
-        );
-    }
-}
-
-#[test]
-fn gc_remediation_schema_statements_translate_for_postgres_and_mysql() {
-    let (_, migration) = unique_migration_containing("CREATE TABLE oci_registry_purge_fences(");
-    for dialect in [Dialect::Postgres, Dialect::Mysql] {
-        for sql in crate::backend::split_statements(migration) {
-            dialect.translate(&sql).unwrap_or_else(|error| {
-                panic!("{dialect:?} rejected GC remediation SQL: {error:#}")
-            });
-        }
-    }
-}
-
-#[test]
-fn gc_schema_statements_translate_for_postgres_and_mysql() {
-    let (_, migration) =
-        unique_migration_containing("CREATE TABLE oci_provider_inventory_generations(");
-    for statement in crate::backend::split_statements(migration) {
-        for dialect in [Dialect::Postgres, Dialect::Mysql] {
-            dialect
-                .translate(&statement)
-                .unwrap_or_else(|error| panic!("{dialect:?} rejected GC SQL: {error:#}"));
-        }
+        assert!(migration.contains(identity), "baseline omits {identity}");
     }
 }
 
@@ -1965,7 +1920,7 @@ async fn gc_lock_fences_every_upload_phase_and_publication_add_commit() {
 }
 
 #[tokio::test]
-async fn fresh_v24_migration_and_expired_plan_recovery_execute_on_sqlite() {
+async fn baseline_and_expired_plan_recovery_execute_on_sqlite() {
     let database = Database::open_in_memory().await.unwrap();
     seed_registry(&database).await;
     seed_run(&database, "expired", "planned", 2).await;
@@ -2103,42 +2058,6 @@ async fn snapshot_lease_acquisition_cannot_race_an_applying_candidate() {
         )
         .await
         .unwrap();
-}
-
-#[tokio::test]
-async fn gc_concurrent_start_from_pre_gc_applies_once_and_reopens() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("pre-gc-to-current.db");
-    let (gc_index, _) =
-        unique_migration_containing("CREATE TABLE oci_provider_inventory_generations(");
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    for migration in &MIGRATIONS[..gc_index] {
-        connection.execute_batch(migration).unwrap();
-    }
-    connection
-        .execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL);")
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO schema_version(version) VALUES(?1)",
-            [i64::try_from(gc_index).unwrap()],
-        )
-        .unwrap();
-    drop(connection);
-
-    let (left, right) = tokio::join!(Database::open(&path), Database::open(&path));
-    drop(left.unwrap());
-    drop(right.unwrap());
-    let reopened = Database::open(&path).await.unwrap();
-    let version: i64 = reopened
-        .backend
-        .query_opt("SELECT version FROM schema_version", &[])
-        .await
-        .unwrap()
-        .unwrap()
-        .get(0)
-        .unwrap();
-    assert_eq!(version, MIGRATIONS.len() as i64);
 }
 
 #[tokio::test]

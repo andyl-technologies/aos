@@ -98,9 +98,13 @@ interaction and rendering contract is defined in
 | `aos maintain inventory` | Evaluate and print the canonical maintenance inventory |
 | `aos maintain inventory --check` | Fail on coverage/schema/association errors |
 | `aos maintain scan` | Refresh declared upstream and advisory observations |
+| `aos maintain scan --repology-fallback` | Add bounded same-name Repology trigger signals for unmapped packages |
 | `aos maintain scan --offline` | Re-evaluate only sufficiently fresh cached observations |
 | `aos maintain report --outdated` | Show selectable newer releases by unit/stream |
 | `aos maintain report --unknown` | Show incomplete or contradictory discovery |
+| `aos maintain report --advisory` | Show non-authoritative version, vulnerability, and license signals |
+| `aos maintain report --vulnerable` | Show current versions reported vulnerable by an advisory provider |
+| `aos maintain report --license-change` | Show corroborated license-set differences between current and newer records |
 | `aos maintain report --family bazel` | Show every maintained stream and lifecycle in one family |
 
 ### Planning and execution
@@ -110,12 +114,21 @@ interaction and rendering contract is defined in
 | `aos maintain plan UNIT` | Create a closed plan without modifying source |
 | `aos maintain plan UNIT --component NAME=IDENTITY ...` | Validate and plan an explicitly selected complete component vector; `--target VERSION` is a one-component shorthand |
 | `aos maintain plan --campaign COHORT` | Close the component target vectors for an explicit multi-unit campaign |
+| `aos maintain refresh-hashes UNIT` | Recompute literal source and language-vendor hashes after a manual version edit |
+| `aos maintain refresh-hashes UNIT --check` | Verify refreshable hashes and restore the package source unchanged |
 | `aos maintain run UNIT` | Plan if necessary, create a worktree, and advance until a gate or human decision |
 | `aos maintain run --campaign COHORT` | Plan if necessary and execute an explicit multi-unit campaign |
 | `aos maintain run UNIT --until STAGE` | Stop at a named deterministic boundary |
 | `aos maintain resume RUN` | Verify durable preconditions and continue |
 | `aos maintain test RUN [--quick | --final]` | Run or rerun the selected gate plan |
 | `aos maintain repair RUN` | Invoke one bounded agent iteration for the current typed failure |
+
+`refresh-hashes` is a bounded migration aid for a single-member update unit
+that does not yet have complete typed artifact contracts. It recognizes literal
+hashes owned by the AOS `fetchurl`, Cargo, Go, npm, and Bazel materializers,
+evaluates each fixed-output derivation in source order, and restores the owner
+file after any ambiguous or failed operation. Shared owners and dynamic hash
+expressions require a typed contract instead.
 
 ### Inspection and handoff
 

@@ -44,11 +44,13 @@ pub(super) struct QemuPluginRegDescriptor {
     pub(super) handle: *mut QemuPluginRegister,
     pub(super) name: *const c_char,
     pub(super) feature: *const c_char,
+    pub(super) is_readonly: bool,
 }
 
-type QemuVcpuTbTransCbFn = extern "C" fn(QemuPluginId, *mut QemuPluginTb);
+type QemuVcpuTbTransCbFn = extern "C" fn(*mut QemuPluginTb, *mut c_void);
 type QemuVcpuInsnExecCbFn = extern "C" fn(c_uint, *mut c_void);
-type QemuRegisterTbTransCbFn = extern "C" fn(QemuPluginId, Option<QemuVcpuTbTransCbFn>);
+type QemuRegisterTbTransCbFn =
+    extern "C" fn(QemuPluginId, Option<QemuVcpuTbTransCbFn>, *mut c_void);
 type QemuRegisterTbExecCbFn =
     extern "C" fn(*mut QemuPluginTb, Option<QemuVcpuInsnExecCbFn>, c_int, *mut c_void);
 type QemuTbNInsnsFn = extern "C" fn(*const QemuPluginTb) -> usize;
@@ -57,7 +59,7 @@ type QemuInsnDataFn = extern "C" fn(*const QemuPluginInsn, *mut c_void, usize) -
 type QemuRegisterInsnExecCbFn =
     extern "C" fn(*mut QemuPluginInsn, Option<QemuVcpuInsnExecCbFn>, c_int, *mut c_void);
 type QemuGetRegistersFn = extern "C" fn() -> *mut GArray;
-type QemuReadRegisterFn = extern "C" fn(*mut QemuPluginRegister, *mut GByteArray) -> c_int;
+type QemuReadRegisterFn = extern "C" fn(*mut QemuPluginRegister, *mut GByteArray) -> bool;
 type QemuReadMemoryVaddrFn = extern "C" fn(u64, *mut GByteArray, usize) -> bool;
 type QemuWriteMemoryVaddrFn = extern "C" fn(u64, *const u8, usize) -> bool;
 type QemuFaultReadyMarkerFn = extern "C" fn(*const c_char, usize, u64) -> c_int;
@@ -140,7 +142,7 @@ fn resolve_symbol<T: Copy>(
     symbol: &'static str,
 ) -> Result<T, LiveWhiteboxError> {
     // SAFETY: `symbol_name_c` is a static NUL-terminated name. Every call site
-    // supplies the exact function-pointer type declared by QEMU 10.0 or GLib.
+    // supplies the exact function-pointer type declared by QEMU 11.1 or GLib.
     let address = unsafe { libc::dlsym(libc::RTLD_DEFAULT, symbol_name_c.as_ptr().cast()) };
     if address.is_null() {
         Err(LiveWhiteboxError::CapabilityUnavailable { symbol })

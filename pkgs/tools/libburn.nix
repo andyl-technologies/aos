@@ -13,7 +13,7 @@
   gnumake,
   pkg-config,
 }: let
-  version = "1.5.6";
+  version = "1.5.8";
 in
   mkDerivation {
     pname = "libburn";
@@ -23,7 +23,7 @@ in
       urls = [
         "https://files.libburnia-project.org/releases/libburn-${version}.tar.gz"
       ];
-      hash = "sha256-cpVJG0vl7qxeej+yBn4jbilV/9xrvUX1RkZu3uMhZEs=";
+      hash = "sha256-jiTdmfW3yvvs8BFtYbYZ7okJjiAmPm9Hx5Oq9KmNZHM=";
     };
 
     buildDeps = [gnumake pkg-config];

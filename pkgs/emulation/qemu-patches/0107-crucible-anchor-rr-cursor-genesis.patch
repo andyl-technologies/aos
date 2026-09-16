@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index d8554b767..bb7e73138 100644
+index 3451b778b..098c44f84 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -119,6 +119,27 @@ void icount_crucible_rr_snapshot_resume_prepare(void)
@@ -95,10 +95,10 @@ index d8554b767..bb7e73138 100644
      timers_state.crucible_rr_selection_pending = false;
      remaining = quantum - timers_state.crucible_rr_cursor_position;
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 49290729d..90840e631 100644
+index 794785189..89b356160 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -936,6 +936,7 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -937,6 +937,7 @@ static void *rr_cpu_thread_fn(void *arg)
      rr_start_kick_timer();
  
      cpu = first_cpu;
@@ -106,7 +106,7 @@ index 49290729d..90840e631 100644
  
      /* process any pending work */
      rr_crucible_sim_normalize_first_exit(cpu);
-@@ -943,6 +944,7 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -944,6 +945,7 @@ static void *rr_cpu_thread_fn(void *arg)
      while (1) {
          /* Only used for icount_enabled() */
          int64_t cpu_budget = 0;
@@ -114,7 +114,7 @@ index 49290729d..90840e631 100644
  
          bql_unlock();
          replay_mutex_lock();
-@@ -1106,7 +1108,23 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -1114,7 +1116,23 @@ static void *rr_cpu_thread_fn(void *arg)
  
              qatomic_set(&rr_current_cpu, NULL);
              crucible_sim_det_ipi_drain_pending();
@@ -139,7 +139,7 @@ index 49290729d..90840e631 100644
          } /* while (cpu && !cpu->exit_request).. */
  
          /* Does not need a memory barrier because a spurious wakeup is okay.  */
-@@ -1132,6 +1150,10 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -1140,6 +1158,10 @@ static void *rr_cpu_thread_fn(void *arg)
           */
          rr_crucible_sim_advance_stalled_deadline();
  
@@ -150,11 +150,11 @@ index 49290729d..90840e631 100644
          /*
           * Re-enter the run loop when a boundary callback queued later work
           * for a runnable guest.  Reaching an exact icount boundary may leave
-diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index 3ab3fb95a..f8761d2d4 100644
---- a/include/system/cpu-timers.h
-+++ b/include/system/cpu-timers.h
-@@ -82,6 +82,7 @@ uint64_t icount_crucible_rr_switch_quantum(void);
+diff --git a/include/exec/icount.h b/include/exec/icount.h
+index 11aa01d05..b34423e60 100644
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -79,6 +79,7 @@ uint64_t icount_crucible_rr_switch_quantum(void);
  uint64_t icount_crucible_rr_current_vcpu(void);
  uint64_t icount_crucible_rr_cursor_position(void);
  void icount_crucible_rr_snapshot_resume_prepare(void);
@@ -163,10 +163,10 @@ index 3ab3fb95a..f8761d2d4 100644
  CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
  
 diff --git a/plugins/api.c b/plugins/api.c
-index 29c7905a6..9f13b2bc4 100644
+index a5c270229..15bca6015 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -736,7 +736,8 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
+@@ -915,7 +915,8 @@ int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
  
      if (!out || (!cpu && !exact_boundary) ||
          (current_vcpu == UINT64_MAX && !genesis_cursor) ||

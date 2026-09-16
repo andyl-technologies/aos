@@ -108,6 +108,55 @@ fn digest<T: Serialize>(value: &T) -> Result<String, RpcError> {
 }
 
 impl RpcService {
+    /// Resolves setup instructions only after the requested delivery switch finishes.
+    ///
+    /// # Errors
+    /// Returns an error for unavailable canonical delivery, a pending destination
+    /// switch, or unreadable persisted workflow state.
+    pub(crate) async fn registry_setup_url(
+        &self,
+        registry: &crate::db::RegistryRecord,
+    ) -> Result<String, RpcError> {
+        let canonical = self.registry_consumer_url(registry).await?;
+        let mut cursor = String::new();
+        loop {
+            let page = self
+                .db
+                .list_delivery_workflows(
+                    crate::db::SurfaceTarget::Registry(registry.id),
+                    200,
+                    &cursor,
+                )
+                .await
+                .map_err(RpcError::internal)?;
+            for workflow in page.records {
+                let intent: IntentSeal =
+                    serde_json::from_str(&workflow.intent_json).map_err(RpcError::internal)?;
+                let progress: Progress =
+                    serde_json::from_str(&workflow.progress_json).map_err(RpcError::internal)?;
+                if !progress.active
+                    && intent
+                        .intent
+                        .audiences
+                        .iter()
+                        .any(|audience| audience == "git")
+                    && intent.canonical_url.trim_end_matches('/') != canonical.trim_end_matches('/')
+                {
+                    // Existing routes remain usable during preparation, but new
+                    // consumers must not be enrolled on the outgoing destination.
+                    return Err(RpcError::FailedPrecondition(
+                        "registry delivery setup is awaiting destination activation".into(),
+                    ));
+                }
+            }
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            cursor = next;
+        }
+        Ok(canonical)
+    }
+
     /// Plans a direct CDN destination using existing storage and explicit grants.
     ///
     /// # Errors

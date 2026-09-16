@@ -1181,7 +1181,9 @@ in
               exec "$buildCC" "$@"
             )
             compilerIncludes=$(runBuildCC -print-file-name=include)
-            runBuildCC -nostdinc -I. -Iapple-headers -isystem "$compilerIncludes" \
+            # bootstrap_cmds predates C23, where bool became a keyword and
+            # conflicts with migcom's boolean_t parameter named bool.
+            runBuildCC -std=gnu17 -nostdinc -I. -Iapple-headers -isystem "$compilerIncludes" \
               -Ulinux -U__linux -U__linux__ -D__APPLE__=1 -D__MACH__=1 \
               -D__private_extern__= -D__kernel_ptr_semantics= \
               -D__LITTLE_ENDIAN__=1 -DNDEBUG -DMIG_VERSION='"aos-mig"' \

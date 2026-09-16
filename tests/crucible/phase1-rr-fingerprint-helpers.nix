@@ -322,7 +322,7 @@ in
           script = ''
             set -eu
 
-            mkdir -p accel/tcg exec hw/boards hw/i386 include/qemu include/system io \
+            mkdir -p accel/tcg exec hw/boards hw/i386 include/plugins include/qemu include/system io \
               migration plugins qapi qemu sysemu system tcg
             for header in \
               exec/cpu-common.h \
@@ -525,7 +525,7 @@ in
             };
             QEMU_FIXTURE
 
-            cat > include/qemu/qemu-plugin.h <<'QEMU_FIXTURE'
+            cat > include/plugins/qemu-plugin.h <<'QEMU_FIXTURE'
             #ifndef QEMU_PLUGIN_H
             #define QEMU_PLUGIN_H
             #include <stdint.h>
@@ -663,7 +663,7 @@ in
             typedef struct GByteArray GByteArray;
             struct qemu_plugin_register;
 
-            #include "include/qemu/qemu-plugin.h"
+            #include "include/plugins/qemu-plugin.h"
 
             int main(void)
             {
@@ -683,7 +683,7 @@ in
               stock-rr-fingerprint-helpers-negative.err
 
             patch --batch --fuzz=0 -p1 < "$patchSourcePath"
-            cp include/qemu/qemu-plugin.h qemu/qemu-plugin.h
+            cp include/plugins/qemu-plugin.h qemu/qemu-plugin.h
             cp include/system/cpu-timers.h system/cpu-timers.h
             cp "$microtestSourcePath" phase1-rr-fingerprint-helpers.c
             cc -std=c11 -O2 -Wall -Wextra -Werror \

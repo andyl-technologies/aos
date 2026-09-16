@@ -720,6 +720,16 @@ in
                       find "$dir" -name '*.c' -o -name '*.cpp' -o -name '*.h' 2>/dev/null | while read f; do
                         sed -i 's|#include <sys/sysctl\.h>|/* removed: sys/sysctl.h */|g' "$f" 2>/dev/null || true
                       done
+                      # GCC 16 defaults C sources to C23, where bool is a
+                      # keyword. Restrict the old Serviceability Agent C code
+                      # without passing a C-only option to HotSpot's C++ build.
+                      find "$dir" -path '*/hotspot/make/linux/makefiles/saproc.make' 2>/dev/null | while read f; do
+                        test "$(grep -Fc '$(QUIETLY) $(CC) -D$(BUILDARCH)' "$f")" = 1
+                        sed -i \
+                          's|$(QUIETLY) $(CC) -D$(BUILDARCH)|$(QUIETLY) $(CC) -std=gnu17 -D$(BUILDARCH)|' \
+                          "$f"
+                        test "$(grep -Fc '$(QUIETLY) $(CC) -std=gnu17 -D$(BUILDARCH)' "$f")" = 1
+                      done
                       # Fix hardcoded /bin/echo in Defs-utils.gmk
                       find "$dir" -name 'Defs-utils.gmk' 2>/dev/null | while read f; do
                         sed -i \
@@ -779,11 +789,12 @@ in
                         sed -i 's/^const char \*\*parentPathv;/extern const char **parentPathv;/' "$f" 2>/dev/null || true
                         sed -i 's/^char \*\*parentPathv;/extern char **parentPathv;/' "$f" 2>/dev/null || true
                       done
-                      # Add -fcommon and -Wno-implicit-function-declaration globally
-                      # as safety nets for other GCC 14 issues in JDK native code.
-                      # Append to Defs-linux.gmk which defines CFLAGS_COMMON used by all builds.
+                      # Keep the legacy JDK native C sources on the pre-C23
+                      # language rules they were written for. OTHER_CFLAGS is
+                      # intentionally C-only; HotSpot's C++ flags stay intact.
+                      # The remaining flags tolerate known GCC 14-era sources.
                       find "$dir" -path '*/jdk/make/common/Defs-linux.gmk' 2>/dev/null | while read f; do
-                        echo 'OTHER_CFLAGS += -fcommon -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-incompatible-pointer-types' >> "$f" 2>/dev/null || true
+                        echo 'OTHER_CFLAGS += -std=gnu17 -fcommon -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-incompatible-pointer-types' >> "$f" 2>/dev/null || true
                         # Fix empty OPENWIN_HOME: bare -I flag eats -c flag, causing
                         # gcc to link instead of compile in headless AWT build
                         echo 'OPENWIN_HOME = ${xorg-stubs}' >> "$f" 2>/dev/null || true
@@ -2192,20 +2203,13 @@ in
                   chmod +x $TOOLS/gjavah-wrapper
 
                   # Build up to and including boot JDK + stage2 bootstrap setup.
-                  # IcedTea 2.6 drives the same boot javac outputs from several
-                  # recursive make branches. Parallel execution can corrupt
-                  # javac 7's shared class-writing state and abort in
-                  # ClassWriter.writePool or leave an enum class without its
-                  # synthetic values() method. The configured PARALLEL_JOBS is
-                  # propagated independently to recursive OpenJDK builds, so
-                  # both that knob and the outer make jobserver must be serial.
                   # JAVAH_CMD is passed on the make command line to override the
                   # OpenJDK build system's computed value. JAVAH_CMD is NOT defined
                   # in source .gmk files — it's generated at build time from BOOTDIR
                   # and other variables. The computed value uses `java -jar javah.jar`
                   # which crashes with NPE under JamVM. Make command-line variables
                   # override all makefile-level assignments including computed ones.
-                  make -j1 PARALLEL_JOBS=1 \
+                  make -j"$NIX_BUILD_CORES" PARALLEL_JOBS="$NIX_BUILD_CORES" \
                     stamps/bootstrap-directory-symlink-stage2.stamp \
                     ALT_UNIXCOMMAND_PATH=$TOOLS/ \
                     ALT_USRBIN_PATH=$TOOLS/ \
@@ -2254,7 +2258,7 @@ in
                   fi
 
                   # Continue the full build (make skips already-completed targets)
-                  make -j1 \
+                  make -j"$NIX_BUILD_CORES" \
                     ALT_UNIXCOMMAND_PATH=$TOOLS/ \
                     ALT_USRBIN_PATH=$TOOLS/ \
                     ALT_DEVTOOLS_PATH=$TOOLS/ \

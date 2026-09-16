@@ -67,7 +67,7 @@ in {
       export PWD_CMD
     '';
     buildScript = ''
-      make -j1
+      make -j"$NIX_BUILD_CORES"
     '';
     installScript = ''
       make install ${autotoolsVars}
@@ -303,7 +303,7 @@ in {
     # This release does not declare the generated helper executables as
     # prerequisites of every consumer that invokes them.
     buildScript = ''
-      make -j1
+      make -j"$NIX_BUILD_CORES"
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"

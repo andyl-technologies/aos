@@ -1,5 +1,5 @@
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
-index b6b1b605d..4406617ee 100644
+index f3298b0ba..ef34799bb 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
 @@ -28,6 +28,7 @@
@@ -9,8 +9,8 @@ index b6b1b605d..4406617ee 100644
 +#include "qemu/crucible-fault.h"
  #include "exec/cpu-common.h"
  #include "system/kvm.h"
- #include "system/cpu-timers.h"
-@@ -52,6 +53,8 @@ typedef struct CrucibleSimDetIpiEvent {
+ #include "system/mshv.h"
+@@ -55,6 +56,8 @@ typedef struct CrucibleSimDetIpiEvent {
      uint8_t vector_num;
      uint8_t trigger_mode;
      uint64_t event_id;
@@ -19,7 +19,7 @@ index b6b1b605d..4406617ee 100644
  } CrucibleSimDetIpiEvent;
  
  static GQueue crucible_sim_det_ipi_queue = G_QUEUE_INIT;
-@@ -63,7 +66,11 @@ static bool crucible_sim_det_ipi_draining;
+@@ -66,7 +69,11 @@ static bool crucible_sim_det_ipi_draining;
  DECLARE_INSTANCE_CHECKER(APICCommonState, APIC,
                           TYPE_APIC)
  
@@ -32,7 +32,7 @@ index b6b1b605d..4406617ee 100644
  static void apic_update_irq(APICCommonState *s);
  static void apic_startup(APICCommonState *s, int vector_num);
  static void apic_get_delivery_bitmask(uint32_t *deliver_bitmask,
-@@ -167,6 +174,35 @@ static void apic_vapic_base_update(APICCommonState *s)
+@@ -170,6 +177,35 @@ static void apic_vapic_base_update(APICCommonState *s)
      apic_sync_vapic(s, SYNC_TO_VAPIC);
  }
  
@@ -68,7 +68,7 @@ index b6b1b605d..4406617ee 100644
  static void apic_local_deliver(APICCommonState *s, int vector)
  {
      uint32_t lvt = s->lvt[vector];
-@@ -183,7 +219,7 @@ static void apic_local_deliver(APICCommonState *s, int vector)
+@@ -186,7 +222,7 @@ static void apic_local_deliver(APICCommonState *s, int vector)
          break;
  
      case APIC_DM_NMI:
@@ -77,7 +77,7 @@ index b6b1b605d..4406617ee 100644
          break;
  
      case APIC_DM_EXTINT:
-@@ -195,7 +231,13 @@ static void apic_local_deliver(APICCommonState *s, int vector)
+@@ -198,7 +234,13 @@ static void apic_local_deliver(APICCommonState *s, int vector)
          if ((vector == APIC_LVT_LINT0 || vector == APIC_LVT_LINT1) &&
              (lvt & APIC_LVT_LEVEL_TRIGGER))
              trigger_mode = APIC_TRIGGER_LEVEL;
@@ -92,7 +92,7 @@ index b6b1b605d..4406617ee 100644
      }
  }
  
-@@ -286,6 +328,10 @@ static bool crucible_sim_det_ipi_enqueue(CPUState *src_cpu,
+@@ -287,6 +329,10 @@ static bool crucible_sim_det_ipi_enqueue(CPUState *src_cpu,
      event->vector_num = vector_num;
      event->trigger_mode = trigger_mode;
      event->event_id = ++crucible_sim_det_ipi_next_event_id;
@@ -103,7 +103,7 @@ index b6b1b605d..4406617ee 100644
      g_queue_push_tail(&crucible_sim_det_ipi_queue, event);
      return true;
  }
-@@ -318,7 +364,12 @@ static void crucible_sim_det_ipi_deliver_event(
+@@ -319,7 +365,12 @@ static void crucible_sim_det_ipi_deliver_event(
      switch (event->delivery_mode) {
      case APIC_DM_LOWPRI:
      case APIC_DM_FIXED:
@@ -117,7 +117,7 @@ index b6b1b605d..4406617ee 100644
          break;
      case APIC_DM_SMI:
          cpu_interrupt(dst_cpu, CPU_INTERRUPT_SMI);
-@@ -362,6 +413,8 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
+@@ -363,6 +414,8 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
      X86CPU *x86_cpu;
      APICCommonState *target_apic;
      uint64_t delivery_icount;
@@ -126,7 +126,7 @@ index b6b1b605d..4406617ee 100644
      unsigned int src_vcpu = UINT_MAX;
  
      if (vector > UINT8_MAX) {
-@@ -379,7 +432,14 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
+@@ -380,7 +433,14 @@ int crucible_sim_det_ipi_deliver_commanded(unsigned int target_vcpu,
      }
  
      target_apic = APIC_COMMON(x86_cpu->apic_state);
@@ -142,7 +142,7 @@ index b6b1b605d..4406617ee 100644
  
      if (current_cpu) {
          src_vcpu = current_cpu->cpu_index;
-@@ -398,6 +458,13 @@ static void apic_bus_deliver(CPUState *src_cpu,
+@@ -399,6 +459,13 @@ static void apic_bus_deliver(CPUState *src_cpu,
                               uint8_t trigger_mode)
  {
      APICCommonState *apic_iter;
@@ -156,7 +156,7 @@ index b6b1b605d..4406617ee 100644
  
      switch (delivery_mode) {
          case APIC_DM_LOWPRI:
-@@ -418,11 +485,14 @@ static void apic_bus_deliver(CPUState *src_cpu,
+@@ -419,11 +486,14 @@ static void apic_bus_deliver(CPUState *src_cpu,
                                                         delivery_mode,
                                                         vector_num,
                                                         trigger_mode)) {
@@ -173,7 +173,7 @@ index b6b1b605d..4406617ee 100644
  
          case APIC_DM_FIXED:
              break;
-@@ -435,17 +505,17 @@ static void apic_bus_deliver(CPUState *src_cpu,
+@@ -436,17 +506,17 @@ static void apic_bus_deliver(CPUState *src_cpu,
                      cpu_interrupt(CPU(apic_iter->cpu), CPU_INTERRUPT_SMI);
                  }
              );
@@ -194,7 +194,7 @@ index b6b1b605d..4406617ee 100644
  
          case APIC_DM_INIT:
              /* normal INIT IPI sent to processors */
-@@ -456,22 +526,27 @@ static void apic_bus_deliver(CPUState *src_cpu,
+@@ -457,22 +527,27 @@ static void apic_bus_deliver(CPUState *src_cpu,
                      cpu_interrupt(CPU(apic_iter->cpu), CPU_INTERRUPT_INIT);
                  }
              );
@@ -225,7 +225,7 @@ index b6b1b605d..4406617ee 100644
  }
  
  static void apic_deliver_irq(uint32_t dest, uint8_t dest_mode,
-@@ -665,11 +740,24 @@ void apic_poll_irq(DeviceState *dev)
+@@ -658,11 +733,24 @@ void apic_poll_irq(APICCommonState *s)
      apic_update_irq(s);
  }
  
@@ -252,7 +252,7 @@ index b6b1b605d..4406617ee 100644
      if (trigger_mode)
          apic_set_bit(s->tmr, vector_num);
      else
-@@ -687,6 +775,112 @@ static void apic_set_irq(APICCommonState *s, int vector_num, int trigger_mode)
+@@ -680,6 +768,112 @@ static void apic_set_irq(APICCommonState *s, int vector_num, int trigger_mode)
      apic_update_irq(s);
  }
  
@@ -365,17 +365,17 @@ index b6b1b605d..4406617ee 100644
  static void apic_eoi(APICCommonState *s)
  {
      int isrv;
-@@ -916,7 +1110,9 @@ static bool apic_check_pic(APICCommonState *s)
- int apic_get_interrupt(DeviceState *dev)
+@@ -900,7 +1094,9 @@ static bool apic_check_pic(APICCommonState *s)
+ 
+ int apic_get_interrupt(APICCommonState *s)
  {
-     APICCommonState *s = APIC(dev);
 +    QemuCrucibleInterruptEvent event;
      int intno;
 +    int original_intno;
  
      /* if the APIC is installed or enabled, we let the 8259 handle the
         IRQs */
-@@ -938,11 +1134,94 @@ int apic_get_interrupt(DeviceState *dev)
+@@ -922,11 +1118,94 @@ int apic_get_interrupt(APICCommonState *s)
          apic_sync_vapic(s, SYNC_TO_VAPIC);
          return s->spurious_vec & 0xff;
      }
@@ -471,7 +471,7 @@ index b6b1b605d..4406617ee 100644
  
      return intno;
  }
-@@ -1331,6 +1610,11 @@ static const MemoryRegionOps apic_io_ops = {
+@@ -1317,6 +1596,11 @@ static const MemoryRegionOps apic_io_ops = {
  static void apic_realize(DeviceState *dev, Error **errp)
  {
      APICCommonState *s = APIC(dev);
@@ -483,7 +483,7 @@ index b6b1b605d..4406617ee 100644
  
      if (kvm_enabled()) {
          warn_report("Userspace local APIC is deprecated for KVM.");
-@@ -1359,6 +1643,70 @@ static void apic_realize(DeviceState *dev, Error **errp)
+@@ -1345,6 +1629,70 @@ static void apic_realize(DeviceState *dev, Error **errp)
      }
      local_apics[s->initial_apic_id] = s;
  
@@ -555,10 +555,10 @@ index b6b1b605d..4406617ee 100644
  }
  
 diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
-index 2a3e878c4..7bddd0f70 100644
+index 49c03a5bc..36633e8ef 100644
 --- a/hw/intc/apic_common.c
 +++ b/hw/intc/apic_common.c
-@@ -210,6 +210,14 @@ void apic_init_reset(DeviceState *dev)
+@@ -193,6 +193,14 @@ void apic_init_reset(APICCommonState *s)
      memset(s->isr, 0, sizeof(s->isr));
      memset(s->tmr, 0, sizeof(s->tmr));
      memset(s->irr, 0, sizeof(s->irr));
@@ -573,7 +573,7 @@ index 2a3e878c4..7bddd0f70 100644
      for (i = 0; i < APIC_LVT_NB; i++) {
          s->lvt[i] = APIC_LVT_MASKED;
      }
-@@ -372,6 +380,36 @@ static const VMStateDescription vmstate_apic_common_sipi = {
+@@ -364,6 +372,36 @@ static const VMStateDescription vmstate_apic_common_sipi = {
      }
  };
  
@@ -610,7 +610,7 @@ index 2a3e878c4..7bddd0f70 100644
  static const VMStateDescription vmstate_apic_common = {
      .name = "apic",
      .version_id = 3,
-@@ -404,6 +442,7 @@ static const VMStateDescription vmstate_apic_common = {
+@@ -397,6 +435,7 @@ static const VMStateDescription vmstate_apic_common = {
      },
      .subsections = (const VMStateDescription * const []) {
          &vmstate_apic_common_sipi,
@@ -619,7 +619,7 @@ index 2a3e878c4..7bddd0f70 100644
      }
  };
 diff --git a/hw/intc/arm_gic.c b/hw/intc/arm_gic.c
-index 3581ff8e8..cb6cdcd17 100644
+index 4d4b79e6f..5d792162d 100644
 --- a/hw/intc/arm_gic.c
 +++ b/hw/intc/arm_gic.c
 @@ -19,6 +19,8 @@
@@ -628,8 +628,8 @@ index 3581ff8e8..cb6cdcd17 100644
  #include "qemu/osdep.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
- #include "hw/irq.h"
- #include "hw/sysbus.h"
+ #include "hw/core/irq.h"
+ #include "hw/core/sysbus.h"
  #include "gic_internal.h"
 @@ -94,9 +96,12 @@ static inline void gic_get_best_irq(GICState *s, int cpu,
      for (irq = 0; irq < s->num_irq; irq++) {
@@ -938,7 +938,7 @@ index 3581ff8e8..cb6cdcd17 100644
      /* Extra core-specific regions for the CPU interfaces. This is
       * necessary for "franken-GIC" implementations, for example on
 diff --git a/hw/intc/arm_gic_common.c b/hw/intc/arm_gic_common.c
-index 5ac56e338..99c085868 100644
+index 304d89cf5..0b5f73a56 100644
 --- a/hw/intc/arm_gic_common.c
 +++ b/hw/intc/arm_gic_common.c
 @@ -98,6 +98,42 @@ static const VMStateDescription vmstate_gic_virt_state = {
@@ -1012,7 +1012,7 @@ index 5ac56e338..99c085868 100644
  
      if (s->virt_extn) {
 diff --git a/hw/intc/arm_gicv3.c b/hw/intc/arm_gicv3.c
-index 58e18fff5..c6f0a155a 100644
+index e93c1df5b..3cab20741 100644
 --- a/hw/intc/arm_gicv3.c
 +++ b/hw/intc/arm_gicv3.c
 @@ -17,6 +17,8 @@
@@ -1236,10 +1236,17 @@ index 58e18fff5..c6f0a155a 100644
  
      agc->parent_realize(dev, &local_err);
      if (local_err) {
-@@ -449,6 +617,63 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
+@@ -449,7 +617,68 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
  
      gicv3_init_irqs_and_mmio(s, gicv3_set_irq, gic_ops);
  
+-    gicv3_init_cpuif(s, errp);
++    gicv3_init_cpuif(s, &local_err);
++    if (local_err) {
++        error_propagate(errp, local_err);
++        return;
++    }
++
 +    if (!qemu_crucible_fault_interrupt_register_injector(
 +            QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI,
 +            gicv3_crucible_interrupt_inject, s) ||
@@ -1296,12 +1303,11 @@ index 58e18fff5..c6f0a155a 100644
 +        error_setg(errp, "conflicting Crucible GICv3 family realization");
 +        return;
 +    }
-+
-     gicv3_init_cpuif(s);
  }
  
+ static void arm_gicv3_class_init(ObjectClass *klass, const void *data)
 diff --git a/hw/intc/arm_gicv3_common.c b/hw/intc/arm_gicv3_common.c
-index 76b2283c9..12f56cf38 100644
+index f7ba74e6d..4a60c0797 100644
 --- a/hw/intc/arm_gicv3_common.c
 +++ b/hw/intc/arm_gicv3_common.c
 @@ -25,6 +25,7 @@
@@ -1311,8 +1317,8 @@ index 76b2283c9..12f56cf38 100644
 +#include "qemu/crucible-fault.h"
  #include "hw/core/cpu.h"
  #include "hw/intc/arm_gicv3_common.h"
- #include "hw/qdev-properties.h"
-@@ -182,6 +183,37 @@ static const VMStateDescription vmstate_gicv3_cpu_nmi = {
+ #include "hw/core/qdev-properties.h"
+@@ -184,6 +185,37 @@ static const VMStateDescription vmstate_gicv3_cpu_nmi = {
      }
  };
  
@@ -1350,7 +1356,7 @@ index 76b2283c9..12f56cf38 100644
  static const VMStateDescription vmstate_gicv3_cpu = {
      .name = "arm_gicv3_cpu",
      .version_id = 1,
-@@ -215,6 +247,7 @@ static const VMStateDescription vmstate_gicv3_cpu = {
+@@ -217,6 +249,7 @@ static const VMStateDescription vmstate_gicv3_cpu = {
          &vmstate_gicv3_cpu_sre_el1,
          &vmstate_gicv3_gicv4,
          &vmstate_gicv3_cpu_nmi,
@@ -1358,7 +1364,7 @@ index 76b2283c9..12f56cf38 100644
          NULL
      }
  };
-@@ -275,6 +308,40 @@ const VMStateDescription vmstate_gicv3_gicd_nmi = {
+@@ -277,6 +310,40 @@ const VMStateDescription vmstate_gicv3_gicd_nmi = {
      }
  };
  
@@ -1399,15 +1405,15 @@ index 76b2283c9..12f56cf38 100644
  static const VMStateDescription vmstate_gicv3 = {
      .name = "arm_gicv3",
      .version_id = 1,
-@@ -304,6 +371,7 @@ static const VMStateDescription vmstate_gicv3 = {
-     .subsections = (const VMStateDescription * const []) {
+@@ -307,6 +374,7 @@ static const VMStateDescription vmstate_gicv3 = {
          &vmstate_gicv3_gicd_no_migration_shift_bug,
          &vmstate_gicv3_gicd_nmi,
+         &vmstate_gicv3_hvf,
 +        &vmstate_gicv3_crucible_interrupt,
          NULL
      }
  };
-@@ -503,6 +571,9 @@ static void arm_gicv3_common_reset_hold(Object *obj, ResetType type)
+@@ -499,6 +567,9 @@ static void arm_gicv3_common_reset_hold(Object *obj, ResetType type)
      for (i = 0; i < s->num_cpu; i++) {
          GICv3CPUState *cs = &s->cpu[i];
  
@@ -1417,7 +1423,7 @@ index 76b2283c9..12f56cf38 100644
          cs->level = 0;
          cs->gicr_ctlr = 0;
          if (s->lpi_enable) {
-@@ -534,6 +605,15 @@ static void arm_gicv3_common_reset_hold(Object *obj, ResetType type)
+@@ -530,6 +601,15 @@ static void arm_gicv3_common_reset_hold(Object *obj, ResetType type)
          cs->gicr_igrpmodr0 = 0;
          cs->gicr_nsacr = 0;
          memset(cs->gicr_ipriorityr, 0, sizeof(cs->gicr_ipriorityr));
@@ -1433,7 +1439,7 @@ index 76b2283c9..12f56cf38 100644
  
          cs->hppi.prio = 0xff;
          cs->hppi.nmi = false;
-@@ -566,6 +646,19 @@ static void arm_gicv3_common_reset_hold(Object *obj, ResetType type)
+@@ -562,6 +642,19 @@ static void arm_gicv3_common_reset_hold(Object *obj, ResetType type)
      memset(s->edge_trigger, 0, sizeof(s->edge_trigger));
      memset(s->gicd_ipriority, 0, sizeof(s->gicd_ipriority));
      memset(s->gicd_irouter, 0, sizeof(s->gicd_irouter));
@@ -1454,17 +1460,17 @@ index 76b2283c9..12f56cf38 100644
      /* GICD_IROUTER are UNKNOWN at reset so in theory the guest must
       * write these to get sane behaviour and we need not populate the
 diff --git a/hw/intc/arm_gicv3_cpuif.c b/hw/intc/arm_gicv3_cpuif.c
-index de37465bc..42e7b80c1 100644
+index 67a0bba4b..c7567e0cb 100644
 --- a/hw/intc/arm_gicv3_cpuif.c
 +++ b/hw/intc/arm_gicv3_cpuif.c
-@@ -16,6 +16,7 @@
- #include "qemu/bitops.h"
+@@ -17,6 +17,7 @@
  #include "qemu/log.h"
  #include "qemu/main-loop.h"
+ #include "qapi/error.h"
 +#include "qemu/crucible-fault.h"
  #include "trace.h"
  #include "gicv3_internal.h"
- #include "hw/irq.h"
+ #include "hw/core/irq.h"
 @@ -1187,6 +1188,222 @@ static void icc_activate_irq(GICv3CPUState *cs, int irq)
      }
  }
@@ -1843,7 +1849,7 @@ index 90b238fac..ebdfe0258 100644
          src_pend = 0;
          address_space_write(as, src_baddr + i, MEMTXATTRS_UNSPECIFIED,
 diff --git a/hw/intc/gic_internal.h b/hw/intc/gic_internal.h
-index 8ddbf554c..367098dfa 100644
+index b821f1feb..2cef7ac6f 100644
 --- a/hw/intc/gic_internal.h
 +++ b/hw/intc/gic_internal.h
 @@ -319,7 +319,9 @@ static inline int gic_get_priority(GICState *s, int irq, int cpu)
@@ -1858,7 +1864,7 @@ index 8ddbf554c..367098dfa 100644
  }
  
 diff --git a/hw/intc/i8259.c b/hw/intc/i8259.c
-index d88b20f40..63fc57e0e 100644
+index 8f2aa1f0f..5f4e6dbf9 100644
 --- a/hw/intc/i8259.c
 +++ b/hw/intc/i8259.c
 @@ -23,6 +23,10 @@
@@ -1870,9 +1876,9 @@ index d88b20f40..63fc57e0e 100644
 +#include "qapi/error.h"
 +#include "hw/core/cpu.h"
  #include "hw/intc/i8259.h"
- #include "hw/irq.h"
+ #include "hw/core/irq.h"
  #include "hw/isa/isa.h"
-@@ -124,6 +128,16 @@ static void pic_set_irq(void *opaque, int irq, int level)
+@@ -121,6 +125,16 @@ static void pic_set_irq(void *opaque, int irq, int level)
      int mask = 1 << irq;
      int irq_index = s->master ? irq : irq + 8;
  
@@ -1889,7 +1895,7 @@ index d88b20f40..63fc57e0e 100644
      trace_pic_set_irq(s->master, irq, level);
      pic_stat_update_irq(irq_index, level);
  
-@@ -173,35 +187,202 @@ static void pic_intack(PICCommonState *s, int irq)
+@@ -170,35 +184,202 @@ static void pic_intack(PICCommonState *s, int irq)
      pic_update_irq(s);
  }
  
@@ -2102,7 +2108,7 @@ index d88b20f40..63fc57e0e 100644
  #ifdef DEBUG_IRQ_LATENCY
      printf("IRQ%d latency=%0.3fus\n",
             irq,
-@@ -401,6 +582,20 @@ static void pic_realize(DeviceState *dev, Error **errp)
+@@ -398,6 +579,20 @@ static void pic_realize(DeviceState *dev, Error **errp)
      qdev_init_gpio_out(dev, s->int_out, ARRAY_SIZE(s->int_out));
      qdev_init_gpio_in(dev, pic_set_irq, 8);
  
@@ -2124,7 +2130,7 @@ index d88b20f40..63fc57e0e 100644
  }
  
 diff --git a/hw/intc/i8259_common.c b/hw/intc/i8259_common.c
-index c77ff683b..ce8756c63 100644
+index 8ceb5841b..06d3ff332 100644
 --- a/hw/intc/i8259_common.c
 +++ b/hw/intc/i8259_common.c
 @@ -50,6 +50,15 @@ void pic_reset_common(PICCommonState *s)
@@ -2188,7 +2194,7 @@ index c77ff683b..ce8756c63 100644
      }
  };
 diff --git a/hw/intc/ioapic.c b/hw/intc/ioapic.c
-index 8cd1d85e0..9013d6da7 100644
+index 1b3f1e824..1b9d57f59 100644
 --- a/hw/intc/ioapic.c
 +++ b/hw/intc/ioapic.c
 @@ -21,6 +21,7 @@
@@ -2199,7 +2205,7 @@ index 8cd1d85e0..9013d6da7 100644
  #include "qapi/error.h"
  #include "monitor/monitor.h"
  #include "hw/i386/apic.h"
-@@ -39,6 +40,7 @@
+@@ -45,6 +46,7 @@
  #define APIC_DELIVERY_MODE_SHIFT 8
  #define APIC_POLARITY_SHIFT 14
  #define APIC_TRIG_MODE_SHIFT 15
@@ -2207,11 +2213,12 @@ index 8cd1d85e0..9013d6da7 100644
  
  static IOAPICCommonState *ioapics[MAX_IOAPICS];
  
-@@ -135,7 +137,16 @@ static void ioapic_service(IOAPICCommonState *s)
+@@ -141,8 +143,17 @@ static void ioapic_service(IOAPICCommonState *s)
                   * the IOAPIC message into a MSI one, and its
                   * address space will decide whether we need a
                   * translation. */
--                stl_le_phys(ioapic_as, info.addr, info.data);
+-                address_space_stl_le(ioapic_as, info.addr, info.data,
+-                                     MEMTXATTRS_UNSPECIFIED, NULL);
 +                {
 +                    bool source_owner =
 +                        qemu_crucible_fault_interrupt_source_enter_polarity(
@@ -2219,13 +2226,14 @@ index 8cd1d85e0..9013d6da7 100644
 +                            (entry >> IOAPIC_LVT_POLARITY_SHIFT) & 1 ?
 +                                QEMU_CRUCIBLE_INTERRUPT_POLARITY_LOW :
 +                                QEMU_CRUCIBLE_INTERRUPT_POLARITY_HIGH);
-+                    stl_le_phys(ioapic_as, info.addr, info.data);
++                    address_space_stl_le(ioapic_as, info.addr, info.data,
++                                         MEMTXATTRS_UNSPECIFIED, NULL);
 +                    qemu_crucible_fault_interrupt_source_leave(source_owner);
 +                }
              }
          }
      }
-@@ -449,6 +460,7 @@ static void ioapic_machine_done_notify(Notifier *notifier, void *data)
+@@ -456,6 +467,7 @@ static void ioapic_machine_done_notify(Notifier *notifier, void *data)
  static void ioapic_realize(DeviceState *dev, Error **errp)
  {
      IOAPICCommonState *s = IOAPIC_COMMON(dev);
@@ -2233,7 +2241,7 @@ index 8cd1d85e0..9013d6da7 100644
  
      if (s->version != 0x11 && s->version != 0x20) {
          error_setg(errp, "IOAPIC only supports version 0x11 or 0x20 "
-@@ -464,6 +476,17 @@ static void ioapic_realize(DeviceState *dev, Error **errp)
+@@ -471,6 +483,17 @@ static void ioapic_realize(DeviceState *dev, Error **errp)
  
      qdev_init_gpio_in(dev, ioapic_set_irq, IOAPIC_NUM_PINS);
  
@@ -2291,7 +2299,7 @@ index b9f5b4592..ece027037 100644
  
  /* Normally called by pci_default_write_config(). */
 diff --git a/hw/pci/msix.c b/hw/pci/msix.c
-index 66f27b9d7..53de0d09c 100644
+index 1b23eaf10..b0c668b9c 100644
 --- a/hw/pci/msix.c
 +++ b/hw/pci/msix.c
 @@ -15,6 +15,7 @@
@@ -2302,7 +2310,7 @@ index 66f27b9d7..53de0d09c 100644
  #include "qemu/log.h"
  #include "hw/pci/msi.h"
  #include "hw/pci/msix.h"
-@@ -333,6 +334,14 @@ int msix_init(struct PCIDevice *dev, unsigned short nentries,
+@@ -333,6 +334,14 @@ int msix_init(struct PCIDevice *dev, uint32_t nentries,
          error_setg(errp, "MSI-X is not supported by interrupt controller");
          return -ENOTSUP;
      }
@@ -2317,7 +2325,7 @@ index 66f27b9d7..53de0d09c 100644
  
      if (nentries < 1 || nentries > PCI_MSIX_FLAGS_QSIZE + 1) {
          error_setg(errp, "The number of MSI-X vectors is invalid");
-@@ -534,6 +543,7 @@ int msix_enabled(PCIDevice *dev)
+@@ -540,6 +549,7 @@ int msix_enabled(PCIDevice *dev)
  void msix_notify(PCIDevice *dev, unsigned vector)
  {
      MSIMessage msg;
@@ -2325,7 +2333,7 @@ index 66f27b9d7..53de0d09c 100644
  
      assert(vector < dev->msix_entries_nr);
  
-@@ -548,7 +558,10 @@ void msix_notify(PCIDevice *dev, unsigned vector)
+@@ -554,7 +564,10 @@ void msix_notify(PCIDevice *dev, unsigned vector)
  
      msg = msix_get_message(dev, vector);
  
@@ -2337,10 +2345,10 @@ index 66f27b9d7..53de0d09c 100644
  
  void msix_reset(PCIDevice *dev)
 diff --git a/include/hw/i386/apic_internal.h b/include/hw/i386/apic_internal.h
-index d6e85833d..8adfed4b2 100644
+index a26d53bb9..c5355aafb 100644
 --- a/include/hw/i386/apic_internal.h
 +++ b/include/hw/i386/apic_internal.h
-@@ -171,6 +171,10 @@ struct APICCommonState {
+@@ -170,6 +170,10 @@ struct APICCommonState {
      uint32_t isr[8];  /* in service register */
      uint32_t tmr[8];  /* trigger mode register */
      uint32_t irr[8]; /* interrupt request register */
@@ -2352,7 +2360,7 @@ index d6e85833d..8adfed4b2 100644
      uint32_t esr; /* error register */
      uint32_t icr[2];
 diff --git a/include/hw/intc/arm_gic_common.h b/include/hw/intc/arm_gic_common.h
-index 97fea4102..540c09f92 100644
+index b169394e6..2cf814454 100644
 --- a/include/hw/intc/arm_gic_common.h
 +++ b/include/hw/intc/arm_gic_common.h
 @@ -95,6 +95,12 @@ struct GICState {
@@ -2369,10 +2377,10 @@ index 97fea4102..540c09f92 100644
      uint16_t priority_mask[GIC_NCPU_VCPU];
      uint16_t running_priority[GIC_NCPU_VCPU];
 diff --git a/include/hw/intc/arm_gicv3_common.h b/include/hw/intc/arm_gicv3_common.h
-index a3d6a0e50..d04f9b76e 100644
+index 03ab3e8f2..e1aeb69a8 100644
 --- a/include/hw/intc/arm_gicv3_common.h
 +++ b/include/hw/intc/arm_gicv3_common.h
-@@ -152,6 +152,11 @@ struct GICv3CPUState {
+@@ -153,6 +153,11 @@ struct GICv3CPUState {
      uint32_t gicr_igrpmodr0;
      uint32_t gicr_nsacr;
      uint8_t gicr_ipriorityr[GIC_INTERNAL];
@@ -2384,7 +2392,7 @@ index a3d6a0e50..d04f9b76e 100644
      /* VLPI_base page registers */
      uint64_t gicr_vpropbaser;
      uint64_t gicr_vpendbaser;
-@@ -261,6 +266,12 @@ struct GICv3State {
+@@ -267,6 +272,12 @@ struct GICv3State {
      GIC_DECLARE_BITMAP(nmi);          /* GICD_INMIR */
      uint8_t gicd_ipriority[GICV3_MAXIRQ];
      uint64_t gicd_irouter[GICV3_MAXIRQ];
@@ -2413,8 +2421,57 @@ index f9dcc4163..d5c5294fe 100644
      qemu_irq int_out[1];
      uint32_t master; /* reflects /SP input pin */
      uint32_t iobase;
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 95368e9da..62f28fef8 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -2084,6 +2084,44 @@ size_t qemu_plugin_crucible_fault_instruction_manifest(
+     uint8_t *manifest, size_t capacity, uint8_t sha256[32],
+     uint16_t *architecture);
+ 
++/** One immutable realized interrupt-source capability row. */
++struct qemu_plugin_crucible_fault_interrupt_capability {
++    uint16_t family;
++    uint16_t trigger;
++    uint16_t polarity;
++    uint16_t delivery_drop;
++    uint32_t vector_start;
++    uint32_t vector_end;
++    uint32_t replacement_vector_start;
++    uint32_t replacement_vector_end;
++    uint16_t priority;
++    uint8_t vmstate;
++    uint8_t reserved;
++    uint64_t model_phase_mask;
++    const char *id;
++    const char *controller;
++    const char *source;
++    const char *controller_version;
++    const uint32_t *target_vcpus;
++    size_t target_vcpu_count;
++};
++
++/** Copy the immutable interrupt-source manifest for the realized machine. */
++QEMU_PLUGIN_API
++size_t qemu_plugin_crucible_fault_interrupt_manifest(
++    struct qemu_plugin_crucible_fault_interrupt_capability *out,
++    size_t capacity, uint16_t *architecture);
++
++/** Bind one public interrupt row and its component identities. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_interrupt_bind(
++    uint32_t row_index, const uint8_t id[32],
++    const uint8_t controller[32], const uint8_t source[32]);
++
++/** Seal the complete one-to-one interrupt identity map. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_interrupt_bindings_seal(void);
++
+ /** Bind the public architecture identity used by every register target. */
+ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_fault_register_bind_architecture(
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 4ff51630a..92f634dd2 100644
+index 8420166aa..67588ef76 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -208,6 +208,107 @@ bool qemu_crucible_fault_instruction_ensure_registered(void);
@@ -2525,58 +2582,9 @@ index 4ff51630a..92f634dd2 100644
  enum QemuCrucibleMemoryAccessClass {
      QEMU_CRUCIBLE_MEMORY_FETCH = 0x01,
      QEMU_CRUCIBLE_MEMORY_CPU_LOAD = 0x02,
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index d7668180a..d82a128f6 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1723,6 +1723,44 @@ size_t qemu_plugin_crucible_fault_instruction_manifest(
-     uint8_t *manifest, size_t capacity, uint8_t sha256[32],
-     uint16_t *architecture);
- 
-+/** One immutable realized interrupt-source capability row. */
-+struct qemu_plugin_crucible_fault_interrupt_capability {
-+    uint16_t family;
-+    uint16_t trigger;
-+    uint16_t polarity;
-+    uint16_t delivery_drop;
-+    uint32_t vector_start;
-+    uint32_t vector_end;
-+    uint32_t replacement_vector_start;
-+    uint32_t replacement_vector_end;
-+    uint16_t priority;
-+    uint8_t vmstate;
-+    uint8_t reserved;
-+    uint64_t model_phase_mask;
-+    const char *id;
-+    const char *controller;
-+    const char *source;
-+    const char *controller_version;
-+    const uint32_t *target_vcpus;
-+    size_t target_vcpu_count;
-+};
-+
-+/** Copy the immutable interrupt-source manifest for the realized machine. */
-+QEMU_PLUGIN_API
-+size_t qemu_plugin_crucible_fault_interrupt_manifest(
-+    struct qemu_plugin_crucible_fault_interrupt_capability *out,
-+    size_t capacity, uint16_t *architecture);
-+
-+/** Bind one public interrupt row and its component identities. */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_fault_interrupt_bind(
-+    uint32_t row_index, const uint8_t id[32],
-+    const uint8_t controller[32], const uint8_t source[32]);
-+
-+/** Seal the complete one-to-one interrupt identity map. */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_fault_interrupt_bindings_seal(void);
-+
- /** Bind the public architecture identity used by every register target. */
- QEMU_PLUGIN_API
- int qemu_plugin_crucible_fault_register_bind_architecture(
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
 new file mode 100644
-index 000000000..c376c9236
+index 000000000..4b53ff529
 --- /dev/null
 +++ b/plugins/crucible-fault-interrupt.c
 @@ -0,0 +1,1852 @@
@@ -2592,7 +2600,7 @@ index 000000000..c376c9236
 +#include "hw/core/cpu.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
-+#include "qemu/qemu-plugin.h"
++#include "plugins/qemu-plugin.h"
 +#include "qemu/timer.h"
 +#include "qobject/qdict.h"
 +#include "qobject/qlist.h"
@@ -4433,7 +4441,7 @@ index 000000000..c376c9236
 +    return true;
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 76b092a32..9fbb68197 100644
+index 7c96506eb..c4b6ede75 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -2198,6 +2198,7 @@ static bool node_operation_valid(uint16_t command_kind, uint16_t operation)
@@ -4513,10 +4521,10 @@ index 8f34479d1..566e349a8 100644
      }
      qemu_crucible_fault_registry_seal();
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 75bafa1d4..dd93f06d4 100644
+index f55352de2..d41b3fa65 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -62,6 +62,7 @@ user_ss.add(files('user.c', 'api-user.c'))
+@@ -82,7 +82,8 @@ user_ss.add(files('user.c', 'api-user.c'))
  system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
                      'crucible-fault-memory.c', 'crucible-fault-node.c',
                      'crucible-fault-register.c',
@@ -4524,9 +4532,10 @@ index 75bafa1d4..dd93f06d4 100644
 +                    'crucible-fault-instruction.c',
 +                    'crucible-fault-interrupt.c'))
  
- common_ss.add(files('loader.c', 'api.c', 'core.c'))
+ user_ss.add(files('api.c', 'core.c'))
+ system_ss.add(files('api.c', 'core.c'))
 diff --git a/target/arm/helper.c b/target/arm/helper.c
-index 72dba9ce5..6dd86e210 100644
+index dd9a1f0a3..0f3c0b009 100644
 --- a/target/arm/helper.c
 +++ b/target/arm/helper.c
 @@ -28,6 +28,7 @@
@@ -4535,16 +4544,19 @@ index 72dba9ce5..6dd86e210 100644
  #include "qemu/guest-random.h"
 +#include "qemu/crucible-fault.h"
  #ifdef CONFIG_TCG
- #include "semihosting/common-semi.h"
- #endif
-@@ -2470,7 +2471,12 @@ static void gt_update_irq(ARMCPU *cpu, int timeridx)
-         irqstate = 0;
-     }
- 
+ #include "accel/tcg/probe.h"
+ #include "accel/tcg/getpc.h"
+@@ -1396,8 +1397,14 @@ static void gt_update_irq(ARMCPU *cpu, int timeridx)
+      * We update both the GICv5 PPI and the external-GIC irq line
+      * (whichever of the two mechanisms is unused will do nothing)
+      */
+-    gt_update_gicv5_ppi(env, timeridx, irqstate);
 -    qemu_set_irq(cpu->gt_timer_outputs[timeridx], irqstate);
 +    {
 +        bool source_owner = qemu_crucible_fault_interrupt_source_enter(
 +            QEMU_CRUCIBLE_INTERRUPT_ARM_TIMER);
++
++        gt_update_gicv5_ppi(env, timeridx, irqstate);
 +        qemu_set_irq(cpu->gt_timer_outputs[timeridx], irqstate);
 +        qemu_crucible_fault_interrupt_source_leave(source_owner);
 +    }

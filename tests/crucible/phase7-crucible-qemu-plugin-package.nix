@@ -77,7 +77,7 @@
       }
       {
         label = "patched qemu plugin header probe";
-        needle = "header=\"" + "$" + "{qemu-crucible}/include/qemu/qemu-plugin.h\"";
+        needle = "header=\"" + "$" + "{qemu-crucible}/include/qemu-plugin.h\"";
       }
       {
         label = "QEMU plugin API version probe";
@@ -133,7 +133,7 @@
     ++ failuresFor "pkgs/emulation/qemu.nix" qemuPackageNix [
       {
         label = "QEMU plugin header installed";
-        needle = "install -m 644 include/qemu/qemu-plugin.h \"$out/include/qemu/qemu-plugin.h\"";
+        needle = "install -m 644 include/plugins/qemu-plugin.h \"$out/include/qemu-plugin.h\"";
       }
       {
         label = "QEMU output retains GPL-2.0-or-later text for its plugin header";

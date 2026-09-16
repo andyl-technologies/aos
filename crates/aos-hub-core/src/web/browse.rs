@@ -108,6 +108,8 @@ pub enum Rendered {
     NotAcceptable,
     /// Required topology configuration is absent or temporarily unreadable.
     ServiceUnavailable,
+    /// A browser capability is disabled; carries a safe explanation for its page.
+    PageUnavailable(&'static str),
 }
 
 /// Maximum packages loaded for one browse page view.
@@ -128,9 +130,6 @@ const REVERSE_DEP_CAP: usize = 100;
 
 /// Maximum distinct values embedded per field for the filter autocomplete.
 const VALUE_CAP: usize = 500;
-
-/// Maximum repair-job rows shown in the per-registry health page history.
-const HEALTH_REPAIR_JOB_LIMIT: i64 = 50;
 
 /// Current Unix time in seconds.
 fn now_secs() -> i64 {
@@ -365,6 +364,8 @@ pub struct BrowseQuery {
     pub status: Option<String>,
     /// Exact documented option or guide variant.
     pub entry: Option<String>,
+    /// Exact package guide entry anchoring document-scoped navigation.
+    pub package_entry: Option<String>,
     /// Search scope: release (default) or subtree.
     pub scope: Option<String>,
     /// Opaque cursor for additional variants at the selected node.
@@ -389,7 +390,7 @@ pub struct BrowseQuery {
     pub release: Option<String>,
     /// Exact system-image channel filter.
     pub channel: Option<String>,
-    /// Exact system-image architecture filter.
+    /// Exact image or OCI container architecture filter.
     pub architecture: Option<String>,
     /// Exact system-image format filter.
     pub format: Option<String>,
@@ -473,6 +474,7 @@ impl BrowseQuery {
                 "minor" => out.minor = Some(value.into_owned()),
                 "status" => out.status = Some(value.into_owned()),
                 "entry" => out.entry = Some(value.into_owned()),
+                "package_entry" => out.package_entry = Some(value.into_owned()),
                 "scope" => out.scope = Some(value.into_owned()),
                 "variant_cursor" => out.variant_cursor = Some(value.into_owned()),
                 "q" => out.q = Some(value.into_owned()),
@@ -659,7 +661,7 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
         return Rendered::ServiceUnavailable;
     };
     let caches = resolved_cache_urls(caches);
-    let external = svc.registry_consumer_url(&registry).await.ok();
+    let external = svc.registry_setup_url(&registry).await.ok();
     let setup = pages::RegistrySetup::new(&registry, status.as_ref(), external.as_deref(), &caches);
     Rendered::Html(pages::registry_home(
         &registry,
@@ -741,7 +743,7 @@ pub async fn images(
     let (Ok(images), Ok(channels)) = (images, channels) else {
         return Rendered::ServiceUnavailable;
     };
-    let download_base = svc.registry_consumer_url(&registry).await.ok();
+    let download_base = svc.registry_setup_url(&registry).await.ok();
     Rendered::Html(pages::images_page(
         &registry,
         status.as_ref(),
@@ -779,7 +781,7 @@ pub async fn containers(
         return Rendered::NotFound;
     };
     if !svc.container_rollout.pull {
-        return Rendered::ServiceUnavailable;
+        return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
     let context = match super::release_browse::ReleaseContext::load(
         &svc.db,
@@ -810,8 +812,7 @@ pub async fn containers(
         &context,
         &containers,
         authority.ok().flatten().as_deref(),
-        query.query(),
-        query.page_number(),
+        query,
         started,
         &session,
     ))
@@ -836,7 +837,7 @@ pub async fn container_repositories(
         return Rendered::NotFound;
     };
     if !svc.container_rollout.pull {
-        return Rendered::ServiceUnavailable;
+        return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
     let filter = crate::db::OciRepositoryListFilter {
         repository_prefix: query.query().map(str::to_string),
@@ -893,7 +894,7 @@ pub async fn container_repository(
         return Rendered::NotFound;
     };
     if !svc.container_rollout.pull {
-        return Rendered::ServiceUnavailable;
+        return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
     let Ok(Some(repository)) = svc
         .db
@@ -944,8 +945,7 @@ pub async fn container_repository(
             &context,
             &containers,
             authority.as_deref(),
-            None,
-            query.page_number(),
+            query,
             started,
             &session_indicator(svc, headers).await,
         ));
@@ -1005,7 +1005,7 @@ pub async fn container_tag(
         return Rendered::NotFound;
     };
     if !svc.container_rollout.pull {
-        return Rendered::ServiceUnavailable;
+        return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
     let Ok(Some(tag_record)) = svc
         .db
@@ -1081,7 +1081,7 @@ pub async fn container_manifest(
         return Rendered::NotFound;
     };
     if !svc.container_rollout.pull {
-        return Rendered::ServiceUnavailable;
+        return Rendered::PageUnavailable("Container browsing is not enabled for this Hub.");
     }
     let context = if let Some(release) = query.release.as_deref() {
         let context = match super::release_browse::ReleaseContext::load(
@@ -1336,11 +1336,11 @@ pub async fn package(
         ));
     };
     let detail = super::release_browse::package_detail(package);
-    let closure = super::release_browse::package_closure(&catalog, &detail, REVERSE_DEP_CAP);
+    let closures = super::release_browse::package_closures(&catalog, &detail, REVERSE_DEP_CAP);
     let (session, caches, external, documentation_result) = futures_util::future::join4(
         session_indicator(svc, headers),
         svc.db.registry_cache_stack_entries(registry.id),
-        svc.registry_consumer_url(&registry),
+        svc.registry_setup_url(&registry),
         package_documentation_reference(&svc.db, registry.id, &detail, Some(release)),
     )
     .await;
@@ -1360,7 +1360,7 @@ pub async fn package(
         &registry,
         status.as_ref(),
         &detail,
-        &closure,
+        &closures,
         &setup,
         &context,
         documentation.as_ref(),
@@ -1644,45 +1644,18 @@ async fn verified_release_record(
     Some(record)
 }
 
-/// The per-registry health page (HTML): the cache × coverage validation matrix
-/// plus missing/corrupt drill-downs, repair history, freshness, and routes.
+/// The per-registry health page (HTML): index, cache policy, and route status.
 pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Rendered {
     let started = Instant::now();
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let mut runs = Vec::new();
-    if let Ok(latest) = svc.db.latest_validation_runs(registry.id).await {
-        for run in latest {
-            let missing = if run.missing > 0 {
-                svc.db.validation_missing(run.id).await.unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let corrupt = if run.missing > 0 {
-                svc.db.validation_corrupt(run.id).await.unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            runs.push((run, missing, corrupt));
-        }
-    }
     let stack = svc
         .db
         .registry_cache_stack(registry.id)
         .await
         .ok()
         .flatten();
-    let probes = svc
-        .db
-        .list_cache_probes(registry.id)
-        .await
-        .unwrap_or_default();
-    let repair_jobs = svc
-        .db
-        .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)
-        .await
-        .unwrap_or_default();
     let route_records = svc
         .db
         .list_routes(crate::db::SurfaceTarget::Registry(registry.id))
@@ -1719,10 +1692,7 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
     Rendered::Html(pages::health_page(
         &registry,
         status.as_ref(),
-        &runs,
         stack.as_ref(),
-        &probes,
-        &repair_jobs,
         &routes,
         started,
         &session,

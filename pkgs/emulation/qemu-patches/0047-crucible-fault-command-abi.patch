@@ -1,83 +1,20 @@
 diff --git a/MAINTAINERS b/MAINTAINERS
-index c02c8afa8..c03d7973b 100644
+index fbf5c8b46..7cd1f8de1 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -3838,6 +3838,7 @@ R: Pierrick Bouvier <pierrick.bouvier@linaro.org>
+@@ -4203,6 +4203,7 @@ R: Alexandre Iooss <erdnaxe@crans.org>
  S: Maintained
  F: docs/devel/tcg-plugins.rst
  F: plugins/
 +F: include/qemu/crucible-fault.h
  F: tests/tcg/plugins/
- F: tests/functional/test_aarch64_tcg_plugins.py
- F: contrib/plugins/
-diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-new file mode 100644
-index 000000000..4ba375282
---- /dev/null
-+++ b/include/qemu/crucible-fault.h
-@@ -0,0 +1,57 @@
-+/*
-+ * Crucible deterministic fault command registry
-+ *
-+ * Copyright (c) 2026 ANDYL Technologies
-+ *
-+ * SPDX-License-Identifier: GPL-2.0-or-later
-+ */
-+
-+#ifndef QEMU_CRUCIBLE_FAULT_H
-+#define QEMU_CRUCIBLE_FAULT_H
-+
-+#include "aos/crucible/crucible_shmem_abi.h"
-+#include "qemu/qemu-plugin.h"
-+
-+typedef struct QemuCrucibleFaultHandler QemuCrucibleFaultHandler;
-+
-+typedef int (*QemuCrucibleFaultValidateFn)(
-+    const struct qemu_plugin_crucible_fault_command *command,
-+    const uint8_t *payload, size_t payload_len);
-+typedef int (*QemuCrucibleFaultArmFn)(
-+    const struct qemu_plugin_crucible_fault_command *command,
-+    const uint8_t *payload, size_t payload_len, void **state_out);
-+/*
-+ * Prepare may allocate and update only handler-private staging state and the
-+ * result/evidence buffers.  It must not mutate guest, device, scheduler,
-+ * translation, or externally visible QEMU state.  A nonzero return is always
-+ * normalized by the dispatcher to a non-Applied result.
-+ */
-+typedef int (*QemuCrucibleFaultPrepareFn)(
-+    const struct qemu_plugin_crucible_fault_command *command,
-+    const uint8_t *payload, size_t payload_len, void *state,
-+    struct qemu_plugin_crucible_fault_result *result,
-+    GByteArray *result_payload);
-+typedef void (*QemuCrucibleFaultCommitFn)(
-+    const struct qemu_plugin_crucible_fault_command *command,
-+    const uint8_t *payload, size_t payload_len, void *state,
-+    struct qemu_plugin_crucible_fault_result *result,
-+    GByteArray *result_payload);
-+typedef void (*QemuCrucibleFaultFreeFn)(void *state);
-+
-+struct QemuCrucibleFaultHandler {
-+    struct qemu_plugin_crucible_fault_capability capability;
-+    QemuCrucibleFaultValidateFn validate;
-+    QemuCrucibleFaultArmFn arm;
-+    QemuCrucibleFaultPrepareFn prepare;
-+    QemuCrucibleFaultCommitFn commit;
-+    QemuCrucibleFaultFreeFn free_state;
-+};
-+
-+void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler);
-+void qemu_crucible_fault_registry_seal(void);
-+void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
-+                                           uint64_t observed_icount);
-+bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
-+uint64_t qemu_crucible_fault_next_icount(void);
-+
-+#endif
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 9a893df07..eef57abfc 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1744,6 +1744,139 @@ uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
+ F: tests/tcg/multiarch/plugin/
+ F: tests/functional/aarch64/test_tcg_plugins.py
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 8a0696f61..5d72bd055 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -2105,6 +2105,139 @@ uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
  QEMU_PLUGIN_API
  int64_t qemu_plugin_clock_deadline_ns(void);
  
@@ -217,6 +154,69 @@ index 9a893df07..eef57abfc 100644
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+new file mode 100644
+index 000000000..8d8000f9d
+--- /dev/null
++++ b/include/qemu/crucible-fault.h
+@@ -0,0 +1,57 @@
++/*
++ * Crucible deterministic fault command registry
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef QEMU_CRUCIBLE_FAULT_H
++#define QEMU_CRUCIBLE_FAULT_H
++
++#include "aos/crucible/crucible_shmem_abi.h"
++#include "plugins/qemu-plugin.h"
++
++typedef struct QemuCrucibleFaultHandler QemuCrucibleFaultHandler;
++
++typedef int (*QemuCrucibleFaultValidateFn)(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len);
++typedef int (*QemuCrucibleFaultArmFn)(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void **state_out);
++/*
++ * Prepare may allocate and update only handler-private staging state and the
++ * result/evidence buffers.  It must not mutate guest, device, scheduler,
++ * translation, or externally visible QEMU state.  A nonzero return is always
++ * normalized by the dispatcher to a non-Applied result.
++ */
++typedef int (*QemuCrucibleFaultPrepareFn)(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void *state,
++    struct qemu_plugin_crucible_fault_result *result,
++    GByteArray *result_payload);
++typedef void (*QemuCrucibleFaultCommitFn)(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void *state,
++    struct qemu_plugin_crucible_fault_result *result,
++    GByteArray *result_payload);
++typedef void (*QemuCrucibleFaultFreeFn)(void *state);
++
++struct QemuCrucibleFaultHandler {
++    struct qemu_plugin_crucible_fault_capability capability;
++    QemuCrucibleFaultValidateFn validate;
++    QemuCrucibleFaultArmFn arm;
++    QemuCrucibleFaultPrepareFn prepare;
++    QemuCrucibleFaultCommitFn commit;
++    QemuCrucibleFaultFreeFn free_state;
++};
++
++void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler);
++void qemu_crucible_fault_registry_seal(void);
++void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
++                                           uint64_t observed_icount);
++bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
++uint64_t qemu_crucible_fault_next_icount(void);
++
++#endif
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
 index 000000000..dd80672c8
@@ -819,15 +819,18 @@ index 000000000..dd80672c8
 +
 +type_init(crucible_fault_register_abi_handlers)
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 3be8245a6..955a3ec97 100644
+index 9899f166e..011e5829d 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -59,7 +59,6 @@ if host_os == 'windows'
+@@ -79,10 +79,9 @@ else
  endif
  
  user_ss.add(files('user.c', 'api-user.c'))
 -system_ss.add(files('system.c', 'api-system.c'))
 +system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c'))
  
- common_ss.add(files('loader.c', 'api.c', 'core.c'))
+ user_ss.add(files('api.c', 'core.c'))
+ system_ss.add(files('api.c', 'core.c'))
+ 
+ common_ss.add(files('loader.c'))
 -

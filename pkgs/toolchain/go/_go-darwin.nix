@@ -9,6 +9,7 @@
   pname,
   version,
   src,
+  update,
   nativeGo,
   nativeCc ? null,
   legacyCBootstrap ? false,
@@ -30,6 +31,7 @@
 in
   mkDerivation {
     inherit pname version src;
+    inherit update;
 
     buildDeps = [nativeGo];
     runtimeDeps = [];

@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index 55e0a1a7f..928eaff3e 100644
+index 883996e5e..e0095579c 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -182,6 +182,31 @@ int64_t icount_get(void)
+@@ -181,6 +181,31 @@ int64_t icount_get(void)
      return icount;
  }
  
@@ -34,24 +34,11 @@ index 55e0a1a7f..928eaff3e 100644
  int64_t icount_to_ns(int64_t icount)
  {
      return icount << qatomic_read(&timers_state.icount_time_shift);
-diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index d90db9b39..c3ff6d123 100644
---- a/include/qemu/plugin.h
-+++ b/include/qemu/plugin.h
-@@ -175,7 +175,7 @@ void qemu_plugin_flush_cb(void);
- 
- void qemu_plugin_atexit_cb(void);
- 
--bool qemu_plugin_has_time_control(void);
-+bool qemu_plugin_time_advance_is_pending(void);
- 
- void qemu_plugin_add_dyn_cb_arr(GArray *arr);
- 
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index eed7f3d1e..3c33f10ad 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -728,6 +728,56 @@ const void *qemu_plugin_request_time_control(void);
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 9ddbf51e3..6b612d090 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -826,6 +826,56 @@ const void *qemu_plugin_request_time_control(void);
  QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
@@ -106,15 +93,28 @@ index eed7f3d1e..3c33f10ad 100644
 +int qemu_plugin_advance_time_ns(int64_t time);
 +
  /**
-  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * qemu_plugin_net_inject() - injects an inbound frame into the default NIC
   * @data: Ethernet frame bytes
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index 5d9118845..b07b1afd9 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -183,7 +183,7 @@ void qemu_plugin_flush_cb(void);
+ 
+ void qemu_plugin_atexit_cb(void);
+ 
+-bool qemu_plugin_has_time_control(void);
++bool qemu_plugin_time_advance_is_pending(void);
+ 
+ void qemu_plugin_add_dyn_cb_arr(GArray *arr);
+ 
 diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index b7955d80e..6b7aaa201 100644
+index a1abed0d7..34e1fd600 100644
 --- a/include/system/cpu-timers.h
 +++ b/include/system/cpu-timers.h
-@@ -76,6 +76,14 @@ void icount_start_warp_timer(void);
- void icount_account_warp_timer(void);
- void icount_notify_exit(void);
+@@ -15,6 +15,14 @@
+ /* init the whole cpu timers API, including icount, ticks, and cpu_throttle */
+ void cpu_timers_init(void);
  
 +/*
 + * Crucible: advance the icount-derived QEMU_CLOCK_VIRTUAL to an exact ns
@@ -128,7 +128,7 @@ index b7955d80e..6b7aaa201 100644
   * CPU Ticks and Clock
   */
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 303501cf6..5269de1a4 100644
+index 33002b814..c276d8927 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -102,6 +102,14 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
@@ -146,7 +146,7 @@ index 303501cf6..5269de1a4 100644
  
  bool qemu_plugin_has_time_control(void)
  {
-@@ -133,6 +141,87 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+@@ -136,6 +144,87 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
      }
  }
  

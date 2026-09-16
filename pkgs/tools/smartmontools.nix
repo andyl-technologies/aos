@@ -14,7 +14,7 @@
   stdenv,
   buildPackages,
 }: let
-  version = "7.4";
+  version = "7.5";
 in
   mkDerivation {
     pname = "smartmontools";
@@ -24,7 +24,7 @@ in
       urls = [
         "https://sourceforge.net/projects/smartmontools/files/smartmontools/${version}/smartmontools-${version}.tar.gz"
       ];
-      hash = "sha256-6aYfZB/5bKlTGe37F5SM0pfQzTNCc2ssScmdRxb7mT0=";
+      hash = "sha256-aQuDyjMTeNqeoNnWEAjEsi3eOROHubutfyk4fyWV924=";
     };
 
     buildDeps = [gnumake];

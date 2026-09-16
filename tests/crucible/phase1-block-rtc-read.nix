@@ -141,6 +141,7 @@ in
             : > hw/qdev-core.h
             : > hw/rtc/mc146818rtc.h
             : > qapi/qapi-builtin-visit.h
+            : > qapi/qapi-types-common.h
             : > qapi/error.h
             : > qemu/accel.h
             : > qemu/atomic.h
@@ -149,6 +150,7 @@ in
             : > qemu/option.h
             : > qemu/osdep.h
             : > qemu/timer.h
+            : > qemu/target-info.h
             : > qemu/units.h
             : > qom/object.h
             : > system/accel-ops.h
@@ -222,16 +224,18 @@ in
             #include "qemu/error-report.h"
             #include "qemu/accel.h"
             #include "qemu/atomic.h"
+            #include "qapi/qapi-types-common.h"
             #include "qapi/qapi-builtin-visit.h"
             #include "qemu/units.h"
-            #if defined(CONFIG_USER_ONLY)
-            #include "hw/qdev-core.h"
+            #include "qemu/target-info.h"
+            #ifndef CONFIG_USER_ONLY
+            #include "system/tcg.h"
             #else
-            #include "hw/boards.h"
+            #include "hw/qdev-core.h"
             #endif
+            #include "hw/boards.h"
             #include "system/system.h"
             #include "system/accel-ops.h"
-            #include "system/tcg.h"
 
             typedef struct MachineState MachineState;
             typedef struct TCGState {
@@ -323,8 +327,8 @@ in
                 RTC_BASE_DATETIME,
             } rtc_base_type = RTC_BASE_UTC;
             static time_t rtc_ref_start_datetime;
-            static int rtc_realtime_clock_offset; /* used only with QEMU_CLOCK_REALTIME */
-            static int rtc_host_datetime_offset = -1; /* valid & used only with
+            static time_t rtc_realtime_clock_offset; /* used only with QEMU_CLOCK_REALTIME */
+            static time_t rtc_host_datetime_offset = -1; /* valid & used only with
                                                          RTC_BASE_DATETIME */
             QEMUClockType rtc_clock;
             /***********************************************************/

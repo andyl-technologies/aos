@@ -20,7 +20,7 @@
   openssl,
   stdenv,
 }: let
-  version = "0.10.0";
+  version = "0.10.2";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
@@ -31,7 +31,7 @@ in
       urls = [
         "https://github.com/stefanberger/swtpm/archive/refs/tags/v${version}.tar.gz"
       ];
-      hash = "sha256-nxCuDTEjqwXDgI+MjTn2M88aDPFC1qybh7g2SmgqyEI=";
+      hash = "sha256-9hz28em7y0zvswtwyvrxxN9UxpYeZc+mODDorQ4iATQ=";
     };
 
     buildDeps =

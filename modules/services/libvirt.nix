@@ -87,7 +87,10 @@ in {
         pkgs.swtpm
         pkgs.systemd
         pkgs.util-linux
-        pkgs.zfs
+        # Follow the host's ZFS package rather than the userland-only build:
+        # a host with ZFS enabled uses a kernel-bound one, and two OpenZFS
+        # store paths in a single closure collide over their udev rules.
+        config.aos.filesystems.zfs.package
       ];
       serviceConfig.ExecReload = [
         ""

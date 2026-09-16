@@ -288,7 +288,7 @@ in
           script = ''
             set -eu
 
-            mkdir -p hw include/qemu migration net plugins qapi qemu
+            mkdir -p hw include/plugins include/qemu migration net plugins qapi qemu
             : > hw/boards.h
             : > migration/blocker.h
             : > net/net.h
@@ -320,7 +320,7 @@ in
             }
             PLUGIN_INTERNAL_HEADER_FIXTURE
 
-            cat > include/qemu/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
+            cat > include/plugins/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
             #ifndef QEMU_QEMU_PLUGIN_H
             #define QEMU_QEMU_PLUGIN_H
 
@@ -344,7 +344,7 @@ in
             void qemu_plugin_update_ns(const void *handle, int64_t time);
 
             /**
-             * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+             * qemu_plugin_net_inject() - injects an inbound frame into the default NIC
              * @data: Ethernet frame bytes
              * @len: byte length of @data
              */
@@ -497,16 +497,19 @@ in
 
             #include <stdint.h>
 
+            /* init the whole cpu timers API, including icount, ticks, and cpu_throttle */
+            void cpu_timers_init(void);
+
+            /*
+             * CPU Ticks and Clock
+             */
+
             int64_t icount_get(void);
             int64_t icount_to_ns(int64_t icount);
 
             void icount_start_warp_timer(void);
             void icount_account_warp_timer(void);
             void icount_notify_exit(void);
-
-            /*
-             * CPU Ticks and Clock
-             */
 
             #endif /* SYSTEM_CPU_TIMERS_H */
             CPU_TIMERS_FIXTURE
@@ -617,7 +620,7 @@ in
             cp "$commitBarrierPatchSourcePath" "$out/${commitBarrierPatchName}"
             cp "$enqueueKickPatchSourcePath" "$out/${enqueueKickPatchName}"
             cp "$vcpuBoundaryPatchSourcePath" "$out/${vcpuBoundaryPatchName}"
-            cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
+            cp include/plugins/qemu-plugin.h "$out/qemu-plugin.h.patched"
             cp plugins/api-system.c "$out/api-system.c.patched"
             cat >> "$out/result" <<'RESULT'
             check=checks.crucible.phase1.pluginTimeAdvance

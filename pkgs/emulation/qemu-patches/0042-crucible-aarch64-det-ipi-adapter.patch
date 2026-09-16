@@ -1,5 +1,5 @@
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 01786ac78..7413b57aa 100644
+index 787e4dc7a..d4bf6a01b 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
 @@ -22,6 +22,7 @@
@@ -8,9 +8,9 @@ index 01786ac78..7413b57aa 100644
  #include "qemu/log.h"
 +#include "qemu/plugin.h"
  #include "exec/page-vary.h"
- #include "target/arm/idau.h"
- #include "qemu/module.h"
-@@ -45,6 +46,8 @@
+ #include "system/whpx.h"
+ #include "target/arm/tcg/idau.h"
+@@ -47,6 +48,8 @@
  #include "system/tcg.h"
  #include "system/qtest.h"
  #include "system/hw_accel.h"
@@ -19,9 +19,9 @@ index 01786ac78..7413b57aa 100644
  #include "kvm_arm.h"
  #include "disas/capstone.h"
  #include "fpu/softfloat.h"
-@@ -52,6 +55,40 @@
- #include "target/arm/cpu-qom.h"
- #include "target/arm/gtimer.h"
+@@ -56,6 +59,40 @@
+ 
+ #include "trace.h"
  
 +/*
 + * ARM interrupt-controller delivery is already serialized by the single RR

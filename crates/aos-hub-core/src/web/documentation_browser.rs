@@ -80,6 +80,31 @@ pub(crate) async fn browse(
         },
         None => None,
     };
+    let package = match query.package_entry.as_deref() {
+        Some(key) => match svc
+            .db
+            .documentation_tree_entry(registry.id, &commit, key)
+            .await
+        {
+            Ok(Some(entry)) if entry.kind == "package" => Some(entry),
+            Ok(_) => return Rendered::NotFound,
+            Err(_) => return Rendered::ServiceUnavailable,
+        },
+        None => selected
+            .as_ref()
+            .filter(|entry| entry.kind == "package")
+            .cloned(),
+    };
+    let digest = package.as_ref().map(|entry| entry.document_sha256.as_str());
+    if selected
+        .as_ref()
+        .is_some_and(|entry| digest.is_some_and(|digest| digest != entry.document_sha256))
+    {
+        return Rendered::NotFound;
+    }
+    let mut query = query.clone();
+    query.package_entry = package.as_ref().map(|entry| entry.key.clone());
+    let query = &query;
     let root_key = documentation_node_key(&[]);
     let key = query
         .root
@@ -99,7 +124,7 @@ pub(crate) async fn browse(
     }
     let node = match svc
         .db
-        .documentation_tree_node(registry.id, &commit, key)
+        .documentation_tree_node_in_document(registry.id, &commit, key, digest)
         .await
     {
         Ok(Some(node)) => node,
@@ -116,7 +141,7 @@ pub(crate) async fn browse(
     let flattened = term.is_none() && query.view.as_deref() == Some("all");
     let children = match svc
         .db
-        .documentation_tree_children(
+        .documentation_tree_children_in_document(
             registry.id,
             &commit,
             key,
@@ -125,6 +150,7 @@ pub(crate) async fn browse(
             } else {
                 None
             },
+            digest,
         )
         .await
     {
@@ -140,7 +166,13 @@ pub(crate) async fn browse(
     let descendants = if flattened {
         match svc
             .db
-            .documentation_tree_descendants(registry.id, &commit, key, query.cursor.as_deref())
+            .documentation_tree_descendants_in_document(
+                registry.id,
+                &commit,
+                key,
+                query.cursor.as_deref(),
+                digest,
+            )
             .await
         {
             Ok(page) => Some(page),
@@ -152,13 +184,14 @@ pub(crate) async fn browse(
     let results = if let Some(term) = term {
         match svc
             .db
-            .search_documentation_tree(
+            .search_documentation_tree_in_document(
                 registry.id,
                 &commit,
                 (query.scope.as_deref() == Some("subtree")).then_some(key),
                 term,
                 query.kind.as_deref(),
                 query.cursor.as_deref(),
+                digest,
             )
             .await
         {
@@ -170,7 +203,13 @@ pub(crate) async fn browse(
     };
     let variants = match svc
         .db
-        .documentation_tree_variants(registry.id, &commit, key, query.variant_cursor.as_deref())
+        .documentation_tree_variants_in_document(
+            registry.id,
+            &commit,
+            key,
+            query.variant_cursor.as_deref(),
+            digest,
+        )
         .await
     {
         Ok(page) => page,
@@ -181,30 +220,24 @@ pub(crate) async fn browse(
     } else {
         selected.or_else(|| variants.items.first().cloned())
     };
-    let document = if let Some(entry) = &selected {
-        let locator = match svc
-            .db
-            .package_documentation_locator_at_release(
-                registry.id,
-                release,
-                &entry.package_name,
-                &entry.package_version,
-                &entry.platform,
-            )
-            .await
-        {
-            Ok(Some(locator)) if locator.artifact.document_sha256 == entry.document_sha256 => {
-                locator
-            }
-            Ok(_) => return Rendered::NotFound,
-            Err(_) => return Rendered::ServiceUnavailable,
-        };
-        match svc
-            .load_package_documentation_locator(registry.id, &locator)
-            .await
-        {
+    // Child expansion needs only the authenticated catalog projection. Fetch
+    // the full package document only when rendering its overview or an option.
+    let package_document = if let Some(entry) = &package {
+        match load_document(svc, registry.id, release, entry).await {
             Ok(document) => Some(document),
-            Err(_) => return Rendered::ServiceUnavailable,
+            Err(error) => return error,
+        }
+    } else {
+        None
+    };
+    let document = if let Some(entry) = &selected {
+        if let Some(document) = &package_document {
+            Some(document.clone())
+        } else {
+            match load_document(svc, registry.id, release, entry).await {
+                Ok(document) => Some(document),
+                Err(error) => return error,
+            }
         }
     } else {
         None
@@ -221,9 +254,37 @@ pub(crate) async fn browse(
         results.as_ref(),
         selected.as_ref(),
         document.as_ref(),
+        package.as_ref().zip(package_document.as_ref()),
         started,
         &session,
     ))
+}
+
+/// Authenticates the exact document against the selected release snapshot.
+async fn load_document(
+    svc: &RpcService,
+    registry_id: i64,
+    release: &str,
+    entry: &crate::db::DocumentationTreeEntry,
+) -> Result<aos_doc_model::PackageDocumentation, Rendered> {
+    let locator = match svc
+        .db
+        .package_documentation_locator_at_release(
+            registry_id,
+            release,
+            &entry.package_name,
+            &entry.package_version,
+            &entry.platform,
+        )
+        .await
+    {
+        Ok(Some(locator)) if locator.artifact.document_sha256 == entry.document_sha256 => locator,
+        Ok(_) => return Err(Rendered::NotFound),
+        Err(_) => return Err(Rendered::ServiceUnavailable),
+    };
+    svc.load_package_documentation_locator(registry_id, &locator)
+        .await
+        .map_err(|_| Rendered::ServiceUnavailable)
 }
 
 /// Resolves older package documentation URLs into the same release tree.
@@ -348,7 +409,15 @@ pub(crate) async fn legacy(
     let selection = BrowseQuery {
         release: Some(release),
         entry: Some(entry_key),
-        ..BrowseQuery::default()
+        package_entry: match crate::db::documentation_entry_key(
+            &locator.artifact.document_sha256,
+            "package",
+            package,
+        ) {
+            Ok(key) => Some(key),
+            Err(_) => return Rendered::ServiceUnavailable,
+        },
+        ..query.clone()
     };
     // Keep the legacy address on the initial request so its fragment remains
     // available to the enhancement. Direct query links also work without JS.

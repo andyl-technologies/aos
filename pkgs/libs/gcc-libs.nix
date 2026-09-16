@@ -1,13 +1,9 @@
 ##! GCC runtime shared libraries (libstdc++.so, libgcc_s.so)
 ##!
-##! Our bootstrap GCC 14 is built with --disable-shared for hermetic static
+##! Our bootstrap GCC 16 is built with --disable-shared for hermetic static
 ##! linking. This package builds GCC from source with --enable-shared to
 ##! produce properly versioned shared libraries (with GLIBCXX_3.4.x symbol
-##! versions), for use by pre-built binaries (e.g. bazel-bootstrap) that
-##! need shared libstdc++.
-##!
-##! Uses builtins.derivation (not mkDerivation) to match the gcc14 tier
-##! build environment — the cc-wrapper interferes with GMP's CC_FOR_BUILD.
+##! versions), for use by pre-built binaries that need shared libstdc++.
 {
   mkDerivation,
   lib,
@@ -15,10 +11,9 @@
   bootstrapTools,
   buildPackages,
 }: let
-  # Use the same sources as the gcc14 tier (builtins.fetchTarball)
   gcc-src = builtins.fetchTarball {
-    url = "https://mirrors.kernel.org/gnu/gcc/gcc-14.3.0/gcc-14.3.0.tar.xz";
-    sha256 = "18slj57b3zizzmc1bn4b6x8rygijfjjmwfzipdvyyzrbspaa5x21";
+    url = "https://mirrors.kernel.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz";
+    sha256 = "18mx8x4as86ngqxk9r91fppm8kkkdydn9jgvhih06245z7cjrplj";
   };
   gmp-src = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gmp/gmp-6.3.0.tar.xz";
@@ -33,14 +28,9 @@
     sha256 = "1b6layaybj039fajx8dpy2zvcfy7s02y3y4lficz16vac0fsd0jk";
   };
 
-  # Pull derivations (not just paths) from cc-wrapper's passthru so we
-  # can reach the multi-output glibc's $dev / $static. orig-libc /
-  # orig-cc in nix-support/ are string paths; reading them via readFile
-  # would lose the attribute set. The dynamic-linker file remains a
-  # readFile since it's a plain path to ld-linux.so inside glibc.$out.
   glibc = bootstrapTools.libc;
   gcc = bootstrapTools.cc;
-  trim = s: lib.removeSuffix "\n" s;
+  trim = value: lib.removeSuffix "\n" value;
   interp = trim (builtins.readFile "${bootstrapTools}/nix-support/dynamic-linker");
   platformConfig = stdenv.hostPlatform.config;
   expectedCrossElfMachine =
@@ -50,12 +40,11 @@
 in
   if stdenv.isCross
   then
-    # The final cross GCC already builds these target runtimes from the same
-    # source and version. Package that qualified runtime surface instead of
-    # starting a second GCC build whose compiler cannot execute natively.
+    # The final cross GCC already builds the matching target runtimes. Reuse
+    # that qualified surface rather than starting a target compiler here.
     mkDerivation {
       pname = "gcc-libs";
-      version = "14.3.0";
+      version = "16.2.0";
       src = null;
 
       runtimeDeps = [stdenv.glibc];
@@ -68,16 +57,20 @@ in
           name = "install";
           script = ''
             runtimeDirectory="${stdenv.gcc}/${platformConfig}/lib64"
+            set -- "$runtimeDirectory"/libstdc++.so.6.0.*
+            if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+              echo "error: expected exactly one target libstdc++ runtime" >&2
+              exit 1
+            fi
+            libstdcxxSoname=$(basename "$1")
             mkdir -p "$out/lib"
 
-            # Preserve the native gcc-libs package's complete public file set,
-            # including the link-time scripts and SONAME symlinks.
             for runtimeLibrary in \
               libgcc_s.so \
               libgcc_s.so.1 \
               libstdc++.so \
               libstdc++.so.6 \
-              libstdc++.so.6.0.33; do
+              "$libstdcxxSoname"; do
               runtimePath="$runtimeDirectory/$runtimeLibrary"
               test -e "$runtimePath" || {
                 echo "error: missing target GCC runtime $runtimePath" >&2
@@ -86,9 +79,9 @@ in
               cp -a "$runtimePath" "$out/lib/"
             done
 
-            for runtimeLibrary in libgcc_s.so.1 libstdc++.so.6.0.33; do
+            for runtimeLibrary in libgcc_s.so.1 "$libstdcxxSoname"; do
               runtimePath="$out/lib/$runtimeLibrary"
-              if test "$runtimeLibrary" = libgcc_s.so.1; then
+              if [ "$runtimeLibrary" = libgcc_s.so.1 ]; then
                 runtimeRpath="${stdenv.glibc}/lib"
               else
                 runtimeRpath="$out/lib:${stdenv.glibc}/lib"
@@ -104,10 +97,8 @@ in
                 grep -E 'Machine:[[:space:]]+${expectedCrossElfMachine}$'
             done
 
-            test "$(readlink "$out/lib/libstdc++.so")" = \
-              'libstdc++.so.6.0.33'
-            test "$(readlink "$out/lib/libstdc++.so.6")" = \
-              'libstdc++.so.6.0.33'
+            test "$(readlink "$out/lib/libstdc++.so")" = "$libstdcxxSoname"
+            test "$(readlink "$out/lib/libstdc++.so.6")" = "$libstdcxxSoname"
           '';
         }
       ];
@@ -121,40 +112,30 @@ in
       };
     }
   else
-    # Use mkDerivation but bypass the cc-wrapper by setting CC/CXX directly
     mkDerivation {
       pname = "gcc-libs";
-      version = "14.3.0";
-
-      # No fetchurl source — we use builtins.fetchTarball inline
+      version = "16.2.0";
       src = null;
 
       buildDeps = [buildPackages.patchelf];
       runtimeDeps = [];
       propagatedDeps = [];
-
-      # Builds the GCC target runtime libraries with explicit raw-GCC flags,
-      # bypassing the production wrapper. Keep it outside the package hardening
-      # policy so verification does not expect wrapper effects here.
       hardeningDisable = ["all"];
 
       phases = [
         {
           name = "build";
           script = ''
-            # Clear cc-wrapper environment that interferes with GCC's
-            # internal sub-configures (e.g. GMP's CC_FOR_BUILD test)
             unset C_INCLUDE_PATH CPATH CPLUS_INCLUDE_PATH LIBRARY_PATH
             unset NIX_CFLAGS_COMPILE NIX_LDFLAGS PKG_CONFIG_PATH
 
             cd "$TMPDIR"
-
-            # Copy GCC source (tar pipe to avoid cp -r fchmodat bug)
-            mkdir gcc-14.3.0 && (cd ${gcc-src} && tar cf - .) | (cd gcc-14.3.0 && tar xf -)
-            cd gcc-14.3.0
+            mkdir gcc-16.2.0
+            (cd ${gcc-src} && tar cf - .) | (cd gcc-16.2.0 && tar xf -)
+            cd gcc-16.2.0
             chmod -R u+w .
+            patch -p1 < ${../../stdenv/linux-cross/gcc-16-gawk-5.4.patch}
 
-            # In-tree GMP/MPFR/MPC
             mkdir gmp && (cd ${gmp-src} && tar cf - .) | (cd gmp && tar xf -)
             chmod -R u+w gmp
             mkdir mpfr && (cd ${mpfr-src} && tar cf - .) | (cd mpfr && tar xf -)
@@ -162,55 +143,28 @@ in
             mkdir mpc && (cd ${mpc-src} && tar cf - .) | (cd mpc && tar xf -)
             chmod -R u+w mpc
 
-            # Touch autotools timestamps to prevent regeneration.
-            # Order: inputs (.y/.l/.am/.ac) oldest, then .c/.h, then outputs
-            # (configure/Makefile.in) newest. This prevents make from trying
-            # to regenerate flex/bison/autotools outputs.
-            for dir in . gmp mpfr mpc; do
-              find "$dir" -type f \( -name '*.y' -o -name '*.l' -o -name 'Makefile.am' -o -name 'configure.ac' -o -name 'configure.in' -o -name 'acinclude.m4' \) \
+            for directory in . gmp mpfr mpc; do
+              find "$directory" -type f \( -name '*.y' -o -name '*.l' -o -name 'Makefile.am' -o -name 'configure.ac' -o -name 'configure.in' -o -name 'acinclude.m4' \) \
                 -exec touch -t 200001010000.00 {} + 2>/dev/null || true
-            done
-            for dir in . gmp mpfr mpc; do
-              find "$dir" -type f \( -name '*.c' -o -name '*.cc' -o -name '*.h' \) \
+              find "$directory" -type f \( -name '*.c' -o -name '*.cc' -o -name '*.h' \) \
                 -exec touch -t 200001010030.00 {} + 2>/dev/null || true
-            done
-            for dir in . gmp mpfr mpc; do
-              find "$dir" \( -name 'configure' -o -name 'Makefile.in' -o -name 'aclocal.m4' -o -name 'config.h.in' \) \
+              find "$directory" \( -name configure -o -name Makefile.in -o -name aclocal.m4 -o -name config.h.in \) \
                 -exec touch -t 200001010100.00 {} + 2>/dev/null || true
-            done
-            # Generated .info and man pages must be newer than sources
-            for dir in . gmp mpfr mpc; do
-              find "$dir" \( -name '*.1' -o -name '*.info' \) \
+              find "$directory" \( -name '*.1' -o -name '*.info' \) \
                 -exec touch -t 200001010200.00 {} + 2>/dev/null || true
             done
 
-            # Set up target sysroot
             mkdir -p "$TMPDIR/sysroot/usr/include"
             ln -sf ${glibc.dev}/include/* "$TMPDIR/sysroot/usr/include/"
-            # Real lib dirs (not symlinks to $glibc/lib) so we can mix
-            # shared libs from $out/lib and static archives from $static/lib —
-            # -static linking finds them.
             mkdir -p "$TMPDIR/sysroot/usr/lib" "$TMPDIR/sysroot/lib"
-            for f in ${glibc}/lib/* ${glibc.static}/lib/*.a; do
-              bn=$(basename "$f")
-              ln -sf "$f" "$TMPDIR/sysroot/usr/lib/$bn"
-              ln -sf "$f" "$TMPDIR/sysroot/lib/$bn"
+            for file in ${glibc}/lib/* ${glibc.static}/lib/*.a; do
+              name=$(basename "$file")
+              ln -sf "$file" "$TMPDIR/sysroot/usr/lib/$name"
+              ln -sf "$file" "$TMPDIR/sysroot/lib/$name"
             done
 
             mkdir -p "$TMPDIR/build"
             cd "$TMPDIR/build"
-
-            # Use the unwrapped GCC directly (not cc-wrapper) to match gcc14 build.
-            # CC_FOR_BUILD must include -static because GMP configure runs
-            # $CC_FOR_BUILD conftest.c without CFLAGS — the resulting dynamic
-            # executable can't run in the sandbox (linker path not available).
-            # No -isystem ${glibc.dev}/include here: ${gcc} is the wrapped tier
-            # gcc which already injects -idirafter ${glibc.dev}/include via its
-            # specs. -isystem would place stdlib.h before the C++ stdlib dir,
-            # and GCC dedups includes — so the later -idirafter is dropped
-            # as redundant, leaving stdlib.h only at the prepended position
-            # where <cstdlib>'s #include_next <stdlib.h> can't reach it.
-            # Same hazard fix as patchelf.nix / gcc-stage2.nix.
             CC="${gcc}/bin/gcc" CXX="${gcc}/bin/g++" \
             CC_FOR_BUILD="${gcc}/bin/gcc -static" \
             CFLAGS="-O2 -static" \
@@ -219,20 +173,25 @@ in
             CFLAGS_FOR_BUILD="-O2 -static" \
             LDFLAGS_FOR_BUILD="-static" \
             AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
-            "$TMPDIR/gcc-14.3.0/configure" \
+            "$TMPDIR/gcc-16.2.0/configure" \
               --prefix="$out" \
-              --build=${platformConfig} --host=${platformConfig} --target=${platformConfig} \
+              --build=${platformConfig} \
+              --host=${platformConfig} \
+              --target=${platformConfig} \
               --enable-languages=c,c++ \
-              --enable-shared --disable-nls --enable-threads=posix \
-              --disable-multilib --disable-bootstrap \
-              --disable-libsanitizer --disable-libvtv --disable-libgomp --disable-libatomic \
-              --with-native-system-header-dir="/usr/include" \
+              --enable-shared \
+              --disable-nls \
+              --enable-threads=posix \
+              --disable-multilib \
+              --disable-bootstrap \
+              --disable-libsanitizer \
+              --disable-libvtv \
+              --disable-libgomp \
+              --disable-libatomic \
+              --with-native-system-header-dir=/usr/include \
               --with-build-sysroot="$TMPDIR/sysroot" \
               --program-transform-name=
 
-            # Build the compiler (needed to build target libs).
-            # CC_FOR_BUILD on the command line ensures GMP's configure test
-            # produces static executables that can run in the sandbox.
             make -j"$NIX_BUILD_CORES" all-gcc \
               AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
               BOOT_CFLAGS="-O2 -static" \
@@ -241,9 +200,6 @@ in
               "CC_FOR_BUILD=${gcc}/bin/gcc -static" \
               "CFLAGS_FOR_BUILD=-O2 -static"
 
-            # Build shared target libraries.
-            # LDFLAGS_FOR_TARGET includes -dynamic-linker so configure test
-            # programs can actually run in the Nix sandbox (no /lib64/ld-linux).
             TARGET_LDFLAGS="-Wl,-dynamic-linker=${interp} -Wl,-rpath,$out/lib -Wl,-rpath,${glibc}/lib"
             make -j"$NIX_BUILD_CORES" all-target-libgcc \
               AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
@@ -255,18 +211,15 @@ in
               CXXFLAGS_FOR_TARGET="-O2 -fPIC" \
               "LDFLAGS_FOR_TARGET=$TARGET_LDFLAGS"
 
-            # Install
             make install-target-libgcc \
               AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
             make install-target-libstdc++-v3 \
               AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
 
-            # Clean up — keep only shared libraries
             rm -rf "$out/bin" "$out/include" "$out/share" "$out/libexec"
             find "$out" -name '*.a' -delete
             find "$out" -name '*.la' -delete
             find "$out" -name '*.py' -delete
-            # Move libs to $out/lib
             if [ -d "$out/lib64" ] && [ ! -d "$out/lib" ]; then
               mv "$out/lib64" "$out/lib"
             elif [ -d "$out/lib64" ]; then
@@ -274,20 +227,22 @@ in
               rm -rf "$out/lib64"
             fi
             rm -rf "$out/${platformConfig}" 2>/dev/null || true
-            find "$out/lib" -type d -name 'gcc' -exec rm -rf {} + 2>/dev/null || true
-
-            echo "gcc-libs installed to $out"
-            find "$out" -name '*.so*' -type f -o -name '*.so*' -type l | sort
+            find "$out/lib" -type d -name gcc -exec rm -rf {} + 2>/dev/null || true
           '';
         }
       ];
 
       postFinalize = ''
-        libstdcxx="$out/lib/libstdc++.so.6.0.33"
+        set -- "$out"/lib/libstdc++.so.6.0.*
+        if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+          echo "gcc-libs: expected exactly one installed libstdc++ runtime" >&2
+          exit 1
+        fi
+        libstdcxx=$1
         ${buildPackages.patchelf}/bin/patchelf --print-needed "$libstdcxx" | \
           grep -Fx libgcc_s.so.1
 
-        resolvedLibgcc=""
+        resolvedLibgcc=
         savedIFS="$IFS"
         IFS=:
         for directory in $(${buildPackages.patchelf}/bin/patchelf \
@@ -300,7 +255,7 @@ in
         IFS="$savedIFS"
 
         if [ "$resolvedLibgcc" != "$out/lib/libgcc_s.so.1" ]; then
-          echo "gcc-libs: libstdc++.so.6 does not resolve libgcc_s.so.1 from its own output" >&2
+          echo "gcc-libs: libstdc++.so.6 does not resolve its output's libgcc_s.so.1" >&2
           exit 1
         fi
       '';

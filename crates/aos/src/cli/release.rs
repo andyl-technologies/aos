@@ -101,6 +101,10 @@ pub struct ReleaseQualificationExecuteArgs {
 
 #[derive(Args)]
 pub struct ReleaseContractArgs {
+    /// Select the registry whose pipeline assurance is required
+    #[arg(long, default_value = "andyl/main")]
+    pub registry: String,
+
     /// Select the release class whose obligations are displayed
     #[arg(long = "class", default_value = "edge", value_parser = ["edge", "candidate", "stable", "emergency"])]
     pub release_class: String,

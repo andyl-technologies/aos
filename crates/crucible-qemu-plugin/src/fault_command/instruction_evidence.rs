@@ -642,11 +642,7 @@ pub(super) fn clock_command_expectation(
         command_kind: command_kind as u16,
         binding_hash,
         model_phase: decoded.model_phase,
-        source_ids: value
-            .chunks_exact(32)
-            .map(|chunk| chunk.try_into())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| FaultCommandBridgeError::ClockEvidence)?,
+        source_ids: value.as_chunks::<32>().0.to_vec(),
         parameters,
     })
 }
@@ -770,7 +766,9 @@ pub(super) fn hex_bytes(value: &str) -> Result<Vec<u8>, FaultCommandBridgeError>
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let nibble = |byte: u8| match byte {
                 b'0'..=b'9' => Some(byte - b'0'),

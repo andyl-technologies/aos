@@ -1,5 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index afc442b02..157a65596 100644
+index 9bc1a0990..366dc97de 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -15,6 +15,9 @@
@@ -648,10 +648,10 @@ index afc442b02..157a65596 100644
  
  static void bdrv_crucible_shmem_init(void)
 diff --git a/block/io.c b/block/io.c
-index 1ba8d1aee..d2e5041e8 100644
+index a916b236c..cdb39929d 100644
 --- a/block/io.c
 +++ b/block/io.c
-@@ -3533,6 +3533,12 @@ bdrv_parent_cb_resize(BlockDriverState *bs)
+@@ -3601,6 +3601,12 @@ void coroutine_fn bdrv_co_parent_cb_resize(BlockDriverState *bs)
      }
  }
  
@@ -665,10 +665,10 @@ index 1ba8d1aee..d2e5041e8 100644
   * Truncate file to 'offset' bytes (needed only for file protocols)
   *
 diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
-index b69d0997a..9bf1347b6 100644
+index 695fe0058..035fe8f85 100644
 --- a/hw/block/virtio-blk.c
 +++ b/hw/block/virtio-blk.c
-@@ -74,8 +74,19 @@ static int virtio_blk_handle_rw_error(VirtIOBlockReq *req, int error,
+@@ -73,8 +73,19 @@ static int virtio_blk_handle_rw_error(VirtIOBlockReq *req, int error,
      bool is_read, bool acct_failed)
  {
      VirtIOBlock *s = req->dev;
@@ -688,7 +688,7 @@ index b69d0997a..9bf1347b6 100644
      if (action == BLOCK_ERROR_ACTION_STOP) {
          /* Break the link as the next request is going to be parsed from the
           * ring again. Otherwise we may end up doing a double completion! */
-@@ -1127,30 +1138,43 @@ static void virtio_blk_dma_restart_cb(void *opaque, bool running,
+@@ -1163,30 +1174,43 @@ static void virtio_blk_dma_restart_cb(void *opaque, bool running,
      }
  }
  
@@ -743,7 +743,7 @@ index b69d0997a..9bf1347b6 100644
  
      blk_set_enable_write_cache(s->blk, s->original_wce);
  }
-@@ -1379,6 +1403,132 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
+@@ -1416,6 +1440,132 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
      return 0;
  }
  
@@ -876,7 +876,7 @@ index b69d0997a..9bf1347b6 100644
  static void virtio_resize_cb(void *opaque)
  {
      VirtIODevice *vdev = opaque;
-@@ -1796,6 +1946,7 @@ static void virtio_blk_device_realize(DeviceState *dev, Error **errp)
+@@ -1833,6 +1983,7 @@ static void virtio_blk_device_realize(DeviceState *dev, Error **errp)
  
      s->blk = conf->conf.blk;
      s->rq = NULL;
@@ -884,7 +884,7 @@ index b69d0997a..9bf1347b6 100644
      s->sector_mask = (s->conf.conf.logical_block_size / BDRV_SECTOR_SIZE) - 1;
  
      for (i = 0; i < conf->num_queues; i++) {
-@@ -1844,6 +1995,7 @@ static void virtio_blk_device_unrealize(DeviceState *dev)
+@@ -1881,6 +2032,7 @@ static void virtio_blk_device_unrealize(DeviceState *dev)
      unsigned i;
  
      blk_drain(s->blk);
@@ -892,7 +892,7 @@ index b69d0997a..9bf1347b6 100644
      del_boot_device_lchs(dev, "/disk@0,0");
      virtio_blk_vq_aio_context_cleanup(s);
      for (i = 0; i < conf->num_queues; i++) {
-@@ -1874,6 +2026,10 @@ static const VMStateDescription vmstate_virtio_blk = {
+@@ -1911,6 +2063,10 @@ static const VMStateDescription vmstate_virtio_blk = {
          VMSTATE_VIRTIO_DEVICE,
          VMSTATE_END_OF_LIST()
      },
@@ -904,10 +904,10 @@ index b69d0997a..9bf1347b6 100644
  
  static const Property virtio_blk_properties[] = {
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index ea6d5f934..91caba2e8 100644
+index 3d794223e..30dde4d78 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
-@@ -2111,19 +2111,30 @@ typedef struct VirtQueueElementOld {
+@@ -2177,19 +2177,30 @@ typedef struct VirtQueueElementOld {
      struct iovec out_sg[VIRTQUEUE_MAX_SIZE];
  } VirtQueueElementOld;
  
@@ -940,7 +940,7 @@ index ea6d5f934..91caba2e8 100644
      assert(ARRAY_SIZE(data.in_addr) >= data.in_num);
      assert(ARRAY_SIZE(data.out_addr) >= data.out_num);
  
-@@ -2154,10 +2165,26 @@ void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz)
+@@ -2220,10 +2231,26 @@ void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz)
          qemu_get_be32s(f, &elem->ndescs);
      }
  
@@ -968,7 +968,7 @@ index ea6d5f934..91caba2e8 100644
                                  VirtQueueElement *elem)
  {
 diff --git a/include/block/block_int-common.h b/include/block/block_int-common.h
-index ebb4e56a5..deeb3e800 100644
+index 147c08155..9b378dcb3 100644
 --- a/include/block/block_int-common.h
 +++ b/include/block/block_int-common.h
 @@ -379,6 +379,13 @@ struct BlockDriver {
@@ -986,7 +986,7 @@ index ebb4e56a5..deeb3e800 100644
       * Try to get @bs's logical and physical block size.
       * On success, store them in @bsz and return zero.
 diff --git a/include/block/block_int-io.h b/include/block/block_int-io.h
-index 4a7cf2b4f..401b0ee02 100644
+index ed8b5657d..d1be4edf6 100644
 --- a/include/block/block_int-io.h
 +++ b/include/block/block_int-io.h
 @@ -130,6 +130,12 @@ bdrv_co_refresh_total_sectors(BlockDriverState *bs, int64_t hint);
@@ -1015,10 +1015,10 @@ index 3d8dee7ec..881c16031 100644
      unsigned short sector_mask;
      bool original_wce;
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
-index 006d49b12..15c9f88d4 100644
+index ab1adb56c..cb0d2aa02 100644
 --- a/include/hw/virtio/virtio.h
 +++ b/include/hw/virtio/virtio.h
-@@ -273,6 +273,8 @@ void virtqueue_map(VirtIODevice *vdev, VirtQueueElement *elem);
+@@ -325,6 +325,8 @@ void virtqueue_map(VirtIODevice *vdev, VirtQueueElement *elem);
  void *virtqueue_pop(VirtQueue *vq, size_t sz);
  unsigned int virtqueue_drop_all(VirtQueue *vq);
  void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz);
@@ -1027,11 +1027,11 @@ index 006d49b12..15c9f88d4 100644
  void qemu_put_virtqueue_element(VirtIODevice *vdev, QEMUFile *f,
                                  VirtQueueElement *elem);
  int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index f3c4cbd44..8cf4a4450 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -220,7 +220,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 086316db2..478a043ba 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -264,7 +264,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
  
  /**
   * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
@@ -1041,7 +1041,7 @@ index f3c4cbd44..8cf4a4450 100644
   * @op: one of QEMU_PLUGIN_BLK_OP_*
   * @offset: byte offset for read, write, and discard requests
   * @data: write payload, or NULL for read, flush, and discard
-@@ -229,7 +230,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
+@@ -273,7 +274,8 @@ typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata
   *
   * Returns: 0 when the request was accepted, nonzero on fail-loud rejection.
   */
@@ -1051,7 +1051,7 @@ index f3c4cbd44..8cf4a4450 100644
                                             uint32_t op,
                                             uint64_t offset,
                                             const uint8_t *data,
-@@ -238,7 +240,8 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
+@@ -282,7 +284,8 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
  
  /**
   * typedef qemu_plugin_blk_poll_cb_t - shmem block completion poll callback
@@ -1061,7 +1061,7 @@ index f3c4cbd44..8cf4a4450 100644
   * @data: read response output buffer, or NULL for zero-payload completions
   * @capacity: byte capacity of @data
   * @userdata: a pointer supplied when callbacks were registered
-@@ -249,7 +252,8 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
+@@ -293,7 +296,8 @@ typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
   * response is ready yet.  @errno must be in the inclusive range 1 through
   * QEMU_PLUGIN_BLK_POLL_ERROR_MAX.
   */
@@ -1071,7 +1071,7 @@ index f3c4cbd44..8cf4a4450 100644
                                               uint8_t *data,
                                               size_t capacity,
                                               void *userdata);
-@@ -266,11 +270,68 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
+@@ -310,11 +314,68 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
  typedef void (*qemu_plugin_blk_wait_cb_t)(uint32_t request_id,
                                            void *userdata);
  
@@ -1140,7 +1140,7 @@ index f3c4cbd44..8cf4a4450 100644
  #define QEMU_PLUGIN_BLK_POLL_ERROR_BASE INT64_C(4096)
  #define QEMU_PLUGIN_BLK_POLL_ERROR_MAX INT64_C(4095)
  #define QEMU_PLUGIN_BLK_POLL_ERROR(error_number) \
-@@ -1125,6 +1186,27 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
+@@ -1223,6 +1284,27 @@ void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
                                   qemu_plugin_blk_poll_cb_t poll_cb,
                                   void *userdata);
  
@@ -1169,10 +1169,10 @@ index f3c4cbd44..8cf4a4450 100644
   * qemu_plugin_register_blk_wait_cb() - register the shmem block wait hook
   * @wait_cb: callback fired before a pending block coroutine parks
 diff --git a/qapi/block-core.json b/qapi/block-core.json
-index b1937780e..724dc2768 100644
+index 1f87b0785..2d99203a7 100644
 --- a/qapi/block-core.json
 +++ b/qapi/block-core.json
-@@ -3184,6 +3184,8 @@
+@@ -3324,6 +3324,8 @@
  #
  # @copy-on-read: Since 3.0
  #
@@ -1181,24 +1181,24 @@ index b1937780e..724dc2768 100644
  # @blklogwrites: Since 3.0
  #
  # @blkreplay: Since 4.2
-@@ -3204,7 +3206,7 @@
+@@ -3339,7 +3341,7 @@
  { 'enum': 'BlockdevDriver',
    'data': [ 'blkdebug', 'blklogwrites', 'blkreplay', 'blkverify', 'bochs',
              'cloop', 'compress', 'copy-before-write', 'copy-on-read', 'dmg',
 -            'file', 'snapshot-access', 'ftp', 'ftps',
 +            'crucible-shmem', 'file', 'snapshot-access', 'ftp', 'ftps',
-             {'name': 'gluster', 'features': [ 'deprecated' ] },
              {'name': 'host_cdrom', 'if': 'HAVE_HOST_BLOCK_DEVICE' },
              {'name': 'host_device', 'if': 'HAVE_HOST_BLOCK_DEVICE' },
-@@ -4569,6 +4571,19 @@
+             'http', 'https',
+@@ -4680,6 +4682,19 @@
    'base': 'BlockdevOptionsGenericFormat',
    'data': { '*offset': 'int', '*size': 'int' } }
  
 +##
 +# @BlockdevOptionsCrucibleShmem:
 +#
-+# Driver-specific options for the AOS deterministic shared-memory block
-+# transport.
++# Driver-specific options for the AOS deterministic shared-memory
++# block transport.
 +#
 +# @size: fixed virtual device size in bytes
 +#
@@ -1210,7 +1210,7 @@ index b1937780e..724dc2768 100644
  ##
  # @BlockdevOptionsThrottle:
  #
-@@ -4730,6 +4745,7 @@
+@@ -4841,6 +4856,7 @@
        'compress':   'BlockdevOptionsGenericFormat',
        'copy-before-write':'BlockdevOptionsCbw',
        'copy-on-read':'BlockdevOptionsCor',

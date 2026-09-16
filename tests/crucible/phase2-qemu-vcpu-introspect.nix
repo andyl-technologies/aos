@@ -237,7 +237,7 @@ in
           script = ''
             set -eu
 
-            mkdir -p disas exec include/qemu plugins qemu tcg
+            mkdir -p disas exec include/plugins include/qemu plugins qemu tcg
             for header in \
               disas/disas.h \
               exec/cpu-common.h \
@@ -257,7 +257,7 @@ in
               : > "$header"
             done
 
-            cat > include/qemu/qemu-plugin.h <<'QEMU_HEADER'
+            cat > include/plugins/qemu-plugin.h <<'QEMU_HEADER'
             #ifndef QEMU_PLUGIN_H
             #define QEMU_PLUGIN_H
             #include <stdbool.h>
@@ -396,15 +396,15 @@ in
 
             QEMU_API
 
-            test -f ${referenceQemu}/include/qemu/qemu-plugin.h
+            test -f ${referenceQemu}/include/qemu-plugin.h
             if grep -q 'qemu_plugin_read_vcpu_regs' \
-              ${referenceQemu}/include/qemu/qemu-plugin.h
+              ${referenceQemu}/include/qemu-plugin.h
             then
               echo "reference QEMU header unexpectedly declares qemu_plugin_read_vcpu_regs" >&2
               exit 1
             fi
             if grep -q 'qemu_plugin_rr_cursor' \
-              ${referenceQemu}/include/qemu/qemu-plugin.h
+              ${referenceQemu}/include/qemu-plugin.h
             then
               echo "reference QEMU header unexpectedly declares qemu_plugin_rr_cursor" >&2
               exit 1
@@ -413,7 +413,7 @@ in
             cat > stock-vcpu-introspect-negative.c <<'STOCK_NEGATIVE'
             #include <stdint.h>
             #include <stddef.h>
-            #include <qemu/qemu-plugin.h>
+            #include <qemu-plugin.h>
 
             int main(void)
             {
@@ -439,7 +439,7 @@ in
             grep -q 'qemu_plugin_rr_cursor' stock-vcpu-introspect-negative.err
 
             patch --batch --fuzz=0 -p1 < "$patchSourcePath"
-            cp include/qemu/qemu-plugin.h qemu/qemu-plugin.h
+            cp include/plugins/qemu-plugin.h qemu/qemu-plugin.h
             cp "$microtestSourcePath" phase2-qemu-vcpu-introspect.c
             cc -std=c11 -O2 -Wall -Wextra -Werror \
               -Wno-unused-function -Wno-unused-parameter \

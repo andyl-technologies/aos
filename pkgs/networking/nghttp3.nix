@@ -5,7 +5,7 @@
   cmake,
   ninja,
 }: let
-  version = "1.15.0";
+  version = "1.18.0";
 in
   mkDerivation {
     pname = "nghttp3";
@@ -13,7 +13,7 @@ in
 
     src = fetchurl {
       urls = ["https://github.com/ngtcp2/nghttp3/releases/download/v${version}/nghttp3-${version}.tar.bz2"];
-      hash = "sha256-xsSRpSgEgUCY5EZjDm78RZr8DT2nlS/+bL3As/mbK2I=";
+      hash = "sha256-yiMmaLlKXh+1S0FjLMVkc6tIImSDgUQQ72KnBilOZAI=";
     };
 
     buildDeps = [cmake ninja];

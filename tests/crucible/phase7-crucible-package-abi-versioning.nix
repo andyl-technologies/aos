@@ -66,6 +66,8 @@
     python3 = "/aos-python3";
     setuptools = null;
     distlib = null;
+    pip = null;
+    wheel = null;
     glib = null;
     pixman = null;
     zlib = null;

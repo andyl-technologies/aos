@@ -243,9 +243,8 @@ static void tcg_exec(unsigned int cpu_index, uint64_t icount, void *opaque)
     poll_events();
 }
 
-static void at_exit(qemu_plugin_id_t id, void *opaque)
+static void at_exit(void *opaque)
 {
-    (void)id;
     (void)opaque;
     poll_events();
     if (!finished) {

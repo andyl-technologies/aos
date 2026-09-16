@@ -271,8 +271,8 @@ impl NodeFaultFieldV1 {
                     && self.value.len() / 32 <= NODE_FAULT_MAX_HASH_SET_V1
                     && !self
                         .value
-                        .chunks_exact(32)
-                        .collect::<Vec<_>>()
+                        .as_chunks::<32>()
+                        .0
                         .windows(2)
                         .any(|pair| pair[0] >= pair[1])
             }

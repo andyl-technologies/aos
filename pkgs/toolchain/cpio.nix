@@ -33,7 +33,7 @@ in
       {
         name = "build";
         script = ''
-          $CONFIG_SHELL ./configure \
+          CFLAGS="-O2 -std=gnu17" $CONFIG_SHELL ./configure \
             $configureFlags \
             --prefix=$out \
             --disable-nls

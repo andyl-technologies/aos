@@ -117,7 +117,7 @@ in {
       #endif' execute_cmd.c
     '';
     buildScript = ''
-      make -j1 ${autotoolsVars}
+      make -j"$NIX_BUILD_CORES" ${autotoolsVars}
     '';
     installScript = ''
       make install ${autotoolsVars}

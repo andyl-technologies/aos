@@ -129,7 +129,7 @@ in
           script = ''
             set -eu
 
-            mkdir -p hw include/net include/qemu migration net plugins qapi qemu
+            mkdir -p hw include/net include/plugins include/qemu migration net plugins qapi qemu
             : > hw/boards.h
             : > migration/blocker.h
             : > net/net.h
@@ -139,7 +139,7 @@ in
             : > qemu/plugin-memory.h
             : > qemu/plugin.h
 
-            cat > include/qemu/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
+            cat > include/plugins/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
             #ifndef QEMU_QEMU_PLUGIN_H
             #define QEMU_QEMU_PLUGIN_H
 
@@ -344,7 +344,7 @@ in
             grep -q '^stock_negative_control_drop_without_queue=true$' "$out/result"
 
             cp "$patchSourcePath" "$out/${patchName}"
-            cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
+            cp include/plugins/qemu-plugin.h "$out/qemu-plugin.h.patched"
             cp plugins/api-system.c "$out/api-system.c.patched"
             cat >> "$out/result" <<'RESULT'
             check=checks.crucible.phase1.qemuNetDeterministic

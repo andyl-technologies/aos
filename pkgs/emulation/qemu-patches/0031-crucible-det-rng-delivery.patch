@@ -1,5 +1,5 @@
 diff --git a/backends/rng-builtin.c b/backends/rng-builtin.c
-index 4cfa7e578..7c949af38 100644
+index 41b7bfaa2..16db2d31f 100644
 --- a/backends/rng-builtin.c
 +++ b/backends/rng-builtin.c
 @@ -34,6 +34,28 @@ static void rng_builtin_receive_entropy_bh(void *opaque)
@@ -31,7 +31,7 @@ index 4cfa7e578..7c949af38 100644
  static void rng_builtin_request_entropy(RngBackend *b, RngRequest *req)
  {
      RngBuiltin *s = RNG_BUILTIN(b);
-@@ -60,6 +82,7 @@ static void rng_builtin_class_init(ObjectClass *klass, void *data)
+@@ -60,6 +82,7 @@ static void rng_builtin_class_init(ObjectClass *klass, const void *data)
      RngBackendClass *rbc = RNG_BACKEND_CLASS(klass);
  
      rbc->request_entropy = rng_builtin_request_entropy;
@@ -40,20 +40,20 @@ index 4cfa7e578..7c949af38 100644
  
  static const TypeInfo rng_builtin_info = {
 diff --git a/backends/rng.c b/backends/rng.c
-index 1f6fb106a..853d20745 100644
+index bc9c7a5ab..3fd95b922 100644
 --- a/backends/rng.c
 +++ b/backends/rng.c
-@@ -11,7 +11,9 @@
-  */
+@@ -12,7 +12,9 @@
  
  #include "qemu/osdep.h"
+ #include "qemu/units.h"
 +#include "qemu/accel.h"
  #include "system/rng.h"
-+#include "system/cpu-timers.h"
++#include "exec/icount.h"
  #include "qapi/error.h"
  #include "qemu/module.h"
  #include "qom/object_interfaces.h"
-@@ -32,6 +34,38 @@ void rng_backend_request_entropy(RngBackend *s, size_t size,
+@@ -35,6 +37,38 @@ void rng_backend_request_entropy(RngBackend *s, size_t size,
          req->opaque = opaque;
          req->data = g_malloc(req->size);
  
@@ -114,7 +114,7 @@ index 5060d49d6..5caa7b0de 100644
 +
  #endif /* QEMU_GUEST_RANDOM_H */
 diff --git a/include/system/rng.h b/include/system/rng.h
-index e383f87d2..d51a6ac7b 100644
+index a2667d75e..8e075edee 100644
 --- a/include/system/rng.h
 +++ b/include/system/rng.h
 @@ -44,6 +44,16 @@ struct RngBackendClass

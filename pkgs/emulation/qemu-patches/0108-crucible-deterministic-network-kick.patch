@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 55c096523..9dd88089e 100644
+index 7eb51b20d..24f21f20e 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
-@@ -1055,6 +1055,22 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -1044,6 +1044,22 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  break;
              }
  
@@ -24,9 +24,9 @@ index 55c096523..9dd88089e 100644
 +
              if (unlikely(qemu_crucible_fault_memory_fetch_rules_active() ||
                           fault_boundary)) {
-                 cflags &= ~CF_COUNT_MASK;
+                 s.cflags &= ~CF_COUNT_MASK;
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index bb7e73138..219cadef1 100644
+index 098c44f84..02d952ced 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -52,6 +52,7 @@ static bool icount_sleep = true;
@@ -59,7 +59,7 @@ index bb7e73138..219cadef1 100644
  }
  
 diff --git a/hw/net/virtio-net.c b/hw/net/virtio-net.c
-index 7712e6f19..447be11ac 100644
+index 9a40110e2..029392a76 100644
 --- a/hw/net/virtio-net.c
 +++ b/hw/net/virtio-net.c
 @@ -17,6 +17,7 @@
@@ -74,11 +74,11 @@ index 7712e6f19..447be11ac 100644
  #include "net_rx_pkt.h"
  #include "hw/virtio/vhost.h"
  #include "system/qtest.h"
-+#include "system/cpu-timers.h"
++#include "exec/icount.h"
  
  #define VIRTIO_NET_VM_VERSION    11
  
-@@ -382,6 +384,13 @@ static void virtio_net_drop_tx_queue_data(VirtIODevice *vdev, VirtQueue *vq)
+@@ -401,6 +403,13 @@ static void virtio_net_drop_tx_queue_data(VirtIODevice *vdev, VirtQueue *vq)
      }
  }
  
@@ -89,10 +89,10 @@ index 7712e6f19..447be11ac 100644
 +    return icount_enabled() && strcmp(current_accel_name(), "sim") == 0;
 +}
 +
- static void virtio_net_set_status(struct VirtIODevice *vdev, uint8_t status)
+ static int virtio_net_set_status(struct VirtIODevice *vdev, uint8_t status)
  {
      VirtIONet *n = VIRTIO_NET(vdev);
-@@ -417,6 +426,13 @@ static void virtio_net_set_status(struct VirtIODevice *vdev, uint8_t status)
+@@ -436,6 +445,13 @@ static int virtio_net_set_status(struct VirtIODevice *vdev, uint8_t status)
              if (q->tx_timer) {
                  timer_mod(q->tx_timer,
                                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + n->tx_timeout);
@@ -106,7 +106,7 @@ index 7712e6f19..447be11ac 100644
              } else {
                  replay_bh_schedule_event(q->tx_bh);
              }
-@@ -2707,7 +2723,11 @@ static void virtio_net_tx_complete(NetClientState *nc, ssize_t len)
+@@ -2723,7 +2739,11 @@ static void virtio_net_tx_complete(NetClientState *nc, ssize_t len)
           */
          virtio_queue_set_notification(q->tx_vq, 0);
          if (q->tx_bh) {
@@ -119,7 +119,7 @@ index 7712e6f19..447be11ac 100644
          } else {
              timer_mod(q->tx_timer,
                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + n->tx_timeout);
-@@ -2873,7 +2893,17 @@ static void virtio_net_handle_tx_bh(VirtIODevice *vdev, VirtQueue *vq)
+@@ -2889,7 +2909,17 @@ static void virtio_net_handle_tx_bh(VirtIODevice *vdev, VirtQueue *vq)
          return;
      }
      virtio_queue_set_notification(vq, 0);
@@ -138,7 +138,7 @@ index 7712e6f19..447be11ac 100644
  }
  
  static void virtio_net_tx_timer(void *opaque)
-@@ -2953,12 +2983,20 @@ static void virtio_net_tx_bh(void *opaque)
+@@ -2969,12 +2999,20 @@ static void virtio_net_tx_bh(void *opaque)
                   * broken */
      }
  
@@ -164,7 +164,7 @@ index 7712e6f19..447be11ac 100644
      }
  
      /* If less than a full burst, re-enable notification and flush
-@@ -2970,8 +3008,12 @@ static void virtio_net_tx_bh(void *opaque)
+@@ -2986,8 +3024,12 @@ static void virtio_net_tx_bh(void *opaque)
          return;
      } else if (ret > 0) {
          virtio_queue_set_notification(q->tx_vq, 0);
@@ -180,10 +180,10 @@ index 7712e6f19..447be11ac 100644
  }
  
 diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
-index fbcf68f0e..e019245ab 100644
+index cbeaee1b8..cc2fee37b 100644
 --- a/hw/virtio/virtio-pci.c
 +++ b/hw/virtio/virtio-pci.c
-@@ -327,19 +327,24 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
+@@ -371,19 +371,24 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
       * deterministic icount; synchronous completion without ioeventfd is
       * ordinary QEMU device behaviour.  No QEMU record/replay (RFC-0010 NG-6).
       *
@@ -214,10 +214,10 @@ index fbcf68f0e..e019245ab 100644
          }
      }
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index 0b17824e8..67a72a014 100644
+index 84c8a89d0..86c637695 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
-@@ -2540,24 +2540,27 @@ void virtio_queue_notify(VirtIODevice *vdev, int n)
+@@ -2572,24 +2572,27 @@ void virtio_queue_notify(VirtIODevice *vdev, int n)
  
      trace_virtio_queue_notify(vdev, vq - vdev->vq, vq);
      /*
@@ -256,7 +256,7 @@ index 0b17824e8..67a72a014 100644
          event_notifier_set(&vq->host_notifier);
      } else if (vq->handle_output) {
          vq->handle_output(vdev, vq);
-@@ -2914,6 +2917,36 @@ static const VMStateDescription vmstate_virtio_packed_virtqueues = {
+@@ -2951,6 +2954,36 @@ static const VMStateDescription vmstate_virtio_packed_virtqueues = {
      }
  };
  
@@ -293,7 +293,7 @@ index 0b17824e8..67a72a014 100644
  static const VMStateDescription vmstate_ringsize = {
      .name = "ringsize_state",
      .version_id = 1,
-@@ -3058,6 +3091,7 @@ static const VMStateDescription vmstate_virtio = {
+@@ -3120,6 +3153,7 @@ static const VMStateDescription vmstate_virtio = {
          &vmstate_virtio_started,
          &vmstate_virtio_packed_virtqueues,
          &vmstate_virtio_disabled,
@@ -301,31 +301,11 @@ index 0b17824e8..67a72a014 100644
          NULL
      }
  };
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 65df26295..8b42081c3 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1349,6 +1349,7 @@ int qemu_plugin_net_inject(const uint8_t *data, size_t len);
-  * typedef qemu_plugin_net_tx_cb_t - shmem network TX callback
-  * @data: Ethernet frame bytes emitted by the guest
-  * @len: byte length of @data
-+ * @emit_icount: committed raw icount at the device transmit boundary
-  * @userdata: a pointer supplied when the callback was registered
-  *
-  * Called synchronously from QEMU's network transmit path before the frame is
-@@ -1357,6 +1358,7 @@ int qemu_plugin_net_inject(const uint8_t *data, size_t len);
-  */
- typedef int (*qemu_plugin_net_tx_cb_t)(const uint8_t *data,
-                                        size_t len,
-+                                       uint64_t emit_icount,
-                                        void *userdata);
- 
- /**
-diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index f8761d2d4..84ff4dc3c 100644
---- a/include/system/cpu-timers.h
-+++ b/include/system/cpu-timers.h
-@@ -81,6 +81,7 @@ int64_t icount_round(int64_t count);
+diff --git a/include/exec/icount.h b/include/exec/icount.h
+index b34423e60..d451fd93d 100644
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -78,6 +78,7 @@ int64_t icount_round(int64_t count);
  uint64_t icount_crucible_rr_switch_quantum(void);
  uint64_t icount_crucible_rr_current_vcpu(void);
  uint64_t icount_crucible_rr_cursor_position(void);
@@ -333,19 +313,39 @@ index f8761d2d4..84ff4dc3c 100644
  void icount_crucible_rr_snapshot_resume_prepare(void);
  void icount_crucible_rr_initialize_genesis(CPUState *cpu);
  uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 73709e045..329ecef06 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -1447,6 +1447,7 @@ int qemu_plugin_net_inject(const uint8_t *data, size_t len);
+  * typedef qemu_plugin_net_tx_cb_t - shmem network TX callback
+  * @data: Ethernet frame bytes emitted by the guest
+  * @len: byte length of @data
++ * @emit_icount: committed raw icount at the device transmit boundary
+  * @userdata: a pointer supplied when the callback was registered
+  *
+  * Called synchronously from QEMU's network transmit path before the frame is
+@@ -1455,6 +1456,7 @@ int qemu_plugin_net_inject(const uint8_t *data, size_t len);
+  */
+ typedef int (*qemu_plugin_net_tx_cb_t)(const uint8_t *data,
+                                        size_t len,
++                                       uint64_t emit_icount,
+                                        void *userdata);
+ 
+ /**
 diff --git a/migration/savevm.c b/migration/savevm.c
-index ec35791af..19859de11 100644
+index 9fc8bb992..95b00518c 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
-@@ -53,6 +53,7 @@
- #include "system/cpu-timers.h"
- #include "exec/memory.h"
+@@ -54,6 +54,7 @@
+ #include "exec/icount.h"
  #include "exec/target_page.h"
+ #include "exec/page-vary.h"
 +#include "exec/tb-flush.h"
  #include "trace.h"
  #include "qemu/iov.h"
  #include "qemu/job.h"
-@@ -3510,6 +3511,15 @@ bool save_snapshot(const char *name, bool overwrite, const char *vmstate,
+@@ -3574,6 +3575,15 @@ bool save_snapshot(const char *name, bool overwrite, const char *vmstate,
      ret = 0;
  
      icount_crucible_rr_snapshot_resume_prepare();
@@ -361,7 +361,7 @@ index ec35791af..19859de11 100644
  
   the_end:
      bdrv_drain_all_end();
-@@ -3677,6 +3687,11 @@ bool load_snapshot(const char *name, const char *vmstate,
+@@ -3748,6 +3758,11 @@ bool load_snapshot(const char *name, const char *vmstate,
          return false;
      }
  
@@ -374,10 +374,10 @@ index ec35791af..19859de11 100644
  
  err_drain:
 diff --git a/net/net.c b/net/net.c
-index 1add21d43..727bd63a4 100644
+index d18265a67..9b37367d0 100644
 --- a/net/net.c
 +++ b/net/net.c
-@@ -51,6 +51,7 @@
+@@ -52,6 +52,7 @@
  #include "qemu/option.h"
  #include "qemu/keyval.h"
  #include "qapi/error.h"
@@ -385,7 +385,7 @@ index 1add21d43..727bd63a4 100644
  #include "qapi/opts-visitor.h"
  #include "system/runstate.h"
  #include "net/colo-compare.h"
-@@ -98,14 +99,21 @@ static bool crucible_net_tx_callback_ready(NetClientState *sender)
+@@ -99,14 +100,21 @@ static bool crucible_net_tx_callback_ready(NetClientState *sender)
  
  static ssize_t crucible_net_tx_submit(const uint8_t *data, size_t len)
  {
@@ -410,10 +410,10 @@ index 1add21d43..727bd63a4 100644
  
  static int nb_nics;
 diff --git a/system/cpu-timers.c b/system/cpu-timers.c
-index 166600d1d..875eee08c 100644
+index e09f38002..e34d30af2 100644
 --- a/system/cpu-timers.c
 +++ b/system/cpu-timers.c
-@@ -209,6 +209,7 @@ static int crucible_rr_cursor_state_post_load(void *opaque, int version_id)
+@@ -210,6 +210,7 @@ static int crucible_rr_cursor_state_post_load(void *opaque, int version_id)
          !qemu_get_cpu(state->crucible_rr_current_vcpu)) {
          return -EINVAL;
      }

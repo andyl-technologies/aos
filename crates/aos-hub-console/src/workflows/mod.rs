@@ -30,6 +30,7 @@ mod placement_policies;
 mod placements;
 mod registry_configuration;
 mod registry_containers;
+mod registry_metadata;
 mod registry_mirror;
 mod registry_publication;
 mod resource_access;

@@ -5,7 +5,7 @@
   gnumake,
   libsepol,
 }: let
-  version = "3.10";
+  version = "3.11";
 in
   mkDerivation {
     pname = "semodule-utils";
@@ -15,7 +15,7 @@ in
       urls = [
         "https://github.com/SELinuxProject/selinux/releases/download/${version}/selinux-${version}.tar.gz"
       ];
-      hash = "sha256-tHDgCV1FBpqAzs+Av5xRImQrycFU9BqnbTBQ6DfVmiA=";
+      hash = "sha256-a21Hqw81/hwJvaDGKCHI2XoMvn9ulASzON973gGCxPQ=";
     };
 
     buildDeps = [gnumake];

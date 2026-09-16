@@ -12,7 +12,7 @@
   expat,
   xz,
 }: let
-  version = "3.8.5";
+  version = "3.8.9";
 in
   mkDerivation {
     pname = "libarchive";
@@ -23,7 +23,7 @@ in
         "https://www.libarchive.org/downloads/libarchive-${version}.tar.xz"
         "https://github.com/libarchive/libarchive/releases/download/v${version}/libarchive-${version}.tar.xz"
       ];
-      hash = "sha256-1oBo50vu46DsDdBK7pA31XV/zGUVkabc8bbVQvsVpwM=";
+      hash = "sha256-iIyTT52VZI7LkWPcjiOrgKR27LgajxFUcEoie1tnbd4=";
     };
 
     buildDeps = [

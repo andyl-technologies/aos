@@ -1,5 +1,22 @@
 # Canonical release coordinator
 
+Registry identity and software channel are independent. Both `andyl/main` and
+`andyl/testing` can carry edge, candidate, and stable releases. Main requires
+strict build and publication provenance even for edge; testing isolates the
+experimental pipeline and its keys. Testing releases never become main releases
+by changing a channel or copying signed artifacts.
+
+Disk images and OCI containers must configure APM for their exact publishing
+registry. The shared `aos.release` profile supplies the CDN URL (`https://cdn.aos.andyl.org/<registry>/`), trust alias, root
+epoch, channel, and testing notice. Planning, building, and image finalization
+check this profile from the clean source commit frozen in the plan, on every
+selected platform. A testing profile fails a main plan and vice versa. Package
+transactions, manifests, evidence, and channel receipts bind the same registry;
+packages inherit their client's configured registry when installed. Inspect the
+appropriate obligations with `aos release contract --registry andyl/testing`
+or `--registry andyl/main` before preparing a request.
+
+
 Start with the [release checklist](release-checklist.md) for the order of
 operations and the conditions for proceeding. This page is the command reference;
 the [qualification specification](qualification.md) defines the evidence. New plans
@@ -117,7 +134,7 @@ request supplies:
 
 - release id, calendar version, and release class;
 - one registry authorized by [`registries.md`](registries.md), its exact base
-  commit and generation, and a release class/channel allowed by that registry;
+  commit and generation, and a software release class/channel;
 - protected source branch, unused immutable source tag, and SHA-256 digest of
   the public contributor-authorization summary;
 - explicit decisions for both Linux system-image targets;

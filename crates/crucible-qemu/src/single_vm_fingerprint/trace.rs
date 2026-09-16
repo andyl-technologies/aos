@@ -1715,7 +1715,7 @@ fn parse_sha256(
         });
     }
     let mut digest = [0_u8; 32];
-    for (index, pair) in text.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         digest[index] = (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]);
     }
     if digest_is_zero(&digest) {

@@ -7,7 +7,7 @@
   perl,
   bash,
 }: let
-  version = "2.72";
+  version = "2.73";
 in
   mkDerivation {
     pname = "autoconf";
@@ -17,7 +17,7 @@ in
       urls = [
         "https://mirrors.kernel.org/gnu/autoconf/autoconf-${version}.tar.xz"
       ];
-      hash = "sha256-uohcExlXjWyU1G6bDc60AUyq/iSQ5Deg28o/JwoiP1o=";
+      hash = "sha256-n9ZyschCX6wvpn+gR3uZCYcmi5D/NtXwFtrle+DWtS4=";
     };
 
     # The generated Perl programs are executed while assembling the package.

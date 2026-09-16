@@ -3,6 +3,9 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  autoconf,
+  automake,
+  libtool,
   sed,
   coreutils,
   util-linux,
@@ -10,26 +13,20 @@
   bash,
   stdenv,
 }: let
-  version = "1.37.2";
+  version = "2.1.4";
 in
   mkDerivation {
     pname = "fakeroot";
     inherit version;
 
     src = fetchurl {
-      # Debian's pool keeps only the current version; 1.37.2 was
-      # superseded (1.38.1 is current) and 404s there now. The
-      # content-addressed snapshot.debian.org /file/<sha1> URL serves the
-      # exact tarball permanently. The pool URL is kept as a secondary in
-      # case the version is reinstated.
       urls = [
-        "https://snapshot.debian.org/file/1a721c2b4093a4e83dc091dc41a028f19340c1b3"
-        "https://deb.debian.org/debian/pool/main/f/fakeroot/fakeroot_${version}.orig.tar.gz"
+        "https://deb.debian.org/debian/pool/main/f/fakeroot/fakeroot_${version}.orig.tar.xz"
       ];
-      hash = "sha256-Dupg++iXcbiPz0Fcjy8KbM/p7eu887pdwCEnGNmIhNs=";
+      hash = "sha256-CCK9Wp8M8Z0roFRriLBDLU09mRfbYsV7dARMytugbkk=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps = [gnumake autoconf automake libtool];
     # scripts/fakeroot.in is patched (below) to hardcode util-linux, sed,
     # and coreutils store paths. These must be in runtimeDeps so the
     # scrubPhase nuke-refs pass keeps the hashes — otherwise the wrapper
@@ -60,6 +57,8 @@ in
         script =
           if stdenv.isCross && stdenv.hostPlatform.isDarwin
           then ''
+            $CONFIG_SHELL ./bootstrap
+
             # Hardcode paths to runtime tools in the fakeroot wrapper script
             # so it doesn't rely on PATH resolution at runtime.
             # Darwin implements SysV message queues, but upstream only seeds
@@ -74,6 +73,8 @@ in
               scripts/fakeroot.in
           ''
           else ''
+            $CONFIG_SHELL ./bootstrap
+
             # Hardcode paths to runtime tools in the fakeroot wrapper script
             # so it doesn't rely on PATH resolution at runtime.
             ${

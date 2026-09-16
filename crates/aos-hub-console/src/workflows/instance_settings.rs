@@ -468,5 +468,9 @@ fn on_off(value: bool) -> &'static str {
 }
 
 fn reload() {
-    crate::app::refresh();
+    // Instance settings also change the server-rendered shell metadata.
+    // Reload the document so its title, masthead, banner, and links agree.
+    if let Some(window) = leptos::web_sys::window() {
+        let _ = window.location().reload();
+    }
 }

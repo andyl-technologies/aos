@@ -1,5 +1,5 @@
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index d2c7d9d04..8cd248a98 100644
+index 603b96ceb..f23debdcc 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -3483,6 +3483,10 @@ static int node_prepare(

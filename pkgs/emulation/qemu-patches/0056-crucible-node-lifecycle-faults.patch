@@ -1,5 +1,5 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 8bc1b2109..8502efe20 100644
+index ff767e715..543d84ad1 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -32,6 +32,7 @@
@@ -10,7 +10,7 @@ index 8bc1b2109..8502efe20 100644
  #include "qemu/plugin.h"
  #include "qemu/timer.h"
  #include "exec/cpu-common.h"
-@@ -93,6 +94,87 @@ static CPUState *rr_crucible_sim_loop_cpu(CPUState *cpu)
+@@ -94,6 +95,87 @@ static CPUState *rr_crucible_sim_loop_cpu(CPUState *cpu)
      return cpu;
  }
  
@@ -98,7 +98,7 @@ index 8bc1b2109..8502efe20 100644
  static void rr_crucible_sim_reset_exit_request(CPUState *cpu)
  {
      if (!cpu) {
-@@ -237,7 +319,8 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -238,7 +320,8 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
              (crucible_sim_shmem_dispatch_registered() ||
               crucible_sim_observer_registered() ||
               qemu_crucible_fault_next_icount(
@@ -108,7 +108,7 @@ index 8bc1b2109..8502efe20 100644
              uint64_t current_icount = qemu_plugin_icount_raw();
              bool observer_due = false;
              bool dispatch_due = false;
-@@ -259,6 +342,8 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -260,6 +343,8 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
              *cpu_budget = qemu_crucible_fault_clamp_budget(
                  CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount,
                  *cpu_budget);
@@ -117,7 +117,7 @@ index 8bc1b2109..8502efe20 100644
              if (*cpu_budget == 0) {
                  qemu_crucible_fault_dispatch_boundary(
                      CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount);
-@@ -313,9 +398,10 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -314,9 +399,10 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
              r != EXCP_HALTED && cpu_can_run(cpu));
  
          if (rr_crucible_sim_mode() &&
@@ -131,7 +131,7 @@ index 8bc1b2109..8502efe20 100644
              qemu_crucible_fault_dispatch_boundary(
                  CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY,
                  qemu_plugin_icount_raw());
-@@ -609,7 +695,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -617,7 +703,8 @@ static void *rr_cpu_thread_fn(void *arg)
                  (crucible_sim_shmem_dispatch_registered() ||
                   crucible_sim_observer_registered() ||
                   qemu_crucible_fault_next_icount(
@@ -141,7 +141,7 @@ index 8bc1b2109..8502efe20 100644
                  uint64_t current_icount = qemu_plugin_icount_raw();
                  bool observer_due = false;
                  bool dispatch_due = false;
-@@ -631,6 +718,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -639,6 +726,8 @@ static void *rr_cpu_thread_fn(void *arg)
                  cpu_budget = qemu_crucible_fault_clamp_budget(
                      CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, current_icount,
                      cpu_budget);
@@ -150,7 +150,7 @@ index 8bc1b2109..8502efe20 100644
                  if (cpu_budget == 0) {
                      qemu_crucible_fault_dispatch_boundary(
                          CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY,
-@@ -658,6 +747,9 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -666,6 +755,9 @@ static void *rr_cpu_thread_fn(void *arg)
  
              if (!qemu_crucible_fault_vcpu_service_eligible(cpu)) {
                  qemu_crucible_fault_vcpu_service_skipped(cpu);
@@ -160,7 +160,7 @@ index 8bc1b2109..8502efe20 100644
              } else if (cpu_can_run(cpu)) {
                  if (rr_crucible_sim_run_tcg_batch(&cpu, &cpu_budget)) {
                      break;
-@@ -683,6 +775,15 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -690,6 +782,15 @@ static void *rr_cpu_thread_fn(void *arg)
              rr_crucible_sim_reset_exit_request(cpu);
          }
  
@@ -177,10 +177,10 @@ index 8bc1b2109..8502efe20 100644
              /*
               * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
 diff --git a/hw/block/pflash_cfi01.c b/hw/block/pflash_cfi01.c
-index b5ea927f3..f974150c1 100644
+index a13b91967..25028afc0 100644
 --- a/hw/block/pflash_cfi01.c
 +++ b/hw/block/pflash_cfi01.c
-@@ -1027,8 +1027,10 @@ static void postload_update_cb(void *opaque, bool running, RunState state)
+@@ -1019,8 +1019,10 @@ static void postload_update_cb(void *opaque, bool running, RunState state)
      PFlashCFI01 *pfl = opaque;
  
      /* This is called after bdrv_activate_all.  */
@@ -193,8 +193,8 @@ index b5ea927f3..f974150c1 100644
  
      trace_pflash_postload_cb(pfl->name);
      pflash_update(pfl, 0, pfl->sector_len * pfl->nb_blocs);
-@@ -1039,6 +1041,9 @@ static int pflash_post_load(void *opaque, int version_id)
-     PFlashCFI01 *pfl = opaque;
+@@ -1041,6 +1043,9 @@ static int pflash_post_load(void *opaque, int version_id)
+     }
  
      if (!pfl->ro) {
 +        if (pfl->vmstate) {
@@ -204,10 +204,10 @@ index b5ea927f3..f974150c1 100644
                                                          pfl);
      }
 diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
-index 7bddd0f70..703302097 100644
+index 36633e8ef..e21701150 100644
 --- a/hw/intc/apic_common.c
 +++ b/hw/intc/apic_common.c
-@@ -509,6 +509,7 @@ static void apic_common_class_init(ObjectClass *klass, void *data)
+@@ -490,6 +490,7 @@ static void apic_common_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
  
@@ -216,10 +216,10 @@ index 7bddd0f70..703302097 100644
      device_class_set_props(dc, apic_properties_common);
      dc->realize = apic_common_realize;
 diff --git a/hw/intc/arm_gic_common.c b/hw/intc/arm_gic_common.c
-index 99c085868..620d00cf5 100644
+index 0b5f73a56..9bae70d89 100644
 --- a/hw/intc/arm_gic_common.c
 +++ b/hw/intc/arm_gic_common.c
-@@ -417,6 +417,7 @@ static void arm_gic_common_class_init(ObjectClass *klass, void *data)
+@@ -418,6 +418,7 @@ static void arm_gic_common_class_init(ObjectClass *klass, const void *data)
      ResettableClass *rc = RESETTABLE_CLASS(klass);
      ARMLinuxBootIfClass *albifc = ARM_LINUX_BOOT_IF_CLASS(klass);
  
@@ -228,10 +228,10 @@ index 99c085868..620d00cf5 100644
      dc->realize = arm_gic_common_realize;
      device_class_set_props(dc, arm_gic_common_properties);
 diff --git a/hw/intc/arm_gicv3_common.c b/hw/intc/arm_gicv3_common.c
-index 12f56cf38..25464c762 100644
+index 4a60c0797..ab2f65be3 100644
 --- a/hw/intc/arm_gicv3_common.c
 +++ b/hw/intc/arm_gicv3_common.c
-@@ -722,6 +722,7 @@ static void arm_gicv3_common_class_init(ObjectClass *klass, void *data)
+@@ -720,6 +720,7 @@ static void arm_gicv3_common_class_init(ObjectClass *klass, const void *data)
      ResettableClass *rc = RESETTABLE_CLASS(klass);
      ARMLinuxBootIfClass *albifc = ARM_LINUX_BOOT_IF_CLASS(klass);
  
@@ -240,10 +240,10 @@ index 12f56cf38..25464c762 100644
      dc->realize = arm_gicv3_common_realize;
      device_class_set_props(dc, arm_gicv3_common_properties);
 diff --git a/hw/intc/i8259_common.c b/hw/intc/i8259_common.c
-index ce8756c63..e0d38e1ca 100644
+index 06d3ff332..51567ef5e 100644
 --- a/hw/intc/i8259_common.c
 +++ b/hw/intc/i8259_common.c
-@@ -244,6 +244,7 @@ static void pic_common_class_init(ObjectClass *klass, void *data)
+@@ -244,6 +244,7 @@ static void pic_common_class_init(ObjectClass *klass, const void *data)
      DeviceClass *dc = DEVICE_CLASS(klass);
      InterruptStatsProviderClass *ic = INTERRUPT_STATS_PROVIDER_CLASS(klass);
  
@@ -252,10 +252,10 @@ index ce8756c63..e0d38e1ca 100644
      device_class_set_props(dc, pic_properties_common);
      dc->realize = pic_common_realize;
 diff --git a/hw/intc/ioapic_common.c b/hw/intc/ioapic_common.c
-index 769896353..a6abec554 100644
+index d3bcd5699..925a4d958 100644
 --- a/hw/intc/ioapic_common.c
 +++ b/hw/intc/ioapic_common.c
-@@ -202,6 +202,7 @@ static void ioapic_common_class_init(ObjectClass *klass, void *data)
+@@ -202,6 +202,7 @@ static void ioapic_common_class_init(ObjectClass *klass, const void *data)
      DeviceClass *dc = DEVICE_CLASS(klass);
      InterruptStatsProviderClass *ic = INTERRUPT_STATS_PROVIDER_CLASS(klass);
  
@@ -264,10 +264,10 @@ index 769896353..a6abec554 100644
      dc->vmsd = &vmstate_ioapic_common;
      ic->print_info = ioapic_print_info;
 diff --git a/hw/rtc/mc146818rtc.c b/hw/rtc/mc146818rtc.c
-index e322fc2ff..d727879ed 100644
+index ba396435d..a59ae051e 100644
 --- a/hw/rtc/mc146818rtc.c
 +++ b/hw/rtc/mc146818rtc.c
-@@ -1024,6 +1024,7 @@ static void rtc_class_initfn(ObjectClass *klass, void *data)
+@@ -1011,6 +1011,7 @@ static void rtc_class_initfn(ObjectClass *klass, const void *data)
      ResettableClass *rc = RESETTABLE_CLASS(klass);
      AcpiDevAmlIfClass *adevc = ACPI_DEV_AML_IF_CLASS(klass);
  
@@ -276,22 +276,22 @@ index e322fc2ff..d727879ed 100644
      dc->vmsd = &vmstate_rtc;
      rc->phases.enter = rtc_reset_enter;
 diff --git a/hw/rtc/pl031.c b/hw/rtc/pl031.c
-index ed439bd3a..29c87a3d9 100644
+index 09d1b15c7..91efc91d3 100644
 --- a/hw/rtc/pl031.c
 +++ b/hw/rtc/pl031.c
-@@ -336,6 +336,7 @@ static void pl031_class_init(ObjectClass *klass, void *data)
+@@ -315,6 +315,7 @@ static void pl031_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
  
 +    dc->crucible_volatile_state = true;
      dc->vmsd = &vmstate_pl031;
-     device_class_set_props(dc, pl031_properties);
  }
+ 
 diff --git a/hw/timer/arm_timer.c b/hw/timer/arm_timer.c
-index 1213b77aa..c972392c6 100644
+index fb70333c5..323722e9d 100644
 --- a/hw/timer/arm_timer.c
 +++ b/hw/timer/arm_timer.c
-@@ -396,6 +396,7 @@ static void sp804_class_init(ObjectClass *klass, void *data)
+@@ -396,6 +396,7 @@ static void sp804_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *k = DEVICE_CLASS(klass);
  
@@ -300,10 +300,10 @@ index 1213b77aa..c972392c6 100644
      device_class_set_props(k, sp804_properties);
      k->vmsd = &vmstate_sp804;
 diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
-index ccb97b680..14dafd921 100644
+index 42285cff7..c47edd6d1 100644
 --- a/hw/timer/hpet.c
 +++ b/hw/timer/hpet.c
-@@ -740,6 +740,7 @@ static void hpet_device_class_init(ObjectClass *klass, void *data)
+@@ -769,6 +769,7 @@ static void hpet_device_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
  
@@ -312,10 +312,10 @@ index ccb97b680..14dafd921 100644
      device_class_set_legacy_reset(dc, hpet_reset);
      dc->vmsd = &vmstate_hpet;
 diff --git a/hw/timer/i8254_common.c b/hw/timer/i8254_common.c
-index 29105afcc..900b0e183 100644
+index 419d4cd6e..0466cfe5c 100644
 --- a/hw/timer/i8254_common.c
 +++ b/hw/timer/i8254_common.c
-@@ -246,6 +246,7 @@ static void pit_common_class_init(ObjectClass *klass, void *data)
+@@ -244,6 +244,7 @@ static void pit_common_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
  
@@ -323,11 +323,11 @@ index 29105afcc..900b0e183 100644
      dc->realize = pit_common_realize;
      dc->vmsd = &vmstate_pit_common;
      /*
-diff --git a/include/hw/qdev-core.h b/include/hw/qdev-core.h
-index 530f3da70..bed976ac0 100644
---- a/include/hw/qdev-core.h
-+++ b/include/hw/qdev-core.h
-@@ -160,6 +160,13 @@ struct DeviceClass {
+diff --git a/include/hw/core/qdev.h b/include/hw/core/qdev.h
+index e14762234..7b82d7a30 100644
+--- a/include/hw/core/qdev.h
++++ b/include/hw/core/qdev.h
+@@ -161,6 +161,13 @@ struct DeviceClass {
      bool user_creatable;
      bool hotpluggable;
  
@@ -341,8 +341,33 @@ index 530f3da70..bed976ac0 100644
      /* callbacks */
      /**
       * @legacy_reset: deprecated device reset method pointer
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 1899f9e37..e634ab71c 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -2405,6 +2405,20 @@ QEMU_PLUGIN_API
+ size_t qemu_plugin_crucible_fault_capabilities(
+     struct qemu_plugin_crucible_fault_capability *out, size_t capacity);
+ 
++/**
++ * qemu_plugin_crucible_fault_ready_marker() - observe one guest ready marker
++ * @marker: UTF-8 marker bytes, without a trailing NUL
++ * @marker_len: exact nonzero marker length, bounded to 255 bytes
++ * @observed_icount: exact raw icount at the guest observation callback
++ *
++ * Returns one when the marker completes a pending ready policy, zero when no
++ * pending policy names it, or a negative errno for an invalid observation.
++ * The call is effective only in deterministic sim-fault mode.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_ready_marker(
++    const char *marker, size_t marker_len, uint64_t observed_icount);
++
+ /**
+  * qemu_plugin_crucible_fault_submit() - copy and arm a validated command
+  * @command: plugin-validated fixed command fields
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 8b3eced85..565a84c57 100644
+index 8e51bff93..d8cf9bddf 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -72,6 +72,7 @@ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
@@ -380,52 +405,26 @@ index 8b3eced85..565a84c57 100644
  
  /*
   * Architecture interrupt-controller interception contract.  These objects are
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 12d734b22..80b958974 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -2044,6 +2044,20 @@ QEMU_PLUGIN_API
- size_t qemu_plugin_crucible_fault_capabilities(
-     struct qemu_plugin_crucible_fault_capability *out, size_t capacity);
- 
-+/**
-+ * qemu_plugin_crucible_fault_ready_marker() - observe one guest ready marker
-+ * @marker: UTF-8 marker bytes, without a trailing NUL
-+ * @marker_len: exact nonzero marker length, bounded to 255 bytes
-+ * @observed_icount: exact raw icount at the guest observation callback
-+ *
-+ * Returns one when the marker completes a pending ready policy, zero when no
-+ * pending policy names it, or a negative errno for an invalid observation.
-+ * The call is effective only in deterministic sim-fault mode.
-+ */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_fault_ready_marker(
-+    const char *marker, size_t marker_len, uint64_t observed_icount);
-+
- /**
-  * qemu_plugin_crucible_fault_submit() - copy and arm a validated command
-  * @command: plugin-validated fixed command fields
 diff --git a/migration/savevm.c b/migration/savevm.c
-index 3c3c64dff..238a29ec7 100644
+index 527bb4e70..0af31e381 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
 @@ -28,6 +28,8 @@
  
  #include "qemu/osdep.h"
- #include "hw/boards.h"
+ #include "hw/core/boards.h"
 +#include "hw/core/cpu.h"
 +#include "hw/qdev-core.h"
  #include "net/net.h"
  #include "migration.h"
  #include "migration/snapshot.h"
-@@ -247,11 +249,48 @@ typedef struct SaveStateEntry {
+@@ -249,10 +251,47 @@ typedef struct SaveStateEntry {
      int load_section_id;
      const SaveVMHandlers *ops;
      const VMStateDescription *vmsd;
 +    VMStateIf *obj;
      void *opaque;
      CompatEntry *compat;
-     int is_ram;
  } SaveStateEntry;
  
 +static uint32_t crucible_lifecycle_state_domain(const SaveStateEntry *se)
@@ -467,7 +466,7 @@ index 3c3c64dff..238a29ec7 100644
  typedef struct SaveState {
      QTAILQ_HEAD(, SaveStateEntry) handlers;
      SaveStateEntry *handler_pri_head[MIG_PRI_MAX + 1];
-@@ -911,6 +950,7 @@ int vmstate_register_with_alias_id(VMStateIf *obj, uint32_t instance_id,
+@@ -938,6 +977,7 @@ int vmstate_register_with_alias_id(VMStateIf *obj, uint32_t instance_id,
      se->section_id = savevm_state.global_section_id++;
      se->opaque = opaque;
      se->vmsd = vmsd;
@@ -475,53 +474,81 @@ index 3c3c64dff..238a29ec7 100644
      se->alias_id = alias_id;
  
      if (obj) {
-@@ -1803,6 +1843,14 @@ void qemu_savevm_live_state(QEMUFile *f)
- }
+@@ -1954,16 +1994,43 @@ static bool qemu_savevm_se_iterable(SaveStateEntry *se)
  
- int qemu_save_device_state(QEMUFile *f)
-+{
+ int qemu_save_device_state(QEMUFile *f, Error **errp)
+ {
+-    int ret;
 +    return qemu_save_device_state_domains(
 +        f, QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE |
 +           QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE |
-+           QEMU_CRUCIBLE_LIFECYCLE_STATE_CONTROL);
++           QEMU_CRUCIBLE_LIFECYCLE_STATE_CONTROL,
++        errp);
 +}
-+
-+int qemu_save_device_state_domains(QEMUFile *f, uint32_t domains)
- {
-     MigrationState *ms = migrate_get_current();
-     Error *local_err = NULL;
-@@ -1817,7 +1865,7 @@ int qemu_save_device_state(QEMUFile *f)
-     QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
-         int ret;
  
--        if (se->is_ram) {
-+        if (se->is_ram || !(crucible_lifecycle_state_domain(se) & domains)) {
-             continue;
-         }
-         ret = vmstate_save(f, se, NULL, &local_err);
+-    /* Both COLO and Xen never use vmdesc, hence NULL. */
+-    ret = qemu_savevm_state_non_iterable_early(f, NULL, errp);
+-    if (ret) {
+-        return ret;
++int qemu_save_device_state_domains(QEMUFile *f, uint32_t domains,
++                                   Error **errp)
++{
++    SaveStateEntry *se;
++
++    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
++        int ret;
++
++        if (!se->vmsd || !se->vmsd->early_setup ||
++            !(crucible_lifecycle_state_domain(se) & domains)) {
++            continue;
++        }
++
++        ret = vmstate_save(f, se, NULL, errp);
++        if (ret) {
++            return ret;
++        }
+     }
+ 
+-    if (!qemu_savevm_state_non_iterable(f, errp)) {
+-        return -1;
++    cpu_synchronize_all_states();
++
++    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
++        if ((se->vmsd && se->vmsd->early_setup) ||
++            !(crucible_lifecycle_state_domain(se) & domains)) {
++            continue;
++        }
++
++        if (vmstate_save(f, se, NULL, errp) < 0) {
++            return -1;
++        }
+     }
+ 
+     qemu_savevm_state_end(f);
 diff --git a/migration/savevm.h b/migration/savevm.h
-index 58761d88e..0df53f173 100644
+index 35802a786..de7fccaf0 100644
 --- a/migration/savevm.h
 +++ b/migration/savevm.h
-@@ -62,6 +62,12 @@ void qemu_savevm_send_postcopy_ram_discard(QEMUFile *f, const char *name,
- void qemu_savevm_send_colo_enable(QEMUFile *f);
- void qemu_savevm_live_state(QEMUFile *f);
- int qemu_save_device_state(QEMUFile *f);
+@@ -69,6 +69,13 @@ void qemu_savevm_send_postcopy_ram_discard(QEMUFile *f, const char *name,
+                                            uint64_t *length_list);
+ int qemu_save_device_state(QEMUFile *f, Error **errp);
+ int qemu_loadvm_state(QEMUFile *f, Error **errp);
 +enum QemuCrucibleLifecycleStateDomain {
 +    QEMU_CRUCIBLE_LIFECYCLE_STATE_VOLATILE = 1U << 0,
 +    QEMU_CRUCIBLE_LIFECYCLE_STATE_DEVICE = 1U << 1,
 +    QEMU_CRUCIBLE_LIFECYCLE_STATE_CONTROL = 1U << 2,
 +};
-+int qemu_save_device_state_domains(QEMUFile *f, uint32_t domains);
++int qemu_save_device_state_domains(QEMUFile *f, uint32_t domains,
++                                   Error **errp);
  int qemu_savevm_crucible_schema_sha256(uint8_t digest[32],
                                         uint64_t *sections_out);
- 
+ void qemu_loadvm_state_cleanup(MigrationIncomingState *mis);
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 000000000..310a425f7
+index 000000000..e6922218d
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,1558 @@
+@@ -0,0 +1,1562 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -544,7 +571,7 @@ index 000000000..310a425f7
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
 +#include "qemu/module.h"
-+#include "qemu/qemu-plugin.h"
++#include "plugins/qemu-plugin.h"
 +#include "qobject/qlist.h"
 +#include "qobject/qdict.h"
 +#include "qobject/qnum.h"
@@ -866,6 +893,7 @@ index 000000000..310a425f7
 +                                            uint8_t **state,
 +                                            size_t *state_len)
 +{
++    g_autoptr(Error) local_err = NULL;
 +    QIOChannelBuffer *buffer;
 +    QEMUFile *file;
 +    int status;
@@ -878,7 +906,10 @@ index 000000000..310a425f7
 +    }
 +    buffer = qio_channel_buffer_new(4096);
 +    file = qemu_file_new_output(QIO_CHANNEL(buffer));
-+    status = qemu_save_device_state_domains(file, domains);
++    status = qemu_save_device_state_domains(file, domains, &local_err);
++    if (status != 0 && local_err) {
++        error_report_err(g_steal_pointer(&local_err));
++    }
 +    if (status == 0) {
 +        status = qemu_fflush(file);
 +    }
@@ -2081,7 +2112,7 @@ index 000000000..310a425f7
 +
 +type_init(crucible_lifecycle_register)
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 24bdbb225..5738b87ae 100644
+index ac3997d1b..588e9412b 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -1699,18 +1699,34 @@ static bool node_json_watchdog(const QObject *object)
@@ -2213,7 +2244,7 @@ index 24bdbb225..5738b87ae 100644
      QemuCrucibleFaultEventReservation *reservation)
  {
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
-index ff1e179e4..132728656 100644
+index 5935ee79e..8632d240d 100644
 --- a/plugins/crucible-fault-vcpu-service.c
 +++ b/plugins/crucible-fault-vcpu-service.c
 @@ -513,6 +513,11 @@ bool qemu_crucible_fault_vcpu_service_eligible(CPUState *cpu)
@@ -2247,10 +2278,10 @@ index 31b19e1e4..fe7b0ca9e 100644
           crucible_boundary_deadlines && i < crucible_boundary_deadlines->len;
           i++) {
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 30ff5ba97..3c76bd91d 100644
+index b3be9deae..af12536a0 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -65,6 +65,7 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
+@@ -85,7 +85,8 @@ system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
                      'crucible-fault-instruction.c',
                      'crucible-fault-interrupt.c',
                      'crucible-fault-hardware-error.c',
@@ -2258,20 +2289,21 @@ index 30ff5ba97..3c76bd91d 100644
 +                    'crucible-fault-vcpu-service.c',
 +                    'crucible-fault-lifecycle.c'))
  
- common_ss.add(files('loader.c', 'api.c', 'core.c'))
+ user_ss.add(files('api.c', 'core.c'))
+ system_ss.add(files('api.c', 'core.c'))
 diff --git a/system/runstate.c b/system/runstate.c
-index d426fee75..b66a53bfc 100644
+index 8d1fa9dca..8560dc300 100644
 --- a/system/runstate.c
 +++ b/system/runstate.c
-@@ -42,6 +42,7 @@
- #include "qapi/qapi-commands-run-state.h"
+@@ -43,6 +43,7 @@
  #include "qapi/qapi-events-run-state.h"
  #include "qemu/accel.h"
+ #include "accel/accel-ops.h"
 +#include "qemu/crucible-fault.h"
  #include "qemu/error-report.h"
  #include "qemu/job.h"
  #include "qemu/log.h"
-@@ -555,6 +556,7 @@ void qemu_system_reset(ShutdownCause reason)
+@@ -596,6 +597,7 @@ void qemu_system_reset(ShutdownCause reason)
      }
  
      vm_set_suspended(false);

@@ -170,7 +170,7 @@ pub fn cases(
         .ok_or_else(|| anyhow::anyhow!("archival plan has no shared qualification contract"))?;
     let current = contract.schema_version == CONTRACT_V2;
     let mut requirements: Vec<_> = contract
-        .selected(plan.release_class)
+        .selected(&plan.registry, plan.release_class)?
         .filter(|gate| gate.phase == phase)
         .filter(|gate| {
             !current
@@ -300,7 +300,11 @@ pub fn cases(
                     .as_ref()
                     .is_some_and(|claim| claim.minimum_assurance == AssuranceLevel::A3)
                 {
-                    Some(contract.thresholds_for(plan.release_class)?.soak_seconds)
+                    Some(
+                        contract
+                            .thresholds_for(&plan.registry, plan.release_class)?
+                            .soak_seconds,
+                    )
                 } else {
                     None
                 },
@@ -480,7 +484,7 @@ pub fn assess_observations(
         .qualification
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("missing qualification contract"))?;
-    let thresholds = contract.thresholds_for(plan.release_class)?;
+    let thresholds = contract.thresholds_for(&plan.registry, plan.release_class)?;
     if evidence.windows(2).any(|pair| pair[0].id >= pair[1].id) {
         bail!("qualification evidence count differs from applicable cases");
     }

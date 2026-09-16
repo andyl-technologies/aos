@@ -1,8 +1,8 @@
 diff --git a/MAINTAINERS b/MAINTAINERS
-index d54b5578f..5d6bc7439 100644
+index 902db7721..1490bc416 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -3163,6 +3163,7 @@ Main loop
+@@ -3472,6 +3472,7 @@ Main loop
  M: Paolo Bonzini <pbonzini@redhat.com>
  S: Maintained
  F: include/qemu/main-loop.h
@@ -10,6 +10,30 @@ index d54b5578f..5d6bc7439 100644
  F: include/system/runstate.h
  F: include/system/runstate-action.h
  F: util/main-loop.c
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index c224309da..90f99f3eb 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -1765,6 +1765,19 @@ int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
+ QEMU_PLUGIN_API
+ void qemu_plugin_crucible_fingerprint_capture_free(void *material);
+ 
++/** Original raw Unix process argc/argv identity captured at process entry. */
++struct qemu_plugin_crucible_process_argv_attestation {
++    uint32_t version;
++    uint64_t argc;
++    uint64_t raw_bytes;
++    uint8_t sha256[32];
++};
++
++/** Return the original raw Unix process argc/argv attestation. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_process_argv_attestation(
++    struct qemu_plugin_crucible_process_argv_attestation *out);
++
+ /** Return the observed aggregate instruction count, or zero if unavailable. */
+ QEMU_PLUGIN_API
+ uint64_t qemu_plugin_crucible_icount(void);
 diff --git a/include/qemu/crucible-process.h b/include/qemu/crucible-process.h
 new file mode 100644
 index 000000000..aa8fa71be
@@ -33,46 +57,22 @@ index 000000000..aa8fa71be
 +
 +#endif /* QEMU_CRUCIBLE_PROCESS_H */
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9a0b94fd5..e3112d324 100644
+index 5829fbb1d..4352446e0 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
-@@ -8,6 +8,7 @@
- #define QEMU_PLUGIN_H
+@@ -9,6 +9,7 @@
  
  #include "qemu/config-file.h"
+ #include "plugins/qemu-plugin.h"
 +#include "qemu/crucible-process.h"
- #include "qemu/qemu-plugin.h"
  #include "qemu/error-report.h"
  #include "qemu/queue.h"
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index a44cf90ee..a11fc9505 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1404,6 +1404,19 @@ int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
- QEMU_PLUGIN_API
- void qemu_plugin_crucible_fingerprint_capture_free(void *material);
- 
-+/** Original raw Unix process argc/argv identity captured at process entry. */
-+struct qemu_plugin_crucible_process_argv_attestation {
-+    uint32_t version;
-+    uint64_t argc;
-+    uint64_t raw_bytes;
-+    uint8_t sha256[32];
-+};
-+
-+/** Return the original raw Unix process argc/argv attestation. */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_process_argv_attestation(
-+    struct qemu_plugin_crucible_process_argv_attestation *out);
-+
- /** Return the observed aggregate instruction count, or zero if unavailable. */
- QEMU_PLUGIN_API
- uint64_t qemu_plugin_crucible_icount(void);
+ #include "qemu/option.h"
 diff --git a/plugins/api.c b/plugins/api.c
-index 591363c5a..df34473f3 100644
+index e89baf2b4..d177612e9 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -1116,6 +1116,17 @@ void qemu_plugin_crucible_fingerprint_capture_free(void *material)
+@@ -1295,6 +1295,17 @@ void qemu_plugin_crucible_fingerprint_capture_free(void *material)
      g_free(material);
  }
  
@@ -91,7 +91,7 @@ index 591363c5a..df34473f3 100644
  {
      return qemu_plugin_icount_raw();
 diff --git a/system/main.c b/system/main.c
-index 1c0220673..79b8d2e7e 100644
+index b8f7157cc..101f4d1e9 100644
 --- a/system/main.c
 +++ b/system/main.c
 @@ -23,6 +23,7 @@
@@ -231,5 +231,5 @@ index 1c0220673..79b8d2e7e 100644
  {
 +    crucible_capture_process_argv(argc, argv);
      qemu_init(argc, argv);
-     bql_unlock();
-     replay_mutex_unlock();
+ 
+     /*

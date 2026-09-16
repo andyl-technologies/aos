@@ -1,7 +1,7 @@
 # QEMU patch-series license inventory
 
 QEMU is GPL-2.0-only as a combined emulator. Individual source files retain
-their own licenses. QEMU 10.0's `LICENSE` states that a source file without
+their own licenses. QEMU 11.1's `LICENSE` states that a source file without
 licensing information is GPL-2.0-or-later unless it is in one of the listed
 GPL-2.0-only directories. The Crucible patch series does not change an
 existing file's license.

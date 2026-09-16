@@ -103,7 +103,9 @@
     CARGO_PROFILE_RELEASE_OPT_LEVEL = "s";
     CARGO_PROFILE_RELEASE_LTO = "thin";
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
-    CARGO_PROFILE_RELEASE_STRIP = "debuginfo";
+    # Monomorphized browser symbol names can exceed the provider's asset limit
+    # even without DWARF. Browsers need the executable sections, not these names.
+    CARGO_PROFILE_RELEASE_STRIP = "symbols";
   };
   cargoEnv = {PROTOC = "${buildProtobuf}/bin/protoc";} // consoleReleaseEnv;
   cargoArtifacts = mkCargoArtifacts {
@@ -178,6 +180,11 @@ in
           test -s "$out/hub-console.js"
           test -s "$out/hub-console_bg.wasm"
           test -s "$out/hub-console.css"
+          console_wasm_size=$(wc -c < "$out/hub-console_bg.wasm")
+          if [ "$console_wasm_size" -gt 26214400 ]; then
+            echo "Hub console WebAssembly exceeds the 25 MiB Worker asset limit: $console_wasm_size bytes" >&2
+            exit 1
+          fi
           grep -q 'export function mount' "$out/hub-console.js"
           grep -q 'var(--paper)' "$out/hub-console.css"
           grep -q 'var(--form-label-col)' "$out/hub-console.css"

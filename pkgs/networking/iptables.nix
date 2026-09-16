@@ -12,7 +12,7 @@
   libnftnl,
   libpcap,
 }: let
-  version = "1.8.11";
+  version = "1.8.13";
 in
   mkDerivation {
     pname = "iptables";
@@ -22,7 +22,7 @@ in
       urls = [
         "https://www.netfilter.org/projects/iptables/files/iptables-${version}.tar.xz"
       ];
-      hash = "sha256-2HMD1V74ySvK1N0/l4sm0nIBNkKwKUJXdfW60QCf57I=";
+      hash = "sha256-GvzTPano+ROs5qISZ4gWLiB+JvXV4pxlc8Dlgf/Fi5k=";
     };
 
     buildDeps = [

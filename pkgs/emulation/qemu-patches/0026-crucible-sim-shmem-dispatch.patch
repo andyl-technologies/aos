@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
-index 4fd87012f..f7023978c 100644
+index b21f0a1b9..884ee4dc7 100644
 --- a/accel/tcg/meson.build
 +++ b/accel/tcg/meson.build
-@@ -30,5 +30,6 @@ system_ss.add(when: ['CONFIG_TCG'], if_true: files(
+@@ -36,5 +36,6 @@ system_ss.add(files(
    'tcg-accel-ops-mttcg.c',
    'tcg-accel-ops-rr.c',
    'tcg-accel-ops-sim.c',
@@ -10,10 +10,10 @@ index 4fd87012f..f7023978c 100644
    'watchpoint.c',
  ))
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index dc00fb398..a133a7c26 100644
+index 7ff83cf4c..771777c55 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -38,6 +38,7 @@
+@@ -39,6 +39,7 @@
  #include "tcg-accel-ops.h"
  #include "tcg-accel-ops-rr.h"
  #include "tcg-accel-ops-icount.h"
@@ -21,9 +21,9 @@ index dc00fb398..a133a7c26 100644
  
  /* Kick all RR vCPUs */
  void rr_kick_vcpu_thread(CPUState *unused)
-@@ -395,6 +396,19 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -403,6 +404,19 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
-                               (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
+                               (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
 +            if (rr_crucible_sim_mode() &&
 +                crucible_sim_shmem_dispatch_registered()) {
@@ -41,7 +41,7 @@ index dc00fb398..a133a7c26 100644
              if (cpu_can_run(cpu)) {
                  int r;
  
-@@ -406,6 +420,10 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -414,6 +428,10 @@ static void *rr_cpu_thread_fn(void *arg)
                  if (icount_enabled()) {
                      icount_process_data(cpu);
                  }
@@ -54,7 +54,7 @@ index dc00fb398..a133a7c26 100644
  
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
 new file mode 100644
-index 000000000..e55a1f804
+index 000000000..e6266067c
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
 @@ -0,0 +1,76 @@
@@ -63,7 +63,7 @@ index 000000000..e55a1f804
 + */
 +
 +#include "qemu/osdep.h"
-+#include "qemu/qemu-plugin.h"
++#include "plugins/qemu-plugin.h"
 +#include "tcg-accel-ops-sim-shmem.h"
 +
 +static uint64_t crucible_current_icount;
@@ -152,11 +152,11 @@ index 000000000..69553f35f
 +bool crucible_sim_shmem_may_advance_to(uint64_t candidate_icount);
 +
 +#endif /* TCG_ACCEL_OPS_SIM_SHMEM_H */
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 1e6b12e2d..7bdab83a1 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -173,6 +173,22 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 4f2f78734..bbf592738 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -217,6 +217,22 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
  typedef void (*qemu_plugin_vcpu_idle_resume_cb_t)(unsigned int vcpu_index,
                                                    uint64_t icount,
                                                    void *userdata);
@@ -179,7 +179,7 @@ index 1e6b12e2d..7bdab83a1 100644
  /**
   * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
   * @request_id: driver-assigned request id
-@@ -981,6 +997,24 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
+@@ -1079,6 +1095,24 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
                                                qemu_plugin_vcpu_idle_resume_cb_t resume_cb,
                                                void *userdata);
  

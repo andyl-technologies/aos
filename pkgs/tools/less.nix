@@ -5,7 +5,7 @@
   gnumake,
   ncurses,
 }: let
-  version = "668";
+  version = "704";
 in
   mkDerivation {
     pname = "less";
@@ -16,7 +16,7 @@ in
         "https://www.greenwoodsoftware.com/less/less-${version}.tar.gz"
         "https://mirrors.kernel.org/gentoo/distfiles/less-${version}.tar.gz"
       ];
-      hash = "sha256-KBn1VWTYbVQqu+yv2C/2HoGaPuyWf6o2zT5o8VlqRLg=";
+      hash = "sha256-IKCworslJfpTx+7pvrhUtMnPFy6rsgmvcCB0NUe/6fs=";
     };
 
     buildDeps = [gnumake];

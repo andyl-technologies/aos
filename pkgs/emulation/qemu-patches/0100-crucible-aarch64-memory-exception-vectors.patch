@@ -1,5 +1,5 @@
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 216b4e5f9..654b273db 100644
+index 142100e1a..f9cede897 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -4478,9 +4478,9 @@ static bool node_memory_rule_admissible(QemuCrucibleFaultRule *rule)

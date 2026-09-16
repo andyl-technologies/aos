@@ -695,7 +695,10 @@
     if (!input || !suggest || !indexEl || !form) return;
     var index;
     try { index = JSON.parse(indexEl.textContent); } catch (_) { return; }
+    // Replace native datalist suggestions only once the enhanced picker is ready.
+    input.removeAttribute("list");
     var entries = [];
+    if (index.allow_all) entries.push({value: "all", label: "All releases", kind: "scope"});
     (index.channels || []).forEach(function (channel) {
       entries.push({value: channel.name, label: channel.name + " \u2192 " + channel.release, kind: "channel"});
     });
@@ -707,18 +710,21 @@
     });
     var active = -1;
     var shown = [];
-    function close() { suggest.hidden = true; suggest.innerHTML = ""; active = -1; shown = []; }
+    function close() { suggest.hidden = true; suggest.innerHTML = ""; input.removeAttribute("aria-activedescendant"); active = -1; shown = []; }
     function choose(entry) { input.value = entry.value; close(); form.requestSubmit(); }
     function render() {
       var term = input.value.trim().toLowerCase();
       shown = entries.filter(function (entry) { return !term || entry.value.toLowerCase().indexOf(term) !== -1; }).slice(0, 12);
       suggest.innerHTML = "";
       active = -1;
+      input.removeAttribute("aria-activedescendant");
       if (!shown.length) { suggest.hidden = true; return; }
       shown.forEach(function (entry, position) {
         var item = document.createElement("div");
         item.className = "fs-item release-suggest-" + entry.kind;
+        item.id = "release-option-" + position;
         item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", "false");
         item.textContent = entry.label;
         item.addEventListener("mousedown", function (event) { event.preventDefault(); choose(entry); });
         item.addEventListener("mouseenter", function () { highlight(position); });
@@ -728,12 +734,20 @@
     }
     function highlight(position) {
       active = position;
-      Array.from(suggest.children).forEach(function (item, at) { item.classList.toggle("active", at === active); });
-      if (active >= 0) suggest.children[active].scrollIntoView({block: "nearest"});
+      Array.from(suggest.children).forEach(function (item, at) {
+        item.classList.toggle("active", at === active);
+        item.setAttribute("aria-selected", at === active ? "true" : "false");
+      });
+      if (active >= 0) {
+        input.setAttribute("aria-activedescendant", suggest.children[active].id);
+        suggest.children[active].scrollIntoView({block: "nearest"});
+      }
     }
     input.setAttribute("role", "combobox");
     input.setAttribute("aria-expanded", "false");
     input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-controls", suggest.id);
+    suggest.setAttribute("aria-label", "Available releases");
     suggest.setAttribute("role", "listbox");
     input.addEventListener("input", render);
     input.addEventListener("focus", render);
@@ -758,10 +772,13 @@
   if (!browser || !window.fetch) return;
   var base = browser.getAttribute("data-doc-base");
   var release = browser.getAttribute("data-doc-release");
+  var packageEntry = browser.getAttribute("data-doc-package") || "";
+  var legacyPath = browser.hasAttribute("data-doc-legacy") ? location.pathname : null;
   function nodeUrl(key, children, cursor) {
     var url = new URL(base + (children ? "/children" : ""), location.origin);
     url.searchParams.set("release", release);
     url.searchParams.set("root", key);
+    if (packageEntry) url.searchParams.set("package_entry", packageEntry);
     if (cursor) url.searchParams.set("cursor", cursor);
     return url;
   }
@@ -833,7 +850,9 @@
   var reader = browser.querySelector("[data-doc-reader]");
   var crumbs = browser.querySelector(".doc-breadcrumbs");
   function isDocPage(url) {
-    return url.origin === location.origin && url.pathname === base;
+    if (url.origin !== location.origin) return false;
+    if (legacyPath && url.pathname === legacyPath) return true;
+    return url.pathname === base && (url.searchParams.get("package_entry") || "") === packageEntry;
   }
   function markCurrent(key) {
     browser.querySelectorAll(".doc-tree [aria-current]").forEach(function (row) { row.removeAttribute("aria-current"); });
@@ -855,6 +874,7 @@
         var nextCrumbs = page.querySelector(".doc-breadcrumbs");
         var nextBrowser = page.querySelector("[data-doc-browser]");
         if (!next || !nextCrumbs || !nextBrowser) throw new Error("Unexpected page");
+        if ((nextBrowser.getAttribute("data-doc-package") || "") !== packageEntry) throw new Error("Different package scope");
         reader.innerHTML = next.innerHTML;
         crumbs.innerHTML = nextCrumbs.innerHTML;
         var root = nextBrowser.getAttribute("data-doc-root");
@@ -893,6 +913,7 @@
   window.addEventListener("popstate", function () {
     var url = new URL(location.href);
     if (isDocPage(url) && url.searchParams.get("release") === release) swap(url, false);
+    else location.reload();
   });
   history.replaceState({docs: true}, "", location.href);
 
@@ -971,3 +992,12 @@
   window.addEventListener("hashchange", selectAnchor);
   selectAnchor();
 })();
+
+// Keep keyboard focus on the disclosure after dismissing account navigation.
+document.addEventListener("keydown", function (event) {
+  if (event.key !== "Escape") return;
+  var menu = event.target.closest && event.target.closest("details.masthead-menu[open]");
+  if (!menu) return;
+  menu.open = false;
+  menu.querySelector("summary").focus();
+});

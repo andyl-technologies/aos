@@ -13,7 +13,7 @@ third-party tooling share one schema:
 | `PackageService` | search, package/version/platform metadata, closures, narinfo lookups, reverse-deps |
 | `ChannelService` | channel list, 256-partition state, floor history; reviewed advance/init against an exact signing-key generation |
 | `PublishService` | the write path: stage release, mint upload credentials (`MintUploadCredentials`), finalize, status stream, publish leases |
-| `ValidationService` | consistency-validation runs, per-cache coverage reports, repair jobs |
+| `CacheIntegrationService` | managed-cache relationships, inventory, coverage operations, retention, and garbage collection |
 | `KeyService` | roster mirror, signing-key generations, typed usages, rotation and retirement workflows |
 | `TokenService` | provisioning-token CRUD — same semantics as `aos token` |
 | `AuditService` | audit log queries |

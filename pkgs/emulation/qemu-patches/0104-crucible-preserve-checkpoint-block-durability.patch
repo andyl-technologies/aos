@@ -1,5 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index ec70c3c63..6d33dc601 100644
+index 615d0389f..cd3a23829 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -654,6 +654,17 @@ crucible_shmem_co_flush(BlockDriverState *bs)

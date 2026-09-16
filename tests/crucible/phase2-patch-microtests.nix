@@ -165,7 +165,7 @@
 
           tar -xf ${qemuPackage.src} -C "$TMPDIR/stock-qemu"
           ! grep -q 'qemu_plugin_crucible_request_terminal_pause' \
-            "$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/include/qemu/qemu-plugin.h"
+            "$TMPDIR/stock-qemu/qemu-${qemuPackage.version}/include/plugins/qemu-plugin.h"
 
           cat > "$out/result" <<'RESULT'
           PASS
@@ -1526,6 +1526,26 @@
         '';
       };
     }
+    {
+      patch = "0116-crucible-qemu-11-api-port.patch";
+      check = certifyExactPatch {
+        patchName = "0116-crucible-qemu-11-api-port.patch";
+        liveCheck = qemuPatchRegeneration;
+        evidenceName = "qemu-11-full-series-build-and-regeneration";
+        liveEvidence = ''
+          grep -Fxq 'qemu_version=11.1.1' "$live_result"
+          grep -Fxq 'branch_commit_count_matches_manifest=true' "$live_result"
+          grep -Fxq 'regenerated_patch_bytes_match_committed=true' "$live_result"
+          grep -Fxq 'qemu_package_patch_phase_generated_from_manifest=true' "$live_result"
+          grep -Fq 'qemu_process_cpu_events_common(cpu);' \
+            ${patchDir}/0116-crucible-qemu-11-api-port.patch
+          grep -Fq 'qemu_save_device_state(f, &local_err);' \
+            ${patchDir}/0116-crucible-qemu-11-api-port.patch
+          grep -Fq 'qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans, NULL);' \
+            ${patchDir}/0116-crucible-qemu-11-api-port.patch
+        '';
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -1622,7 +1642,7 @@ in
             cd "$work_dir"
 
             test -x ${qemuPackage}/bin/qemu-system-x86_64
-            test -f ${qemuPackage}/include/qemu/qemu-plugin.h
+            test -f ${qemuPackage}/include/qemu-plugin.h
             nm -D --defined-only ${qemuPackage}/bin/qemu-system-x86_64 \
               > "$out/qemu-system-x86_64.dynamic-symbols"
             for symbol in \

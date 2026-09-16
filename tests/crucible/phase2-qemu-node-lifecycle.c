@@ -347,17 +347,15 @@ static void ready_tb_exec(unsigned int vcpu_index, void *opaque)
     }
 }
 
-static void ready_tb_translate(qemu_plugin_id_t id,
-                               struct qemu_plugin_tb *tb)
+static void ready_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
 {
-    (void)id;
+    (void)userdata;
     qemu_plugin_register_vcpu_tb_exec_cb(
         tb, ready_tb_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
 }
 
-static void at_exit(qemu_plugin_id_t id, void *opaque)
+static void at_exit(void *opaque)
 {
-    (void)id;
     (void)opaque;
     if (!finished) {
         fail("QEMU exited before the reset completion was observed");
@@ -411,7 +409,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     if (argc == 4) {
         if (strcmp(argv[3], "boot_policy=require_ready") == 0) {
             require_ready = true;
-            qemu_plugin_register_vcpu_tb_trans_cb(id, ready_tb_translate);
+            qemu_plugin_register_vcpu_tb_trans_cb(id, ready_tb_translate, NULL);
         } else if (strcmp(argv[3], "boot_policy=exhaust") == 0) {
             require_ready = true;
             ready_exhaustion = true;

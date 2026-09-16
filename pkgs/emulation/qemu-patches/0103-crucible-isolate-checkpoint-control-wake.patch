@@ -1,5 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
-index 501f55f6c..ec70c3c63 100644
+index 724c5e9f8..615d0389f 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -293,6 +293,16 @@ static void crucible_shmem_wake(Notifier *notifier, void *data)

@@ -14,8 +14,8 @@
 A **cache** here means exactly a Nix binary cache: a `nix-cache-info` plus a
 set of content-addressed NARs and their Ed25519-signed `.narinfo` pointers —
 the substituter half of the world, the counterpart to a registry's mutable
-git surface. The hub already *observes* caches (the advertised-endpoint list +
-freshness probes in [04](04-caching-and-mirroring.md)); this file makes the hub
+git surface. The hub already reads the advertised-endpoint list described in
+[04](04-caching-and-mirroring.md); this file makes the hub
 **host and manage** them: garbage collection, size limits, full-text search,
 closure-graph visualization, GC roots pinned to published AOS packages,
 reclamation when package versions are removed, no-JS web browsing, and a NAR
@@ -70,16 +70,10 @@ independent flags on the same join row.
 
 ### Naming reconciliation with the current spec
 
-The shipped schema already has a *rebuildable, derived* table named `caches`
-(`(registry_id, url, priority)` — the flattened advertised cache-stack, with
-`cache_probes` for observability). To give the managed object the clean name
-the model deserves, the migration **renames that derived table to
-`advertised_caches`** (it is rebuilt from each registry's committed
-`[cache_stack]` on every index, so the rename is a drop+recreate with no
-system-of-record data at risk; `cache_probes`/validation reference a
-`cache_url` string, not a foreign key, so they are unaffected beyond the column
-they read). The freed name `caches` becomes the managed-cache
-system-of-record table. The [04](04-caching-and-mirroring.md) "CacheStore"
+The rebuildable `advertised_caches` table stores each registry's flattened
+advertised cache stack and is reconstructed from committed surface data on
+every index. The `caches` table stores managed-cache system-of-record data.
+The [04](04-caching-and-mirroring.md) "CacheStore"
 concept (a shareable binding+prefix several registries advertise) is realized
 *by* a managed cache — that's what a `caches` row is.
 
@@ -231,7 +225,7 @@ cache_usage(cache_id PK→caches, used_bytes, object_count, updated_at)
 
 cache_gc_runs(
   id, cache_id→caches, started_at, finished_at, status, error,
-  scanned, retained, deleted_objects, freed_bytes)   -- run history, like validation_runs
+  scanned, retained, deleted_objects, freed_bytes)   -- garbage-collection run history
 ```
 
 Plus the per-dialect full-text index over `cache_objects(store_name, deriver)`.
@@ -498,9 +492,8 @@ the current spec. Phases are orderable; A lands first, E last.
 
 ### Phase B — cache core: object, storage, publish, serve
 
-- [x] Migration (v22): rename derived `caches` → `advertised_caches`; repoint the
-      indexer/validation readers (`cache_probes` keys on a `cache_url` string, so
-      it is unaffected) and the `list_advertised_caches` method.
+- [x] Migration (v22): rename derived `caches` → `advertised_caches`; repoint
+      the indexer readers and the `list_advertised_caches` method.
 - [x] Migration (v22): `caches`, `cache_registry_links`, `cache_gc_policy`,
       `cache_gc_roots` (with `expires_at`) SoR tables; `cache_objects`,
       `cache_usage`, `cache_gc_runs` derived tables; indexed `LIKE` search over

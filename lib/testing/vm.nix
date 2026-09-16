@@ -137,6 +137,17 @@
       # /opt/aos-test/bin holds the test agent scripts.
       mkdir -p rootfs/opt/aos-test/bin
 
+      # Mount points for declared ZFS datasets. systemd creates a missing
+      # Where= directory itself but cannot do so on the read-only root, so a
+      # dataset mounting directly onto the image needs its directory here.
+      ${lib.concatMapStringsSep "\n" (mountPoint: ''
+          mkdir -p ${lib.escapeShellArg "rootfs${mountPoint}"}
+        '') (
+          builtins.filter (point: point != null && point != "/")
+          (map (dataset: dataset.mountPoint)
+            (builtins.attrValues system.config.aos.filesystems.zfs.datasets))
+        )}
+
       # ── Guest agent handler: one framed request from stdin → framed
       # response to stdout. Wire format (v2):
       #   Frame:        <ascii-decimal body_len>\n<body bytes>
@@ -360,6 +371,12 @@
       # pre-refactor behavior.
       shrinkToFit = false;
       minSizeMiB = 2048;
+      # Out-of-tree modules the system under test declares. Without these the
+      # guest's module tree holds only the in-tree set, and a subject built
+      # around an external module -- ZFS, the NVIDIA driver -- boots with that
+      # module simply absent, which reads as the feature being broken rather
+      # than missing from the test image.
+      kernelModulePackages = system.config.aos.kernel.modulePackages;
       # Over and above toplevel + kernel: systemd/coreutils/bash/socat
       # are depended on transitively by toplevel, but the agent scripts
       # reference socat at a runtime-only path (not via environment.
@@ -672,7 +689,11 @@
     rootfsDeps ? null,
     # Shared:
     testScript ? null,
-    timeout ? 120,
+    extraDisks ? [],
+    kernelParams ? [],
+    # Null means "harness default", so a caller threading an unset option
+    # through does not have to restate the number.
+    timeout ? null,
     memory ? null,
     seedSELinuxDisabledConfig ? true,
   }:
@@ -716,12 +737,18 @@
         then memory
         else 2048;
 
+      effectiveTimeout =
+        if timeout != null
+        then timeout
+        else 120;
+
       # Driver manifest. The aos-test-driver consumes this JSON to
       # build one FirecrackerMachine; the testScript runs as a
       # Python module via runpy with `vm` exposed as a global. See
       # the v1 spec ("Manifest schema") for the full field list.
       manifest = {
-        inherit name timeout;
+        inherit name;
+        timeout = effectiveTimeout;
         machines = [
           {
             name = "vm";
@@ -738,6 +765,11 @@
             metadata = null;
             memory_mib = effectiveMemory;
             vcpu_count = 2;
+            # Blank devices for storage checks, presented as /dev/vdb onward.
+            extra_disks = map (disk: {inherit (disk) sizeMiB;}) extraDisks;
+            # Appended to the harness's own boot arguments, which own the root
+            # and console selection. Kernel module parameters live here.
+            kernel_params = kernelParams;
           }
         ];
       };

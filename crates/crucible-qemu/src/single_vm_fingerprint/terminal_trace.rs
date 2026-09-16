@@ -465,7 +465,7 @@ fn decode_sha256(encoded: &str, line: usize) -> Result<[u8; 32], QemuTraceFinger
         return Err(malformed(line, "SHA-256 digest must contain 64 hex digits"));
     }
     let mut digest = [0_u8; 32];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = hex_nibble(pair[0]).ok_or_else(|| malformed(line, "invalid SHA-256 hex"))?;
         let low = hex_nibble(pair[1]).ok_or_else(|| malformed(line, "invalid SHA-256 hex"))?;
         digest[index] = (high << 4) | low;

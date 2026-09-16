@@ -2,9 +2,13 @@
 
 Use the shared [qualification contract](qualification.md) and [release checklist](release-checklist.md). Production selects stronger obligations in the same contract.
 
-`andyl/main` is the supported registry. It is a separate trust and lifecycle
+`andyl/main` is the supported registry. It is a separate trust and pipeline assurance
 domain from `andyl/testing`; testing releases and testing roots never promote
 into it.
+
+Follow [Registry key management](registry-key-management.md) for the intended
+hardware-backed custody, independent authorities, rotation, and recovery
+requirements. GCP/AWS signer integration remains separate implementation work.
 
 Main remains closed until the launch gates in
 [`canonical-releases.md`](canonical-releases.md) are complete and a maintainer
@@ -80,7 +84,9 @@ Creating the topology row does not authorize or publish a base.
   prerelease component, and the `stable` channel.
 - Emergency plans use the reviewed hotfix source policy, a release version
   without a prerelease component, and the `stable` channel.
-- Edge plans are rejected. Publish experimental work to `andyl/testing`.
+- Edge plans use the `edge` channel and development versions, with the same
+  strict pipeline provenance and independent review required for every main
+  release. Test new build or release mechanisms in `andyl/testing`.
 
 Follow the [release checklist](release-checklist.md), using
 [`canonical-releases.md`](canonical-releases.md) for command arguments, including

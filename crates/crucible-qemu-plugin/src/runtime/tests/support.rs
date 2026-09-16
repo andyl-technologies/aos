@@ -378,6 +378,7 @@ extern "C" fn test_register_tcg_exec_cb(
 extern "C" fn test_register_vcpu_init(
     _plugin_id: crate::QemuPluginId,
     _callback: crate::QemuVcpuSimpleCbFn,
+    _userdata: *mut std::ffi::c_void,
 ) {
 }
 

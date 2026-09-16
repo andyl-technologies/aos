@@ -32,7 +32,7 @@
   # importer code paths, which AOS doesn't need for the
   # composefs-generated EROFS image used by `system.build.etcMetadataImage`.
   # Bump when AOS needs those importer features.
-  version = "1.8.10";
+  version = "1.9.4";
   checkMkfsProgram =
     if stdenv.isCross
     then ".mkfs.erofs-unwrapped"
@@ -56,7 +56,7 @@ in
       urls = [
         "https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/snapshot/erofs-utils-${version}.tar.gz"
       ];
-      hash = "sha256-BetO3r4R3szm7LNOmNL4DIzSg8Lyln2Lp+/VhBhXBRQ=";
+      hash = "sha256-fRNaolUDJqWs8g9TxRiupaiQABXOUHAAROQPgYwx3YA=";
     };
 
     buildDeps = [

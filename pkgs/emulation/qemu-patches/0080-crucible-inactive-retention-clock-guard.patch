@@ -1,5 +1,5 @@
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index caa2fa7da..b84e544c7 100644
+index 994bc76ac..c18c31a31 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -6879,7 +6879,7 @@ static void node_memory_retention_boundary_apply(

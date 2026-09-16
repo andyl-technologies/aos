@@ -4,9 +4,8 @@ References to *v1* elsewhere in this document mean the end of
 phase 2 — the first generally usable release.
 
 1. **Read-only hub** (highest value, lowest risk): `surface/` reader +
-   indexer, public browse UI, nix-cache/dumb-HTTP facade,
-   **consistency validation** (read-only by nature) and frontend
-   freshness probes. Deploy on Cloudflare against the existing
+   indexer, public browse UI, and nix-cache/dumb-HTTP facade. Deploy on
+   Cloudflare against the existing
    `cdn.aos.andyl.org` bucket in registration-only mode. Since
    tenancy arrives in phase 2, phase-1 registries are **instance-level
    records** — created by instance config or CLI, owned by no org,

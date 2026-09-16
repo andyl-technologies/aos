@@ -78,7 +78,7 @@ in {
         -Ui_xlocale
     '';
     buildScript = ''
-      make -j1
+      make -j"$NIX_BUILD_CORES"
     '';
     installScript = ''
       make install ${autotoolsVars}
@@ -355,7 +355,7 @@ in {
         "--disable-nls"
       ];
     buildScript = ''
-      make -j1 ${autotoolsVars}
+      make -j"$NIX_BUILD_CORES" ${autotoolsVars}
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"

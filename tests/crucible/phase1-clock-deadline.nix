@@ -328,21 +328,22 @@ in
               cd source
             fi
 
-            mkdir -p "$TMPDIR/clock-deadline-fixture/hw/boards" \
+            mkdir -p "$TMPDIR/clock-deadline-fixture/hw/core" \
+              "$TMPDIR/clock-deadline-fixture/include/plugins" \
               "$TMPDIR/clock-deadline-fixture/include/qemu" \
               "$TMPDIR/clock-deadline-fixture/migration" \
               "$TMPDIR/clock-deadline-fixture/plugins" \
               "$TMPDIR/clock-deadline-fixture/qapi" \
               "$TMPDIR/clock-deadline-fixture/qemu"
             cd "$TMPDIR/clock-deadline-fixture"
-            : > hw/boards.h
+            : > hw/core/boards.h
             : > migration/blocker.h
             : > qapi/error.h
             : > qemu/plugin-memory.h
             : > qemu/plugin.h
             : > qemu/timer.h
 
-            cat > include/qemu/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
+            cat > include/plugins/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
             #ifndef QEMU_PLUGIN_H
             #define QEMU_PLUGIN_H
 
@@ -373,11 +374,11 @@ in
 
             #include "qapi/error.h"
             #include "migration/blocker.h"
-            #include "hw/boards.h"
+            #include "hw/core/boards.h"
             #include "qemu/plugin-memory.h"
             #include "qemu/plugin.h"
 
-            #include "qemu/qemu-plugin.h"
+            #include "plugins/qemu-plugin.h"
 
             typedef struct CPUState CPUState;
             typedef struct Error Error;
@@ -519,7 +520,7 @@ in
 
             cp "$patchSourcePath" "$out/${patchName}"
             cp "$TMPDIR/clock-deadline-fixture/plugins/api-system.c" "$out/api-system.c.patched"
-            cp "$TMPDIR/clock-deadline-fixture/include/qemu/qemu-plugin.h" \
+            cp "$TMPDIR/clock-deadline-fixture/include/plugins/qemu-plugin.h" \
               "$out/qemu-plugin.h.patched"
             cp "$TMPDIR/clock-deadline-fixture/stock-clock-deadline-negative.err" \
               "$out/stock-negative-control.err"

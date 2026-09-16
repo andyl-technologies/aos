@@ -2624,20 +2624,12 @@ fn replace_control_result(
                     "replacement association inputs require nonempty packed i64 values",
                 ));
             }
-            let inputs = bytes
-                .chunks_exact(8)
-                .map(|chunk| {
-                    let encoded: [u8; 8] = chunk.try_into().map_err(|_error| {
-                        network_effect_application_error(
-                            transform,
-                            "replacement association input width is invalid",
-                        )
-                    })?;
-                    Ok(crucible::model::SignalValue::I64(i64::from_be_bytes(
-                        encoded,
-                    )))
-                })
-                .collect::<Result<Vec<_>, SchedulerError>>()?;
+            let inputs: Vec<_> = bytes
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|chunk| crucible::model::SignalValue::I64(i64::from_be_bytes(*chunk)))
+                .collect();
             let mut mapping = event.action.mapping_output.as_ref().clone();
             match &mut mapping {
                 crucible::model::ResolvedMappingOutput::Parameter { value, .. }

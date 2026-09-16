@@ -11,7 +11,7 @@
   sed,
   bash,
 }: let
-  version = "5.3.1";
+  version = "5.4.1";
 in
   mkDerivation {
     pname = "gawk";
@@ -19,7 +19,7 @@ in
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/gawk/gawk-${version}.tar.xz"];
-      hash = "0y3gsl6f09swpc1daamp049l8k3cggmhrx2g7m13cqiah5jbfkb9";
+      hash = "sha256-B/b3NCt/6+QxP8LCVCrZPWT+IK2HFyABCfEFqCb1/Tc=";
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake sed];

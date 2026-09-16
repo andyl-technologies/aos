@@ -1,5 +1,5 @@
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 501478891..d0176df22 100644
+index 01719e833..3fa08f1bc 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -134,7 +134,8 @@ void qemu_crucible_fault_fail_deferred(
@@ -13,10 +13,10 @@ index 501478891..d0176df22 100644
  uint64_t qemu_crucible_fault_next_boundary_deadline(uint16_t phase);
  int64_t qemu_crucible_fault_clamp_budget(uint16_t phase,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 81299fdf6..03a9a4506 100644
+index cdc0ec29a..a32258c13 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -721,11 +721,18 @@ void qemu_plugin_fire_control_boundary_cb(CPUState *cpu)
+@@ -724,11 +724,18 @@ void qemu_plugin_fire_control_boundary_cb(CPUState *cpu)
      qemu_plugin_vcpu_idle_resume_cb_t cb = qemu_plugin_control_boundary_cb;
  
      if (cb && cpu) {
@@ -37,7 +37,7 @@ index 81299fdf6..03a9a4506 100644
          qemu_plugin_crucible_control_boundary_depth--;
      }
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
-index 1ea15d518..e8b82984c 100644
+index 2d4b23260..5e49a7f69 100644
 --- a/plugins/crucible-fault-lifecycle.c
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -149,6 +149,17 @@ bool qemu_crucible_fault_lifecycle_process_bound(void)
@@ -91,17 +91,34 @@ index 353e1b359..58db41c19 100644
              break;
          }
 diff --git a/qapi/misc.json b/qapi/misc.json
-index 3c51a075c..16c7ebec3 100644
+index fd656634e..d1fb1cae3 100644
 --- a/qapi/misc.json
 +++ b/qapi/misc.json
-@@ -186,7 +186,9 @@
+@@ -184,19 +184,19 @@
+ ##
+ # @crucible-complete-terminal-lifecycle:
  #
- # @action-sha256: Lowercase hexadecimal SHA-256 of the resolved fault action.
+-# Authorize the pending Crucible terminal lifecycle decision without
+-# resuming guest execution.  The SHA-256 values bind this command to the
+-# exact authenticated fault action and evidence emitted by this process
+-# generation.  The command is idempotent when repeated unchanged.  It
+-# fails if an argument changes or no terminal decision is pending.
++# Authorize a pending Crucible terminal lifecycle decision while guest
++# execution stays stopped.  Hashes bind the command to the exact fault
++# action and evidence emitted by this process generation.  Repeating
++# the same command is idempotent.  Changed arguments cause an error.
++# The command requires a pending terminal decision.
  #
--# @evidence-sha256: Lowercase hexadecimal SHA-256 of the CRUCLIF evidence.
-+# @evidence-sha256: Lowercase hexadecimal SHA-256 of the CRUCLIF evidence
-+#     after zeroing its raw retired-instruction coordinate.  The plugin maps
-+#     that coordinate into scheduler-logical space before publication.
+ # @action-sha256: Lowercase hexadecimal SHA-256 of the resolved fault
+ #     action.
+ #
+ # @evidence-sha256: Lowercase hexadecimal SHA-256 of the CRUCLIF
+-#     evidence after zeroing its raw retired-instruction coordinate.  The
+-#     plugin maps
+-#     that coordinate into scheduler-logical space before publication.
++#     evidence after its raw retired-instruction coordinate is zeroed.
++#     The plugin maps this coordinate into scheduler-logical space
++#     before publication.
  #
  # @process-generation: Nonzero host-supervised process generation.
  #

@@ -176,15 +176,28 @@ for disk in "${disks[@]}"; do
   vdevs+=("${disk}-part2")
 done
 
-zpool create -f -o ashift=12 -o autotrim=on \
+# `compatibility` pins the feature set rather than enabling everything this
+# release supports. A pool that uses a feature an older release cannot read
+# would strand the A/B rollback slot, which is the one that has to import this
+# pool when the running slot is the broken one.
+#
+# The dataset-level properties are the pool-wide defaults every dataset
+# inherits. Record size stays at 128 KiB and deduplication stays off because
+# both decide how much unmovable kernel memory ZFS allocates per buffer;
+# modules/base/zfs-datasets.nix is what relaxes either, per dataset and behind
+# an explicit opt-in.
+zpool create -f -o ashift=12 -o autotrim=on -o compatibility=@compatibility@ \
   -O encryption=aes-256-gcm -O keyformat=raw -O keylocation="file://$key" \
   -O compression=zstd-3 -O atime=off -O mountpoint=none \
+  -O recordsize=128K -O dedup=off -O xattr=sa -O acltype=posixacl \
   @pool@ "${vdevs[@]}"
 pool_created=true
 zfs create -p -o mountpoint=none @pool@/@dataset@
-zfs create -o mountpoint=legacy -o canmount=noauto @pool@/var
-zfs create -o mountpoint=legacy @pool@/var/log
-zfs create -o mountpoint=legacy @pool@/var/lib
+
+# The datasets carrying system state are not created here. The running system
+# declares them, and aos-zfs-datasets.service creates and converges them on
+# first boot. Creating them here too would put their property policy in two
+# places, which is how the two drift apart.
 
 for slot in a b; do
   zfs create -V "$root_size" -o volblocksize=16K -o compression=off @pool@/@dataset@/root-$slot

@@ -280,16 +280,14 @@ impl FingerprintSampleSlot {
 }
 
 fn digest_to_words(digest: &[u8; FINGERPRINT_DIGEST_BYTES], out: &mut [u64]) {
-    for (word, chunk) in out.iter_mut().zip(digest.chunks_exact(8)) {
-        let mut bytes = [0_u8; 8];
-        bytes.copy_from_slice(chunk);
-        *word = u64::from_le_bytes(bytes);
+    for (word, bytes) in out.iter_mut().zip(digest.as_chunks::<8>().0) {
+        *word = u64::from_le_bytes(*bytes);
     }
 }
 
 fn words_to_digest(words: &[u64]) -> [u8; FINGERPRINT_DIGEST_BYTES] {
     let mut digest = [0_u8; FINGERPRINT_DIGEST_BYTES];
-    for (chunk, word) in digest.chunks_exact_mut(8).zip(words) {
+    for (chunk, word) in digest.as_chunks_mut::<8>().0.iter_mut().zip(words) {
         chunk.copy_from_slice(&word.to_le_bytes());
     }
     digest

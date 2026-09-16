@@ -10,33 +10,33 @@
   stdenv,
   writeShellScriptBin,
 }: let
-  version = "3.5.21";
+  version = "3.7.1";
   src = fetchurl {
     urls = [
       "https://github.com/etcd-io/etcd/archive/v${version}/etcd-${version}.tar.gz"
     ];
-    hash = "sha256-dtf8r+T8yVf81FZxImuZLBbl9eckk13qnfAZCsKxNIE=";
+    hash = "sha256-lTUqlv+x2S33e1vOK7I5BG+pTNmdyDn/fuz9yYNBZjc=";
   };
 
   serverModules = fetchGoModules {
     inherit src;
     name = "etcd-server-modules";
     sourceRoot = "etcd-${version}/server";
-    hash = "sha256-WQERZkiUy6qjGtnLwdJBUEaX+JF55DjqZPnPIDSpK7A=";
+    hash = "sha256-P53Cgg4phztWZefOtu89XsoUPHiO7kRaYFYXPn0KpfE=";
   };
 
   etcdctlModules = fetchGoModules {
     inherit src;
     name = "etcdctl-modules";
     sourceRoot = "etcd-${version}/etcdctl";
-    hash = "sha256-/14AOtsHbSHKpy7R2GsLxyaDGhqTHTVPEfA/IuwdEYc=";
+    hash = "sha256-P53Cgg4phztWZefOtu89XsoUPHiO7kRaYFYXPn0KpfE=";
   };
 
   etcdutlModules = fetchGoModules {
     inherit src;
     name = "etcdutl-modules";
     sourceRoot = "etcd-${version}/etcdutl";
-    hash = "sha256-VpQYa5/CLyzE6vva78hahzKWqRVE3BB4nhHly9SnuXg=";
+    hash = "sha256-P53Cgg4phztWZefOtu89XsoUPHiO7kRaYFYXPn0KpfE=";
   };
   control = writeShellScriptBin "etcd-control" ''
     set -eu

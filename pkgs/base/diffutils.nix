@@ -11,7 +11,7 @@
   gnumake,
   coreutils,
 }: let
-  version = "3.10";
+  version = "3.12";
 in
   mkDerivation (
     {
@@ -20,7 +20,7 @@ in
 
       src = fetchurl {
         urls = ["https://mirrors.kernel.org/gnu/diffutils/diffutils-${version}.tar.xz"];
-        hash = "17nhkdn5a2z6pwcmjs4jas2plg066hbdz06y5vhypr14qwyfkrch";
+        hash = "sha256-fIt/n8hgkUH96pzs6FJJ0whiQ5H/Yd7a9Sj8szdyff0=";
       };
 
       buildDeps = [m4 flex bison autoconf automake texinfo gnumake];

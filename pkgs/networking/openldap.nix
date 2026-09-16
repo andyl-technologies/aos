@@ -16,7 +16,7 @@
   coreutils,
   writeShellScriptBin,
 }: let
-  version = "2.6.10";
+  version = "2.7.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   control = writeShellScriptBin "openldap-control" ''
     set -euo pipefail
@@ -45,7 +45,7 @@ in
       urls = [
         "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-${version}.tgz"
       ];
-      hash = "sha256-wGXwSq1Cc3rr1gsv5JOXBKyEQma8CuqhYJ8MrZh75RY=";
+      hash = "sha256-nobzfaN1qpSKG0eN12/oewIJDkfCH6yuGSI1iONAeSI=";
     };
 
     buildDeps = [gnumake pkg-config file libtool];

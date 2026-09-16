@@ -31,6 +31,27 @@
    "manifest_version" : "aos.hub.api/v1",
    "methods" : [
       {
+         "method" : "GetRegistryMetadata",
+         "path" : "aos.hub.v1.RegistryService/GetRegistryMetadata",
+         "request" : "GetRegistryRequest",
+         "response" : "RegistryMetadataResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "PlanUpdateRegistryMetadata",
+         "path" : "aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata",
+         "request" : "PlanUpdateRegistryMetadataRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "UpdateRegistryMetadata",
+         "path" : "aos.hub.v1.RegistryService/UpdateRegistryMetadata",
+         "request" : "ApplyRegistryMutationRequest",
+         "response" : "RegistryMetadataChangeResponse",
+         "service" : "RegistryService"
+      },
+      {
          "method" : "PlanDeliveryDestination",
          "path" : "aos.hub.v1.DeliveryService/PlanDeliveryDestination",
          "request" : "PlanDeliveryDestinationRequest",

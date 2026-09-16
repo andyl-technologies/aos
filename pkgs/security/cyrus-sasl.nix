@@ -72,6 +72,16 @@ in
           if stdenv.isCross
           then
             ''
+              ${
+                if stdenv.hostPlatform.isDarwin
+                then ''
+                  # Cyrus SASL uses K&R-style prototype compatibility macros.
+                  # Build this release in the dialect its configure logic expects.
+                  export CFLAGS="''${CFLAGS:-} -std=gnu17"
+                ''
+                else ""
+              }
+
               # makemd5 generates a target header but executes on the build
               # machine. Isolate its compiler from target paths and hardening.
               native_cc="$BUILD_CC"
@@ -154,6 +164,11 @@ in
                 --with-sqlite3=${sqlite}
             ''
           else ''
+            # Cyrus SASL uses K&R-style prototype compatibility macros. C23
+            # changes empty parameter lists to mean no parameters, so build
+            # this release in the dialect its configure logic expects.
+            export CFLAGS="''${CFLAGS:-} -std=gnu17"
+
             ./configure \
               $configureFlags \
               --prefix=$out \

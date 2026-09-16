@@ -1,16 +1,16 @@
 diff --git a/hw/core/machine-qmp-cmds.c b/hw/core/machine-qmp-cmds.c
-index 3130c5cd4..e7a608829 100644
+index e62cb4ec8..eb7afec3e 100644
 --- a/hw/core/machine-qmp-cmds.c
 +++ b/hw/core/machine-qmp-cmds.c
-@@ -19,6 +19,7 @@
- #include "qapi/qobject-input-visitor.h"
- #include "qapi/type-helpers.h"
+@@ -22,6 +22,7 @@
  #include "qemu/uuid.h"
+ #include "qemu/target-info.h"
+ #include "qemu/target-info-qapi.h"
 +#include "qemu/plugin.h"
  #include "qom/qom-qobject.h"
  #include "system/hostmem.h"
  #include "system/hw_accel.h"
-@@ -273,6 +274,11 @@ UuidInfo *qmp_query_uuid(Error **errp)
+@@ -302,6 +303,11 @@ UuidInfo *qmp_query_uuid(Error **errp)
  
  void qmp_system_reset(Error **errp)
  {
@@ -22,52 +22,15 @@ index 3130c5cd4..e7a608829 100644
      qemu_system_reset_request(SHUTDOWN_CAUSE_HOST_QMP_SYSTEM_RESET);
  }
  
-diff --git a/include/exec/memory.h b/include/exec/memory.h
-index e1c196a0c..2b1dd7183 100644
---- a/include/exec/memory.h
-+++ b/include/exec/memory.h
-@@ -1180,6 +1180,29 @@ typedef bool (*flatview_cb)(Int128 start,
-  */
- void flatview_for_each_range(FlatView *fv, flatview_cb cb, void *opaque);
- 
-+/**
-+ * typedef flatview_section_cb: callback for flatview_for_each_section()
-+ *
-+ * @section: effective flattened section, including inherited attributes
-+ * @opaque: data pointer passed to flatview_for_each_section()
-+ *
-+ * Returns: true to stop the iteration, false to keep going.
-+ */
-+typedef bool (*flatview_section_cb)(const MemoryRegionSection *section,
-+                                    void *opaque);
-+
-+/**
-+ * flatview_for_each_section: Iterate through effective FlatView sections
-+ * @fv: the FlatView to iterate through
-+ * @cb: function to call for each effective section
-+ * @opaque: opaque data pointer to pass to @cb
-+ *
-+ * Unlike flatview_for_each_range(), each callback receives the effective
-+ * flattened attributes inherited through aliases and containers.
-+ */
-+void flatview_for_each_section(FlatView *fv, flatview_section_cb cb,
-+                               void *opaque);
-+
- static inline bool MemoryRegionSection_eq(MemoryRegionSection *a,
-                                           MemoryRegionSection *b)
- {
 diff --git a/include/migration/misc.h b/include/migration/misc.h
-index 8fd36eba1..f9cd4f110 100644
+index 2b2fbb59a..7475c7ad8 100644
 --- a/include/migration/misc.h
 +++ b/include/migration/misc.h
-@@ -59,6 +59,17 @@ void migration_shutdown(void);
- bool migration_is_running(void);
- bool migration_thread_is_self(void);
- 
-+/*
-+ * Under the BQL, atomically prove migration quiescence and permanently exclude
-+ * new migration loaders before terminal raw-state export.
-+ */
+@@ -66,6 +66,14 @@ bool migration_thread_is_self(void);
+  *    - MIG_EVENT_SETUP [-> MIG_EVENT_POSTCOPY_START] -> MIG_EVENT_FAILED
+  *    - MIG_EVENT_FAILED
+  */
++/* Under the BQL, atomically excludes migration before raw-state export. */
 +int migration_crucible_raw_state_export_admit(void);
 +bool migration_crucible_raw_state_export_sealed(void);
 +
@@ -76,26 +39,13 @@ index 8fd36eba1..f9cd4f110 100644
 +void migration_crucible_load_end(void);
 +
  typedef enum MigrationEventType {
-     MIG_EVENT_PRECOPY_SETUP,
-     MIG_EVENT_PRECOPY_DONE,
-diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index e3112d324..02dfd45e3 100644
---- a/include/qemu/plugin.h
-+++ b/include/qemu/plugin.h
-@@ -25,6 +25,8 @@
- struct qemu_plugin_desc;
- typedef QTAILQ_HEAD(, qemu_plugin_desc) QemuPluginList;
- 
-+bool qemu_crucible_terminal_vmstate_exported(void);
-+
- /*
-  * Construct a qemu_plugin_meminfo_t.
-  */
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index a11fc9505..c62471c50 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1382,6 +1382,139 @@ QEMU_PLUGIN_API
+     MIG_EVENT_SETUP,
+     MIG_EVENT_POSTCOPY_START,
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 90f99f3eb..5670ac692 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -1743,6 +1743,139 @@ QEMU_PLUGIN_API
  int qemu_plugin_crucible_device_state_schema_sha256(
      uint8_t digest_out[32], uint64_t *sections_out);
  
@@ -235,11 +185,58 @@ index a11fc9505..c62471c50 100644
  /**
   * Capture length-framed RAM and device-state fingerprint material.
   *
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index 4352446e0..faccc38a0 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -25,6 +25,8 @@
+ struct qemu_plugin_desc;
+ typedef QTAILQ_HEAD(, qemu_plugin_desc) QemuPluginList;
+ 
++bool qemu_crucible_terminal_vmstate_exported(void);
++
+ /*
+  * Construct a qemu_plugin_meminfo_t.
+  */
+diff --git a/include/system/memory.h b/include/system/memory.h
+index 2192fc9bd..91f75a9b0 100644
+--- a/include/system/memory.h
++++ b/include/system/memory.h
+@@ -978,6 +978,29 @@ typedef bool (*flatview_cb)(Int128 start,
+  */
+ void flatview_for_each_range(FlatView *fv, flatview_cb cb, void *opaque);
+ 
++/**
++ * typedef flatview_section_cb: callback for flatview_for_each_section()
++ *
++ * @section: effective flattened section, including inherited attributes
++ * @opaque: data pointer passed to flatview_for_each_section()
++ *
++ * Returns: true to stop the iteration, false to keep going.
++ */
++typedef bool (*flatview_section_cb)(const MemoryRegionSection *section,
++                                    void *opaque);
++
++/**
++ * flatview_for_each_section: Iterate through effective FlatView sections
++ * @fv: the FlatView to iterate through
++ * @cb: function to call for each effective section
++ * @opaque: opaque data pointer to pass to @cb
++ *
++ * Unlike flatview_for_each_range(), each callback receives the effective
++ * flattened attributes inherited through aliases and containers.
++ */
++void flatview_for_each_section(FlatView *fv, flatview_section_cb cb,
++                               void *opaque);
++
+ static inline bool MemoryRegionSection_eq(MemoryRegionSection *a,
+                                           MemoryRegionSection *b)
+ {
 diff --git a/migration/migration.c b/migration/migration.c
-index d46e776e2..bc5689ab4 100644
+index 9df6da131..69c5e7d13 100644
 --- a/migration/migration.c
 +++ b/migration/migration.c
-@@ -101,6 +101,9 @@ enum mig_rp_message_type {
+@@ -93,6 +93,9 @@ enum mig_rp_message_type {
  
  static MigrationState *current_migration;
  static MigrationIncomingState *current_incoming;
@@ -249,15 +246,15 @@ index d46e776e2..bc5689ab4 100644
  
  static GSList *migration_blockers[MIG_MODE__MAX];
  
-@@ -286,6 +289,7 @@ static int migration_stop_vm(MigrationState *s, RunState state)
+@@ -296,6 +299,7 @@ static int migration_stop_vm(MigrationState *s, RunState state)
  void migration_object_init(void)
  {
      /* This can only be called once. */
 +    qemu_mutex_init(&crucible_raw_state_mutex);
      assert(!current_migration);
-     current_migration = MIGRATION_OBJ(object_new(TYPE_MIGRATION));
+     current_migration = MIGRATION(object_new(TYPE_MIGRATION));
  
-@@ -697,6 +701,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)
+@@ -632,6 +636,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)
  {
      MigrationStatus current = mis->state;
  
@@ -270,7 +267,7 @@ index d46e776e2..bc5689ab4 100644
      if (current == MIGRATION_STATUS_POSTCOPY_PAUSED) {
          /*
           * Incoming postcopy migration will stay in PAUSED state even if
-@@ -1206,6 +1216,71 @@ bool migration_is_running(void)
+@@ -1028,6 +1038,71 @@ bool migration_is_running(void)
      }
  }
  
@@ -341,8 +338,8 @@ index d46e776e2..bc5689ab4 100644
 +
  static bool migration_is_active(void)
  {
-     MigrationState *s = current_migration;
-@@ -2032,6 +2107,12 @@ bool migration_is_blocked(Error **errp)
+     MigrationState *s = migrate_get_current();
+@@ -1955,6 +2030,12 @@ bool migration_is_blocked(Error **errp)
  /* Returns true if continue to migrate, or false if error detected */
  static bool migrate_prepare(MigrationState *s, bool resume, Error **errp)
  {
@@ -356,10 +353,10 @@ index d46e776e2..bc5689ab4 100644
          if (s->state != MIGRATION_STATUS_POSTCOPY_PAUSED) {
              error_setg(errp, "Cannot resume if there is no "
 diff --git a/migration/savevm.c b/migration/savevm.c
-index ab5afbe25..3c3c64dff 100644
+index 60a85bfd0..527bb4e70 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
-@@ -54,6 +54,7 @@
+@@ -55,6 +55,7 @@
  #include "qemu/iov.h"
  #include "qemu/job.h"
  #include "qemu/main-loop.h"
@@ -367,7 +364,7 @@ index ab5afbe25..3c3c64dff 100644
  #include "block/snapshot.h"
  #include "block/thread-pool.h"
  #include "qemu/cutils.h"
-@@ -3112,6 +3113,18 @@ int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis)
+@@ -3132,6 +3133,18 @@ int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
      uint8_t section_type;
      int ret = 0;
  
@@ -386,7 +383,7 @@ index ab5afbe25..3c3c64dff 100644
  retry:
      while (true) {
          section_type = qemu_get_byte(f);
-@@ -3179,6 +3192,7 @@ out:
+@@ -3203,6 +3216,7 @@ out:
              goto retry;
          }
      }
@@ -394,8 +391,8 @@ index ab5afbe25..3c3c64dff 100644
      return ret;
  }
  
-@@ -3189,6 +3203,11 @@ int qemu_loadvm_state(QEMUFile *f)
-     Error *local_err = NULL;
+@@ -3212,6 +3226,11 @@ int qemu_loadvm_state(QEMUFile *f, Error **errp)
+     MigrationIncomingState *mis = migration_incoming_get_current();
      int ret;
  
 +    if (qemu_crucible_terminal_vmstate_exported()) {
@@ -403,10 +400,10 @@ index ab5afbe25..3c3c64dff 100644
 +            "VMState load rejected after terminal Crucible VMState export");
 +        return -EPERM;
 +    }
-     if (qemu_savevm_state_blocked(&local_err)) {
-         error_report_err(local_err);
+     if (qemu_savevm_state_blocked(errp)) {
          return -EINVAL;
-@@ -3534,6 +3553,11 @@ bool load_snapshot(const char *name, const char *vmstate,
+     }
+@@ -3583,6 +3602,11 @@ bool load_snapshot(const char *name, const char *vmstate,
      int ret;
      MigrationIncomingState *mis = migration_incoming_get_current();
  
@@ -415,11 +412,11 @@ index ab5afbe25..3c3c64dff 100644
 +                   "snapshot load rejected after terminal Crucible VMState export");
 +        return false;
 +    }
-     if (!bdrv_all_can_snapshot(has_devices, devices, errp)) {
+     if (!migrate_can_snapshot(errp)) {
          return false;
      }
 diff --git a/plugins/api.c b/plugins/api.c
-index df34473f3..9fb02d1ad 100644
+index d177612e9..4c21472bf 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -36,6 +36,7 @@
@@ -430,19 +427,18 @@ index df34473f3..9fb02d1ad 100644
  #include "qemu/main-loop.h"
  #include "qemu/plugin.h"
  #include "qemu/log.h"
-@@ -43,9 +44,11 @@
- #include "io/channel-buffer.h"
+@@ -46,8 +47,10 @@
  #include "migration/qemu-file.h"
  #include "migration/savevm.h"
+ #include "exec/icount.h"
 +#include "migration/misc.h"
- #include "system/cpu-timers.h"
  #include "system/runstate.h"
  #include "tcg/tcg.h"
 +#include "exec/address-spaces.h"
  #include "exec/cpu-common.h"
  #include "exec/gdbstub.h"
  #include "exec/memory.h"
-@@ -971,6 +974,359 @@ int qemu_plugin_crucible_device_state_schema_sha256(
+@@ -1150,6 +1153,359 @@ int qemu_plugin_crucible_device_state_schema_sha256(
      return qemu_savevm_crucible_schema_sha256(digest_out, sections_out);
  }
  
@@ -803,10 +799,10 @@ index df34473f3..9fb02d1ad 100644
                                        uint64_t material_length,
                                        uint8_t digest_out[32])
 diff --git a/system/cpus.c b/system/cpus.c
-index 2cc5f887a..bdaa7bba2 100644
+index 97e5a5ede..004d77775 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
-@@ -650,6 +650,11 @@ void resume_all_vcpus(void)
+@@ -673,6 +673,11 @@ void resume_all_vcpus(void)
  {
      CPUState *cpu;
  
@@ -818,7 +814,7 @@ index 2cc5f887a..bdaa7bba2 100644
      if (!runstate_is_running()) {
          return;
      }
-@@ -745,6 +750,11 @@ int vm_prepare_start(bool step_pending)
+@@ -769,6 +774,11 @@ int vm_prepare_start(bool step_pending)
      RunState requested;
  
      qemu_vmstop_requested(&requested);
@@ -830,16 +826,16 @@ index 2cc5f887a..bdaa7bba2 100644
      if (runstate_is_running() && requested == RUN_STATE__MAX) {
          return -1;
      }
-@@ -896,4 +906,3 @@ void qmp_inject_nmi(Error **errp)
+@@ -928,4 +938,3 @@ void qmp_inject_nmi(Error **errp)
  {
      nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
  }
 -
 diff --git a/system/memory.c b/system/memory.c
-index 4c829793a..78478af9f 100644
+index 5fc36708e..e7d2444c1 100644
 --- a/system/memory.c
 +++ b/system/memory.c
-@@ -705,6 +705,23 @@ void flatview_for_each_range(FlatView *fv, flatview_cb cb , void *opaque)
+@@ -700,6 +700,23 @@ void flatview_for_each_range(FlatView *fv, flatview_cb cb , void *opaque)
      }
  }
  
@@ -864,10 +860,10 @@ index 4c829793a..78478af9f 100644
  {
      while (mr->enabled) {
 diff --git a/system/runstate.c b/system/runstate.c
-index 272801d30..d426fee75 100644
+index 08acf801b..8d1fa9dca 100644
 --- a/system/runstate.c
 +++ b/system/runstate.c
-@@ -46,6 +46,7 @@
+@@ -47,6 +47,7 @@
  #include "qemu/job.h"
  #include "qemu/log.h"
  #include "qemu/module.h"
@@ -875,8 +871,8 @@ index 272801d30..d426fee75 100644
  #include "qemu/sockets.h"
  #include "qemu/timer.h"
  #include "qemu/thread.h"
-@@ -510,6 +511,11 @@ void qemu_system_reset(ShutdownCause reason)
-     MachineClass *mc;
+@@ -521,6 +522,11 @@ void qemu_system_reset(ShutdownCause reason)
+     int ret;
      ResetType type;
  
 +    if (qemu_crucible_terminal_vmstate_exported()) {
@@ -884,10 +880,10 @@ index 272801d30..d426fee75 100644
 +            "VM reset rejected after terminal Crucible VMState export");
 +        return;
 +    }
-     mc = current_machine ? MACHINE_GET_CLASS(current_machine) : NULL;
- 
      cpu_synchronize_all_states();
-@@ -626,6 +632,11 @@ void qemu_system_guest_pvshutdown(void)
+ 
+     switch (reason) {
+@@ -736,6 +742,11 @@ void qemu_system_guest_pvshutdown(void)
  
  void qemu_system_reset_request(ShutdownCause reason)
  {
@@ -899,7 +895,7 @@ index 272801d30..d426fee75 100644
      if (reboot_action == REBOOT_ACTION_SHUTDOWN &&
          reason != SHUTDOWN_CAUSE_SUBSYSTEM_RESET) {
          shutdown_requested = reason;
-@@ -649,6 +660,11 @@ static void qemu_system_suspend(void)
+@@ -760,6 +771,11 @@ static void qemu_system_suspend(void)
  
  void qemu_system_suspend_request(void)
  {
@@ -911,7 +907,7 @@ index 272801d30..d426fee75 100644
      if (runstate_check(RUN_STATE_SUSPENDED)) {
          return;
      }
-@@ -666,6 +682,11 @@ void qemu_system_wakeup_request(WakeupReason reason, Error **errp)
+@@ -777,6 +793,11 @@ void qemu_system_wakeup_request(WakeupReason reason, Error **errp)
  {
      trace_system_wakeup_request(reason);
  
@@ -923,7 +919,7 @@ index 272801d30..d426fee75 100644
      if (!runstate_check(RUN_STATE_SUSPENDED)) {
          error_setg(errp,
                     "Unable to wake up: guest is not in suspended state");
-@@ -747,6 +768,11 @@ static void qemu_system_shutdown(ShutdownCause cause)
+@@ -862,6 +883,11 @@ static void qemu_system_shutdown(ShutdownCause cause)
  
  void qemu_system_powerdown_request(void)
  {

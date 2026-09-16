@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index 928eaff3e..98c43015d 100644
+index e0095579c..c826b60bf 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -168,6 +168,29 @@ int64_t icount_get_raw(void)
+@@ -167,6 +167,29 @@ int64_t icount_get_raw(void)
      return icount;
  }
  
@@ -33,7 +33,7 @@ index 928eaff3e..98c43015d 100644
  int64_t icount_get(void)
  {
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 74262051b..2a86b16bb 100644
+index 9855d3308..f14280bc8 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -31,6 +31,7 @@
@@ -42,9 +42,9 @@ index 74262051b..2a86b16bb 100644
  #include "qemu/guest-random.h"
 +#include "qemu/plugin.h"
  #include "exec/cpu-common.h"
+ #include "accel/tcg/cpu-loop.h"
  #include "tcg/startup.h"
- #include "tcg-accel-ops.h"
-@@ -272,6 +273,7 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -297,6 +298,7 @@ static void *rr_cpu_thread_fn(void *arg)
                  if (icount_enabled()) {
                      icount_process_data(cpu);
                  }
@@ -52,45 +52,27 @@ index 74262051b..2a86b16bb 100644
                  bql_lock();
  
                  if (r == EXCP_DEBUG) {
-diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index c3ff6d123..0aca978ad 100644
---- a/include/qemu/plugin.h
-+++ b/include/qemu/plugin.h
-@@ -177,6 +177,17 @@ void qemu_plugin_atexit_cb(void);
+diff --git a/include/exec/icount.h b/include/exec/icount.h
+index e54ac8bc2..6b3388b6e 100644
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -46,6 +46,9 @@ void icount_update(CPUState *cpu);
+ /* get raw icount value */
+ int64_t icount_get_raw(void);
  
- bool qemu_plugin_time_advance_is_pending(void);
- 
-+extern qemu_plugin_tcg_exec_cb_t qemu_plugin_tcg_exec_cb;
-+extern void *qemu_plugin_tcg_exec_userdata;
-+void qemu_plugin_fire_tcg_exec_cb(CPUState *cpu);
++/* observe raw icount without committing the current vCPU executed count */
++int64_t icount_get_raw_observed(void);
 +
-+static inline void qemu_plugin_maybe_fire_tcg_exec_cb(CPUState *cpu)
-+{
-+    if (qemu_plugin_tcg_exec_cb) {
-+        qemu_plugin_fire_tcg_exec_cb(cpu);
-+    }
-+}
-+
- void qemu_plugin_add_dyn_cb_arr(GArray *arr);
- 
- static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -272,6 +283,9 @@ static inline void qemu_plugin_flush_cb(void)
- static inline void qemu_plugin_atexit_cb(void)
- { }
- 
-+static inline void qemu_plugin_maybe_fire_tcg_exec_cb(CPUState *cpu)
-+{ }
-+
- static inline
- void qemu_plugin_add_dyn_cb_arr(GArray *arr)
- { }
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 59c620d11..b05159f2d 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -154,6 +154,16 @@ typedef void (*qemu_plugin_vcpu_simple_cb_t)(qemu_plugin_id_t id,
- typedef void (*qemu_plugin_vcpu_udata_cb_t)(unsigned int vcpu_index,
-                                             void *userdata);
+ /* return the virtual CPU time in ns, based on the instruction counter. */
+ int64_t icount_get(void);
+ /*
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 18f7ab979..7a8dc26dd 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -198,6 +198,16 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
+                                              uint64_t from_pc, uint64_t to_pc,
+                                              void *userdata);
  
 +/**
 + * typedef qemu_plugin_tcg_exec_cb_t - TCG cpu_exec callback
@@ -105,7 +87,7 @@ index 59c620d11..b05159f2d 100644
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -788,6 +798,24 @@ int qemu_plugin_advance_time_ns(int64_t time);
+@@ -886,6 +896,24 @@ int qemu_plugin_advance_time_ns(int64_t time);
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_icount_raw(void);
  
@@ -130,7 +112,7 @@ index 59c620d11..b05159f2d 100644
  /**
   * qemu_plugin_force_vcpu_exit() - force the current vCPU out of cpu_exec
   *
-@@ -835,6 +863,19 @@ int qemu_plugin_register_wake_fd(int fd);
+@@ -933,6 +961,19 @@ int qemu_plugin_register_wake_fd(int fd);
  QEMU_PLUGIN_API
  void qemu_plugin_request_shutdown(int failure);
  
@@ -148,24 +130,42 @@ index 59c620d11..b05159f2d 100644
 +                                       void *userdata);
 +
  /**
-  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * qemu_plugin_net_inject() - injects an inbound frame into the default NIC
   * @data: Ethernet frame bytes
-diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
-index 6b7aaa201..ed2d445e0 100644
---- a/include/system/cpu-timers.h
-+++ b/include/system/cpu-timers.h
-@@ -46,6 +46,9 @@ void icount_update(CPUState *cpu);
- /* get raw icount value */
- int64_t icount_get_raw(void);
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index b07b1afd9..fc22463a8 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -185,6 +185,17 @@ void qemu_plugin_atexit_cb(void);
  
-+/* observe raw icount without committing the current vCPU's executed count */
-+int64_t icount_get_raw_observed(void);
+ bool qemu_plugin_time_advance_is_pending(void);
+ 
++extern qemu_plugin_tcg_exec_cb_t qemu_plugin_tcg_exec_cb;
++extern void *qemu_plugin_tcg_exec_userdata;
++void qemu_plugin_fire_tcg_exec_cb(CPUState *cpu);
 +
- /* return the virtual CPU time in ns, based on the instruction counter. */
- int64_t icount_get(void);
- /*
++static inline void qemu_plugin_maybe_fire_tcg_exec_cb(CPUState *cpu)
++{
++    if (qemu_plugin_tcg_exec_cb) {
++        qemu_plugin_fire_tcg_exec_cb(cpu);
++    }
++}
++
+ void qemu_plugin_add_dyn_cb_arr(GArray *arr);
+ 
+ static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
+@@ -313,6 +324,9 @@ static inline void qemu_plugin_flush_cb(void)
+ static inline void qemu_plugin_atexit_cb(void)
+ { }
+ 
++static inline void qemu_plugin_maybe_fire_tcg_exec_cb(CPUState *cpu)
++{ }
++
+ static inline
+ void qemu_plugin_add_dyn_cb_arr(GArray *arr)
+ { }
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 1dcd4d60e..96141b30e 100644
+index f5f4b2135..31445f9a2 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -116,6 +116,8 @@ static int64_t qemu_plugin_time_advance_target;
@@ -177,7 +177,7 @@ index 1dcd4d60e..96141b30e 100644
  
  static void qemu_plugin_time_advance_barrier_bh(void *opaque);
  static void qemu_plugin_time_advance_complete_bh(void *opaque);
-@@ -246,6 +248,26 @@ uint64_t qemu_plugin_icount_raw(void)
+@@ -249,6 +251,26 @@ uint64_t qemu_plugin_icount_raw(void)
      return (uint64_t)raw_icount;
  }
  
@@ -204,7 +204,7 @@ index 1dcd4d60e..96141b30e 100644
  void qemu_plugin_force_vcpu_exit(void)
  {
      if (current_cpu) {
-@@ -353,6 +375,23 @@ void qemu_plugin_request_shutdown(int failure)
+@@ -356,6 +378,23 @@ void qemu_plugin_request_shutdown(int failure)
      }
  }
  

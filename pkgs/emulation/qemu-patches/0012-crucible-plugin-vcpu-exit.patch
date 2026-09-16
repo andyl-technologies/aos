@@ -1,8 +1,8 @@
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index bf426bfd1..a63c6d1a4 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -788,6 +788,16 @@ int qemu_plugin_advance_time_ns(int64_t time);
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index 61ab533e2..9013d49b6 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -886,6 +886,16 @@ int qemu_plugin_advance_time_ns(int64_t time);
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_icount_raw(void);
  
@@ -17,13 +17,13 @@ index bf426bfd1..a63c6d1a4 100644
 +void qemu_plugin_force_vcpu_exit(void);
 +
  /**
-  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * qemu_plugin_net_inject() - injects an inbound frame into the default NIC
   * @data: Ethernet frame bytes
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index d38d27cb5..343f0ed4f 100644
+index b700b63f4..0ee6081ec 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -238,6 +238,13 @@ uint64_t qemu_plugin_icount_raw(void)
+@@ -241,6 +241,13 @@ uint64_t qemu_plugin_icount_raw(void)
      return (uint64_t)raw_icount;
  }
  

@@ -15,7 +15,7 @@
   docbook-xsl,
   buildPackages,
 }: let
-  version = "1.35.1";
+  version = "1.36.1";
   sitePackages = "lib/python3.14/site-packages";
 in
   mkDerivation {
@@ -26,7 +26,7 @@ in
       urls = [
         "https://gitlab.gnome.org/GNOME/gtk-doc/-/archive/${version}/gtk-doc-${version}.tar.gz"
       ];
-      hash = "sha256-9A9uedVVwAvAqp9cyOe+5VRXWJZbwvbyOBKkQtbNCZY=";
+      hash = "sha256-nl9t0hLKLDG9DugEupZy8A0wytEsA/mrqdFen3QTTcQ=";
     };
 
     buildDeps = [

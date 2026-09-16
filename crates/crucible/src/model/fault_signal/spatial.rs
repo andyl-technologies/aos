@@ -1438,7 +1438,7 @@ fn sample_regular_grid(
             let mut current = values_for_cube(dimensions, values, lower)?;
             for axis in 0..3 {
                 let mut next = Vec::with_capacity(current.len() / 2);
-                for pair in current.chunks_exact(2) {
+                for pair in current.as_chunks::<2>().0 {
                     next.push(interpolate_value(
                         &pair[0],
                         &pair[1],

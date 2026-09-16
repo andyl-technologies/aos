@@ -1,8 +1,8 @@
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index 56176924c..a47e73e93 100644
+index 1fca5ee17..c031517ca 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -218,6 +218,21 @@ static bool rr_crucible_sim_all_vcpus_halted(void)
+@@ -219,6 +219,21 @@ static bool rr_crucible_sim_all_vcpus_halted(void)
      return true;
  }
  
@@ -24,7 +24,7 @@ index 56176924c..a47e73e93 100644
  static void rr_crucible_sim_sync_vcpu_halt_callbacks(void)
  {
      CPUState *cpu;
-@@ -405,6 +420,24 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+@@ -406,6 +421,24 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
                      qemu_cond_wait_bql(first_cpu->halt_cond);
                      return true;
                  }
@@ -49,7 +49,7 @@ index 56176924c..a47e73e93 100644
                  return false;
              }
          }
-@@ -558,10 +591,11 @@ static void rr_wait_io_event(void)
+@@ -559,10 +592,11 @@ static void rr_wait_io_event(void)
          return;
      }
  
@@ -65,7 +65,7 @@ index 56176924c..a47e73e93 100644
  
          rr_stop_kick_timer();
          if (qemu_plugin_time_advance_is_pending()) {
-@@ -578,6 +612,9 @@ static void rr_wait_io_event(void)
+@@ -579,6 +613,9 @@ static void rr_wait_io_event(void)
              if (qemu_plugin_crucible_vmstop_pending()) {
                  return;
              }
@@ -75,7 +75,7 @@ index 56176924c..a47e73e93 100644
              qemu_cond_wait_bql(first_cpu->halt_cond);
              continue;
          }
-@@ -596,6 +633,9 @@ static void rr_wait_io_event(void)
+@@ -597,6 +634,9 @@ static void rr_wait_io_event(void)
              if (qemu_plugin_crucible_vmstop_pending()) {
                  return;
              }
@@ -85,7 +85,7 @@ index 56176924c..a47e73e93 100644
              if (!rr_crucible_sim_all_vcpus_halted()) {
                  break;
              }
-@@ -757,6 +797,16 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -758,6 +798,16 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu = first_cpu;
          }
          cpu = rr_crucible_sim_loop_cpu(cpu);
@@ -100,9 +100,9 @@ index 56176924c..a47e73e93 100644
 +            rr_crucible_sim_reset_exit_request(cpu);
 +        }
  
-         while (cpu && cpu_work_list_empty(cpu) && !cpu->exit_request) {
-             /* Store rr_current_cpu before evaluating cpu_can_run().  */
-@@ -835,6 +885,18 @@ static void *rr_cpu_thread_fn(void *arg)
+         while (cpu && cpu_work_list_empty(cpu)) {
+             /*
+@@ -843,6 +893,18 @@ static void *rr_cpu_thread_fn(void *arg)
                          (dispatch_due || !observer_due)) {
                          qemu_cond_wait_bql(first_cpu->halt_cond);
                      }
@@ -121,7 +121,7 @@ index 56176924c..a47e73e93 100644
                      break;
                  }
              }
-@@ -883,6 +945,27 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -891,6 +953,27 @@ static void *rr_cpu_thread_fn(void *arg)
           */
          rr_crucible_sim_advance_stalled_deadline();
  
@@ -150,19 +150,19 @@ index 56176924c..a47e73e93 100644
              /*
               * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
 diff --git a/hw/acpi/core.c b/hw/acpi/core.c
-index 58f8964e1..41fe09c52 100644
+index a6a62a742..c0723ec3c 100644
 --- a/hw/acpi/core.c
 +++ b/hw/acpi/core.c
-@@ -20,6 +20,8 @@
-  */
+@@ -21,6 +21,8 @@
  
  #include "qemu/osdep.h"
+ #include "hw/core/irq.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
- #include "hw/irq.h"
  #include "hw/acpi/acpi.h"
+ #include "hw/acpi/acpi_dev_interface.h"
  #include "hw/nvram/fw_cfg.h"
-@@ -34,6 +36,8 @@
+@@ -35,6 +37,8 @@
  #include "system/runstate.h"
  #include "trace.h"
  
@@ -171,7 +171,7 @@ index 58f8964e1..41fe09c52 100644
  struct acpi_table_header {
      uint16_t _length;         /* our length, not actual part of the hdr */
                                /* allows easier parsing for fw_cfg clients */
-@@ -387,11 +391,9 @@ static void acpi_notify_wakeup(Notifier *notifier, void *data)
+@@ -390,11 +394,9 @@ static void acpi_notify_wakeup(Notifier *notifier, void *data)
  /* ACPI PM1a EVT */
  uint16_t acpi_pm1_evt_get_sts(ACPIREGS *ar)
  {
@@ -186,7 +186,7 @@ index 58f8964e1..41fe09c52 100644
          ar->pm1.evt.sts |= ACPI_BITMASK_TIMER_STATUS;
      }
      return ar->pm1.evt.sts;
-@@ -483,32 +485,111 @@ void acpi_pm1_evt_init(ACPIREGS *ar, acpi_update_sci_fn update_sci,
+@@ -486,32 +488,111 @@ void acpi_pm1_evt_init(ACPIREGS *ar, acpi_update_sci_fn update_sci,
  void acpi_pm_tmr_update(ACPIREGS *ar, bool enable)
  {
      int64_t expire_time;
@@ -303,7 +303,7 @@ index 58f8964e1..41fe09c52 100644
      return d & 0xffffff;
  }
  
-@@ -516,6 +597,19 @@ static void acpi_pm_tmr_timer(void *opaque)
+@@ -519,6 +600,19 @@ static void acpi_pm_tmr_timer(void *opaque)
  {
      ACPIREGS *ar = opaque;
  
@@ -323,7 +323,7 @@ index 58f8964e1..41fe09c52 100644
      qemu_system_wakeup_request(QEMU_WAKEUP_REASON_PMTIMER, NULL);
      ar->tmr.update_sci(ar);
  }
-@@ -540,6 +634,14 @@ static const MemoryRegionOps acpi_pm_tmr_ops = {
+@@ -543,6 +637,14 @@ static const MemoryRegionOps acpi_pm_tmr_ops = {
      .endianness = DEVICE_LITTLE_ENDIAN,
  };
  
@@ -338,9 +338,9 @@ index 58f8964e1..41fe09c52 100644
  void acpi_pm_tmr_init(ACPIREGS *ar, acpi_update_sci_fn update_sci,
                        MemoryRegion *parent)
  {
-@@ -548,11 +650,40 @@ void acpi_pm_tmr_init(ACPIREGS *ar, acpi_update_sci_fn update_sci,
-     memory_region_init_io(&ar->tmr.io, memory_region_owner(parent),
+@@ -552,11 +654,40 @@ void acpi_pm_tmr_init(ACPIREGS *ar, acpi_update_sci_fn update_sci,
                            &acpi_pm_tmr_ops, ar, "acpi-tmr", 4);
+     memory_region_enable_lockless_io(&ar->tmr.io);
      memory_region_add_subregion(parent, 8, &ar->tmr.io);
 +    const QemuCrucibleClockSourceDescriptor clock = {
 +        .source_kind = QEMU_CRUCIBLE_CLOCK_X86_ACPI_PM_TIMER,
@@ -380,10 +380,10 @@ index 58f8964e1..41fe09c52 100644
  }
  
 diff --git a/hw/acpi/ich9.c b/hw/acpi/ich9.c
-index c7a735bf6..d1f5e3f8a 100644
+index 5e8f8a7ea..26d970d1b 100644
 --- a/hw/acpi/ich9.c
 +++ b/hw/acpi/ich9.c
-@@ -240,6 +240,29 @@ static const VMStateDescription vmstate_pcihp_state = {
+@@ -222,6 +222,29 @@ static const VMStateDescription vmstate_pcihp_state = {
      }
  };
  
@@ -413,7 +413,7 @@ index c7a735bf6..d1f5e3f8a 100644
  const VMStateDescription vmstate_ich9_pm = {
      .name = "ich9_pm",
      .version_id = 1,
-@@ -262,6 +285,7 @@ const VMStateDescription vmstate_ich9_pm = {
+@@ -244,6 +267,7 @@ const VMStateDescription vmstate_ich9_pm = {
          &vmstate_tco_io_state,
          &vmstate_cpuhp_state,
          &vmstate_pcihp_state,
@@ -422,10 +422,10 @@ index c7a735bf6..d1f5e3f8a 100644
      }
  };
 diff --git a/hw/acpi/piix4.c b/hw/acpi/piix4.c
-index 6d023e595..92ae13275 100644
+index 9b7f50c7a..a9df9b7ff 100644
 --- a/hw/acpi/piix4.c
 +++ b/hw/acpi/piix4.c
-@@ -236,6 +236,26 @@ static bool vmstate_test_migrate_acpi_index(void *opaque, int version_id)
+@@ -224,6 +224,26 @@ static bool vmstate_test_migrate_acpi_index(void *opaque, int version_id)
             !s->not_migrate_acpi_index;
  }
  
@@ -452,7 +452,7 @@ index 6d023e595..92ae13275 100644
  /* qemu-kvm 1.2 uses version 3 but advertised as 2
   * To support incoming qemu-kvm 1.2 migration, change version_id
   * and minimum_version_id to 2 below (which breaks migration from
-@@ -272,6 +292,7 @@ static const VMStateDescription vmstate_acpi = {
+@@ -259,6 +279,7 @@ static const VMStateDescription vmstate_acpi = {
      .subsections = (const VMStateDescription * const []) {
           &vmstate_memhp_state,
           &vmstate_cpuhp_state,
@@ -461,10 +461,10 @@ index 6d023e595..92ae13275 100644
      }
  };
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
-index 4406617ee..e873a0286 100644
+index ef34799bb..2e76129fd 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
-@@ -43,6 +43,34 @@
+@@ -46,6 +46,34 @@
  #define SYNC_ISR_IRR_TO_VAPIC           0x4
  
  static APICCommonState **local_apics;
@@ -499,7 +499,7 @@ index 4406617ee..e873a0286 100644
  static uint32_t max_apics;
  static uint32_t max_apic_words;
  
-@@ -1245,10 +1273,79 @@ int apic_accept_pic_intr(DeviceState *dev)
+@@ -1228,10 +1256,79 @@ int apic_accept_pic_intr(APICCommonState *s)
  
  static void apic_timer_update(APICCommonState *s, int64_t current_time)
  {
@@ -580,7 +580,7 @@ index 4406617ee..e873a0286 100644
      }
  }
  
-@@ -1256,6 +1353,18 @@ static void apic_timer(void *opaque)
+@@ -1239,6 +1336,18 @@ static void apic_timer(void *opaque)
  {
      APICCommonState *s = opaque;
  
@@ -599,7 +599,7 @@ index 4406617ee..e873a0286 100644
      apic_local_deliver(s, APIC_LVT_TIMER);
      apic_timer_update(s, s->next_time);
  }
-@@ -1496,7 +1605,7 @@ static int apic_register_write(int index, uint64_t val)
+@@ -1480,7 +1589,7 @@ static int apic_register_write(APICCommonState *s, int index, uint64_t val)
              int n = index - 0x32;
              s->lvt[n] = val;
              if (n == APIC_LVT_TIMER) {
@@ -608,7 +608,7 @@ index 4406617ee..e873a0286 100644
              } else if (n == APIC_LVT_LINT0 && apic_check_pic(s)) {
                  apic_update_irq(s);
              }
-@@ -1504,7 +1613,7 @@ static int apic_register_write(int index, uint64_t val)
+@@ -1488,7 +1597,7 @@ static int apic_register_write(APICCommonState *s, int index, uint64_t val)
          break;
      case 0x38:
          s->initial_count = val;
@@ -617,7 +617,7 @@ index 4406617ee..e873a0286 100644
          apic_timer_update(s, s->initial_count_load_time);
          break;
      case 0x39:
-@@ -1590,11 +1699,14 @@ static void apic_pre_save(APICCommonState *s)
+@@ -1576,11 +1685,14 @@ static void apic_pre_save(APICCommonState *s)
  
  static void apic_post_load(APICCommonState *s)
  {
@@ -637,7 +637,7 @@ index 4406617ee..e873a0286 100644
  }
  
  static const MemoryRegionOps apic_io_ops = {
-@@ -1632,6 +1744,38 @@ static void apic_realize(DeviceState *dev, Error **errp)
+@@ -1618,6 +1730,38 @@ static void apic_realize(DeviceState *dev, Error **errp)
      s->io_memory.disable_reentrancy_guard = true;
  
      s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, apic_timer, s);
@@ -677,7 +677,7 @@ index 4406617ee..e873a0286 100644
      /*
       * The --machine none does not call apic_set_max_apic_id before creating
 diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
-index 703302097..a8f1a7ba6 100644
+index e21701150..749d3ce4a 100644
 --- a/hw/intc/apic_common.c
 +++ b/hw/intc/apic_common.c
 @@ -19,6 +19,7 @@
@@ -688,7 +688,7 @@ index 703302097..a8f1a7ba6 100644
  #include "qemu/error-report.h"
  #include "qemu/module.h"
  #include "qapi/error.h"
-@@ -155,7 +156,8 @@ bool apic_next_timer(APICCommonState *s, int64_t current_time)
+@@ -140,7 +141,8 @@ bool apic_next_timer(APICCommonState *s, int64_t current_time)
          return false;
      }
  
@@ -698,7 +698,7 @@ index 703302097..a8f1a7ba6 100644
  
      if (s->lvt[APIC_LVT_TIMER] & APIC_LVT_TIMER_PERIODIC) {
          if (!s->initial_count) {
-@@ -178,8 +180,23 @@ uint32_t apic_get_current_count(APICCommonState *s)
+@@ -163,8 +165,23 @@ uint32_t apic_get_current_count(APICCommonState *s)
  {
      int64_t d;
      uint32_t val;
@@ -724,7 +724,7 @@ index 703302097..a8f1a7ba6 100644
      if (s->lvt[APIC_LVT_TIMER] & APIC_LVT_TIMER_PERIODIC) {
          /* periodic */
          val = s->initial_count - (d % ((uint64_t)s->initial_count + 1));
-@@ -410,6 +427,26 @@ static const VMStateDescription vmstate_apic_common_crucible_interrupt = {
+@@ -402,6 +419,26 @@ static const VMStateDescription vmstate_apic_common_crucible_interrupt = {
      }
  };
  
@@ -751,7 +751,7 @@ index 703302097..a8f1a7ba6 100644
  static const VMStateDescription vmstate_apic_common = {
      .name = "apic",
      .version_id = 3,
-@@ -443,6 +480,7 @@ static const VMStateDescription vmstate_apic_common = {
+@@ -436,6 +473,7 @@ static const VMStateDescription vmstate_apic_common = {
      .subsections = (const VMStateDescription * const []) {
          &vmstate_apic_common_sipi,
          &vmstate_apic_common_crucible_interrupt,
@@ -760,7 +760,7 @@ index 703302097..a8f1a7ba6 100644
      }
  };
 diff --git a/hw/rtc/mc146818rtc.c b/hw/rtc/mc146818rtc.c
-index d727879ed..74a207c92 100644
+index a59ae051e..c60df4138 100644
 --- a/hw/rtc/mc146818rtc.c
 +++ b/hw/rtc/mc146818rtc.c
 @@ -26,6 +26,8 @@
@@ -771,8 +771,8 @@ index d727879ed..74a207c92 100644
 +#include "qemu/error-report.h"
  #include "hw/acpi/acpi_aml_interface.h"
  #include "hw/intc/kvm_irqcount.h"
- #include "hw/irq.h"
-@@ -72,7 +74,7 @@
+ #include "hw/core/irq.h"
+@@ -66,7 +68,7 @@
  #define RTC_ISA_BASE 0x70
  
  static void rtc_set_time(MC146818RtcState *s);
@@ -781,20 +781,22 @@ index d727879ed..74a207c92 100644
  static void rtc_set_cmos(MC146818RtcState *s, const struct tm *tm);
  static inline int rtc_from_bcd(MC146818RtcState *s, int a);
  static uint64_t get_next_alarm(MC146818RtcState *s);
-@@ -83,24 +85,163 @@ static inline bool rtc_running(MC146818RtcState *s)
+@@ -77,25 +79,163 @@ static inline bool rtc_running(MC146818RtcState *s)
              (s->cmos_data[RTC_REG_A] & 0x70) <= 0x20);
  }
  
--static uint64_t get_guest_rtc_ns(MC146818RtcState *s)
+-/*
+- * Note: get_rtc_ns_since_last_update() does not include the base_rtc seconds
+- * value.  This does not matter if the caller only needs the nanoseconds part.
+- */
+-static uint64_t get_rtc_ns_since_last_update(MC146818RtcState *s)
 +static uint64_t get_guest_rtc_ns_raw(MC146818RtcState *s,
 +                                     uint64_t guest_clock)
- {
--    uint64_t guest_clock = qemu_clock_get_ns(rtc_clock);
--
-     return s->base_rtc * NANOSECONDS_PER_SECOND +
-         guest_clock - s->last_update + s->offset;
- }
- 
++{
++    return s->base_rtc * NANOSECONDS_PER_SECOND +
++        guest_clock - s->last_update + s->offset;
++}
++
 +static uint64_t get_guest_rtc_ns(MC146818RtcState *s, bool guest_read)
 +{
 +    uint64_t raw = get_guest_rtc_ns_raw(
@@ -821,7 +823,8 @@ index d727879ed..74a207c92 100644
 +}
 +
 +static int64_t rtc_timer_clock_ns(MC146818RtcState *s)
-+{
+ {
+-    return qemu_clock_get_ns(rtc_clock) - s->last_update + s->offset;
 +    uint64_t now = qemu_crucible_fault_clock_source_active(
 +        QEMU_CRUCIBLE_CLOCK_X86_RTC, 0) ?
 +        get_guest_rtc_ns(s, false) : qemu_clock_get_ns(rtc_clock);
@@ -882,8 +885,8 @@ index d727879ed..74a207c92 100644
 +            action)) {
 +        qemu_crucible_fault_clock_event_terminal();
 +    }
-+}
-+
+ }
+ 
  static void rtc_coalesced_timer_update(MC146818RtcState *s)
  {
 +    bool fault_active = qemu_crucible_fault_clock_source_active(
@@ -950,7 +953,7 @@ index d727879ed..74a207c92 100644
      }
  }
  
-@@ -120,6 +261,17 @@ static void rtc_coalesced_timer(void *opaque)
+@@ -115,6 +255,17 @@ static void rtc_coalesced_timer(void *opaque)
  {
      MC146818RtcState *s = opaque;
  
@@ -968,7 +971,7 @@ index d727879ed..74a207c92 100644
      if (s->irq_coalesced != 0) {
          s->cmos_data[RTC_REG_C] |= 0xc0;
          DPRINTF_C("cmos: injecting from timer\n");
-@@ -130,7 +282,9 @@ static void rtc_coalesced_timer(void *opaque)
+@@ -125,7 +276,9 @@ static void rtc_coalesced_timer(void *opaque)
          }
      }
  
@@ -979,7 +982,7 @@ index d727879ed..74a207c92 100644
  }
  
  static uint32_t rtc_periodic_clock_ticks(MC146818RtcState *s)
-@@ -155,13 +309,29 @@ static void periodic_timer_update(MC146818RtcState *s, int64_t current_time,
+@@ -150,13 +303,29 @@ static void periodic_timer_update(MC146818RtcState *s, int64_t current_time,
  {
      uint32_t period;
      int64_t cur_clock, next_irq_clock, lost_clock = 0;
@@ -1009,7 +1012,7 @@ index d727879ed..74a207c92 100644
          return;
      }
  
-@@ -222,13 +392,59 @@ static void periodic_timer_update(MC146818RtcState *s, int64_t current_time,
+@@ -217,13 +386,59 @@ static void periodic_timer_update(MC146818RtcState *s, int64_t current_time,
  
      next_irq_clock = cur_clock + period - lost_clock;
      s->next_periodic_time = periodic_clock_to_ns(next_irq_clock) + 1;
@@ -1070,7 +1073,7 @@ index d727879ed..74a207c92 100644
      periodic_timer_update(s, s->next_periodic_time, s->period, false);
      s->cmos_data[RTC_REG_C] |= REG_C_PF;
      if (s->cmos_data[RTC_REG_B] & REG_B_PIE) {
-@@ -253,6 +469,24 @@ static void check_update_timer(MC146818RtcState *s)
+@@ -248,6 +463,24 @@ static void check_update_timer(MC146818RtcState *s)
      uint64_t next_update_time;
      uint64_t guest_nsec;
      int next_alarm_sec;
@@ -1095,7 +1098,7 @@ index d727879ed..74a207c92 100644
  
      /* From the data sheet: "Holding the dividers in reset prevents
       * interrupts from operating, while setting the SET bit allows"
-@@ -260,20 +494,140 @@ static void check_update_timer(MC146818RtcState *s)
+@@ -255,20 +488,140 @@ static void check_update_timer(MC146818RtcState *s)
       */
      if ((s->cmos_data[RTC_REG_A] & 0x60) == 0x60) {
          assert((s->cmos_data[RTC_REG_A] & REG_A_UIP) == 0);
@@ -1120,7 +1123,7 @@ index d727879ed..74a207c92 100644
          return;
      }
  
--    guest_nsec = get_guest_rtc_ns(s) % NANOSECONDS_PER_SECOND;
+-    guest_nsec = get_rtc_ns_since_last_update(s) % NANOSECONDS_PER_SECOND;
 -    next_update_time = qemu_clock_get_ns(rtc_clock)
 -        + NANOSECONDS_PER_SECOND - guest_nsec;
 +    uint64_t guest_now = get_guest_rtc_ns(s, false);
@@ -1241,7 +1244,7 @@ index d727879ed..74a207c92 100644
  
      /* If update_in_progress latched the UIP bit, we must keep the timer
       * programmed to the next second, so that UIP is cleared.  Otherwise,
-@@ -286,17 +640,52 @@ static void check_update_timer(MC146818RtcState *s)
+@@ -281,17 +634,52 @@ static void check_update_timer(MC146818RtcState *s)
           */
          if ((s->cmos_data[RTC_REG_B] & REG_B_SET) ||
              (s->cmos_data[RTC_REG_C] & REG_C_AF)) {
@@ -1296,7 +1299,7 @@ index d727879ed..74a207c92 100644
  }
  
  static inline uint8_t convert_hour(MC146818RtcState *s, uint8_t hour)
-@@ -315,7 +704,7 @@ static uint64_t get_next_alarm(MC146818RtcState *s)
+@@ -310,7 +698,7 @@ static uint64_t get_next_alarm(MC146818RtcState *s)
      int32_t alarm_sec, alarm_min, alarm_hour, cur_hour, cur_min, cur_sec;
      int32_t hour, min, sec;
  
@@ -1305,7 +1308,7 @@ index d727879ed..74a207c92 100644
  
      alarm_sec = rtc_from_bcd(s, s->cmos_data[RTC_SECONDS_ALARM]);
      alarm_min = rtc_from_bcd(s, s->cmos_data[RTC_MINUTES_ALARM]);
-@@ -407,10 +796,33 @@ static void rtc_update_timer(void *opaque)
+@@ -402,10 +790,33 @@ static void rtc_update_timer(void *opaque)
      int32_t irqs = REG_C_UF;
      int32_t new_irqs;
  
@@ -1340,7 +1343,7 @@ index d727879ed..74a207c92 100644
      s->cmos_data[RTC_REG_A] &= ~REG_A_UIP;
  
      if (qemu_clock_get_ns(rtc_clock) >= s->next_alarm_time) {
-@@ -472,7 +884,7 @@ static void cmos_ioport_write(void *opaque, hwaddr addr,
+@@ -466,7 +877,7 @@ static void cmos_ioport_write(void *opaque, hwaddr addr,
  
              if ((data & 0x60) == 0x60) {
                  if (rtc_running(s)) {
@@ -1349,7 +1352,7 @@ index d727879ed..74a207c92 100644
                  }
                  /* What happens to UIP when divider reset is enabled is
                   * unclear from the datasheet.  Shouldn't matter much
-@@ -494,7 +906,7 @@ static void cmos_ioport_write(void *opaque, hwaddr addr,
+@@ -488,7 +899,7 @@ static void cmos_ioport_write(void *opaque, hwaddr addr,
                  (s->cmos_data[RTC_REG_A] & REG_A_UIP);
  
              if (update_periodic_timer) {
@@ -1358,7 +1361,7 @@ index d727879ed..74a207c92 100644
                                        old_period, true);
              }
  
-@@ -508,7 +920,7 @@ static void cmos_ioport_write(void *opaque, hwaddr addr,
+@@ -502,7 +913,7 @@ static void cmos_ioport_write(void *opaque, hwaddr addr,
              if (data & REG_B_SET) {
                  /* update cmos to when the rtc was stopping */
                  if (rtc_running(s)) {
@@ -1367,17 +1370,17 @@ index d727879ed..74a207c92 100644
                  }
                  /* set mode: reset UIP mode */
                  s->cmos_data[RTC_REG_A] &= ~REG_A_UIP;
-@@ -517,7 +929,8 @@ static void cmos_ioport_write(void *opaque, hwaddr addr,
+@@ -511,7 +922,8 @@ static void cmos_ioport_write(void *opaque, hwaddr addr,
                  /* if disabling set mode, update the time */
                  if ((s->cmos_data[RTC_REG_B] & REG_B_SET) &&
                      (s->cmos_data[RTC_REG_A] & 0x70) <= 0x20) {
--                    s->offset = get_guest_rtc_ns(s) % NANOSECONDS_PER_SECOND;
+-                    s->offset = get_rtc_ns_since_last_update(s) % NANOSECONDS_PER_SECOND;
 +                    s->offset = get_guest_rtc_ns(s, false) %
 +                                NANOSECONDS_PER_SECOND;
                      rtc_set_time(s);
                  }
              }
-@@ -533,7 +946,7 @@ static void cmos_ioport_write(void *opaque, hwaddr addr,
+@@ -527,7 +939,7 @@ static void cmos_ioport_write(void *opaque, hwaddr addr,
              s->cmos_data[RTC_REG_B] = data;
  
              if (update_periodic_timer) {
@@ -1386,7 +1389,7 @@ index d727879ed..74a207c92 100644
                                        old_period, true);
              }
  
-@@ -599,6 +1012,13 @@ static void rtc_set_time(MC146818RtcState *s)
+@@ -593,6 +1005,13 @@ static void rtc_set_time(MC146818RtcState *s)
      s->base_rtc = mktimegm(&tm);
      s->last_update = qemu_clock_get_ns(rtc_clock);
  
@@ -1400,7 +1403,7 @@ index d727879ed..74a207c92 100644
      qapi_event_send_rtc_change(qemu_timedate_diff(&tm), qom_path);
  }
  
-@@ -626,13 +1046,13 @@ static void rtc_set_cmos(MC146818RtcState *s, const struct tm *tm)
+@@ -620,12 +1039,14 @@ static void rtc_set_cmos(MC146818RtcState *s, const struct tm *tm)
      s->cmos_data[RTC_CENTURY] = rtc_to_bcd(s, year / 100);
  }
  
@@ -1409,23 +1412,24 @@ index d727879ed..74a207c92 100644
  {
      struct tm ret;
      time_t guest_sec;
-     int64_t guest_nsec;
++    uint64_t guest_nsec;
  
--    guest_nsec = get_guest_rtc_ns(s);
+-    guest_sec = s->base_rtc + get_rtc_ns_since_last_update(s) / NANOSECONDS_PER_SECOND;
 +    guest_nsec = get_guest_rtc_ns(s, guest_read);
-     guest_sec = guest_nsec / NANOSECONDS_PER_SECOND;
++    guest_sec = guest_nsec / NANOSECONDS_PER_SECOND;
      gmtime_r(&guest_sec, &ret);
  
-@@ -659,7 +1079,7 @@ static int update_in_progress(MC146818RtcState *s)
+     /* Is SET flag of Register B disabled? */
+@@ -651,7 +1072,7 @@ static int update_in_progress(MC146818RtcState *s)
          }
      }
  
--    guest_nsec = get_guest_rtc_ns(s);
+-    guest_nsec = get_rtc_ns_since_last_update(s);
 +    guest_nsec = get_guest_rtc_ns(s, true);
      /* UIP bit will be set at last 244us of every second. */
      if ((guest_nsec % NANOSECONDS_PER_SECOND) >=
          (NANOSECONDS_PER_SECOND - UIP_HOLD_LENGTH)) {
-@@ -691,7 +1111,7 @@ static uint64_t cmos_ioport_read(void *opaque, hwaddr addr,
+@@ -683,7 +1104,7 @@ static uint64_t cmos_ioport_read(void *opaque, hwaddr addr,
              /* if not in set mode, calibrate cmos before
               * reading*/
              if (rtc_running(s)) {
@@ -1434,7 +1438,7 @@ index d727879ed..74a207c92 100644
              }
              ret = s->cmos_data[s->cmos_index];
              break;
-@@ -763,7 +1183,7 @@ static int rtc_pre_save(void *opaque)
+@@ -754,7 +1175,7 @@ static int rtc_pre_save(void *opaque)
  {
      MC146818RtcState *s = opaque;
  
@@ -1443,7 +1447,7 @@ index d727879ed..74a207c92 100644
  
      return 0;
  }
-@@ -787,7 +1207,8 @@ static int rtc_post_load(void *opaque, int version_id)
+@@ -778,7 +1199,8 @@ static int rtc_post_load(void *opaque, int version_id)
          uint64_t now = qemu_clock_get_ns(rtc_clock);
          if (now < s->next_periodic_time ||
              now > (s->next_periodic_time + get_max_clock_jump())) {
@@ -1453,7 +1457,7 @@ index d727879ed..74a207c92 100644
          }
      }
  
-@@ -816,6 +1237,50 @@ static const VMStateDescription vmstate_rtc_irq_reinject_on_ack_count = {
+@@ -807,6 +1229,50 @@ static const VMStateDescription vmstate_rtc_irq_reinject_on_ack_count = {
      }
  };
  
@@ -1504,7 +1508,7 @@ index d727879ed..74a207c92 100644
  static const VMStateDescription vmstate_rtc = {
      .name = "mc146818rtc",
      .version_id = 3,
-@@ -840,6 +1305,7 @@ static const VMStateDescription vmstate_rtc = {
+@@ -831,6 +1297,7 @@ static const VMStateDescription vmstate_rtc = {
      },
      .subsections = (const VMStateDescription * const []) {
          &vmstate_rtc_irq_reinject_on_ack_count,
@@ -1512,7 +1516,7 @@ index d727879ed..74a207c92 100644
          NULL
      }
  };
-@@ -867,10 +1333,44 @@ static void rtc_get_date(Object *obj, struct tm *current_tm, Error **errp)
+@@ -858,10 +1325,44 @@ static void rtc_get_date(Object *obj, struct tm *current_tm, Error **errp)
  {
      MC146818RtcState *s = MC146818_RTC(obj);
  
@@ -1558,7 +1562,7 @@ index d727879ed..74a207c92 100644
  static void rtc_realizefn(DeviceState *dev, Error **errp)
  {
      ISADevice *isadev = ISA_DEVICE(dev);
-@@ -914,6 +1414,37 @@ static void rtc_realizefn(DeviceState *dev, Error **errp)
+@@ -905,6 +1406,37 @@ static void rtc_realizefn(DeviceState *dev, Error **errp)
  
      s->periodic_timer = timer_new_ns(rtc_clock, rtc_periodic_timer, s);
      s->update_timer = timer_new_ns(rtc_clock, rtc_update_timer, s);
@@ -1597,7 +1601,7 @@ index d727879ed..74a207c92 100644
  
      s->suspend_notifier.notify = rtc_notify_suspend;
 diff --git a/hw/rtc/pl031.c b/hw/rtc/pl031.c
-index 29c87a3d9..ab11a6459 100644
+index 91efc91d3..bdf274762 100644
 --- a/hw/rtc/pl031.c
 +++ b/hw/rtc/pl031.c
 @@ -21,6 +21,8 @@
@@ -1879,7 +1883,7 @@ index 29c87a3d9..ab11a6459 100644
  }
  
  static void pl031_finalize(Object *obj)
-@@ -297,6 +490,26 @@ static const VMStateDescription vmstate_pl031_tick_offset = {
+@@ -289,6 +482,26 @@ static const VMStateDescription vmstate_pl031_tick_offset = {
      }
  };
  
@@ -1906,7 +1910,7 @@ index 29c87a3d9..ab11a6459 100644
  static const VMStateDescription vmstate_pl031 = {
      .name = "pl031",
      .version_id = 1,
-@@ -315,6 +528,7 @@ static const VMStateDescription vmstate_pl031 = {
+@@ -307,6 +520,7 @@ static const VMStateDescription vmstate_pl031 = {
      },
      .subsections = (const VMStateDescription * const []) {
          &vmstate_pl031_tick_offset,
@@ -1915,22 +1919,22 @@ index 29c87a3d9..ab11a6459 100644
      }
  };
 diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
-index 14dafd921..c4d7aa2a9 100644
+index c47edd6d1..07858a99c 100644
 --- a/hw/timer/hpet.c
 +++ b/hw/timer/hpet.c
-@@ -25,9 +25,10 @@
-  */
+@@ -26,8 +26,10 @@
  
  #include "qemu/osdep.h"
+ #include "hw/core/irq.h"
+-#include "qapi/error.h"
 +#include "qemu/crucible-fault.h"
-+#include "qemu/error-report.h"
- #include "hw/irq.h"
- #include "qapi/error.h"
--#include "qemu/error-report.h"
+ #include "qemu/error-report.h"
++#include "qapi/error.h"
++#include "qapi/error.h"
  #include "qemu/timer.h"
- #include "hw/qdev-properties.h"
+ #include "hw/core/qdev-properties.h"
  #include "hw/timer/hpet.h"
-@@ -62,6 +63,10 @@ typedef struct HPETTimer {  /* timers */
+@@ -65,6 +67,10 @@ typedef struct HPETTimer {  /* timers */
                               * mode. Next pop will be actual timer expiration.
                               */
      uint64_t last;          /* last value armed, to avoid timer storms */
@@ -1941,7 +1945,7 @@ index 14dafd921..c4d7aa2a9 100644
  } HPETTimer;
  
  struct HPETState {
-@@ -129,6 +134,15 @@ static uint64_t ticks_to_ns(uint64_t value)
+@@ -133,6 +139,15 @@ static uint64_t ticks_to_ns(uint64_t value)
      return value * HPET_CLK_PERIOD;
  }
  
@@ -1957,7 +1961,7 @@ index 14dafd921..c4d7aa2a9 100644
  static uint64_t ns_to_ticks(uint64_t value)
  {
      return value / HPET_CLK_PERIOD;
-@@ -151,11 +165,35 @@ static int deactivating_bit(uint64_t old, uint64_t new, uint64_t mask)
+@@ -155,11 +170,35 @@ static int deactivating_bit(uint64_t old, uint64_t new, uint64_t mask)
      return ((old & mask) && !(new & mask));
  }
  
@@ -1994,7 +1998,7 @@ index 14dafd921..c4d7aa2a9 100644
  static uint64_t hpet_get_ns(HPETState *s, uint64_t tick)
  {
      return ticks_to_ns(tick) - s->hpet_offset;
-@@ -235,7 +273,7 @@ static int hpet_pre_save(void *opaque)
+@@ -242,7 +281,7 @@ static int hpet_pre_save(void *opaque)
  
      /* save current counter value */
      if (hpet_enabled(s)) {
@@ -2003,12 +2007,12 @@ index 14dafd921..c4d7aa2a9 100644
      }
  
      /*
-@@ -266,8 +304,13 @@ static int hpet_post_load(void *opaque, int version_id)
+@@ -271,6 +310,16 @@ static int hpet_post_load(void *opaque, int version_id)
+         t->cmp64 = hpet_calculate_cmp64(t, s->hpet_counter, t->cmp);
+         t->last = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - NANOSECONDS_PER_SECOND;
      }
-     /* Recalculate the offset between the main counter and guest time */
-     if (!s->hpet_offset_saved) {
--        s->hpet_offset = ticks_to_ns(s->hpet_counter)
--                        - qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    /* Recalculate the offset between the main counter and guest time */
++    if (!s->hpet_offset_saved) {
 +        uint64_t counter_ns;
 +
 +        if (!ticks_to_ns_checked(s->hpet_counter, &counter_ns)) {
@@ -2016,10 +2020,11 @@ index 14dafd921..c4d7aa2a9 100644
 +        }
 +        s->hpet_offset = counter_ns -
 +                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-     }
++    }
  
      return 0;
-@@ -325,6 +368,44 @@ static const VMStateDescription vmstate_hpet_timer = {
+ }
+@@ -327,6 +376,44 @@ static const VMStateDescription vmstate_hpet_timer = {
      }
  };
  
@@ -2064,7 +2069,7 @@ index 14dafd921..c4d7aa2a9 100644
  static const VMStateDescription vmstate_hpet = {
      .name = "hpet",
      .version_id = 2,
-@@ -344,13 +425,42 @@ static const VMStateDescription vmstate_hpet = {
+@@ -346,13 +433,42 @@ static const VMStateDescription vmstate_hpet = {
      .subsections = (const VMStateDescription * const []) {
          &vmstate_hpet_rtc_irq_level,
          &vmstate_hpet_offset,
@@ -2108,7 +2113,7 @@ index 14dafd921..c4d7aa2a9 100644
  
      /* Clamp period to reasonable min value (1 us) */
      if (timer_is_periodic(t) && ns - t->last < 1000) {
-@@ -358,7 +468,59 @@ static void hpet_arm(HPETTimer *t, uint64_t tick)
+@@ -360,7 +476,59 @@ static void hpet_arm(HPETTimer *t, uint64_t tick)
      }
  
      t->last = ns;
@@ -2168,7 +2173,7 @@ index 14dafd921..c4d7aa2a9 100644
  }
  
  /*
-@@ -368,7 +530,22 @@ static void hpet_timer(void *opaque)
+@@ -370,7 +538,22 @@ static void hpet_timer(void *opaque)
  {
      HPETTimer *t = opaque;
      uint64_t period = t->period;
@@ -2192,7 +2197,7 @@ index 14dafd921..c4d7aa2a9 100644
  
      if (timer_is_periodic(t) && period != 0) {
          while (hpet_time_after(cur_tick, t->cmp64)) {
-@@ -389,7 +566,7 @@ static void hpet_timer(void *opaque)
+@@ -391,7 +574,7 @@ static void hpet_timer(void *opaque)
  
  static void hpet_set_timer(HPETTimer *t)
  {
@@ -2201,7 +2206,7 @@ index 14dafd921..c4d7aa2a9 100644
  
      t->wrap_flag = 0;
      t->cmp64 = hpet_calculate_cmp64(t, cur_tick, t->cmp);
-@@ -410,7 +587,26 @@ static void hpet_set_timer(HPETTimer *t)
+@@ -412,7 +595,26 @@ static void hpet_set_timer(HPETTimer *t)
  static void hpet_del_timer(HPETTimer *t)
  {
      HPETState *s = t->state;
@@ -2228,39 +2233,36 @@ index 14dafd921..c4d7aa2a9 100644
  
      if (s->isr & (1 << t->tn)) {
          /* For level-triggered interrupt, this leaves ISR set but lowers irq.  */
-@@ -456,9 +652,21 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
-             return s->config >> shift;
-         case HPET_COUNTER:
-             if (hpet_enabled(s)) {
--                cur_tick = hpet_get_ticks(s);
-+                cur_tick = hpet_get_ticks(s, true);
-             } else {
+@@ -440,8 +642,20 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
+             version = seqlock_read_begin(&s->state_version);
+             if (unlikely(!hpet_enabled(s))) {
                  cur_tick = s->hpet_counter;
 +                if (qemu_crucible_fault_clock_source_active(
 +                        QEMU_CRUCIBLE_CLOCK_X86_HPET, s->hpet_id)) {
 +                    bool read_error;
 +
 +                    if (!qemu_crucible_fault_clock_read_ticks(
-+                            QEMU_CRUCIBLE_CLOCK_X86_HPET,
-+                            s->hpet_id, cur_tick, 0,
-+                            &cur_tick, &read_error) || read_error) {
++                            QEMU_CRUCIBLE_CLOCK_X86_HPET, s->hpet_id,
++                            cur_tick, 0, &cur_tick, &read_error) ||
++                        read_error) {
 +                        error_report("Crucible HPET counter read failed");
 +                        abort();
 +                    }
 +                }
+             } else {
+-                cur_tick = hpet_get_ticks(s);
++                cur_tick = hpet_get_ticks(s, true);
              }
-             trace_hpet_ram_read_reading_counter(addr & 4, cur_tick);
-             return cur_tick >> shift;
-@@ -560,9 +768,23 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
-             new_val = hpet_fixup_reg(new_val, old_val, HPET_CFG_WRITE_MASK);
+         } while (seqlock_read_retry(&s->state_version, version));
+         trace_hpet_ram_read_reading_counter(addr & 4, cur_tick);
+@@ -512,9 +726,21 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
+             seqlock_write_begin(&s->state_version);
              s->config = new_val;
              if (activating_bit(old_val, new_val, HPET_CFG_ENABLE)) {
-+                uint64_t counter_ns = ticks_to_ns(s->hpet_counter);
++                uint64_t counter_ns;
 +
                  /* Enable main counter and interrupt generation. */
-+                if (qemu_crucible_fault_clock_source_active(
-+                        QEMU_CRUCIBLE_CLOCK_X86_HPET, s->hpet_id) &&
-+                    !ticks_to_ns_checked(s->hpet_counter, &counter_ns)) {
++                if (!ticks_to_ns_checked(s->hpet_counter, &counter_ns)) {
 +                    error_report("Crucible HPET counter coordinate overflow");
 +                    abort();
 +                }
@@ -2276,7 +2278,7 @@ index 14dafd921..c4d7aa2a9 100644
                  for (i = 0; i < s->num_timers; i++) {
                      if (timer_enabled(&s->timer[i]) && (s->isr & (1 << i))) {
                          update_irq(&s->timer[i], 1);
-@@ -571,7 +793,7 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
+@@ -523,7 +749,7 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
                  }
              } else if (deactivating_bit(old_val, new_val, HPET_CFG_ENABLE)) {
                  /* Halt main counter and disable interrupt generation. */
@@ -2285,7 +2287,7 @@ index 14dafd921..c4d7aa2a9 100644
                  for (i = 0; i < s->num_timers; i++) {
                      hpet_del_timer(&s->timer[i]);
                  }
-@@ -682,6 +904,52 @@ static void hpet_init(Object *obj)
+@@ -711,6 +937,52 @@ static void hpet_init(Object *obj)
      sysbus_init_mmio(sbd, &s->iomem);
  }
  
@@ -2338,7 +2340,7 @@ index 14dafd921..c4d7aa2a9 100644
  static void hpet_realize(DeviceState *dev, Error **errp)
  {
      SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
-@@ -727,6 +995,38 @@ static void hpet_realize(DeviceState *dev, Error **errp)
+@@ -757,6 +1029,38 @@ static void hpet_realize(DeviceState *dev, Error **errp)
  
      qdev_init_gpio_in(dev, hpet_handle_legacy_irq, 2);
      qdev_init_gpio_out(dev, &s->pit_enabled, 1);
@@ -2378,19 +2380,19 @@ index 14dafd921..c4d7aa2a9 100644
  
  static const Property hpet_device_properties[] = {
 diff --git a/hw/timer/i8254.c b/hw/timer/i8254.c
-index 058fc61ce..28b3d6457 100644
+index 1a8b6bf9a..f1f059ebf 100644
 --- a/hw/timer/i8254.c
 +++ b/hw/timer/i8254.c
 @@ -25,6 +25,8 @@
  #include "qemu/osdep.h"
- #include "hw/irq.h"
+ #include "hw/core/irq.h"
  #include "qemu/module.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
  #include "qemu/timer.h"
  #include "hw/timer/i8254.h"
  #include "hw/timer/i8254_internal.h"
-@@ -49,12 +51,36 @@ struct PITClass {
+@@ -50,12 +52,36 @@ struct PITClass {
  
  static void pit_irq_timer_update(PITChannelState *s, int64_t current_time);
  
@@ -2429,7 +2431,7 @@ index 058fc61ce..28b3d6457 100644
                   NANOSECONDS_PER_SECOND);
      switch(s->mode) {
      case 0:
-@@ -88,7 +114,7 @@ static void pit_set_channel_gate(PITCommonState *s, PITChannelState *sc,
+@@ -89,7 +115,7 @@ static void pit_set_channel_gate(PITCommonState *s, PITChannelState *sc,
      case 5:
          if (sc->gate < val) {
              /* restart counting on rising edge */
@@ -2438,7 +2440,7 @@ index 058fc61ce..28b3d6457 100644
              pit_irq_timer_update(sc, sc->count_load_time);
          }
          break;
-@@ -96,7 +122,7 @@ static void pit_set_channel_gate(PITCommonState *s, PITChannelState *sc,
+@@ -97,7 +123,7 @@ static void pit_set_channel_gate(PITCommonState *s, PITChannelState *sc,
      case 3:
          if (sc->gate < val) {
              /* restart counting on rising edge */
@@ -2447,7 +2449,7 @@ index 058fc61ce..28b3d6457 100644
              pit_irq_timer_update(sc, sc->count_load_time);
          }
          /* XXX: disable/enable counting */
-@@ -109,7 +135,7 @@ static inline void pit_load_count(PITChannelState *s, int val)
+@@ -110,7 +136,7 @@ static inline void pit_load_count(PITChannelState *s, int val)
  {
      if (val == 0)
          val = 0x10000;
@@ -2456,7 +2458,7 @@ index 058fc61ce..28b3d6457 100644
      s->count = val;
      pit_irq_timer_update(s, s->count_load_time);
  }
-@@ -118,7 +144,7 @@ static inline void pit_load_count(PITChannelState *s, int val)
+@@ -119,7 +145,7 @@ static inline void pit_load_count(PITChannelState *s, int val)
  static void pit_latch_count(PITChannelState *s)
  {
      if (!s->count_latched) {
@@ -2465,7 +2467,7 @@ index 058fc61ce..28b3d6457 100644
          s->count_latched = s->rw_mode;
      }
  }
-@@ -145,8 +171,7 @@ static void pit_ioport_write(void *opaque, hwaddr addr,
+@@ -148,8 +174,7 @@ static void pit_ioport_write(void *opaque, hwaddr addr,
                          /* status latch */
                          /* XXX: add BCD and null count */
                          s->status =
@@ -2475,7 +2477,7 @@ index 058fc61ce..28b3d6457 100644
                              (s->rw_mode << 4) |
                              (s->mode << 1) |
                              s->bcd;
-@@ -229,20 +254,20 @@ static uint64_t pit_ioport_read(void *opaque, hwaddr addr,
+@@ -232,20 +257,20 @@ static uint64_t pit_ioport_read(void *opaque, hwaddr addr,
          switch(s->read_state) {
          default:
          case RW_STATE_LSB:
@@ -2500,7 +2502,7 @@ index 058fc61ce..28b3d6457 100644
              ret = (count >> 8) & 0xff;
              s->read_state = RW_STATE_WORD0;
              break;
-@@ -255,10 +280,20 @@ static void pit_irq_timer_update(PITChannelState *s, int64_t current_time)
+@@ -261,10 +286,20 @@ static void pit_irq_timer_update(PITChannelState *s, int64_t current_time)
  {
      int64_t expire_time;
      int irq_level;
@@ -2521,7 +2523,7 @@ index 058fc61ce..28b3d6457 100644
      expire_time = pit_get_next_transition_time(s, current_time);
      irq_level = pit_get_out(s, current_time);
      qemu_set_irq(s->irq, irq_level);
-@@ -268,16 +303,84 @@ static void pit_irq_timer_update(PITChannelState *s, int64_t current_time)
+@@ -274,16 +309,84 @@ static void pit_irq_timer_update(PITChannelState *s, int64_t current_time)
             (double)(expire_time - current_time) / NANOSECONDS_PER_SECOND);
  #endif
      s->next_transition_time = expire_time;
@@ -2609,7 +2611,7 @@ index 058fc61ce..28b3d6457 100644
      pit_irq_timer_update(s, s->next_transition_time);
  }
  
-@@ -303,7 +406,7 @@ static void pit_irq_control(void *opaque, int n, int enable)
+@@ -309,7 +412,7 @@ static void pit_irq_control(void *opaque, int n, int enable)
  
      if (enable) {
          s->irq_disabled = 0;
@@ -2618,7 +2620,7 @@ index 058fc61ce..28b3d6457 100644
      } else {
          s->irq_disabled = 1;
          timer_del(s->irq_timer);
-@@ -331,6 +434,16 @@ static void pit_post_load(PITCommonState *s)
+@@ -337,6 +440,16 @@ static void pit_post_load(PITCommonState *s)
      }
  }
  
@@ -2635,7 +2637,7 @@ index 058fc61ce..28b3d6457 100644
  static void pit_realizefn(DeviceState *dev, Error **errp)
  {
      PITCommonState *pit = PIT_COMMON(dev);
-@@ -348,6 +461,35 @@ static void pit_realizefn(DeviceState *dev, Error **errp)
+@@ -354,6 +467,35 @@ static void pit_realizefn(DeviceState *dev, Error **errp)
      qdev_init_gpio_in(dev, pit_irq_control, 1);
  
      pc->parent_realize(dev, errp);
@@ -2670,12 +2672,12 @@ index 058fc61ce..28b3d6457 100644
 +    }
  }
  
- static void pit_class_initfn(ObjectClass *klass, void *data)
+ static void pit_class_initfn(ObjectClass *klass, const void *data)
 diff --git a/hw/timer/i8254_common.c b/hw/timer/i8254_common.c
-index 900b0e183..663b5eab3 100644
+index 0466cfe5c..24b558349 100644
 --- a/hw/timer/i8254_common.c
 +++ b/hw/timer/i8254_common.c
-@@ -199,6 +199,29 @@ static const VMStateDescription vmstate_pit_channel = {
+@@ -197,6 +197,29 @@ static const VMStateDescription vmstate_pit_channel = {
      }
  };
  
@@ -2705,7 +2707,7 @@ index 900b0e183..663b5eab3 100644
  static int pit_dispatch_pre_save(void *opaque)
  {
      PITCommonState *s = opaque;
-@@ -235,6 +258,10 @@ static const VMStateDescription vmstate_pit_common = {
+@@ -233,6 +256,10 @@ static const VMStateDescription vmstate_pit_common = {
          VMSTATE_INT64(channels[0].next_transition_time,
                        PITCommonState), /* formerly irq_timer */
          VMSTATE_END_OF_LIST()
@@ -2717,7 +2719,7 @@ index 900b0e183..663b5eab3 100644
  };
  
 diff --git a/include/hw/acpi/acpi.h b/include/hw/acpi/acpi.h
-index d1a4fa2af..ca26320d9 100644
+index dc3672db5..b7c3e949d 100644
 --- a/include/hw/acpi/acpi.h
 +++ b/include/hw/acpi/acpi.h
 @@ -115,6 +115,9 @@ struct ACPIPMTimer {
@@ -2731,10 +2733,10 @@ index d1a4fa2af..ca26320d9 100644
      acpi_update_sci_fn update_sci;
  };
 diff --git a/include/hw/i386/apic_internal.h b/include/hw/i386/apic_internal.h
-index 8adfed4b2..e742af078 100644
+index c5355aafb..f2b954847 100644
 --- a/include/hw/i386/apic_internal.h
 +++ b/include/hw/i386/apic_internal.h
-@@ -186,6 +186,9 @@ struct APICCommonState {
+@@ -185,6 +185,9 @@ struct APICCommonState {
      int64_t next_time;
      QEMUTimer *timer;
      int64_t timer_expiry;
@@ -2768,10 +2770,10 @@ index 64893be15..c2c6826da 100644
      LostTickPolicy lost_tick_policy;
      Notifier suspend_notifier;
 diff --git a/include/hw/rtc/pl031.h b/include/hw/rtc/pl031.h
-index 9fd4be1ab..808825e9e 100644
+index 75779c631..34ff622cc 100644
 --- a/include/hw/rtc/pl031.h
 +++ b/include/hw/rtc/pl031.h
-@@ -43,6 +43,10 @@ struct PL031State {
+@@ -42,6 +42,10 @@ struct PL031State {
      uint32_t cr;
      uint32_t im;
      uint32_t is;
@@ -2796,8 +2798,53 @@ index 1761deb4c..94130eae8 100644
  } PITChannelState;
  
  struct PITCommonState {
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index ebcff26d3..c30f30078 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -2253,6 +2253,40 @@ size_t qemu_plugin_crucible_fault_hardware_error_manifest(
+     struct qemu_plugin_crucible_fault_hardware_error_capability *out,
+     size_t capacity, uint16_t *architecture);
+ 
++/** One immutable realized guest-clock source capability row. */
++struct qemu_plugin_crucible_fault_clock_capability {
++    uint16_t source_kind;
++    uint16_t architecture;
++    uint16_t base_domain;
++    uint16_t timer_relationship;
++    uint32_t width_bits;
++    uint32_t flags;
++    uint64_t frequency_numerator;
++    uint64_t frequency_denominator;
++    uint64_t model_phase_mask;
++    uint8_t vmstate;
++    uint8_t monotonicity;
++    uint8_t reserved[6];
++    const char *id;
++    const char *implementation;
++};
++
++/** Copies the complete immutable guest-clock manifest. */
++QEMU_PLUGIN_API
++size_t qemu_plugin_crucible_fault_clock_manifest(
++    struct qemu_plugin_crucible_fault_clock_capability *out,
++    size_t capacity, uint16_t *architecture);
++
++/** Binds one manifest row to the canonical public object identity. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_clock_bind(
++    uint32_t row_index, const uint8_t id[32]);
++
++/** Seals the complete guest-clock identity binding table and manifest. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_clock_bindings_seal(
++    const uint8_t manifest_sha256[32]);
++
+ /** Bind one public hardware-error row and its memory topology identities. */
+ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_fault_hardware_error_bind(
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index a706e822e..0f0fee953 100644
+index 08d80be14..c30e6cd9b 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -75,6 +75,11 @@ int qemu_crucible_fault_vmstate_enable(void);
@@ -2959,65 +3006,11 @@ index a706e822e..0f0fee953 100644
  /* Deterministic vCPU service and fixed-topology eligibility control. */
  int qemu_crucible_fault_vcpu_service_validate(
      const QemuCrucibleFaultRule *rule);
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 29eb2e39c..fe47a6861 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -69,7 +69,7 @@ typedef uint64_t qemu_plugin_id_t;
- 
- extern QEMU_PLUGIN_EXPORT int qemu_plugin_version;
- 
--#define QEMU_PLUGIN_VERSION 4
-+#define QEMU_PLUGIN_VERSION 5
- 
- /**
-  * struct qemu_info_t - system information for plugins
-@@ -1892,6 +1892,40 @@ size_t qemu_plugin_crucible_fault_hardware_error_manifest(
-     struct qemu_plugin_crucible_fault_hardware_error_capability *out,
-     size_t capacity, uint16_t *architecture);
- 
-+/** One immutable realized guest-clock source capability row. */
-+struct qemu_plugin_crucible_fault_clock_capability {
-+    uint16_t source_kind;
-+    uint16_t architecture;
-+    uint16_t base_domain;
-+    uint16_t timer_relationship;
-+    uint32_t width_bits;
-+    uint32_t flags;
-+    uint64_t frequency_numerator;
-+    uint64_t frequency_denominator;
-+    uint64_t model_phase_mask;
-+    uint8_t vmstate;
-+    uint8_t monotonicity;
-+    uint8_t reserved[6];
-+    const char *id;
-+    const char *implementation;
-+};
-+
-+/** Copies the complete immutable guest-clock manifest. */
-+QEMU_PLUGIN_API
-+size_t qemu_plugin_crucible_fault_clock_manifest(
-+    struct qemu_plugin_crucible_fault_clock_capability *out,
-+    size_t capacity, uint16_t *architecture);
-+
-+/** Binds one manifest row to the canonical public object identity. */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_fault_clock_bind(
-+    uint32_t row_index, const uint8_t id[32]);
-+
-+/** Seals the complete guest-clock identity binding table and manifest. */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_fault_clock_bindings_seal(
-+    const uint8_t manifest_sha256[32]);
-+
- /** Bind one public hardware-error row and its memory topology identities. */
- QEMU_PLUGIN_API
- int qemu_plugin_crucible_fault_hardware_error_bind(
 diff --git a/migration/savevm.c b/migration/savevm.c
-index 238a29ec7..dc27b9190 100644
+index 0af31e381..c8b7361d0 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
-@@ -264,7 +264,8 @@ static uint32_t crucible_lifecycle_state_domain(const SaveStateEntry *se)
+@@ -265,7 +265,8 @@ static uint32_t crucible_lifecycle_state_domain(const SaveStateEntry *se)
      if (!se->obj) {
          if (strcmp(name, "globalstate") == 0 ||
              strcmp(name, "replay") == 0 ||
@@ -3028,10 +3021,10 @@ index 238a29ec7..dc27b9190 100644
          }
          if (strcmp(name, "cpu") == 0 ||
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index 7702bd5c6..f3b6a53bc 100644
+index e6270fb1e..ae2c5ddc9 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -345,13 +345,11 @@ enum {
+@@ -348,13 +348,11 @@ enum {
      QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
  };
  
@@ -3047,7 +3040,7 @@ index 7702bd5c6..f3b6a53bc 100644
          !qemu_plugin_crucible_single_threaded_rr()) {
          return -EPERM;
      }
-@@ -378,6 +376,14 @@ int qemu_plugin_request_vmstop(void)
+@@ -381,6 +379,14 @@ int qemu_plugin_request_vmstop(void)
      return status;
  }
  
@@ -7396,7 +7389,7 @@ index 000000000..8cf6f5177
 +
 +type_init(crucible_clock_register)
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
-index cd1a116b7..f2f7e088b 100644
+index edcede4cf..c705ce632 100644
 --- a/plugins/crucible-fault-interrupt.c
 +++ b/plugins/crucible-fault-interrupt.c
 @@ -924,9 +924,9 @@ int qemu_crucible_fault_interrupt_validate(const QemuCrucibleFaultRule *rule)
@@ -7413,7 +7406,7 @@ index cd1a116b7..f2f7e088b 100644
      bool storm_retain_pending;
      uint32_t storm_burst, storm_total;
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
-index 73cffb61b..7f4c1adf4 100644
+index 9c1aadab7..a5c801d81 100644
 --- a/plugins/crucible-fault-lifecycle.c
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -20,6 +20,7 @@
@@ -7421,7 +7414,7 @@ index 73cffb61b..7f4c1adf4 100644
  #include "qemu/error-report.h"
  #include "qemu/module.h"
 +#include "qemu/plugin.h"
- #include "qemu/qemu-plugin.h"
+ #include "plugins/qemu-plugin.h"
  #include "qemu/units.h"
  #include "qobject/qlist.h"
 @@ -133,6 +134,7 @@ static bool crucible_lifecycle_node_hung;
@@ -7444,7 +7437,7 @@ index 73cffb61b..7f4c1adf4 100644
  }
  
  int qemu_plugin_crucible_lifecycle_set_process_generation(
-@@ -1628,6 +1635,8 @@ static void crucible_lifecycle_watchdog_boundary(
+@@ -1632,6 +1639,8 @@ static void crucible_lifecycle_watchdog_boundary(
      resolved.maximum_attempts = winner_plan.maximum_attempts;
      resolved.retry_delay = winner_plan.retry_delay;
      resolved.exhausted_transition = winner_plan.exhausted_transition;
@@ -7453,7 +7446,7 @@ index 73cffb61b..7f4c1adf4 100644
      crucible_hang_digest(crucible_lifecycle_hangs, hang_before_hash);
      for (guint index = 0; index < due->len; index++) {
          CrucibleHangState *state = g_ptr_array_index(due, index);
-@@ -1671,9 +1680,11 @@ static void crucible_lifecycle_watchdog_boundary(
+@@ -1675,9 +1684,11 @@ static void crucible_lifecycle_watchdog_boundary(
              winner->rule, observed_icount, &resolved, false,
              before_hash, after_hash, evidence, &outcome,
              &winner->watchdog_reservation);
@@ -7466,7 +7459,7 @@ index 73cffb61b..7f4c1adf4 100644
              abort();
          }
          if (status == 0) {
-@@ -1826,7 +1837,8 @@ static int crucible_lifecycle_vmstate_save(GByteArray *payload)
+@@ -1830,7 +1841,8 @@ static int crucible_lifecycle_vmstate_save(GByteArray *payload)
  
          if (activation > UINT32_MAX || watchdog > UINT32_MAX ||
              recovery > UINT32_MAX ||
@@ -7477,7 +7470,7 @@ index 73cffb61b..7f4c1adf4 100644
              return -EINVAL;
          }
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index 46504433f..2e5ac74ec 100644
+index 1de352704..8fb2dfc28 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -2332,6 +2332,16 @@ static bool node_ratio_capacity_valid(QemuCrucibleFaultRule *rule, uint16_t tag)
@@ -7908,7 +7901,7 @@ index 46504433f..2e5ac74ec 100644
      crucible_memory_vmstate_free(state);
  }
 diff --git a/plugins/crucible-fault-vmstate.c b/plugins/crucible-fault-vmstate.c
-index 629eb40dc..486b17a13 100644
+index 312e50d2b..d29397f9b 100644
 --- a/plugins/crucible-fault-vmstate.c
 +++ b/plugins/crucible-fault-vmstate.c
 @@ -43,6 +43,7 @@ static bool crucible_fault_vmstate_has_expected_reservations;
@@ -7987,10 +7980,10 @@ index 67071aa63..4e95b1d42 100644
              crucible_fault_queue_result(&result, result_payload);
              result_payload = NULL;
 diff --git a/plugins/meson.build b/plugins/meson.build
-index c02bdf799..a100e609e 100644
+index 3ddc8cd15..4c736df33 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
-@@ -61,6 +61,7 @@ endif
+@@ -81,6 +81,7 @@ endif
  user_ss.add(files('user.c', 'api-user.c'))
  system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
                      'crucible-fault-vmstate.c',
@@ -7999,10 +7992,10 @@ index c02bdf799..a100e609e 100644
                      'crucible-fault-register.c',
                      'crucible-fault-instruction.c',
 diff --git a/system/vl.c b/system/vl.c
-index c06dd6f8b..3dcf01144 100644
+index a51e6eec1..6c7b86a23 100644
 --- a/system/vl.c
 +++ b/system/vl.c
-@@ -2703,6 +2703,11 @@ static void qemu_init_displays(void)
+@@ -2719,6 +2719,11 @@ static void qemu_init_displays(void)
      }
  }
  
@@ -8014,7 +8007,7 @@ index c06dd6f8b..3dcf01144 100644
  static void qemu_init_board(void)
  {
      MachineClass *machine_class = MACHINE_GET_CLASS(current_machine);
-@@ -2710,14 +2715,10 @@ static void qemu_init_board(void)
+@@ -2726,14 +2731,10 @@ static void qemu_init_board(void)
      /* From here on we enter MACHINE_PHASE_INITIALIZED.  */
      machine_run_board_init(current_machine, mem_path, &error_fatal);
  
@@ -8033,7 +8026,7 @@ index c06dd6f8b..3dcf01144 100644
  
      if (machine_class->auto_create_sdcard) {
          bool ambigous;
-@@ -2815,6 +2816,14 @@ void qmp_x_exit_preconfig(Error **errp)
+@@ -2829,6 +2830,14 @@ void qmp_x_exit_preconfig(Error **errp)
  
      qemu_init_board();
      qemu_create_cli_devices();
@@ -8049,10 +8042,10 @@ index c06dd6f8b..3dcf01144 100644
          return;
      }
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 95680db84..b75f4d76a 100644
+index 3ccec0316..3447f6aa8 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
-@@ -2673,6 +2673,46 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
+@@ -2497,6 +2497,46 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
      cpu_reset(cs);
  
      acc->parent_realize(dev, errp);
@@ -8100,10 +8093,10 @@ index 95680db84..b75f4d76a 100644
  
  static ObjectClass *arm_cpu_class_by_name(const char *cpu_model)
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index 63928381e..4ce933083 100644
+index 307181fa4..60bf4cf61 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
-@@ -906,6 +906,9 @@ struct ArchCPU {
+@@ -972,6 +972,9 @@ struct ArchCPU {
  
      /* Timers used by the generic (architected) timer */
      QEMUTimer *gt_timer[NUM_GTIMERS];
@@ -8114,7 +8107,7 @@ index 63928381e..4ce933083 100644
       * Timer used by the PMU. Its state is restored after migration by
       * pmu_op_finish() - it does not need other handling during migration
 diff --git a/target/arm/helper.c b/target/arm/helper.c
-index c5c52b46b..faf56fda6 100644
+index 468d3a5b6..9b0433ff4 100644
 --- a/target/arm/helper.c
 +++ b/target/arm/helper.c
 @@ -8,7 +8,7 @@
@@ -8126,7 +8119,7 @@ index c5c52b46b..faf56fda6 100644
  #include "trace.h"
  #include "cpu.h"
  #include "internals.h"
-@@ -2446,11 +2446,35 @@ static CPAccessResult gt_sel2timer_access(CPUARMState *env,
+@@ -1353,11 +1353,35 @@ static CPAccessResult gt_sel2timer_access(CPUARMState *env,
      }
  }
  
@@ -8163,8 +8156,8 @@ index c5c52b46b..faf56fda6 100644
 +    return value;
  }
  
- static void gt_update_irq(ARMCPU *cpu, int timeridx)
-@@ -2581,6 +2605,15 @@ uint64_t gt_direct_access_timer_offset(CPUARMState *env, int timeridx)
+ static void gt_update_gicv5_ppi(CPUARMState *env, int timeridx, bool level)
+@@ -1509,6 +1533,15 @@ uint64_t gt_direct_access_timer_offset(CPUARMState *env, int timeridx)
  static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
  {
      ARMGenericTimer *gt = &cpu->env.cp15.c14_timer[timeridx];
@@ -8180,7 +8173,7 @@ index c5c52b46b..faf56fda6 100644
  
      if (gt->ctl & 1) {
          /*
-@@ -2588,7 +2621,30 @@ static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
+@@ -1516,7 +1549,30 @@ static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
           * reset timer to when ISTATUS next has to change
           */
          uint64_t offset = gt_indirect_access_timer_offset(&cpu->env, timeridx);
@@ -8212,7 +8205,7 @@ index c5c52b46b..faf56fda6 100644
          /* Note that this must be unsigned 64 bit arithmetic: */
          int istatus = count - offset >= gt->cval;
          uint64_t nexttick;
-@@ -2625,26 +2681,104 @@ static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
+@@ -1553,26 +1609,104 @@ static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
           * set the timer for as far in the future as possible. When the
           * timer expires we will reset the timer for any remaining period.
           */
@@ -8318,7 +8311,7 @@ index c5c52b46b..faf56fda6 100644
      timer_del(cpu->gt_timer[timeridx]);
  }
  
-@@ -3088,53 +3222,83 @@ static void gt_hv_ctl_write(CPUARMState *env, const ARMCPRegInfo *ri,
+@@ -2020,53 +2154,83 @@ static void gt_hv_ctl_write(CPUARMState *env, const ARMCPRegInfo *ri,
      gt_ctl_write(env, ri, GTIMER_HYPVIRT, value);
  }
  
@@ -8410,10 +8403,10 @@ index c5c52b46b..faf56fda6 100644
  
  static const ARMCPRegInfo generic_timer_cp_reginfo[] = {
 diff --git a/target/arm/internals.h b/target/arm/internals.h
-index 4641218a5..32fdee9f6 100644
+index 41b19b53d..b7f6aef38 100644
 --- a/target/arm/internals.h
 +++ b/target/arm/internals.h
-@@ -1956,6 +1956,7 @@ int delete_hw_watchpoint(target_ulong addr, target_ulong len, int type);
+@@ -1986,6 +1986,7 @@ int delete_gdbstub_hw_watchpoint(vaddr addr, vaddr len, GdbBreakpointType type);
  
  /* Return the current value of the system counter in ticks */
  uint64_t gt_get_countervalue(CPUARMState *env);
@@ -8422,10 +8415,10 @@ index 4641218a5..32fdee9f6 100644
   * Return the currently applicable offset between the system counter
   * and the counter for the specified timer, as used for direct register
 diff --git a/target/arm/machine.c b/target/arm/machine.c
-index 3409223fb..9f075bb53 100644
+index 5543f2f87..75ddf06b8 100644
 --- a/target/arm/machine.c
 +++ b/target/arm/machine.c
-@@ -1080,6 +1080,34 @@ static int cpu_post_load(void *opaque, int version_id)
+@@ -1294,6 +1294,34 @@ static int cpu_post_load(void *opaque, int version_id)
      return 0;
  }
  
@@ -8460,19 +8453,19 @@ index 3409223fb..9f075bb53 100644
  const VMStateDescription vmstate_arm_cpu = {
      .name = "cpu",
      .version_id = 22,
-@@ -1156,6 +1184,7 @@ const VMStateDescription vmstate_arm_cpu = {
- #endif
+@@ -1387,6 +1415,7 @@ const VMStateDescription vmstate_arm_cpu = {
+         &vmstate_zt0,
          &vmstate_serror,
          &vmstate_crucible_hardware_error,
 +        &vmstate_arm_cpu_crucible_clock,
          &vmstate_irq_line_state,
          &vmstate_wfxt_timer,
-         NULL
+         &vmstate_syndrome64,
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index d79bb7182..2f2002722 100644
+index bafb088d8..c5a73c792 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
-@@ -8090,6 +8090,24 @@ static bool x86_cpu_update_smp_cache_topo(MachineState *ms, X86CPU *cpu,
+@@ -10062,6 +10062,24 @@ static bool x86_cpu_update_smp_cache_topo(MachineState *ms, X86CPU *cpu,
  }
  #endif
  
@@ -8497,7 +8490,7 @@ index d79bb7182..2f2002722 100644
  static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
  {
      CPUState *cs = CPU(dev);
-@@ -8361,6 +8379,38 @@ static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
+@@ -10339,6 +10357,38 @@ static void x86_cpu_realizefn(DeviceState *dev, Error **errp)
      cpu_reset(cs);
  
      xcc->parent_realize(dev, &local_err);
@@ -8537,7 +8530,7 @@ index d79bb7182..2f2002722 100644
  out:
      if (local_err != NULL) {
 diff --git a/target/i386/tcg/misc_helper.c b/target/i386/tcg/misc_helper.c
-index 2b5f092a2..970cd9a6b 100644
+index f7342871d..68bdceffa 100644
 --- a/target/i386/tcg/misc_helper.c
 +++ b/target/i386/tcg/misc_helper.c
 @@ -18,6 +18,8 @@
@@ -8547,9 +8540,9 @@ index 2b5f092a2..970cd9a6b 100644
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
  #include "qemu/log.h"
+ #include "accel/tcg/cpu-loop.h"
  #include "cpu.h"
- #include "exec/helper-proto.h"
-@@ -71,6 +73,22 @@ void helper_rdtsc(CPUX86State *env)
+@@ -72,6 +74,22 @@ void helper_rdtsc(CPUX86State *env)
      cpu_svm_check_intercept_param(env, SVM_EXIT_RDTSC, 0, GETPC());
  
      val = cpu_get_tsc(env) + env->tsc_offset;
@@ -8573,7 +8566,7 @@ index 2b5f092a2..970cd9a6b 100644
      env->regs[R_EDX] = (uint32_t)(val >> 32);
  }
 diff --git a/target/i386/tcg/system/svm_helper.c b/target/i386/tcg/system/svm_helper.c
-index f9982b72d..ead30002a 100644
+index 52a234e7f..65c1841e7 100644
 --- a/target/i386/tcg/system/svm_helper.c
 +++ b/target/i386/tcg/system/svm_helper.c
 @@ -19,6 +19,8 @@
@@ -8585,7 +8578,7 @@ index f9982b72d..ead30002a 100644
  #include "cpu.h"
  #include "exec/helper-proto.h"
  #include "exec/cputlb.h"
-@@ -303,8 +305,19 @@ void helper_vmrun(CPUX86State *env, int aflag, int next_eip_addend)
+@@ -304,8 +306,19 @@ void helper_vmrun(CPUX86State *env, int aflag, int next_eip_addend)
      /* enable intercepts */
      env->hflags |= HF_GUEST_MASK;
  
@@ -8607,7 +8600,7 @@ index f9982b72d..ead30002a 100644
  
      new_cr0 = x86_ldq_phys(cs, env->vm_vmcb + offsetof(struct vmcb, save.cr0));
      if (new_cr0 & SVM_CR0_RESERVED_MASK) {
-@@ -828,7 +841,17 @@ void do_vmexit(CPUX86State *env)
+@@ -832,7 +845,17 @@ void do_vmexit(CPUX86State *env)
      env->int_ctl = 0;
  
      /* Clears the TSC_OFFSET inside the processor. */

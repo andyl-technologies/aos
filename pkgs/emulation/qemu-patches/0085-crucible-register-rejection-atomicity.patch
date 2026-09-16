@@ -1,16 +1,16 @@
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
-index 40c17f020..af804870a 100644
+index bcb916087..9e1665923 100644
 --- a/accel/tcg/cputlb.c
 +++ b/accel/tcg/cputlb.c
-@@ -19,6 +19,7 @@
- 
- #include "qemu/osdep.h"
+@@ -21,6 +21,7 @@
  #include "qemu/main-loop.h"
+ #include "qemu/target-info.h"
+ #include "accel/tcg/cpu-loop.h"
 +#include "qemu/crucible-fault.h"
  #include "accel/tcg/cpu-ops.h"
- #include "exec/exec-all.h"
- #include "exec/page-protection.h"
-@@ -415,6 +416,7 @@ void tlb_flush_by_mmuidx(CPUState *cpu, uint16_t idxmap)
+ #include "accel/tcg/iommu.h"
+ #include "accel/tcg/probe.h"
+@@ -419,6 +420,7 @@ void tlb_flush_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap)
  
  void tlb_flush(CPUState *cpu)
  {
@@ -19,7 +19,7 @@ index 40c17f020..af804870a 100644
  }
  
 diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
-index 3f1bebf6a..599249604 100644
+index 4313864d2..786a0b196 100644
 --- a/accel/tcg/tb-maint.c
 +++ b/accel/tcg/tb-maint.c
 @@ -20,6 +20,7 @@
@@ -29,46 +29,92 @@ index 3f1bebf6a..599249604 100644
 +#include "qemu/crucible-fault.h"
  #include "exec/cputlb.h"
  #include "exec/log.h"
- #include "exec/exec-all.h"
-@@ -791,6 +792,7 @@ done:
+ #include "exec/page-protection.h"
+@@ -801,6 +802,7 @@ static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
  
- void tb_flush(CPUState *cpu)
+ void queue_tb_flush(CPUState *cs)
  {
 +    qemu_crucible_fault_register_side_effect_observed(1U << 1);
      if (tcg_enabled()) {
          unsigned tb_flush_count = qatomic_read(&tb_ctx.tb_flush_count);
- 
+         async_safe_run_on_cpu(cs, do_tb_flush,
 diff --git a/hw/core/cpu-common.c b/hw/core/cpu-common.c
-index 9ceb7859f..e23f19bd7 100644
+index 9f225d452..61100c8c5 100644
 --- a/hw/core/cpu-common.c
 +++ b/hw/core/cpu-common.c
-@@ -21,6 +21,7 @@
- #include "qemu/osdep.h"
+@@ -22,6 +22,7 @@
+ #include "exec/cpu-common.h"
  #include "qapi/error.h"
  #include "hw/core/cpu.h"
 +#include "qemu/crucible-fault.h"
  #include "system/hw_accel.h"
  #include "qemu/log.h"
  #include "qemu/main-loop.h"
-@@ -70,6 +71,8 @@ void cpu_reset_interrupt(CPUState *cpu, int mask)
- {
-     bool need_lock = !bql_locked();
+@@ -70,11 +71,13 @@ CPUState *cpu_create(const char *typename)
  
+ void cpu_reset_interrupt(CPUState *cpu, int mask)
+ {
 +    qemu_crucible_fault_register_side_effect_observed(1U << 3);
-+
-     if (need_lock) {
-         bql_lock();
-     }
-@@ -81,6 +84,7 @@ void cpu_reset_interrupt(CPUState *cpu, int mask)
+     qatomic_and(&cpu->interrupt_request, ~mask);
+ }
  
  void cpu_exit(CPUState *cpu)
  {
 +    qemu_crucible_fault_register_side_effect_observed(1U << 5);
-     qatomic_set(&cpu->exit_request, 1);
-     /* Ensure cpu_exec will see the exit request after TCG has exited.  */
-     smp_wmb();
+     /* Ensure cpu_exec will see the reason why the exit request was set.  */
+     qatomic_store_release(&cpu->exit_request, true);
+     qemu_cpu_kick(cpu);
+diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
+index f2e213413..b5ccf14f4 100644
+--- a/include/plugins/qemu-plugin.h
++++ b/include/plugins/qemu-plugin.h
+@@ -2218,6 +2218,24 @@ struct qemu_plugin_crucible_fault_register_capability {
+     size_t mask_bytes;
+ };
+ 
++#define QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_COUNT 6
++
++enum qemu_plugin_crucible_register_side_effect_index {
++    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_TLB = 0,
++    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_TB = 1,
++    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_FLAGS = 2,
++    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_INTERRUPT = 3,
++    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_TIMER = 4,
++    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_CONTROL_FLOW = 5,
++};
++
++/** Complete architectural and derived-state observation for rejection tests. */
++struct qemu_plugin_crucible_register_rejection_observation {
++    uint8_t canonical_register_hash[32];
++    uint64_t side_effect_counts[
++        QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_COUNT];
++};
++
+ /** Copy the immutable register target manifest for the realized CPU model. */
+ QEMU_PLUGIN_API
+ size_t qemu_plugin_crucible_fault_register_manifest(
+@@ -2249,6 +2267,19 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
+                                              size_t out_value_capacity,
+                                              size_t *out_value_len);
+ 
++/**
++ * qemu_plugin_crucible_register_rejection_observe() - observe rejection state
++ * @out: plugin-owned complete observation
++ *
++ * Hashes the canonical GDB byte stream for every realized vCPU and snapshots
++ * counters for the six register-mutation side-effect classes. The caller must
++ * own an exact deterministic RR callback, or hold the BQL while the VM is
++ * stopped. Returns zero on success and a negative errno value on failure.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_register_rejection_observe(
++    struct qemu_plugin_crucible_register_rejection_observation *out);
++
+ /**
+  * qemu_plugin_crucible_fault_instruction_manifest() - copy decoder contract
+  * @manifest: optional plugin-owned output bytes
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 74cfebebf..501478891 100644
+index 073cdae72..01719e833 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
 @@ -281,6 +281,23 @@ void qemu_crucible_fault_accelerator_device_unregister(void *opaque);
@@ -96,10 +142,10 @@ index 74cfebebf..501478891 100644
  bool qemu_crucible_fault_register_rules_active(void);
  bool qemu_crucible_fault_register_boundaries_active(void);
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 952a779b0..5cd7c7eac 100644
+index dc01cbbec..d99c857a7 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
-@@ -195,6 +195,7 @@ void qemu_plugin_fire_control_boundary_cb(CPUState *cpu);
+@@ -203,6 +203,7 @@ void qemu_plugin_fire_control_boundary_cb(CPUState *cpu);
  
  void qemu_plugin_crucible_exact_boundary_enter(void);
  void qemu_plugin_crucible_exact_boundary_leave(void);
@@ -107,60 +153,11 @@ index 952a779b0..5cd7c7eac 100644
  bool qemu_plugin_crucible_vmstop_pending(void);
  bool qemu_plugin_crucible_vmstop_admission_pending(void);
  void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
-diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index 13569f0ce..cc779123a 100644
---- a/include/qemu/qemu-plugin.h
-+++ b/include/qemu/qemu-plugin.h
-@@ -1857,6 +1857,24 @@ struct qemu_plugin_crucible_fault_register_capability {
-     size_t mask_bytes;
- };
- 
-+#define QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_COUNT 6
-+
-+enum qemu_plugin_crucible_register_side_effect_index {
-+    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_TLB = 0,
-+    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_TB = 1,
-+    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_FLAGS = 2,
-+    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_INTERRUPT = 3,
-+    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_TIMER = 4,
-+    QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_CONTROL_FLOW = 5,
-+};
-+
-+/** Complete architectural and derived-state observation for rejection tests. */
-+struct qemu_plugin_crucible_register_rejection_observation {
-+    uint8_t canonical_register_hash[32];
-+    uint64_t side_effect_counts[
-+        QEMU_PLUGIN_CRUCIBLE_REGISTER_SIDE_EFFECT_COUNT];
-+};
-+
- /** Copy the immutable register target manifest for the realized CPU model. */
- QEMU_PLUGIN_API
- size_t qemu_plugin_crucible_fault_register_manifest(
-@@ -1888,6 +1906,19 @@ int qemu_plugin_crucible_fault_register_read(unsigned int vcpu_index,
-                                              size_t out_value_capacity,
-                                              size_t *out_value_len);
- 
-+/**
-+ * qemu_plugin_crucible_register_rejection_observe() - observe rejection state
-+ * @out: plugin-owned complete observation
-+ *
-+ * Hashes the canonical GDB byte stream for every realized vCPU and snapshots
-+ * counters for the six register-mutation side-effect classes. The caller must
-+ * own an exact deterministic RR callback, or hold the BQL while the VM is
-+ * stopped. Returns zero on success and a negative errno value on failure.
-+ */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_register_rejection_observe(
-+    struct qemu_plugin_crucible_register_rejection_observation *out);
-+
- /**
-  * qemu_plugin_crucible_fault_instruction_manifest() - copy decoder contract
-  * @manifest: optional plugin-owned output bytes
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index cecbf9cc4..4d1142f87 100644
+index 0bedaf6c4..fb4827420 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -489,6 +489,11 @@ void qemu_plugin_crucible_exact_boundary_leave(void)
+@@ -492,6 +492,11 @@ void qemu_plugin_crucible_exact_boundary_leave(void)
      qemu_plugin_crucible_exact_boundary_depth--;
  }
  
@@ -173,10 +170,10 @@ index cecbf9cc4..4d1142f87 100644
  {
      return qatomic_read(&qemu_plugin_crucible_vmstop_state) !=
 diff --git a/plugins/api.c b/plugins/api.c
-index 1e048e2cb..0330a3da3 100644
+index 967dfb1c8..1c5440edb 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -508,13 +508,17 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -687,13 +687,17 @@ bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr)
  #ifndef CONFIG_USER_ONLY
  static bool qemu_plugin_crucible_vcpu_register_read_allowed(void)
  {
@@ -200,7 +197,7 @@ index 1e048e2cb..0330a3da3 100644
  }
  
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
-index ba3c8484a..b5e8c8b5f 100644
+index 443ce0768..b7cefc5d1 100644
 --- a/plugins/crucible-fault-node.c
 +++ b/plugins/crucible-fault-node.c
 @@ -3286,6 +3286,22 @@ static int node_memory_resolve_target(QemuCrucibleFaultRule *rule,
@@ -348,7 +345,7 @@ index ba3c8484a..b5e8c8b5f 100644
          result->status = CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH;
          return -ESTALE;
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
-index b6a4ed0cc..994c1957e 100644
+index 4a5db01b6..c53b6d8fa 100644
 --- a/plugins/crucible-fault-register.c
 +++ b/plugins/crucible-fault-register.c
 @@ -58,6 +58,33 @@ static uint8_t crucible_register_architecture_identity[32];
@@ -512,7 +509,7 @@ index d171c2e95..353e1b359 100644
  
  void qemu_plugin_register_crucible_fault_completion_cb(
 diff --git a/system/cpus.c b/system/cpus.c
-index b6a796ec6..c038e3d39 100644
+index 8dfc730c3..8e15e93ff 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -25,6 +25,7 @@
@@ -523,14 +520,14 @@ index b6a796ec6..c038e3d39 100644
  #include "qapi/error.h"
  #include "qapi/qapi-commands-machine.h"
  #include "qapi/qapi-commands-misc.h"
-@@ -265,6 +266,7 @@ static void generic_handle_interrupt(CPUState *cpu, int mask)
+@@ -273,6 +274,7 @@ void generic_handle_interrupt(CPUState *cpu, int mask)
  
  void cpu_interrupt(CPUState *cpu, int mask)
  {
 +    qemu_crucible_fault_register_side_effect_observed(1U << 3);
-     if (cpus_accel->handle_interrupt) {
-         cpus_accel->handle_interrupt(cpu, mask);
-     } else {
+     g_assert(bql_locked());
+ 
+     cpus_accel->handle_interrupt(cpu, mask);
 diff --git a/target/arm/crucible-register.c b/target/arm/crucible-register.c
 index 6e1a76766..a6d49cd08 100644
 --- a/target/arm/crucible-register.c
