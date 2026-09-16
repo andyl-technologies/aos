@@ -39,7 +39,7 @@ metadata transport
   -> detect platform or config drive
   -> fetch exact user-data and facts
   -> authorize host.nix
-  -> restricted initrd evaluation of aos.provisioning
+  -> complete initrd evaluation and storage-plan projection
   -> validate and commit the first-boot storage plan
   -> switch_root
   -> pure stage-2 evaluation and provider fixpoint
@@ -49,9 +49,9 @@ metadata transport
   -> atomically activate the configuration generation
 ```
 
-The initrd evaluation can see only the closed provisioning schema shipped in
-the image. It cannot fetch registry modules or select arbitrary build packages.
-This is the path that runs before disk mutation.
+The initrd evaluation uses the complete image-frozen module and selected
+package/provider fixed point. It cannot fetch registry modules or select
+arbitrary build packages. This is the path that runs before disk mutation.
 
 The stage-2 evaluator is a pure function of the image's ABI-pinned module
 library, authenticated package `config` outputs, the exact accepted `host.nix`,
