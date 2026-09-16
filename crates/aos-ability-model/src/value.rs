@@ -433,6 +433,15 @@ pub enum ValueExpression {
         /// Identifies the normalized child path below `base`.
         relative_path: crate::RelativePath,
     },
+    /// Serializes one resolved typed value as bounded AOS canonical JSON.
+    CanonicalJson {
+        /// Retains the exact schema used to validate the value before serialization.
+        source_schema: Box<crate::ValueSchema>,
+        /// Supplies the typed value to resolve and serialize.
+        value: Box<ValueExpression>,
+        /// Limits the encoded canonical JSON string in bytes.
+        max_bytes: u64,
+    },
     /// Supplies an exact immutable artifact reference.
     ArtifactReference {
         /// Identifies the retained artifact and closure.
@@ -464,7 +473,7 @@ impl ValueExpression {
         match self {
             Self::Literal { value } => JsonValueKind::of_json(value.as_json()),
             Self::List { .. } => Some(JsonValueKind::Array),
-            Self::PathWithin { .. } => Some(JsonValueKind::String),
+            Self::PathWithin { .. } | Self::CanonicalJson { .. } => Some(JsonValueKind::String),
             Self::Object { .. }
             | Self::ArtifactReference { .. }
             | Self::ResourceReference { .. } => Some(JsonValueKind::Object),
@@ -505,6 +514,20 @@ impl ValueExpression {
                         return false;
                     }
                     stack.push((base, child_depth));
+                }
+                Self::CanonicalJson {
+                    source_schema,
+                    value,
+                    max_bytes,
+                } => {
+                    if *max_bytes == 0 || !source_schema.is_within_limits(max_depth, max_items) {
+                        return false;
+                    }
+                    item_count = item_count.saturating_add(1);
+                    if item_count > max_items {
+                        return false;
+                    }
+                    stack.push((value, child_depth));
                 }
                 Self::Literal { .. }
                 | Self::ArtifactReference { .. }
@@ -780,5 +803,32 @@ mod tests {
         );
         assert!(expression.is_within_limits(64, 2));
         assert!(!expression.is_within_limits(1, 2));
+    }
+
+    #[test]
+    fn canonical_json_retains_its_source_schema_and_byte_bound() {
+        let expression = ValueExpression::CanonicalJson {
+            source_schema: Box::new(crate::ValueSchema::Record {
+                fields: BTreeMap::from([(
+                    LocalKey::new("enabled").expect("field name"),
+                    crate::ValueSchema::Boolean,
+                )]),
+                optional_fields: Vec::new(),
+            }),
+            value: Box::new(ValueExpression::Literal {
+                value: AbilityValue::new(serde_json::json!({"enabled": true}))
+                    .expect("ability value"),
+            }),
+            max_bytes: 128,
+        };
+        let encoded = serde_json::to_value(&expression).expect("serialize expression");
+
+        assert_eq!(encoded["source"], "canonical-json");
+        assert_eq!(encoded["max_bytes"], 128);
+        assert_eq!(
+            expression.top_level_json_kind(),
+            Some(crate::JsonValueKind::String)
+        );
+        assert!(expression.is_within_limits(64, 16));
     }
 }

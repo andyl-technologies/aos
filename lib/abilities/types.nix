@@ -879,6 +879,7 @@ in rec {
       concreteSchema.kind
       == "string"
       && concreteSchema.syntax == "execution-path-v1";
+    admitsCanonicalJson = concreteSchema.kind == "string";
     pathWithinType = moduleTypes.mkOptionType {
       name = "path within a deferred execution path";
       description = "normalized path below a literal or deferred absolute execution path";
@@ -895,13 +896,34 @@ in rec {
         );
       merge = moduleTypes.mergeEqualOption;
     };
+    canonicalJsonType = moduleTypes.mkOptionType {
+      name = "typed canonical JSON expression";
+      description = "bounded canonical JSON derived from one typed deferred value";
+      check = value: let
+        decoded =
+          if builtins.isAttrs value && value ? source_schema
+          then builtins.tryEval (fromSchema value.source_schema)
+          else {success = false;};
+      in
+        admitsCanonicalJson
+        && builtins.isAttrs value
+        && builtins.attrNames value == ["_type" "max_bytes" "source_schema" "value"]
+        && value._type == "aos-canonical-json"
+        && builtins.isInt value.max_bytes
+        && value.max_bytes > 0
+        && value.max_bytes <= concreteSchema.max_length
+        && decoded.success
+        && (deferredResult decoded.value).check value.value;
+      merge = moduleTypes.mergeEqualOption;
+    };
     authored = moduleTypes.mkOptionType {
       name = "literal or deferred expression";
       description = "literal value, exact operation result reference, or normalized child execution path";
       check = value:
         expectedType.check value
         || operationResultReferenceType.check value
-        || pathWithinType.check value;
+        || pathWithinType.check value
+        || canonicalJsonType.check value;
       merge = location: definitions: let
         value = (builtins.elemAt definitions (builtins.length definitions - 1)).value;
       in
@@ -909,6 +931,8 @@ in rec {
         then operationResultReferenceType.merge location definitions
         else if builtins.isAttrs value && (value._type or null) == "aos-runtime-path"
         then pathWithinType.merge location definitions
+        else if builtins.isAttrs value && (value._type or null) == "aos-canonical-json"
+        then canonicalJsonType.merge location definitions
         else expectedType.merge location definitions;
     };
   in

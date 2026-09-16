@@ -1077,6 +1077,12 @@
     schema = schemas.validateSchema "composition value schema" schemaValue;
     resultMarker = builtins.isAttrs value && (value._type or null) == "aos-request-output-reference";
     pathMarker = builtins.isAttrs value && (value._type or null) == "aos-runtime-path";
+    canonicalJsonMarker = builtins.isAttrs value && (value._type or null) == "aos-canonical-json";
+    unrefined = candidate:
+      if candidate.kind == "refined"
+      then unrefined candidate.value
+      else candidate;
+    canonicalJsonTarget = unrefined schema;
     invalid = expected: fail "composition value must be ${expected}";
     valueKind = candidate:
       if builtins.isBool candidate
@@ -1093,6 +1099,23 @@
   in
     if resultMarker
     then value
+    else if canonicalJsonMarker
+    then let
+      checked = requireAttrs "canonical-json expression" ["_type" "source_schema" "value" "max_bytes"] value;
+      sourceSchema = schemas.validateSchema "canonical-json source schema" checked.source_schema;
+    in
+      if
+        canonicalJsonTarget.kind == "string"
+        && builtins.isInt checked.max_bytes
+        && checked.max_bytes > 0
+        && checked.max_bytes <= canonicalJsonTarget.max_length
+      then
+        checked
+        // {
+          source_schema = sourceSchema;
+          value = checkCompositionValue sourceSchema checked.value;
+        }
+      else fail "canonical-json expression requires a bounded string target"
     else if schema.kind == "refined"
     then let
       checked = checkCompositionValue schema.value value;
@@ -1401,6 +1424,7 @@
       schema = schemas.validateSchema "composition projection schema" schemaValue;
       resultMarker = builtins.isAttrs value && (value._type or null) == "aos-request-output-reference";
       pathMarker = builtins.isAttrs value && (value._type or null) == "aos-runtime-path";
+      canonicalJsonMarker = builtins.isAttrs value && (value._type or null) == "aos-canonical-json";
       sourceNode = nodes.${sourceName};
       valueKind = candidate:
         if builtins.isBool candidate
@@ -1448,6 +1472,20 @@
             else if descriptor.schema != schema
             then fail "resultOf '${referenceName}' has a different output schema"
             else resolveComposition nodes targetName schema targetValue (trail ++ [referenceName])
+      else if canonicalJsonMarker
+      then let
+        checked = checkCompositionValue schema value;
+        resolved = resolveComposition nodes sourceName checked.source_schema checked.value trail;
+      in
+        if containsRequestOutput 0 resolved
+        then checked // {value = resolved;}
+        else let
+          sourceValue = schemas.checkValue checked.source_schema resolved;
+          encoded = builtins.toJSON sourceValue;
+        in
+          if builtins.stringLength encoded > checked.max_bytes
+          then failLimit "canonical-json expression exceeds its declared byte limit"
+          else schemas.checkValue schema encoded
       else if schema.kind == "refined"
       then let
         resolved = resolveComposition nodes sourceName schema.value value trail;
@@ -1758,6 +1796,37 @@ in rec {
     request = requireLocalKey "result request" request;
     output = requireLocalKey "result output" output;
   };
+
+  canonicalJsonOf = {
+    type,
+    value,
+    maxBytes,
+  }: let
+    sourceSchema = abilityTypes.schemaOf "canonical-json source" type;
+    effectResult =
+      builtins.isAttrs value
+      && builtins.attrNames value == ["_type" "key" "kind" "output" "up"]
+      && value._type == "aos-effect-result-reference"
+      && builtins.elem value.kind ["operation" "merge"]
+      && builtins.isInt value.up
+      && value.up >= 0
+      && value.up <= 64
+      && abilityTypes.localKey.check value.key
+      && abilityTypes.localKey.check value.output;
+    candidate = {
+      _type = "aos-canonical-json";
+      source_schema = sourceSchema;
+      inherit value;
+      max_bytes = maxBytes;
+    };
+  in
+    if
+      builtins.isInt maxBytes
+      && maxBytes > 0
+      && maxBytes <= maxStringLength
+      && ((abilityTypes.deferredResult type).check value || effectResult)
+    then candidate
+    else fail "canonicalJsonOf requires a typed deferred value and a valid string byte limit";
 
   pathWithin = args: let
     checked = requireAttrs "path-within expression" ["base" "relativePath"] args;

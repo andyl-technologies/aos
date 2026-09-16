@@ -464,6 +464,26 @@
       group = "services";
     });
   };
+  canonicalJsonGraph = effects.graph {
+    source = invoke {
+      target = service "observe";
+      through = serviceBinding;
+      method = "observe";
+      inputs = {};
+      group = "services";
+    };
+    consumer = effects.after ["source"] (invoke {
+      target = service "observe";
+      through = serviceBinding;
+      method = "observe";
+      inputs.encoded = abilities.canonicalJsonOf {
+        type = abilities.types.boolean;
+        value = effects.result "source" "ready";
+        maxBytes = 16;
+      };
+      group = "services";
+    });
+  };
 in {
   normalized = effects.normalize ["nginx"] transition;
   reversed = effects.normalize ["nginx"] (effects.graph {
@@ -474,6 +494,7 @@ in {
   bootstrap = effects.normalize ["bootstrap"] providerBootstrap;
   kubernetes = effects.normalize ["kubernetes"] kubernetesGraph;
   pathWithin = effects.normalize ["path-within"] pathWithinGraph;
+  canonicalJson = effects.normalize ["canonical-json"] canonicalJsonGraph;
   inherit
     missingReference
     cycle
