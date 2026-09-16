@@ -97,12 +97,10 @@
         after = [
           (resultOf "local-filesystems" "readiness-resource")
           (resultOf "network-readiness" "readiness-resource")
-          (resultOf "aos-credential-recovery-lifecycle" "service-resource")
         ];
         before = [];
         requires = [
           (resultOf "local-filesystems" "readiness-resource")
-          (resultOf "aos-credential-recovery-lifecycle" "service-resource")
         ];
         wants = [(resultOf "network-readiness" "readiness-resource")];
         requisite = [];
@@ -365,13 +363,11 @@
         after = [
           (resultOf "local-filesystems" "readiness-resource")
           (resultOf "network-readiness" "readiness-resource")
-          (resultOf "aos-credential-recovery-lifecycle" "service-resource")
           registryReadiness
         ];
         before = [(resultOf "user-sessions-ready" "readiness-resource")];
         requires = [
           (resultOf "local-filesystems" "readiness-resource")
-          (resultOf "aos-credential-recovery-lifecycle" "service-resource")
         ];
         wants = [
           (resultOf "network-readiness" "readiness-resource")

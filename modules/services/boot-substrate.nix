@@ -134,7 +134,6 @@
       ]
       ++ [
         "aos-config-seed.service"
-        "aos-credential-recovery.service"
         "aos-machine-id.service"
         "aos-seed-profiles.service"
         "etc-overlay-setup.service"

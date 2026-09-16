@@ -946,7 +946,6 @@ mod tests {
             "schema": "aos.config-manifest/v1",
             "packages": ["firewall", "web"],
             "config": {"firewall": {}, "web": {}},
-            "credentials": {"firewall": {}, "web": {}},
             "graph": {"edges": {"web": ["firewall"], "firewall": []}},
             "etc": {},
             "jobScripts": {},

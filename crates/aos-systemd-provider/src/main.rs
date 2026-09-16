@@ -7,6 +7,7 @@
 
 mod boot_platform;
 mod credential;
+mod credential_encryption;
 mod identity;
 mod manager_watchdog;
 mod materialize;
@@ -156,6 +157,12 @@ async fn run() -> Result<()> {
             })
             .collect::<Result<Vec<_>>>()?;
         return measurement_index::run(&arguments);
+    }
+    if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "credential-encrypt")
+    {
+        return credential_encryption::run(&arguments[2..]);
     }
     if arguments.len() == 1 {
         return qualification_observer::run().await;

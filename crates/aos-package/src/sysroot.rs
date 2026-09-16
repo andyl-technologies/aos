@@ -2539,7 +2539,6 @@ mod tests {
             "users": [],
             "graph": {"edges": {}},
             "config": {},
-            "credentials": {},
             "ownership": {
                 "etc": {}, "jobScripts": {}, "users": {}, "storePaths": {}
             }

@@ -53,27 +53,13 @@ impl Error for PreparationError {}
 fn run() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     match arguments.as_slice() {
-        [command] if command == "recover-credentials" => recover_credentials(Path::new(SYSROOT)),
         [command] if command == "seed-configuration" => {
             seed_configuration(Path::new(SYSROOT), Path::new(PROFILE_ENV))
         }
         _ => Err(PreparationError::message(
-            "usage: aos-boot-preparations <recover-credentials|seed-configuration>",
+            "usage: aos-boot-preparations seed-configuration",
         )),
     }
-}
-
-fn recover_credentials(root: &Path) -> Result<()> {
-    run_exact(
-        PACKAGE_RUNTIME,
-        &["recover-credential-transactions"],
-        &[("AOS_ROOT", root.as_os_str())],
-    )
-    .map_err(|error| {
-        PreparationError::message(format!(
-            "recovering interrupted credential transactions: {error}"
-        ))
-    })
 }
 
 fn seed_configuration(root: &Path, profile_environment: &Path) -> Result<()> {

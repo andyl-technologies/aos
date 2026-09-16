@@ -156,7 +156,7 @@ pub(crate) fn invoke(role: CredentialRole, invocation: Invocation) -> Result<Inv
         bail!("unsupported credential invocation schema");
     }
     if !invocation.method_is_bound() {
-        bail!("credential invocation method is not bound to its recovery contract");
+        bail!("credential invocation method is not bound to its checked contract");
     }
     require_method(role, &invocation.method, &invocation.semantics)?;
     require_method(
@@ -165,7 +165,7 @@ pub(crate) fn invoke(role: CredentialRole, invocation: Invocation) -> Result<Inv
         &invocation.request.semantics,
     )?;
     if invocation.method.interface != invocation.request.method.interface {
-        bail!("credential recovery cannot cross interfaces");
+        bail!("credential invocation cannot cross interfaces");
     }
     if resource_set_digest(&invocation.request.resources)?
         != invocation.request.native_context_digest

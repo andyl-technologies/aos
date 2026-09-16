@@ -1353,7 +1353,7 @@
     "aos-landlock"
     "aos-recovery"
     "aos-registry-server"
-    "aos-secret-reference-test"
+    "aos-credential-delivery-test"
     "aos-selinux-run"
     "aos-service-root"
     "aos-system-image-e2e-fixture"

@@ -302,41 +302,6 @@
     then throw "the stock system must emit aos-graph-compile.service"
     else if !(builtins.hasAttr "aos-activate" system.config.systemd.services)
     then throw "the stock system must emit aos-activate.service"
-    else if !(builtins.hasAttr "aos-credential-recovery" system.config.systemd.services)
-    then throw "the stock system must recover interrupted credential publication"
-    else if
-      !(builtins.hasAttr
-        "aos-credential-recovery"
-        system.config.boot.initrd.systemd.services)
-    then throw "the initrd must recover interrupted credential publication before restoring /etc"
-    else if
-      !(builtins.elem
-        "nix-overlay-setup.service"
-        system.config.boot.initrd.systemd.services."aos-credential-recovery".requires)
-      || !(builtins.elem
-        "nix-overlay-setup.service"
-        system.config.boot.initrd.systemd.services."aos-credential-recovery".after)
-    then throw "initrd credential recovery must wait for the /nix overlay"
-    else if
-      !(builtins.elem
-        "aos-credential-recovery.service"
-        system.config.systemd.services.aos-eval.requires)
-    then throw "host evaluation must require credential transaction recovery"
-    else if
-      !(builtins.elem
-        "aos-credential-recovery.service"
-        system.config.boot.initrd.systemd.services."aos-config-seed".requires)
-    then throw "the initrd config lower must wait for credential transaction recovery"
-    else if
-      !(builtins.elem
-        "nix-overlay-setup.service"
-        system.config.boot.initrd.systemd.services."aos-credential-recovery".requires)
-    then throw "initrd credential recovery must require the target Nix overlay"
-    else if
-      !(builtins.elem
-        "nix-overlay-setup.service"
-        system.config.boot.initrd.systemd.services."aos-credential-recovery".after)
-    then throw "initrd credential recovery must start after the target Nix overlay"
     else if
       builtins.elem
       "aos-seed-profiles.service"
@@ -347,11 +312,6 @@
         "local-fs.target"
         system.config.systemd.services.aos-firstboot-reeval.requires)
     then throw "stage-2 re-evaluation must require the durable local filesystem substrate"
-    else if
-      !(containsStr
-        "AOS_ROOT=/sysroot"
-        system.config.boot.initrd.systemd.services."aos-credential-recovery".script)
-    then throw "initrd credential recovery must rebase transaction paths beneath /sysroot"
     else if system.config.systemd.services."aos-pkg-install@".serviceConfig.ProtectSystem != "strict"
     then throw "package config rendering must run with ProtectSystem=strict"
     else if

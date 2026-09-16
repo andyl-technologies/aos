@@ -34,7 +34,6 @@
     && builtins.isAttrs value.packageOutputs
     && builtins.isAttrs value.graph.edges
     && builtins.isAttrs value.config
-    && builtins.isAttrs value.credentials
     && builtins.isInt value.module_abi
     && inputNames value
     && ownershipNames value;

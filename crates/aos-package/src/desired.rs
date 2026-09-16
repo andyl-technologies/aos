@@ -6,7 +6,7 @@
 //! are installed, and explicit installed names absent from the file are
 //! removed.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -25,61 +25,19 @@ use aos_core::output::{OutputMode, Printer};
 pub const DEFAULT_DESIRED_PATH: &str = "/etc/aos/packages.d/desired.toml";
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DesiredToml {
     #[serde(default)]
     packages: Vec<String>,
-    #[serde(default)]
-    credentials: DesiredPackageCredentials,
     #[serde(default)]
     desired: Option<DesiredSection>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DesiredSection {
     #[serde(default)]
     packages: Vec<String>,
-    #[serde(default)]
-    credentials: DesiredPackageCredentials,
-}
-
-/// Desired credential values keyed by package and credential name.
-pub(crate) type DesiredPackageCredentials =
-    BTreeMap<String, BTreeMap<String, DesiredCredentialValue>>;
-
-/// Loads only the credential resolver inputs from a desired-package file.
-///
-/// # Errors
-///
-/// Returns an error when the file cannot be read or its TOML contract is
-/// malformed.
-pub(crate) fn load_desired_credentials(path: &Path) -> Result<DesiredPackageCredentials> {
-    Ok(DesiredFile::from_path(path)?.credentials)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
-pub(crate) enum DesiredCredentialValue {
-    Plaintext(String),
-    Source(DesiredCredentialSource),
-}
-
-impl From<String> for DesiredCredentialValue {
-    fn from(value: String) -> Self {
-        Self::Plaintext(value)
-    }
-}
-
-impl From<&str> for DesiredCredentialValue {
-    fn from(value: &str) -> Self {
-        Self::Plaintext(value.to_string())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) struct DesiredCredentialSource {
-    pub(crate) system_credential: String,
 }
 
 /// Reconcile explicit APM roots against a desired-package file.
@@ -175,7 +133,6 @@ pub async fn reconcile_from_file(
 #[derive(Debug)]
 struct DesiredFile {
     packages: BTreeSet<String>,
-    credentials: DesiredPackageCredentials,
 }
 
 impl DesiredFile {
@@ -188,15 +145,15 @@ impl DesiredFile {
     fn from_str(content: &str) -> Result<Self> {
         let parsed: DesiredToml =
             toml::from_str(content).context("invalid desired package TOML")?;
-        let top_level_present = !parsed.packages.is_empty() || !parsed.credentials.is_empty();
-        let (names, credentials) = match parsed.desired {
-            Some(desired) if !desired.packages.is_empty() || !desired.credentials.is_empty() => {
+        let top_level_present = !parsed.packages.is_empty();
+        let names = match parsed.desired {
+            Some(desired) if !desired.packages.is_empty() => {
                 if top_level_present {
                     bail!("desired package file must not mix top-level keys with [desired]");
                 }
-                (desired.packages, desired.credentials)
+                desired.packages
             }
-            _ => (parsed.packages, parsed.credentials),
+            _ => parsed.packages,
         };
 
         let mut set = BTreeSet::new();
@@ -205,31 +162,7 @@ impl DesiredFile {
                 .with_context(|| format!("invalid desired package name '{name}'"))?;
             set.insert(name);
         }
-        for (package, package_credentials) in &credentials {
-            validate_package_name(package)
-                .with_context(|| format!("invalid desired credential package name '{package}'"))?;
-            for name in package_credentials.keys() {
-                crate::types::validate_credential_name(name).with_context(|| {
-                    format!("invalid desired credential name '{package}.{name}'")
-                })?;
-            }
-            for (name, value) in package_credentials {
-                if let DesiredCredentialValue::Source(source) = value {
-                    crate::types::validate_credential_name(&source.system_credential)
-                        .with_context(|| {
-                            format!(
-                                "invalid desired system credential name '{}.{}'",
-                                package, name
-                            )
-                        })?;
-                }
-            }
-        }
-
-        Ok(Self {
-            packages: set,
-            credentials,
-        })
+        Ok(Self { packages: set })
     }
 }
 
@@ -237,7 +170,6 @@ impl DesiredFile {
 fn desired_packages_from_str(content: &str) -> Result<BTreeSet<String>> {
     Ok(DesiredFile::from_str(content)?.packages)
 }
-
 fn explicit_installed_packages(config: &ApmConfig) -> Result<BTreeSet<String>> {
     let profile = Profile::open_readonly(config.scope);
     let installed = list_meta(&profile)?;
@@ -290,73 +222,13 @@ packages = ["k3s-worker"]
     }
 
     #[test]
-    fn desired_file_parse_nested_credentials() {
-        let desired = DesiredFile::from_str(
-            r#"
-[desired]
-packages = ["web"]
-
-[desired.credentials.web]
-join-token = "secret"
-"#,
-        )
-        .unwrap();
-
-        assert!(desired.packages.contains("web"));
-        assert_eq!(
-            desired.credentials["web"]["join-token"],
-            DesiredCredentialValue::Plaintext("secret".to_string())
-        );
-    }
-
-    #[test]
-    fn desired_file_parse_system_credential_reference() {
-        let desired = DesiredFile::from_str(
-            r#"
-[desired]
-packages = ["web"]
-
-[desired.credentials.web]
-join-token = { system-credential = "bootstrap-token" }
-"#,
-        )
-        .unwrap();
-
-        let DesiredCredentialValue::Source(source) = &desired.credentials["web"]["join-token"]
-        else {
-            panic!("expected system credential source");
-        };
-        assert_eq!(source.system_credential, "bootstrap-token");
-    }
-
-    #[test]
-    fn desired_file_parse_system_credential_reference_table() {
-        let desired = DesiredFile::from_str(
-            r#"
-packages = ["web"]
-
-[credentials.web.join-token]
-system-credential = "bootstrap-token"
-"#,
-        )
-        .unwrap();
-
-        let DesiredCredentialValue::Source(source) = &desired.credentials["web"]["join-token"]
-        else {
-            panic!("expected system credential source");
-        };
-        assert_eq!(source.system_credential, "bootstrap-token");
-    }
-
-    #[test]
-    fn desired_file_rejects_system_credential_unknown_fields() {
+    fn desired_file_rejects_legacy_credentials() {
         let err = DesiredFile::from_str(
             r#"
 packages = ["web"]
 
 [credentials.web.join-token]
 system-credential = "bootstrap-token"
-plaintext = "secret"
 "#,
         )
         .unwrap_err();
@@ -372,9 +244,6 @@ packages = ["web"]
 
 [desired]
 packages = ["worker"]
-
-[desired.credentials.worker]
-join-token = "secret"
 "#,
         )
         .unwrap_err();
@@ -386,38 +255,5 @@ join-token = "secret"
     fn desired_packages_reject_path_like_names() {
         let err = desired_packages_from_str(r#"packages = ["../bad"]"#).unwrap_err();
         assert!(err.to_string().contains("invalid desired package name"));
-    }
-
-    #[test]
-    fn desired_credentials_reject_invalid_names() {
-        let err = DesiredFile::from_str(
-            r#"
-packages = ["web"]
-
-[credentials.web]
-"bad/name" = "secret"
-"#,
-        )
-        .unwrap_err();
-
-        assert!(err.to_string().contains("invalid desired credential name"));
-    }
-
-    #[test]
-    fn desired_credentials_reject_invalid_system_credential_names() {
-        let err = DesiredFile::from_str(
-            r#"
-packages = ["web"]
-
-[credentials.web]
-join-token = { system-credential = "bad/name" }
-"#,
-        )
-        .unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("invalid desired system credential name")
-        );
     }
 }

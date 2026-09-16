@@ -80,12 +80,10 @@ in {
       requires = [
         "local-fs.target"
         "aos-nix-db.service"
-        "aos-credential-recovery.service"
       ];
       after = [
         "local-fs.target"
         "aos-nix-db.service"
-        "aos-credential-recovery.service"
       ];
       before = [
         "aos-eval.service"

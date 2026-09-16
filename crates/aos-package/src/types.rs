@@ -924,17 +924,6 @@ pub(crate) fn validate_absolute_path(path: &str, kind: &str) -> Result<()> {
     bail!("{kind} must be an absolute path: {path}")
 }
 
-pub(crate) fn validate_credential_name(name: &str) -> Result<()> {
-    if !name.is_empty()
-        && name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
-    {
-        return Ok(());
-    }
-    bail!("invalid credential name '{name}'")
-}
-
 pub(crate) fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
     if !ciphertext.is_empty()
         && ciphertext
@@ -1854,9 +1843,6 @@ pub struct ApmSettings {
     /// Automatically run gc after autoremove.
     #[serde(default)]
     pub auto_gc: bool,
-    /// PCR policy public key used for signed-PCR credential encryption.
-    #[serde(default)]
-    pub credential_pcr_public_key: Option<String>,
 }
 
 /// Serde default for [`ApmSettings::parallel_downloads`].
@@ -1871,7 +1857,6 @@ impl Default for ApmSettings {
             parallel_downloads: default_parallel(),
             auto_autoremove: false,
             auto_gc: false,
-            credential_pcr_public_key: None,
         }
     }
 }
@@ -3181,17 +3166,12 @@ assume_yes = true
 parallel_downloads = 8
 auto_autoremove = true
 auto_gc = false
-credential_pcr_public_key = "/etc/aos/pcr-sign.pem"
 "#;
         let conf: ApmConfFile = toml::from_str(toml_str).unwrap();
         assert!(conf.settings.assume_yes);
         assert_eq!(conf.settings.parallel_downloads, 8);
         assert!(conf.settings.auto_autoremove);
         assert!(!conf.settings.auto_gc);
-        assert_eq!(
-            conf.settings.credential_pcr_public_key.as_deref(),
-            Some("/etc/aos/pcr-sign.pem")
-        );
     }
 
     #[test]

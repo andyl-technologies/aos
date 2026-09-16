@@ -906,7 +906,6 @@ in {
         packageOutputs = {};
         graph.edges = {};
         config = {};
-        credentials = {};
         inherit ownership;
       });
 
