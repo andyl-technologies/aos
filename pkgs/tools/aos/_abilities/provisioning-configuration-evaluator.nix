@@ -1,23 +1,31 @@
-##! Package-owned evaluation of retained authorized provisioning input.
+##! Package-owned complete initrd configuration evaluation.
 {
   config,
   lib,
-  packageName,
   ...
 }: let
   types = lib.abilities.types;
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
   alias = "storage-provisioning-configuration-evaluator";
   artifact = lib.abilities.packageOutput {output = "packageRuntime";};
-  registrySnapshot =
-    config.aos.abilities.interfaces."${packageName}:synchronized-registry-snapshot".methods.observe.outputs.registry-snapshot.schema;
+  authorizedInput = lib.abilities.interfaces.configurationInput.types.authorizedInput;
+  storeView = lib.abilities.interfaces.packageStoreReadView.interfaces.readView;
+  marker = lib.abilities.interfaces.blockStorage.types.provisioningMarkerObservation;
   authorizedInputSource = types.taggedUnion {
     tag = "kind";
-    variants.retained-artifact = types.record {
-      fields = {
-        kind = types.enum ["retained-artifact"];
-        artifact = types.deferredResult types.artifactReference;
-        content_sha256 = types.deferredResult types.digest;
+    variants = {
+      direct-result = types.record {
+        fields = {
+          kind = types.enum ["direct-result"];
+          input = types.deferredResult authorizedInput;
+        };
+      };
+      retained-artifact = types.record {
+        fields = {
+          kind = types.enum ["retained-artifact"];
+          artifact = types.deferredResult types.artifactReference;
+          content_sha256 = types.deferredResult types.digest;
+        };
       };
     };
   };
@@ -25,17 +33,17 @@
     fields = {
       request = storage.requestType;
       authorized_input = authorizedInputSource;
-      registry_snapshot = types.deferredResult registrySnapshot;
+      marker = types.deferredResult marker;
+      store_view = types.deferredResult storeView.locatorType;
     };
   };
   result = types.record {
     fields = {
       schema = types.enum ["aos.configuration.provisioning-evaluation-result/v1"];
-      controller = types.resourceReference;
-      handoff = types.resourceReference;
       manifest_blob = types.transactionBlobReference;
       manifest_sha256 = types.digest;
-      registry_snapshot_sha256 = types.digest;
+      provisioning_plan_sha256 = types.digest;
+      static_contract = types.executionPath;
       host_module_sha256 = types.optional types.digest;
       instance_facts_sha256 = types.digest;
     };
@@ -48,7 +56,7 @@
     };
   };
   method = {
-    description = "Evaluates retained authorized provisioning input against one synchronized registry snapshot.";
+    description = "Evaluates authorized provisioning input through the complete initrd configuration fixed point.";
     inherit parameters;
     semantics = {
       requiredTargetAccess = "exclusive-write";
@@ -59,7 +67,14 @@
     guarantees = [];
     outputs.configuration-result = {
       schema = result;
-      description = "Returns the graph-bound manifest blob identity and exact evaluation authorities.";
+      description = "Returns the canonical manifest blob identity and exact initrd evaluation authority.";
+      phase = "runtime";
+      lifetime = "transaction";
+      visibility = "protected";
+    };
+    outputs.provisioning-plan = {
+      schema = lib.abilities.interfaces.blockStorage.types.provisioningPlan;
+      description = "Returns the canonical storage plan projected from the same complete fixed point.";
       phase = "runtime";
       lifetime = "transaction";
       visibility = "protected";
@@ -73,7 +88,7 @@
   };
   declaration = lib.abilities.declareInterface {
     name = "aos.configuration.storage-provisioning-evaluation";
-    description = "Evaluates retained authorized provisioning input into a canonical configuration manifest blob.";
+    description = "Evaluates authorized input into one canonical initrd manifest and storage-plan projection.";
     abi = 1;
     requestType = storage.requestType;
     methods.evaluate = method;
@@ -93,7 +108,7 @@ in {
     interfaces.${alias} = declaration;
 
     implementations.${alias} = {
-      description = "Evaluates retained provisioning input through the package-owned configuration runtime.";
+      description = "Evaluates provisioning input through the package-owned complete initrd configuration runtime.";
       inherit artifact;
       interface = lib.abilities.interfaceIdentity (
         lib.abilities.interfaceDocumentFromDeclaration declaration

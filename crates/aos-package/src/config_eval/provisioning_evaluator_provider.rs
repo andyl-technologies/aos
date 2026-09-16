@@ -179,10 +179,16 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
     let slot = LocalKey::new(MANIFEST_SLOT)?;
     publish_transaction_blob_output(&slot, &output.manifest)?;
     let manifest_sha256 = output.result.manifest_sha256.to_string();
-    let outputs = BTreeMap::from([(
-        LocalKey::new("configuration-result")?,
-        ability_value(serde_json::to_value(output.result)?)?,
-    )]);
+    let outputs = BTreeMap::from([
+        (
+            LocalKey::new("configuration-result")?,
+            ability_value(serde_json::to_value(output.result)?)?,
+        ),
+        (
+            LocalKey::new("provisioning-plan")?,
+            ability_value(serde_json::to_value(output.provisioning_plan)?)?,
+        ),
+    ]);
 
     Ok(InvocationResult {
         schema: RESULT_SCHEMA.into(),

@@ -1,9 +1,8 @@
-//! Package-owned metadata authorization and provisioning-plan handler.
+//! Package-owned metadata authorization handler.
 //!
 //! Exact host bytes and semantic early-network facts cross operations only
-//! through protected typed outputs. Authorization consumes those values
-//! directly; the plan observer materializes them only inside the private Nix
-//! evaluator boundary.
+//! through protected typed outputs. The complete initrd configuration
+//! evaluator consumes the authorization result directly.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -11,8 +10,6 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use crate::AcquiredMetadata;
-use crate::executable::ExecutableReference;
-use crate::provisioning::evaluate_provisioning_plan;
 use crate::trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload_files};
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
@@ -28,50 +25,18 @@ use aos_provider_protocol::{
     validate_resource_context, validate_resource_contexts,
 };
 use aos_storage_provisioning::{
-    AuthorizedProvisioningInput, BaseLibraryIdentity, CanonicalProvisioningPlan,
-    CanonicalProvisioningSource, ProvisioningAuthorization, ProvisioningIntent,
-    ProvisioningMarkerObservation, ProvisioningTrustMode, observed_instance_facts,
-    validate_authorized_provisioning_input, validate_provisioning_intent,
+    AuthorizedProvisioningInput, BaseLibraryIdentity, CanonicalProvisioningSource,
+    ProvisioningAuthorization, ProvisioningIntent, ProvisioningTrustMode,
+    observed_instance_facts, validate_authorized_provisioning_input,
+    validate_provisioning_intent,
 };
 use serde::{Deserialize, Serialize};
 
 const AUTHORIZATION_OBSERVATION: &str = "aos.metadata.provisioning-authorization-observation/v1";
-const PLAN_OBSERVATION: &str = "aos.metadata.provisioning-plan-observation/v1";
 const PROVIDER_CONTEXT: &str = "aos.metadata.provisioning-provider-context/v1";
 const AUTHORIZED_INPUT_SLOT: &str = "authorized-provisioning-input";
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum MetadataRole {
-    Authorization,
-    PlanObservation,
-}
-
-impl MetadataRole {
-    fn from_method(method: &MethodReference) -> Result<Self> {
-        match (method.interface.name.as_str(), method.method.as_str()) {
-            ("aos.metadata.storage-provisioning-input-authorization", "authorize") => {
-                Ok(Self::Authorization)
-            }
-            ("aos.metadata.storage-provisioning-plan", "observe") => Ok(Self::PlanObservation),
-            _ => bail!("interface method does not select a checked metadata handler role"),
-        }
-    }
-
-    const fn method(self) -> &'static str {
-        match self {
-            Self::Authorization => "authorize",
-            Self::PlanObservation => "observe",
-        }
-    }
-
-    fn initial_observation(self) -> Result<AbilityValue> {
-        match self {
-            Self::Authorization => authorization_observation(None, "ready"),
-            Self::PlanObservation => plan_observation(None, "ready"),
-        }
-    }
-}
+const AUTHORIZATION_INTERFACE: &str = "aos.metadata.storage-provisioning-input-authorization";
+const AUTHORIZATION_METHOD: &str = "authorize";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,20 +74,10 @@ struct ArtifactPathReference {
     path: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PlanParameters {
-    request: ProvisioningIntent,
-    authorized_input: AuthorizedProvisioningInput,
-    marker: ProvisioningMarkerObservation,
-    nix_instantiate: ExecutableReference,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderContext {
     schema: String,
-    role: MetadataRole,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,21 +89,12 @@ struct AuthorizationObservation {
     state: &'static str,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(deny_unknown_fields)]
-struct PlanObservation {
-    schema: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<CanonicalProvisioningSource>,
-    state: &'static str,
-}
-
-/// Runs an authorization or plan-normalization call from the process streams.
+/// Runs an authorization call from the process streams.
 ///
 /// # Errors
 ///
 /// Returns an error when the selected ABI, checked authority, metadata input,
-/// complete initrd evaluation, or provider result is invalid.
+/// or provider result is invalid.
 pub async fn run_policy_provider_from_process() -> Result<()> {
     run_provider_from_process().await
 }
@@ -176,14 +122,14 @@ async fn run_provider_from_process() -> Result<()> {
         "admit" => {
             let request: AdmissionRequest =
                 aos_contract::canonical::from_slice(&input, "metadata admission")?;
-            let role = MetadataRole::from_method(&request.method)?;
-            serde_json::to_value(admit(role, request)?)?
+            validate_method(&request.method)?;
+            serde_json::to_value(admit(request)?)?
         }
         "effect" | "reconcile" | "cancel" => {
             let invocation: Invocation =
                 aos_contract::canonical::from_slice(&input, "metadata invocation")?;
-            let role = MetadataRole::from_method(&invocation.method)?;
-            serde_json::to_value(invoke(role, invocation, purpose).await?)?
+            validate_method(&invocation.method)?;
+            serde_json::to_value(invoke(invocation, purpose).await?)?
         }
         purpose => bail!("unsupported metadata provider purpose {purpose:?}"),
     };
@@ -196,18 +142,18 @@ async fn run_provider_from_process() -> Result<()> {
     Ok(())
 }
 
-fn admit(role: MetadataRole, request: AdmissionRequest) -> Result<AdmissionResult> {
+fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     ensure!(
         request.schema == ADMISSION_REQUEST_SCHEMA,
         "unsupported admission schema"
     );
     validate_admission_resource(&request)?;
     validate_resource_contexts(&request.resources)?;
-    validate_method(role, request.method.method.as_str())?;
+    validate_method(&request.method)?;
     let intent: ProvisioningIntent = decode(&request.resource_spec.value)?;
     validate_provisioning_intent(&intent)?;
 
-    let observation = role.initial_observation()?;
+    let observation = authorization_observation(None, "ready")?;
     Ok(AdmissionResult {
         schema: ADMISSION_SCHEMA.into(),
         disposition: AdmissionDisposition::Admitted,
@@ -216,7 +162,6 @@ fn admit(role: MetadataRole, request: AdmissionRequest) -> Result<AdmissionResul
         observation,
         native_context: ability_value(serde_json::to_value(ProviderContext {
             schema: PROVIDER_CONTEXT.into(),
-            role,
         })?)?,
         supported_purposes: SupportedPurposes::from_ordered(vec![
             InvocationPurpose::Effect,
@@ -228,7 +173,6 @@ fn admit(role: MetadataRole, request: AdmissionRequest) -> Result<AdmissionResul
 }
 
 async fn invoke(
-    role: MetadataRole,
     invocation: Invocation,
     purpose: &str,
 ) -> Result<InvocationResult> {
@@ -246,8 +190,8 @@ async fn invoke(
             == invocation.request.native_context_digest,
         "resource contexts differ from their authenticated digest"
     );
-    validate_method(role, invocation.method.method.as_str())?;
-    validate_method(role, invocation.request.method.method.as_str())?;
+    validate_method(&invocation.method)?;
+    validate_method(&invocation.request.method)?;
     let target = exact_context(&invocation.request.target, &invocation.request.resources)?;
     let bound = validate_resource_context(target)?;
     ensure!(
@@ -263,14 +207,14 @@ async fn invoke(
     );
     let provider_context: ProviderContext = decode(&bound.provider_context)?;
     ensure!(
-        provider_context.schema == PROVIDER_CONTEXT && provider_context.role == role,
-        "metadata provider context differs from the selected handler role"
+        provider_context.schema == PROVIDER_CONTEXT,
+        "metadata provider context differs from the selected handler"
     );
     let intent: ProvisioningIntent = decode(&bound.resource_spec.value)?;
     validate_provisioning_intent(&intent)?;
 
     if invocation.control.cancelled || invocation.purpose == InvocationPurpose::Cancel {
-        return cancelled_result(&invocation, role);
+        return cancelled_result(&invocation);
     }
     ensure!(
         matches!(
@@ -280,62 +224,34 @@ async fn invoke(
         "metadata provisioning does not support compensation"
     );
 
-    match role {
-        MetadataRole::Authorization => {
-            let parameters: AuthorizationParameters = decode(&invocation.request.inputs)?;
-            ensure!(
-                parameters.request == intent,
-                "authorization request differs from the checked resource"
-            );
-            let input = authorize(&parameters.configuration, &parameters.acquired_metadata)?;
-            let evidence = authorization_observation(Some(input.source), "authorized")?;
-            let authorized_input = serde_json::to_value(&input)?;
-            let authorized_input_bytes =
-                aos_contract::canonical::canonical_json(&authorized_input)?;
-            let output_slot = LocalKey::new(AUTHORIZED_INPUT_SLOT)?;
-            publish_transaction_blob_output(&output_slot, &authorized_input_bytes)?;
-            completed_result(
-                &invocation,
-                evidence,
-                method_outputs([
-                    (
-                        "authorized-provisioning-input",
-                        ability_value(authorized_input)?,
-                    ),
-                    (
-                        "authorized-input-blob",
-                        ability_value(serde_json::to_value(TransactionBlobOutput {
-                            kind: TRANSACTION_BLOB_OUTPUT_TYPE.into(),
-                            slot: LocalKey::new(AUTHORIZED_INPUT_SLOT)?,
-                        })?)?,
-                    ),
-                ])?,
-            )
-        }
-        MetadataRole::PlanObservation => {
-            let parameters: PlanParameters = decode(&invocation.request.inputs)?;
-            ensure!(
-                parameters.request == intent,
-                "plan request differs from the checked resource"
-            );
-            let source = parameters.authorized_input.source;
-            let nix_instantiate = parameters.nix_instantiate.resolve()?;
-            let plan = observe_plan(
-                &parameters.request,
-                &parameters.authorized_input,
-                &parameters.marker,
-                &nix_instantiate,
-            )?;
-            completed_result(
-                &invocation,
-                plan_observation(Some(source), "planned")?,
-                method_outputs([(
-                    "provisioning-plan",
-                    ability_value(serde_json::to_value(plan)?)?,
-                )])?,
-            )
-        }
-    }
+    let parameters: AuthorizationParameters = decode(&invocation.request.inputs)?;
+    ensure!(
+        parameters.request == intent,
+        "authorization request differs from the checked resource"
+    );
+    let input = authorize(&parameters.configuration, &parameters.acquired_metadata)?;
+    let evidence = authorization_observation(Some(input.source), "authorized")?;
+    let authorized_input = serde_json::to_value(&input)?;
+    let authorized_input_bytes = aos_contract::canonical::canonical_json(&authorized_input)?;
+    let output_slot = LocalKey::new(AUTHORIZED_INPUT_SLOT)?;
+    publish_transaction_blob_output(&output_slot, &authorized_input_bytes)?;
+    completed_result(
+        &invocation,
+        evidence,
+        method_outputs([
+            (
+                "authorized-provisioning-input",
+                ability_value(authorized_input)?,
+            ),
+            (
+                "authorized-input-blob",
+                ability_value(serde_json::to_value(TransactionBlobOutput {
+                    kind: TRANSACTION_BLOB_OUTPUT_TYPE.into(),
+                    slot: LocalKey::new(AUTHORIZED_INPUT_SLOT)?,
+                })?)?,
+            ),
+        ])?,
+    )
 }
 
 fn authorize(
@@ -419,17 +335,6 @@ fn validate_acquired_metadata(acquired: &AcquiredMetadata) -> Result<()> {
         "acquired metadata facts are not canonical"
     );
     Ok(())
-}
-
-fn observe_plan(
-    request: &ProvisioningIntent,
-    input: &AuthorizedProvisioningInput,
-    marker: &ProvisioningMarkerObservation,
-    nix_instantiate: &Path,
-) -> Result<CanonicalProvisioningPlan> {
-    validate_authorized_provisioning_input(input)?;
-    verify_base_library(&input.base_library)?;
-    evaluate_provisioning_plan(request, input, marker, nix_instantiate)
 }
 
 fn validate_authorization_configuration(configuration: &AuthorizationConfiguration) -> Result<()> {
@@ -528,10 +433,11 @@ fn verify_base_library(identity: &BaseLibraryIdentity) -> Result<()> {
     Ok(())
 }
 
-fn validate_method(role: MetadataRole, method: &str) -> Result<()> {
+fn validate_method(method: &MethodReference) -> Result<()> {
     ensure!(
-        method == role.method(),
-        "method differs from the selected metadata handler role"
+        method.interface.name.as_str() == AUTHORIZATION_INTERFACE
+            && method.method.as_str() == AUTHORIZATION_METHOD,
+        "interface method does not select metadata authorization"
     );
     Ok(())
 }
@@ -562,17 +468,6 @@ fn authorization_observation(
     })?)
 }
 
-fn plan_observation(
-    source: Option<CanonicalProvisioningSource>,
-    state: &'static str,
-) -> Result<AbilityValue> {
-    ability_value(serde_json::to_value(PlanObservation {
-        schema: PLAN_OBSERVATION,
-        source,
-        state,
-    })?)
-}
-
 fn completed_result(
     invocation: &Invocation,
     evidence: AbilityValue,
@@ -587,8 +482,8 @@ fn completed_result(
     })
 }
 
-fn cancelled_result(invocation: &Invocation, role: MetadataRole) -> Result<InvocationResult> {
-    let evidence = role.initial_observation()?;
+fn cancelled_result(invocation: &Invocation) -> Result<InvocationResult> {
+    let evidence = authorization_observation(None, "ready")?;
     Ok(InvocationResult {
         schema: RESULT_SCHEMA.into(),
         disposition: InvocationDisposition::RejectedBeforeEffect,
@@ -652,29 +547,11 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_methods_select_closed_metadata_roles() {
-        let cases = [
-            (
-                "aos.metadata.storage-provisioning-input-authorization",
-                MetadataRole::Authorization,
-                "authorize",
-            ),
-            (
-                "aos.metadata.storage-provisioning-plan",
-                MetadataRole::PlanObservation,
-                "observe",
-            ),
-        ];
-
-        for (interface, expected, method) in cases {
-            let role = MetadataRole::from_method(&method_reference(interface, method))
-                .expect("authenticated interface method selects a role");
-            assert_eq!(role, expected);
-            validate_method(role, method).expect("role method matches");
-        }
-        assert!(
-            MetadataRole::from_method(&method_reference("aos.metadata.unknown", "detect")).is_err()
-        );
+    fn only_authorization_method_is_admitted() {
+        validate_method(&method_reference(AUTHORIZATION_INTERFACE, AUTHORIZATION_METHOD))
+            .expect("authorization method");
+        assert!(validate_method(&method_reference("aos.metadata.unknown", "detect")).is_err());
+        assert!(validate_method(&method_reference(AUTHORIZATION_INTERFACE, "observe")).is_err());
     }
 
     #[test]
