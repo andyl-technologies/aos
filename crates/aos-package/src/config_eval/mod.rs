@@ -144,15 +144,41 @@ impl WorkingSetMember {
 #[derive(Debug, Clone)]
 pub struct FixpointInputs {
     /// The delivered leaf `host.nix` path.
-    pub host_nix: PathBuf,
+    pub host_nix: EvaluatorInput,
     /// Ordered, generation-pinned runtime operator module entrypoints.
-    pub runtime_modules: Vec<PathBuf>,
+    pub runtime_modules: Vec<EvaluatorInput>,
     /// The in-image, ABI-pinned module library.
-    pub base_lib: PathBuf,
+    pub base_lib: EvaluatorInput,
     /// Optional normalized metadata facts consumed as a typed Nix module.
     pub facts_json: Option<PathBuf>,
     /// Packages explicitly installed (`desired.toml`): the starting working set.
     pub seed_set: Vec<WorkingSetMember>,
+}
+
+/// Keeps one canonical store identity separate from its selected readable path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvaluatorInput {
+    /// Canonical package-store identity used by Nix store operations.
+    pub identity: PathBuf,
+    /// Physical immutable path used only for direct byte reads.
+    pub read_path: PathBuf,
+}
+
+impl EvaluatorInput {
+    pub(crate) fn canonical(path: PathBuf) -> Self {
+        Self {
+            read_path: path.clone(),
+            identity: path,
+        }
+    }
+
+    fn in_store_view(identity: PathBuf, store_view: &store_view::StoreViewLocator) -> Result<Self> {
+        let read_path = store_view.read_path(&identity)?;
+        Ok(Self {
+            identity,
+            read_path,
+        })
+    }
 }
 
 /// One step of the causal chain, recorded for the non-convergence dump.
@@ -343,11 +369,11 @@ fn render_trace(trace: &[IterRecord], iterations: u32) -> String {
 #[derive(Debug)]
 pub struct EvalAttempt<'a> {
     /// The trusted leaf `host.nix`, passed as an operator-provenance module.
-    pub host_nix: &'a Path,
+    pub host_nix: &'a EvaluatorInput,
     /// Ordered direct runtime operator module entrypoints.
-    pub runtime_modules: &'a [PathBuf],
+    pub runtime_modules: &'a [EvaluatorInput],
     /// The in-image module library.
-    pub base_lib: &'a Path,
+    pub base_lib: &'a EvaluatorInput,
     /// Optional normalized metadata facts file.
     pub facts_json: Option<&'a Path>,
     /// The current working set rendered into `entry.nix`.
@@ -557,6 +583,48 @@ pub struct RetainedHostInputs {
     pub instance_facts: materialize::InstanceFactsInput,
 }
 
+#[derive(Debug, Clone)]
+struct PreparedEvaluatorInputs {
+    host_nix: EvaluatorInput,
+    runtime_modules: Vec<EvaluatorInput>,
+    base_lib: EvaluatorInput,
+    facts_json: Option<PathBuf>,
+}
+
+fn prepare_evaluator_inputs(cmd: &EvalCommand) -> Result<PreparedEvaluatorInputs> {
+    let host_nix = match &cmd.retained_host_inputs {
+        Some(retained) => EvaluatorInput::in_store_view(
+            PathBuf::from(&retained.host_nix.store_path),
+            &cmd.store_view,
+        )?,
+        None => EvaluatorInput::canonical(
+            add_fixed_eval_host_source(&cmd.host_nix, &cmd.eval_root)
+                .context("pinning authorized host.nix before pure evaluation")?,
+        ),
+    };
+    let base_lib = EvaluatorInput::in_store_view(cmd.base_lib.clone(), &cmd.store_view)?;
+    let runtime_modules = cmd
+        .runtime_modules
+        .iter()
+        .cloned()
+        .map(|identity| EvaluatorInput::in_store_view(identity, &cmd.store_view))
+        .collect::<Result<Vec<_>>>()?;
+    let facts_json = match (&cmd.retained_host_inputs, &cmd.facts_json) {
+        (Some(retained), Some(_)) => Some(
+            cmd.store_view
+                .read_path(Path::new(&retained.instance_facts.store_path))?,
+        ),
+        (_, path) => path.clone(),
+    };
+
+    Ok(PreparedEvaluatorInputs {
+        host_nix,
+        runtime_modules,
+        base_lib,
+        facts_json,
+    })
+}
+
 fn enforce_host_nix_trust_policy(cmd: &EvalCommand) -> Result<()> {
     if cmd.image_default_host {
         let bytes = std::fs::read(&cmd.host_nix).with_context(|| {
@@ -647,16 +715,10 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     // runs before the fixpoint so failures cannot emit a manifest.
     enforce_host_nix_trust_policy(cmd)?;
 
-    // Pure Nix evaluation may import only immutable store inputs. Metadata is
-    // delivered under /run, so pin the already-authorized bytes as a closed
-    // source directory before either the package-selection projection or the
-    // complete option fixpoint sees them. The cloned command also makes every
-    // later manifest identity refer to the exact bytes evaluated, rather than
-    // reopening a mutable path.
-    let mut pinned_cmd = cmd.clone();
-    pinned_cmd.host_nix = add_fixed_eval_host_source(&cmd.host_nix, &cmd.eval_root)
-        .context("pinning authorized host.nix before pure evaluation")?;
-    let cmd = &pinned_cmd;
+    // Direct reads use the selected immutable view while Nix operations retain
+    // canonical store identities. Keeping both paths explicit prevents a
+    // physical boot-store alias from becoming a second package identity.
+    let prepared = prepare_evaluator_inputs(cmd)?;
 
     // The by-name config-module resolver is the on-host registry set: it reads
     // each package's authenticated package module. This replaces
@@ -669,7 +731,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         validate_registry_authority(&resolver, snapshot, &cmd.store_view)?;
     }
 
-    let mut seed_set = load_host_selection(cmd)?;
+    let mut seed_set = load_host_selection(cmd, &prepared)?;
     for legacy_seed in load_seed_set(cmd.desired.as_deref())? {
         if !seed_set
             .iter()
@@ -679,7 +741,11 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         }
     }
 
-    let evaluator = stock::StockNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
+    let evaluator = stock::StockNixEvaluator::in_store_view(
+        cmd.eval_root.clone(),
+        cmd.verbose,
+        cmd.store_view.clone(),
+    );
     // Resolve the selected names before evaluation. This both pins the exact
     // runtime outputs and adds signed package-level dependencies (`requires`
     // and capability providers) to the module working set.
@@ -715,10 +781,10 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             }));
         }
         let inputs = FixpointInputs {
-            host_nix: cmd.host_nix.clone(),
-            runtime_modules: cmd.runtime_modules.clone(),
-            base_lib: cmd.base_lib.clone(),
-            facts_json: cmd.facts_json.clone().filter(|path| path.is_file()),
+            host_nix: prepared.host_nix.clone(),
+            runtime_modules: prepared.runtime_modules.clone(),
+            base_lib: prepared.base_lib.clone(),
+            facts_json: prepared.facts_json.clone().filter(|path| path.is_file()),
             seed_set,
         };
         let mut candidate = run_fixpoint(&inputs, &evaluator).map_err(eval_command_failure)?;
@@ -778,7 +844,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         outer_iterations += 1;
     };
 
-    let manifest = enrich_manifest(cmd, &outcome, &runtime)?;
+    let manifest = enrich_manifest(cmd, &prepared, &outcome, &runtime)?;
     if let Some(parent) = cmd.out.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
@@ -1084,6 +1150,7 @@ fn package_module_release_identity(
 
 fn enrich_manifest(
     cmd: &EvalCommand,
+    prepared: &PreparedEvaluatorInputs,
     outcome: &FixpointOutcome,
     runtime: &runtime::RuntimeResolution,
 ) -> Result<materialize::ConfigManifest> {
@@ -1108,14 +1175,18 @@ fn enrich_manifest(
         retain_ability_sidecar_roots(object, activation)?;
     }
 
-    let host_bytes = std::fs::read(&cmd.host_nix)
-        .with_context(|| format!("reading host input {}", cmd.host_nix.display()))?;
+    let host_bytes = std::fs::read(&prepared.host_nix.read_path).with_context(|| {
+        format!(
+            "reading host input {}",
+            prepared.host_nix.read_path.display()
+        )
+    })?;
     let evaluator = std::env::current_exe().context("resolving evaluator executable")?;
     let evaluator_store_path = evaluator_store_root(&evaluator)?;
     let package_modules = package_module_inputs(&outcome.working_set)?;
 
     let (facts, retained_facts_bytes, facts_input_path) =
-        match cmd.facts_json.as_deref().filter(|path| path.is_file()) {
+        match prepared.facts_json.as_deref().filter(|path| path.is_file()) {
             Some(path) => {
                 let bytes = std::fs::read(path)
                     .with_context(|| format!("reading facts {}", path.display()))?;
@@ -1141,10 +1212,15 @@ fn enrich_manifest(
     // Reuse an already immutable facts input instead of asking Nix to import an
     // identical copy. Besides avoiding needless store traffic on-host, this
     // keeps hermetic preflight checks independent of a writable Nix state dir.
-    let facts_store_source = facts_input_path
-        .filter(|path| path.starts_with("/nix/store"))
-        .unwrap_or(&retained_facts);
-    let facts_store_path = add_fixed_input_to_store(facts_store_source)?;
+    let facts_store_path = match &cmd.retained_host_inputs {
+        Some(retained) => PathBuf::from(&retained.instance_facts.store_path),
+        None => {
+            let facts_store_source = facts_input_path
+                .filter(|path| path.starts_with("/nix/store"))
+                .unwrap_or(&retained_facts);
+            add_fixed_input_to_store(facts_store_source)?
+        }
+    };
 
     let (platform, trust_mode, signer_key) = if cmd.image_default_host {
         ("image".to_string(), "image".to_string(), None)
@@ -1156,11 +1232,14 @@ fn enrich_manifest(
         };
         ("unknown".to_string(), trust_mode.to_string(), None)
     };
-    let base_abi_hash = read_base_lib_abi_hash(&cmd.base_lib, cmd.module_abi)?;
+    let base_abi_hash = read_base_lib_abi_hash(&prepared.base_lib.read_path, cmd.module_abi)?;
     let evaluator_store_hash = evaluator_store_hash(&evaluator)?;
     let (config_registry, config_release_tag, config_tag_signer_key, config_realization) =
         package_module_release_identity(&outcome.working_set)?;
-    let host_store_path = add_fixed_input_to_store(&cmd.host_nix)?;
+    let host_store_path = match &cmd.retained_host_inputs {
+        Some(retained) => PathBuf::from(&retained.host_nix.store_path),
+        None => add_fixed_input_to_store(&prepared.host_nix.read_path)?,
+    };
     let runtime_modules =
         runtime_module_manifest_input(&cmd.runtime_modules, cmd.runtime_module_root.as_deref())?;
 
@@ -1678,27 +1757,87 @@ pub fn reeval_cross_abi(
     verbose: u8,
     expected_current_generation: Option<u32>,
 ) -> Result<()> {
-    remove_if_present(&out)?;
-    let graph_out = out.with_file_name("graph.json");
-    remove_if_present(&graph_out)?;
+    let source = load_cross_abi_source(source_manifest)?;
+    let store_view = source.inputs.store_view.clone();
+
+    reeval_cross_abi_with_source(
+        retained,
+        running_base_lib,
+        source,
+        &store_view,
+        eval_root,
+        out,
+        verbose,
+        expected_current_generation,
+    )
+}
+
+pub(crate) fn reeval_cross_abi_in_store_view(
+    retained: &crate::types::CrossAbiReEvalInputs,
+    running_base_lib: &Path,
+    source_manifest: &Path,
+    store_view: &store_view::StoreViewLocator,
+    eval_root: PathBuf,
+    out: PathBuf,
+    verbose: u8,
+    expected_current_generation: Option<u32>,
+) -> Result<()> {
+    let source = load_cross_abi_source(source_manifest)?;
+
+    reeval_cross_abi_with_source(
+        retained,
+        running_base_lib,
+        source,
+        store_view,
+        eval_root,
+        out,
+        verbose,
+        expected_current_generation,
+    )
+}
+
+fn load_cross_abi_source(source_manifest: &Path) -> Result<materialize::ConfigManifest> {
     let source_bytes = std::fs::read(source_manifest)
         .with_context(|| format!("reading retained manifest {}", source_manifest.display()))?;
-    let source: materialize::ConfigManifest = serde_json::from_slice(&source_bytes)
+    let source = serde_json::from_slice::<materialize::ConfigManifest>(&source_bytes)
         .with_context(|| format!("parsing retained manifest {}", source_manifest.display()))?;
     source
         .validate()
         .with_context(|| format!("validating retained manifest {}", source_manifest.display()))?;
-    validate_retained_manifest_inputs(&source, retained)?;
-    validate_cross_abi_inputs(retained, running_base_lib, &source)?;
 
-    let working_set = retained_cross_abi_working_set(&source, retained)?;
-    let runtime_modules = retained_runtime_modules(&source)?;
-    let evaluator = stock::StockNixEvaluator::new(eval_root, verbose);
+    Ok(source)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reeval_cross_abi_with_source(
+    retained: &crate::types::CrossAbiReEvalInputs,
+    running_base_lib: &Path,
+    source: materialize::ConfigManifest,
+    store_view: &store_view::StoreViewLocator,
+    eval_root: PathBuf,
+    out: PathBuf,
+    verbose: u8,
+    expected_current_generation: Option<u32>,
+) -> Result<()> {
+    remove_if_present(&out)?;
+    let graph_out = out.with_file_name("graph.json");
+    remove_if_present(&graph_out)?;
+    validate_retained_manifest_inputs(&source, retained)?;
+    validate_cross_abi_inputs(retained, running_base_lib, &source, store_view)?;
+
+    let working_set = retained_cross_abi_working_set(&source, retained, store_view)?;
+    let runtime_modules = retained_runtime_modules_in_store_view(&source, store_view)?;
+    let host_nix =
+        EvaluatorInput::in_store_view(PathBuf::from(&retained.host_nix_ref), store_view)?;
+    let facts_json = store_view.read_path(Path::new(&retained.facts_ref))?;
+    let running_base_lib =
+        EvaluatorInput::in_store_view(running_base_lib.to_path_buf(), store_view)?;
+    let evaluator = stock::StockNixEvaluator::in_store_view(eval_root, verbose, store_view.clone());
     let attempt = EvalAttempt {
-        host_nix: Path::new(&retained.host_nix_ref),
+        host_nix: &host_nix,
         runtime_modules: &runtime_modules,
-        base_lib: running_base_lib,
-        facts_json: Some(Path::new(&retained.facts_ref)),
+        base_lib: &running_base_lib,
+        facts_json: Some(&facts_json),
         working_set: &working_set,
         iteration: 0,
     };
@@ -1732,9 +1871,11 @@ pub fn reeval_cross_abi(
     let evaluator_path = std::env::current_exe().context("resolving evaluator executable")?;
     let evaluator_store_path = evaluator_store_root(&evaluator_path)?;
     let mut inputs = source.inputs.clone();
-    inputs.base_lib.store_path = running_base_lib.to_string_lossy().into_owned();
+    inputs.store_view = store_view.clone();
+    inputs.base_lib.store_path = running_base_lib.identity.to_string_lossy().into_owned();
     inputs.base_lib.module_abi = retained.to_module_abi;
-    inputs.base_lib.abi_hash = read_base_lib_abi_hash(running_base_lib, retained.to_module_abi)?;
+    inputs.base_lib.abi_hash =
+        read_base_lib_abi_hash(&running_base_lib.read_path, retained.to_module_abi)?;
     inputs.evaluator.store_path = evaluator_store_path.to_string_lossy().into_owned();
     inputs.evaluator.store_hash = evaluator_store_hash(&evaluator_path)?;
     if inputs.runtime_modules.is_some() || inputs.ability_activation.is_some() {
@@ -1762,11 +1903,50 @@ pub fn reeval_cross_abi(
 pub(crate) fn retained_runtime_modules(
     manifest: &materialize::ConfigManifest,
 ) -> Result<Vec<PathBuf>> {
-    retained_runtime_modules_with(manifest, retained_store_path_nar_hash)
+    let store_view = manifest.inputs.store_view.clone();
+    retained_runtime_modules_in_store_view(manifest, &store_view)
+        .map(|inputs| inputs.into_iter().map(|input| input.identity).collect())
+}
+
+fn retained_runtime_modules_in_store_view(
+    manifest: &materialize::ConfigManifest,
+    store_view: &store_view::StoreViewLocator,
+) -> Result<Vec<EvaluatorInput>> {
+    let Some(runtime) = &manifest.inputs.runtime_modules else {
+        return Ok(Vec::new());
+    };
+    let identity_root = Path::new(&runtime.store_path);
+    let actual = retained_store_path_nar_hash(identity_root).with_context(|| {
+        format!(
+            "hashing retained runtime module set {}",
+            identity_root.display()
+        )
+    })?;
+    anyhow::ensure!(
+        crate::verify::sha256_hashes_equal(&actual, &runtime.nar_hash)?,
+        "retained runtime module set {} does not match manifest NAR hash",
+        identity_root.display()
+    );
+
+    runtime
+        .entrypoints
+        .iter()
+        .map(|entry| {
+            let identity = identity_root.join(entry);
+            let input = EvaluatorInput::in_store_view(identity, store_view)?;
+            anyhow::ensure!(
+                input.read_path.is_file(),
+                "retained runtime module entrypoint is absent: {}",
+                input.read_path.display()
+            );
+            Ok(input)
+        })
+        .collect()
 }
 
 /// Resolves the descriptor's exact entrypoint list with an injectable NAR
 /// hasher so replay invariants remain testable without mutating `/nix/store`.
+#[cfg(test)]
 fn retained_runtime_modules_with<F>(
     manifest: &materialize::ConfigManifest,
     nar_hash: F,
@@ -1803,6 +1983,7 @@ where
 fn retained_cross_abi_working_set(
     source: &materialize::ConfigManifest,
     retained: &crate::types::CrossAbiReEvalInputs,
+    store_view: &store_view::StoreViewLocator,
 ) -> Result<Vec<WorkingSetMember>> {
     retained
         .package_modules
@@ -1830,7 +2011,7 @@ fn retained_cross_abi_working_set(
                 &pin.store_path,
                 &pin.nar_hash,
                 contract,
-                &source.inputs.store_view,
+                store_view,
             )?;
             anyhow::ensure!(
                 resolved.document.content_digest()?.to_string() == module.document_digest,
@@ -1887,8 +2068,9 @@ fn validate_cross_abi_inputs(
     retained: &crate::types::CrossAbiReEvalInputs,
     running_base_lib: &Path,
     source: &materialize::ConfigManifest,
+    store_view: &store_view::StoreViewLocator,
 ) -> Result<()> {
-    for (kind, path) in std::iter::once(("running base library", running_base_lib))
+    for (kind, canonical_path) in std::iter::once(("running base library", running_base_lib))
         .chain(std::iter::once((
             "host.nix",
             Path::new(&retained.host_nix_ref),
@@ -1904,15 +2086,17 @@ fn validate_cross_abi_inputs(
                 .map(|module| ("package module", Path::new(&module.store_path))),
         )
     {
-        if !path.starts_with("/nix/store/") || !path.exists() {
+        let path = store_view.read_path(canonical_path)?;
+        if !path.exists() {
             anyhow::bail!(
                 "required retained {kind} input is unavailable: {}",
                 path.display()
             );
         }
     }
-    let facts_bytes = std::fs::read(&retained.facts_ref)
-        .with_context(|| format!("reading retained facts {}", retained.facts_ref))?;
+    let facts_path = store_view.read_path(Path::new(&retained.facts_ref))?;
+    let facts_bytes = std::fs::read(&facts_path)
+        .with_context(|| format!("reading retained facts {}", facts_path.display()))?;
     let facts: aos_metadata::fetcher::Facts = serde_json::from_slice(&facts_bytes)
         .with_context(|| format!("parsing retained facts {}", retained.facts_ref))?;
     let normalized = aos_metadata::facts_render::normalize_host_facts(&facts);
@@ -1920,8 +2104,22 @@ fn validate_cross_abi_inputs(
     if sha256_identity(&normalized_bytes) != retained.facts_hash {
         anyhow::bail!("retained facts bytes do not match the recorded facts_hash");
     }
-    validate_retained_content_identities(source, retained, retained_store_path_nar_hash)?;
+    validate_retained_content_identities_in_store_view(source, retained, store_view)?;
     Ok(())
+}
+
+fn validate_retained_content_identities_in_store_view(
+    source: &materialize::ConfigManifest,
+    retained: &crate::types::CrossAbiReEvalInputs,
+    store_view: &store_view::StoreViewLocator,
+) -> Result<()> {
+    let mut mapped = retained.clone();
+    mapped.host_nix_ref = store_view
+        .read_path(Path::new(&retained.host_nix_ref))?
+        .to_string_lossy()
+        .into_owned();
+
+    validate_retained_content_identities(source, &mapped, retained_store_path_nar_hash)
 }
 
 /// Verifies the exact retained host and package-module bytes before evaluation.
@@ -1971,11 +2169,14 @@ where
 
 /// Recomputes a store path's NAR hash from its current bytes.
 fn retained_store_path_nar_hash(path: &Path) -> Result<String> {
+    let eval_store = selected_eval_store_uri()?;
+    retained_store_path_nar_hash_in(path, eval_store.as_deref())
+}
+
+fn selected_eval_store_uri() -> Result<Option<std::ffi::OsString>> {
     let explicit_store = std::env::var_os("AOS_NIX_EVAL_STORE");
     let rooted_nix_environment = std::env::var_os("AOS_ROOT").map(|_| aos_core::nix::aos_nix_env());
-    let eval_store =
-        retained_eval_store_uri(explicit_store.as_deref(), rooted_nix_environment.as_deref())?;
-    retained_store_path_nar_hash_in(path, eval_store.as_deref())
+    retained_eval_store_uri(explicit_store.as_deref(), rooted_nix_environment.as_deref())
 }
 
 /// Selects an explicit evaluator store or reconstructs the exact rooted store.
@@ -2014,6 +2215,7 @@ fn retained_store_path_nar_hash_in(
     let mut command = std::process::Command::new("nix");
     command
         .args(["--extra-experimental-features", "nix-command"])
+        .env_remove("LD_LIBRARY_PATH")
         .env_remove("NIX_REMOTE")
         .env_remove("NIX_STORE_DIR")
         .env_remove("NIX_STATE_DIR")
@@ -2052,7 +2254,19 @@ fn retained_store_path_nar_hash_in(
 /// before their registry package modules can be fetched, while the complete
 /// runtime evaluation needs those modules. Only `aos.apm.desiredPackages` is
 /// declared, so unrelated host definitions remain lazy.
-fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
+fn load_host_selection(
+    cmd: &EvalCommand,
+    prepared: &PreparedEvaluatorInputs,
+) -> Result<Vec<WorkingSetMember>> {
+    let eval_store = selected_eval_store_uri()?;
+    load_host_selection_in(cmd, prepared, eval_store.as_deref())
+}
+
+fn load_host_selection_in(
+    cmd: &EvalCommand,
+    prepared: &PreparedEvaluatorInputs,
+    eval_store: Option<&std::ffi::OsStr>,
+) -> Result<Vec<WorkingSetMember>> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct HostSelection {
@@ -2060,7 +2274,7 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     }
 
     anyhow::ensure!(
-        cmd.host_nix.starts_with("/nix/store"),
+        prepared.host_nix.identity.starts_with("/nix/store"),
         "host package-selection input must be pinned in /nix/store"
     );
 
@@ -2068,16 +2282,16 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     std::fs::create_dir_all(&source_root)
         .with_context(|| format!("creating host-selection source {}", source_root.display()))?;
     let staged_entry = source_root.join("entry.nix");
-    let base = stock::locked_store_input(&cmd.base_lib, None)
-        .context("locking the base library for host package selection")?;
-    let host = stock::locked_store_input(&cmd.host_nix, None)
-        .context("locking host.nix for host package selection")?;
-    let runtime_modules = cmd
+    let lock = |input: &EvaluatorInput| -> Result<String> {
+        stock::locked_evaluator_input_in(input, None, eval_store)
+    };
+    let base =
+        lock(&prepared.base_lib).context("locking the base library for host package selection")?;
+    let host = lock(&prepared.host_nix).context("locking host.nix for host package selection")?;
+    let runtime_modules = prepared
         .runtime_modules
         .iter()
-        .map(|path| {
-            stock::locked_store_input(path, None).map(|locked| format!("(import {locked})"))
-        })
+        .map(|input| lock(input).map(|locked| format!("(import {locked})")))
         .collect::<Result<Vec<_>>>()?
         .join(" ");
     let expression = format!(
@@ -2095,8 +2309,9 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     );
     std::fs::write(&staged_entry, &expression)
         .with_context(|| format!("writing {}", staged_entry.display()))?;
-    let mut evaluator = stock::pure_eval_command()
-        .context("resolving the AOS stock evaluator for host package selection")?;
+    let mut evaluator =
+        stock::pure_eval_command_in(eval_store, Some(cmd.store_view.read_root.as_path()))
+            .context("resolving the AOS stock evaluator for host package selection")?;
     evaluator.arg("-");
     let output = stock::output_with_expression(&mut evaluator, &expression)
         .context("spawning restricted host package-selection evaluation")?;

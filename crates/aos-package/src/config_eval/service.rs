@@ -59,8 +59,9 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
     )?;
 
     if retained_reevaluation_is_required() {
-        let result = crate::sysroot::reeval_active_config_for_boot(
+        let result = crate::sysroot::reeval_active_config_for_boot_in_store_view(
             Path::new(SYSTEM_PROFILE),
+            &command.store_view,
             command.eval_root.clone(),
             command.out.clone(),
             command.verbose,
@@ -69,11 +70,16 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
         return Ok(());
     }
 
-    let (host_nix, image_default_host, facts_json) = retained_configuration_inputs(command)?;
+    let (host_nix, image_default_host, facts_json, retained_host_inputs) =
+        retained_configuration_inputs(command, Path::new(ACTIVE_MANIFEST))?;
     let module_abi =
         running_module_abi(Path::new(RUNNING_OS_RELEASE))?.unwrap_or(command.module_abi);
     let (runtime_modules, runtime_module_root, expected_current_generation) =
-        active_runtime_modules(Path::new(ACTIVE_MANIFEST), Path::new(SYSTEM_STATE))?;
+        active_runtime_modules(
+            Path::new(ACTIVE_MANIFEST),
+            Path::new(SYSTEM_STATE),
+            &command.store_view,
+        )?;
     let desired = command.desired.is_file().then(|| command.desired.clone());
 
     let result = run_eval_command(&EvalCommand {
@@ -90,7 +96,7 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
         eval_root: command.eval_root.clone(),
         verbose: command.verbose,
         trusted_config_keys_dirs: Vec::new(),
-        retained_host_inputs: None,
+        retained_host_inputs,
         require_signed_host_nix: false,
         image_default_host,
         registry_snapshot: None,
@@ -136,20 +142,31 @@ fn retained_reevaluation_is_required() -> bool {
 
 fn retained_configuration_inputs(
     command: &ServiceCommand,
-) -> Result<(PathBuf, bool, Option<PathBuf>)> {
+    active_manifest: &Path,
+) -> Result<(
+    PathBuf,
+    bool,
+    Option<PathBuf>,
+    Option<super::RetainedHostInputs>,
+)> {
     let staged = command.eval_root.join("host.nix");
-    if Path::new(ACTIVE_MANIFEST).is_file() {
+    if active_manifest.is_file() {
         let manifest: ConfigManifest = serde_json::from_slice(
-            &fs::read(ACTIVE_MANIFEST).with_context(|| format!("reading {ACTIVE_MANIFEST}"))?,
+            &fs::read(active_manifest)
+                .with_context(|| format!("reading {}", active_manifest.display()))?,
         )
-        .with_context(|| format!("parsing {ACTIVE_MANIFEST}"))?;
+        .with_context(|| format!("parsing {}", active_manifest.display()))?;
         manifest.validate()?;
 
-        let host_nix = PathBuf::from(&manifest.inputs.host_nix.store_path);
+        let host_nix = command
+            .store_view
+            .read_path(Path::new(&manifest.inputs.host_nix.store_path))?;
         if !host_nix.is_file() {
             bail!("retained host input is unavailable: {}", host_nix.display());
         }
-        let facts_json = PathBuf::from(&manifest.inputs.instance_facts.store_path);
+        let facts_json = command
+            .store_view
+            .read_path(Path::new(&manifest.inputs.instance_facts.store_path))?;
         if !facts_json.is_file() {
             bail!(
                 "retained instance facts are unavailable: {}",
@@ -160,12 +177,16 @@ fn retained_configuration_inputs(
             manifest.inputs.host_nix.trust_mode.as_str(),
             "image" | "image-default"
         );
-        return Ok((host_nix, image_default, Some(facts_json)));
+        let retained = super::RetainedHostInputs {
+            host_nix: manifest.inputs.host_nix,
+            instance_facts: manifest.inputs.instance_facts,
+        };
+        return Ok((host_nix, image_default, Some(facts_json), Some(retained)));
     }
 
     fs::write(&staged, b"{}\n")
         .with_context(|| format!("writing image-default host module {}", staged.display()))?;
-    Ok((staged, true, None))
+    Ok((staged, true, None, None))
 }
 
 fn running_module_abi(path: &Path) -> Result<Option<u32>> {
@@ -197,6 +218,7 @@ fn running_module_abi(path: &Path) -> Result<Option<u32>> {
 fn active_runtime_modules(
     manifest_path: &Path,
     state_path: &Path,
+    store_view: &super::store_view::StoreViewLocator,
 ) -> Result<(Vec<PathBuf>, Option<PathBuf>, Option<u32>)> {
     let bytes = match fs::read(manifest_path) {
         Ok(bytes) => bytes,
@@ -216,20 +238,44 @@ fn active_runtime_modules(
     };
     runtime.validate()?;
 
-    let root = PathBuf::from(&runtime.store_path);
+    let identity_root = PathBuf::from(&runtime.store_path);
+    let read_root = store_view.read_path(&identity_root)?;
     let modules = runtime
         .entrypoints
         .iter()
-        .map(|entry| root.join(entry))
-        .collect();
+        .map(|entry| {
+            let read_path = read_root.join(entry);
+            anyhow::ensure!(
+                read_path.is_file(),
+                "retained runtime module entrypoint is unavailable: {}",
+                read_path.display()
+            );
+            Ok(identity_root.join(entry))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let generation = current_config_generation_number(state_path)?;
 
-    Ok((modules, Some(root), Some(generation)))
+    Ok((modules, Some(identity_root), Some(generation)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn service_command(
+        store_view: super::super::store_view::StoreViewLocator,
+        eval_root: PathBuf,
+    ) -> ServiceCommand {
+        ServiceCommand {
+            store_view,
+            base_lib: "/nix/store/base-lib".into(),
+            module_abi: 1,
+            desired: eval_root.join("desired.toml"),
+            out: eval_root.join("manifest-out.json"),
+            eval_root,
+            verbose: 0,
+        }
+    }
 
     #[test]
     fn running_module_abi_requires_one_unsigned_integer() {
@@ -246,5 +292,57 @@ mod tests {
         assert!(running_module_abi(&release).is_err());
 
         fs::remove_dir_all(root).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn retained_inputs_use_selected_store_read_view() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let read_root = temporary.path().join("read-store");
+        let canonical_host = PathBuf::from("/nix/store/gggggggggggggggggggggggggggggggg-host.nix");
+        let canonical_facts =
+            PathBuf::from("/nix/store/ffffffffffffffffffffffffffffffff-facts.json");
+        let readable_host = read_root.join(canonical_host.file_name().expect("host object name"));
+        let readable_facts =
+            read_root.join(canonical_facts.file_name().expect("facts object name"));
+        fs::create_dir_all(&read_root).expect("create selected read view");
+        fs::write(&readable_host, "{}\n").expect("write readable host input");
+        fs::write(&readable_facts, "{}\n").expect("write readable facts input");
+
+        let store_view = super::super::store_view::StoreViewLocator::new(
+            "/nix/store".into(),
+            read_root,
+            "/nix/store/static-contract/contract.json".into(),
+        )
+        .expect("selected store view");
+        let mut manifest: ConfigManifest = serde_json::from_str(include_str!(
+            "../../tests/fixtures/config_manifest/manifest.json"
+        ))
+        .expect("fixture manifest");
+        manifest.inputs.store_view = store_view.clone();
+        manifest.inputs.host_nix.store_path = canonical_host.to_string_lossy().into_owned();
+        manifest.inputs.instance_facts.store_path = canonical_facts.to_string_lossy().into_owned();
+        let manifest_path = temporary.path().join("active-manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("serialize manifest"),
+        )
+        .expect("write active manifest");
+
+        let command = service_command(store_view, temporary.path().join("eval"));
+        let (host, image_default, facts, retained) =
+            retained_configuration_inputs(&command, &manifest_path).expect("retained inputs");
+
+        assert_eq!(host, readable_host);
+        assert_eq!(facts.as_deref(), Some(readable_facts.as_path()));
+        assert!(!image_default);
+        let retained = retained.expect("retained identities");
+        assert_eq!(
+            retained.host_nix.store_path,
+            canonical_host.to_string_lossy()
+        );
+        assert_eq!(
+            retained.instance_facts.store_path,
+            canonical_facts.to_string_lossy()
+        );
     }
 }

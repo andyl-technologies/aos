@@ -219,10 +219,12 @@ pub fn resolve_build_stage(spec_path: &Path, output_path: &Path, eval_root: &Pat
     );
 
     let evaluator = StockNixEvaluator::new(eval_root, 0);
+    let intent_module = super::EvaluatorInput::canonical(spec.intent_module.clone());
+    let base_lib = super::EvaluatorInput::canonical(spec.base_lib.clone());
     let attempt = EvalAttempt {
-        host_nix: &spec.intent_module,
+        host_nix: &intent_module,
         runtime_modules: &[],
-        base_lib: &spec.base_lib,
+        base_lib: &base_lib,
         facts_json: None,
         working_set: &working_set,
         iteration: 0,

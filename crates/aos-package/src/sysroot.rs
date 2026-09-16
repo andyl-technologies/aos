@@ -425,6 +425,42 @@ pub fn reeval_active_config_for_boot(
         .iter()
         .find(|generation| generation.number == state.current)
         .context("no active system configuration generation")?;
+    let source_manifest = validate_generation_manifest(profile_path, active)?;
+    let manifest = crate::config_eval::activation::load_config_manifest(&source_manifest)?;
+
+    reeval_active_config_for_boot_in_store_view(
+        profile_path,
+        &manifest.inputs.store_view,
+        eval_root,
+        out,
+        verbose,
+    )
+}
+
+/// Re-evaluates the active configuration through an explicitly selected store view.
+///
+/// The retained manifest records canonical store identities. The selected boot
+/// environment supplies the physical read view used for this evaluation, so an
+/// image transition never reuses an obsolete backend-specific store path.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as
+/// [`reeval_active_config_for_boot`], or when a retained canonical store path
+/// cannot be mapped through `store_view`.
+pub(crate) fn reeval_active_config_for_boot_in_store_view(
+    profile_path: &Path,
+    store_view: &crate::config_eval::store_view::StoreViewLocator,
+    eval_root: PathBuf,
+    out: PathBuf,
+    verbose: u8,
+) -> Result<()> {
+    let state = load_generation_state_readonly(profile_path)?;
+    let active = state
+        .generations
+        .iter()
+        .find(|generation| generation.number == state.current)
+        .context("no active system configuration generation")?;
     let running = running_image_generation()?;
     let retained = CrossAbiReEvalInputs {
         package_modules: active.package_modules.clone(),
@@ -435,10 +471,11 @@ pub fn reeval_active_config_for_boot(
         to_module_abi: running.module_abi,
     };
     let source_manifest = validate_generation_manifest(profile_path, active)?;
-    crate::config_eval::reeval_cross_abi(
+    crate::config_eval::reeval_cross_abi_in_store_view(
         &retained,
         Path::new(&running.evaluator_ref),
         &source_manifest,
+        store_view,
         eval_root,
         out,
         verbose,
