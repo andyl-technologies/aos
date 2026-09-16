@@ -245,13 +245,13 @@ fn retained_inputs(
 ) -> Result<RetainedHostInputs> {
     let host_bytes = fs::read(host_nix).context("reading pinned authorized host input")?;
     let facts_bytes = fs::read(facts_json).context("reading pinned observational facts")?;
-    let facts: crate::metadata::fetcher::Facts =
+    let facts: aos_metadata::fetcher::Facts =
         serde_json::from_slice(&facts_bytes).context("decoding observational instance facts")?;
     ensure!(
-        crate::metadata::facts_render::canonicalize_host_facts(&facts)? == facts,
+        aos_metadata::facts_render::canonicalize_host_facts(&facts)? == facts,
         "authorized observational instance facts are not canonical"
     );
-    let normalized = crate::metadata::facts_render::normalize_host_facts(&facts);
+    let normalized = aos_metadata::facts_render::normalize_host_facts(&facts);
     let normalized = serde_json::to_vec(&normalized)
         .context("encoding normalized observational instance facts")?;
     let (host_trust_mode, host_platform, host_signer) = match input.source {

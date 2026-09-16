@@ -60,7 +60,6 @@ pub(crate) mod gitcmd;
 pub mod hold;
 pub mod images;
 pub mod install;
-pub mod metadata;
 pub(crate) mod package_attestation;
 pub use package_attestation::PackageQuoteArtifacts;
 pub mod package_contract;

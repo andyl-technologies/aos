@@ -479,9 +479,9 @@ impl StockNixEvaluator {
             .map(|facts_json| -> Result<String> {
                 let raw = std::fs::read(facts_json)
                     .with_context(|| format!("reading facts {}", facts_json.display()))?;
-                let facts: crate::metadata::fetcher::Facts = serde_json::from_slice(&raw)
+                let facts: aos_metadata::fetcher::Facts = serde_json::from_slice(&raw)
                     .with_context(|| format!("parsing facts {}", facts_json.display()))?;
-                Ok(crate::metadata::facts_render::render_host_facts_nix(&facts))
+                Ok(aos_metadata::facts_render::render_host_facts_nix(&facts))
             })
             .transpose()?;
         let facts_binding = facts_module.as_ref().map_or_else(String::new, |module| {

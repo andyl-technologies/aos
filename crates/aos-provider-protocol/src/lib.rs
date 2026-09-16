@@ -7,6 +7,10 @@
 //! all interpretation of desired values, realizations, and native state.
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::io::{self, Write as _};
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Component, Path, PathBuf};
 
 use aos_ability_model::{
     AbilityValue, IncarnationId, InterfaceName, LocalKey, MethodReference, MethodSemantics,
@@ -44,6 +48,70 @@ pub const TRANSACTION_BLOB_INPUT_DIRECTORY_ENV: &str = "AOS_ABILITY_TRANSACTION_
 pub const TRANSACTION_BLOB_OUTPUT_DIRECTORY_ENV: &str = "AOS_ABILITY_TRANSACTION_BLOB_OUTPUTS";
 /// Marker returned by a handler after writing one blob output slot.
 pub const TRANSACTION_BLOB_OUTPUT_TYPE: &str = "aos-transaction-blob-output";
+
+/// Publishes one private transaction-blob output under the runtime-authorized slot.
+///
+/// The runtime supplies the output directory through the handler ABI. This
+/// helper validates that directory and atomically replaces only the selected
+/// regular-file slot, so package providers share one blob publication path.
+///
+/// # Errors
+///
+/// Returns an error when the runtime output directory is missing or unsafe,
+/// the selected slot is not a regular file, or durable publication fails.
+pub fn publish_transaction_blob_output(slot: &LocalKey, contents: &[u8]) -> anyhow::Result<()> {
+    let output = std::env::var_os(TRANSACTION_BLOB_OUTPUT_DIRECTORY_ENV)
+        .ok_or_else(|| anyhow::anyhow!("reading the private transaction blob output directory"))?;
+    let directory = PathBuf::from(output);
+    anyhow::ensure!(
+        directory.is_absolute()
+            && directory
+                .components()
+                .all(|component| matches!(component, Component::RootDir | Component::Normal(_))),
+        "transaction blob output directory is not a normalized absolute path"
+    );
+    let metadata = fs::symlink_metadata(&directory)?;
+    anyhow::ensure!(
+        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+        "transaction blob output directory is not a real directory"
+    );
+    anyhow::ensure!(
+        fs::canonicalize(&directory)? == directory,
+        "transaction blob output directory is not canonical"
+    );
+
+    publish_transaction_blob_output_at(&directory, slot, contents)
+}
+
+fn publish_transaction_blob_output_at(
+    directory: &Path,
+    slot: &LocalKey,
+    contents: &[u8],
+) -> anyhow::Result<()> {
+    let destination = directory.join(slot.as_str());
+    match fs::symlink_metadata(&destination) {
+        Ok(metadata) => anyhow::ensure!(
+            metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
+            "transaction blob output slot is not a regular file"
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".aos-transaction-blob-")
+        .tempfile_in(directory)?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    temporary.write_all(contents)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(&destination)
+        .map_err(|error| error.error)?;
+    fs::File::open(directory)?.sync_all()?;
+    Ok(())
+}
 
 /// Computes the canonical digest of one provider-native context.
 ///
@@ -532,6 +600,7 @@ pub enum InvocationDisposition {
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
+    use std::os::unix::fs::{MetadataExt as _, symlink};
 
     use aos_ability_model::{
         AbilityValue, AccessMode, InterfaceKey, InterfaceName, LocalKey, MethodReference,
@@ -543,9 +612,46 @@ mod tests {
         ADMISSION_REQUEST_SCHEMA, AdmissionDisposition, AdmissionRequest, AdmissionRevision,
         BoundNativeContext, HandlerSchemaContract, InvocationControl, InvocationDisposition,
         InvocationPurpose, NATIVE_CONTEXT_DIGEST_DOMAIN, RecoveryMethods, ResourceContext,
-        ResourceSpec, SupportedPurposes, native_context_digest, validate_admission_resource,
-        validate_resource_contexts,
+        ResourceSpec, SupportedPurposes, native_context_digest, publish_transaction_blob_output_at,
+        validate_admission_resource, validate_resource_contexts,
     };
+
+    #[test]
+    fn transaction_blob_publication_is_atomic_and_private() {
+        let directory = tempfile::tempdir().expect("private blob output directory");
+        let slot = LocalKey::new("manifest").expect("slot name");
+
+        publish_transaction_blob_output_at(directory.path(), &slot, b"first")
+            .expect("first blob publication");
+        publish_transaction_blob_output_at(directory.path(), &slot, b"replacement")
+            .expect("recovered blob publication");
+
+        let path = directory.path().join(slot.as_str());
+        assert_eq!(
+            std::fs::read(&path).expect("published blob"),
+            b"replacement"
+        );
+        assert_eq!(
+            std::fs::metadata(path)
+                .expect("published blob metadata")
+                .mode()
+                & 0o7777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn transaction_blob_publication_rejects_a_symbolic_link_slot() {
+        let directory = tempfile::tempdir().expect("private blob output directory");
+        let outside = tempfile::NamedTempFile::new().expect("outside file");
+        let slot = LocalKey::new("manifest").expect("slot name");
+        symlink(outside.path(), directory.path().join(slot.as_str())).expect("symbolic link");
+
+        let error = publish_transaction_blob_output_at(directory.path(), &slot, b"manifest")
+            .expect_err("symbolic link is rejected");
+
+        assert!(error.to_string().contains("not a regular file"));
+    }
 
     #[test]
     fn command_vocabulary_has_stable_wire_names() {

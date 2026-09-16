@@ -2,7 +2,7 @@
 
 #[tokio::main]
 async fn main() {
-    if let Err(error) = aos_package::metadata::provider::run_policy_provider_from_process().await {
+    if let Err(error) = aos_metadata::policy::run_policy_provider_from_process().await {
         eprintln!("aos-metadata-policy-provider: {error:#}");
         std::process::exit(1);
     }

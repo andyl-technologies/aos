@@ -6,7 +6,7 @@
 //! mountpoint as `METADATA_DIR`; the matching [`PlatformFetcher`] then reads
 //! files from that directory with no network.
 //!
-//! [`PlatformFetcher`]: crate::metadata::fetcher::PlatformFetcher
+//! [`PlatformFetcher`]: crate::fetcher::PlatformFetcher
 //!
 //! The probe is behind the [`ConfigDriveProbe`] trait so tests never touch
 //! `blkid`/`mount` or require root:

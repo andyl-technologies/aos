@@ -734,10 +734,12 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "hex",
+ "rand 0.9.4",
  "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "ssh-key",
  "tempfile",
  "tokio",
  "url",
@@ -749,7 +751,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-metadata",
- "aos-package",
  "tokio",
 ]
 
@@ -942,6 +943,7 @@ dependencies = [
  "aos-contract",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

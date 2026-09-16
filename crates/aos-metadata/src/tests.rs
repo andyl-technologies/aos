@@ -18,8 +18,13 @@ use super::fetcher::{Facts, MacIface, PlatformFetcher, StaticNetwork, UserData};
 use super::http::{RecordedHttp, RecordedMethod};
 use super::mount::{CONFIG_DRIVE_LABELS, FakeProbe};
 use super::offline::{AosMetadataFetcher, ConfigDriveFetcher, NoCloudFetcher, QemuFwCfgFetcher};
-use super::stash::{MetadataResult, Stash};
 use super::staticnet::{parse_netplan_network_config, parse_openstack_network_data};
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    format!("{:x}", Sha256::digest(bytes))
+}
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -403,7 +408,7 @@ fn aws_imdsv2_404_user_data_is_none() {
 
 #[test]
 fn aws_imdsv2_host_pointer_resolved_with_pin() {
-    let pin = super::stash::sha256_hex(b"{ big = true; }");
+    let pin = sha256_hex(b"{ big = true; }");
     let pointer = format!(
         r#"{{"host_nix_url":"https://cfg.example/host.nix","sha256":"{pin}","sig_url":"https://cfg.example/host.nix.sig"}}"#
     );
@@ -655,7 +660,7 @@ fn facts_render_is_deterministic_and_typed() {
 }
 
 #[test]
-fn facts_hash_is_canonical_and_includes_static_network() {
+fn facts_identity_is_canonical_and_includes_static_network() {
     let first = Facts {
         mac_to_iface: vec![
             MacIface {
@@ -688,16 +693,10 @@ fn facts_hash_is_canonical_and_includes_static_network() {
         "protected fact transport is independent of collection order"
     );
 
-    let first_dir = tempdir().unwrap();
-    let second_dir = tempdir().unwrap();
-    let first_hash = Stash::open(first_dir.path())
-        .unwrap()
-        .write_facts(&first)
-        .unwrap();
-    let second_hash = Stash::open(second_dir.path())
-        .unwrap()
-        .write_facts(&reordered)
-        .unwrap();
+    let first_canonical = canonicalize_host_facts(&first).unwrap();
+    let reordered_canonical = canonicalize_host_facts(&reordered).unwrap();
+    let first_hash = sha256_hex(&serde_json::to_vec(&first_canonical).unwrap());
+    let second_hash = sha256_hex(&serde_json::to_vec(&reordered_canonical).unwrap());
     assert_eq!(
         first_hash, second_hash,
         "fact collection order is not identity"
@@ -705,11 +704,8 @@ fn facts_hash_is_canonical_and_includes_static_network() {
 
     let mut changed = first;
     changed.network.as_mut().unwrap().gateway = Some("192.0.2.254".into());
-    let changed_dir = tempdir().unwrap();
-    let changed_hash = Stash::open(changed_dir.path())
-        .unwrap()
-        .write_facts(&changed)
-        .unwrap();
+    let changed = canonicalize_host_facts(&changed).unwrap();
+    let changed_hash = sha256_hex(&serde_json::to_vec(&changed).unwrap());
     assert_ne!(
         first_hash, changed_hash,
         "static network facts affect facts_hash"
@@ -746,25 +742,20 @@ fn facts_render_antiquotation_neutralized() {
 }
 
 // ---------------------------------------------------------------------------
-// provider-private stash + run_fetch end-to-end (offline)
+// typed acquisition end-to-end (offline)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn acquisition_context_is_typed_and_never_rendered_as_an_environment_file() {
+fn acquisition_context_carries_network_requirement_as_typed_data() {
     let context = AcquisitionContext {
         platform: PlatformId::Aws,
         metadata_dir: None,
     };
-    let stash_dir = tempdir().unwrap();
-    let _stash = Stash::open(stash_dir.path()).unwrap();
-
     assert!(context.needs_network());
-    assert!(!stash_dir.path().join("platform.env").exists());
 }
 
 #[test]
-fn run_fetch_offline_writes_full_stash() {
-    let stash_dir = tempdir().unwrap();
+fn fetch_metadata_offline_returns_exact_typed_result() {
     let media = tempdir().unwrap();
     let os = media.path().join("openstack/latest");
     std::fs::create_dir_all(&os).unwrap();
@@ -781,60 +772,27 @@ fn run_fetch_offline_writes_full_stash() {
     )
     .unwrap();
 
-    let stash = Stash::open(stash_dir.path()).unwrap();
     let fetcher = ConfigDriveFetcher::new(media.path());
     let http = RecordedHttp::new();
-    block_on(super::run_fetch_with(
-        &stash,
-        &fetcher,
-        &http,
-        "config-drive",
-    ))
-    .unwrap();
+    let acquired = block_on(super::fetch_metadata_with(&fetcher, &http)).unwrap();
 
-    // Exact user-data + signature are stashed; authorization owns host.nix.
+    assert_eq!(acquired.host_module.as_deref(), Some("{ ok = true; }"));
     assert_eq!(
-        std::fs::read(stash_dir.path().join("user-data")).unwrap(),
-        b"{ ok = true; }"
+        acquired.host_module_signature.as_deref(),
+        Some("-----BEGIN SSH SIGNATURE-----")
     );
-    assert!(stash_dir.path().join("user-data.sig").exists());
-    assert!(!stash_dir.path().join("host.nix").exists());
-
-    // facts.json present.
-    assert!(stash_dir.path().join("facts.json").exists());
-
-    // run record reflects the run.
-    let result: MetadataResult = serde_json::from_slice(
-        &std::fs::read(stash_dir.path().join(".metadata-result.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(result.platform_id, "config-drive");
-    assert!(result.fetched_user_data);
-    assert!(result.sig_present);
-    assert_eq!(result.user_data_source, "config-drive");
-    assert!(stash.already_run());
+    assert_eq!(acquired.facts.hostname.as_deref(), Some("os-1"));
+    assert_eq!(acquired.facts.instance_id.as_deref(), Some("u-1"));
 }
 
 #[test]
-fn run_fetch_no_user_data_is_failure_safe() {
-    let stash_dir = tempdir().unwrap();
+fn fetch_metadata_without_user_data_returns_facts_only() {
     let media = tempdir().unwrap(); // empty: no host.nix
-    let stash = Stash::open(stash_dir.path()).unwrap();
     let fetcher = AosMetadataFetcher::new(media.path());
     let http = RecordedHttp::new();
-    block_on(super::run_fetch_with(
-        &stash,
-        &fetcher,
-        &http,
-        "aos-metadata",
-    ))
-    .unwrap();
+    let acquired = block_on(super::fetch_metadata_with(&fetcher, &http)).unwrap();
 
-    assert!(!stash_dir.path().join("user-data").exists());
-    let result: MetadataResult = serde_json::from_slice(
-        &std::fs::read(stash_dir.path().join(".metadata-result.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(!result.fetched_user_data);
-    assert!(!result.sig_present);
+    assert_eq!(acquired.host_module, None);
+    assert_eq!(acquired.host_module_signature, None);
+    assert_eq!(acquired.facts, Facts::default());
 }

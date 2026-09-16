@@ -2,7 +2,7 @@
 //!
 //! GCP, Azure, DigitalOcean, and OpenStack IMDS fetchers follow the same shape
 //! with provider-specific endpoints, headers, and encodings in
-//! [`crate::metadata::cloud`].
+//! [`crate::cloud`].
 //!
 //! # IMDSv2 token dance (mandatory)
 //!
