@@ -101,6 +101,46 @@ validate_rooted_executable() {
     && [ -x "$rooted_target" ]
 }
 
+validate_profile_state() {
+  jq -e '
+    type == "object"
+    and (keys | sort) == ["current", "generations", "next"]
+    and (.current | type) == "number"
+    and (.next | type) == "number"
+    and (.generations | type) == "array"
+    and all(.generations[];
+      type == "object"
+      and ((keys - ["host_nix_commit"]) | sort) == [
+        "base_lib_ref", "created_at", "evaluator_ref", "facts_hash",
+        "facts_ref", "host_nix_ref", "image_gen_parent", "manifest_hash",
+        "module_abi_pinned", "number", "package_modules"
+      ]
+      and (.number | type) == "number"
+      and (.image_gen_parent | type) == "number"
+      and (.module_abi_pinned | type) == "number"
+      and (.manifest_hash | type) == "string" and (.manifest_hash | length) > 0
+      and (.package_modules | type) == "array"
+      and all(.package_modules[];
+        type == "object"
+        and (keys | sort) == [
+          "document_digest", "entrypoint", "nar_hash", "origin", "package",
+          "store_path"
+        ]
+        and all(.[]; type == "string" and length > 0)
+      )
+      and (.host_nix_ref | type) == "string" and (.host_nix_ref | length) > 0
+      and ((has("host_nix_commit") | not)
+        or (.host_nix_commit == null)
+        or ((.host_nix_commit | type) == "string"))
+      and (.facts_hash | type) == "string" and (.facts_hash | length) > 0
+      and (.facts_ref | type) == "string" and (.facts_ref | length) > 0
+      and (.base_lib_ref | type) == "string" and (.base_lib_ref | length) > 0
+      and (.evaluator_ref | type) == "string" and (.evaluator_ref | length) > 0
+      and (.created_at | type) == "string" and (.created_at | length) > 0
+    )
+  ' "$1" >/dev/null
+}
+
 read_pcr11() {
   # cryptsetup may leave the swtpm resource manager busy briefly after
   # an unattended unlock. Never let an informational PCR read wedge
@@ -432,20 +472,11 @@ else
       '[.generations[] | select(.number == $existing) | .initrd_pcr11][0] // ""' \
       "$image_dir/state.json")
     if [ -z "$recorded_initrd" ] && [ -n "$initrd_pcr11" ]; then
-      # Preserve the catalog-published stable PCR 11 separately. For
-      # legacy seed records only, an equal old expected value was the
-      # initrd snapshot and is migrated rather than reinterpreted as
-      # the stable ready-phase value.
       jq \
         --argjson existing "$existing" --arg initrd "$initrd_pcr11" \
         '.running = $existing
          | (.generations[] | select(.number == $existing)) |=
-           (.initrd_pcr11 = $initrd
-            | if .registry == "seed"
-                 and ((.expected_pcr11 // "") | ascii_downcase) == $initrd
-              then del(.expected_pcr11)
-              else .
-              end)' \
+           (.initrd_pcr11 = $initrd)' \
         "$image_dir/state.json" > "$image_dir/.state.json.new"
       publish_image_state "$image_dir/.state.json.new"
     elif [ "$recorded_running" -ne "$existing" ]; then
@@ -462,21 +493,18 @@ fi
 # A fully reconciled recurrent boot is read-only. Avoid refreshing
 # durable roots and copying state immediately after TPM-unlocking
 # /var; those mutations are repair operations, not boot requirements.
-# Any missing root or legacy state falls through to the repair path.
+# Any missing retained root falls through to the repair path.
 if [ "$steady_recurrent" = true ]; then
   retained_base=$(readlink \
     "$image_dir/image-gen-$existing/baselib/$abi" 2>/dev/null || true)
   if [ "$retained_base" = "$base_lib" ] && [ -e "$profile_dir/state.json" ]; then
-    has_legacy=$(jq \
-      '[.generations[] | has("toplevel")] | any' \
-      "$profile_dir/state.json")
-    if [ "$has_legacy" = false ]; then
-      link=$(readlink "$profile_dir/current" 2>/dev/null || true)
-      GEN=${link#gen-}
-      [ -n "$GEN" ] || GEN=0
-      printf 'AOS_PROFILE_GEN=%s\n' "$GEN" > /run/aos-profile-gen.env
-      exit 0
-    fi
+    validate_profile_state "$profile_dir/state.json" \
+      || fail_image_identity "system profile state does not match the current schema"
+    link=$(readlink "$profile_dir/current" 2>/dev/null || true)
+    GEN=${link#gen-}
+    [ -n "$GEN" ] || GEN=0
+    printf 'AOS_PROFILE_GEN=%s\n' "$GEN" > /run/aos-profile-gen.env
+    exit 0
   fi
 fi
 
@@ -484,102 +512,9 @@ mkdir -p "$image_dir/image-gen-$existing/baselib"
 ln -sfn "$base_lib" "$image_dir/image-gen-$existing/baselib/$abi"
 mkdir -p "$profile_dir"
 
-# One-shot legacy migration. Every bundled record must both carry the
-# complete config-generation input/output binding and authenticate its
-# retired toplevel fields through mutually agreeing immutable metadata,
-# os-release, base-lib, and image-index fields. Migration is all-or-
-# nothing; incomplete records leave the original state untouched.
 if [ -e "$profile_dir/state.json" ]; then
-  cp "$profile_dir/state.json" "$profile_dir/.state.json.migrate"
-  has_legacy=$(jq '[.generations[] | has("toplevel")] | any' \
-    "$profile_dir/.state.json.migrate")
-  migration_failed=0
-  for index in $(jq -r \
-    '.generations | to_entries[] | select(.value | has("toplevel")) | .key' \
-    "$profile_dir/.state.json.migrate"); do
-    legacy_top=$(jq -r --argjson index "$index" \
-      '.generations[$index].toplevel' "$profile_dir/.state.json.migrate")
-    case "$legacy_top" in
-      /nix/store/*) ;;
-      *)
-        echo "aos-seed-profiles: legacy generation $index has unsafe toplevel" >&2
-        migration_failed=1
-        continue
-        ;;
-    esac
-    legacy_abi=$(tr -d '\n' < "/sysroot$legacy_top/meta/module-abi" 2>/dev/null || true)
-    legacy_digest=$(tr -d '\n' < "/sysroot$legacy_top/meta/baselib-digest" 2>/dev/null || true)
-    legacy_base=$(readlink "/sysroot$legacy_top/base-lib" 2>/dev/null || true)
-    legacy_osrel=$(readlink "/sysroot$legacy_top/os-release" 2>/dev/null || true)
-    [ -n "$legacy_abi" ] || { migration_failed=1; continue; }
-    case "$legacy_abi" in *[!0-9]*) migration_failed=1; continue ;; esac
-    case "$legacy_base" in /nix/store/*) ;; *) migration_failed=1; continue ;; esac
-    case "$legacy_osrel" in /nix/store/*) ;; *) migration_failed=1; continue ;; esac
-    legacy_os_abi=$(read_os_release AOS_MODULE_ABI "/sysroot$legacy_osrel" 2>/dev/null || true)
-    legacy_os_digest=$(read_os_release AOS_BASELIB_DIGEST "/sysroot$legacy_osrel" 2>/dev/null || true)
-    [ "$legacy_abi" = "$legacy_os_abi" ] || { migration_failed=1; continue; }
-    [ -n "$legacy_digest" ] && [ "$legacy_digest" = "$legacy_os_digest" ] \
-      || { migration_failed=1; continue; }
-
-    legacy_matches=$(jq \
-      --arg top "$legacy_top" --arg base "$legacy_base" \
-      --arg digest "$legacy_digest" --argjson abi "$legacy_abi" \
-      '[.generations[] | select(.toplevel == $top
-         and .evaluator_ref == $base and .module_abi == $abi
-         and .baselib_digest == $digest)] | length' \
-      "$image_dir/state.json")
-    [ "$legacy_matches" -eq 1 ] || { migration_failed=1; continue; }
-    legacy_parent=$(jq -r \
-      --arg top "$legacy_top" --arg base "$legacy_base" \
-      --arg digest "$legacy_digest" --argjson abi "$legacy_abi" \
-      '.generations[] | select(.toplevel == $top
-         and .evaluator_ref == $base and .module_abi == $abi
-         and .baselib_digest == $digest) | .number' \
-      "$image_dir/state.json")
-    jq --argjson index "$index" \
-      --argjson abi "$legacy_abi" --argjson parent "$legacy_parent" \
-      --arg base "$legacy_base" \
-      '.generations[$index].module_abi_pinned = $abi
-       | .generations[$index].image_gen_parent = $parent
-       | .generations[$index].base_lib_ref = $base' \
-      "$profile_dir/.state.json.migrate" > "$profile_dir/.state.json.next"
-    mv "$profile_dir/.state.json.next" "$profile_dir/.state.json.migrate"
-  done
-  complete=$(jq '
-    all(.generations[];
-      (.image_gen_parent | type) == "number"
-      and (.module_abi_pinned | type) == "number"
-      and (.manifest_hash | type) == "string" and (.manifest_hash | length) > 0
-      and (.package_module_closure | type) == "string" and (.package_module_closure | length) > 0
-      and (.package_module_paths | type) == "array"
-      and (.package_module_packages | type) == "array"
-      and (.host_nix_ref | type) == "string" and (.host_nix_ref | length) > 0
-      and (.facts_hash | type) == "string" and (.facts_hash | length) > 0
-      and (.facts_ref | type) == "string" and (.facts_ref | length) > 0
-      and (.base_lib_ref | type) == "string" and (.base_lib_ref | length) > 0
-      and (.evaluator_ref | type) == "string" and (.evaluator_ref | length) > 0)' \
-    "$profile_dir/.state.json.migrate")
-  if [ "$has_legacy" = true ] && { [ "$migration_failed" -ne 0 ] || [ "$complete" != true ]; }; then
-    rm -f "$profile_dir/.state.json.migrate"
-    echo "aos-seed-profiles: legacy system state cannot be authenticated as complete config generations" >&2
-    exit 1
-  fi
-  if [ "$has_legacy" = true ]; then
-    jq '
-      .generations |= map({
-        number, image_gen_parent, module_abi_pinned, manifest_hash,
-        package_module_closure, package_module_paths,
-        package_module_packages, host_nix_ref, host_nix_commit,
-        facts_hash, facts_ref, base_lib_ref, evaluator_ref, created_at
-      })' "$profile_dir/.state.json.migrate" \
-      > "$profile_dir/.state.json.next"
-    mv "$profile_dir/.state.json.next" "$profile_dir/.state.json.migrate"
-    sync "$profile_dir/.state.json.migrate"
-    mv "$profile_dir/.state.json.migrate" "$profile_dir/state.json"
-    sync "$profile_dir"
-  else
-    rm -f "$profile_dir/.state.json.migrate"
-  fi
+  validate_profile_state "$profile_dir/state.json" \
+    || fail_image_identity "system profile state does not match the current schema"
 fi
 
 if [ ! -e "$profile_dir/state.json" ]; then
