@@ -197,15 +197,7 @@
       extraClosures = system.config.aos.image.hostConfigClosures;
       kernelModulePackages = system.config.aos.kernel.modulePackages;
       firmwarePackages = system.config.aos.kernel.firmwarePackages;
-      # Preserve the image-owned Secure Boot authority outside /nix/store.
-      # The baked toplevel ceases to be a GC root after host configuration is
-      # activated, while this copy remains protected by the immutable root.
       postPopulate = ''
-        mkdir -p rootfs/usr/lib/aos/host
-        cp ${system.config.system.build.staticAbilityContract}/contract.json \
-          rootfs/usr/lib/aos/host/static-ability-contract.json
-        chmod 0444 rootfs/usr/lib/aos/host/static-ability-contract.json
-
         ${lib.optionalString system.config.aos.boot.initrd.abilityHandoff.enable ''
           # The host receiver authenticates the producer's static-contract
           # commitment against this image-owned copy after switch-root.

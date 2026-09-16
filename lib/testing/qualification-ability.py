@@ -67,7 +67,6 @@ ASSEMBLY_MEDIA_TYPE = "application/vnd.aos.image.unsigned-assembly.v2+json"
 FINALIZED_SET_MEDIA_TYPE = "application/vnd.aos.image.finalized-set.v1+json"
 INITRD_STATIC_CONTRACT = "lib/aos/initrd/static-ability-contract.json"
 INITRD_ACTIVATION_SELECTION = "etc/aos/initrd-ability-activation.json"
-HOST_STATIC_CONTRACT = "/usr/lib/aos/host/static-ability-contract.json"
 
 
 def load_support(name: str, path: pathlib.Path) -> Any:
@@ -84,6 +83,25 @@ def load_support(name: str, path: pathlib.Path) -> Any:
         del sys.modules[name]
         raise
     return module
+
+
+def store_view_read_path(locator: dict[str, Any], identity: str) -> str:
+    """Maps one canonical store identity through a selected read-view locator."""
+
+    if locator.get("schema") != "aos.package-store.read-view-locator/v1":
+        raise RuntimeError("running manifest has an unsupported package-store locator")
+    identity_root = pathlib.PurePosixPath(locator["identity_root"])
+    read_root = pathlib.PurePosixPath(locator["read_root"])
+    identity_path = pathlib.PurePosixPath(identity)
+    if not identity_root.is_absolute() or not read_root.is_absolute():
+        raise RuntimeError("running package-store locator contains a relative root")
+    try:
+        relative = identity_path.relative_to(identity_root)
+    except ValueError as error:
+        raise RuntimeError("package identity is outside the selected store root") from error
+    if not relative.parts:
+        raise RuntimeError("package identity names the store root")
+    return str(read_root / relative)
 
 
 IMAGE = load_support("aos_qualification_image_support", IMAGE_SUPPORT)
@@ -1404,11 +1422,18 @@ class Scenario:
             raise RuntimeError("running kernel differs from the published image contract")
         root_hash = image["metadata"]["root"]["root_hash"]
         machine.ssh(f"grep -Eq '(^| )roothash={re.escape(root_hash)}($| )' /proc/cmdline")
+        manifest = json.loads(machine.ssh("cat /run/aos/manifest.json"))
+        store_view = manifest["inputs"]["store_view"]
+        host_contract_path = store_view_read_path(
+            store_view, store_view["static_contract"]
+        )
         host_contract = machine.ssh(
-            f"sha256sum {HOST_STATIC_CONTRACT} | cut -d ' ' -f1"
+            f"sha256sum {shlex.quote(host_contract_path)} | cut -d ' ' -f1"
         ).strip()
         if "sha256:" + host_contract != image["host_static_contract"]["sha256"]:
-            raise RuntimeError("running root differs from its host static ability contract")
+            raise RuntimeError(
+                "selected package-store view differs from its host ability contract"
+            )
         if machine.native_package_runtime and machine.expected_image_role == "candidate":
             self.assert_initrd_handoff(machine, boot_id)
 

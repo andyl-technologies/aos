@@ -214,6 +214,7 @@ in {
       import hashlib
       import base64
       import json
+      import shlex
       import os
       import re
       import time
@@ -328,6 +329,19 @@ in {
                   for key in sorted(value)
               ) + "}"
           raise TypeError(f"unsupported canonical JSON value: {type(value)!r}")
+
+      def store_view_read_path(locator, identity):
+          assert locator["schema"] == "aos.package-store.read-view-locator/v1", locator
+          identity_root = locator["identity_root"].rstrip("/")
+          read_root = locator["read_root"].rstrip("/")
+          assert identity_root.startswith("/") and read_root.startswith("/"), locator
+          prefix = identity_root + "/"
+          assert identity.startswith(prefix), (locator, identity)
+          relative = identity.removeprefix(prefix)
+          assert relative and all(
+              part not in ("", ".", "..") for part in relative.split("/")
+          ), relative
+          return read_root + "/" + relative
 
       def efivar_byte(name):
           path = f"/sys/firmware/efi/efivars/{name}-{SB_GUID}"
@@ -751,6 +765,7 @@ in {
               rm -rf /run/runtime-config-attestation-rederive
               mkdir -p /run/runtime-config-attestation-rederive
               {APM} __eval \
+                --store-view {shlex.quote(canonical_json(manifest['inputs']['store_view']))} \
                 --host-nix /run/runtime-config-attested-host.nix \
                 --base-lib {inputs['base_lib']['store_path']} \
                 --facts {inputs['instance_facts']['store_path']} \
@@ -795,8 +810,12 @@ in {
           # Exercise the public, identity-pinned generation verifier. The
           # verifier policy is a separate file even in this single-node test;
           # production callers supply these values from their fleet catalog.
+          store_view = manifest["inputs"]["store_view"]
+          static_contract_path = store_view_read_path(
+              store_view, store_view["static_contract"]
+          )
           static_contract = json.loads(target.succeed(
-              "cat /usr/lib/aos/host/static-ability-contract.json"
+              f"cat {shlex.quote(static_contract_path)}"
           ))
           static_packages = static_contract["platforms"][0]["packages"]
           image_members = []
@@ -809,9 +828,7 @@ in {
               ]
               assert len(matches) == 1, (module["package"], matches)
               manifest_path = matches[0]["manifest"]["store_path"]
-              lower_manifest = (
-                  "/nix.lower/store/" + manifest_path.removeprefix("/nix/store/")
-              )
+              lower_manifest = store_view_read_path(store_view, manifest_path)
               package_document = json.loads(target.succeed(
                   f"cat {lower_manifest}/contract.json"
               ))
