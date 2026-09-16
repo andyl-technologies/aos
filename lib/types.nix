@@ -686,9 +686,11 @@ in rec {
     mergeProvenanceByKey = true;
     check = builtins.isAttrs;
     merge = loc: defs:
-      if evalSubmodule != null
-      then evalSubmodule moduleArgs loc defs
-      else builtins.foldl' (acc: def: deepMergeSub acc def.value) {} defs;
+      builtins.removeAttrs (
+        if evalSubmodule != null
+        then evalSubmodule moduleArgs loc defs
+        else builtins.foldl' (acc: def: deepMergeSub acc def.value) {} defs
+      ) ["_module"];
     _submodule = moduleArgs;
     _aosDocType = {
       kind = "submodule";

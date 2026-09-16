@@ -225,7 +225,8 @@
   ];
   addCheckScalarMerged = validAddCheckEvaluation.config.checked.scalar == 1;
   addCheckSubmoduleMerged =
-    validAddCheckEvaluation.config.checked.record.lower == 1
+    validAddCheckEvaluation.config.checked.record.lower
+    == 1
     && validAddCheckEvaluation.config.checked.record.upper == 2;
   addCheckListMerged = validAddCheckEvaluation.config.checked.values == [1 2];
   addCheckScalarRejected =
@@ -249,6 +250,78 @@
       .config
       .checked
       .values
+    )
+    .success;
+
+  # --- types.submodule public value ----------------------------------
+  submoduleVisibilityDeclaration = {lib, ...}: {
+    options = {
+      strictRecord = lib.mkOption {
+        type = lib.types.submodule {
+          _module.strict = true;
+          options.value = lib.mkOption {type = lib.types.str;};
+        };
+      };
+      freeformRecord = lib.mkOption {
+        type = lib.types.submodule {
+          freeformType = lib.types.attrs;
+          options.declared = lib.mkOption {type = lib.types.str;};
+        };
+      };
+      nestedRecord = lib.mkOption {
+        type = lib.types.submodule {
+          options.inner = lib.mkOption {
+            type = lib.types.submodule {
+              options.value = lib.mkOption {type = lib.types.str;};
+            };
+          };
+        };
+      };
+    };
+  };
+  submoduleVisibilityEvaluation = lib.evalModules {
+    modules = [
+      submoduleVisibilityDeclaration
+      {
+        strictRecord.value = "strict";
+        freeformRecord = {
+          declared = "declared";
+          extra = "freeform";
+        };
+        nestedRecord.inner.value = "nested";
+      }
+    ];
+    inherit lib;
+  };
+  strictSubmodulePublic =
+    submoduleVisibilityEvaluation.config.strictRecord
+    == {value = "strict";};
+  freeformSubmodulePublic =
+    submoduleVisibilityEvaluation.config.freeformRecord
+    == {
+      declared = "declared";
+      extra = "freeform";
+    };
+  nestedSubmodulePublic =
+    submoduleVisibilityEvaluation.config.nestedRecord
+    == {inner = {value = "nested";};};
+  strictSubmoduleRejectsUndeclared =
+    !(
+      builtins.tryEval
+      (lib.evalModules {
+        modules = [
+          submoduleVisibilityDeclaration
+          {
+            strictRecord = {
+              value = "strict";
+              extra = "forbidden";
+            };
+          }
+        ];
+        inherit lib;
+      })
+      .config
+      .strictRecord
     )
     .success;
 
@@ -1302,6 +1375,14 @@
         message = "addCheck validates merged scalar, submodule, and list values";
       }
       {
+        ok =
+          strictSubmodulePublic
+          && freeformSubmodulePublic
+          && nestedSubmodulePublic
+          && strictSubmoduleRejectsUndeclared;
+        message = "submodule hides engine metadata and preserves strict/freeform/nested semantics";
+      }
+      {
         ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean" && f3bDocumentationIsStructured;
         message = "contributable typed documentation surface";
       }
@@ -1405,6 +1486,7 @@ in
           echo "  types.pathInStore — rejects host paths: OK"
           echo "  types.pathInStore — rejects non-paths: OK"
           echo "  types.addCheck — validates merged scalar/submodule/list values: OK"
+          echo "  types.submodule — hides engine metadata and preserves merge semantics: OK"
           echo "  contributable surface exposed, marker inert: OK"
           echo "  operator tier-75 beats package, mkForce beats operator: OK"
           echo "  no operatorModules means no priority lift: OK"
