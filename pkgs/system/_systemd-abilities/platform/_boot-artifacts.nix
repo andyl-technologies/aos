@@ -11,6 +11,7 @@
   rootfs,
   activeImageDbCerts,
   normalArtifactPath,
+  targetPlatform,
 }: let
   config = system.config;
   version = config.aos.system.version;
@@ -55,8 +56,8 @@
     };
   };
   efiName =
-    efiNames.${lib.platform.constraints.cpu}
-    or (throw "systemd-boot has no UEFI executable names for ${lib.system}");
+    efiNames.${targetPlatform.cpu}
+    or (throw "systemd-boot has no UEFI executable names for ${targetPlatform.system}");
 
   espUkiFilename = builtins.baseNameOf normalArtifactPath;
 
@@ -168,7 +169,7 @@
       slotManifest = recoverySlotManifest;
       recoveryCopy = lib.toUpper copy;
       recoveryAbi = recovery.abi;
-      platform = lib.system;
+      platform = targetPlatform.system;
       moduleAbi = config.aos.system.moduleAbi;
     };
   recoveryInitrdA =
@@ -358,7 +359,7 @@ in {
   recoveryUkiAEspPath = "EFI/AOS/recovery-a.efi";
   recoveryUkiBEspPath = "EFI/AOS/recovery-b.efi";
   ukiStubExecutable = "${pkgs.systemd}/lib/systemd/boot/efi/linux${
-    if lib.platform.constraints.cpu == "x86_64"
+    if targetPlatform.cpu == "x86_64"
     then "x64"
     else "aa64"
   }.efi.stub";
