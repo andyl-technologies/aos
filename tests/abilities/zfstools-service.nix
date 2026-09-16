@@ -54,11 +54,11 @@
           };
         }
       ];
-      packageModules = builtins.map packageModule [pkgs.aos-zfs-provider pkgs.zfstools];
+      packageModules = builtins.map packageModule [pkgs.aos-zfs-provider pkgs.systemd pkgs.zfstools];
     };
   disabled = evaluate false;
   enabled = evaluate true;
-  disabledZfstoolsRequests = lib.filterAttrs (name: _: lib.hasPrefix "zfstools:" name) disabled.config.aos.abilities.requests;
+  disabledZfstoolsRequests = lib.filterAttrs (_: request: request.package == "zfstools") disabled.config.aos.abilities.requests;
   requests = enabled.config.aos.abilities.requests;
   outputReference = request: output: {
     _type = "aos-request-output-reference";
@@ -69,7 +69,15 @@
   schedule = requests."zfstools:hourly-schedule".parameters;
   activation = requests."zfstools:zfs-auto-snapshot-hourly-activation".parameters;
   storageReadiness = enabled.config.aos.filesystems.zfs.readinessResources;
-  datasetRequests = builtins.filter (name: lib.hasPrefix "aos-zfs-provider:dataset-" name) (builtins.attrNames requests);
+  datasetRequests = builtins.attrNames (lib.filterAttrs
+    (_: request:
+      request.package == "aos-zfs-provider"
+      && request.localKey
+      == "dataset-${lib.abilities.identityKeyFor "aos.zfs.dataset-request/v1" {
+        pool = "tank";
+        dataset = "data";
+      }}")
+    requests);
   datasetRequest = builtins.head datasetRequests;
   portableOptionTree = options:
     builtins.all

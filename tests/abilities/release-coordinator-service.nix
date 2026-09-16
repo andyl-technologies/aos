@@ -47,6 +47,11 @@
       ];
       packageModules = [
         {
+          name = "systemd";
+          inherit (pkgs.systemd) version;
+          module = pkgs.systemd.module + "/module.nix";
+        }
+        {
           name = "aos";
           inherit (pkgs.aos) version;
           module = pkgs.aos.module + "/module.nix";
@@ -63,6 +68,21 @@
     });
   abilities = evaluated: evaluated.config.aos.abilities;
   requests = evaluated: (abilities evaluated).requests;
+  releaseCoordinatorRequests = evaluated:
+    lib.filterAttrs
+    (_: request:
+      request.package == "aos"
+      && !(builtins.elem request.localKey packageProfileRequestKeys))
+    (requests evaluated);
+  packageProfileRequestKeys = [
+    "package-profile-convergence-conditions"
+    "package-profile-convergence-dependencies"
+    "package-profile-convergence-environment"
+    "package-profile-convergence-isolation"
+    "package-profile-convergence-lifecycle"
+    "package-profile-convergence-linux_isolation"
+    "package-profile-convergence-readiness"
+  ];
   request = name: (requests enabled)."aos:${name}".parameters;
   assertionsHold = evaluated:
     builtins.all (assertion: assertion.assertion) evaluated.config.assertions;
@@ -119,7 +139,7 @@ in
   assert !assertionsHold missingPrograms;
   assert !assertionsHold sharedCredential;
   assert !(abilities disabled).instances ? "aos:release-coordinator";
-  assert (abilities disabled).requests == {};
+  assert releaseCoordinatorRequests disabled == {};
   assert (abilities disabled).requirementTemplates == (abilities enabled).requirementTemplates;
   assert builtins.all
   (name: builtins.hasAttr name (abilities enabled).requirementTemplates)
@@ -262,8 +282,8 @@ in
     (builtins.head (request "alert-${failedOperation}-lifecycle").start).executable.arguments
     == ["--fixed" failedOperation])
   failedOperations;
-  assert !(lib.hasInfix "systemd" (builtins.toJSON (requests enabled)));
-  assert !(lib.hasInfix ".service" (builtins.toJSON (requests enabled)));
+  assert !(lib.hasInfix "systemd" (builtins.toJSON (releaseCoordinatorRequests enabled)));
+  assert !(lib.hasInfix ".service" (builtins.toJSON (releaseCoordinatorRequests enabled)));
   assert !(lib.hasInfix "/nix/store" (builtins.toJSON (requests enabled)));
   assert (request "release-lifecycle").start
   == [

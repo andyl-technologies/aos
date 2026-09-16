@@ -32,6 +32,11 @@
       ];
       packageModules = [
         {
+          name = "systemd";
+          inherit (pkgs.systemd) version;
+          module = pkgs.systemd.module + "/module.nix";
+        }
+        {
           name = "docker-engine";
           inherit (pkgs.docker-engine) version;
           module = pkgs.docker-engine.module + "/module.nix";
@@ -54,6 +59,23 @@
     (option: lib.concatStringsSep "." option.path)
     packageContract.option_declarations;
   requests = enabled.config.aos.abilities.requests;
+  dockerRequests = evaluated:
+    lib.filterAttrs
+    (_: request: request.package == "docker-engine")
+    evaluated.config.aos.abilities.requests;
+  dockerRequirements = evaluated:
+    builtins.listToAttrs (builtins.map
+      (localKey: let
+        name = "docker-engine:${localKey}";
+      in {
+        inherit name;
+        value = evaluated.config.aos.abilities.requirementTemplates.${name};
+      })
+      (builtins.attrNames packageProjection.requirementTemplates));
+  dockerInstances = evaluated:
+    lib.filterAttrs
+    (_: instance: instance.package == "docker-engine")
+    evaluated.config.aos.abilities.instances;
   lifecycle = requests."docker-engine:docker-lifecycle".parameters;
   start = (builtins.head lifecycle.start).executable;
 in
@@ -100,13 +122,13 @@ in
     path = "module.nix";
   };
   assert pkgs.docker-engine ? module;
-  assert disabled.config.aos.abilities.requests == {};
-  assert disabled.config.aos.abilities.instances == {};
-  assert builtins.attrNames disabled.config.aos.abilities.requirementTemplates
+  assert dockerRequests disabled == {};
+  assert dockerInstances disabled == {};
+  assert builtins.attrNames (dockerRequirements disabled)
   == builtins.map
   (name: "docker-engine:${name}")
   (builtins.attrNames packageProjection.requirementTemplates);
-  assert builtins.attrNames requests
+  assert builtins.attrNames (dockerRequests enabled)
   == [
     "docker-engine:docker-data-storage"
     "docker-engine:docker-dependencies"

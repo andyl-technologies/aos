@@ -70,6 +70,23 @@
     (option: lib.concatStringsSep "." option.path)
     packageContract.option_declarations;
   requests = baseline.config.aos.abilities.requests;
+  zramRequests = evaluated:
+    lib.filterAttrs
+    (_: request: request.package == "zram-generator")
+    evaluated.config.aos.abilities.requests;
+  zramInstances = evaluated:
+    lib.filterAttrs
+    (_: instance: instance.package == "zram-generator")
+    evaluated.config.aos.abilities.instances;
+  zramRequirements = evaluated:
+    builtins.listToAttrs (builtins.map
+      (localKey: let
+        name = "zram-generator:${localKey}";
+      in {
+        inherit name;
+        value = evaluated.config.aos.abilities.requirementTemplates.${name};
+      })
+      (builtins.attrNames packageProjection.requirementTemplates));
   filesystemRequirement =
     baseline.config.aos.abilities.requirementTemplates."zram-generator:filesystem-entry";
   packagedUnitRequirement =
@@ -124,9 +141,9 @@ in
     path = "module.nix";
   };
   assert pkgs.zram-generator ? module;
-  assert disabled.config.aos.abilities.instances == {};
-  assert disabled.config.aos.abilities.requests == {};
-  assert builtins.attrNames disabled.config.aos.abilities.requirementTemplates
+  assert zramInstances disabled == {};
+  assert zramRequests disabled == {};
+  assert builtins.attrNames (zramRequirements disabled)
   == [
     "zram-generator:configuration-materialization"
     "zram-generator:filesystem-entry"
@@ -136,7 +153,7 @@ in
   assert filesystemRequirement.methods == ["materialize" "observe" "release"];
   assert packagedUnitRequirement.methods == ["observe"];
   assert builtins.all (assertion: assertion.assertion) baseline.config.assertions;
-  assert builtins.attrNames requests
+  assert builtins.attrNames (zramRequests baseline)
   == [
     "zram-generator:zram-generator-config"
     "zram-generator:zram-generator-configuration"

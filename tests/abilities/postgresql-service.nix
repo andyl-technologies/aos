@@ -41,6 +41,11 @@
       ];
       packageModules = [
         {
+          name = "systemd";
+          inherit (pkgs.systemd) version;
+          module = pkgs.systemd.module + "/module.nix";
+        }
+        {
           name = "postgresql";
           module = pkgs.postgresql.module + "/module.nix";
         }
@@ -82,6 +87,14 @@
   standbyAbilities = standby.config.aos.abilities;
   standaloneRequests = builtins.attrNames standaloneAbilities.requests;
   standbyRequests = builtins.attrNames standbyAbilities.requests;
+  postgresqlRequests = evaluated:
+    lib.filterAttrs
+    (_: request: request.package == "postgresql")
+    evaluated.config.aos.abilities.requests;
+  postgresqlInstances = evaluated:
+    lib.filterAttrs
+    (_: instance: instance.package == "postgresql")
+    evaluated.config.aos.abilities.instances;
   mainStorage = standaloneAbilities.requests."postgresql:main-storage".parameters.mounts;
   serverSource = standbyAbilities.requests."postgresql:server-configuration".parameters.source;
   missingBootstrap = evaluate {enable = true;};
@@ -107,8 +120,8 @@ in
   assert !assertionsHold missingStandby;
   assert !assertionsHold invalidTls;
   assert !assertionsHold reservedSetting;
-  assert disabledAbilities.instances == {};
-  assert disabledAbilities.requests == {};
+  assert postgresqlInstances disabled == {};
+  assert postgresqlRequests disabled == {};
   assert builtins.elem "postgresql:initialize-lifecycle" standaloneRequests;
   assert builtins.elem "postgresql:main-lifecycle" standaloneRequests;
   assert builtins.elem "postgresql:credential-bootstrap-superuser-password" standaloneRequests;

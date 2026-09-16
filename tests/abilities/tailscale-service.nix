@@ -32,6 +32,11 @@
       ];
       packageModules = [
         {
+          name = "systemd";
+          inherit (pkgs.systemd) version;
+          module = pkgs.systemd.module + "/module.nix";
+        }
+        {
           name = "tailscale";
           inherit (pkgs.tailscale) version;
           module = pkgs.tailscale.module + "/module.nix";
@@ -52,6 +57,14 @@
     (option: lib.concatStringsSep "." option.path)
     packageContract.option_declarations;
   requests = enabled.config.aos.abilities.requests;
+  tailscaleRequests = evaluated:
+    lib.filterAttrs
+    (_: request: request.package == "tailscale")
+    evaluated.config.aos.abilities.requests;
+  tailscaleInstances = evaluated:
+    lib.filterAttrs
+    (_: instance: instance.package == "tailscale")
+    evaluated.config.aos.abilities.instances;
   lifecycle = requests."tailscale:tailscaled-lifecycle".parameters;
 in
   assert enabled.config.environment.systemPackages
@@ -96,8 +109,8 @@ in
     path = "module.nix";
   };
   assert pkgs.tailscale ? module;
-  assert disabled.config.aos.abilities.instances == {};
-  assert disabled.config.aos.abilities.requests == {};
+  assert tailscaleInstances disabled == {};
+  assert tailscaleRequests disabled == {};
   assert enabled.config.aos.abilities.instances ? "tailscale:service";
   assert requests ? "tailscale:network-readiness";
   assert requests ? "tailscale:tunnel-device";
