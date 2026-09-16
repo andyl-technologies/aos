@@ -1,30 +1,44 @@
-##! modules/image/container.nix — Per-system OCI artifact projection
+##! Target-neutral selection of a package-owned container artifact backend.
 ##!
-##! Associates publishable OCI artifacts with the same evaluated system variant
-##! that produces disk images. The OCI builder consumes an explicit userland
-##! projection; it never packages the bootable system toplevel, kernel, initrd,
-##! bootloader, or other disk-only state.
+##! The base module knows only the selected backend value and checked package
+##! projections. OCI layout, runtime initialization, and platform mapping stay
+##! inside the backend package.
 {
   config,
+  checkedPackageProjections ? [],
   lib,
   pkgs,
   systemName,
   ...
 }: let
-  cfg = config.aos.containers;
-  containerSchema = import ../../lib/containers/schema.nix;
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (pkgs.buildPackages) mkDerivation coreutils findutils gzip jq tar;
-    abilityContractValidator = pkgs.buildPackages.aos-ability-contract-validator;
+  cfg = config.aos.containers or null;
+  enabled = cfg != null && cfg.enable;
+  backend =
+    if enabled
+    then cfg.backend
+    else null;
+  targetPlatform = {
+    os = pkgs.stdenv.hostPlatform.constraints.os;
+    cpu = pkgs.stdenv.hostPlatform.constraints.cpu;
+    abi = pkgs.stdenv.hostPlatform.constraints.abi;
+    features = pkgs.stdenv.hostPlatform.constraints.features;
   };
-  defaultAosDefinition =
-    (import ../../containers/aos.nix {
-      inherit lib pkgs;
-      goldenRoots = config.environment.systemPackages;
-      aosSystem = pkgs.stdenv.hostPlatform.system;
-    })
-    .config;
+  mkReferenceGraph = import ../../lib/build/reference-graph.nix {
+    inherit lib;
+    inherit (pkgs.buildPackages) mkDerivation coreutils jq;
+  };
+  runtimeClosureAudit = args:
+    import ../../lib/build/runtime-closure-audit.nix args;
+  defaultDefinition =
+    if enabled
+    then
+      (backend.defaultDefinition {
+        inherit lib pkgs targetPlatform;
+        goldenRoots = config.environment.systemPackages;
+        evidenceOverrides = [];
+      })
+      .config
+    else null;
   systemIdentity = {
     inherit
       (config.aos.system)
@@ -44,103 +58,60 @@
         ;
     };
   };
-  definitionAssertions = definition:
-    definition.assertions
-    ++ [
+  builtContainers =
+    if !enabled
+    then {}
+    else
+      lib.mapAttrs
+      (name: container:
+        backend.buildContainer {
+          inherit
+            lib
+            pkgs
+            container
+            systemIdentity
+            mkReferenceGraph
+            runtimeClosureAudit
+            ;
+          buildPackages = pkgs.buildPackages;
+          packageProjections = checkedPackageProjections;
+          definitionAttribute = "systems.${systemName}.build.containers.${name}";
+        })
+      cfg.definitions;
+in {
+  options.system.build = {
+    containers = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = {};
+      readOnly = true;
+      description = "Container artifacts derived by the selected package backend.";
+    };
+
+    defaultContainer = lib.mkOption {
+      type = lib.types.nullOr lib.types.anything;
+      default = null;
+      readOnly = true;
+      description = "Default container artifact associated with this system variant.";
+    };
+  };
+
+  config = lib.mkIf enabled {
+    aos.containers.definitions.aos = lib.mkDefault defaultDefinition;
+
+    assertions = [
       {
-        assertion = definition.platform.aosSystem == pkgs.stdenv.hostPlatform.system;
-        message = "container platform.aosSystem must match the evaluated package-set target";
+        assertion = (backend._type or null) == "aos-package-artifact-backend";
+        message = "container artifacts require one selected package-owned backend";
       }
       {
-        assertion =
-          definition.platform.architecture
-          == (
-            if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
-            then "amd64"
-            else "arm64"
-          );
-        message = "container OCI architecture must match the evaluated AOS target";
+        assertion = builtins.match "[A-Za-z_][A-Za-z0-9_-]*" systemName != null;
+        message = "system variant names with containers must be canonical Nix attribute identifiers";
+      }
+      {
+        assertion = cfg.default == null || builtins.hasAttr cfg.default cfg.definitions;
+        message = "aos.containers.default must name an enabled container definition";
       }
     ];
-  checkedDefinition = name: definition: let
-    failures = builtins.filter (assertion: !assertion.assertion) (definitionAssertions definition);
-    checked =
-      if failures == []
-      then definition
-      else
-        throw ''
-          Container '${name}' failed evaluation:
-          ${lib.concatStringsSep "\n" (map (failure: "  - ${failure.message}") failures)}
-        '';
-  in
-    builtins.seq checked checked;
-  builtContainers =
-    lib.mapAttrs
-    (name: definition: let
-      container = checkedDefinition name definition;
-    in
-      import ../../lib/containers/build.nix {
-        inherit lib pkgs container oci systemIdentity;
-        buildPkgs = pkgs.buildPackages;
-        definitionAttribute = "systems.${systemName}.build.containers.${name}";
-      })
-    cfg.definitions;
-in {
-  options.aos.containers = {
-    enable = lib.mkOption {
-      type = lib.types.bool;
-      default = pkgs.stdenv.hostPlatform.isLinux;
-      description = "Whether this system evaluation exposes associated OCI container artifacts.";
-    };
-
-    default = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = "aos";
-      description = "Name of the container associated with this system variant by default.";
-    };
-
-    definitions = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule containerSchema);
-      default = {};
-      internal = true;
-      description = "Strict OCI artifact definitions evaluated with this system variant.";
-    };
-  };
-
-  options.system.build.containers = lib.mkOption {
-    type = lib.types.attrsOf lib.types.anything;
-    default = {};
-    readOnly = true;
-    description = "OCI artifacts derived from this evaluated system configuration.";
-  };
-
-  options.system.build.defaultContainer = lib.mkOption {
-    type = lib.types.nullOr lib.types.anything;
-    default = null;
-    readOnly = true;
-    description = "Default OCI artifact associated with this system variant.";
-  };
-
-  config = lib.mkIf cfg.enable {
-    aos.containers.definitions.aos = defaultAosDefinition;
-
-    assertions =
-      [
-        {
-          assertion = builtins.match "[A-Za-z_][A-Za-z0-9_-]*" systemName != null;
-          message = "system variant names with containers must be canonical Nix attribute identifiers";
-        }
-        {
-          assertion = cfg.default == null || builtins.hasAttr cfg.default cfg.definitions;
-          message = "aos.containers.default must name an enabled container definition";
-        }
-      ]
-      ++ builtins.concatMap
-      (name:
-        map
-        (assertion: assertion // {message = "container '${name}': ${assertion.message}";})
-        (definitionAssertions cfg.definitions.${name}))
-      (builtins.attrNames cfg.definitions);
 
     system.build.containers = builtContainers;
     system.build.defaultContainer =

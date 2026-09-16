@@ -1,4 +1,4 @@
-##! lib/containers/schema.nix — Typed scratch-container definition schema
+##! Package-owned typed scratch-container definition schema.
 ##!
 ##! This module describes build inputs and OCI runtime metadata without
 ##! evaluating an AOS bootable system. The schema is deliberately closed: it

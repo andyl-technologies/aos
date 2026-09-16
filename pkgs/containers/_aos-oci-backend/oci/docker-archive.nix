@@ -1,4 +1,4 @@
-##! lib/build/oci/docker-archive.nix -- deterministic Docker load archive.
+##! Package-owned deterministic Docker load archive.
 ##!
 ##! Converts one platform image without invoking Docker, Podman, or BuildKit.
 ##! Layer tar streams and config bytes are taken from the already-verified OCI

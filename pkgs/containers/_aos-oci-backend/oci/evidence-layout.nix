@@ -1,4 +1,4 @@
-##! lib/build/oci/evidence-layout.nix -- Unsigned container evidence graph
+##! Package-owned unsigned OCI evidence graph.
 ##!
 ##! Produces deterministic OCI artifact manifests for the realized Nix closure,
 ##! SPDX SBOM, corresponding-source inventory, license report, and in-toto

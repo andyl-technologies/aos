@@ -14,8 +14,7 @@
   publicationInputs,
   publicationInputsRepeat,
   schedulerSystem,
-  armExecution,
-  amdExecution,
+  targetExecution,
   platformChecks,
 }:
 pkgs.mkDerivation {
@@ -151,8 +150,7 @@ pkgs.mkDerivation {
           --arg evidenceArchiveSha256 "$(sha256sum ${evidence}/evidence.oci.tar | cut -d ' ' -f 1)" \
           --arg signatureInputSha256 "$(sha256sum ${evidence}/signature-input.json | cut -d ' ' -f 1)" \
           --arg schedulerSystem ${lib.escapeShellArg schedulerSystem} \
-          --arg armExecution ${lib.escapeShellArg armExecution} \
-          --arg amdExecution ${lib.escapeShellArg amdExecution} '
+          --argjson targetExecution ${lib.escapeShellArg (builtins.toJSON targetExecution)} '
             {
               schema: $schema,
               systems: ["aarch64-linux", "x86_64-linux"],
@@ -163,16 +161,11 @@ pkgs.mkDerivation {
               builderRequirement: {
                 schedulerSystem: $schedulerSystem,
                 targetSystems: ["aarch64-linux", "x86_64-linux"],
-                targetExecution: {
-                  "aarch64-linux": $armExecution,
-                  "x86_64-linux": $amdExecution
-                },
+                targetExecution: $targetExecution,
                 requiresConfiguredBinfmt: (
-                  [
-                    {system: "aarch64-linux", mode: $armExecution},
-                    {system: "x86_64-linux", mode: $amdExecution}
-                  ]
-                  | map(select(.mode == "qemu-binfmt") | .system)
+                  $targetExecution
+                  | to_entries
+                  | map(select(.value == "qemu-binfmt") | .key)
                 ),
                 nativeTargetBuilderRequired: false
               },

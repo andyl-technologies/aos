@@ -1,4 +1,4 @@
-##! lib/containers/init-script.nix -- daemonless container initialization.
+##! Linux daemonless-container initialization owned by the OCI backend.
 ##!
 ##! Returns the exact script bytes used as the `aos` container entrypoint.  A
 ##! compile-time root prefix exists only so the focused derivation test can run

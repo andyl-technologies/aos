@@ -1,4 +1,4 @@
-##! lib/build/oci/common.nix -- shared OCI builder invariants.
+##! Shared invariants for the package-owned OCI builder.
 ##!
 ##! This file owns the byte-level archive ABI and pure validation used by every
 ##! OCI builder.  Keeping the tar command in one place is intentional: a flag,

@@ -1,4 +1,4 @@
-##! lib/build/oci/image-layout.nix -- OCI image layout and archive assembly.
+##! Package-owned OCI image layout and archive assembly.
 ##!
 ##! The assembler treats layer outputs as untrusted build inputs: it verifies
 ##! descriptor syntax, size, SHA-256, and DiffID shape before copying blobs.  It

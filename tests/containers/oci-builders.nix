@@ -8,8 +8,12 @@
   pkgs,
   lib,
 }: let
-  oci = import ../../lib/build/oci {
+  mkReferenceGraph = import ../../lib/build/reference-graph.nix {
     inherit lib;
+    inherit (pkgs) mkDerivation coreutils jq;
+  };
+  oci = import ../../pkgs/containers/_aos-oci-backend/oci {
+    inherit lib mkReferenceGraph;
     inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
     abilityContractValidator = pkgs.aos-ability-contract-validator;
   };
@@ -121,9 +125,31 @@
     allowTestArtifacts = true;
   };
   abilityPackageSmokeProvider = pkgs.ability-package-smoke-provider;
-  abilityPackageRegistry = {
-    ability-package-smoke = pkgs.ability-package-smoke;
-    ability-package-smoke-provider = abilityPackageSmokeProvider;
+  selectorKey = selector:
+    builtins.toJSON (builtins.removeAttrs selector ["_type"]);
+  retainedSmokeOutputs = {
+    ${selectorKey (lib.abilities.packageOutput {package = "ability-package-smoke";})} = pkgs.ability-package-smoke;
+    ${selectorKey (lib.abilities.packageOutput {package = "ability-package-smoke-provider";})} = abilityPackageSmokeProvider;
+    ${selectorKey (lib.abilities.packageOutput {
+      package = "self";
+      output = "module";
+    })} = pkgs.ability-package-smoke.module;
+  };
+  smokePackageProjection = {
+    _type = "aos-checked-package-projection";
+    payload = pkgs.ability-package-smoke;
+    inherit (pkgs.ability-package-smoke) contract;
+    origin = {
+      _type = "aos-authenticated-package-origin";
+      package = {
+        name = pkgs.ability-package-smoke.pname;
+        inherit (pkgs.ability-package-smoke) version;
+        document = builtins.toString pkgs.ability-package-smoke.contract.document;
+      };
+      packageArtifactFor = selector:
+        retainedSmokeOutputs.${selectorKey selector}
+        or (throw "fixture origin did not retain selector ${selector.package}:${selector.output}");
+    };
   };
   abilityContractFor = {
     architecture,
@@ -135,8 +161,7 @@
         inherit architecture;
         os = "linux";
       };
-      packageRegistry = abilityPackageRegistry;
-      packageRoots = [pkgs.ability-package-smoke];
+      packageProjections = [smokePackageProjection];
       runtimeRoots = [applicationRoot pkgs.ability-package-smoke];
     };
   amd64AbilityContract = abilityContractFor {architecture = "amd64";};
@@ -294,8 +319,8 @@
       touch "''${outputs[out]}/semantic-validator-observed-forged-marker"
     fi
   '';
-  probeOci = import ../../lib/build/oci {
-    inherit lib;
+  probeOci = import ../../pkgs/containers/_aos-oci-backend/oci {
+    inherit lib mkReferenceGraph;
     inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
     abilityContractValidator = semanticValidationProbe;
   };
@@ -430,8 +455,7 @@
       architecture = "amd64";
       os = "linux";
     };
-    packageRegistry = abilityPackageRegistry;
-    packageRoots = [pkgs.ability-package-smoke];
+    packageProjections = [smokePackageProjection];
     runtimeRoots = [application];
   });
   aggregateContractMismatch = tryBuilder (oci.mkMultiPlatformIndex {
@@ -547,7 +571,40 @@
     architecture = "riscv64";
     vendor = "forged";
   };
+  localHelperSelector = lib.abilities.packageOutput {
+    package = "helper";
+  };
+  originFixture = name: payload: helper: {
+    _type = "aos-checked-package-projection";
+    inherit payload;
+    contract = {};
+    origin = {
+      _type = "aos-authenticated-package-origin";
+      package = {
+        inherit name;
+        version = "1";
+        document = "/nix/store/${name}-contract";
+      };
+      packageArtifactFor = selector:
+        if selector == localHelperSelector
+        then helper
+        else throw "fixture origin received an unretained selector";
+    };
+  };
+  firstOriginHelper = pkgs.runCommand "first-origin-helper" {} ''
+    mkdir -p "$out"
+  '';
+  secondOriginHelper = pkgs.runCommand "second-origin-helper" {} ''
+    mkdir -p "$out"
+  '';
+  firstOrigin = originFixture "first-package" base firstOriginHelper;
+  secondOrigin = originFixture "second-package" application secondOriginHelper;
+  firstResolvedHelper = oci.checkedPackageOrigin.resolve firstOrigin localHelperSelector;
+  secondResolvedHelper = oci.checkedPackageOrigin.resolve secondOrigin localHelperSelector;
   evalContracts = assert validStickyMode.success;
+  assert firstResolvedHelper == firstOriginHelper;
+  assert secondResolvedHelper == secondOriginHelper;
+  assert firstResolvedHelper != secondResolvedHelper;
   assert !(amd64AbilityContract ? outPath);
   assert builtins.isAttrs amd64AbilityContract.artifact;
   assert amd64AbilityContract.artifact ? outPath;

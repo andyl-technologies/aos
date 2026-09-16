@@ -1,4 +1,4 @@
-##! lib/containers/package-evidence.nix -- Evaluated package evidence catalog
+##! Package-owned evaluated OCI package evidence.
 ##!
 ##! Maps every named AOS package output to the package metadata and source
 ##! identity still available at evaluation time. A later realized-graph join

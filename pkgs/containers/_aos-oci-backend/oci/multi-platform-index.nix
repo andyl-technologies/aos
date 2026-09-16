@@ -1,4 +1,4 @@
-##! lib/build/oci/multi-platform-index.nix -- multi-platform OCI indexes.
+##! Package-owned multi-platform OCI index assembly.
 ##!
 ##! This builder composes already-built platform manifests without unpacking a
 ##! layer.  Platform descriptors are sorted by canonical platform identity, and

@@ -1,4 +1,4 @@
-##! lib/build/oci/metadata-layer.nix -- deterministic authored root metadata.
+##! Package-owned deterministic OCI root metadata.
 ##!
 ##! Metadata is intentionally described as typed directories, text files, and
 ##! symlinks.  There is no arbitrary source-tree import: internal callers may

@@ -1,4 +1,4 @@
-##! containers/aos.nix — Initial AOS base-container definition
+##! AOS base-container definition owned by the OCI backend package.
 ##!
 ##! The baked roots are inherited from the production server golden image.
 ##! This is analogous to a distribution base image: it contains the standard
@@ -9,20 +9,8 @@
   pkgs,
   goldenRoots,
   evidenceOverrides ? [],
-  aosSystem,
+  platform,
 }: let
-  hostSystem = pkgs.stdenv.hostPlatform.system;
-  validatedSystem =
-    if aosSystem == hostSystem
-    then hostSystem
-    else throw "containers.aos: requested target '${aosSystem}' does not match package-set target '${hostSystem}'";
-  architecture =
-    if validatedSystem == "x86_64-linux"
-    then "amd64"
-    else if validatedSystem == "aarch64-linux"
-    then "arm64"
-    else throw "containers.aos: unsupported AOS package-set target '${validatedSystem}'";
-
   coreRoots = [pkgs.glibc pkgs.gcc-libs pkgs.ca-certificates];
   shellRoots = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep pkgs.sed pkgs.gawk];
   # The CLI is intentionally split into independently portable outputs.  Keep
@@ -165,11 +153,7 @@ in {
       stopSignal = "SIGTERM";
     };
 
-    platform = {
-      os = "linux";
-      inherit architecture;
-      aosSystem = validatedSystem;
-    };
+    platform = platform // {aosSystem = pkgs.stdenv.hostPlatform.system;};
 
     packageManagement = {
       enable = true;
@@ -186,7 +170,7 @@ in {
       "org.opencontainers.image.vendor" = "Andyl, Inc.";
       "org.opencontainers.image.source" = "https://github.com/andyl-technologies/aos";
       "dev.andyl.aos.container.definition" = "aos";
-      "dev.andyl.aos.system" = validatedSystem;
+      "dev.andyl.aos.system" = pkgs.stdenv.hostPlatform.system;
     };
     publication = {
       repository = "aos";
