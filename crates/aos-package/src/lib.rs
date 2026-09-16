@@ -518,9 +518,6 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: ApmRegistryCommand,
     },
-    /// Hidden: produce the host package-attestation quote for the service controller.
-    #[command(name = "__attest-service", hide = true)]
-    AttestService,
     /// Hidden: drive the on-host resolve/evaluate configuration fixpoint.
     ///
     /// Called only by `aos-eval.service`. Renders the working set into
@@ -1074,11 +1071,9 @@ impl PackageCommand {
     pub fn is_runtime_internal(&self) -> bool {
         matches!(
             self,
-            PackageCommand::AttestService
-                | PackageCommand::Attest {
-                    command: AttestCommand::ReadUkiIdentitySection { .. },
-                }
-                | PackageCommand::Eval { .. }
+            PackageCommand::Attest {
+                command: AttestCommand::ReadUkiIdentitySection { .. },
+            } | PackageCommand::Eval { .. }
                 | PackageCommand::EvalRetained { .. }
                 | PackageCommand::EvalService { .. }
                 | PackageCommand::Materialize { .. }
@@ -1141,7 +1136,6 @@ impl PackageCommand {
             | PackageCommand::Rollback { .. }
             | PackageCommand::Credential(..)
             | PackageCommand::Registry { .. }
-            | PackageCommand::AttestService
             | PackageCommand::Eval { .. }
             | PackageCommand::Materialize { .. }
             | PackageCommand::Config { .. } => Portable,
@@ -3583,10 +3577,6 @@ pub async fn run(
         return result;
     }
 
-    if let PackageCommand::AttestService = command {
-        return run_package_attestation_service();
-    }
-
     if let PackageCommand::Attest {
         command:
             AttestCommand::Quote {
@@ -3998,9 +3988,6 @@ pub async fn run(
         }
         PackageCommand::AbilityStageReceive { .. } => {
             unreachable!("AbilityStageReceive is handled before ApmConfig::load")
-        }
-        PackageCommand::AttestService => {
-            unreachable!("AttestService is handled before ApmConfig::load")
         }
     }
 }
@@ -4965,7 +4952,13 @@ fn run_produce_package_attestation_quote(
     Ok(())
 }
 
-fn run_package_attestation_service() -> Result<()> {
+/// Produces the host package-attestation quote for the package-owned service.
+///
+/// # Errors
+///
+/// Returns an error when TPM discovery, quote production, or durable result
+/// publication fails.
+pub fn run_package_attestation_service() -> Result<()> {
     let nonce_path = Path::new("/run/aos-attest/nonce");
     let event_log_path = Path::new("/run/log/aos-packages.cel");
     let output_dir = Path::new("/var/lib/aos-attest/quote");

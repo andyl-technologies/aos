@@ -25,7 +25,6 @@ mod provider;
 
 pub(crate) use ability::NativeAbRolloutBackend;
 pub use boot_commit::run_from_process as run_boot_commit_from_process;
-pub(crate) use boot_commit::verify_rollout_boot_commit;
 pub(crate) use model::{
     AbRolloutRequest, AbRolloutTerminalRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity,
 };

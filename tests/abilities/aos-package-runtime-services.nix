@@ -32,6 +32,11 @@
           version = pkgs.aos.version;
           module = pkgs.aos.module + "/module.nix";
         }
+        {
+          name = "systemd";
+          version = pkgs.systemd.version;
+          module = pkgs.systemd.module + "/module.nix";
+        }
       ];
     };
   disabled = evaluate {enabled = false;};
@@ -47,13 +52,13 @@
     inherit request output;
   };
   profileLifecycle = requests."aos:package-profile-convergence-lifecycle".parameters;
-  quoteLifecycle = requests."aos:aos-attest-lifecycle".parameters;
+  quoteLifecycle = requests."systemd:aos-attest-lifecycle".parameters;
   snapshotImplementation = enabled.config.aos.abilities.implementations."aos:synchronized-registry-snapshot";
 in
   assert !(disabledRequests ? "aos:package-profile-specification");
   assert disabledRequests ? "aos:package-profile-convergence-lifecycle";
-  assert disabledRequests ? "aos:aos-attest-lifecycle";
-  assert initrd.config.aos.abilities.requests == {};
+  assert disabledRequests ? "systemd:aos-attest-lifecycle";
+  assert !(initrd.config.aos.abilities.requests ? "systemd:aos-attest-lifecycle");
   assert enabled.config.aos.abilities.instances."aos:synchronized-registry-snapshot".implementation
   == "aos:synchronized-registry-snapshot";
   assert !(initrd.config.aos.abilities.instances ? "aos:synchronized-registry-snapshot");
@@ -93,15 +98,14 @@ in
     {
       executable = {
         artifact = lib.abilities.packageOutput {
-          package = "aos";
-          output = "packageRuntime";
+          package = "aos-systemd-provider";
         };
-        entry_point = "bin/aos-package-runtime";
-        arguments = ["__attest-service"];
+        entry_point = "bin/aos-systemd-attestation-provider";
+        arguments = [];
       };
       ignore_failure = false;
     }
   ];
-  assert requests."aos:aos-attest-dependencies".parameters.prerequisites
+  assert requests."systemd:aos-attest-dependencies".parameters.prerequisites
   == [(resultOf "aos:package-profile-convergence-lifecycle" "service-resource")];
   assert !(enabled.config ? systemd); true

@@ -10,6 +10,7 @@ aos-ability-model.workspace = true
 aos-contract.workspace = true
 aos-net = { workspace = true, default-features = false }
 aos-provider-protocol.workspace = true
+aos-package.workspace = true
 aos-systemd.workspace = true
 hex.workspace = true
 serde.workspace = true

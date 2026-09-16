@@ -2351,7 +2351,12 @@ fn event_log_line(sequence_number: usize, event: &MeasurementEvent) -> Result<St
 }
 
 fn trusted_systemd_pcrextend_path() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var(PCR_EXTEND_ENV) {
+    if let Ok(path) = std::env::var(PCR_EXTEND_ENV).or_else(|error| match error {
+        std::env::VarError::NotPresent => option_env!("AOS_SYSTEMD_PCREXTEND")
+            .map(str::to_owned)
+            .ok_or(std::env::VarError::NotPresent),
+        error => Err(error),
+    }) {
         if path.is_empty() {
             bail!("{PCR_EXTEND_ENV} must not be empty");
         }
@@ -2375,10 +2380,26 @@ fn trusted_systemd_pcrextend_path() -> Result<PathBuf> {
 }
 
 fn trusted_tpm2_tool_path(env_name: &str, bin_name: &str) -> Result<PathBuf> {
-    let path = std::env::var(env_name).with_context(|| {
-        format!("{env_name} is not configured for package attestation quote production")
-    })?;
+    let path = std::env::var(env_name)
+        .ok()
+        .or_else(|| compiled_tpm2_tool_path(env_name).map(str::to_owned))
+        .with_context(|| {
+            format!("{env_name} is not configured for package attestation quote production")
+        })?;
     validate_trusted_tpm2_tool_path(env_name, bin_name, &path)
+}
+
+fn compiled_tpm2_tool_path(env_name: &str) -> Option<&'static str> {
+    match env_name {
+        TPM2_CREATEEK_ENV => option_env!("AOS_TPM2_CREATEEK"),
+        TPM2_CREATEAK_ENV => option_env!("AOS_TPM2_CREATEAK"),
+        TPM2_READPUBLIC_ENV => option_env!("AOS_TPM2_READPUBLIC"),
+        TPM2_QUOTE_ENV => option_env!("AOS_TPM2_QUOTE"),
+        TPM2_PCRREAD_ENV => option_env!("AOS_TPM2_PCRREAD"),
+        TPM2_CHECKQUOTE_ENV => option_env!("AOS_TPM2_CHECKQUOTE"),
+        TPM2_FLUSHCONTEXT_ENV => option_env!("AOS_TPM2_FLUSHCONTEXT"),
+        _ => None,
+    }
 }
 
 fn tpm2_tcti() -> Result<Option<String>> {
