@@ -35,8 +35,7 @@ pub struct PlatformEnv {
     pub platform_id: String,
     /// `METADATA_DIR` — the mounted offline-channel directory, if any.
     pub metadata_dir: Option<String>,
-    /// Whether the platform needs network (the cloud IMDS gate). Rendered as
-    /// `NEED_NETWORK=1` and mirrored by an adjacent `need-network` flag file.
+    /// Whether the platform needs network for metadata acquisition.
     pub need_network: bool,
 }
 
@@ -121,22 +120,13 @@ impl Stash {
         &self.dir
     }
 
-    /// Write `platform.env`, and touch/remove the adjacent `need-network` flag
-    /// the cloud-network gate keys off.
+    /// Writes the private `platform.env` acquisition handoff.
     ///
     /// # Errors
     ///
     /// Returns `Err` on any write failure.
     pub fn write_platform_env(&self, env: &PlatformEnv) -> Result<()> {
-        std::fs::write(self.dir.join("platform.env"), env.render())
-            .context("writing platform.env")?;
-        let flag = self.dir.join("need-network");
-        if env.need_network {
-            std::fs::write(&flag, b"1").context("writing need-network flag")?;
-        } else if flag.exists() {
-            let _ = std::fs::remove_file(&flag);
-        }
-        Ok(())
+        std::fs::write(self.dir.join("platform.env"), env.render()).context("writing platform.env")
     }
 
     /// Read `platform.env` from the stash.
