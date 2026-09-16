@@ -935,31 +935,6 @@ pub(crate) fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
     bail!("credential ciphertext contains unsupported characters")
 }
 
-pub(crate) fn validate_unit_name(unit: &str) -> Result<()> {
-    let has_known_suffix = [
-        ".automount",
-        ".mount",
-        ".path",
-        ".service",
-        ".slice",
-        ".socket",
-        ".target",
-        ".timer",
-    ]
-    .iter()
-    .any(|suffix| unit.ends_with(suffix));
-
-    let overlay_safe = unit.chars().enumerate().all(|(index, character)| {
-        character.is_ascii_alphanumeric()
-            || (index > 0 && matches!(character, '+' | '.' | '_' | '=' | '@' | '-'))
-    });
-
-    if !overlay_safe || !has_known_suffix {
-        bail!("invalid systemd unit name '{unit}'");
-    }
-    Ok(())
-}
-
 fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
     if image.format.is_empty()
         || !image
@@ -2739,22 +2714,6 @@ mod tests {
         ] {
             let err = validate_package_name(name).unwrap_err();
             assert!(err.to_string().contains("package name"));
-        }
-    }
-
-    #[test]
-    fn expose_unit_names_use_the_overlay_safe_token_grammar() {
-        for unit in ["web.service", "web+blue=@.service"] {
-            validate_unit_name(unit).unwrap();
-        }
-        for unit in [
-            "bad,unit.service",
-            "bad:unit.service",
-            "bad\\unit.service",
-            "bad/unit.service",
-        ] {
-            let err = validate_unit_name(unit).unwrap_err();
-            assert!(err.to_string().contains("systemd unit name"));
         }
     }
 
