@@ -140,10 +140,10 @@ in
     "aos-nix-store-provider:nix-store-database-effects"
   ];
   assert abilities.compositionRequests.${childRequestKey}.parameters == desired.value;
-  assert effectsHandler.entryPoint == "libexec/aos-nix-store-database-effects";
+  assert effectsHandler.entryPoint == "libexec/aos-nix-store-provider";
   assert artifactController.handlerDescriptor == null;
   assert artifactController.providerModule.path == "share/aos/providers/content-addressed-object.nix";
-  assert artifactHandler.entryPoint == "libexec/aos-content-addressed-object";
+  assert artifactHandler.entryPoint == "libexec/aos-nix-store-provider";
   assert desired.kind == "aos.nix.store-database";
   assert desired.lifetime == "persistent";
   assert desired.value
