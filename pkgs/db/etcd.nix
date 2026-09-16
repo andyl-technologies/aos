@@ -321,7 +321,8 @@ in
           "etcd:credential-peer-private-key"
           "etcd:credential-peer-trusted-ca"
         ]
-        && builtins.length (credentialRequests tlsEvaluations.both) == 6
+        && credentialRequests tlsEvaluations.both
+        == credentialRequests tlsEvaluations.client ++ credentialRequests tlsEvaluations.peer
         && builtins.map (mount: mount.source) mainStorageMounts
         == [
           (qualifiedResultOf "etcd:data-storage" "planned-path")

@@ -260,6 +260,9 @@ in
       lifecycle = requests."dbus:dbus-lifecycle".parameters;
       managerIdentity = requests."dbus:dbus-manager_identity".parameters;
       sockets = requests."dbus:dbus-socket_activation".parameters.sockets;
+      socketModes = builtins.listToAttrs (
+        builtins.map (socket: lib.nameValuePair socket.manager_name socket.mode) sockets
+      );
       principal = requests."dbus:service-principal".parameters;
       contractHolds =
         self.abilities ? requirementTemplates
@@ -272,9 +275,7 @@ in
           name = "dbus";
           aliases = ["messagebus"];
         }
-        && builtins.length sockets == 1
-        && (builtins.head sockets).manager_name == "dbus"
-        && (builtins.head sockets).mode == "0666"
+        && socketModes == {dbus = "0666";}
         && !(principal ? requested_id);
     in {
       ability-module-contract =
