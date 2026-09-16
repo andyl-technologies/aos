@@ -333,8 +333,7 @@ pub struct SwitchParams {
     pub base_label: String,
     /// When `true`, stop after the diff (no manifest is committed live).
     pub dry_run: bool,
-    /// Where a **real** switch publishes the committed manifest for the
-    /// downstream fetch/render/activate pipeline to consume.
+    /// Where a real switch publishes the checked manifest before activation.
     pub live_manifest: std::path::PathBuf,
     /// Render the `--json` diff envelope instead of the human form.
     pub json_out: bool,
@@ -345,9 +344,9 @@ pub struct SwitchParams {
 /// Drives the (builder-gated) evaluator to a candidate manifest via
 /// [`super::run_eval_command`], diffs it against the loaded base, and prints the
 /// result. For `--dry-run` it stops there — a clean no-op on the live system.
-/// For a real switch it atomically publishes the candidate and its exact graph,
-/// then enters the checked native activation boundary. That boundary executes
-/// the selected binding/effect plan and commits the resulting generation.
+/// For a real switch it atomically publishes the candidate, then enters the
+/// checked native activation boundary. That boundary executes the selected
+/// binding and effect plan through authenticated provider handlers.
 /// The active generation's retained source manifest is never overwritten.
 ///
 /// Returns the computed [`ManifestDiff`] so a fleet test can assert the realized
@@ -375,21 +374,13 @@ pub async fn run_switch(params: &SwitchParams) -> Result<ManifestDiff> {
         return Ok(diff);
     }
 
-    // 3. Publish graph first and manifest second. A crash between the two is
-    // fail-closed: native activation authenticates the matched pair. The next
-    // switch replaces both before starting any transaction.
-    let candidate_graph = params.eval.out.with_file_name("graph.json");
-    let live_graph = params.live_manifest.with_file_name("graph.json");
-    publish_file_atomic(&candidate_graph, &live_graph)?;
+    // Publish the exact checked manifest before invoking native activation.
     publish_file_atomic(&params.eval.out, &params.live_manifest)?;
 
-    // 4. Enter the backend-neutral native activation boundary. It holds the
-    // system switch lock across exact-plan execution, /etc publication, and
-    // generation commit; selected package terminals own all backend effects.
     super::activation::activate_config(&super::activation::ActivateConfigParams {
         manifest: params.live_manifest.clone(),
-        graph: live_graph,
-        ..super::activation::ActivateConfigParams::default()
+        module_abi: params.eval.module_abi,
+        ..Default::default()
     })?;
     Ok(diff)
 }

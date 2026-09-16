@@ -160,7 +160,7 @@ impl RetainedActivatabilityReport {
 
 /// Authenticates a retained configuration and its current activation inputs.
 pub(super) fn configuration(
-    config: &ApmConfig,
+    _config: &ApmConfig,
     profile: &Path,
     target: &ConfigGeneration,
     running: &ImageGeneration,
@@ -241,18 +241,6 @@ pub(super) fn configuration(
                     manifest.module_abi, running.module_abi
                 )),
             });
-        }
-
-        if let Err(error) = crate::credential_artifact::reconcile_secret_refs(
-            &config.settings,
-            &crate::credential_artifact::aos_root_path(),
-            &manifest.credentials,
-        ) {
-            push_reason(
-                &mut reasons,
-                ActivatabilityReasonCode::CredentialUnavailable,
-                error,
-            );
         }
 
         let params = ActivateConfigParams {

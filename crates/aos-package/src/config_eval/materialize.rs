@@ -695,7 +695,7 @@ pub struct ManifestInputs {
     pub package_modules: PackageModulesInput,
     /// Exact authorized host module.
     pub host_nix: HostNixInput,
-    /// Immutable runtime operator module set, present only in manifest v2.
+    /// Immutable runtime operator module set when the candidate uses one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_modules: Option<RuntimeModulesInput>,
     /// Active generation observed before this candidate evaluation began.
@@ -1446,7 +1446,7 @@ pub fn materialize_generation_lower(
         .with_context(|| format!("validating manifest {}", manifest_path.display()))?;
     reject_native_activation_on_standalone_materialization(&manifest)?;
     let manifest_value = serde_json::to_value(&manifest)?;
-    let manifest_hash = crate::graph_compile::reproject::hash_cjson(&manifest_value);
+    let manifest_hash = crate::canonical_json_digest(&manifest_value)?;
     let final_dir = generation_dir.join(GENERATION_LOWER_DIR);
     if final_dir.exists() {
         validate_generation_lower(&final_dir, &manifest_hash, fsck_erofs)?;
@@ -1607,9 +1607,7 @@ fn hash_tree(root: &Path) -> Result<String> {
     }
     let mut records = Vec::new();
     collect_tree_records(root, root, &mut records)?;
-    Ok(crate::graph_compile::reproject::hash_cjson(
-        &serde_json::Value::Array(records),
-    ))
+    crate::canonical_json_digest(&serde_json::Value::Array(records))
 }
 
 fn collect_tree_records(

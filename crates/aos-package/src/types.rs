@@ -2540,8 +2540,8 @@ impl ImageGenerationState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigGeneration {
-    /// Config-generation number (names the `gen-N/` directory; the pointer
-    /// `activate.sh.in` commits).
+    /// Config-generation number naming the `gen-N/` directory selected by
+    /// the checked activation transaction.
     pub number: u32,
     /// The [`ImageGeneration::number`] this config-gen was evaluated against.
     pub image_gen_parent: u32,
@@ -4074,7 +4074,6 @@ pin = "v2026.02"
                 .expect_err("the final image-generation identity must be complete");
             assert!(error.to_string().contains(required));
         }
-
     }
 
     fn sample_documentation_artifact() -> DocumentationArtifactMeta {
