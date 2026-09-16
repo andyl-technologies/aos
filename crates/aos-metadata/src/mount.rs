@@ -72,28 +72,10 @@ pub trait ConfigDriveProbe {
     fn probe_and_mount(&self, labels: &[&str], mountpoint: &Path) -> Result<Option<ConfigDrive>>;
 }
 
-/// Production probe: `blkid -L <label>` then `mount -o ro`.
-///
-/// `blkid` and `mount` are resolved from `PATH` by default.
-/// `AOS_METADATA_BLKID` and `AOS_METADATA_MOUNT` override them with absolute
-/// paths; [`BlkidProbe::with_tools`] provides the equivalent programmatic
-/// override.
+/// Production probe: exact `blkid -L <label>` then exact `mount -o ro`.
 pub struct BlkidProbe {
     blkid: PathBuf,
     mount: PathBuf,
-}
-
-impl Default for BlkidProbe {
-    fn default() -> Self {
-        Self {
-            blkid: std::env::var_os("AOS_METADATA_BLKID")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("blkid")),
-            mount: std::env::var_os("AOS_METADATA_MOUNT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("mount")),
-        }
-    }
 }
 
 impl BlkidProbe {

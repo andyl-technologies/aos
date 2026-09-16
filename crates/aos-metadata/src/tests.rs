@@ -9,13 +9,16 @@ use std::path::Path;
 
 use tempfile::tempdir;
 
-use super::detect::{PlatformCapability, classify_dmi, detect, needs_network, platform_capability};
+use super::detect::{
+    AcquisitionContext, PlatformCapability, PlatformId, classify_dmi, detect, needs_network,
+    platform_capability,
+};
 use super::facts_render::{canonicalize_host_facts, render_host_facts_nix};
 use super::fetcher::{Facts, MacIface, PlatformFetcher, StaticNetwork, UserData};
 use super::http::{RecordedHttp, RecordedMethod};
 use super::mount::{CONFIG_DRIVE_LABELS, FakeProbe};
 use super::offline::{AosMetadataFetcher, ConfigDriveFetcher, NoCloudFetcher, QemuFwCfgFetcher};
-use super::stash::{MetadataResult, PlatformEnv, Stash};
+use super::stash::{MetadataResult, Stash};
 use super::staticnet::{parse_netplan_network_config, parse_openstack_network_data};
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
@@ -81,7 +84,7 @@ fn network_platforms_gated() {
         Some(PlatformCapability::NetworkMetadata)
     );
     assert_eq!(platform_capability("hetzner"), None);
-    assert!(super::select_fetcher("hetzner", None).is_err());
+    assert!(PlatformId::parse("hetzner").is_err());
 }
 
 #[test]
@@ -93,8 +96,8 @@ fn detect_reads_fake_sysfs() {
 
     let probe = FakeProbe::new(); // no config-drive present
     let env = detect(dir.path(), &probe, &dir.path().join("media")).unwrap();
-    assert_eq!(env.platform_id, "aws");
-    assert!(env.need_network);
+    assert_eq!(env.platform, PlatformId::Aws);
+    assert!(env.needs_network());
     assert!(env.metadata_dir.is_none());
 }
 
@@ -109,12 +112,9 @@ fn detect_config_drive_short_circuits_cloud() {
     let media = tempdir().unwrap();
     let probe = FakeProbe::new().with("cidata", media.path());
     let env = detect(dir.path(), &probe, Path::new("/unused")).unwrap();
-    assert_eq!(env.platform_id, "nocloud");
-    assert!(!env.need_network);
-    assert_eq!(
-        env.metadata_dir.as_deref(),
-        Some(media.path().to_str().unwrap())
-    );
+    assert_eq!(env.platform, PlatformId::Nocloud);
+    assert!(!env.needs_network());
+    assert_eq!(env.metadata_dir.as_deref(), Some(media.path()));
 }
 
 #[test]
@@ -215,12 +215,12 @@ fn nocloud_fixtures_support_common_flow_mappings_and_fail_closed() {
     let dir = tempdir().unwrap();
     std::fs::write(
         dir.path().join("meta-data"),
-        include_bytes!("../../tests/fixtures/metadata/nocloud/meta-data.yaml"),
+        include_bytes!("../tests/fixtures/metadata/nocloud/meta-data.yaml"),
     )
     .unwrap();
     std::fs::write(
         dir.path().join("network-config"),
-        include_bytes!("../../tests/fixtures/metadata/nocloud/network-config-flow.yaml"),
+        include_bytes!("../tests/fixtures/metadata/nocloud/network-config-flow.yaml"),
     )
     .unwrap();
     let fetcher = NoCloudFetcher::new(dir.path());
@@ -236,7 +236,7 @@ fn nocloud_fixtures_support_common_flow_mappings_and_fail_closed() {
 
     std::fs::write(
         dir.path().join("network-config"),
-        include_bytes!("../../tests/fixtures/metadata/nocloud/network-config-malformed-flow.yaml"),
+        include_bytes!("../tests/fixtures/metadata/nocloud/network-config-malformed-flow.yaml"),
     )
     .unwrap();
     let error = block_on(fetcher.fetch_facts(&RecordedHttp::new()))
@@ -746,43 +746,20 @@ fn facts_render_antiquotation_neutralized() {
 }
 
 // ---------------------------------------------------------------------------
-// stash format + run_fetch end-to-end (offline)
+// provider-private stash + run_fetch end-to-end (offline)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn platform_env_roundtrip() {
-    let env = PlatformEnv {
-        platform_id: "nocloud".into(),
-        metadata_dir: Some("/private/transaction/media".into()),
-        need_network: false,
-    };
-    let parsed = PlatformEnv::parse(&env.render());
-    assert_eq!(parsed, env);
-
-    let cloud = PlatformEnv {
-        platform_id: "aws".into(),
+fn acquisition_context_is_typed_and_never_rendered_as_an_environment_file() {
+    let context = AcquisitionContext {
+        platform: PlatformId::Aws,
         metadata_dir: None,
-        need_network: true,
     };
-    let parsed = PlatformEnv::parse(&cloud.render());
-    assert_eq!(parsed, cloud);
-}
-
-#[test]
-fn platform_handoff_does_not_publish_an_ambient_network_flag() {
     let stash_dir = tempdir().unwrap();
-    let stash = Stash::open(stash_dir.path()).unwrap();
+    let _stash = Stash::open(stash_dir.path()).unwrap();
 
-    stash
-        .write_platform_env(&PlatformEnv {
-            platform_id: "aws".into(),
-            metadata_dir: None,
-            need_network: true,
-        })
-        .unwrap();
-
-    assert!(stash_dir.path().join("platform.env").is_file());
-    assert!(!stash_dir.path().join("need-network").exists());
+    assert!(context.needs_network());
+    assert!(!stash_dir.path().join("platform.env").exists());
 }
 
 #[test]
@@ -860,154 +837,4 @@ fn run_fetch_no_user_data_is_failure_safe() {
     .unwrap();
     assert!(!result.fetched_user_data);
     assert!(!result.sig_present);
-}
-
-// ---------------------------------------------------------------------------
-// first-boot host authorization + storage projection validation
-// ---------------------------------------------------------------------------
-
-#[test]
-fn no_user_data_selects_schema_defaults_without_authorized_host() {
-    use super::provisioning::{AuthorizeOptions, ProvisioningTrust, run_authorize};
-
-    let stash_dir = tempdir().unwrap();
-    let stash = Stash::open(stash_dir.path()).unwrap();
-    stash
-        .write_platform_env(&PlatformEnv {
-            platform_id: "metal".into(),
-            metadata_dir: None,
-            need_network: false,
-        })
-        .unwrap();
-    stash
-        .write_result(&MetadataResult {
-            platform_id: "metal".into(),
-            fetched_user_data: false,
-            user_data_source: "imds".into(),
-            user_data_sha256: None,
-            sig_present: false,
-            facts_hash: "00".repeat(32),
-            timestamp: "1970-01-01T00:00:00Z".into(),
-        })
-        .unwrap();
-
-    let result = run_authorize(&AuthorizeOptions {
-        stash_dir: stash_dir.path().to_path_buf(),
-        trust: ProvisioningTrust::Platform,
-        trusted_config_key_dirs: Vec::new(),
-    })
-    .unwrap();
-    assert!(result.is_none());
-    assert!(!stash_dir.path().join("host.nix").exists());
-}
-
-#[test]
-fn platform_input_is_preserved_as_exact_host_nix() {
-    use super::provisioning::{AuthorizeOptions, ProvisioningTrust, run_authorize};
-
-    let stash_dir = tempdir().unwrap();
-    let media = tempdir().unwrap();
-    let host = b"{ aos.provisioning.storage.partitions.var.sizeMin = \"8G\"; }\n";
-    std::fs::write(media.path().join("host.nix"), host).unwrap();
-
-    let stash = Stash::open(stash_dir.path()).unwrap();
-    stash
-        .write_platform_env(&PlatformEnv {
-            platform_id: "aos-metadata".into(),
-            metadata_dir: Some(media.path().display().to_string()),
-            need_network: false,
-        })
-        .unwrap();
-    let fetcher = AosMetadataFetcher::new(media.path());
-    let http = RecordedHttp::new();
-    block_on(super::run_fetch_with(
-        &stash,
-        &fetcher,
-        &http,
-        "aos-metadata",
-    ))
-    .unwrap();
-
-    let result = run_authorize(&AuthorizeOptions {
-        stash_dir: stash_dir.path().to_path_buf(),
-        trust: ProvisioningTrust::Platform,
-        trusted_config_key_dirs: Vec::new(),
-    })
-    .unwrap()
-    .unwrap();
-
-    assert_eq!(
-        std::fs::read(stash_dir.path().join("host.nix")).unwrap(),
-        host
-    );
-    assert_eq!(result.host_nix_sha256, super::stash::sha256_hex(host));
-    super::provisioning::verify_host_binding(stash_dir.path()).unwrap();
-}
-
-#[test]
-fn signed_host_verifies_exact_input_and_rejects_tampering() {
-    use super::provisioning::{AuthorizeOptions, ProvisioningTrust, run_authorize};
-    use crate::config_trust::CONFIG_SIGNATURE_NAMESPACE;
-    use crate::security::sign_payload_signature;
-    use crate::sshkey::Ed25519Keypair;
-
-    let stash_dir = tempdir().unwrap();
-    let media = tempdir().unwrap();
-    let keys = tempdir().unwrap();
-    let host = b"{ aos.provisioning.storage.partitions.var.sizeMin = \"8G\"; }\n";
-
-    let key = Ed25519Keypair::generate();
-    let private = keys.path().join("ops.key");
-    std::fs::write(&private, key.to_openssh_private_key("ops")).unwrap();
-    std::fs::write(
-        keys.path().join("ops.pub"),
-        format!("{}\n", key.trust_key_line("ops")),
-    )
-    .unwrap();
-    let signature = sign_payload_signature(&private, CONFIG_SIGNATURE_NAMESPACE, host).unwrap();
-    std::fs::write(media.path().join("host.nix"), host).unwrap();
-    std::fs::write(media.path().join("host.nix.sig"), signature).unwrap();
-
-    let stash = Stash::open(stash_dir.path()).unwrap();
-    stash
-        .write_platform_env(&PlatformEnv {
-            platform_id: "aos-metadata".into(),
-            metadata_dir: Some(media.path().display().to_string()),
-            need_network: false,
-        })
-        .unwrap();
-    let http = RecordedHttp::new();
-    block_on(super::run_fetch_with(
-        &stash,
-        &AosMetadataFetcher::new(media.path()),
-        &http,
-        "aos-metadata",
-    ))
-    .unwrap();
-
-    let opts = AuthorizeOptions {
-        stash_dir: stash_dir.path().to_path_buf(),
-        trust: ProvisioningTrust::Signed,
-        trusted_config_key_dirs: vec![keys.path().to_path_buf()],
-    };
-    let accepted = run_authorize(&opts).unwrap().unwrap();
-    assert!(accepted.signer.is_some());
-
-    std::fs::write(stash_dir.path().join("user-data"), b"tampered").unwrap();
-    assert!(run_authorize(&opts).is_err());
-    assert!(!stash_dir.path().join("host.nix").exists());
-}
-
-#[test]
-fn storage_projection_rejects_malformed_paths_and_identifiers() {
-    use super::repart::ProvisioningPlan;
-
-    let unsafe_plans = [
-        r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":"dev/vdb","label":"var","type":"linux-generic","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1}}}}"#,
-        r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":null,"label":"var","type":"invalid/type","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1}}}}"#,
-    ];
-    for input in unsafe_plans {
-        let plan: ProvisioningPlan = serde_json::from_str(input).unwrap();
-        assert!(super::repart::validate_provisioning_plan(&plan, false).is_err());
-    }
 }

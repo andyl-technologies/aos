@@ -41,9 +41,8 @@ use super::http::MetadataHttp;
 /// `TransferEngine` plus the `tokio::time::timeout` shim.
 #[async_trait::async_trait]
 pub trait PlatformFetcher: Send + Sync {
-    /// Stable platform identifier, matching `PLATFORM_ID` in `platform.env`
-    /// (e.g. `"aws"`, `"nocloud"`, `"config-drive"`, `"qemu"`,
-    /// `"aos-metadata"`).
+    /// Stable identifier from the typed detector result (for example, `"aws"`,
+    /// `"nocloud"`, `"config-drive"`, `"qemu"`, or `"aos-metadata"`).
     fn platform_id(&self) -> &'static str;
 
     /// Acquire the operator user-data payload, if present.

@@ -24,6 +24,8 @@ members = [
     "aos-doc",
     "aos-doc-model",
     "aos-package",
+    "aos-metadata",
+    "aos-metadata-provider",
     "aos-hub-console-contract",
     "aos-hub-core",
     "aos-hub",
@@ -241,6 +243,8 @@ aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-doc-model = { path = "aos-doc-model" }
 aos-package = { path = "aos-package" }
+aos-metadata = { path = "aos-metadata" }
+aos-metadata-provider = { path = "aos-metadata-provider" }
 aos-storage-provisioning = { path = "aos-storage-provisioning" }
 aos-configuration-provider = { path = "aos-configuration-provider" }
 aos-filesystem-provider = { path = "aos-filesystem-provider" }

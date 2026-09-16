@@ -6,7 +6,6 @@
 //!
 //! ```text
 //! <transaction-scratch>/stash/
-//! ├── platform.env            # PLATFORM_ID=<id>  [+ METADATA_DIR=<path>]
 //! ├── user-data               # exact fetched bytes
 //! ├── user-data.sig           # detached whole-input SSHSIG (optional)
 //! ├── host.nix                # policy-accepted operator config
@@ -15,10 +14,9 @@
 //! └── .provisioning-result.json # authorization and binding record
 //! ```
 //!
-//! `platform.env` is a private handoff between acquisition helpers within one
-//! provider invocation. `.metadata-result.json` records acquisition.
-//! `.provisioning-result.json`
-//! records the later trust decision and accepted content hashes.
+//! `.metadata-result.json` records acquisition. `.provisioning-result.json`
+//! records the later trust decision and accepted content hashes. Platform
+//! selection remains a typed in-memory value within the provider invocation.
 
 use std::path::{Path, PathBuf};
 
@@ -27,54 +25,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::fetcher::Facts;
-
-/// The `platform.env` document (systemd `EnvironmentFile` form).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PlatformEnv {
-    /// `PLATFORM_ID` — the fetcher selector.
-    pub platform_id: String,
-    /// `METADATA_DIR` — the mounted offline-channel directory, if any.
-    pub metadata_dir: Option<String>,
-    /// Whether the platform needs network for metadata acquisition.
-    pub need_network: bool,
-}
-
-impl PlatformEnv {
-    /// Render to `KEY=value` lines for a systemd `EnvironmentFile`.
-    pub fn render(&self) -> String {
-        let mut out = format!("PLATFORM_ID={}\n", self.platform_id);
-        if let Some(dir) = &self.metadata_dir {
-            out.push_str(&format!("METADATA_DIR={dir}\n"));
-        }
-        if self.need_network {
-            out.push_str("NEED_NETWORK=1\n");
-        }
-        out
-    }
-
-    /// Parse a `platform.env` file's contents.
-    ///
-    /// Unknown keys are ignored (forward-compatible with adjacent vars).
-    pub fn parse(text: &str) -> Self {
-        let mut env = PlatformEnv::default();
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((k, v)) = line.split_once('=') else {
-                continue;
-            };
-            match k.trim() {
-                "PLATFORM_ID" => env.platform_id = v.trim().to_string(),
-                "METADATA_DIR" => env.metadata_dir = Some(v.trim().to_string()),
-                "NEED_NETWORK" => env.need_network = v.trim() == "1",
-                _ => {}
-            }
-        }
-        env
-    }
-}
 
 /// The `.metadata-result.json` acquisition record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,26 +70,6 @@ impl Stash {
         &self.dir
     }
 
-    /// Writes the private `platform.env` acquisition handoff.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` on any write failure.
-    pub fn write_platform_env(&self, env: &PlatformEnv) -> Result<()> {
-        std::fs::write(self.dir.join("platform.env"), env.render()).context("writing platform.env")
-    }
-
-    /// Read `platform.env` from the stash.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` when the file is missing or unreadable.
-    pub fn read_platform_env(&self) -> Result<PlatformEnv> {
-        let text = std::fs::read_to_string(self.dir.join("platform.env"))
-            .context("reading platform.env")?;
-        Ok(PlatformEnv::parse(&text))
-    }
-
     /// Stash exact fetched user-data bytes and optional detached signature.
     ///
     /// Returns the lowercase-hex SHA-256 of the payload for the run record.
@@ -165,25 +95,6 @@ impl Stash {
     /// Returns an error when an existing output cannot be removed.
     pub fn clear_fetch_outputs(&self) -> Result<()> {
         for file in ["user-data", "user-data.sig", ".metadata-result.json"] {
-            let path = self.dir.join(file);
-            if path.exists() {
-                std::fs::remove_file(&path)
-                    .with_context(|| format!("removing {}", path.display()))?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Remove every output owned by the authorization phase.
-    ///
-    /// This runs before each authorization attempt so a failed re-run cannot
-    /// expose stale accepted configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when an existing output cannot be removed.
-    pub fn clear_authorized_outputs(&self) -> Result<()> {
-        for file in ["host.nix", super::provisioning::PROVISIONING_RESULT_FILE] {
             let path = self.dir.join(file);
             if path.exists() {
                 std::fs::remove_file(&path)

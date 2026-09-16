@@ -1,0 +1,23 @@
+[package]
+name = "aos-metadata"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-ability-model = { workspace = true }
+aos-contract = { workspace = true }
+aos-net = { workspace = true, features = ["transfer"] }
+aos-provider-protocol = { workspace = true }
+aos-storage-provisioning = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }

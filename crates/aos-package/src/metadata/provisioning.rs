@@ -11,6 +11,7 @@ use std::process::Command;
 use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
+use aos_metadata::{Stash, stash::sha256_hex};
 use aos_storage_provisioning::{
     CanonicalProvisioningPlan, CanonicalProvisioningSource, ProvisioningMarkerObservation,
     ProvisioningMarkerState, canonicalize_provisioning_plan,
@@ -22,7 +23,6 @@ use serde::{Deserialize, Serialize};
 use crate::config_trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload};
 
 use super::repart::ProvisioningPlan;
-use super::stash::{Stash, sha256_hex};
 
 /// Raw user-data filename written by the fetch phase.
 pub const RAW_USER_DATA_FILE: &str = "user-data";
@@ -112,6 +112,8 @@ pub struct ProvisioningResult {
 pub struct AuthorizeOptions {
     /// Metadata stash root.
     pub stash_dir: PathBuf,
+    /// Platform that supplied the exact input bytes.
+    pub platform_id: String,
     /// Measured policy selected by the image.
     pub trust: ProvisioningTrust,
     /// Public signed-mode anchors available in initrd.
@@ -146,16 +148,25 @@ pub struct EvalProvisioningOptions {
 /// fails, or authorized outputs cannot be replaced.
 pub fn run_authorize(opts: &AuthorizeOptions) -> Result<Option<ProvisioningResult>> {
     let stash = Stash::open(&opts.stash_dir)?;
-    stash.clear_authorized_outputs()?;
+    clear_authorized_outputs(&stash)?;
     match authorize_inner(&stash, opts) {
         Ok(result) => Ok(result),
         Err(error) => {
-            stash
-                .clear_authorized_outputs()
+            clear_authorized_outputs(&stash)
                 .context("clearing partial provisioning outputs after authorization failure")?;
             Err(error)
         }
     }
+}
+
+fn clear_authorized_outputs(stash: &Stash) -> Result<()> {
+    for file in ["host.nix", PROVISIONING_RESULT_FILE] {
+        let path = stash.dir().join(file);
+        if path.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn authorize_inner(stash: &Stash, opts: &AuthorizeOptions) -> Result<Option<ProvisioningResult>> {
@@ -169,8 +180,6 @@ fn authorize_inner(stash: &Stash, opts: &AuthorizeOptions) -> Result<Option<Prov
     }
     let raw = std::fs::read(&raw_path).context("reading fetched host.nix")?;
     let sig = std::fs::read_to_string(stash.dir().join(RAW_USER_DATA_SIGNATURE_FILE)).ok();
-    let env = stash.read_platform_env()?;
-
     let signer = match opts.trust {
         ProvisioningTrust::Platform => None,
         ProvisioningTrust::Signed => Some(
@@ -189,7 +198,7 @@ fn authorize_inner(stash: &Stash, opts: &AuthorizeOptions) -> Result<Option<Prov
     std::fs::write(stash.dir().join("host.nix"), &raw).context("writing accepted host.nix")?;
     let result = ProvisioningResult {
         trust_mode: opts.trust,
-        platform_id: env.platform_id,
+        platform_id: opts.platform_id.clone(),
         host_nix_sha256: sha256_hex(&raw),
         signer,
     };

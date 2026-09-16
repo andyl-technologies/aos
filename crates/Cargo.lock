@@ -722,6 +722,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-metadata"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-ability-model",
+ "aos-contract",
+ "aos-net",
+ "aos-provider-protocol",
+ "aos-storage-provisioning",
+ "async-trait",
+ "base64 0.22.1",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "aos-metadata-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-metadata",
+ "aos-package",
+ "tokio",
+]
+
+[[package]]
 name = "aos-net"
 version = "0.1.0"
 dependencies = [
@@ -816,6 +848,7 @@ dependencies = [
  "aos-contract",
  "aos-core",
  "aos-doc-model",
+ "aos-metadata",
  "aos-net",
  "aos-oci-types",
  "aos-proto-types",

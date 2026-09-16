@@ -31,44 +31,20 @@
       abi_hash = config.aos.config.evalAtBoot.baseLibAbiHash;
     };
   };
-  provisioningRequest = {
-    name = "first-boot";
-    enabled = true;
-    root_device = config.aos.filesystems.rootDevice;
-    measured_boot = config.aos.boot.secureBoot.measuredBoot.enable;
-    policy = {
-      initialize = "if-unprovisioned";
-      committed_divergence = "require-factory-reset";
-    };
-    prerequisites = [];
-  };
 in {
   config = {
-    aos.metadata.storageProvisioning = {
-      inherit authorizationConfiguration;
-      request = provisioningRequest;
-    };
+    aos.metadata.storageProvisioning = {inherit authorizationConfiguration;};
 
     aos.boot.initrd.extraPackages = [
       configTrustAnchors
       config.aos.config.evalAtBoot.baseLib
-      pkgs.aos.metadataRuntime
+      pkgs.aos-metadata-provider
       pkgs.aos-nix-store-provider
       pkgs.nix
     ];
 
     aos.abilities.stages.initrd = {
-      packages = [pkgs.aos pkgs.aos-nix-store-provider];
-      intent = [
-        {
-          aos.metadata = {
-            storageProvisioning = {
-              inherit authorizationConfiguration;
-              request = provisioningRequest;
-            };
-          };
-        }
-      ];
+      packages = [pkgs.aos pkgs.aos-metadata-provider pkgs.aos-nix-store-provider];
     };
   };
 }

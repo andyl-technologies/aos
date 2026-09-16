@@ -96,6 +96,7 @@
   childRequests = key: resource: {
     "${key}" = childRequest "effects" key resource.value;
     "detect-platform-${key}" = childRequest "detect-platform" key resource.value;
+    "acquire-metadata-${key}" = childRequest "acquire-metadata" key resource.value;
     "authorize-input-${key}" = childRequest "authorize-input" key resource.value;
     "observe-marker-${key}" = childRequest "observe-marker" key resource.value;
     "observe-plan-${key}" = childRequest "observe-plan" key resource.value;
@@ -309,15 +310,17 @@
       detectKey = "detect-${resourceKey}";
       decisionKey = "network-decision-${resourceKey}";
       networkKey = "network-ready-${resourceKey}";
-      offlineAuthorizationKey = "authorize-offline-${resourceKey}";
-      onlineAuthorizationKey = "authorize-online-${resourceKey}";
-      authorizationMergeKey = "authorized-input-${resourceKey}";
+      offlineAcquisitionKey = "acquire-offline-${resourceKey}";
+      onlineAcquisitionKey = "acquire-online-${resourceKey}";
+      acquisitionMergeKey = "acquired-metadata-${resourceKey}";
+      authorizationKey = "authorize-${resourceKey}";
       markerKey = "observe-marker-${resourceKey}";
       planKey = "observe-plan-${resourceKey}";
       networkApplyKey = "apply-network-bootstrap-${resourceKey}";
       commitKey = "commit-${resourceKey}";
       authorizedInputCommitKey = "commit-authorized-input-${resourceKey}";
       detectBinding = selectedBinding change "detect-platform" "detect" "read";
+      acquisitionBinding = selectedBinding change "acquire-metadata" "acquire" "exclusive-write";
       authorizationBinding = selectedBinding change "authorize-input" "authorize" "exclusive-write";
       markerBinding = selectedBinding change "observe-marker" "observe" "read";
       planBinding = selectedBinding change "observe-plan" "observe" "exclusive-write";
@@ -378,16 +381,22 @@
       bootstrapInput =
         if hostNetworkRevision.value.authority == "operator"
         then literal null
-        else result "merge" authorizationMergeKey "network-bootstrap";
+        else result "merge" acquisitionMergeKey "network-bootstrap";
       bootstrapEdges =
         lib.optional
         (hostNetworkRevision.value.authority != "operator")
-        (edge "merge" authorizationMergeKey "operation" networkApplyKey "data");
+        (edge "merge" acquisitionMergeKey "operation" networkApplyKey "data");
       requestInput = literal desired.value;
       metadataInputs = extra: object ({request = requestInput;} // extra);
       authorizationInputs = metadataInputs {
         configuration = literal config.aos.metadata.storageProvisioning.authorizationConfiguration;
+        acquired_metadata = result "merge" acquisitionMergeKey "acquired-metadata";
+      };
+      acquisitionInputs = metadataInputs {
         platform = result "operation" detectKey "platform";
+        blkid = literal (executable "util-linux" "sbin/blkid");
+        mount = literal (executable "util-linux" "bin/mount");
+        umount = literal (executable "util-linux" "bin/umount");
       };
       markerInputs = metadataInputs {
         lsblk = literal (executable "util-linux" "bin/lsblk");
@@ -401,7 +410,11 @@
         targetInterface = interface.identity;
         targetResource = resource;
         targetLifetime = "transaction";
-        inputs = metadataInputs {};
+        inputs = metadataInputs {
+          blkid = literal (executable "util-linux" "sbin/blkid");
+          mount = literal (executable "util-linux" "bin/mount");
+          umount = literal (executable "util-linux" "bin/umount");
+        };
         access = "read";
         controller = controllerIdentity;
       };
@@ -422,21 +435,34 @@
         access = "read";
         controller = controllerIdentity;
       };
-      authorize = key: alternative:
+      acquire = key: alternative:
         operation {
           inherit key;
           branchContext = branch decisionKey alternative;
-          binding = authorizationBinding;
-          method = "authorize";
+          binding = acquisitionBinding;
+          method = "acquire";
           phase = "preparing";
           inputPhase = "runtime";
           targetInterface = interface.identity;
           targetResource = resource;
           targetLifetime = "transaction";
-          inputs = authorizationInputs;
+          inputs = acquisitionInputs;
           access = "exclusive-write";
           controller = controllerIdentity;
         };
+      authorizationOperation = operation {
+        key = authorizationKey;
+        binding = authorizationBinding;
+        method = "authorize";
+        phase = "preparing";
+        inputPhase = "runtime";
+        targetInterface = interface.identity;
+        targetResource = resource;
+        targetLifetime = "transaction";
+        inputs = authorizationInputs;
+        access = "exclusive-write";
+        controller = controllerIdentity;
+      };
       markerOperation = operation {
         key = markerKey;
         binding = markerBinding;
@@ -460,8 +486,9 @@
         targetResource = resource;
         targetLifetime = "transaction";
         inputs = metadataInputs {
-          authorized_input = result "merge" authorizationMergeKey "authorized-provisioning-input";
+          authorized_input = result "operation" authorizationKey "authorized-provisioning-input";
           marker = result "operation" markerKey "marker";
+          nix_instantiate = literal (executable "nix" "bin/nix-instantiate");
         };
         access = "exclusive-write";
         controller = controllerIdentity;
@@ -503,7 +530,7 @@
         targetLifetime = "persistent";
         inputs = object {
           request = literal checkedContentRequest;
-          blob = result "merge" authorizationMergeKey "authorized-input-blob";
+          blob = result "operation" authorizationKey "authorized-input-blob";
         };
         access = "exclusive-write";
         controller = controllerFor contentResource;
@@ -512,8 +539,9 @@
       operations = [
         detectOperation
         networkOperation
-        (authorize offlineAuthorizationKey "offline")
-        (authorize onlineAuthorizationKey "online")
+        (acquire offlineAcquisitionKey "offline")
+        (acquire onlineAcquisitionKey "online")
+        authorizationOperation
         markerOperation
         planOperation
         networkApplyOperation
@@ -548,29 +576,22 @@
       ];
       merges = [
         {
-          key = scopedKey authorizationMergeKey;
+          key = scopedKey acquisitionMergeKey;
           decision = scopedKey decisionKey;
           branch_context = [];
           outputs = {
-            authorized-provisioning-input = {
-              descriptor = methodOutput "aos.metadata.storage-provisioning-input-authorization" "authorize" "authorized-provisioning-input";
+            acquired-metadata = {
+              descriptor = methodOutput "aos.metadata.storage-provisioning-acquisition" "acquire" "acquired-metadata";
               alternatives = {
-                offline = (result "operation" offlineAuthorizationKey "authorized-provisioning-input").reference;
-                online = (result "operation" onlineAuthorizationKey "authorized-provisioning-input").reference;
+                offline = (result "operation" offlineAcquisitionKey "acquired-metadata").reference;
+                online = (result "operation" onlineAcquisitionKey "acquired-metadata").reference;
               };
             };
             network-bootstrap = {
-              descriptor = methodOutput "aos.metadata.storage-provisioning-input-authorization" "authorize" "network-bootstrap";
+              descriptor = methodOutput "aos.metadata.storage-provisioning-acquisition" "acquire" "network-bootstrap";
               alternatives = {
-                offline = (result "operation" offlineAuthorizationKey "network-bootstrap").reference;
-                online = (result "operation" onlineAuthorizationKey "network-bootstrap").reference;
-              };
-            };
-            authorized-input-blob = {
-              descriptor = methodOutput "aos.metadata.storage-provisioning-input-authorization" "authorize" "authorized-input-blob";
-              alternatives = {
-                offline = (result "operation" offlineAuthorizationKey "authorized-input-blob").reference;
-                online = (result "operation" onlineAuthorizationKey "authorized-input-blob").reference;
+                offline = (result "operation" offlineAcquisitionKey "network-bootstrap").reference;
+                online = (result "operation" onlineAcquisitionKey "network-bootstrap").reference;
               };
             };
           };
@@ -578,15 +599,16 @@
       ];
       edges = [
         (edge "operation" detectKey "decision" decisionKey "data")
-        (edge "decision" decisionKey "operation" offlineAuthorizationKey "branch-guard")
+        (edge "decision" decisionKey "operation" offlineAcquisitionKey "branch-guard")
         (edge "decision" decisionKey "operation" networkKey "branch-guard")
-        (edge "decision" decisionKey "operation" onlineAuthorizationKey "branch-guard")
-        (edge "operation" networkKey "operation" onlineAuthorizationKey "readiness")
-        (edge "operation" offlineAuthorizationKey "merge" authorizationMergeKey "branch-merge")
-        (edge "operation" onlineAuthorizationKey "merge" authorizationMergeKey "branch-merge")
-        (edge "merge" authorizationMergeKey "operation" planKey "data")
+        (edge "decision" decisionKey "operation" onlineAcquisitionKey "branch-guard")
+        (edge "operation" networkKey "operation" onlineAcquisitionKey "readiness")
+        (edge "operation" offlineAcquisitionKey "merge" acquisitionMergeKey "branch-merge")
+        (edge "operation" onlineAcquisitionKey "merge" acquisitionMergeKey "branch-merge")
+        (edge "merge" acquisitionMergeKey "operation" authorizationKey "data")
+        (edge "operation" authorizationKey "operation" planKey "data")
         (edge "operation" markerKey "operation" planKey "data")
-        (edge "merge" authorizationMergeKey "operation" authorizedInputCommitKey "data")
+        (edge "operation" authorizationKey "operation" authorizedInputCommitKey "data")
         (edge "operation" authorizedInputCommitKey "operation" commitKey "readiness")
         (edge "operation" planKey "operation" commitKey "data")
       ]
