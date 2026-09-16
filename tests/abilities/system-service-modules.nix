@@ -50,7 +50,7 @@
           }
         ]
         ++ lib.optionals realizeService [
-          ../../modules/systemd/system.nix
+          ./_systemd-platform-module.nix
           {
             aos.abilities = {
               instances."systemd:manager" = {};

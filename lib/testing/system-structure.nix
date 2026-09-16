@@ -12,7 +12,7 @@
 }: let
   config = system.config;
   manifest = config.system.build.configManifest;
-  systemdUnits = config.system.build.systemdSystemUnits;
+  systemdUnits = "${config.system.build.managerConfiguration}/systemd-units";
   contextualOutputs = [
     systemdUnits
     config.system.build.etcDump

@@ -57,8 +57,28 @@
       };
     };
   };
+  initrdBuildResultType = lib.types.submodule {
+    options = {
+      artifact = lib.mkOption {
+        type = lib.types.package;
+        description = "Selected manager initrd artifact.";
+      };
+      sourceStageBundle = lib.mkOption {
+        type = lib.types.package;
+        description = "Checked initrd source-stage bundle.";
+      };
+      staticAbilityContract = lib.mkOption {
+        type = lib.types.package;
+        description = "Selected initrd static ability contract.";
+      };
+    };
+  };
   configurationType = lib.types.addCheck (lib.types.submodule {
     options = {
+      buildInitrd = lib.mkOption {
+        type = lib.types.functionTo initrdBuildResultType;
+        description = "Opaque package-owned initrd artifact builder.";
+      };
       buildOutput = lib.mkOption {
         type = lib.types.functionTo lib.types.package;
         description = "Opaque package-owned manager configuration builder.";

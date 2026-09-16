@@ -1744,7 +1744,7 @@ in {
       initrd-stage-contract = import ./tests/build/initrd-stage-contract.nix {
         inherit pkgs lib mkSystem;
       };
-      systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
+      systemd-verity = import ./tests/abilities/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
       {
@@ -1919,8 +1919,8 @@ in {
     };
     darling-harness = import ./lib/testing/darling-check.nix {inherit pkgs lib;};
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
-    systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
-    systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
+    systemd-lib = import ./tests/abilities/systemd-lib.nix {inherit pkgs lib;};
+    systemd-generate = import ./tests/abilities/systemd-generate.nix {inherit pkgs lib;};
     crucible = crucibleChecks;
     system-structure = let
       variants = lib.mapAttrs (variant: system:
@@ -1948,7 +1948,7 @@ in {
       // {
         inherit variants;
       };
-    systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
+    systemd-credentials = import ./tests/abilities/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
     package-preset = packagePresetCheck;
     selinux-base = selinuxBaseCheck;

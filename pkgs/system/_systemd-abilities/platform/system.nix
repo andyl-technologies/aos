@@ -1,9 +1,9 @@
-##! modules/systemd/system.nix — Stage 2 systemd module
+##! pkgs/system/_systemd-abilities/platform/system.nix — Stage 2 systemd module
 ##!
 ##! Declares the typed `systemd.*` option tree (services, timers, sockets,
 ##! targets, paths, slices, mounts, automounts, units, plus the package /
 ##! packages / globalEnvironment plumbing), wires `systemd.units` via the
-##! *-ToUnit rendering functions in `lib/modules/systemd/lib.nix`, and produces
+##! *-ToUnit rendering functions in `pkgs/system/_systemd-abilities/platform/render.nix`, and produces
 ##! `system.build.systemdSystemUnits` — a derivation whose output is a
 ##! directory matching `/etc/systemd/system/`.
 ##!
@@ -14,15 +14,27 @@
 {
   config,
   lib,
-  pkgs,
+  packageArtifactFor,
   provenance,
   ...
 }: let
-  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
-  systemdUnitOptions = import ../../lib/modules/systemd/unit-options.nix {
+  packageOutput = package: lib.abilities.packageOutput {inherit package;};
+  rendererPackages = {
+    bash = packageArtifactFor (packageOutput "bash");
+    coreutils = packageArtifactFor (packageOutput "coreutils");
+    findutils = packageArtifactFor (packageOutput "findutils");
+    grep = packageArtifactFor (packageOutput "grep");
+    sed = packageArtifactFor (packageOutput "sed");
+    systemd = packageArtifactFor (lib.abilities.packageOutput {});
+  };
+  systemdLib = import ./render.nix {
+    inherit lib;
+    pkgs = rendererPackages;
+  };
+  systemdUnitOptions = import ./unit-options.nix {
     inherit lib systemdLib;
   };
-  systemdTypes = import ../../lib/modules/systemd/types.nix {
+  systemdTypes = import ./types.nix {
     inherit lib systemdLib systemdUnitOptions;
   };
 
@@ -33,7 +45,7 @@
   # Upstream nixpkgs bakes `cfg.globalEnvironment // def.environment` into
   # `serviceToUnit`, reading `cfg` through a closure over the whole NixOS
   # config. The AOS port moves that merge out here so the library in
-  # `lib/modules/systemd/lib.nix` stays a pure function of its inputs, reusable for initrd
+  # `pkgs/system/_systemd-abilities/platform/render.nix` stays a pure function of its inputs, reusable for initrd
   # / nspawn / user units without re-parameterisation. Per-service
   # values still win over globals because `//` is right-biased and
   # `svc.environment` is on the right.
@@ -112,7 +124,7 @@ in {
         `systemd.services.<name>.environment`. Matches nixpkgs
         semantics: per-service values win over globals. Applied as a
         pre-merge step in this module (see the module source), rather
-        than inside `lib/modules/systemd/lib.nix`, so the library stays a pure function
+        than inside `pkgs/system/_systemd-abilities/platform/render.nix`, so the library stays a pure function
         of its inputs.
       '';
     };
@@ -185,19 +197,6 @@ in {
         `config.systemd.units` below.
       '';
     };
-  };
-
-  # Declare `system.build.systemdSystemUnits` as a real option so
-  # `modules/base/build.nix` can read it via `config.system.build.
-  # systemdSystemUnits`. It's defined below in `config` and consumed
-  # by build.nix's toplevel script via a single `ln -s` line.
-  options.system.build.systemdSystemUnits = lib.mkOption {
-    type = lib.types.package;
-    description = ''
-      Derivation whose output is an assembled `/etc/systemd/system/`
-      directory produced by `generateUnits`. Staged into the toplevel
-      by `modules/base/build.nix`.
-    '';
   };
 
   # Pure render/assemble split: the unit-body data that the
@@ -498,8 +497,8 @@ in {
       cfg.targets;
 
     # `onlyManualStart` on a .scope unit would be an error too (spec §7.3),
-    # but AOS has no `scope` unit type (none in lib/modules/systemd/
-    # types.nix), so there is no eval-time data source to check; revisit if
+    # but AOS has no `scope` unit type in the package-owned type library, so
+    # there is no eval-time data source to check; revisit if
     # a scopes option is ever added.
 
     # `reloadIfChanged = true` without an ExecReload= falls back to restart
@@ -540,25 +539,6 @@ in {
     # used at runtime. Its manifest is the only filename authority for those
     # entries; the assembler validates bytes, links, and collisions with the
     # ordinary module-rendered tree before publishing the boot unit directory.
-    system.build.systemdSystemUnits = let
-      baseUnits = systemdLib.materializeUnits {
-        type = "system";
-        inherit (config.system.build.systemdMaterializationData) etc jobScripts;
-      };
-      providerArtifacts = config.systemd.providerUnitArtifacts;
-      providerArtifactsJson = builtins.toJSON providerArtifacts;
-    in
-      if providerArtifacts == []
-      then baseUnits
-      else
-        pkgs.runCommand "systemd-system-units-with-provider-artifacts" {
-          inherit baseUnits providerArtifactsJson;
-          passAsFile = ["providerArtifactsJson"];
-        } ''
-          providerArtifactsPath="$providerArtifactsJsonPath" \
-            ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider assemble
-        '';
-
     # --- Pure render values ---------------------------------------------
     #
     # Fold every service's F2-A job-script records into the flat
@@ -605,9 +585,6 @@ in {
     # branch recurses — spec v12 §5.2). At runtime, this directory
     # merges with the per-generation config lower's `/etc/systemd/system/`
     # without one side shadowing the other.
-    environment.etc."systemd/system" = {
-      source = config.system.build.systemdSystemUnits;
-    };
     environment.etc."systemd/system.conf.d/50-aos-watchdog.conf" = lib.mkIf (
       config.systemd.providerManagerConfigurationArtifacts != []
     ) {

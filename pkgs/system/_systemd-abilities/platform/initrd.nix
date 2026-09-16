@@ -1,14 +1,14 @@
-##! modules/systemd/initrd.nix — Stage 1 systemd module (tier ii)
+##! pkgs/system/_systemd-abilities/platform/initrd.nix — Stage 1 systemd module (tier ii)
 ##!
 ##! Declares the typed `boot.initrd.systemd.*` option tree for the
 ##! systemd-based initrd and produces `system.build.initrd` by
 ##! rendering the options through the stage-1 `*-ToUnit` helpers in
-##! `lib/modules/systemd/lib.nix`, flattening the pure `generateUnits`
+##! `pkgs/system/_systemd-abilities/platform/render.nix`, flattening the pure `generateUnits`
 ##! result, and materializing it for the cpio assembler in
 ##! `../base/initrd-builder.nix`.
 ##!
 ##! Uses the `stage1*` option + type variants from
-##! `lib/modules/systemd/unit-options.nix` / `lib/modules/systemd/types.nix`,
+##! `pkgs/system/_systemd-abilities/platform/unit-options.nix` / `pkgs/system/_systemd-abilities/platform/types.nix`,
 ##! so modules that contribute initrd units declare
 ##! them with real per-option validation exactly like stage-2 services.
 ##! The stage-1 option trees drop the switch-to-configuration knobs
@@ -29,17 +29,27 @@
 {
   config,
   initrdAbilityEvaluation ? null,
-  initrdStaticContract ? null,
   lib,
-  pkgs,
+  packageArtifactFor,
   ...
 }: let
-  buildPkgs = pkgs.buildPackages;
-  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
-  systemdUnitOptions = import ../../lib/modules/systemd/unit-options.nix {
+  packageOutput = package: lib.abilities.packageOutput {inherit package;};
+  rendererPackages = {
+    bash = packageArtifactFor (packageOutput "bash");
+    coreutils = packageArtifactFor (packageOutput "coreutils");
+    findutils = packageArtifactFor (packageOutput "findutils");
+    grep = packageArtifactFor (packageOutput "grep");
+    sed = packageArtifactFor (packageOutput "sed");
+    systemd = packageArtifactFor (lib.abilities.packageOutput {});
+  };
+  systemdLib = import ./render.nix {
+    inherit lib;
+    pkgs = rendererPackages;
+  };
+  systemdUnitOptions = import ./unit-options.nix {
     inherit lib systemdLib;
   };
-  systemdTypes = import ../../lib/modules/systemd/types.nix {
+  systemdTypes = import ./types.nix {
     inherit lib systemdLib systemdUnitOptions;
   };
 
@@ -47,7 +57,7 @@
 
   # Render each initrd unit category through its stage-1 *-ToUnit
   # renderer and key the result by unit file name (e.g. "foo.service").
-  # Mirrors `modules/systemd/system.nix`'s stage-2 pattern but without
+  # Mirrors `pkgs/system/_systemd-abilities/platform/system.nix`'s stage-2 pattern but without
   # the `globalEnvironment` pre-merge — initrd services don't need it.
   #
   withName = cfgToUnit: c: lib.nameValuePair c.name (cfgToUnit c);
@@ -76,98 +86,7 @@
     if initrdAbilityEvaluation == null
     then []
     else initrdAbilityEvaluation.config.systemd.providerUnitArtifacts or [];
-  selectedArtifactBackend = config.aos.artifacts.backend or null;
-  artifactBackend =
-    if
-      builtins.isAttrs selectedArtifactBackend
-      && (selectedArtifactBackend._type or null) == "aos-package-artifact-backend"
-    then selectedArtifactBackend
-    else throw "systemd initrd requires one selected package-owned artifact backend";
-  targetPlatform = {
-    os = pkgs.stdenv.hostPlatform.constraints.os;
-    cpu = pkgs.stdenv.hostPlatform.constraints.cpu;
-    abi = pkgs.stdenv.hostPlatform.constraints.abi;
-    features = pkgs.stdenv.hostPlatform.constraints.features;
-  };
-  mkReferenceGraph = import ../../lib/build/reference-graph.nix {
-    inherit lib;
-    inherit (buildPkgs) mkDerivation coreutils jq;
-  };
-  initrdStaticAbilityContractBuild = artifactBackend.buildStaticContract {
-    inherit lib targetPlatform mkReferenceGraph;
-    buildPackages = buildPkgs;
-    pname = "aos-initrd-static-abilities";
-    artifactClass = "bootable";
-    executionStage = "initrd";
-    packageRoots = config.aos.boot.initrd.packageRoots;
-  };
-  initrdAbilityGraph =
-    if initrdAbilityEvaluation == null
-    then null
-    else initrdAbilityEvaluation.config.aos.abilities;
-  initrdSourceFixedPoint =
-    if initrdAbilityGraph == null
-    then null
-    else
-      buildPkgs.writeTextFile {
-        name = "aos-initrd-source-fixed-point";
-        destination = "/fixed-point.json";
-        text = builtins.toJSON {
-          inherit (initrdAbilityGraph)
-            environment
-            instances
-            instanceIdentities
-            requests
-            compositionRequests
-            compositionRequirements
-            bindings
-            compositionOutputs
-            compositionPendingRequests
-            resolvedResources
-            ;
-          executionObserver = initrdAbilityGraph.resolvedExecutionObserver;
-        };
-      };
-  initrdSourceStageBundle =
-    if initrdSourceFixedPoint == null || initrdStaticContract == null
-    then null
-    else let
-      expectedContractIdentity = "${initrdStaticAbilityContractBuild.artifact}/contract.json";
-      checkedStaticContract =
-        if initrdStaticContract.identity == expectedContractIdentity
-        then initrdStaticContract
-        else throw "systemd initrd static contract differs from the completed initrd fixed point";
-      specification = builtins.toFile "aos-initrd-source-stage-materialization.json" (builtins.toJSON {
-        schema = "aos.ability.source-stage-materialization/v1";
-        stage = "initrd";
-        authority = initrdAbilityGraph.environment.authority;
-        key = initrdAbilityGraph.environment.key;
-        platform = {
-          system = pkgs.stdenv.hostPlatform.constraints.os;
-          architecture = pkgs.stdenv.hostPlatform.constraints.cpu;
-        };
-        staticContract = checkedStaticContract;
-        fixedPoint = "${initrdSourceFixedPoint}/fixed-point.json";
-      });
-    in
-      buildPkgs.runCommand "aos-initrd-source-stage-bundle.json" {} ''
-        ${buildPkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped \
-          __ability-materialize-source-stage \
-          --spec ${specification} \
-          --out "$out"
-      '';
-
-  # Render the typed `boot.initrd.systemd.network` tree to a directory of
-  # `<name>.network` files. These are networkd config (not units), so they
-  # skip `generateUnits`/`renderedInitrdUnits` and are handed to the cpio
-  # assembler as a separate directory it copies into /etc/systemd/network/.
-  initrdNetworkDir = pkgs.runCommand "initrd-systemd-networks" {} ''
-    mkdir -p $out
-    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (
-        name: def: "cp ${builtins.toFile "${name}.network" (systemdLib.networkToText def)} $out/${name}.network"
-      )
-      cfg.network)}
-  '';
+  initrdNetworkFiles = lib.mapAttrs (_: systemdLib.networkToText) cfg.network;
 in {
   options.boot.initrd.systemd = {
     enable = lib.mkEnableOption "a systemd-based initrd (tier ii, not yet implemented)";
@@ -256,32 +175,20 @@ in {
     };
   };
 
-  # Declare `system.build.systemdInitrdUnits` as a real option so the
-  # initrd builder below (and any out-of-tree consumers) can read it.
-  options.system.build.systemdInitrdUnits = lib.mkOption {
-    type = lib.types.package;
-    description = ''
-      Derivation whose output is an assembled `/etc/systemd/system/`
-      directory for the initrd, materialized from `generateUnits`' pure
-      rendering of the `boot.initrd.systemd.*` option tree. Consumed by
-      the cpio assembler in `modules/base/initrd-builder.nix`.
-    '';
-  };
-
-  options.system.build.initrdStaticAbilityContract = lib.mkOption {
-    type = lib.types.package;
-    readOnly = true;
-    description = ''
-      Static initrd-stage ability declarations embedded in the normal initrd.
-      Host-stage facilities cannot discharge obligations in this contract.
-    '';
-  };
-
-  options.system.build.initrdSourceStageBundle = lib.mkOption {
-    type = lib.types.nullOr lib.types.package;
+  options.system.build.systemdInitrdPlan = lib.mkOption {
+    type = lib.types.submodule {
+      options = {
+        etc = lib.mkOption {type = lib.types.attrsOf lib.types.attrs;};
+        jobScripts = lib.mkOption {type = lib.types.attrsOf lib.types.attrs;};
+        networkFiles = lib.mkOption {type = lib.types.attrsOf lib.types.lines;};
+        providerArtifacts = lib.mkOption {type = lib.types.listOf lib.types.path;};
+        renderedNetworks = lib.mkOption {type = lib.types.listOf lib.types.str;};
+        renderedUnits = lib.mkOption {type = lib.types.listOf lib.types.str;};
+      };
+    };
     readOnly = true;
     internal = true;
-    description = "Checked source-composed plan emitted from the completed initrd fixed point.";
+    description = "Pure package-owned rendering plan for the selected systemd initrd.";
   };
 
   config = {
@@ -289,28 +196,19 @@ in {
     # policy contributes only provider-neutral intent; it does not select a
     # manager or a TPM token format from the generic secure-boot module.
     aos.boot.initrd.packageRoots =
-      (with pkgs; [
-        bash
-        coreutils
-        cryptsetup
-        e2fsprogs
-        grep
-        gptfdisk
-        iproute2
-        kmod
-        less
-        systemd
-        util-linux
-      ])
-      ++ lib.optional
-      (config.aos.boot.secureBoot.measuredBoot.enable
-        && config.aos.boot.storage.backend != "zfs-zvol")
-      pkgs.aos-systemd-var-policy;
-
-    environment.systemPackages =
-      lib.optional
-      config.aos.boot.secureBoot.measuredBoot.enable
-      pkgs.aos-systemd-var-policy;
+      (builtins.map packageArtifactFor (builtins.map packageOutput [
+        "bash"
+        "coreutils"
+        "cryptsetup"
+        "e2fsprogs"
+        "grep"
+        "gptfdisk"
+        "iproute2"
+        "kmod"
+        "less"
+        "util-linux"
+      ]))
+      ++ [rendererPackages.systemd];
 
     # Re-run stage-1 config oneshots against the real /etc in stage-2.
     #
@@ -354,49 +252,13 @@ in {
         };
       };
 
-    system.build.systemdInitrdUnits = let
-      baseUnits = systemdLib.materializeUnits {
-        type = "initrd";
-        etc = systemdLib.unitsToEtc pureInitrdUnits;
-        jobScripts = initrdJobScripts;
-      };
-      providerArtifactsJson = builtins.toJSON initrdProviderArtifacts;
-    in
-      if initrdProviderArtifacts == []
-      then baseUnits
-      else
-        pkgs.runCommand "systemd-initrd-units-with-provider-artifacts" {
-          inherit baseUnits providerArtifactsJson;
-          passAsFile = ["providerArtifactsJson"];
-        } ''
-          providerArtifactsPath="$providerArtifactsJsonPath" \
-            ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider assemble
-        '';
-
-    system.build.initrd = import ../base/_initrd-builder.nix {
-      inherit pkgs lib;
-      kernel = config.system.build.kernel;
-      kernelModulePackages = config.aos.boot.initrd.modulePackages;
-      firmwarePackages = config.aos.boot.initrd.firmwarePackages;
-      loadModules = config.aos.boot.initrd.loadModules;
-      initrdUnits = config.system.build.systemdInitrdUnits;
-      initrdPackages = config.aos.boot.initrd.packageRoots;
-      inherit initrdNetworkDir;
+    system.build.systemdInitrdPlan = {
+      etc = systemdLib.unitsToEtc pureInitrdUnits;
+      jobScripts = initrdJobScripts;
+      networkFiles = initrdNetworkFiles;
+      providerArtifacts = initrdProviderArtifacts;
       renderedUnits = builtins.attrNames renderedInitrdUnits;
       renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);
-      handoff = config.system.build.bootSubstrateContract;
-      inherit initrdStaticContract initrdSourceStageBundle;
-      maskedUnits =
-        cfg.maskedUnits
-        ++ lib.optionals config.aos.security.verity.enable [
-          "emergency.target"
-          "rescue.target"
-        ];
-      validateBootIdentity = config.aos.security.verity.enable;
-      keepBinutils = config.aos.boot.recovery.enable;
     };
-
-    system.build.initrdStaticAbilityContract = initrdStaticAbilityContractBuild.artifact;
-    system.build.initrdSourceStageBundle = initrdSourceStageBundle;
   };
 }

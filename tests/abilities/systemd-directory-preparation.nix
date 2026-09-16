@@ -100,7 +100,7 @@
       inherit lib;
       modules = [
         lib.abilities.module
-        ../../modules/systemd/system.nix
+        ./_systemd-platform-module.nix
         {
           config.aos.abilities = {
             environment = {

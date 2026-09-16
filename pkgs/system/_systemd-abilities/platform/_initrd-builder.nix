@@ -1,4 +1,4 @@
-##! modules/base/_initrd-builder.nix — Tier-ii systemd initrd builder
+##! pkgs/system/_systemd-abilities/platform/_initrd-builder.nix — Tier-ii systemd initrd builder
 ##!
 ##! Builds a zstd-compressed cpio initramfs from pure Nix-store paths —
 ##! no VM, no losetup. The archive is assembled from a directory tree
@@ -18,7 +18,7 @@
 ##!   7. Upstream systemd initrd units symlinked from ${systemd}/lib/systemd/
 ##!      system/ into /etc/systemd/system/. (AOS systemd ships units at
 ##!      lib/systemd/system/, not example/; generateUnits can't fold these
-##!      in automatically for initrd — see the TODO in lib/modules/systemd/lib.nix:510.)
+##!      in automatically for initrd — see the TODO in pkgs/system/_systemd-abilities/platform/render.nix:510.)
 ##!   8. The output of `generateUnits` for the rendered initrd units —
 ##!      `boot.initrd.systemd.services` etc. resolved through the stage-1
 ##!      ToUnit renderers.
@@ -38,35 +38,32 @@
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
 ##!   keepBinutils — retain current binutils for signed UKI section inspection
 ##!                  in recovery-enabled normal initrds.
-##!   abilityResolutionInput — authenticated desired-state and operator policy
-##!                  documents used by the checked build-stage planner.
+##!   initrdSourceStageBundle — direct checked plan from the completed initrd
+##!                  module fixed point.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
-  pkgs,
   lib,
+  mkDerivation,
+  runtimePackages,
   kernel,
   kernelModulePackages ? [],
   firmwarePackages ? [],
   loadModules,
   initrdUnits,
   initrdPackages,
-  initrdStaticAbilityContractBuild,
   initrdNetworkDir ? null,
   renderedUnits,
   renderedNetworks,
   handoff,
-  abilityResolutionInput ? null,
-  abilityEnvironment,
-  abilityIntent ? [],
-  baseLib,
+  initrdSourceStageBundle,
+  initrdStaticContract,
   maskedUnits ? [],
   validateBootIdentity ? false,
   keepBinutils ? false,
 }: let
-  buildPkgs = pkgs.buildPackages;
   inherit
-    (pkgs)
+    (runtimePackages)
     bash
     coreutils
     cpio
@@ -85,41 +82,6 @@
     zstd
     ;
   uniqueInitrdPackages = lib.unique initrdPackages;
-  initrdStaticAbilityContract = initrdStaticAbilityContractBuild.artifact;
-
-  initrdIntentModuleRoot = buildPkgs.writeTextFile {
-    name = "aos-initrd-ability-intent";
-    destination = "/module.nix";
-    text = ''
-      { ... }: {
-        imports = builtins.map
-          (intent: { config = intent; })
-          (builtins.fromJSON ${builtins.toJSON (builtins.toJSON abilityIntent)});
-      }
-    '';
-  };
-  initrdAbilityStage =
-    if abilityResolutionInput == null
-    then null
-    else
-      import ../../lib/build/ability-stage.nix {
-        inherit lib;
-        inherit (buildPkgs) mkDerivation;
-        packageRuntime = buildPkgs.aos.packageRuntime;
-      } {
-        pname = "aos-initrd";
-        stage = abilityEnvironment.stage;
-        authority = abilityEnvironment.authority;
-        key = abilityEnvironment.key;
-        inherit baseLib;
-        intentModule = "${initrdIntentModuleRoot}/module.nix";
-        inherit (abilityResolutionInput) desiredInput authenticatedPolicySet;
-        packageContracts = initrdStaticAbilityContractBuild.retainedPackageContractArtifacts;
-      };
-  resolvedAbilityStage =
-    if initrdAbilityStage == null
-    then null
-    else initrdAbilityStage.resolvedStage;
 
   dependencyRoots =
     [
@@ -408,25 +370,27 @@
 
   modulesLoadConf = lib.concatStringsSep "\n" loadModules;
 
+  completionUnit = handoff.resource.realization.completion_unit.unit_name;
+  requiredUnits = builtins.map (unit: unit.unit_name) handoff.resource.realization.required_units;
   requiredUnitChecks =
     lib.concatMapStringsSep "\n" (unit: ''
       unit_path=root/etc/systemd/system/${unit}
-      requirement_path=root/etc/systemd/system/${handoff.completionTarget}.requires/${unit}
+      requirement_path=root/etc/systemd/system/${completionUnit}.requires/${unit}
       if [ ! -f "$unit_path" ]; then
         echo "initrd-builder: required handoff unit is not rendered: ${unit}" >&2
         exit 1
       fi
       if [ ! -L "$requirement_path" ]; then
-        echo "initrd-builder: ${handoff.completionTarget} does not require ${unit}" >&2
+        echo "initrd-builder: ${completionUnit} does not require ${unit}" >&2
         exit 1
       fi
       unit_target=$(readlink -f "$unit_path")
       requirement_target=$(readlink -f "$requirement_path")
       if [ "$requirement_target" != "$unit_target" ]; then
-        echo "initrd-builder: ${handoff.completionTarget} requirement does not resolve to ${unit}" >&2
+        echo "initrd-builder: ${completionUnit} requirement does not resolve to ${unit}" >&2
         exit 1
       fi
-      if ! awk -v target=${lib.escapeShellArg handoff.completionTarget} '
+      if ! awk -v target=${lib.escapeShellArg completionUnit} '
         /^[[:space:]]*\[/ {
           in_unit = ($0 ~ /^[[:space:]]*\[Unit\][[:space:]]*$/)
           next
@@ -445,18 +409,18 @@
         }
         END { exit found ? 0 : 1 }
       ' "$unit_path"; then
-        echo "initrd-builder: ${unit} is not ordered before ${handoff.completionTarget}" >&2
+        echo "initrd-builder: ${unit} is not ordered before ${completionUnit}" >&2
         exit 1
       fi
     '')
-    handoff.requiredUnits;
+    requiredUnits;
 
   interactivePath = lib.concatStringsSep ":" (
     (map (p: "${p}/bin") initrdPackages)
     ++ (map (p: "${p}/sbin") initrdPackages)
     ++ ["/bin" "/sbin"]
   );
-  initrdArtifact = pkgs.mkDerivation {
+  initrdArtifact = mkDerivation {
     name = "aos-initrd";
     src = null;
 
@@ -467,7 +431,7 @@
       findutils
       gawk
       jq
-    ] ++ lib.optional (resolvedAbilityStage != null) resolvedAbilityStage;
+    ];
 
     # `exportReferencesGraph` writes one file per package/name pair
     # containing that package's transitive runtime closure. Nix
@@ -620,14 +584,12 @@
           OSREL
           cp root/etc/os-release root/etc/initrd-release
 
-          cp ${initrdStaticAbilityContract}/contract.json \
+          cp ${initrdStaticContract.path} \
             root/lib/aos/initrd/static-ability-contract.json
           chmod 0444 root/lib/aos/initrd/static-ability-contract.json
 
-          ${lib.optionalString (resolvedAbilityStage != null) ''
-            cp ${resolvedAbilityStage} root/lib/aos/initrd/resolved-ability-stage.json
-            chmod 0444 root/lib/aos/initrd/resolved-ability-stage.json
-          ''}
+          cp ${initrdSourceStageBundle} root/lib/aos/initrd/source-stage-bundle.json
+          chmod 0444 root/lib/aos/initrd/source-stage-bundle.json
 
           # Make the interactive stage-1 recovery shells usable:
           cat > root/etc/profile <<PROFILE
@@ -978,15 +940,15 @@
                 rendered_networks:($renderedNetworks | sort | unique),
                 load_modules:($loadModules | sort | unique),
                 masked_units:($maskedUnits | sort | unique),
-                handoff:{to_stage:"host",mechanism:"systemd-switch-root",
-                  completion_target:$handoff.completionTarget,
-                  required_units:($handoff.requiredUnits | sort | unique),
-                  preserved_mounts:($handoff.preservedMounts
-                    | map({initrd_path:.initrdPath,host_path:.hostPath})
+                handoff:{to_stage:"host",
+                  mechanism:$handoff.resource.realization.mechanism,
+                  completion_target:$handoff.resource.realization.completion_unit.unit_name,
+                  required_units:($handoff.resource.realization.required_units
+                    | map(.unit_name) | sort | unique),
+                  preserved_mounts:($handoff.resource.value.preserved_mounts
                     | unique_by([.initrd_path,.host_path])
                     | sort_by([.initrd_path,.host_path])),
-                  durable_state_roots:($handoff.durableStateRoots
-                    | map({initrd_path:.initrdPath,host_path:.hostPath})
+                  durable_state_roots:($handoff.resource.value.durable_state_roots
                     | unique_by([.initrd_path,.host_path])
                     | sort_by([.initrd_path,.host_path])),
                   transferable_handles:false,
@@ -997,7 +959,7 @@
           [ "$contract_size" -gt 1 ]
           truncate -s $((contract_size - 1)) "$out/initrd-stage-contract.json.tmp"
           mv "$out/initrd-stage-contract.json.tmp" "$out/initrd-stage-contract.json"
-          cp ${initrdStaticAbilityContract}/contract.json \
+          cp ${initrdStaticContract.path} \
             "$out/initrd-static-ability-contract.json"
 
           echo "==> $archive_size bytes written to $out/initrd.img"
@@ -1005,21 +967,9 @@
       }
     ];
 
-    passthru = {
-      staticAbilityContract = initrdStaticAbilityContract;
-      inherit resolvedAbilityStage;
-      planningSnapshot =
-        if initrdAbilityStage == null
-        then null
-        else initrdAbilityStage.planningSnapshot;
-    };
-
     meta = {
       description = "AOS initrd (zstd-compressed cpio, systemd PID 1)";
     };
   };
 in
   initrdArtifact
-  // {
-    staticAbilityContract = initrdStaticAbilityContract;
-  }
