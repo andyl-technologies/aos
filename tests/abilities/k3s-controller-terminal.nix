@@ -145,6 +145,7 @@
     && builtins.attrNames controller.requirements == ["effects"]
     && terminal.providerModule == null
     && terminal.handlerDescriptor != null
+    && terminal.handlerDescriptor.entryPoint == "libexec/aos-kubernetes-provider"
     && child.parameters == desired.value;
 
   transitionFor = {
