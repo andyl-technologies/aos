@@ -93,25 +93,31 @@
       };
 
   validate = serviceTypes: declaration: let
-    lifecycle = declaration.lifecycle;
+    normalizedDeclaration = serviceTypes.serviceDeclaration.merge ["service" declaration.service] [
+      {
+        file = "<service declaration>";
+        value = declaration;
+      }
+    ];
+    lifecycle = normalizedDeclaration.lifecycle;
     startCommandCount = builtins.length lifecycle.start;
-    reload = declaration.reload or null;
-    instantiation = declaration.instantiation or null;
-    managerIdentity = declaration.manager_identity or null;
-    supervision = declaration.supervision or null;
-    startPolicy = declaration.start_policy or null;
-    resources = declaration.resources or null;
-    environment = declaration.environment or null;
-    directories = declaration.directories or null;
-    activation = declaration.activation or null;
-    readiness = declaration.readiness or null;
-    identity = declaration.identity or null;
-    credentials = declaration.credentials or null;
-    configuration = declaration.configuration or null;
-    storage = declaration.storage or null;
-    socketActivation = declaration.socket_activation or null;
-    logging = declaration.logging or null;
-    terminal = declaration.terminal or null;
+    reload = normalizedDeclaration.reload or null;
+    instantiation = normalizedDeclaration.instantiation or null;
+    managerIdentity = normalizedDeclaration.manager_identity or null;
+    supervision = normalizedDeclaration.supervision or null;
+    startPolicy = normalizedDeclaration.start_policy or null;
+    resources = normalizedDeclaration.resources or null;
+    environment = normalizedDeclaration.environment or null;
+    directories = normalizedDeclaration.directories or null;
+    activation = normalizedDeclaration.activation or null;
+    readiness = normalizedDeclaration.readiness or null;
+    identity = normalizedDeclaration.identity or null;
+    credentials = normalizedDeclaration.credentials or null;
+    configuration = normalizedDeclaration.configuration or null;
+    storage = normalizedDeclaration.storage or null;
+    socketActivation = normalizedDeclaration.socket_activation or null;
+    logging = normalizedDeclaration.logging or null;
+    terminal = normalizedDeclaration.terminal or null;
     reloadValid =
       reload
       == null
@@ -139,7 +145,7 @@
       instantiation
       == null
       || instantiation.kind != "template"
-      || !declaration.enabled;
+      || !normalizedDeclaration.enabled;
     supervisionValid =
       supervision
       == null
@@ -306,8 +312,8 @@
         && readiness.mechanism == "process-running"
       );
   in
-    if !serviceTypes.serviceDeclaration.check declaration
-    then throw "service declaration does not match the canonical service type"
+    if !serviceTypes.serviceDeclaration.check normalizedDeclaration
+    then throw "service declaration '${declaration.service or "<unknown>"}' does not match the canonical service type"
     else if startCommandCount == 0
     then throw "service '${declaration.service}' must declare at least one start command"
     else if lifecycle.execution_model != "oneshot" && startCommandCount != 1
@@ -757,28 +763,26 @@
       && resource.output == "retained-resource"
       && path.output == "credential-path")
     credentialFragments;
-    structuredValid =
-      (source.kind or null)
-      != "structured-value"
-      || serviceTypes.structuredDocumentValid source;
-    checked =
-      if !serviceTypes.configurationMaterialization.check declaration
-      then throw "managed configuration does not match the canonical materialization type"
-      else if !structuredValid
-      then throw "managed configuration '${declaration.name}' has an invalid structured document tree"
-      else if credentialFragments != [] && !protectedMode
+    checked = serviceTypes.configurationMaterialization.merge ["managed configuration" declaration.name] [
+      {
+        file = "<managed configuration declaration>";
+        value = declaration;
+      }
+    ];
+    validated =
+      if credentialFragments != [] && !protectedMode
       then throw "managed configuration '${declaration.name}' containing credentials must use mode 0400 or 0600"
       else if !credentialPairsValid
       then throw "managed configuration '${declaration.name}' must pair each credential resource and path from one delivery request"
-      else declaration;
+      else checked;
     interface = serviceInterfaces.managedConfiguration;
     contribution = {
       requirementTemplates.${interface.alias} = requirementFor interface interface.methods [];
-      requests.${checked.name} = {
+      requests.${validated.name} = {
         requirement = interface.alias;
         consumer = consumerInstance;
-        scope = [checked.name];
-        parameters = checked;
+        scope = [validated.name];
+        parameters = validated;
       };
     };
   in

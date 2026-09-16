@@ -898,6 +898,9 @@ let
     then checkStructuredDocument constraint value
     else false;
 
+  constraintsSatisfied = constraints: value:
+    builtins.all (constraint: constraintSatisfied constraint value) constraints;
+
   checkValueUnchecked = schema: value: let
     invalid = expected: fail "expected ${expected}, got ${builtins.typeOf value}";
     checkRecord = let
@@ -1276,5 +1279,5 @@ in rec {
   topLevelKind = schema:
     schemaTopLevelKind (validateSchema "top-level JSON kind" schema);
 
-  inherit checkValue validateSchema;
+  inherit checkValue constraintsSatisfied validateSchema;
 }

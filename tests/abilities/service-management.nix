@@ -1500,6 +1500,25 @@ in
   assert succeedsAs serviceTypes.structuredConfigurationSource deferredExecutionPathSource;
   assert !succeedsAs serviceTypes.structuredConfigurationSource invalidExecutionPathSource;
   assert !succeedsAs serviceTypes.structuredConfigurationSource invalidExecutionPathMarkerSource;
+  assert serviceTypes.configurationMaterialization.check projectedStructuredConfiguration;
+  assert !serviceTypes.configurationMaterialization.check invalidStructuredConfiguration;
+  assert !serviceTypes.configurationMaterialization.check (structuredConfiguration
+    // {
+      source = {
+        kind = "inline-text";
+        content = "server configuration";
+        unexpected = true;
+      };
+    });
+  assert !serviceTypes.configurationMaterialization.check (structuredConfiguration
+    // {source = {kind = "inline-text";};});
+  assert !serviceTypes.configurationMaterialization.check (structuredConfiguration
+    // {
+      source = {
+        kind = "inline-text";
+        content = true;
+      };
+    });
   assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
       inherit serviceTypes;
       consumerInstance = "consumer";
