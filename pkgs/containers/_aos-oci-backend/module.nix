@@ -33,26 +33,8 @@
     && abilitySelection != null
     && abilitySelection.isImplementationSelected "artifact-backend";
 
-  checkedProjectionFor = package: let
-    owner = package.contract.value.package;
-  in {
-    _type = "aos-checked-package-projection";
-    payload = package;
-    inherit (package) contract;
-    origin = {
-      _type = "aos-authenticated-package-origin";
-      package = {
-        inherit (owner) name version;
-        document = builtins.toString package.contract.document;
-      };
-      packageArtifactFor = selector:
-        lib.abilities.authenticatedPackageOutputFor {
-          inherit package selector;
-        };
-    };
-  };
   packageProjectionsFor = packages:
-    builtins.map checkedProjectionFor (builtins.filter
+    builtins.map lib.abilities.authenticatedPackageProjectionFor (builtins.filter
       (package:
         builtins.isAttrs package
         && package ? abilities

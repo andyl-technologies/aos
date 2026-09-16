@@ -34,8 +34,7 @@
     selectedPackage =
       if builtins.elem normalizedSelector.package ["self" ownerName]
       then package
-      else
-        dependencies.${normalizedSelector.package}
+      else dependencies.${normalizedSelector.package}
         or (throw "package '${ownerName}' selector '${builtins.toJSON normalizedSelector}' is outside its authenticated dependency closure");
   in
     if !selectorDeclared
@@ -44,8 +43,7 @@
     then package.module
     else if normalizedSelector.output == (selectedPackage.outputName or "out")
     then selectedPackage
-    else
-      selectedPackage.${normalizedSelector.output}
+    else selectedPackage.${normalizedSelector.output}
       or (throw "package '${ownerName}' selector '${builtins.toJSON normalizedSelector}' names a missing output");
 
   authenticatedPackageOutputsFor = package: let
@@ -69,14 +67,155 @@
     outputs = authenticatedPackageOutputsFor package;
   };
 
+  authenticatedPackageProjectionFor = package: let
+    identity = package.contract.value.package or null;
+    valid =
+      builtins.isAttrs package
+      && package ? abilities
+      && package ? contract
+      && package ? module
+      && builtins.isAttrs identity
+      && builtins.attrNames identity == ["name" "version"]
+      && builtins.isString identity.name
+      && builtins.isString identity.version
+      && package.contract.value.package_module != null;
+  in
+    if !valid
+    then throw "authenticated package projection requires one native package ability contract and module"
+    else
+      checkedAuthenticatedPackageProjection {
+        _type = "aos-checked-package-projection";
+        payload = package;
+        inherit (package) contract;
+        origin = {
+          _type = "aos-authenticated-package-origin";
+          package = {
+            inherit (identity) name version;
+            document = builtins.toString package.contract.document;
+          };
+          packageArtifactFor = selector:
+            authenticatedPackageOutputFor {
+              inherit package selector;
+            };
+        };
+      };
+
+  checkedPackageOutputSelector = selector: let
+    normalized =
+      if builtins.isAttrs selector
+      then builtins.removeAttrs selector ["_type"]
+      else null;
+    valid =
+      builtins.isAttrs selector
+      && builtins.all
+      (name: builtins.elem name ["_type" "package" "output"])
+      (builtins.attrNames selector)
+      && (!selector ? _type || selector._type == "aos-package-output-selector")
+      && builtins.isAttrs normalized
+      && builtins.attrNames normalized == ["output" "package"]
+      && builtins.isString normalized.package
+      && normalized.package != ""
+      && builtins.isString normalized.output
+      && normalized.output != "";
+  in
+    if valid
+    then selector
+    else throw "authenticated package output selector has a non-canonical shape";
+
+  checkedAuthenticatedPackageProjection = projection: let
+    projectionAttrs = builtins.isAttrs projection;
+    contract =
+      if projectionAttrs
+      then projection.contract or null
+      else null;
+    origin =
+      if projectionAttrs
+      then projection.origin or null
+      else null;
+    identity =
+      if builtins.isAttrs origin
+      then origin.package or null
+      else null;
+    contractIdentity =
+      if builtins.isAttrs contract && builtins.isAttrs (contract.value or null)
+      then contract.value.package or null
+      else null;
+    authoritativeSelectors =
+      if builtins.isAttrs contract && builtins.isAttrs (contract.value or null)
+      then contract.value.artifacts or null
+      else null;
+    validContract =
+      builtins.isAttrs contract
+      && builtins.attrNames contract == ["document" "selectors" "value"]
+      && (builtins.isString contract.document || (builtins.isAttrs contract.document && contract.document ? outPath))
+      && builtins.isList contract.selectors
+      && builtins.all
+      (selector: (builtins.tryEval (builtins.deepSeq (checkedPackageOutputSelector selector) true)).success)
+      contract.selectors
+      && builtins.isAttrs contract.value
+      && builtins.isAttrs contractIdentity
+      && builtins.attrNames contractIdentity == ["name" "version"]
+      && builtins.isString contractIdentity.name
+      && contractIdentity.name != ""
+      && builtins.isString contractIdentity.version
+      && contractIdentity.version != ""
+      && builtins.isList authoritativeSelectors
+      && contract.selectors == authoritativeSelectors;
+    validOrigin =
+      builtins.isAttrs origin
+      && builtins.attrNames origin == ["_type" "package" "packageArtifactFor"]
+      && origin._type == "aos-authenticated-package-origin"
+      && builtins.isAttrs identity
+      && builtins.attrNames identity == ["document" "name" "version"]
+      && builtins.isString identity.document
+      && builtins.isString identity.name
+      && identity.name != ""
+      && builtins.isString identity.version
+      && identity.version != ""
+      && builtins.isFunction origin.packageArtifactFor
+      && validContract
+      && identity.name == contractIdentity.name
+      && identity.version == contractIdentity.version
+      && identity.document == builtins.toString contract.document;
+    validPayload =
+      projectionAttrs
+      && builtins.isAttrs (projection.payload or null)
+      && builtins.isString (projection.payload.pname or null)
+      && builtins.isString (projection.payload.version or null)
+      && validContract
+      && projection.payload.pname == contractIdentity.name
+      && projection.payload.version == contractIdentity.version;
+    valid =
+      projectionAttrs
+      && builtins.attrNames projection == ["_type" "contract" "origin" "payload"]
+      && projection._type == "aos-checked-package-projection"
+      && validPayload
+      && validContract
+      && validOrigin;
+  in
+    if valid
+    then projection
+    else throw "authenticated package projection has a non-canonical shape";
+
+  authenticatedProjectionOutputFor = {
+    projection,
+    selector,
+  }: let
+    checkedProjection = checkedAuthenticatedPackageProjection projection;
+    checkedSelector = checkedPackageOutputSelector selector;
+  in
+    checkedProjection.origin.packageArtifactFor checkedSelector;
+
   selectAuthenticatedPackageModuleRecords = packages: records:
     builtins.map (package: let
       name = packageNameFor package;
       version = package.version or "0";
       self = builtins.toString package;
-      matches = builtins.filter
+      matches =
+        builtins.filter
         (record:
-          record.name == name
+          record.name
+          == name
           && (record.version or null) == version
           && (record.outputs.self or null) == self)
         records;
@@ -90,6 +229,9 @@ in {
     authenticatedPackageOutputFor
     authenticatedPackageOutputsFor
     authenticatedPackageModuleRecordFor
+    authenticatedPackageProjectionFor
+    checkedAuthenticatedPackageProjection
+    authenticatedProjectionOutputFor
     selectAuthenticatedPackageModuleRecords
     ;
 }

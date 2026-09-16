@@ -17,6 +17,26 @@
     inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
     abilityContractValidator = pkgs.aos-ability-contract-validator;
   };
+  originResolution = import ./package-origin-resolution.nix {inherit lib;};
+  malformedBackend = builtins.tryEval (builtins.deepSeq
+    ((lib.evalModules {
+        modules = [
+          ../../modules/base/artifact-backend.nix
+          {
+            config.aos.artifacts.backend = {
+              _type = "aos-package-artifact-backend";
+              name = "partial";
+              package = "/nix/store/00000000000000000000000000000000-partial";
+              buildStaticContract = _: {};
+            };
+          }
+        ];
+      })
+      .config
+      .aos
+      .artifacts
+      .backend)
+    true);
 
   base = pkgs.runCommand "oci-builder-fixture-base" {} ''
     mkdir -p "$out/bin" "$out/share"
@@ -125,32 +145,8 @@
     allowTestArtifacts = true;
   };
   abilityPackageSmokeProvider = pkgs.ability-package-smoke-provider;
-  selectorKey = selector:
-    builtins.toJSON (builtins.removeAttrs selector ["_type"]);
-  retainedSmokeOutputs = {
-    ${selectorKey (lib.abilities.packageOutput {package = "ability-package-smoke";})} = pkgs.ability-package-smoke;
-    ${selectorKey (lib.abilities.packageOutput {package = "ability-package-smoke-provider";})} = abilityPackageSmokeProvider;
-    ${selectorKey (lib.abilities.packageOutput {
-      package = "self";
-      output = "module";
-    })} = pkgs.ability-package-smoke.module;
-  };
-  smokePackageProjection = {
-    _type = "aos-checked-package-projection";
-    payload = pkgs.ability-package-smoke;
-    inherit (pkgs.ability-package-smoke) contract;
-    origin = {
-      _type = "aos-authenticated-package-origin";
-      package = {
-        name = pkgs.ability-package-smoke.pname;
-        inherit (pkgs.ability-package-smoke) version;
-        document = builtins.toString pkgs.ability-package-smoke.contract.document;
-      };
-      packageArtifactFor = selector:
-        retainedSmokeOutputs.${selectorKey selector}
-        or (throw "fixture origin did not retain selector ${selector.package}:${selector.output}");
-    };
-  };
+  smokePackageProjection =
+    lib.abilities.authenticatedPackageProjectionFor pkgs.ability-package-smoke;
   abilityContractFor = {
     architecture,
     applicationRoot ? application,
@@ -588,40 +584,9 @@
     architecture = "riscv64";
     vendor = "forged";
   };
-  localHelperSelector = lib.abilities.packageOutput {
-    package = "helper";
-  };
-  originFixture = name: payload: helper: {
-    _type = "aos-checked-package-projection";
-    inherit payload;
-    contract = {};
-    origin = {
-      _type = "aos-authenticated-package-origin";
-      package = {
-        inherit name;
-        version = "1";
-        document = "/nix/store/${name}-contract";
-      };
-      packageArtifactFor = selector:
-        if selector == localHelperSelector
-        then helper
-        else throw "fixture origin received an unretained selector";
-    };
-  };
-  firstOriginHelper = pkgs.runCommand "first-origin-helper" {} ''
-    mkdir -p "$out"
-  '';
-  secondOriginHelper = pkgs.runCommand "second-origin-helper" {} ''
-    mkdir -p "$out"
-  '';
-  firstOrigin = originFixture "first-package" base firstOriginHelper;
-  secondOrigin = originFixture "second-package" application secondOriginHelper;
-  firstResolvedHelper = oci.checkedPackageOrigin.resolve firstOrigin localHelperSelector;
-  secondResolvedHelper = oci.checkedPackageOrigin.resolve secondOrigin localHelperSelector;
-  evalContracts = assert validStickyMode.success;
-  assert firstResolvedHelper == firstOriginHelper;
-  assert secondResolvedHelper == secondOriginHelper;
-  assert firstResolvedHelper != secondResolvedHelper;
+  evalContracts = assert originResolution;
+  assert !malformedBackend.success;
+  assert validStickyMode.success;
   assert !(amd64AbilityContract ? outPath);
   assert builtins.isAttrs amd64AbilityContract.artifact;
   assert amd64AbilityContract.artifact ? outPath;
@@ -638,7 +603,8 @@
   assert !missingFilePayload.success;
   assert !ambiguousFilePayload.success;
   assert !hostFileSource.success;
-  assert openPlatform == {
+  assert openPlatform
+  == {
     os = "otheros";
     architecture = "riscv64";
     variant = null;

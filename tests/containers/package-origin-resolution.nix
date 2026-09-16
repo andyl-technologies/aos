@@ -4,6 +4,7 @@
     inherit lib;
   };
   packageOrigins = import ../../pkgs/containers/_aos-oci-backend/oci/checked-package-origin.nix {
+    abilities = lib.abilities;
     inherit common;
   };
   localHelper = {
@@ -11,29 +12,82 @@
     package = "helper";
     output = "out";
   };
-  projectionFor = name: artifact: {
-    _type = "aos-checked-package-projection";
-    payload = {outPath = "/nix/store/${name}-payload";};
-    contract = {};
-    origin = {
-      _type = "aos-authenticated-package-origin";
-      package = {
-        inherit name;
-        version = "1";
-        document = "/nix/store/${name}-contract";
+  packageFor = {
+    name,
+    path,
+    runtimeDeps ? [],
+    selectors ? [],
+  }: {
+    pname = name;
+    version = "1";
+    outPath = path;
+    outputName = "out";
+    abilities = {};
+    module = "${path}-module";
+    inherit runtimeDeps;
+    contract = {
+      document = "${path}-contract";
+      value = {
+        artifacts = selectors;
+        package = {
+          inherit name;
+          version = "1";
+        };
+        package_module = {
+          artifact = "module";
+          path = "module.nix";
+        };
       };
-      packageArtifactFor = selector:
-        if selector == localHelper
-        then artifact
-        else throw "authenticated origin received an unretained selector";
+      inherit selectors;
     };
   };
   firstArtifact = "/nix/store/first-origin-helper";
   secondArtifact = "/nix/store/second-origin-helper";
-  first = packageOrigins.resolve (projectionFor "first-package" firstArtifact) localHelper;
-  second = packageOrigins.resolve (projectionFor "second-package" secondArtifact) localHelper;
+  selector = builtins.removeAttrs localHelper ["_type"];
+  firstHelper = packageFor {
+    name = "helper";
+    path = firstArtifact;
+  };
+  secondHelper = packageFor {
+    name = "helper";
+    path = secondArtifact;
+  };
+  ownerFor = name: path: helper:
+    packageFor {
+      inherit name path;
+      runtimeDeps = [helper];
+      selectors = [selector];
+    };
+  firstOwner = ownerFor "first-package" "/nix/store/first-package-payload" firstHelper;
+  firstProjection = lib.abilities.authenticatedPackageProjectionFor firstOwner;
+  secondProjection = lib.abilities.authenticatedPackageProjectionFor (
+    ownerFor "second-package" "/nix/store/second-package-payload" secondHelper
+  );
+  first = packageOrigins.resolve firstProjection localHelper;
+  second = packageOrigins.resolve secondProjection localHelper;
+  rejects = projection:
+    !(builtins.tryEval (builtins.deepSeq (
+        lib.abilities.checkedAuthenticatedPackageProjection projection
+      )
+      true)).success;
+  rejectsConstructor = package:
+    !(builtins.tryEval (builtins.deepSeq (
+        lib.abilities.authenticatedPackageProjectionFor package
+      )
+      true)).success;
+  withOriginIdentity = projection: identity:
+    projection
+    // {
+      origin = projection.origin // {package = projection.origin.package // identity;};
+    };
 in
-  assert first == firstArtifact;
-  assert second == secondArtifact;
-  assert first != second;
-    true
+  assert builtins.toString first == firstArtifact;
+  assert builtins.toString second == secondArtifact;
+  assert builtins.toString first != builtins.toString second;
+  assert rejects (withOriginIdentity firstProjection {name = "other-package";});
+  assert rejects (withOriginIdentity firstProjection {version = "2";});
+  assert rejects (withOriginIdentity firstProjection {document = "/nix/store/other-contract";});
+  assert rejects (firstProjection // {payload = firstProjection.payload // {pname = "other-package";};});
+  assert rejects (firstProjection // {payload = firstProjection.payload // {version = "2";};});
+  assert rejects (firstProjection // {contract = firstProjection.contract // {selectors = [];};});
+  assert rejectsConstructor (firstOwner // {pname = "other-package";}); true

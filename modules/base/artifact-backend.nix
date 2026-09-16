@@ -1,16 +1,36 @@
 ##! Opaque package-selected artifact construction boundary.
 {lib, ...}: let
+  backendRecordValid = value:
+    builtins.isAttrs value
+    && builtins.attrNames value
+    == [
+      "_type"
+      "buildContainer"
+      "buildStaticContract"
+      "defaultDefinition"
+      "name"
+      "package"
+    ]
+    && (value._type or null) == "aos-package-artifact-backend"
+    && builtins.isString value.name
+    && value.name != ""
+    && builtins.isString value.package
+    && builtins.match "/nix/store/[0-9a-z]+-[^/]+" value.package != null
+    && builtins.isFunction value.buildStaticContract
+    && builtins.isFunction value.defaultDefinition
+    && builtins.isFunction value.buildContainer;
   backendType = {
     name = "package artifact backend";
     description = "package-owned artifact construction backend";
-    check = value:
-      builtins.isAttrs value
-      && (value._type or null) == "aos-package-artifact-backend"
-      && builtins.isFunction (value.buildStaticContract or null);
-    merge = location: definitions:
-      if builtins.length definitions == 1
-      then (builtins.head definitions).value
-      else throw "The option '${builtins.concatStringsSep "." location}' requires exactly one selected artifact backend.";
+    check = backendRecordValid;
+    merge = location: definitions: let
+      value = (builtins.head definitions).value;
+    in
+      if builtins.length definitions != 1
+      then throw "The option '${builtins.concatStringsSep "." location}' requires exactly one selected artifact backend."
+      else if !backendRecordValid value
+      then throw "The option '${builtins.concatStringsSep "." location}' is not a complete package artifact backend."
+      else value;
   };
 in {
   options.aos.artifacts.backend = lib.mkOption {
