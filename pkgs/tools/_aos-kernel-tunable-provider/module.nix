@@ -35,8 +35,8 @@ in {
         fallback = null;
       };
       providerModule = {
-        inherit artifact;
-        path = "share/aos/providers/kernel-tunables.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "provider.nix";
       };
       desiredType = interface.realizationType;
       requiredFeatures = [];

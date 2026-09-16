@@ -184,8 +184,8 @@ in {
           fallback = null;
         };
         providerModule = {
-          artifact = packageArtifact;
-          path = "share/aos/providers/ebpf-lsm-policy-set.nix";
+          artifact = lib.abilities.packageOutput {output = "module";};
+          path = "provider.nix";
         };
         desiredType = realizationType;
         requiredFeatures = [];

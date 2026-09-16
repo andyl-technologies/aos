@@ -14,7 +14,7 @@
   }:
     qualification.operation {
       inherit input expected;
-      operation = "Check the installed provider module path.";
+      operation = "Check the installed package fixture path.";
       files = {};
       artifacts = [];
       steps = [
@@ -62,7 +62,7 @@ in
         name = "install";
         script = ''
           mkdir -p "$out/share/ability-package-smoke"
-          cp ${./_ability-package-smoke}/default.nix "$out/share/ability-package-smoke/provider.nix"
+          printf '%s\n' 'ability package smoke fixture' > "$out/share/ability-package-smoke/fixture"
         '';
       }
     ];
@@ -71,8 +71,8 @@ in
     qualification.packageProbe = qualification.packageProbe {
       primary = operation {
         input = "The installed package output.";
-        expected = "The package contains its provider module.";
-        path = "share/ability-package-smoke/provider.nix";
+        expected = "The package contains its fixture marker.";
+        path = "share/ability-package-smoke/fixture";
         exitCode = 0;
       };
       badInput = operation {

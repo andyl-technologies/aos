@@ -82,9 +82,6 @@ in
     '';
 
     postInstall = ''
-      mkdir -p "$out/share/aos/providers"
-      cp ${./_aos-boot-preparation-provider/provider.nix} \
-        "$out/share/aos/providers/boot-preparation.nix"
       test -x "$out/bin/aos-boot-preparation-provider"
       if patchelf --print-interpreter "$out/bin/aos-boot-preparation-provider" \
           > "$TMPDIR/aos-boot-preparation-provider.interpreter" 2>/dev/null; then

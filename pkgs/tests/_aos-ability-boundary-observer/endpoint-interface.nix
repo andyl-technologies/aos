@@ -95,8 +95,8 @@ in {
       guarantees = [];
       requirements = {};
       providerModule = {
-        artifact = lib.abilities.packageOutput {};
-        path = "share/aos/providers/ability-boundary-observer-endpoint.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "endpoint-provider.nix";
       };
       desiredType = null;
       requiredFeatures = [];

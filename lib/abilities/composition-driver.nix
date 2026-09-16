@@ -397,10 +397,9 @@
       providerInstance = controller.binding.providerInstance;
       inherit (controller) implementation provider;
     };
-  compositionGroups = builtins.map composeGroup (builtins.attrValues resourcesByController);
+  rawCompositionGroups = builtins.map composeGroup (builtins.attrValues resourcesByController);
 
-  resultGroups = provisionGroups ++ compositionGroups;
-  compositionChildEntries = childEntriesForGroups compositionGroups;
+  compositionChildEntries = childEntriesForGroups rawCompositionGroups;
   compositionGeneratedRequests = requestMapForChildren compositionChildEntries;
   childEntries = provisionChildEntries ++ compositionChildEntries;
   childrenByRequest = groupBy (child: child.request) childEntries;
@@ -411,6 +410,76 @@
     if !childRequestKeysUnique
     then fail "every derived child request key must have exactly one producer"
     else builtins.mapAttrs (_: children: (builtins.head children).declaration) childrenByRequest;
+
+  planningOutputFor = requestName: outputName: let
+    matching = builtins.concatLists (builtins.map (group:
+      if
+        builtins.hasAttr requestName group.result.outputs
+        && builtins.hasAttr outputName group.result.outputs.${requestName}
+      then [group.result.outputs.${requestName}.${outputName}]
+      else [])
+    provisionGroups);
+    selected =
+      builtins.filter (
+        entry: entry.binding.request == requestName
+      )
+      selections;
+    descriptor =
+      if builtins.length selected == 1
+      then (builtins.head selected).interface.outputs.${outputName} or null
+      else null;
+  in
+    if builtins.length matching != 1
+    then fail "composition resultOf '${requestName}.${outputName}' must resolve one exact provider output"
+    else if descriptor == null || descriptor.phase != "planning"
+    then fail "composition resultOf '${requestName}.${outputName}' is not a planning output"
+    else builtins.head matching;
+  resolveCompositionValue = groupKey: trail: value:
+    if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
+    then let
+      matchingChildren =
+        builtins.filter (
+          child:
+            child.originGroup
+            == groupKey
+            && child.localRequestKey == value.request
+        )
+        compositionChildEntries;
+      child =
+        if matchingChildren == []
+        then null
+        else if builtins.length matchingChildren == 1
+        then builtins.head matchingChildren
+        else fail "composition resultOf names ambiguous child request '${value.request}'";
+    in
+      if child == null
+      then value
+      else let
+        reference = "${child.request}.${value.output}";
+      in
+        if builtins.elem reference trail
+        then fail "composition output cycle includes '${reference}'"
+        else resolveCompositionValue groupKey (trail ++ [reference]) (planningOutputFor child.request value.output)
+    else if builtins.isAttrs value
+    then builtins.mapAttrs (_: resolveCompositionValue groupKey trail) value
+    else if builtins.isList value
+    then builtins.map (resolveCompositionValue groupKey trail) value
+    else value;
+  compositionGroups = builtins.map (group:
+    group
+    // {
+      result =
+        group.result
+        // {
+          realizations =
+            builtins.mapAttrs (
+              _: resolveCompositionValue group.groupKey []
+            )
+            group.result.realizations;
+        };
+    })
+  rawCompositionGroups;
+  resultGroups = provisionGroups ++ compositionGroups;
   childrenByOrigin = groupBy (child: child.originGroup) childEntries;
   childGroups =
     builtins.mapAttrs (_: children: {

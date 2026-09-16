@@ -88,14 +88,10 @@ in
     '';
 
     postInstall = ''
-      mkdir -p "$out/libexec" "$out/share/aos/providers"
+      mkdir -p "$out/libexec"
       mv "$out/bin/aos-nix-store-provider" \
         "$out/libexec/aos-nix-store-provider"
       ln -s ${nix}/bin/nix-store "$out/libexec/nix-store"
-      cp ${./_nix-store-provider.nix} \
-        "$out/share/aos/providers/nix-store-database.nix"
-      cp ${./_content-object-provider.nix} \
-        "$out/share/aos/providers/content-addressed-object.nix"
       test -x "$out/libexec/aos-nix-store-provider"
       test ! -e "$out/bin/aos-nix-store-provider"
       if patchelf --print-interpreter "$out/libexec/aos-nix-store-provider" \

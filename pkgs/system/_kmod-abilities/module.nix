@@ -46,8 +46,8 @@ in {
       guarantees = [];
       requirements.effects = effectsRequirement;
       providerModule = {
-        inherit artifact;
-        path = "share/aos/providers/kmod.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "provider.nix";
       };
       desiredType = realizationType;
       requiredFeatures = [];

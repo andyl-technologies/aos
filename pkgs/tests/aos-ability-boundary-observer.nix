@@ -84,11 +84,9 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p "$out/bin" "$out/share/aos/providers"
+          mkdir -p "$out/bin"
           ln -s ${controller}/bin/aos-ability-boundary-controller \
             "$out/bin/aos-ability-boundary-controller"
-          cp ${./_aos-ability-boundary-observer/endpoint-provider.nix} \
-            "$out/share/aos/providers/ability-boundary-observer-endpoint.nix"
         '';
       }
     ];

@@ -635,9 +635,6 @@ in
           mv "$out/bin/aos-registry-snapshot-provider" "$packageRuntime/libexec/"
           mv "$out/bin/aos-image-rollout-observer" "$packageRuntime/libexec/"
           mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/libexec/"
-          mkdir -p "$packageRuntime/share/aos/providers"
-          cp ${./_abilities/configuration-provider/provider.nix} \
-            "$packageRuntime/share/aos/providers/configuration-materialization.nix"
           ln -s ${coreutils}/bin/env "$packageRuntime/libexec/aos-env"
           ln -s ${nftables}/bin/nft "$packageRuntime/libexec/aos-nft"
           ln -s ${util-linux}/bin/setpriv "$packageRuntime/libexec/aos-setpriv"
@@ -661,7 +658,6 @@ in
         test -x "$packageRuntime/libexec/aos-registry-snapshot-provider"
         test -x "$packageRuntime/libexec/aos-image-rollout-observer"
         test -x "$packageRuntime/libexec/aos-image-rollout-provider"
-        test -s "$packageRuntime/share/aos/providers/configuration-materialization.nix"
       ''}
           ${lib.optionalString (!isDarwinCross) ''
         grep -Fqx 'export AOS_PRLIMIT="${util-linux}/bin/prlimit"' "$packageRuntime/bin/aos-package-runtime"

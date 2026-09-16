@@ -8,6 +8,7 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   packageArtifact = lib.abilities.packageOutput {};
+  moduleArtifact = lib.abilities.packageOutput {output = "module";};
   artifactDirectories = types.list {
     element = types.artifactPathReference;
     maxItems = 256;
@@ -173,8 +174,8 @@ in {
           };
         };
         providerModule = {
-          artifact = packageArtifact;
-          path = "share/aos/providers/dbus-registration.nix";
+          artifact = moduleArtifact;
+          path = "registration-provider.nix";
         };
         desiredType = realization;
         requiredFeatures = [];
@@ -186,8 +187,8 @@ in {
         methods = builtins.attrNames contributionMethods;
         guarantees = [];
         providerModule = {
-          artifact = packageArtifact;
-          path = "share/aos/providers/dbus-registration.nix";
+          artifact = moduleArtifact;
+          path = "registration-provider.nix";
         };
         desiredType = realization;
         requiredFeatures = [];

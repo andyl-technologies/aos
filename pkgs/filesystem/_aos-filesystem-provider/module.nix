@@ -4,9 +4,10 @@
   interfaces = serviceManagement.interfaces;
   types = lib.abilities.types;
   artifact = lib.abilities.packageOutput {};
+  moduleArtifact = lib.abilities.packageOutput {output = "module";};
   providerModule = {
-    inherit artifact;
-    path = "share/aos/providers/filesystem.nix";
+    artifact = moduleArtifact;
+    path = "provider.nix";
   };
   storageRealization = types.record {
     fields = {

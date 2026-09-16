@@ -33,8 +33,8 @@ in {
         package = "ability-package-smoke-provider";
       };
       providerModule = {
-        artifact = lib.abilities.packageOutput {};
-        path = "share/ability-package-smoke/provider.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "provider.nix";
       };
     };
 

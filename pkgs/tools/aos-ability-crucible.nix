@@ -84,12 +84,6 @@ in
     '';
 
     postInstall = ''
-      mkdir -p "$out/share/aos/providers"
-      cp ${./_aos-ability-crucible/endpoint-provider.nix} \
-        "$out/share/aos/providers/ability-crucible-endpoint.nix"
-      cp ${./_aos-ability-crucible/settings.nix} \
-        "$out/share/aos/providers/settings.nix"
-
       test -x "$out/bin/aos-ability-crucible"
       if patchelf --print-interpreter "$out/bin/aos-ability-crucible" \
           > "$TMPDIR/aos-ability-crucible.interpreter" 2>/dev/null; then

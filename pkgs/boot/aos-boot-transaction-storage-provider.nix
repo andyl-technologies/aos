@@ -83,9 +83,6 @@ in
     '';
 
     postInstall = ''
-      mkdir -p "$out/share/aos/providers"
-      cp ${./_aos-boot-transaction-storage-provider/provider.nix} \
-        "$out/share/aos/providers/boot-transaction-storage.nix"
       test -x "$out/bin/aos-boot-transaction-storage-provider"
       if patchelf --print-interpreter "$out/bin/aos-boot-transaction-storage-provider" \
           > "$TMPDIR/provider.interpreter" 2>/dev/null; then

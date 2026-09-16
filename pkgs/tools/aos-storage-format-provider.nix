@@ -85,9 +85,6 @@ in
     '';
 
     postInstall = ''
-      mkdir -p "$out/share/aos/providers"
-      cp ${./_storage-format-provider.nix} \
-        "$out/share/aos/providers/storage-format.nix"
       test -x "$out/bin/aos-storage-format-provider"
       if patchelf --print-interpreter "$out/bin/aos-storage-format-provider" \
           > "$TMPDIR/aos-storage-format-provider.interpreter" 2>/dev/null; then

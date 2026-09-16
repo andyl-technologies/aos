@@ -85,9 +85,6 @@ in
     '';
 
     postInstall = ''
-      mkdir -p "$out/share/aos/providers"
-      cp ${./_encrypted-block-mapping-provider.nix} \
-        "$out/share/aos/providers/encrypted-block-mapping.nix"
       test -x "$out/bin/aos-cryptsetup-provider"
       if patchelf --print-interpreter "$out/bin/aos-cryptsetup-provider" \
           > "$TMPDIR/aos-cryptsetup-provider.interpreter" 2>/dev/null; then

@@ -43,8 +43,8 @@ in {
           fallback = null;
         };
         providerModule = {
-          inherit artifact;
-          path = "share/aos/providers/boot-preparation.nix";
+          artifact = lib.abilities.packageOutput {output = "module";};
+          path = "provider.nix";
         };
         requiredFeatures = [];
       };

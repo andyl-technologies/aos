@@ -116,8 +116,8 @@ in {
         configurationTerminalIdentity
         interface.methods;
       providerModule = {
-        artifact = runtimeArtifact;
-        path = "share/aos/providers/configuration-materialization.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "configuration-provider/provider.nix";
       };
       desiredType = realizationType;
       requiredFeatures = [];
@@ -189,8 +189,8 @@ in {
           imagePlatformInterfaces.hostRestart.methods;
       };
       providerModule = {
-        artifact = runtimeArtifact;
-        path = "share/aos/providers/configuration-materialization.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "configuration-provider/provider.nix";
       };
       desiredType = rolloutRealizationType;
       requiredFeatures = [];
