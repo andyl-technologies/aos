@@ -6,6 +6,7 @@
 //! wall-clock, stdout, and stderr limits. The expression rejects functions,
 //! derivations, paths, and context-bearing strings before serialization.
 
+use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -24,7 +25,8 @@ use aos_ability_plan::{CompositionEvaluator, EvaluationError};
 use base64::Engine as _;
 use serde::de::DeserializeOwned;
 
-use super::stock::{locked_store_input, nix_string, store_root_and_suffix};
+use super::stock::{locked_evaluator_input_in, nix_string, store_root_and_suffix};
+use super::{EvaluatorInput, store_view::StoreViewLocator};
 
 static EVALUATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -202,6 +204,8 @@ pub struct RestrictedAbilityEvaluator {
     prlimit: PathBuf,
     nix_cache_home: PathBuf,
     limits: AbilityEvaluationLimits,
+    store_view: Option<StoreViewLocator>,
+    identity_store: Option<OsString>,
 }
 
 impl RestrictedAbilityEvaluator {
@@ -227,7 +231,26 @@ impl RestrictedAbilityEvaluator {
             prlimit: prlimit.into(),
             nix_cache_home: nix_cache_home.into(),
             limits: limits.validate()?,
+            store_view: None,
+            identity_store: None,
         })
+    }
+
+    /// Binds evaluation to one selected immutable package-store read view.
+    ///
+    /// Canonical package paths remain the authenticated identities used for
+    /// store queries. Nix imports read the corresponding immutable physical
+    /// paths from `store_view`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the locator is invalid or the selected identity
+    /// store cannot be derived from the evaluator environment.
+    pub fn with_store_view(mut self, store_view: StoreViewLocator) -> Result<Self> {
+        store_view.validate()?;
+        self.identity_store = super::selected_eval_store_uri()?;
+        self.store_view = Some(store_view);
+        Ok(self)
     }
 
     /// Evaluates one declared provider entry point and decodes its typed result.
@@ -302,9 +325,32 @@ impl RestrictedAbilityEvaluator {
             module.artifact.store_path.len() <= ABILITY_LIMITS_V1.max_string_bytes as usize,
             "ability module artifact store path exceeds the version-1 string limit"
         );
-        let root = store_root_and_suffix(Path::new(&module.artifact.store_path))?.0;
-        let allowed_uri = artifact_allowed_uri(&root, &module.artifact.nar_hash)?;
-        let expression = render_expression(module, entry, arguments)?;
+        let module_identity = Path::new(&module.artifact.store_path).join(module.path.as_str());
+        let input = self.evaluator_input(module_identity)?;
+        let (identity_root, suffix) = store_root_and_suffix(&input.identity)?;
+        if self.store_view.is_some() {
+            let actual = super::retained_store_path_nar_hash_in(
+                &identity_root,
+                self.identity_store.as_deref(),
+            )?;
+            ensure!(
+                crate::verify::sha256_hashes_equal(&actual, &module.artifact.nar_hash.to_string(),)?,
+                "ability module canonical identity differs from its authenticated NAR hash"
+            );
+        }
+        let read_root = input
+            .read_path
+            .ancestors()
+            .nth(suffix.components().count())
+            .context("ability module read path is shorter than its canonical suffix")?;
+        let allowed_uri = artifact_allowed_uri(read_root, &module.artifact.nar_hash)?;
+        let expression = render_expression_for_input(
+            module,
+            &input,
+            self.identity_store.as_deref(),
+            entry,
+            arguments,
+        )?;
         ensure!(
             expression.len() <= self.limits.expression_bytes,
             "ability expression exceeds the {} byte limit",
@@ -367,6 +413,25 @@ impl RestrictedAbilityEvaluator {
                 format!("decoding the typed Nix ability result: {error}"),
             ))
         })
+    }
+
+    fn evaluator_input(&self, identity: PathBuf) -> Result<EvaluatorInput> {
+        match &self.store_view {
+            Some(store_view) => EvaluatorInput::in_store_view(identity, store_view),
+            None => Ok(EvaluatorInput::canonical(identity)),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_store_view_and_identity_store(
+        mut self,
+        store_view: StoreViewLocator,
+        identity_store: OsString,
+    ) -> Result<Self> {
+        store_view.validate()?;
+        self.store_view = Some(store_view);
+        self.identity_store = Some(identity_store);
+        Ok(self)
     }
 
     fn create_evaluation_environment(&self) -> Result<EvaluationEnvironment> {
@@ -638,14 +703,30 @@ fn selected_entry(selected: AbilityEntryPoint) -> Result<LocalKey> {
     })?)
 }
 
+#[cfg(test)]
 fn render_expression(
     module: &ModuleLocator,
     entry: &LocalKey,
     arguments: &AbilityValue,
 ) -> Result<String> {
-    let module_path = Path::new(&module.artifact.store_path).join(module.path.as_str());
-    let artifact_input =
-        locked_store_input(&module_path, Some(&module.artifact.nar_hash.to_string()))?;
+    let input = EvaluatorInput::canonical(
+        Path::new(&module.artifact.store_path).join(module.path.as_str()),
+    );
+    render_expression_for_input(module, &input, None, entry, arguments)
+}
+
+fn render_expression_for_input(
+    module: &ModuleLocator,
+    input: &EvaluatorInput,
+    identity_store: Option<&std::ffi::OsStr>,
+    entry: &LocalKey,
+    arguments: &AbilityValue,
+) -> Result<String> {
+    let artifact_input = locked_evaluator_input_in(
+        input,
+        Some(&module.artifact.nar_hash.to_string()),
+        identity_store,
+    )?;
     let argument_json = aos_contract::canonical::to_vec(arguments.as_json())
         .context("encoding Nix ability arguments")?;
     let argument_json =
@@ -875,6 +956,7 @@ fn read_bounded(
 mod tests {
     use std::ffi::OsStr;
     use std::io::Cursor;
+    use std::process::Command;
 
     use aos_ability_model::{
         ArtifactReference, InterfaceKey, InterfaceName, RelativePath, RequirementDeclaration,
@@ -970,6 +1052,40 @@ mod tests {
             artifact: implementation.artifact.clone(),
             path: RelativePath::new("default.nix").unwrap(),
         }
+    }
+
+    fn executable_on_test_path(name: &str) -> PathBuf {
+        std::env::split_paths(&std::env::var_os("PATH").expect("test PATH"))
+            .map(|directory| directory.join(name))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| panic!("{name} is not available on the test PATH"))
+    }
+
+    fn add_path_to_local_store(store_uri: &str, source: &Path) -> PathBuf {
+        let output = Command::new("nix")
+            .args([
+                "--extra-experimental-features",
+                "nix-command",
+                "--store",
+                store_uri,
+                "store",
+                "add-path",
+            ])
+            .env_remove("LD_LIBRARY_PATH")
+            .arg(source)
+            .output()
+            .expect("add ability module to alternate local store");
+        assert!(
+            output.status.success(),
+            "adding ability module failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("UTF-8 local store path")
+                .trim(),
+        )
     }
 
     #[test]
@@ -1098,6 +1214,65 @@ mod tests {
     }
 
     #[test]
+    fn selected_store_evaluation_verifies_identity_and_reads_only_mapped_path() {
+        let store_root = tempfile::tempdir().expect("temporary local store root");
+        let module_source = tempfile::tempdir().expect("temporary ability module source");
+        std::fs::write(
+            module_source.path().join("default.nix"),
+            r#"{
+  compose = arguments: { inherit (arguments) enabled; };
+  transition = arguments: { inherit (arguments) enabled; };
+}
+"#,
+        )
+        .expect("write ability module");
+
+        let store_uri = format!("local?root={}", store_root.path().display());
+        let identity = add_path_to_local_store(&store_uri, module_source.path());
+        assert!(
+            !identity.exists(),
+            "test identity unexpectedly exists in the ambient store"
+        );
+
+        let nar_hash =
+            super::super::retained_store_path_nar_hash_in(&identity, Some(OsStr::new(&store_uri)))
+                .expect("hash ability module through its canonical identity store");
+        let nar_hash = Sha256Digest::parse(&nar_hash).expect("parse ability module NAR hash");
+        let mut implementation =
+            implementation_at(identity.to_str().expect("UTF-8 store identity"), nar_hash);
+        let module = module_for(&implementation);
+        implementation.provider_module = Some(module.clone());
+
+        let store_view = StoreViewLocator::new(
+            PathBuf::from("/nix/store"),
+            store_root.path().join("nix/store"),
+            PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-contract/contract.json"),
+        )
+        .expect("alternate selected store view");
+        let cache = tempfile::tempdir().expect("temporary ability evaluator cache");
+        let evaluator = RestrictedAbilityEvaluator::new(
+            executable_on_test_path("nix-instantiate"),
+            executable_on_test_path("prlimit"),
+            cache.path(),
+            AbilityEvaluationLimits::default(),
+        )
+        .expect("restricted evaluator")
+        .with_store_view_and_identity_store(store_view, store_uri.into())
+        .expect("bind alternate selected store view");
+
+        let result = evaluator
+            .evaluate::<EnabledResult>(
+                &implementation,
+                &module,
+                AbilityEntryPoint::Compose,
+                &arguments(),
+            )
+            .expect("evaluate ability through alternate selected store view");
+
+        assert_eq!(result, EnabledResult { enabled: true });
+    }
+
+    #[test]
     fn bounded_reader_never_retains_bytes_past_limit() {
         let (events, received_events) = mpsc::channel();
         let output = read_bounded(Cursor::new(vec![b'x'; 32]), 8, "stdout", events).unwrap();
@@ -1218,10 +1393,12 @@ mod tests {
         for path in rejected_paths {
             let mut implementation = implementation();
             implementation.artifact.store_path = path.to_string();
+            let module = module_for(&implementation);
+            implementation.provider_module = Some(module.clone());
             let error = evaluator
                 .evaluate::<serde_json::Value>(
                     &implementation,
-                    &module_for(&implementation),
+                    &module,
                     AbilityEntryPoint::Compose,
                     &arguments(),
                 )

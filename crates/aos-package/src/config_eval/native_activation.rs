@@ -116,7 +116,7 @@ pub(super) fn activate_config(
     );
     let packages = verify_generation_packages(&config, &manifests)
         .context("reverifying desired and retained native packages")?;
-    let mut evaluator = production_evaluator()?;
+    let mut evaluator = production_evaluator_for_store_view(&desired_manifest.inputs.store_view)?;
     let source_activation = specialize_activation(
         &desired_inputs,
         current_inputs.as_ref(),
@@ -300,7 +300,8 @@ pub(crate) fn preflight_retained_manifest(
     let packages = verify_generation_packages(&config, &manifests)
         .context("reverifying retained and current native packages")
         .map_err(RetainedNativePreflightError::Artifact)?;
-    let mut evaluator = production_evaluator().map_err(RetainedNativePreflightError::Provider)?;
+    let mut evaluator = production_evaluator_for_store_view(&desired_manifest.inputs.store_view)
+        .map_err(RetainedNativePreflightError::Provider)?;
     let activation = specialize_activation(
         &desired_inputs,
         current_inputs.as_ref(),
@@ -751,6 +752,12 @@ pub(super) fn production_evaluator() -> Result<RestrictedAbilityEvaluator> {
         Path::new(EVALUATOR_CACHE),
         AbilityEvaluationLimits::default(),
     )
+}
+
+pub(super) fn production_evaluator_for_store_view(
+    store_view: &super::store_view::StoreViewLocator,
+) -> Result<RestrictedAbilityEvaluator> {
+    production_evaluator()?.with_store_view(store_view.clone())
 }
 
 /// Returns the semantic feature set implemented by the native runtime.
