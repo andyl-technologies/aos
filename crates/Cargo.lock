@@ -858,6 +858,7 @@ dependencies = [
  "aos-proto-types",
  "aos-provider-protocol",
  "aos-registry-surface",
+ "aos-release",
  "aos-remote",
  "aos-storage-provisioning",
  "aos-systemd",

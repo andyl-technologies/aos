@@ -19,6 +19,7 @@ aos-net = { workspace = true, features = ["transfer"] }
 aos-oci-types = { workspace = true }
 aos-provider-protocol = { workspace = true }
 aos-remote = { workspace = true }
+aos-release = { workspace = true }
 aos-proto-types = { workspace = true }
 aos-systemd = { workspace = true }
 aos-storage-provisioning = { workspace = true }
