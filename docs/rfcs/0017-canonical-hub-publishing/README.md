@@ -28,10 +28,13 @@ rollout rings within a channel, not additional channels or repositories.
 qualify and serve the same immutable release objects at different stages. They
 are not distinct AOS distributions.
 
-Every stable release closes one four-target package matrix:
+This RFC's stable release policy selects and closes one four-target package
+matrix:
 `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`. Both
 Linux targets also carry the complete system-image and recovery matrix. Darwin
-targets carry packages and their authenticated supporting artifacts only.
+targets carry packages and their authenticated supporting artifacts only. The
+generic package platform schema remains open to other OS, CPU, ABI, and feature
+identities.
 
 The release flow is:
 
