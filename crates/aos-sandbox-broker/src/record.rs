@@ -973,16 +973,16 @@ fn encode_effect(
     intent: &BrokerEffectIntentV1,
     domain: BrokerDomain,
 ) -> Result<Vec<u8>, AuthorizationRecordError> {
-    if domain == BrokerDomain::Mount {
-        return encode_mount_effect_with_shared_codec(intent);
-    }
-    let lease_bytes = encode_local_lease_record(&intent.local_lease_record);
-    let receipt_length = u32::try_from(intent.receipt.len())
-        .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
     let encoded_verb = verb_code(domain, intent.verb);
     if encoded_verb == 0 {
         return Err(AuthorizationRecordError::InvalidPayload);
     }
+    if domain == BrokerDomain::Mount {
+        return encode_mount_effect_with_shared_codec(intent, encoded_verb);
+    }
+    let lease_bytes = encode_local_lease_record(&intent.local_lease_record);
+    let receipt_length = u32::try_from(intent.receipt.len())
+        .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
     let mut bytes = Vec::with_capacity(554 + intent.receipt.len());
     bytes.extend_from_slice(domain.effect_magic());
     bytes.extend_from_slice(&EFFECT_VERSION.to_be_bytes());
@@ -1085,6 +1085,7 @@ fn decode_effect(
 
 fn encode_mount_effect_with_shared_codec(
     intent: &BrokerEffectIntentV1,
+    encoded_verb: u8,
 ) -> Result<Vec<u8>, AuthorizationRecordError> {
     use aos_sandbox_protocol::mount_source_consumption_state::{
         StructurallyDecodedMountEffectV1, structurally_encode_mount_effect_payload_v1,
@@ -1117,7 +1118,7 @@ fn encode_mount_effect_with_shared_codec(
             BrokerEffectStatusV1::Pending => 0,
             BrokerEffectStatusV1::Complete => 1,
         },
-        verb: verb_code(BrokerDomain::Mount, intent.verb),
+        verb: encoded_verb,
         target_tag,
         target_identity,
         request_id: intent.request_id,

@@ -40,7 +40,7 @@ use super::{
     MAXIMUM_REQUEST_BYTES, NetworkNamespaceInspectionRequestV1, NetworkNamespaceInspectorError,
 };
 
-#[cfg(feature = "kernel-tests")]
+#[cfg(any(feature = "kernel-tests", feature = "protected-store-fixture"))]
 pub(super) mod fixture;
 
 const RECORD_MAGIC: &[u8; 8] = b"AOSNPS01";

@@ -912,7 +912,7 @@ fn publication_packet_is_retained_exactly_across_retry() {
     assert_eq!(state.pending, exact);
     assert!(matches!(
         HandshakeError::transport(SeqpacketError::Interrupted),
-        HandshakeError::Transport
+        HandshakeError::RetryableTransport
     ));
     drop(client_socket);
 }

@@ -226,6 +226,11 @@ where
     where
         W: Sync,
     {
+        if !is_exact_host_protocol(protocol_version) {
+            return Err(HostError::Authority(
+                aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
+            ));
+        }
         let candidate = classify_historical_runtime_request_v1(request_bytes, peer, policy)?;
         self.apply_runtime_candidate(
             candidate,

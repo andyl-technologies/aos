@@ -626,18 +626,17 @@ mod tests {
 
     #[test]
     fn all_broker_domains_admit_minor_zero_signed_requests() {
-        let version = ProtocolVersion::new(1, 0);
         let cases = [
-            (ProtocolId::StorageBroker, true),
-            (ProtocolId::HostBroker, true),
-            (ProtocolId::MountBroker, true),
-            (ProtocolId::NetworkBroker, true),
+            (ProtocolId::StorageBroker, ProtocolVersion::new(1, 0)),
+            (ProtocolId::HostBroker, ProtocolVersion::new(1, 0)),
+            (ProtocolId::MountBroker, ProtocolVersion::new(2, 0)),
+            (ProtocolId::NetworkBroker, ProtocolVersion::new(1, 0)),
         ];
 
-        for (protocol, expected) in cases {
+        for (protocol, version) in cases {
             assert_eq!(
                 supports_signed_admission(protocol, version),
-                expected,
+                true,
                 "unexpected signed-admission result for {protocol:?}"
             );
         }

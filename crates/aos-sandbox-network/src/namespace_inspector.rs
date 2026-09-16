@@ -61,7 +61,7 @@ pub use production::{
     NamespaceInspectorProductionError, run_inherited_network_namespace_inspector,
 };
 
-#[cfg(feature = "kernel-tests")]
+#[cfg(any(feature = "kernel-tests", feature = "protected-store-fixture"))]
 pub use store::fixture::{
     PROTECTED_STORE_EXT4_CASES, run_namespace_inspector_protected_store_ext4_fixture,
 };

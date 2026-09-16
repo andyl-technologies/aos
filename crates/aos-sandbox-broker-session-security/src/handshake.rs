@@ -454,7 +454,17 @@ impl HandshakeError {
     fn transport(error: SeqpacketError) -> Self {
         match error {
             SeqpacketError::WouldBlock | SeqpacketError::Interrupted => Self::RetryableTransport,
-            _ => Self::Transport,
+            SeqpacketError::EmptyRecord
+            | SeqpacketError::RecordTooLarge { .. }
+            | SeqpacketError::ControlTruncated
+            | SeqpacketError::PayloadTruncated
+            | SeqpacketError::LengthChanged { .. }
+            | SeqpacketError::Ancillary(_) => Self::RemoteInvalid,
+            SeqpacketError::Kernel(_)
+            | SeqpacketError::Closed
+            | SeqpacketError::InvalidMaximum
+            | SeqpacketError::PartialSend { .. }
+            | SeqpacketError::PeerIdentity(_) => Self::Transport,
         }
     }
 }

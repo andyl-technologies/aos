@@ -10,7 +10,7 @@ name = "aos-sandbox-network-protected-store-fixture"
 path = "src/main.rs"
 
 [dependencies]
-aos-sandbox-network = { workspace = true, features = ["kernel-tests"] }
+aos-sandbox-network = { workspace = true, features = ["protected-store-fixture"] }
 serde_json.workspace = true
 
 [lints]

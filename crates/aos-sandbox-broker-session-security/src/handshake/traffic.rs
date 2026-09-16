@@ -440,7 +440,7 @@ impl ClientAwaitOutcome {
         }
         let flight = match received {
             Ok(flight) => flight,
-            Err(HandshakeError::Transport) => return TrafficTransition::Retry(self),
+            Err(HandshakeError::RetryableTransport) => return TrafficTransition::Retry(self),
             Err(_) => {
                 self.carrier.close();
                 return TrafficTransition::Failed(TrafficProofError::RemoteInvalid);
@@ -611,7 +611,7 @@ impl BrokerAwaitRequest {
         }
         let flight = match received {
             Ok(flight) => flight,
-            Err(HandshakeError::Transport) => return TrafficTransition::Retry(self),
+            Err(HandshakeError::RetryableTransport) => return TrafficTransition::Retry(self),
             Err(_) => {
                 self.carrier.close();
                 return TrafficTransition::Failed(TrafficProofError::RemoteInvalid);

@@ -11,14 +11,12 @@ const PROTOCOL_LIBRARY_SOURCE: &str = include_str!("../../aos-sandbox-protocol/s
 const NETWORK_SERVICE_SOURCE: &str = include_str!("../../aos-sandbox-network/src/service.rs");
 
 #[test]
-fn dependency_boundary_has_no_forbidden_convenience_layer() {
+fn dependency_boundary_uses_only_explicit_wire_and_kernel_layers() {
     for forbidden in [
         "\nrand =",
         "\nrand_core =",
         "\ngetrandom =",
         "\nserde =",
-        "aos-proto",
-        "buffa",
         "journal",
     ] {
         assert!(
@@ -26,6 +24,11 @@ fn dependency_boundary_has_no_forbidden_convenience_layer() {
             "forbidden dependency marker: {forbidden}"
         );
     }
+
+    // The complete method adapters own canonical protobuf traffic directly;
+    // keep that wire dependency explicit instead of adding a generic codec.
+    assert_eq!(CRATE_MANIFEST.matches("aos-proto.workspace").count(), 1);
+    assert_eq!(CRATE_MANIFEST.matches("buffa.workspace").count(), 1);
     assert_eq!(CRATE_MANIFEST.matches("aos-sandbox-protocol").count(), 1);
 }
 
