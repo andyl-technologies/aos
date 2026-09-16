@@ -7,6 +7,8 @@
   mkCargoDummySource,
   aosWorkspaceSource,
   aosWorkspaceVendor,
+  coreutils,
+  grep,
   nix,
   patchelf,
 }: let
@@ -75,7 +77,7 @@ in
     cargoTestFlags = "-p aos-nix-store-provider";
     doCheck = true;
     buildDeps = [patchelf];
-    runtimeDeps = [nix];
+    runtimeDeps = [coreutils grep nix];
 
     abilities = ./_aos-nix-store-provider-module.nix;
 

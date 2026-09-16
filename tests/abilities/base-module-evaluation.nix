@@ -7,19 +7,10 @@
   module,
   packages,
   extraModules ? [],
-}: let
-  packageModule = package: {
-    inherit (package) version;
-    name = package.pname;
-    module = package.module + "/module.nix";
-    outputs = {
-      self = builtins.toString package;
-      dependencies = {};
-    };
-  };
-in
+  enableAbilitySelection ? false,
+}:
   lib.evalModules {
-    inherit lib pkgs;
+    inherit lib pkgs enableAbilitySelection;
     modules = [
       lib.abilities.module
       ../../modules/_package-contributions.nix
@@ -86,5 +77,5 @@ in
         };
       }
     ] ++ extraModules;
-    packageModules = builtins.map packageModule packages;
+    packageModules = builtins.map lib.abilities.authenticatedPackageModuleRecordFor packages;
   }

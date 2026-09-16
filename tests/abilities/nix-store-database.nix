@@ -38,6 +38,7 @@
   };
   evaluated = lib.evalModules {
     inherit lib;
+    enableAbilitySelection = true;
     modules = [
       lib.abilities.module
       {
@@ -45,7 +46,7 @@
           environment = {
             authority = "test";
             key = "nix-store-database";
-            stage = "host";
+            stage = "initrd";
           };
           instances."aos-nix-store-provider:manager" = {};
           bindings."test:nix-store-database" = {
@@ -77,7 +78,11 @@
     selectedProviderModules = [selectedProvider];
   };
   abilities = evaluated.config.aos.abilities;
-  desired = builtins.head (builtins.attrValues abilities.desiredResources);
+  desired = builtins.head (
+    builtins.filter
+    (resource: resource.kind == "aos.nix.store-database")
+    (builtins.attrValues abilities.desiredResources)
+  );
   readiness = abilities.compositionOutputs."consumer:database".readiness-resource;
   transition = abilities.implementations."aos-nix-store-provider:nix-store-database".transition;
   effectsInterface = lib.abilities.interfaceIdentity (
