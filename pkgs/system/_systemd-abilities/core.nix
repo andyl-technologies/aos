@@ -606,6 +606,9 @@
   packagedUnitEffectsIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration packagedUnitEffectsDeclaration
   );
+  packagedUnitIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration packagedUnitDeclaration
+  );
   packagedUnitEffectsRequirement = {
     alias = "packaged-unit-effects";
     description = "Selects the checked lower systemd packaged-unit effect handler.";
@@ -801,6 +804,15 @@
     description = "Selects the checked lower provider-neutral network-configuration effect handler.";
     accepted_interfaces = [networkConfigurationEffects.identity];
     inherit (networkConfigurationEffects) methods;
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
+  networkServiceUnitRequirement = {
+    alias = "network-service-unit";
+    description = "Selects the package-owned lifecycle controller for systemd network services.";
+    accepted_interfaces = [packagedUnitIdentity];
+    methods = ["apply" "observe" "remove"];
     guarantees = [];
     strength = "required";
     fallback = null;
@@ -1457,7 +1469,10 @@ in {
           inherit artifact;
           inherit (networkConfiguration) methods;
           guarantees = [];
-          requirements.network-configuration-effects = networkConfigurationEffectsRequirement;
+          requirements = {
+            network-configuration-effects = networkConfigurationEffectsRequirement;
+            network-service-unit = networkServiceUnitRequirement;
+          };
           providerModule = {
             inherit artifact;
             path = "share/aos/providers/systemd.nix";

@@ -1,8 +1,6 @@
 ##! modules/base/networking.nix — Network configuration module
 ##!
-##! Configures networking via systemd-networkd and systemd-resolved.
-##! Generates .network files for each interface, resolved.conf for DNS,
-##! and manages the hostname.
+##! Declares provider-neutral link, resolver, and hostname policy.
 ##!
 ##! Absorbed TOML config values:
 ##!   [network] hostname, use_dhcp, nameservers, search_domains
@@ -16,52 +14,6 @@
 }: let
   cfg = config.aos.networking;
   consumerInstance = "system:networking";
-  systemdPackagedUnitRequirement = "system:systemd-packaged-unit";
-  packagedUnitRequest = name: unitFile: {
-    requirement = systemdPackagedUnitRequirement;
-    consumer = consumerInstance;
-    scope = [name];
-    parameters = {
-      source = {
-        artifact = lib.abilities.packageOutput {package = "systemd";};
-        unit_file = unitFile;
-        unit_name = "${name}.service";
-      };
-      activation = "enabled";
-      prerequisites = [];
-      dependencies = {
-        after = [];
-        before = [];
-        requires = [];
-        wants = [];
-      };
-      drop_in = {
-        accepted_exit_statuses = [];
-        reload_triggers = [];
-        search_path = [];
-      };
-    };
-  };
-  packagedUnits = {
-    requirementTemplates.${systemdPackagedUnitRequirement} =
-      lib.abilities.interfaceSelector {
-        name = "aos.systemd.packaged-unit";
-        abi = 1;
-      }
-      // {
-        description = "Activate the exact network service units shipped by systemd.";
-        methods = ["apply" "observe" "remove"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-    requests = {
-      "system:networkd" = packagedUnitRequest "systemd-networkd" "lib/systemd/system/systemd-networkd.service";
-      "system:resolved" = lib.mkIf cfg.resolved.enable (
-        packagedUnitRequest "systemd-resolved" "lib/systemd/system/systemd-resolved.service"
-      );
-    };
-  };
   kernelTunables = lib.abilities.interfaces.serviceManagement.forProducer {
     inherit consumerInstance;
     key = "network-tunables";
@@ -225,11 +177,11 @@ in {
       '';
     };
 
-    ## Global DNS servers for systemd-resolved.
+    ## Global DNS servers for the selected resolver provider.
     nameservers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [];
-      description = "Global DNS servers for systemd-resolved.";
+      description = "Global DNS servers for the selected resolver provider.";
     };
 
     ## DNS search domains.
@@ -273,7 +225,7 @@ in {
       default = {};
       description = ''
         VLAN interface definitions. Each key becomes a netdev and network
-        unit in systemd-networkd. Example:
+        link in the selected network provider. Example:
           vlans.vlan100 = { id = 100; interface = "eth0"; address = "10.100.0.5/24"; };
       '';
     };
@@ -303,7 +255,7 @@ in {
       default = {};
       description = ''
         Bond interface definitions. Each key becomes a netdev and network
-        unit in systemd-networkd. Example:
+        link in the selected network provider. Example:
           bonds.bond0 = { interfaces = ["eth0" "eth1"]; mode = "802.3ad"; };
       '';
     };
@@ -320,11 +272,11 @@ in {
     };
 
     resolved = {
-      ## Enable systemd-resolved for DNS resolution.
+      ## Enable provider-managed DNS resolution.
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Enable systemd-resolved for DNS resolution.";
+        description = "Enable DNS resolution through the selected network provider.";
       };
 
       ## DNSSEC validation mode.
@@ -345,7 +297,6 @@ in {
       {instances.${consumerInstance} = {};}
       kernelTunables
       networkConfiguration
-      packagedUnits
     ];
 
     system.checks.networking-base = {
@@ -384,12 +335,9 @@ in {
         ]
         ++ lib.optionals cfg.resolved.enable [
           {
-            name = "resolver-compatibility-link";
-            description = "libc resolver configuration points at systemd-resolved";
+            name = "resolver-configuration";
+            description = "libc resolver configuration is populated";
             script = ''
-              vm.wait_for_unit("systemd-resolved.service")
-              vm.succeed("test -L /etc/resolv.conf")
-              vm.succeed("test \"$(readlink /etc/resolv.conf)\" = /run/systemd/resolve/stub-resolv.conf")
               vm.succeed("test -s /etc/resolv.conf")
             '';
           }

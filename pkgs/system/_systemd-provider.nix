@@ -459,15 +459,56 @@
     realizationSchema = lib.abilities.singletonSchemaDiscriminator
       "systemd network configuration realization"
       networkConfigurationController.desiredType;
+    packagedUnit = name: unitFile: {
+      requirement = "network-service-unit";
+      scope = ["network-service" name];
+      slot = name;
+      parameters = {
+        source = {
+          artifact = lib.abilities.packageOutput {};
+          unit_file = unitFile;
+          unit_name = "${name}.service";
+        };
+        activation = "enabled";
+        prerequisites = [];
+        dependencies = {
+          after = [];
+          before = [];
+          requires = [];
+          wants = [];
+        };
+        drop_in = {
+          accepted_exit_statuses = [];
+          reload_triggers = [];
+          search_path = [];
+        };
+      };
+    };
+    lifecycleRequests = resource:
+      {
+        networkd = packagedUnit "systemd-networkd" "lib/systemd/system/systemd-networkd.service";
+      }
+      // lib.optionalAttrs resource.value.resolver.enabled {
+        resolved = packagedUnit "systemd-resolved" "lib/systemd/system/systemd-resolved.service";
+      };
   in
     emptyResult
     // {
-      requests = builtins.mapAttrs (key: resource: {
-        requirement = "network-configuration-effects";
-        scope = ["network-configuration-effects"];
-        slot = key;
-        parameters = {};
-      }) resources;
+      requests = lib.foldlAttrs (requests: key: resource:
+        requests
+        // {
+          "${key}-effects" = {
+            requirement = "network-configuration-effects";
+            scope = ["network-configuration-effects"];
+            slot = key;
+            parameters = {};
+          };
+        }
+        // lib.mapAttrs' (name: request: {
+          name = "${key}-${name}";
+          value = request;
+        }) (lifecycleRequests resource)) {}
+      resources;
       realizations = builtins.mapAttrs (_: _: {
         schema = realizationSchema;
         systemd = systemdReference;
