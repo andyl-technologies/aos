@@ -503,15 +503,6 @@ in rec {
   in
     decorate "file mode" schema (moduleTypes.addCheck moduleTypes.str (value:
         builtins.match "[0-7]{3,4}" value != null));
-  capabilityName = let
-    schema = schemas.string {
-      maxLength = 128;
-      syntax = null;
-    };
-  in
-    decorate "Linux capability name" schema (moduleTypes.addCheck moduleTypes.str (value:
-        builtins.match "CAP_[A-Z0-9_]+" value != null));
-
   interfaceKey = record {
     fields = {
       name = qualifiedName;
