@@ -128,6 +128,7 @@ pub(super) fn assemble(
         let attributes = ArtifactAttributes {
             platform: Some(output.platform),
             system_variant: None,
+            image: None,
             media_type: "application/x-nix-nar".to_owned(),
             compression: compression(&entry.info.compression)?,
             derivation: Some(output.derivation.clone()),

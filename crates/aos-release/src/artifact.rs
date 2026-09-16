@@ -84,7 +84,7 @@ impl<'de> Deserialize<'de> for BundlePath {
     }
 }
 
-/// Closed kinds of files admitted to a release bundle.
+/// Provider-neutral kinds of files admitted to a release bundle.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ArtifactKind {
@@ -116,49 +116,8 @@ pub enum ArtifactKind {
     License,
     /// Public qualification or policy evidence.
     Evidence,
-    /// A realized AOS system toplevel.
-    SystemToplevel,
-    /// Canonical finalized logical disk before delivery encoding.
-    LogicalDisk,
-    /// Raw disk delivery encoding.
-    RawImage,
-    /// QCOW2 disk delivery encoding.
-    Qcow2Image,
-    /// VMDK disk delivery encoding.
-    VmdkImage,
-    /// Dynamic VHD disk delivery encoding.
-    VhdImage,
-    /// Normal unified kernel image.
-    Uki,
-    /// Recovery unified kernel image.
-    RecoveryUki,
-    /// Signed recovery artifact set.
-    RecoveryBundle,
-    /// Re-derived final image metadata.
-    ImageMetadata,
-    /// Firmware enrollment or rotation artifact.
-    FirmwareEnrollment,
-}
-
-impl ArtifactKind {
-    /// Returns whether this kind is valid only for a Linux platform.
-    #[must_use]
-    pub const fn is_linux_image(self) -> bool {
-        matches!(
-            self,
-            Self::SystemToplevel
-                | Self::LogicalDisk
-                | Self::RawImage
-                | Self::Qcow2Image
-                | Self::VmdkImage
-                | Self::VhdImage
-                | Self::Uki
-                | Self::RecoveryUki
-                | Self::RecoveryBundle
-                | Self::ImageMetadata
-                | Self::FirmwareEnrollment
-        )
-    }
+    /// One artifact interpreted by its selected image-provider contract.
+    Image,
 }
 
 /// Delivery compression applied to the exact file bytes.
@@ -207,6 +166,21 @@ pub enum ArtifactRelation {
     Documents,
 }
 
+/// Provider-authored semantic identity for one opaque image artifact.
+///
+/// The generic release manifest binds the identity to an authenticated
+/// contract artifact without interpreting the provider's role vocabulary.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageArtifactIdentity {
+    /// Provider-owned schema of the contract that defines this role.
+    pub contract_schema: String,
+    /// Artifact id of the authenticated provider contract document.
+    pub contract_artifact: String,
+    /// Provider-owned role within that contract.
+    pub role: String,
+}
+
 /// One exact regular file in the closed release bundle.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -219,6 +193,8 @@ pub struct ArtifactRecord {
     pub platform: Option<Platform>,
     /// System variant for image artifacts.
     pub system_variant: Option<String>,
+    /// Opaque provider contract identity, present only for image artifacts.
+    pub image: Option<ImageArtifactIdentity>,
     /// Exact regular-file path below the bundle root.
     pub path: BundlePath,
     /// Exact file length.
@@ -259,7 +235,7 @@ impl ArtifactRecord {
         {
             bail!("artifact {} has an invalid media type", self.id);
         }
-        if self.kind.is_linux_image() {
+        if self.kind == ArtifactKind::Image {
             let platform = self
                 .platform
                 .ok_or_else(|| anyhow::anyhow!("image artifact {} lacks a platform", self.id))?;
@@ -268,9 +244,26 @@ impl ArtifactRecord {
             }
             let variant = self.system_variant.as_deref().unwrap_or_default();
             require_identifier(variant, "system variant")?;
+            let image = self.image.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("image artifact {} lacks its provider identity", self.id)
+            })?;
+            require_identifier(&image.contract_schema, "image artifact contract schema")?;
+            if !image.contract_schema.contains('/') {
+                bail!("image artifact contract schema must be domain separated");
+            }
+            require_identifier(&image.contract_artifact, "image artifact contract")?;
+            require_identifier(&image.role, "image artifact role")?;
+            if !image.role.contains('/') {
+                bail!("image artifact role must be domain separated");
+            }
         } else if self.system_variant.is_some() {
             bail!(
                 "non-image artifact {} cannot name a system variant",
+                self.id
+            );
+        } else if self.image.is_some() {
+            bail!(
+                "non-image artifact {} cannot name an image contract",
                 self.id
             );
         }

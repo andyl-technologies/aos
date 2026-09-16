@@ -118,7 +118,7 @@ impl ImageCapabilities {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityEvidence {
-    /// ImageMetadata artifact included in this case's exact subject set.
+    /// Provider metadata artifact included in this case's exact subject set.
     pub metadata_artifact: String,
     /// Complete canonical metadata value, never an unbound capability extract.
     pub metadata: serde_json::Value,
@@ -141,7 +141,7 @@ impl CapabilityEvidence {
             .find(|artifact| artifact.id == self.metadata_artifact)
             .ok_or_else(|| anyhow::anyhow!("capability metadata artifact is absent"))?;
         let bytes = crate::canonical::canonical_json(&self.metadata)?;
-        if artifact.kind != ArtifactKind::ImageMetadata
+        if artifact.kind != ArtifactKind::Image
             || !subjects.contains(&artifact.id)
             || artifact.sha256 != Sha256Digest::of_bytes(&bytes)
             || artifact.size_bytes != u64::try_from(bytes.len())?

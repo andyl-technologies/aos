@@ -3,8 +3,7 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Result, bail};
-use aos_release::artifact::BundlePath;
-use aos_release::artifact::require_identifier;
+use aos_release::artifact::{BundlePath, Compression, require_identifier};
 use aos_release::digest::Sha256Digest;
 use aos_release::platform::Platform;
 use aos_release::signing::SignatureResponseV1;
@@ -44,6 +43,21 @@ pub enum FinalizedImageKind {
 }
 
 impl FinalizedImageKind {
+    /// Complete selected-provider artifact inventory.
+    pub const ALL: [Self; 11] = [
+        Self::LogicalDisk,
+        Self::Raw,
+        Self::Qcow2,
+        Self::Vmdk,
+        Self::Vhd,
+        Self::UkiA,
+        Self::UkiB,
+        Self::RecoveryUkiA,
+        Self::RecoveryUkiB,
+        Self::RecoveryBundle,
+        Self::Metadata,
+    ];
+
     /// Returns the stable artifact id assigned to this output kind.
     #[must_use]
     pub const fn artifact_id(self) -> &'static str {
@@ -61,6 +75,100 @@ impl FinalizedImageKind {
             Self::Metadata => "metadata",
         }
     }
+
+    /// Returns the provider-owned release projection for this output kind.
+    #[must_use]
+    pub fn publication(self) -> ImageArtifactPublicationV1 {
+        let (role, media_type, compression, encodes) = match self {
+            Self::LogicalDisk => (
+                "aos.systemd.image-artifact.logical-disk/v1",
+                "application/vnd.aos.logical-disk.raw",
+                Compression::None,
+                None,
+            ),
+            Self::Raw => (
+                "aos.systemd.image-artifact.raw-delivery/v1",
+                "application/vnd.aos.disk-image.raw+zstd",
+                Compression::Zstd,
+                Some("logical-disk"),
+            ),
+            Self::Qcow2 => (
+                "aos.systemd.image-artifact.qcow2-delivery/v1",
+                "application/vnd.aos.disk-image.qcow2",
+                Compression::None,
+                Some("logical-disk"),
+            ),
+            Self::Vmdk => (
+                "aos.systemd.image-artifact.vmdk-delivery/v1",
+                "application/vnd.vmware.vmdk",
+                Compression::None,
+                Some("logical-disk"),
+            ),
+            Self::Vhd => (
+                "aos.systemd.image-artifact.vhd-delivery/v1",
+                "application/vnd.microsoft.vhd",
+                Compression::None,
+                Some("logical-disk"),
+            ),
+            Self::UkiA => (
+                "aos.systemd.image-artifact.boot-payload-a/v1",
+                "application/vnd.aos.uki",
+                Compression::None,
+                None,
+            ),
+            Self::UkiB => (
+                "aos.systemd.image-artifact.boot-payload-b/v1",
+                "application/vnd.aos.uki",
+                Compression::None,
+                None,
+            ),
+            Self::RecoveryUkiA => (
+                "aos.systemd.image-artifact.recovery-payload-a/v1",
+                "application/vnd.aos.uki",
+                Compression::None,
+                None,
+            ),
+            Self::RecoveryUkiB => (
+                "aos.systemd.image-artifact.recovery-payload-b/v1",
+                "application/vnd.aos.uki",
+                Compression::None,
+                None,
+            ),
+            Self::RecoveryBundle => (
+                "aos.systemd.image-artifact.recovery-set/v1",
+                "application/vnd.aos.recovery-bundle.v1+tar+zstd",
+                Compression::Zstd,
+                None,
+            ),
+            Self::Metadata => (
+                "aos.systemd.image-artifact.metadata/v1",
+                "application/vnd.aos.image-metadata.v1+json",
+                Compression::None,
+                None,
+            ),
+        };
+
+        ImageArtifactPublicationV1 {
+            role: role.to_owned(),
+            media_type: media_type.to_owned(),
+            compression,
+            encodes: encodes.map(str::to_owned),
+        }
+    }
+}
+
+/// Provider-authored release projection for one finalized image artifact.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageArtifactPublicationV1 {
+    /// Opaque semantic role interpreted by the selected image provider.
+    pub role: String,
+    /// Public media type of the exact artifact bytes.
+    pub media_type: String,
+    /// Delivery compression already applied to the artifact bytes.
+    pub compression: Compression,
+    /// Provider-local artifact id reconstructed by this encoding, when any.
+    pub encodes: Option<String>,
 }
 
 /// Exact final output bytes.
@@ -71,6 +179,8 @@ pub struct FinalizedImageArtifactV1 {
     pub id: String,
     /// Closed artifact purpose.
     pub kind: FinalizedImageKind,
+    /// Provider-authored projection into the generic release inventory.
+    pub publication: ImageArtifactPublicationV1,
     /// Relative path beneath the finalized image-set root.
     pub path: BundlePath,
     /// Exact byte length.
@@ -127,6 +237,7 @@ impl FinalizedImageSetV1 {
         for artifact in &self.artifacts {
             require_identifier(&artifact.id, "finalized image artifact id")?;
             if artifact.id != artifact.kind.artifact_id()
+                || artifact.publication != artifact.kind.publication()
                 || artifact.size_bytes == 0
                 || !kinds.insert(artifact.kind)
                 || !paths.insert(artifact.path.as_str())
@@ -134,19 +245,17 @@ impl FinalizedImageSetV1 {
                 bail!("finalized image set contains a mislabeled, empty, or duplicate artifact");
             }
         }
-        for required in [
-            FinalizedImageKind::LogicalDisk,
-            FinalizedImageKind::Raw,
-            FinalizedImageKind::Qcow2,
-            FinalizedImageKind::Vmdk,
-            FinalizedImageKind::Vhd,
-            FinalizedImageKind::UkiA,
-            FinalizedImageKind::UkiB,
-            FinalizedImageKind::RecoveryUkiA,
-            FinalizedImageKind::RecoveryUkiB,
-            FinalizedImageKind::RecoveryBundle,
-            FinalizedImageKind::Metadata,
-        ] {
+        for artifact in &self.artifacts {
+            if let Some(encoded) = artifact.publication.encodes.as_deref()
+                && !self
+                    .artifacts
+                    .iter()
+                    .any(|candidate| candidate.id == encoded)
+            {
+                bail!("finalized image artifact encodes an absent provider artifact");
+            }
+        }
+        for required in FinalizedImageKind::ALL {
             if !kinds.contains(&required) {
                 bail!("finalized image set lacks required {required:?} output");
             }
@@ -171,5 +280,21 @@ impl FinalizedImageSetV1 {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_publication_roles_are_unique_and_domain_separated() {
+        let mut roles = BTreeSet::new();
+
+        for kind in FinalizedImageKind::ALL {
+            let publication = kind.publication();
+            assert!(publication.role.contains('/'));
+            assert!(roles.insert(publication.role));
+        }
     }
 }

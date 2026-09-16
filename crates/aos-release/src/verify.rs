@@ -281,7 +281,7 @@ pub(crate) mod tests {
     use crate::RELEASE_JOURNAL_ENTRY_V1;
     use crate::artifact::{
         ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath,
-        Compression,
+        Compression, ImageArtifactIdentity,
     };
     use crate::canonical;
     use crate::digest::Sha256Digest;
@@ -344,21 +344,15 @@ pub(crate) mod tests {
         format!("package/example/{platform}")
     }
 
-    fn image_ids(platform: Platform) -> Vec<(String, ArtifactKind)> {
-        [
-            ("logical-disk", ArtifactKind::LogicalDisk),
-            ("raw", ArtifactKind::RawImage),
-            ("qcow2", ArtifactKind::Qcow2Image),
-            ("vmdk", ArtifactKind::VmdkImage),
-            ("vhd", ArtifactKind::VhdImage),
-            ("uki", ArtifactKind::Uki),
-            ("recovery-uki", ArtifactKind::RecoveryUki),
-            ("recovery-bundle", ArtifactKind::RecoveryBundle),
-            ("metadata", ArtifactKind::ImageMetadata),
-        ]
-        .into_iter()
-        .map(|(name, kind)| (format!("image/server/{platform}/{name}"), kind))
-        .collect()
+    fn image_ids(platform: Platform) -> Vec<String> {
+        ["payload", "metadata"]
+            .into_iter()
+            .map(|name| format!("image/server/{platform}/{name}"))
+            .collect()
+    }
+
+    fn image_contract_id(platform: Platform) -> String {
+        format!("provenance/image/server/{platform}/provider-contract")
     }
 
     fn artifact(
@@ -366,16 +360,36 @@ pub(crate) mod tests {
         kind: ArtifactKind,
         platform: Option<Platform>,
         system_variant: Option<&str>,
-        relationships: Vec<ArtifactRelationship>,
+        mut relationships: Vec<ArtifactRelationship>,
     ) -> anyhow::Result<(ArtifactRecord, Vec<u8>)> {
         let bytes = format!("exact bytes for {id}").into_bytes();
         let path = BundlePath::parse(format!("objects/{id}"))?;
+        let image = if kind == ArtifactKind::Image {
+            let platform = platform.context("test image artifact lacks a platform")?;
+            let role = id
+                .rsplit('/')
+                .next()
+                .context("test image artifact lacks a local id")?;
+            let contract_artifact = image_contract_id(platform);
+            relationships.push(ArtifactRelationship {
+                relation: ArtifactRelation::Documents,
+                target: contract_artifact.clone(),
+            });
+            Some(ImageArtifactIdentity {
+                contract_schema: "aos.test.image-provider/v1".to_owned(),
+                contract_artifact,
+                role: format!("aos.test.image-artifact.{role}/v1"),
+            })
+        } else {
+            None
+        };
         Ok((
             ArtifactRecord {
                 id,
                 kind,
                 platform,
                 system_variant: system_variant.map(str::to_owned),
+                image,
                 path,
                 size_bytes: u64::try_from(bytes.len())?,
                 sha256: Sha256Digest::of_bytes(&bytes),
@@ -414,10 +428,7 @@ pub(crate) mod tests {
         let image_cells: Vec<PlatformCell<PlannedArtifactSet>> = Platform::LINUX
             .into_iter()
             .map(|platform| {
-                let ids = image_ids(platform)
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .collect::<Vec<_>>();
+                let ids = image_ids(platform);
                 PlatformCell {
                     platform,
                     decision: MatrixCell::Artifact {
@@ -527,10 +538,17 @@ pub(crate) mod tests {
             )?);
         }
         for platform in Platform::LINUX {
-            for (id, kind) in image_ids(platform) {
+            payloads.push(artifact(
+                image_contract_id(platform),
+                ArtifactKind::Provenance,
+                Some(platform),
+                None,
+                Vec::new(),
+            )?);
+            for id in image_ids(platform) {
                 payloads.push(artifact(
                     id,
-                    kind,
+                    ArtifactKind::Image,
                     Some(platform),
                     Some("server"),
                     Vec::new(),
@@ -551,6 +569,7 @@ pub(crate) mod tests {
             kind: ArtifactKind::ReleasePlan,
             platform: None,
             system_variant: None,
+            image: None,
             path: BundlePath::parse("release-plan.json")?,
             size_bytes: u64::try_from(plan_bytes.len())?,
             sha256: Sha256Digest::of_bytes(&plan_bytes),
@@ -591,10 +610,7 @@ pub(crate) mod tests {
                 platforms: image_cells
                     .into_iter()
                     .map(|cell| {
-                        let ids = image_ids(cell.platform)
-                            .into_iter()
-                            .map(|(id, _)| id)
-                            .collect::<Vec<_>>();
+                        let ids = image_ids(cell.platform);
                         PlatformCell {
                             platform: cell.platform,
                             decision: MatrixCell::Artifact {
@@ -614,12 +630,7 @@ pub(crate) mod tests {
                 subjects: Platform::ALL
                     .into_iter()
                     .map(package_id)
-                    .chain(
-                        Platform::LINUX
-                            .into_iter()
-                            .flat_map(image_ids)
-                            .map(|(id, _)| id),
-                    )
+                    .chain(Platform::LINUX.into_iter().flat_map(image_ids))
                     .collect(),
                 result: GateResult::Passed,
                 report_digest: evidence_report_digest,
@@ -765,11 +776,12 @@ pub(crate) mod tests {
         manifest.artifacts.push(value);
         let metadata =
             crate::canonical::canonical_json(&crate::test_support::qualification::metadata()?)?;
-        for artifact in manifest
-            .artifacts
-            .iter_mut()
-            .filter(|artifact| artifact.kind == ArtifactKind::ImageMetadata)
-        {
+        for artifact in manifest.artifacts.iter_mut().filter(|artifact| {
+            artifact
+                .image
+                .as_ref()
+                .is_some_and(|identity| identity.role == "aos.test.image-artifact.metadata/v1")
+        }) {
             artifact.sha256 = Sha256Digest::of_bytes(&metadata);
             artifact.size_bytes = u64::try_from(metadata.len())?;
         }
@@ -1477,6 +1489,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn image_artifact_requires_its_exact_provider_contract() -> anyhow::Result<()> {
+        let fixture = release_fixture()?;
+        let plan: ReleasePlanV1 = canonical::from_slice(&fixture.plan, "fixture plan")?;
+        let envelope: ManifestEnvelopeV1 =
+            canonical::from_slice(&fixture.envelope, "fixture manifest")?;
+        let mut manifest = envelope.payload;
+        let image = manifest
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.kind == ArtifactKind::Image)
+            .context("fixture lacks an image artifact")?;
+        image
+            .relationships
+            .retain(|relationship| relationship.relation != ArtifactRelation::Documents);
+
+        assert!(manifest.validate(&plan).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn journal_verifier_rejects_skipped_state() -> anyhow::Result<()> {
         let first = entry(1, None, None, ReleaseState::Planned);
         let first_digest = Sha256Digest::of_canonical("aos.release.journal-entry/v1", &first)?;
@@ -1681,13 +1713,15 @@ pub(crate) mod tests {
     #[test]
     fn complete_release_fixture_verifies() -> anyhow::Result<()> {
         let fixture = release_fixture()?;
+        let envelope: ManifestEnvelopeV1 =
+            canonical::from_slice(&fixture.envelope, "fixture manifest")?;
         let summary = verify_release(
             &fixture.plan,
             &fixture.envelope,
             &fixture.files,
             &[fixture.key],
         )?;
-        assert_eq!(summary.artifact_count, 30);
+        assert_eq!(summary.artifact_count, envelope.payload.artifacts.len());
         assert_eq!(summary.evidence_count, 1);
         assert_eq!(summary.signatures_verified, 1);
         Ok(())
