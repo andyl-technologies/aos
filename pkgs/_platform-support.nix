@@ -750,7 +750,7 @@ let
     "system/_systemd-abilities/share/aos/providers/_systemd-service-provider-lib.nix" = "target-independent-source";
     "system/_systemd-abilities/share/aos/providers/_systemd-service-transition.nix" = "target-independent-source";
     "system/_systemd-abilities/share/aos/providers/_systemd-unit-document.nix" = "target-independent-source";
-    "tests/_ability-package-smoke-module.nix" = "target-independent-source";
+    "tests/_ability-package-smoke-module/module.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
     "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";
@@ -785,7 +785,7 @@ let
   # Source fragments kept below underscore-prefixed directories are also
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
-    "tests/_ability-package-smoke/default.nix" = "linux-only-test-source";
+    "tests/_ability-package-smoke-module/share/ability-package-smoke/provider.nix" = "linux-only-test-source";
     "boot/_aos-boot-preparation-provider/module.nix" = "linux-only-config-source";
     "boot/_aos-boot-preparation-provider/provider.nix" = "target-independent-source";
     "containers/_containerd-config/module.nix" = "linux-only-config-source";

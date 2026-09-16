@@ -3,24 +3,10 @@
   lib,
   pkgs,
 }: let
-  artifactReference = {
-    content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd";
-    nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-  };
-  systemdSelector = lib.abilities.packageOutput {};
   selectedSystemdProvider = import ./_selected-package-provider.nix {
     inherit lib;
     package = pkgs.systemd;
     implementation = "network-configuration";
-    artifactLocators.${builtins.toJSON {
-      package = systemdSelector.package;
-      output = systemdSelector.output;
-    }} = {
-      path = artifactReference.store_path;
-      inherit artifactReference;
-    };
   };
   consumer = {lib, ...}: {
     config.aos.abilities = lib.mkMerge [
@@ -183,7 +169,7 @@ in
   assert resource.kind == "aos.network.configuration";
   assert !(resource.value ? bootstrap);
   assert resource.lifetime == "persistent";
-  assert resource.realization.systemd.store_path == artifactReference.store_path;
+  assert resource.realization.systemd == lib.abilities.packageOutput {};
   assert builtins.isFunction abilities.implementations."systemd:network-configuration".transition;
   assert abilities.implementations."systemd:network-configuration".handlerDescriptor == null;
   assert abilities.implementations."systemd:network-configuration-effects".providerModule == null;

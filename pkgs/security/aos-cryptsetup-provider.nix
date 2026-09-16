@@ -70,7 +70,7 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [];
 
-    abilities = ./_aos-cryptsetup-provider-module.nix;
+    abilities = ./_aos-cryptsetup-provider;
 
     preBuild = staticBuildSetup;
 
@@ -80,7 +80,7 @@ in
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
-      cp ${./_encrypted-block-mapping-provider.nix} \
+      cp ${./_aos-cryptsetup-provider/share/aos/providers/encrypted-block-mapping.nix} \
         "$out/share/aos/providers/encrypted-block-mapping.nix"
       test -x "$out/bin/aos-cryptsetup-provider"
       if patchelf --print-interpreter "$out/bin/aos-cryptsetup-provider" \

@@ -82,8 +82,10 @@ in
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
-      cp ${./_aos-zfs-provider/pool-provider.nix} "$out/share/aos/providers/storage-pool.nix"
-      cp ${./_aos-zfs-provider/dataset-provider.nix} "$out/share/aos/providers/storage-dataset.nix"
+      cp ${./_aos-zfs-provider/share/aos/providers/storage-pool.nix} \
+        "$out/share/aos/providers/storage-pool.nix"
+      cp ${./_aos-zfs-provider/share/aos/providers/storage-dataset.nix} \
+        "$out/share/aos/providers/storage-dataset.nix"
       for provider in aos-zfs-pool-provider aos-zfs-dataset-provider aos-zfs-memory-policy aos-zfs-maintenance; do
         test -x "$out/bin/$provider"
         if patchelf --print-interpreter "$out/bin/$provider" \

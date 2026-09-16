@@ -70,7 +70,7 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [];
 
-    abilities = ./_aos-storage-format-provider-module.nix;
+    abilities = ./_aos-storage-format-provider;
 
     preBuild = staticBuildSetup;
 
@@ -80,7 +80,7 @@ in
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
-      cp ${./_storage-format-provider.nix} \
+      cp ${./_aos-storage-format-provider/share/aos/providers/storage-format.nix} \
         "$out/share/aos/providers/storage-format.nix"
       test -x "$out/bin/aos-storage-format-provider"
       if patchelf --print-interpreter "$out/bin/aos-storage-format-provider" \

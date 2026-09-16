@@ -70,7 +70,7 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [systemd util-linux];
 
-    abilities = ./_aos-storage-provisioning-provider/module.nix;
+    abilities = ./_aos-storage-provisioning-provider;
     preBuild = staticBuildSetup;
 
     preInstall = ''
@@ -79,7 +79,7 @@ in
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
-      cp ${./_aos-storage-provisioning-provider/provider.nix} \
+      cp ${./_aos-storage-provisioning-provider/share/aos/providers/storage-provisioning.nix} \
         "$out/share/aos/providers/storage-provisioning.nix"
       test -x "$out/bin/aos-storage-provisioning-provider"
       if patchelf --print-interpreter "$out/bin/aos-storage-provisioning-provider" \

@@ -44,12 +44,13 @@ in
         name = "install";
         script = ''
           mkdir -p "$out/share/ability-package-smoke"
-          cp ${./_ability-package-smoke}/default.nix "$out/share/ability-package-smoke/provider.nix"
+          cp ${./_ability-package-smoke-module/share/ability-package-smoke/provider.nix} \
+            "$out/share/ability-package-smoke/provider.nix"
         '';
       }
     ];
 
-    abilities = ./_ability-package-smoke-module.nix;
+    abilities = ./_ability-package-smoke-module;
     qualification.packageProbe = qualification.packageProbe {
       primary = operation {
         input = "The installed package output.";

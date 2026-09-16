@@ -67,7 +67,7 @@ in
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [];
-    abilities = ./_aos-boot-preparation-provider/module.nix;
+    abilities = ./_aos-boot-preparation-provider;
 
     preBuild = staticBuildSetup;
 
@@ -77,7 +77,7 @@ in
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
-      cp ${./_aos-boot-preparation-provider/provider.nix} \
+      cp ${./_aos-boot-preparation-provider/share/aos/providers/boot-preparation.nix} \
         "$out/share/aos/providers/boot-preparation.nix"
       test -x "$out/bin/aos-boot-preparation-provider"
       if patchelf --print-interpreter "$out/bin/aos-boot-preparation-provider" \

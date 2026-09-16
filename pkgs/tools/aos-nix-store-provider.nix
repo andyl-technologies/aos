@@ -90,7 +90,7 @@ in
       ln -s ${nix}/bin/nix-store "$out/libexec/nix-store"
       cp ${./_aos-nix-store-provider/share/aos/providers/nix-store-database.nix} \
         "$out/share/aos/providers/nix-store-database.nix"
-      cp ${./_content-object-provider.nix} \
+      cp ${./_aos-nix-store-provider/share/aos/providers/content-addressed-object.nix} \
         "$out/share/aos/providers/content-addressed-object.nix"
       test -x "$out/libexec/aos-nix-store-database-effects"
       test -x "$out/libexec/aos-content-addressed-object"

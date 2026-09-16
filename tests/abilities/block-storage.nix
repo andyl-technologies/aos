@@ -12,23 +12,10 @@
   selectedPoolProvider = selectedProvider pkgs.aos-zfs-provider "storage-pool";
   selectedDatasetProvider = selectedProvider pkgs.aos-zfs-provider "storage-dataset";
   selectedProvisioningProvider = selectedProvider pkgs.aos-storage-provisioning-provider "storage-provisioning";
-  systemdSelector = lib.abilities.packageOutput {};
   selectedNetworkProvider = import ./_selected-package-provider.nix {
     inherit lib;
     package = pkgs.systemd;
     implementation = "network-configuration";
-    artifactLocators.${builtins.toJSON {
-      package = systemdSelector.package;
-      output = systemdSelector.output;
-    }} = {
-      path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd";
-      artifactReference = {
-        content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd";
-        nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-      };
-    };
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   storageInterfaces = lib.abilities.interfaces.blockStorage.interfaces;
@@ -213,6 +200,7 @@
                 requests,
                 ...
               }: {
+                conditionalRequirements = [];
                 requests = {};
                 resourceFragments = {};
                 outputs = builtins.mapAttrs (_: _: {

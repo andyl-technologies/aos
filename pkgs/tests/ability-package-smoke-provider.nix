@@ -28,7 +28,8 @@ in
         name = "install";
         script = ''
           mkdir -p "$out"
-          cp ${./_ability-package-smoke}/default.nix "$out/default.nix"
+          cp ${./_ability-package-smoke-module/share/ability-package-smoke/provider.nix} \
+            "$out/default.nix"
           printf '%s\n' '${selfReferentialDependency}' > "$out/transitive-dependency"
         '';
       }
