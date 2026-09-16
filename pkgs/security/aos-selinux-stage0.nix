@@ -17,7 +17,8 @@
     else throw "aos-selinux-stage0: admissionUnit must name a .target unit";
   qualificationPostPinGateValue =
     if
-      qualificationPostPinGate == ""
+      qualificationPostPinGate
+      == ""
       || builtins.match "/run/aos/[A-Za-z0-9_.-]+" qualificationPostPinGate != null
     then qualificationPostPinGate
     else throw "aos-selinux-stage0: qualificationPostPinGate must be empty or a canonical /run/aos path";
@@ -34,6 +35,8 @@ in
     ];
     runtimeDeps = [];
     propagatedDeps = [];
+    outputChecks = {};
+
     # These logical identities are executable security inputs, not build-tool
     # leakage. Preserve them through the deny-by-default reference scrub so
     # the output closure retains exactly the two authenticated entry roots.

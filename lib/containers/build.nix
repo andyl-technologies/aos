@@ -12,6 +12,7 @@
   systemIdentity,
   definitionAttribute,
 }: let
+  buildPkgs = pkgs.buildPackages;
   releaseIdentity =
     systemIdentity.release
     or {
@@ -49,12 +50,13 @@
 
   auditRoots = uniqueByPath (builtins.concatMap (layer: layer.roots) container.layers);
   runtimeAudit = import ../build/runtime-closure-audit.nix {
-    inherit pkgs lib;
+    pkgs = buildPkgs;
+    inherit lib;
     name = "container-${container.name}";
     roots = auditRoots;
     inherit (container.budgets) maxClosureMiB maxDevelopmentPayloadMiB;
   };
-  bakedRootInventory = pkgs.writeTextFile {
+  bakedRootInventory = buildPkgs.writeTextFile {
     name = "aos-container-${container.name}-baked-roots";
     text =
       builtins.concatStringsSep "\n" (map builtins.toString container.packageRoots)
@@ -190,7 +192,7 @@
     inherit lib pkgs;
     defaultCommand = container.runtime.command;
   };
-  initSource = pkgs.writeTextFile {
+  initSource = buildPkgs.writeTextFile {
     name = "aos-container-${container.name}-init";
     text = initScript;
     destination = "/init";
@@ -245,7 +247,8 @@
       rootPaths = auditRoots;
     };
     facadeLayer = import ./facade-layer.nix {
-      inherit lib pkgs oci referenceGraph;
+      pkgs = buildPkgs;
+      inherit lib oci referenceGraph;
       packageRoots = container.packageRoots;
       explicit = container.filesystem.facade;
       expectedCollisions = container.filesystem.allowedFacadeCollisions;
@@ -389,25 +392,25 @@
     platformBuild = repeat;
   };
   publicationInputs = import ./publication-inputs.nix {
-    inherit pkgs;
+    pkgs = buildPkgs;
     pname = "aos-container-${container.name}-${container.platform.architecture}-publication-inputs";
     index = primary.ociIndex;
     evidenceLayout = evidence;
   };
   publicationInputsRepeat = import ./publication-inputs.nix {
-    inherit pkgs;
+    pkgs = buildPkgs;
     pname = "aos-container-${container.name}-${container.platform.architecture}-publication-inputs-repeat";
     index = repeat.ociIndex;
     evidenceLayout = evidenceRepeat;
   };
-  reproducibility = pkgs.mkDerivation {
+  reproducibility = buildPkgs.mkDerivation {
     pname = "aos-container-${container.name}-${container.platform.architecture}-reproducibility";
     version = "1";
     src = null;
     buildDeps = [
-      pkgs.coreutils
-      pkgs.diffutils
-      pkgs.jq
+      buildPkgs.coreutils
+      buildPkgs.diffutils
+      buildPkgs.jq
       primary.image
       repeat.image
       primary.dockerArchive
@@ -486,11 +489,11 @@
       })
       container.layers;
   };
-  metadata = pkgs.mkDerivation {
+  metadata = buildPkgs.mkDerivation {
     pname = "aos-container-${container.name}-metadata";
     version = "1";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.jq];
+    buildDeps = [buildPkgs.coreutils buildPkgs.jq];
     outputChecks.out = {};
     inherit metadataSpec;
     unsafeDiscardReferences.out = true;

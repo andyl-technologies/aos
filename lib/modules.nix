@@ -709,6 +709,7 @@
             mkForce
             ;
           inherit mkOrder mkBefore mkAfter;
+          inherit mkEnableOption mkPackageOption;
         }
       else lib;
 

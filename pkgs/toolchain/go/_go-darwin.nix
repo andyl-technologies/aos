@@ -9,7 +9,7 @@
   pname,
   version,
   src,
-  update,
+  update ? null,
   nativeGo,
   nativeCc ? null,
   legacyCBootstrap ? false,

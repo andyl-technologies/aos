@@ -6,7 +6,6 @@
 ##! versions), for use by pre-built binaries that need shared libstdc++.
 {
   mkDerivation,
-  lib,
   stdenv,
   bootstrapTools,
   buildPackages,
@@ -30,8 +29,7 @@
 
   glibc = bootstrapTools.libc;
   gcc = bootstrapTools.cc;
-  trim = value: lib.removeSuffix "\n" value;
-  interp = trim (builtins.readFile "${bootstrapTools}/nix-support/dynamic-linker");
+  interp = "${glibc}/lib/${stdenv.hostPlatform.dynamicLinker}";
   platformConfig = stdenv.hostPlatform.config;
   expectedCrossElfMachine =
     if stdenv.hostPlatform.isAarch64

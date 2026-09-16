@@ -103,7 +103,7 @@ in
           assert fields[1] == b"1", fields[1]
           assert fields[4].endswith(b"/bin/aos-selinux-runtime-roots"), fields[4]
           policy = pathlib.Path(
-              "${stage0.expectedPolicy}"
+              "${stage0.passthru.expectedPolicy}"
           ).read_bytes()
           assert fields[5] == hashlib.sha256(policy).hexdigest().encode(), fields[5]
           count = int(fields[6])

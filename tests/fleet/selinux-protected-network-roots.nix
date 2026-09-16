@@ -27,70 +27,68 @@
     aos.boot.initrd.stage0 = lib.mkForce qualificationStage0;
     aos.image.erofsCompressionLevel = 1;
 
-    boot.initrd.systemd.services.aos-protected-root-adversary =
-      lib.mkIf (mode == "shadows") {
-        description = "Shadow logical protected-root executables before switch-root";
-        requiredBy = ["initrd-switch-root.target"];
-        requires = [
-          "mount-var.service"
-          "nix-overlay-setup.service"
-          "etc-overlay-setup.service"
-        ];
-        after = [
-          "mount-var.service"
-          "nix-overlay-setup.service"
-          "etc-overlay-setup.service"
-        ];
-        before = ["initrd-switch-root.target"];
-        serviceConfig = {
-          Type = "oneshot";
-          StandardOutput = "journal+console";
-          StandardError = "journal+console";
-        };
-        script = ''
-          set -eu
-
-          printf 'AOS_SHADOWED_RUNTIME_ROOTS\n' > /run/shadow-runtime-roots
-          printf 'AOS_SHADOWED_LIBSELINUX\n' > /run/shadow-libselinux
-          printf 'AOS_SHADOWED_POLICY\n' > /run/shadow-policy
-          chmod 0555 /run/shadow-runtime-roots /run/shadow-libselinux
-          chmod 0444 /run/shadow-policy
-
-          ${pkgs.util-linux}/bin/mount --bind \
-            /run/shadow-runtime-roots \
-            /sysroot/nix/store/${runtimeRootsBasename}/bin/aos-selinux-runtime-roots
-          ${pkgs.util-linux}/bin/mount --bind \
-            /run/shadow-libselinux \
-            /sysroot/nix/store/${libselinuxBasename}/lib/libselinux.so.1
-          ${pkgs.util-linux}/bin/mount --bind \
-            /run/shadow-policy \
-            /sysroot/nix/store/${policyBasename}/etc/selinux/aos/policy/policy.33
-          echo "AOS protected-root adversary: helper DSO and policy shadowed"
-        '';
+    boot.initrd.systemd.services.aos-protected-root-adversary = lib.mkIf (mode == "shadows") {
+      description = "Shadow logical protected-root executables before switch-root";
+      requiredBy = ["initrd-switch-root.target"];
+      requires = [
+        "mount-var.service"
+        "nix-overlay-setup.service"
+        "etc-overlay-setup.service"
+      ];
+      after = [
+        "mount-var.service"
+        "nix-overlay-setup.service"
+        "etc-overlay-setup.service"
+      ];
+      before = ["initrd-switch-root.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
       };
+      script = ''
+        set -eu
 
-    systemd.services.aos-protected-root-submount-adversary =
-      lib.mkIf (mode == "submount") {
-        description = "Replace /var/lib with a qualification-only submount";
-        requiredBy = ["sysinit.target"];
-        requires = ["var.mount"];
-        after = ["var.mount"];
-        before = ["aos-sandbox-network-roots.service" "sysinit.target"];
-        unitConfig.DefaultDependencies = false;
-        serviceConfig = {
-          Type = "oneshot";
-          StandardOutput = "journal+console";
-          StandardError = "journal+console";
-        };
-        script = ''
-          set -eu
+        printf 'AOS_SHADOWED_RUNTIME_ROOTS\n' > /run/shadow-runtime-roots
+        printf 'AOS_SHADOWED_LIBSELINUX\n' > /run/shadow-libselinux
+        printf 'AOS_SHADOWED_POLICY\n' > /run/shadow-policy
+        chmod 0555 /run/shadow-runtime-roots /run/shadow-libselinux
+        chmod 0444 /run/shadow-policy
 
-          mkdir -p /run/aos-protected-root-submount
-          ${pkgs.util-linux}/bin/mount --bind \
-            /run/aos-protected-root-submount /var/lib
-          echo "AOS protected-root adversary: /var/lib submount installed"
-        '';
+        ${pkgs.util-linux}/bin/mount --bind \
+          /run/shadow-runtime-roots \
+          /sysroot/nix/store/${runtimeRootsBasename}/bin/aos-selinux-runtime-roots
+        ${pkgs.util-linux}/bin/mount --bind \
+          /run/shadow-libselinux \
+          /sysroot/nix/store/${libselinuxBasename}/lib/libselinux.so.1
+        ${pkgs.util-linux}/bin/mount --bind \
+          /run/shadow-policy \
+          /sysroot/nix/store/${policyBasename}/etc/selinux/aos/policy/policy.33
+        echo "AOS protected-root adversary: helper DSO and policy shadowed"
+      '';
+    };
+
+    systemd.services.aos-protected-root-submount-adversary = lib.mkIf (mode == "submount") {
+      description = "Replace /var/lib with a qualification-only submount";
+      requiredBy = ["sysinit.target"];
+      requires = ["var.mount"];
+      after = ["var.mount"];
+      before = ["aos-sandbox-network-roots.service" "sysinit.target"];
+      unitConfig.DefaultDependencies = false;
+      serviceConfig = {
+        Type = "oneshot";
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
       };
+      script = ''
+        set -eu
+
+        mkdir -p /run/aos-protected-root-submount
+        ${pkgs.util-linux}/bin/mount --bind \
+          /run/aos-protected-root-submount /var/lib
+        echo "AOS protected-root adversary: /var/lib submount installed"
+      '';
+    };
   };
 
   systemFor = mode:
@@ -111,12 +109,13 @@ in
   assert protectedConfig.aos.filesystems.rootFsType == "erofs";
   assert !protectedConfig.aos.filesystems.zfs.enable;
   assert protectedConfig.aos.boot.initrd.stage0 == qualificationStage0;
-  assert protectedConfig.aos.boot.initrd.stage0.admissionUnit == "";
-  assert protectedConfig.aos.boot.initrd.stage0.loadedPolicy == "${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
-  assert protectedConfig.aos.boot.initrd.stage0.runtimeRootsProvisioner == runtimeRoots;
+  assert protectedConfig.aos.boot.initrd.stage0.passthru.admissionUnit == "";
+  assert protectedConfig.aos.boot.initrd.stage0.passthru.loadedPolicy == "${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+  assert protectedConfig.aos.boot.initrd.stage0.passthru.runtimeRootsProvisioner == runtimeRoots;
   # `+` restores root credentials for this systemd-spawned preflight; the
   # labeled helper still performs the only SELinux domain transition.
-  assert protectedConfig.systemd.services.aos-netd.serviceConfig.ExecStartPre == [
+  assert protectedConfig.systemd.services.aos-netd.serviceConfig.ExecStartPre
+  == [
     "+/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots ${runtimeRoots}/bin/aos-selinux-runtime-roots --root / --prepare-sandbox-network-roots"
   ]; {
     name = "selinux-protected-network-roots";

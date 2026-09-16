@@ -485,65 +485,72 @@ in {
         }
         {
           assertion =
-            countKernelParameter "selinux" == 1
+            countKernelParameter "selinux"
+            == 1
             && builtins.elem "selinux=1" config.aos.boot.kernelParams;
           message = "immutable SELinux stage 0 requires exactly one selinux=1 parameter.";
         }
         {
           assertion =
-            countKernelParameter "security" == 1
+            countKernelParameter "security"
+            == 1
             && builtins.elem "security=selinux" config.aos.boot.kernelParams;
           message = "immutable SELinux stage 0 requires exactly one security=selinux parameter.";
         }
         {
           assertion =
-            countKernelParameter "enforcing" == 1
+            countKernelParameter "enforcing"
+            == 1
             && builtins.elem "enforcing=1" config.aos.boot.kernelParams;
           message = "immutable SELinux stage 0 requires exactly one enforcing=1 parameter.";
         }
         {
           assertion =
-            countKernelParameter "aos.selinux.root_handoff" == 1
+            countKernelParameter "aos.selinux.root_handoff"
+            == 1
             && builtins.elem "aos.selinux.root_handoff=1" config.aos.boot.kernelParams;
           message = "immutable SELinux stage 0 requires exactly one aos.selinux.root_handoff=1 parameter.";
         }
         {
           assertion =
-            countKernelParameter "rootflags" == 1
+            countKernelParameter "rootflags"
+            == 1
             && builtins.elem "rootflags=nodev" config.aos.boot.kernelParams;
           message = "immutable SELinux stage 0 requires exactly one rootflags=nodev parameter.";
         }
         {
-          assertion = selectedStage0 != null && (selectedStage0.loadedPolicy or null) == canonicalPolicyPath;
+          assertion = selectedStage0 != null && (selectedStage0.passthru.loadedPolicy or null) == canonicalPolicyPath;
           message = "immutable SELinux stage 0 must load the canonical production policy.";
         }
         {
-          assertion = selectedStage0 != null && (selectedStage0.expectedPolicy or null) == canonicalPolicyPath;
+          assertion = selectedStage0 != null && (selectedStage0.passthru.expectedPolicy or null) == canonicalPolicyPath;
           message = "immutable SELinux stage 0 must authenticate the canonical production policy.";
         }
         {
-          assertion = selectedStage0 != null && (selectedStage0.immutablePolicy or null) == productionPolicy;
+          assertion = selectedStage0 != null && (selectedStage0.passthru.immutablePolicy or null) == productionPolicy;
           message = "immutable SELinux stage 0 must identify the canonical immutable policy derivation.";
         }
         {
           assertion =
-            selectedStage0 != null
+            selectedStage0
+            != null
             && (
-              (selectedStage0.admissionUnit or null) == productionAdmissionUnit
+              (selectedStage0.passthru.admissionUnit or null)
+              == productionAdmissionUnit
               || (
                 cfg._qualificationAdmissionRelease
                 && config.aos.image.allowTestArtifacts
-                && (selectedStage0.admissionUnit or null) == ""
+                && (selectedStage0.passthru.admissionUnit or null) == ""
               )
             );
           message = "immutable SELinux stage 0 must retain the production admission hold target.";
         }
         {
-          assertion = selectedStage0 != null && (selectedStage0.runtimeRootsProvisioner or null) == runtimeRootsProvisioner;
+          assertion = selectedStage0 != null && (selectedStage0.passthru.runtimeRootsProvisioner or null) == runtimeRootsProvisioner;
           message = "immutable SELinux stage 0 must authenticate the canonical runtime-root provisioner.";
         }
         {
-          assertion = selectedStage0 != null && (selectedStage0.qualificationPostPinGate or null) == "";
+          assertion = selectedStage0 != null && (selectedStage0.passthru.qualificationPostPinGate or null) == "";
           message = "immutable SELinux stage 0 forbids the qualification post-pin gate in production composition.";
         }
       ];

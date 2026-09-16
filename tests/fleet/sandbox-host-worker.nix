@@ -195,7 +195,7 @@
             "AOS_SANDBOX_QUALIFICATION_NSPAWN=${pkgs.systemd}/bin/systemd-nspawn"
             "AOS_SANDBOX_QUALIFICATION_GUARDIAN=${pkgs.aos-sandbox-guardian}/bin/aos-sandbox-guardian"
             "AOS_SANDBOX_QUALIFICATION_SYSTEMCTL=${pkgs.systemd}/bin/systemctl"
-            "AOS_SANDBOX_QUALIFICATION_SYSTEMD_VERSION=259.8"
+            "AOS_SANDBOX_QUALIFICATION_SYSTEMD_VERSION=261.2"
             "AOS_SANDBOX_QUALIFICATION_NSENTER=${pkgs.util-linux}/bin/nsenter"
             "AOS_SANDBOX_QUALIFICATION_SETPRIV=${pkgs.util-linux}/bin/setpriv"
           ];

@@ -130,25 +130,48 @@
 
   hostFixture = import ../fixtures/maintainer-update-repo/default.nix {
     bash = builtins.unsafeDiscardStringContext "${pkgs.bash}";
+    crossSystem = pkgs.stdenv.hostPlatform.system;
   };
-  mountedPackageDerivation = builtins.storePath (builtins.unsafeDiscardStringContext hostFixture.pkgs.maintain-fixture.drvPath);
-  mountedSourceDerivation =
-    builtins.storePath
-    (builtins.unsafeDiscardStringContext
-      (builtins.elemAt hostFixture.maintenanceInventory.units 0).components.main.sources.source.derivation);
-  packageDerivationRecord =
-    builtins.toFile "maintain-fixture-package-derivation-record"
-    (builtins.unsafeDiscardStringContext (builtins.readFile mountedPackageDerivation));
-  sourceDerivationRecord =
-    builtins.toFile "maintain-fixture-source-derivation-record"
-    (builtins.unsafeDiscardStringContext (builtins.readFile mountedSourceDerivation));
+  mountedPackageDerivation =
+    builtins.unsafeDiscardStringContext hostFixture.pkgs.maintain-fixture.drvPath;
+  mountedSourceDerivation = builtins.unsafeDiscardStringContext (
+    (builtins.elemAt hostFixture.maintenanceInventory.units 0).components.main.sources.source.derivation
+  );
+  derivationRecord = name: derivationPath: let
+    contextualPath = builtins.appendContext derivationPath {
+      ${derivationPath} = {path = true;};
+    };
+  in
+    pkgs.mkDerivation {
+      pname = name;
+      version = "1";
+      src = null;
+      DERIVATION_PATH = contextualPath;
+      dontStrip = true;
+      dontNukeRefs = true;
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p "$out"
+            cp "$DERIVATION_PATH" "$out/record"
+          '';
+        }
+      ];
+    };
+  packageDerivationRecordRoot =
+    derivationRecord "maintain-fixture-package-derivation-record" mountedPackageDerivation;
+  sourceDerivationRecordRoot =
+    derivationRecord "maintain-fixture-source-derivation-record" mountedSourceDerivation;
+  packageDerivationRecord = "${packageDerivationRecordRoot}/record";
+  sourceDerivationRecord = "${sourceDerivationRecordRoot}/record";
 
   mountedClosure = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     rootPaths = [
       fixtureRepository
       maintainerToolBundle
-      packageDerivationRecord
-      sourceDerivationRecord
+      packageDerivationRecordRoot
+      sourceDerivationRecordRoot
     ];
     pname = "maintainer-update-e2e-closure-info";
   };

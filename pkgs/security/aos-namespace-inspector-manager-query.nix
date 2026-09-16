@@ -1,4 +1,4 @@
-##! aos-namespace-inspector-manager-query — Bounded systemd 259 manager query helper
+##! aos-namespace-inspector-manager-query — Bounded systemd 261 manager query helper
 {
   lib,
   mkDerivation,
@@ -21,7 +21,7 @@
     (fixtureDirectory + "/namespace-inspector-manager-query-fixture-cases.c")
   ];
 in
-  assert systemd.version == "259.8";
+  assert systemd.version == "261.2";
     mkDerivation {
       pname = "aos-namespace-inspector-manager-query";
       version = "1";

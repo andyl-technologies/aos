@@ -16,7 +16,9 @@
   isAarch64 = builtins.match "aarch64-.*" system != null;
 
   configFile = "${pkgs.linux}/boot/config-${pkgs.linux.version}";
-  linuxSource = import ../../pkgs/kernel/_source.nix {inherit (pkgs) fetchurl;};
+  linuxSource = import ../../pkgs/kernel/_source.nix {
+    inherit (pkgs) fetchurl mkManualUpstream;
+  };
   configDir = ../../pkgs/kernel/config;
 
   # Symbols required to be enabled (CONFIG_<name>=y). Includes key-free,

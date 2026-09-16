@@ -64,17 +64,17 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps =
-      [
-        pkgs.bash
-        pkgs.coreutils
-        pkgs.findutils
-        pkgs.gzip
-        pkgs.jq
-        pkgs.tar
-        referenceGraph
-      ]
-      ++ packageRoots;
+    # Target package roots are contextual paths in facadeSpec, not executable
+    # host tools. Keeping them out of buildDeps preserves cross-build roles.
+    buildDeps = [
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.findutils
+      pkgs.gzip
+      pkgs.jq
+      pkgs.tar
+      referenceGraph
+    ];
 
     outputChecks.out = {};
     inherit facadeSpec;

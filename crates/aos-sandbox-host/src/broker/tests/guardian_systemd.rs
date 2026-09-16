@@ -1458,7 +1458,7 @@ fn inspect_live_guardian(systemctl: &str, armed: &ArmedGuardian) -> LiveGuardian
 
 fn assert_packaged_systemd_version(systemctl: &str) {
     let expected = std::env::var("AOS_SANDBOX_QUALIFICATION_SYSTEMD_VERSION").unwrap();
-    assert_eq!(expected, "259.8");
+    assert_eq!(expected, "261.2");
     let output = Command::new(systemctl).arg("--version").output().unwrap();
     assert!(
         output.status.success(),
@@ -1466,7 +1466,7 @@ fn assert_packaged_systemd_version(systemctl: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(stdout.lines().next(), Some("systemd 259 (259.8)"));
+    assert_eq!(stdout.lines().next(), Some("systemd 261 (261.2)"));
 }
 
 fn systemctl_properties(

@@ -378,7 +378,7 @@ in {
         ProtectProc = "invisible";
         ProtectSystem = "strict";
         # ProtectKernelTunables also forces the entire bpffs API mount read-only.
-        # Spell out systemd 259.8's complete tunables protection set, then use
+        # Spell out systemd 261.2's complete tunables protection set, then use
         # its documented nested path exception for only this worker's pins.
         InaccessiblePaths = [
           "-/proc/kallsyms"

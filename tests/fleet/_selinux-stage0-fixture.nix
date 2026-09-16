@@ -1,5 +1,8 @@
 # Test-only low-level wiring for deliberately non-production stage-0 packages.
-{lib, pkgs}: stage0: {
+{
+  lib,
+  pkgs,
+}: stage0: {
   # Runtime-negative fixtures must be able to embed malformed or mismatched
   # policy bytes. Keep that capability below the production SELinux module so
   # its final assertions remain fail-closed for every deployable composition.
@@ -17,13 +20,12 @@
   ];
 
   system.build.immutableSelinuxPolicy = pkgs.aos-selinux-production-policy;
-  environment.etc."selinux/aos".source =
-    "${pkgs.aos-selinux-production-policy}/etc/selinux/aos";
+  environment.etc."selinux/aos".source = "${pkgs.aos-selinux-production-policy}/etc/selinux/aos";
   environment.etc."ld.so.preload".text = "";
 
   assertions = [
     {
-      assertion = stage0 != null;
+      assertion = !builtins.isNull stage0;
       message = "the SELinux stage-0 test fixture requires a stage-0 package";
     }
     {

@@ -15,7 +15,7 @@
   containerSchema = import ../../lib/containers/schema.nix;
   oci = import ../../lib/build/oci {
     inherit lib;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+    inherit (pkgs.buildPackages) mkDerivation coreutils findutils gzip jq tar;
   };
   retainedSource = name: source:
     pkgs.writeTextFile {

@@ -51,64 +51,69 @@
   admissionOverride = pkgs.aosSelinuxStage0With {
     admissionUnit = admissionTarget;
   };
-  immutablePolicyOverride = canonicalStage0 // {
-    immutablePolicy = invalidPolicy;
-  };
-  runtimeRootsOverride = canonicalStage0 // {
-    runtimeRootsProvisioner = invalidPolicy;
-  };
-  postPinGateOverride = canonicalStage0 // {
-    qualificationPostPinGate = "/run/aos/not-production";
-  };
+  immutablePolicyOverride =
+    canonicalStage0
+    // {
+      passthru = canonicalStage0.passthru // {immutablePolicy = invalidPolicy;};
+    };
+  runtimeRootsOverride =
+    canonicalStage0
+    // {
+      passthru = canonicalStage0.passthru // {runtimeRootsProvisioner = invalidPolicy;};
+    };
+  postPinGateOverride =
+    canonicalStage0
+    // {
+      passthru = canonicalStage0.passthru // {qualificationPostPinGate = "/run/aos/not-production";};
+    };
 
   admissionModule = stage0:
-    lib.mkMerge [
-      (stage0Fixture stage0)
-      {
-        boot.initrd.systemd.targets."aos-selinux-admission" = {
-          description = "AOS SELinux immutable admission";
-          unitConfig = {
-            DefaultDependencies = "no";
-            Conflicts = "initrd-root-fs.target initrd-switch-root.target";
-          };
+    lib.recursiveUpdate
+    (stage0Fixture stage0)
+    {
+      boot.initrd.systemd.targets."aos-selinux-admission" = {
+        description = "AOS SELinux immutable admission";
+        unitConfig = {
+          DefaultDependencies = "no";
+          Conflicts = "initrd-root-fs.target initrd-switch-root.target";
         };
+      };
 
-        boot.initrd.systemd.services."aos-selinux-admission-proof" = {
-          description = "Prove enforcing init_t admission without real-root access";
-          requiredBy = [admissionTarget];
-          unitConfig.DefaultDependencies = "no";
-          serviceConfig = {
-            Type = "oneshot";
-            StandardOutput = "journal+console";
-            StandardError = "journal+console";
-          };
-          script = ''
-            set -eu
-
-            pid_one_context="$(${pkgs.coreutils}/bin/cat /proc/1/attr/current)"
-            self_context="$(${pkgs.coreutils}/bin/cat /proc/self/attr/current)"
-            secure_boot="$(${pkgs.coreutils}/bin/od -An -tu1 -j4 -N1 \
-              /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c \
-              | ${pkgs.coreutils}/bin/tr -d ' ')"
-            setup_mode="$(${pkgs.coreutils}/bin/od -An -tu1 -j4 -N1 \
-              /sys/firmware/efi/efivars/SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c \
-              | ${pkgs.coreutils}/bin/tr -d ' ')"
-            test "$pid_one_context" = "system_u:system_r:init_t"
-            test "$secure_boot" -eq 1
-            test "$setup_mode" -eq 0
-            test ! -e /dev/mapper/root
-            ! ${pkgs.util-linux}/bin/mountpoint -q /sysroot
-            ! ${pkgs.util-linux}/bin/mountpoint -q /sysroot/var
-
-            echo "AOS SELinux admission proof: pid1=$pid_one_context self=$self_context secureboot=$secure_boot setupmode=$setup_mode"
-          '';
+      boot.initrd.systemd.services."aos-selinux-admission-proof" = {
+        description = "Prove enforcing init_t admission without real-root access";
+        requiredBy = [admissionTarget];
+        unitConfig.DefaultDependencies = "no";
+        serviceConfig = {
+          Type = "oneshot";
+          StandardOutput = "journal+console";
+          StandardError = "journal+console";
         };
+        script = ''
+          set -eu
 
-        # This gate terminates in the admission-only initrd target, so keep the
-        # unrelated system-root image cheap when the fleet harness materializes it.
-        aos.image.erofsCompressionLevel = 1;
-      }
-    ];
+          pid_one_context="$(${pkgs.coreutils}/bin/cat /proc/1/attr/current)"
+          self_context="$(${pkgs.coreutils}/bin/cat /proc/self/attr/current)"
+          secure_boot="$(${pkgs.coreutils}/bin/od -An -tu1 -j4 -N1 \
+            /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c \
+            | ${pkgs.coreutils}/bin/tr -d ' ')"
+          setup_mode="$(${pkgs.coreutils}/bin/od -An -tu1 -j4 -N1 \
+            /sys/firmware/efi/efivars/SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c \
+            | ${pkgs.coreutils}/bin/tr -d ' ')"
+          test "$pid_one_context" = "system_u:system_r:init_t"
+          test "$secure_boot" -eq 1
+          test "$setup_mode" -eq 0
+          test ! -e /dev/mapper/root
+          ! ${pkgs.util-linux}/bin/mountpoint -q /sysroot
+          ! ${pkgs.util-linux}/bin/mountpoint -q /sysroot/var
+
+          echo "AOS SELinux admission proof: pid1=$pid_one_context self=$self_context secureboot=$secure_boot setupmode=$setup_mode"
+        '';
+      };
+
+      # This gate terminates in the admission-only initrd target, so keep the
+      # unrelated system-root image cheap when the fleet harness materializes it.
+      aos.image.erofsCompressionLevel = 1;
+    };
 
   productionModule = {
     aos.security.selinux = {
@@ -118,12 +123,11 @@
   };
   productionSystemFor = stage0:
     systems.server-secureboot-lockdown.extendModules {
-      modules = [
-        productionModule
-        (lib.mkIf (stage0 != null) {
+      modules =
+        [productionModule]
+        ++ lib.optional (!builtins.isNull stage0) {
           aos.boot.initrd.stage0 = lib.mkForce stage0;
-        })
-      ];
+        };
     };
   failedAssertionMessages = evaluated:
     builtins.map (assertion: assertion.message) (
@@ -150,11 +154,11 @@
   validConfig = validSystem.config;
 in
   assert productionSystem.config.aos.boot.initrd.stage0 == canonicalStage0;
-  assert productionSystem.config.aos.boot.initrd.stage0.loadedPolicy == canonicalPolicy;
-  assert productionSystem.config.aos.boot.initrd.stage0.expectedPolicy == canonicalPolicy;
-  assert productionSystem.config.aos.boot.initrd.stage0.immutablePolicy == pkgs.aos-selinux-production-policy;
-  assert productionSystem.config.aos.boot.initrd.stage0.runtimeRootsProvisioner == pkgs.aos-selinux-runtime-roots;
-  assert productionSystem.config.aos.boot.initrd.stage0.admissionUnit == "aos-selinux-stage0-hold.target";
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.loadedPolicy == canonicalPolicy;
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.expectedPolicy == canonicalPolicy;
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.immutablePolicy == pkgs.aos-selinux-production-policy;
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.runtimeRootsProvisioner == pkgs.aos-selinux-runtime-roots;
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.admissionUnit == "aos-selinux-stage0-hold.target";
   assert rejects "immutable SELinux stage 0 must load the canonical production policy." loadedOverrideSystem;
   assert rejects "immutable SELinux stage 0 must authenticate the canonical production policy." expectedOverrideSystem;
   assert rejects "immutable SELinux stage 0 must identify the canonical immutable policy derivation." immutableOverrideSystem;
