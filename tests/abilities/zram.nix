@@ -17,7 +17,8 @@
           util-linux = utilLinux;
         };
       };
-      modules = [
+      modules =
+        ([
         ../../modules/abilities/default.nix
         ../../modules/services/zram.nix
         ({lib, ...}: {
@@ -46,8 +47,8 @@
             };
           };
         })
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "zram-generator";
           inherit (pkgs.zram-generator) version;
@@ -58,7 +59,8 @@
           inherit (pkgs.systemd) version;
           module = pkgs.systemd.module + "/module.nix";
         }
-      ];
+      ]));
+
     };
   baseline = evaluate {};
   changed = evaluate {size = "2048";};

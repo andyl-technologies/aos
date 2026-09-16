@@ -22,8 +22,8 @@ in {
     containerExecution.stages = {
       application-container = {
         scope = "application-container-process";
-        status = "qualified";
-        evidence = ["checks.fleet.ability-native-foreground-container"];
+        status = "missing";
+        blockers = ["package-owned-application-container-process-provider"];
       };
       host = {
         scope = "host-manager";

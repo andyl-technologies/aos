@@ -156,8 +156,12 @@ in {
         message = "The native adapter matrix must partition every package-derived surface cell through fail-closed production applicability.";
       }
       {
-        assertion = containerExecutionMatrix.missing_container_cells == 1;
-        message = "System-container manager execution must remain explicitly unqualified until its production path passes.";
+        assertion = builtins.all (cell:
+          if cell.stage == "host"
+          then cell.status == "qualified"
+          else cell.status == "missing")
+        containerExecutionMatrix.cells;
+        message = "Only package-selected execution stages may carry qualified production evidence.";
       }
     ];
   };

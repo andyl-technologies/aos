@@ -11,7 +11,7 @@
 ##!     hostModule = import <verified-host.nix>;
 ##!     system = baseLib.evalHostConfig {
 ##!       operatorModules = [ hostModule ];
-##!       packageModules  = [ { name = "pkg"; module = import <pkg>/module.nix; } … ];
+##!       authenticatedModules = [ (lib.authenticatedModule { … }) ];
 ##!     };
 ##!   in { manifest = system.config.system.build.configManifest; }
 ##! ```
@@ -61,11 +61,10 @@ let
   imageManifest =
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./image-manifest.json));
-  mergeImageManifestImpl = import ./lib/build/merge-image-manifest.nix {inherit lib;};
 
   # The bundled base module set + the image's system-variant modules. These are
   # exactly the modules the image was built from (minus the registry config
-  # packages, which arrive at stage-2 as authenticated `packageModules`).
+  # packages, whose authenticated wrappers enter the ordinary stage-2 module list).
   baseModules = import ./modules;
   systemModules = import ./system-modules.nix;
 
@@ -84,10 +83,12 @@ let
       if prefix != "" && lib.hasPrefix prefix requestName
       then lib.removePrefix prefix requestName
       else throw "authored ability request '${requestName}' has no authenticated package-local key";
-    unresolvedAuthoredRequests = lib.filterAttrs
+    unresolvedAuthoredRequests =
+      lib.filterAttrs
       (name: _: bindingNamesForRequest name == [])
       abilities.requests;
-    pendingAuthoredRequests = builtins.mapAttrs
+    pendingAuthoredRequests =
+      builtins.mapAttrs
       (name: request: {
         origin = "authored";
         request = name;
@@ -99,7 +100,8 @@ let
         declaration = request;
       })
       unresolvedAuthoredRequests;
-    pendingProviderRequests = builtins.mapAttrs
+    pendingProviderRequests =
+      builtins.mapAttrs
       (_: request:
         request
         // {
@@ -127,7 +129,8 @@ let
       pending = {
         requests = pendingRequests;
         requirements = abilities.compositionRequirements;
-        providerInstances = builtins.mapAttrs
+        providerInstances =
+          builtins.mapAttrs
           (name: instance: {
             inherit (instance) implementation;
             identity = abilities.instanceIdentities.${name};
@@ -137,13 +140,6 @@ let
     };
 in {
   inherit lib imageManifest projectAbilityRound;
-
-  ## Merge an evaluated runtime candidate with the immutable image baseline.
-  mergeImageManifest = {
-    baseline,
-    candidate,
-  }:
-    mergeImageManifestImpl {inherit imageManifest baseline candidate;};
 
   ## Evaluate the closed one-time provisioning projection.
   ##
@@ -201,16 +197,15 @@ in {
   ## Evaluate a host configuration on-host into a config manifest.
   ##
   ## `operatorModules` is the verified leaf `host.nix` (CS4 operator-provenance
-  ## seam — its bare defs win at the reserved priority-75 band). `packageModules`
-  ## are resolver-owned `{ name; module; }` records for config-only outputs
-  ## fetched from the registry. Returns
+  ## seam — its bare defs win at the reserved priority-75 band).
+  ## `authenticatedModules` are resolver-owned provenance wrappers imported
+  ## through the ordinary module list. Returns
   ## the full `evalModules` result; the caller forces
   ## `config.system.build.configManifest`.
   evalHostConfig = {
     operatorModules ? [],
     runtimeModules ? [],
-    packageModules ? [],
-    selectedProviderModules ? [],
+    authenticatedModules ? [],
     abilityBindings ? {},
     factsModules ? [],
   }:
@@ -231,9 +226,10 @@ in {
               builtins.unsafeDiscardStringContext (builtins.toString ./.);
             aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
           }
-        ];
+        ]
+        ++ authenticatedModules;
       pkgs = frozenPkgs;
-      inherit lib operatorModules packageModules selectedProviderModules;
+      inherit lib operatorModules;
       runtimeModules =
         runtimeModules
         ++ lib.optional (abilityBindings != {}) {
@@ -252,8 +248,7 @@ in {
     authority,
     key,
     intentModules ? [],
-    packageModules ? [],
-    selectedProviderModules ? [],
+    authenticatedModules ? [],
     abilityBindings ? {},
   }:
     lib.evalModules {
@@ -264,9 +259,10 @@ in {
             aos.abilities.environment = {inherit authority key stage;};
           }
         ]
-        ++ intentModules;
+        ++ intentModules
+        ++ authenticatedModules;
       pkgs = frozenPkgs;
-      inherit lib packageModules selectedProviderModules;
+      inherit lib;
       runtimeModules = lib.optional (abilityBindings != {}) {
         aos.abilities.bindings = abilityBindings;
       };

@@ -36,7 +36,8 @@
 
   fixedPoint = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       ../../modules/abilities/default.nix
       {
         options.assertions = lib.mkOption {
@@ -78,8 +79,8 @@
           rootPassword.resource = credential "openldap-root-password";
         };
       }
-    ];
-    packageModules = builtins.map packageModule [
+    ])
+      ++ builtins.map lib.authenticatedModule ((builtins.map packageModule [
       pkgs.aos
       pkgs.chrony
       pkgs.openldap
@@ -87,7 +88,8 @@
       pkgs.mariadb
       pkgs.garage
       pkgs.krb5
-    ];
+    ]));
+
   };
   requests = fixedPoint.config.aos.abilities.requests;
   identityRequestNames = [

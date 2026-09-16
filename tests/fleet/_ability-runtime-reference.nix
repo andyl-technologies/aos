@@ -4,52 +4,22 @@
   mkSystem,
   pkgs,
   guestTools ? false,
-  effectQualification ? false,
-  providerStateQualification ? false,
-  transitionTransform ? transition: transition,
 }: let
-  qualificationObserver = import ./_native-adapter-observer.nix {inherit pkgs;};
-  packageSet = import ../abilities/reference-nginx/package.nix {
-    inherit lib;
-    inherit (pkgs) mkDerivation;
-    credentialRuntime = pkgs.aos.packageRuntime;
-    managedConfigurationRuntime = pkgs.aos.packageRuntime;
-    nginxRuntime = pkgs.nginx;
-    serviceRuntime = pkgs.aos.packageRuntime;
-    inherit qualificationObserver;
-    inherit effectQualification providerStateQualification transitionTransform;
-  };
-  systemdManagerPackage = import ../abilities/reference-systemd-manager/package.nix {
-    inherit lib;
-    inherit (pkgs) mkDerivation;
-    packageRuntime = pkgs.aos.packageRuntime;
-    inherit qualificationObserver;
-  };
-
+  # Qualification uses the same authenticated package projections selected by
+  # a production nginx host. The package-owned modules retain the consumer,
+  # controller, and terminal provider sides of the graph.
   orderedPackages = [
     {
-      name = "ability-reference-nginx-consumer";
-      package = packageSet.consumer;
+      name = "nginx";
+      package = pkgs.nginx;
     }
     {
-      name = "ability-reference-nginx";
-      package = packageSet.nginx;
+      name = "aos";
+      package = pkgs.aos;
     }
     {
-      name = "ability-reference-managed-configuration";
-      package = packageSet.managed-configuration;
-    }
-    {
-      name = "ability-reference-credential";
-      package = packageSet.credential;
-    }
-    {
-      name = "ability-reference-service";
-      package = packageSet.service;
-    }
-    {
-      name = "ability-reference-systemd-manager";
-      package = systemdManagerPackage;
+      name = "systemd";
+      package = pkgs.systemd;
     }
   ];
 
@@ -91,7 +61,8 @@
               app-a = 19001;
               app-b = 19002;
               app-c = 19003;
-            }.${
+            }
+            .${
               application
             };
         in {
@@ -190,25 +161,17 @@
       reloadWrapper
     ];
   qualificationCandidateRuntimeCompanions =
-    map (name: let
-      entry = builtins.head (builtins.filter (candidate: candidate.name == name) orderedPackages);
-    in {
+    map (entry: {
       inherit (entry) name;
       primary = entry.package;
       abilities = entry.package.contract.document;
-      originalRuntime = pkgs.aos.packageRuntime;
-    }) [
-      "ability-reference-nginx"
-      "ability-reference-managed-configuration"
-      "ability-reference-credential"
-      "ability-reference-service"
-      "ability-reference-systemd-manager"
-    ];
+      originalRuntime = entry.package;
+    })
+    orderedPackages;
 in {
   inherit
     orderedPackages
     packageRoots
-    packageSet
     qualificationExtraClosures
     qualificationCandidateRuntimeCompanions
     qualificationSetupBody

@@ -313,12 +313,10 @@
           modules = [
             lib.abilities.module
             ../modules/_package-contributions.nix
-          ];
-          packageModules = [
-            {
+            (lib.authenticatedModule {
               name = packageName;
               module = retainedAbilityModule;
-            }
+            })
           ];
           inherit lib;
           pkgs = self;

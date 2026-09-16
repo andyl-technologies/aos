@@ -36,12 +36,13 @@
     else throw "${context} must resolve exactly once";
   providerByName = package: name:
     selectExact "native qualification implementation '${package.pname}:${name}'"
-      (provider: provider.name == name)
-      package.contract.value.implementation.providers;
+    (provider: provider.name == name)
+    package.contract.value.implementation.providers;
   interfaceByIdentity = package: identity:
     (selectExact "native qualification interface '${identity.descriptor}'"
       (entry: entry.descriptor == identity.descriptor)
-      package.contract.value.interface_documents).document;
+      package.contract.value.interface_documents)
+    .document;
   selectedImplementations = builtins.concatMap (package: let
     projection = package.contract.value;
   in
@@ -53,14 +54,16 @@
       interface = interfaceByIdentity package implementation.interface;
     }) (builtins.attrNames projection.qualification.implementations))
   selectedPackages;
-  containerExecutionDeclarations = map (entry: let
-    identity = interfaceIdentity entry.interface;
-  in {
-    adapter = entry.qualification.adapter;
-    scope = entry.qualification.scope;
-    interface = identity;
-    guarantees = builtins.sort builtins.lessThan (map (guarantee: guarantee.name) entry.implementation.guarantees);
-  }) selectedImplementations;
+  containerExecutionDeclarations =
+    map (entry: let
+      identity = interfaceIdentity entry.interface;
+    in {
+      adapter = entry.qualification.adapter;
+      scope = entry.qualification.scope;
+      interface = identity;
+      guarantees = builtins.sort builtins.lessThan (map (guarantee: guarantee.name) entry.implementation.guarantees);
+    })
+    selectedImplementations;
   packageDependencies = package:
     [package]
     ++ (package.buildDeps or [])
@@ -70,7 +73,7 @@
     matches = lib.unique (builtins.filter (candidate:
       builtins.isAttrs candidate
       && (candidate.pname or null) == selector.package)
-    (packageDependencies owner));
+    (packageDependencies owner ++ packages));
     selected =
       if selector.package == "self"
       then owner
@@ -115,8 +118,7 @@
   in
     assert qualification.conformance_families != [];
     assert unique qualification.conformance_families;
-    assert builtins.all (family: builtins.elem family scenarioFamilies) qualification.conformance_families;
-    {
+    assert builtins.all (family: builtins.elem family scenarioFamilies) qualification.conformance_families; {
       inherit adapter;
       inherit scope;
       inherit (qualification) observation_kind;
@@ -254,10 +256,12 @@
   validDisposition = disposition:
     builtins.isAttrs disposition
     && (
-      (builtins.attrNames disposition == ["kind" "value"]
+      (builtins.attrNames disposition
+        == ["kind" "value"]
         && disposition.kind == "exact"
         && token disposition.value)
-      || (builtins.attrNames disposition == ["kind" "supported" "unsupported"]
+      || (builtins.attrNames disposition
+        == ["kind" "supported" "unsupported"]
         && disposition.kind == "cancellation-route"
         && token disposition.supported
         && token disposition.unsupported

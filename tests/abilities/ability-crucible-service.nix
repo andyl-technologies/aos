@@ -15,7 +15,8 @@
   evaluate = enabled:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         {
           aos.abilities.environment = {
@@ -25,8 +26,9 @@
           };
           aos.services.abilityCrucible.enable = enabled;
         }
-      ];
-      packageModules = [packageModule];
+      ])
+        ++ builtins.map lib.authenticatedModule (([packageModule]));
+
     };
   disabled = evaluate false;
   enabled = evaluate true;
@@ -55,7 +57,8 @@
   };
   composed = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       {
         aos.abilities = {
@@ -77,8 +80,9 @@
           };
         };
       }
-    ];
-    packageModules = [packageModule];
+    ])
+      ++ builtins.map lib.authenticatedModule (([packageModule]));
+
   };
   composedAbilities = composed.config.aos.abilities;
   resolvedResources = builtins.attrValues composedAbilities.resolvedResources;

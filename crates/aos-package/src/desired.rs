@@ -56,6 +56,16 @@ pub(crate) fn load_desired_credentials(path: &Path) -> Result<DesiredPackageCred
     Ok(DesiredFile::from_path(path)?.credentials)
 }
 
+/// Loads the validated package roots from a desired-package file.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read, its TOML contract is
+/// malformed, or it contains an invalid package name.
+pub(crate) fn load_desired_packages(path: &Path) -> Result<Vec<String>> {
+    Ok(DesiredFile::from_path(path)?.packages.into_iter().collect())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum DesiredCredentialValue {

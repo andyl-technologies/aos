@@ -107,13 +107,13 @@
     runtimeDefModules = builtins.map defModule (builtins.filter
       (d: (d.provenance or "@base") == "@runtime")
       defs);
-    packageDefRecords =
-      builtins.map (d: {
+    packageDefModules = builtins.map (d:
+      modules.authenticatedModule {
         name = strings.removePrefix "package:" d.provenance;
         module = defModule d;
       }) (builtins.filter
-        (d: strings.hasPrefix "package:" (d.provenance or "@base"))
-        defs);
+      (d: strings.hasPrefix "package:" (d.provenance or "@base"))
+      defs);
 
     # For `attrsOf (submodule ...)` and `listOf (submodule ...)`, the
     # last element of `loc` is the attribute name / list index. Nixpkgs-
@@ -129,7 +129,7 @@
       else {};
 
     evaluated = modules.evalModules {
-      modules = baseModules ++ baseDefModules;
+      modules = baseModules ++ baseDefModules ++ packageDefModules;
       # Passing the fully-wired finalLib ensures any nested submodule
       # types inside `baseModules` see the upgraded `types.submodule`
       # and also recursively delegate to `evalSubmodule`.
@@ -137,7 +137,6 @@
       inherit specialArgs;
       operatorModules = operatorDefModules;
       runtimeModules = runtimeDefModules;
-      packageModules = packageDefRecords;
       enforcePackageAuthorship = false;
     };
   in
@@ -212,6 +211,7 @@
       platform = platformMod.mkPlatform system;
       inherit
         (modules)
+        authenticatedModule
         evalModules
         mkOption
         mkIf

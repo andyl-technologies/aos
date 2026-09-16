@@ -244,7 +244,8 @@
     && !f3bEnableDocumentation.contributable;
 
   packageDiagnosticsEval = lib.evalModules {
-    modules = [
+    modules =
+      ([
       ({lib, ...}: {
         options.assertions = lib.mkOption {
           type = lib.types.listOf lib.types.attrs;
@@ -255,8 +256,8 @@
           default = [];
         };
       })
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "diagnostic-fixture";
         module.config = {
@@ -269,7 +270,8 @@
           warnings = ["package warning"];
         };
       }
-    ];
+    ]));
+
     lib = lib;
   };
   packageEngineDiagnosticsAccepted =
@@ -354,7 +356,8 @@
 
   resolverPackageOwner =
     (lib.evalModules {
-      modules = [
+      modules =
+        ([
         ({lib, ...}: {
           options = {
             artifacts = lib.mkOption {
@@ -368,13 +371,14 @@
         ({provenance, ...}: {
           config.observedOwner = provenance.ownerOfAttr ["artifacts"] "pkg.conf";
         })
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "redis";
           module = {config.artifacts."pkg.conf" = "value";};
         }
-      ];
+      ]));
+
       lib = lib;
     })
     .config
@@ -413,15 +417,17 @@
     inherit module;
   };
   nestedPriorityEval = lib.evalModules {
-    modules = [nestedDecl];
-    packageModules = [
+    modules =
+      ([nestedDecl])
+      ++ builtins.map lib.authenticatedModule (([
       (packageRecord {
         config.tree.main = {
           left = "package";
           right = "preserved";
         };
       })
-    ];
+    ]));
+
     operatorModules = [{config.tree.main.left = "host";}];
     inherit lib;
   };
@@ -430,15 +436,17 @@
     == "host"
     && nestedPriorityEval.config.tree.main.right == "preserved";
   nestedSubmodulePriorityEval = lib.evalModules {
-    modules = [nestedDecl];
-    packageModules = [
+    modules =
+      ([nestedDecl])
+      ++ builtins.map lib.authenticatedModule (([
       (packageRecord {
         config.tree.main.nested = {
           left = "package-left";
           right = "package-right";
         };
       })
-    ];
+    ]));
+
     operatorModules = [{config.tree.main.nested.left = "host-left";}];
     inherit lib;
   };
@@ -448,8 +456,10 @@
     && nestedSubmodulePriorityEval.config.tree.main.nested.right == "package-right";
   nestedForceBeatsHost =
     (lib.evalModules {
-      modules = [nestedDecl];
-      packageModules = [(packageRecord {config.tree.main.left = lib.mkForce "forced";})];
+      modules =
+        ([nestedDecl])
+        ++ builtins.map lib.authenticatedModule (([(packageRecord {config.tree.main.left = lib.mkForce "forced";})]));
+
       operatorModules = [{config.tree.main.left = "host";}];
       inherit lib;
     })
@@ -460,7 +470,8 @@
     == "forced";
   importedForgedFileStaysPackageOwned =
     (lib.evalModules {
-      modules = [
+      modules =
+        ([
         ({lib, ...}: {
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
@@ -470,8 +481,8 @@
           options.observed = lib.mkOption {type = lib.types.str;};
         })
         ({provenance, ...}: {config.observed = provenance.ownerOfAttr ["artifacts"] "imported";})
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         (packageRecord {
           imports = [
             {
@@ -480,7 +491,8 @@
             }
           ];
         })
-      ];
+      ]));
+
       inherit lib;
     })
     .config
@@ -489,7 +501,8 @@
   foreignEnableRejected =
     !(builtins.tryEval (
       (lib.evalModules {
-        modules = [
+        modules =
+          ([
           ({lib, ...}: {
             options.nginx.enable = lib.mkOption {
               type = lib.types.bool;
@@ -497,8 +510,9 @@
               contributable = true;
             };
           })
-        ];
-        packageModules = [(packageRecord {config.nginx.enable = true;})];
+        ])
+          ++ builtins.map lib.authenticatedModule (([(packageRecord {config.nginx.enable = true;})]));
+
         inherit lib;
       })
       .config
@@ -509,7 +523,8 @@
   nestedForeignEnableRejected =
     !(builtins.tryEval (
       (lib.evalModules {
-        modules = [
+        modules =
+          ([
           ({lib, ...}: {
             options.systemd.services = lib.mkOption {
               type = lib.types.attrsOf (lib.types.submodule {
@@ -522,13 +537,14 @@
               contributable = true;
             };
           })
-        ];
-        packageModules = [
+        ])
+          ++ builtins.map lib.authenticatedModule (([
           {
             name = "redis";
             module.config.systemd.services.victim.enable = true;
           }
-        ];
+        ]));
+
         inherit lib;
       })
       .config
@@ -541,15 +557,17 @@
   packageModuleArgsRejected =
     !(builtins.tryEval (
       (lib.evalModules {
-        modules = [nestedDecl];
-        packageModules = [
+        modules =
+          ([nestedDecl])
+          ++ builtins.map lib.authenticatedModule (([
           (packageRecord {
             config = {
               _module.args.laundered = "value";
               tree.main.left = "package";
             };
           })
-        ];
+        ]));
+
         inherit lib;
       })
       .config
@@ -560,13 +578,15 @@
     .success;
   uniquePackageDeclarationAccepted =
     (lib.evalModules {
-      modules = [];
-      packageModules = [
+      modules =
+        ([])
+        ++ builtins.map lib.authenticatedModule (([
         (packageRecord ({lib, ...}: {
           options.redis.value = lib.mkOption {type = lib.types.str;};
           config.redis.value = "owned";
         }))
-      ];
+      ]));
+
       inherit lib;
     })
     .config
@@ -576,22 +596,24 @@
   duplicatePackageDeclarationRejected =
     !(builtins.tryEval (
       builtins.deepSeq (lib.evalModules {
-        modules = [
+        modules =
+          ([
           ({lib, ...}: {
             options.nginx.foreignDefault = lib.mkOption {
               type = lib.types.bool;
               default = false;
             };
           })
-        ];
-        packageModules = [
+        ])
+          ++ builtins.map lib.authenticatedModule (([
           (packageRecord ({lib, ...}: {
             options.nginx.foreignDefault = lib.mkOption {
               type = lib.types.str;
               default = "laundered";
             };
           }))
-        ];
+        ]));
+
         inherit lib;
       })
       true
@@ -599,7 +621,8 @@
     .success;
   allowedContributionAccepted =
     (lib.evalModules {
-      modules = [
+      modules =
+        ([
         ({lib, ...}: {
           options.nginx.virtualHosts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
@@ -607,8 +630,9 @@
             contributable = true;
           };
         })
-      ];
-      packageModules = [(packageRecord {config.nginx.virtualHosts.demo = "ok";})];
+      ])
+        ++ builtins.map lib.authenticatedModule (([(packageRecord {config.nginx.virtualHosts.demo = "ok";})]));
+
       inherit lib;
     })
     .config
@@ -619,15 +643,17 @@
   nonContributableContributionRejected =
     !(builtins.tryEval (
       builtins.deepSeq (lib.evalModules {
-        modules = [
+        modules =
+          ([
           ({lib, ...}: {
             options.nginx.workerProcesses = lib.mkOption {
               type = lib.types.int;
               default = 1;
             };
           })
-        ];
-        packageModules = [(packageRecord {config.nginx.workerProcesses = 8;})];
+        ])
+          ++ builtins.map lib.authenticatedModule (([(packageRecord {config.nginx.workerProcesses = 8;})]));
+
         inherit lib;
       })
       true
@@ -636,8 +662,10 @@
   undeclaredPackageWriteRejected =
     !(builtins.tryEval (
       builtins.deepSeq (lib.evalModules {
-        modules = [];
-        packageModules = [(packageRecord {config.undeclared.value = true;})];
+        modules =
+          ([])
+          ++ builtins.map lib.authenticatedModule (([(packageRecord {config.undeclared.value = true;})]));
+
         inherit lib;
       })
       true
@@ -645,7 +673,8 @@
     .success;
   mkOrderOwnershipPeeled =
     (lib.evalModules {
-      modules = [
+      modules =
+        ([
         ({lib, ...}: {
           options.rules = lib.mkOption {
             type = lib.types.listOf lib.types.str;
@@ -655,8 +684,9 @@
           options.observed = lib.mkOption {type = lib.types.str;};
         })
         ({provenance, ...}: {config.observed = provenance.ownerOfListString ["rules"] "ordered";})
-      ];
-      packageModules = [(packageRecord {config.rules = lib.mkAfter ["ordered"];})];
+      ])
+        ++ builtins.map lib.authenticatedModule (([(packageRecord {config.rules = lib.mkAfter ["ordered"];})]));
+
       inherit lib;
     })
     .config
@@ -664,7 +694,8 @@
     == "redis";
   mixedDependencyOwnersDetected =
     (lib.evalModules {
-      modules = [
+      modules =
+        ([
         ({lib, ...}: {
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf (lib.types.submodule {
@@ -683,14 +714,15 @@
           options.observedOwners = lib.mkOption {type = lib.types.listOf lib.types.str;};
         })
         ({provenance, ...}: {config.observedOwners = provenance.dependencyOwnersOfAttr ["artifacts"] "mixed";})
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         (packageRecord {config.artifacts.mixed.left = "left";})
         {
           name = "other";
           module.config.artifacts.mixed.right = "right";
         }
-      ];
+      ]));
+
       inherit lib;
     })
     .config
@@ -699,7 +731,8 @@
 
   packageDefaultDependencyOwner =
     (lib.evalModules {
-      modules = [
+      modules =
+        ([
         ({lib, ...}: {
           options = {
             artifacts = lib.mkOption {
@@ -712,8 +745,8 @@
         })
         ({config, ...}: {config.artifacts.defaulted = config.provider.value;})
         ({provenance, ...}: {config.observed = provenance.ownerOfAttr ["artifacts"] "defaulted";})
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "provider";
           module = {lib, ...}: {
@@ -723,7 +756,8 @@
             };
           };
         }
-      ];
+      ]));
+
       inherit lib;
     })
     .config
@@ -733,8 +767,9 @@
   undeclaredCrossPackageReadRejected =
     !(builtins.tryEval (builtins.toJSON (
       (lib.evalModules {
-        modules = [];
-        packageModules = [
+        modules =
+          ([])
+          ++ builtins.map lib.authenticatedModule (([
           {
             name = "provider";
             module = {lib, ...}: {
@@ -753,7 +788,8 @@
               config.consumer.observed = config.provider.value;
             };
           }
-        ];
+        ]));
+
         inherit lib;
       })
       .config
@@ -795,7 +831,8 @@
     == "host imported nested";
   hostImportKeepsNormalPriority =
     (lib.evalModules {
-      modules = [
+      modules =
+        ([
         ({lib, ...}: {
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
@@ -803,8 +840,9 @@
             contributable = true;
           };
         })
-      ];
-      packageModules = [(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})];
+      ])
+        ++ builtins.map lib.authenticatedModule (([(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})]));
+
       operatorModules = [{imports = [{config.artifacts.priority = "host import";}];}];
       inherit lib;
     })
@@ -814,7 +852,8 @@
     == "package";
   runtimeDirectGetsOperatorPriority =
     (lib.evalModules {
-      modules = [
+      modules =
+        ([
         ({lib, ...}: {
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
@@ -822,8 +861,9 @@
             contributable = true;
           };
         })
-      ];
-      packageModules = [(packageRecord {config.artifacts.priority = "package";})];
+      ])
+        ++ builtins.map lib.authenticatedModule (([(packageRecord {config.artifacts.priority = "package";})]));
+
       runtimeModules = [{config.artifacts.priority = "runtime";}];
       inherit lib;
     })
@@ -858,7 +898,8 @@
     runtimeValue == operatorValue && runtimeValue == "nested operator";
   runtimeOwnershipMatchesMergePriority =
     (lib.evalModules {
-      modules = [
+      modules =
+        ([
         ({lib, ...}: {
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
@@ -868,8 +909,9 @@
           options.observed = lib.mkOption {type = lib.types.str;};
         })
         ({provenance, ...}: {config.observed = provenance.ownerOfAttr ["artifacts"] "priority";})
-      ];
-      packageModules = [(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})];
+      ])
+        ++ builtins.map lib.authenticatedModule (([(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})]));
+
       runtimeModules = [{config.artifacts.priority = "runtime";}];
       inherit lib;
     })
@@ -878,7 +920,8 @@
     == "@host";
   runtimeImportKeepsNormalPriority =
     (lib.evalModules {
-      modules = [
+      modules =
+        ([
         ({lib, ...}: {
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
@@ -886,8 +929,9 @@
             contributable = true;
           };
         })
-      ];
-      packageModules = [(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})];
+      ])
+        ++ builtins.map lib.authenticatedModule (([(packageRecord {config.artifacts.priority = lib.mkOverride 80 "package";})]));
+
       runtimeModules = [{imports = [{config.artifacts.priority = "runtime import";}];}];
       inherit lib;
     })
@@ -897,8 +941,10 @@
     == "package";
   runtimeNestedImportKeepsNormalPriority =
     (lib.evalModules {
-      modules = [nestedDecl];
-      packageModules = [(packageRecord {config.tree.main.nested.left = lib.mkOverride 80 "package";})];
+      modules =
+        ([nestedDecl])
+        ++ builtins.map lib.authenticatedModule (([(packageRecord {config.tree.main.nested.left = lib.mkOverride 80 "package";})]));
+
       runtimeModules = [{imports = [{config.tree.main.nested.left = "runtime import";}];}];
       inherit lib;
     })
@@ -1059,8 +1105,9 @@
   # --- Authenticated package import roots -----------------------------
   confinedPackageImport =
     (lib.evalModules {
-      modules = [];
-      packageModules = [
+      modules =
+        ([])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "import-fixture";
           configRoot = ./fixtures/package-import-confined;
@@ -1070,7 +1117,8 @@
             dependencies = {};
           };
         }
-      ];
+      ]));
+
       lib = lib;
     })
     .config
@@ -1079,8 +1127,9 @@
     == "confined";
   confinedFilePackageModule =
     (lib.evalModules {
-      modules = [];
-      packageModules = [
+      modules =
+        ([])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "file-fixture";
           configRoot = ./fixtures/package-file-module.nix;
@@ -1090,7 +1139,8 @@
             dependencies = {};
           };
         }
-      ];
+      ]));
+
       lib = lib;
     })
     .config
@@ -1100,8 +1150,9 @@
   filePackageImportRejected =
     !(builtins.tryEval (builtins.deepSeq (
         (lib.evalModules {
-          modules = [];
-          packageModules = [
+          modules =
+            ([])
+            ++ builtins.map lib.authenticatedModule (([
             {
               name = "file-fixture";
               configRoot = ./fixtures/package-file-import.nix;
@@ -1111,7 +1162,8 @@
                 dependencies = {};
               };
             }
-          ];
+          ]));
+
           lib = lib;
         })
         .config
@@ -1120,8 +1172,9 @@
   escapedPackageImportRejected =
     !(builtins.tryEval (builtins.deepSeq (
         (lib.evalModules {
-          modules = [];
-          packageModules = [
+          modules =
+            ([])
+            ++ builtins.map lib.authenticatedModule (([
             {
               name = "import-fixture";
               configRoot = ./fixtures/package-import-escaped;
@@ -1131,7 +1184,8 @@
                 dependencies = {};
               };
             }
-          ];
+          ]));
+
           lib = lib;
         })
         .config
@@ -1143,8 +1197,9 @@
   evaluatedPackageImportRejected =
     !(builtins.tryEval (builtins.deepSeq (
         (lib.evalModules {
-          modules = [];
-          packageModules = [
+          modules =
+            ([])
+            ++ builtins.map lib.authenticatedModule (([
             {
               name = "import-fixture";
               configRoot = ./fixtures/package-import-evaluated;
@@ -1154,7 +1209,8 @@
                 dependencies = {};
               };
             }
-          ];
+          ]));
+
           lib = lib;
         })
         .config
@@ -1166,8 +1222,9 @@
   lexicalStringPackageImportRejected =
     !(builtins.tryEval (builtins.deepSeq (
         (lib.evalModules {
-          modules = [];
-          packageModules = [
+          modules =
+            ([])
+            ++ builtins.map lib.authenticatedModule (([
             {
               name = "import-fixture";
               configRoot = ./fixtures/package-import-string-escape;
@@ -1177,7 +1234,8 @@
                 dependencies = {};
               };
             }
-          ];
+          ]));
+
           lib = lib;
         })
         .config
@@ -1189,8 +1247,9 @@
   unlistedPackageOutputRejected =
     !(
       (lib.evalModules {
-        modules = [];
-        packageModules = [
+        modules =
+          ([])
+          ++ builtins.map lib.authenticatedModule (([
           {
             name = "output-fixture";
             configRoot = ./fixtures/package-output-unlisted;
@@ -1200,7 +1259,8 @@
               dependencies.allowed = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-allowed";
             };
           }
-        ];
+        ]));
+
         lib = lib;
       })
       .config

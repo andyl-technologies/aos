@@ -104,8 +104,9 @@
   rawTypedCrossOwnerRejected =
     !(builtins.tryEval (
       builtins.toJSON ((lib.evalModules {
-          modules = [systemdModule];
-          packageModules = [
+          modules =
+            ([systemdModule])
+            ++ builtins.map lib.authenticatedModule (([
             {
               name = "typed-owner";
               module.config.systemd.services.collision = {
@@ -117,7 +118,8 @@
               name = "raw-owner";
               module.config.systemd.units."collision.service".text = "[Service]\nExecStart=/bin/false\n";
             }
-          ];
+          ]));
+
           inherit pkgs lib;
         })
         .config
@@ -130,11 +132,12 @@
   baseRawTypedPackageRejected =
     !(builtins.tryEval (
       builtins.toJSON ((lib.evalModules {
-          modules = [
+          modules =
+            ([
             systemdModule
             {config.systemd.units."base-collision.service".text = "[Service]\nExecStart=/bin/false\n";}
-          ];
-          packageModules = [
+          ])
+            ++ builtins.map lib.authenticatedModule (([
             {
               name = "typed-owner";
               module.config.systemd.services.base-collision = {
@@ -142,7 +145,8 @@
                 serviceConfig.ExecStart = "/bin/true";
               };
             }
-          ];
+          ]));
+
           inherit pkgs lib;
         })
         .config

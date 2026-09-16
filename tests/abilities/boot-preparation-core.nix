@@ -35,7 +35,8 @@
   };
   evaluated = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       {
         aos.abilities.environment = {
@@ -44,8 +45,8 @@
           stage = "host";
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "consumer";
         module.config.aos.abilities = lib.mkMerge [
@@ -57,7 +58,8 @@
           handoffRequest
         ];
       }
-    ];
+    ]));
+
   };
   abilities = evaluated.config.aos.abilities;
   authoredHandoff = abilities.requests."consumer:boot-preparation-handoff";

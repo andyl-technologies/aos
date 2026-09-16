@@ -186,7 +186,8 @@
   };
   evaluation = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       ../../modules/systemd/system.nix
       {
@@ -249,8 +250,8 @@
           };
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "systemd";
         inherit (pkgs.systemd) version;
@@ -260,10 +261,11 @@
         name = "consumer";
         module = consumerModule;
       }
-    ];
-    selectedProviderModules = [
+    ]) ++ ([
       selectedSystemdProvider
-    ];
+    ]));
+
+
     specialArgs = {
       inherit pkgs;
       provenance = {
@@ -355,8 +357,10 @@
   rejectedProviderSelection = selectedProvider:
     builtins.tryEval (builtins.deepSeq ((lib.evalModules {
         inherit lib pkgs;
-        modules = [lib.abilities.module];
-        selectedProviderModules = [selectedProvider];
+        modules =
+          ([lib.abilities.module])
+          ++ builtins.map lib.authenticatedModule (([selectedProvider]));
+
       }).config.aos.abilities.implementations)
       true);
   traversalSelection = rejectedProviderSelection (

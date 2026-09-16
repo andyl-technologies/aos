@@ -12,15 +12,33 @@
     then builtins.head matches
     else throw "Container execution stage '${stage}' must resolve exactly one selected package declaration for scope '${policy.scope}'.";
   cellFor = stage: policy: let
-    declaration = selectDeclaration stage policy;
+    declaration =
+      if policy.status == "qualified"
+      then selectDeclaration stage policy
+      else null;
   in {
-    id = "${declaration.adapter}/${stage}";
+    id =
+      if declaration == null
+      then "unassigned/${stage}"
+      else "${declaration.adapter}/${stage}";
     inherit (policy) blockers evidence status;
     inherit stage;
-    interface_descriptor = declaration.interface.descriptor;
-    interface_name = declaration.interface.name;
-    required_guarantees = declaration.guarantees;
-    strategy = declaration.adapter;
+    interface_descriptor =
+      if declaration == null
+      then null
+      else declaration.interface.descriptor;
+    interface_name =
+      if declaration == null
+      then null
+      else declaration.interface.name;
+    required_guarantees =
+      if declaration == null
+      then []
+      else declaration.guarantees;
+    strategy =
+      if declaration == null
+      then null
+      else declaration.adapter;
   };
   cells = lib.mapAttrsToList cellFor stagePolicy;
   missingCells = builtins.filter (cell: cell.status == "missing") cells;

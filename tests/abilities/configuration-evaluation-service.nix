@@ -6,7 +6,8 @@
   evaluate = enabled: measuredBoot: pcrPublicKey:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         {
           aos.abilities.environment = {
@@ -27,8 +28,8 @@
             inherit measuredBoot pcrPublicKey;
           };
         }
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "aos";
           version = pkgs.aos.version;
@@ -39,7 +40,8 @@
           version = pkgs.aos-nix-store-provider.version;
           module = pkgs.aos-nix-store-provider.module + "/module.nix";
         }
-      ];
+      ]));
+
     };
   pcrPublicKey = "/nix/store/00000000000000000000000000000000-aos-pcr-pubkey/pcr.pem";
   disabled = evaluate false true pcrPublicKey;

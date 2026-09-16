@@ -905,7 +905,10 @@ in {
         packages = [];
         packageOutputs = {};
         graph.edges = {};
-        config = {};
+        # Package-profile configuration is an ordinary input to this module
+        # fixed point. The evaluator publishes the resulting manifest once;
+        # it does not overlay this value after evaluation.
+        config = config.aos.apm.installAtBoot.config;
         credentials = {};
         inherit ownership;
       });

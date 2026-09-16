@@ -9,7 +9,6 @@
   fixture = import ./_ability-foreground-runtime-reference.nix {
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
-    effectQualification = true;
   };
   subjects = import ./_qualification-subjects.nix {
     inherit lib;

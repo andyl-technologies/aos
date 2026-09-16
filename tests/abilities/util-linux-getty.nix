@@ -13,18 +13,19 @@
     lib.evalModules {
       inherit lib;
       modules =
-        [
+        ([
           ../../modules/abilities/default.nix
           {aos.abilities.environment = environment stage;}
         ]
-        ++ modules;
-      packageModules = [
+        ++ modules)
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "util-linux";
           inherit (pkgs.util-linux) version;
           module = pkgs.util-linux.module + "/module.nix";
         }
-      ];
+      ]));
+
     };
   disabled = evaluate "host" [];
   host = evaluate "host" [

@@ -1,12 +1,14 @@
 # Resolver-authenticated artifact-owner acceptance.
 {
   pkgs,
+  lib,
   mkSystem,
   serverModule,
 }: let
   evaluated = mkSystem {
-    modules = [serverModule];
-    packageModules = [
+    modules =
+      ([serverModule])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "provenance-demo";
         module = {
@@ -18,7 +20,8 @@
           };
         };
       }
-    ];
+    ]));
+
     operatorModules = [
       {
         _file = "forged-package-name.nix";
@@ -85,13 +88,15 @@
     .build
     .configManifest;
   packagePathContribution = builtins.tryEval (builtins.toJSON ((mkSystem {
-      modules = [serverModule];
-      packageModules = [
+      modules =
+        ([serverModule])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "path-contributor";
           module.environment.systemPackages = [pkgs.aos-test-agent];
         }
-      ];
+      ]));
+
     })
     .config
     .system
@@ -100,13 +105,15 @@
     .ownership
     .etc));
   packageSessionContribution = builtins.tryEval (builtins.toJSON ((mkSystem {
-      modules = [serverModule];
-      packageModules = [
+      modules =
+        ([serverModule])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "session-contributor";
           module.environment.sessionVariables.PROVENANCE_TEST = "package";
         }
-      ];
+      ]));
+
     })
     .config
     .system
@@ -136,8 +143,9 @@
     .configManifest
     .etc));
   mixedUserGroupOwner = builtins.tryEval (builtins.toJSON ((mkSystem {
-      modules = [serverModule];
-      packageModules = [
+      modules =
+        ([serverModule])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "group-provider";
           module.aos.users.groups.pkgonly = {
@@ -145,7 +153,8 @@
             members = [];
           };
         }
-      ];
+      ]));
+
       operatorModules = [
         {
           aos.users.users.hostuser = {

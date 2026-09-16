@@ -15,7 +15,8 @@
   };
   evaluated = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       {
         aos.abilities = {
@@ -39,8 +40,8 @@
           };
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "aos-kernel-tunable-provider";
         inherit (pkgs.aos-kernel-tunable-provider) version;
@@ -70,8 +71,9 @@
           {config.aos.abilities.instances.workload = {};}
         ];
       }
-    ];
-    selectedProviderModules = [selectedProvider];
+    ]) ++ ([selectedProvider]));
+
+
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);

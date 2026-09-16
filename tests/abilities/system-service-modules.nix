@@ -24,7 +24,7 @@
         inherit lib pkgs;
       };
       modules =
-        [
+        ([
           ../../modules/abilities/default.nix
           ({lib, ...}: {
             options.environment.systemPackages = lib.mkOption {
@@ -70,9 +70,8 @@
               };
             };
           }
-        ];
-      packageModules =
-        [
+        ])
+        ++ builtins.map lib.authenticatedModule (([
           {
             name = "nftables";
             inherit (pkgs.nftables) version;
@@ -83,8 +82,9 @@
           name = "systemd";
           inherit (pkgs.systemd) version;
           module = pkgs.systemd.module + "/module.nix";
-        };
-      selectedProviderModules = lib.optional realizeService selectedSystemdProvider;
+        }) ++ (lib.optional realizeService selectedSystemdProvider));
+
+
     };
   baseline = evaluate {
     allowedTCP = [22 443];

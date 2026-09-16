@@ -90,7 +90,8 @@
   evaluate = consumerModule: bindings:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         ../../modules/systemd/system.nix
         {
@@ -104,8 +105,8 @@
             inherit bindings;
           };
         }
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "systemd";
           inherit (pkgs.systemd) version;
@@ -115,8 +116,9 @@
           name = "consumer";
           module = consumerModule;
         }
-      ];
-      selectedProviderModules = [selectedSystemdProvider];
+      ]) ++ ([selectedSystemdProvider]));
+
+
       specialArgs = {
         inherit pkgs;
         provenance = {

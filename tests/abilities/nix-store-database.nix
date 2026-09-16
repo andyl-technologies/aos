@@ -38,7 +38,8 @@
   };
   evaluated = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       {
         aos.abilities = {
@@ -62,8 +63,8 @@
           };
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "aos-nix-store-provider";
         inherit (pkgs.aos-nix-store-provider) version;
@@ -73,8 +74,9 @@
         name = "consumer";
         module = consumer;
       }
-    ];
-    selectedProviderModules = [selectedProvider];
+    ]) ++ ([selectedProvider]));
+
+
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);

@@ -20,7 +20,8 @@
 in
   lib.evalModules {
     inherit lib pkgs;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       ../../modules/_package-contributions.nix
       module
@@ -85,6 +86,7 @@ in
           stage = "host";
         };
       }
-    ] ++ extraModules;
-    packageModules = builtins.map packageModule packages;
+    ] ++ extraModules)
+      ++ builtins.map lib.authenticatedModule ((builtins.map packageModule packages));
+
   }

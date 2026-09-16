@@ -15,7 +15,8 @@
   evaluate = enabled:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         ../../modules/services/zfs-auto-snapshot.nix
         {
@@ -53,8 +54,9 @@
             };
           };
         }
-      ];
-      packageModules = builtins.map packageModule [pkgs.aos-zfs-provider pkgs.zfstools];
+      ])
+        ++ builtins.map lib.authenticatedModule ((builtins.map packageModule [pkgs.aos-zfs-provider pkgs.zfstools]));
+
     };
   disabled = evaluate false;
   enabled = evaluate true;

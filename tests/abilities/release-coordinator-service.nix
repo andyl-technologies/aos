@@ -29,7 +29,8 @@
   evaluate = releaseCoordinator:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         {
           options.assertions = lib.mkOption {
@@ -44,14 +45,15 @@
           };
           aos.services.releaseCoordinator = releaseCoordinator;
         }
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "aos";
           inherit (pkgs.aos) version;
           module = pkgs.aos.module + "/module.nix";
         }
-      ];
+      ]));
+
     };
   disabled = evaluate {};
   enabled = evaluate enabledConfiguration;

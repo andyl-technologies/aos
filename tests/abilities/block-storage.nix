@@ -50,7 +50,8 @@
   networkEffects = controllerKey "systemd:network-configuration" "systemd:manager" "host-network";
   evaluated = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       ../../modules/systemd/system.nix
       {
@@ -174,8 +175,8 @@
           };
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "aos-cryptsetup-provider";
         inherit (pkgs.aos-cryptsetup-provider) version;
@@ -345,15 +346,15 @@
         inherit (pkgs.systemd) version;
         module = pkgs.systemd.module + "/module.nix";
       }
-    ];
-    selectedProviderModules = [
+    ]) ++ ([
       selectedCryptsetupProvider
       selectedFormatProvider
       selectedPoolProvider
       selectedDatasetProvider
       selectedProvisioningProvider
       selectedNetworkProvider
-    ];
+    ]));
+
     specialArgs = {
       inherit pkgs;
       provenance = {

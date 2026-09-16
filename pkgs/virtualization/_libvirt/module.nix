@@ -2,6 +2,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }: let
   cfg = config.aos.services.libvirt;
@@ -47,7 +48,8 @@
   accessMembership = producer "access-membership" interfaces.groupMembership {
     name = "libvirt-access";
     group = resultOf "access-group" "identity-resource";
-    principals = builtins.sort
+    principals =
+      builtins.sort
       (left: right: builtins.toJSON left < builtins.toJSON right)
       (builtins.map
         (name: resultOf (allowedPrincipalKey name) "identity-resource")
@@ -480,7 +482,9 @@
       accessMembership
       localFilesystems
     ]
-    ++ allowedPrincipals ++ directories ++ [virtlogd virtlockd libvirtd];
+    ++ allowedPrincipals
+    ++ directories
+    ++ [virtlogd virtlockd libvirtd];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   imports = [./dbus-registration.nix];
@@ -526,20 +530,53 @@ in {
       );
     }
     (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [
+      aos = {
+        abilities = lib.mkMerge (
+          [
+            {
+              instances.${consumerInstance} = {};
+              requests.system-bus-availability = {
+                requirement = availabilityRequirement;
+                consumer = consumerInstance;
+                scope = ["system-bus"];
+                parameters.scope = "system-bus";
+              };
+            }
+          ]
+          ++ builtins.map (value: value.configured) contributions
+        );
+        security.polkit.enable = true;
+      };
+
+      environment.etc."libvirt".source = "${pkgs.libvirt}/etc/libvirt";
+
+      system.checks.libvirt = {
+        description = "Libvirt daemon and local connection checks";
+        checks = [
           {
-            instances.${consumerInstance} = {};
-            requests.system-bus-availability = {
-              requirement = availabilityRequirement;
-              consumer = consumerInstance;
-              scope = ["system-bus"];
-              parameters.scope = "system-bus";
-            };
+            name = "libvirt-active";
+            description = "Libvirt and its helper sockets become active";
+            script = ''
+              vm.wait_until_succeeds(
+                  "systemctl is-active --quiet libvirtd.service", timeout=60
+              )
+              vm.succeed("systemctl is-active --quiet virtlogd.socket")
+              vm.succeed("systemctl is-active --quiet virtlockd.socket")
+            '';
           }
-        ]
-        ++ builtins.map (value: value.configured) contributions
-      );
+          {
+            name = "libvirt-connect";
+            description = "The client connects to the local QEMU driver";
+            script = ''
+              vm.wait_until_succeeds(
+                  "virsh --connect qemu:///system list --all", timeout=30
+              )
+              vm.succeed("test -S /run/libvirt/libvirt-sock")
+              vm.succeed("test $(stat -c %G /run/libvirt/libvirt-sock) = libvirt")
+            '';
+          }
+        ];
+      };
     })
   ];
 }

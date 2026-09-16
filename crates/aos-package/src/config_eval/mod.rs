@@ -149,7 +149,7 @@ pub struct FixpointInputs {
     pub base_lib: PathBuf,
     /// Optional normalized metadata facts consumed as a typed Nix module.
     pub facts_json: Option<PathBuf>,
-    /// Packages explicitly installed (`desired.toml`): the starting working set.
+    /// Package roots selected by the authenticated operator input modules.
     pub seed_set: Vec<WorkingSetMember>,
 }
 
@@ -508,7 +508,7 @@ pub struct EvalCommand {
     pub base_lib: PathBuf,
     /// Optional normalized metadata facts file.
     pub facts_json: Option<PathBuf>,
-    /// Optional `desired.toml` whose `packages` seed the working set.
+    /// Optional desired-package document projected into a typed operator module.
     pub desired: Option<PathBuf>,
     /// The running image's base-lib ABI.
     pub module_abi: u32,
@@ -650,6 +650,11 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         .context("pinning authorized host.nix before pure evaluation")?;
     let cmd = &pinned_cmd;
 
+    let mut evaluation_runtime_modules = cmd.runtime_modules.clone();
+    if let Some(desired_module) = materialize_desired_packages_module(cmd)? {
+        evaluation_runtime_modules.push(desired_module);
+    }
+
     // The by-name config-module resolver is the on-host registry set: it reads
     // each package's authenticated package module. This replaces
     // the removed registry-wide provides index. When apm config is
@@ -661,15 +666,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         validate_registry_authority(&resolver, snapshot)?;
     }
 
-    let mut seed_set = load_host_selection(cmd)?;
-    for legacy_seed in load_seed_set(cmd.desired.as_deref())? {
-        if !seed_set
-            .iter()
-            .any(|member| member.package == legacy_seed.package)
-        {
-            seed_set.push(legacy_seed);
-        }
-    }
+    let mut seed_set = load_host_selection(cmd, &evaluation_runtime_modules)?;
 
     let evaluator = stock::StockNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
     // Resolve the selected names before evaluation. This both pins the exact
@@ -707,7 +704,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         }
         let inputs = FixpointInputs {
             host_nix: cmd.host_nix.clone(),
-            runtime_modules: cmd.runtime_modules.clone(),
+            runtime_modules: evaluation_runtime_modules.clone(),
             base_lib: cmd.base_lib.clone(),
             facts_json: cmd.facts_json.clone().filter(|path| path.is_file()),
             seed_set,
@@ -2059,7 +2056,10 @@ fn retained_store_path_nar_hash_in(
 /// before their registry package modules can be fetched, while the complete
 /// runtime evaluation needs those modules. Only `aos.apm.desiredPackages` is
 /// declared, so unrelated host definitions remain lazy.
-fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
+fn load_host_selection(
+    cmd: &EvalCommand,
+    evaluation_runtime_modules: &[PathBuf],
+) -> Result<Vec<WorkingSetMember>> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct HostSelection {
@@ -2079,8 +2079,7 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
         .context("locking the base library for host package selection")?;
     let host = stock::locked_store_input(&cmd.host_nix, None)
         .context("locking host.nix for host package selection")?;
-    let runtime_modules = cmd
-        .runtime_modules
+    let runtime_modules = evaluation_runtime_modules
         .iter()
         .map(|path| {
             stock::locked_store_input(path, None).map(|locked| format!("(import {locked})"))
@@ -2124,34 +2123,36 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
         .collect())
 }
 
-/// Load seed package names from a `desired.toml`, as bare working-set members.
+/// Converts the desired-package document into one immutable typed module.
 ///
-/// Only the top-level `packages` array is read; seed config-module metadata
-/// (package module artifacts, ABI bands) is discovered by the loop, so seeds carry no
-/// package module artifact here.
-fn load_seed_set(desired: Option<&Path>) -> Result<Vec<WorkingSetMember>> {
+/// The resulting module enters both package selection and the complete module
+/// fixed point. No package name is parsed or unioned beside the option system.
+fn materialize_desired_packages_module(cmd: &EvalCommand) -> Result<Option<PathBuf>> {
+    let desired = cmd.desired.as_deref();
     let Some(path) = desired else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading desired packages {}", path.display()))?;
-    let doc: toml::Value =
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-    let names = doc
-        .as_table()
-        .and_then(|table| table.get("packages"))
-        .and_then(|packages| packages.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|entry| entry.as_str())
-                .map(WorkingSetMember::seed)
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(names)
+
+    let packages = crate::desired::load_desired_packages(path)?;
+    let package_json =
+        serde_json::to_string(&packages).context("serializing desired package module input")?;
+    let encoded_json =
+        serde_json::to_string(&package_json).context("encoding desired package module input")?;
+    let source = format!(
+        "# Generated from authenticated desired-package input; do not edit.\n\
+         {{ lib, ... }}: {{\n\
+        \x20 aos.apm.desiredPackages = lib.mkAfter (builtins.fromJSON {encoded_json});\n\
+         }}\n"
+    );
+    let module = cmd.eval_root.join("desired-packages.nix");
+    std::fs::write(&module, source)
+        .with_context(|| format!("writing desired package module {}", module.display()))?;
+    add_fixed_input_to_store(&module)
+        .map(Some)
+        .context("pinning desired package module before pure evaluation")
 }
 
 #[cfg(test)]

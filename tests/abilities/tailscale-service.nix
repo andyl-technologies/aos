@@ -7,7 +7,8 @@
     lib.evalModules {
       inherit lib;
       specialArgs = {inherit pkgs;};
-      modules = [
+      modules =
+        ([
         ../../modules/abilities/default.nix
         ../../modules/services/tailscale.nix
         ({lib, ...}: {
@@ -29,14 +30,15 @@
             aos.services.tailscale = serviceConfig;
           };
         })
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "tailscale";
           inherit (pkgs.tailscale) version;
           module = pkgs.tailscale.module + "/module.nix";
         }
-      ];
+      ]));
+
     };
 
   disabled = evaluate {enable = false;};

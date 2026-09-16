@@ -6,7 +6,8 @@
   evaluate = configuration:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         ../../modules/abilities/default.nix
         {
           aos.abilities.environment = {
@@ -16,8 +17,8 @@
           };
         }
         configuration
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "test-http-server";
           version = pkgs.test-http-server.version;
@@ -28,7 +29,8 @@
           version = pkgs.upgrade-transition-fixture.version;
           module = pkgs.upgrade-transition-fixture.module + "/module.nix";
         }
-      ];
+      ]));
+
     };
   configured = generation:
     evaluate {

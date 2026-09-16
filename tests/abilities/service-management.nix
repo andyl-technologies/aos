@@ -1016,7 +1016,8 @@
   };
   multiServiceFixedPoint = lib.evalModules {
     specialArgs = {inherit lib;};
-    modules = [
+    modules =
+      ([
       ../../modules/abilities/default.nix
       {
         aos.abilities.environment = {
@@ -1025,8 +1026,8 @@
           stage = "host";
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "multi-service";
         module = {
@@ -1037,7 +1038,8 @@
           ];
         };
       }
-    ];
+    ]));
+
   };
   sharedGuarantee = {
     name = "aos.guarantee.test";
@@ -1057,8 +1059,9 @@
   };
   multiServiceGuaranteeFixedPoint = lib.evalModules {
     specialArgs = {inherit lib;};
-    modules = [../../modules/abilities/default.nix];
-    packageModules = [
+    modules =
+      ([../../modules/abilities/default.nix])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "multi-service-guarantee";
         module = {
@@ -1069,7 +1072,8 @@
           ];
         };
       }
-    ];
+    ]));
+
   };
   declaredAliases = builtins.attrNames serviceManagement.declarations;
 in

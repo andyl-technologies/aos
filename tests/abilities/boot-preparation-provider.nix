@@ -17,7 +17,8 @@
   };
   evaluated = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       {
         aos.abilities = {
@@ -41,8 +42,8 @@
           };
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "aos-boot-preparation-provider";
         inherit (pkgs.aos-boot-preparation-provider) version;
@@ -68,8 +69,9 @@
           })
         ];
       }
-    ];
-    selectedProviderModules = [selectedProvider];
+    ]) ++ ([selectedProvider]));
+
+
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);

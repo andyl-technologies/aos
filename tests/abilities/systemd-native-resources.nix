@@ -29,7 +29,8 @@
   dependentGroupEffectsKey = effectsKey "systemd:activation-group" "dependent";
   evaluation = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       ../../modules/systemd/system.nix
       {
@@ -98,8 +99,8 @@
           instances."systemd:manager" = {};
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "systemd";
         inherit (pkgs.systemd) version;
@@ -179,8 +180,9 @@
           };
         };
       }
-    ];
-    selectedProviderModules = [selectedSystemdProvider];
+    ]) ++ ([selectedSystemdProvider]));
+
+
     specialArgs = {
       inherit pkgs;
       provenance = {

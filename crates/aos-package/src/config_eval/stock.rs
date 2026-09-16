@@ -442,8 +442,9 @@ impl StockNixEvaluator {
                 \x20   authority = {authority};\n\
                 \x20   key = {key};\n\
                 \x20   intentModules = [ intentModule ];\n\
-                \x20   packageModules = {package_modules};\n\
-                \x20   selectedProviderModules = {provider_modules};\n\
+                \x20   authenticatedModules = builtins.map\n\
+                \x20     baseLib.lib.authenticatedModule\n\
+                \x20     ({package_modules} ++ {provider_modules});\n\
                 \x20   abilityBindings = {bindings};\n\
                 \x20 }};\n\
                  in {{ abilityRound = baseLib.projectAbilityRound evaluated {{}}; }}\n",
@@ -500,24 +501,13 @@ impl StockNixEvaluator {
             \x20 system = baseLib.evalHostConfig {{\n\
             \x20   operatorModules = [ hostModule ];\n\
             \x20   runtimeModules = [ {runtime_modules} ];\n\
-            \x20   packageModules = {modules};\n\
-            \x20   selectedProviderModules = {selected_provider_modules};\n\
+            \x20   authenticatedModules = builtins.map\n\
+            \x20     baseLib.lib.authenticatedModule\n\
+            \x20     ({modules} ++ {selected_provider_modules});\n\
             \x20   abilityBindings = {ability_bindings};\n\
             \x20   factsModules = {facts_modules};\n\
             \x20 }};\n\
-            \x20 baselineSystem = baseLib.evalHostConfig {{\n\
-            \x20   operatorModules = [ ];\n\
-            \x20   packageModules = [ ];\n\
-            \x20   factsModules = [ ];\n\
-            \x20 }};\n\
-            \x20 candidate = system.config.system.build.configManifest;\n\
-            \x20 baseline = baselineSystem.config.system.build.configManifest;\n\
-            \x20 mergedManifest = baseLib.mergeImageManifest {{ inherit baseline candidate; }};\n\
-            \x20 finalManifest = mergedManifest // {{\n\
-            \x20   config = baseLib.lib.recursiveUpdate\n\
-            \x20     candidate.config\n\
-            \x20     system.config.aos.apm.installAtBoot.config;\n\
-            \x20 }};\n\
+            \x20 finalManifest = system.config.system.build.configManifest;\n\
             \x20 pendingAbilityRequests = system.config.aos.abilities.compositionPendingRequests;\n\
              in {{\n\
             \x20 optionWrites = system._optionWrites;\n\
@@ -848,7 +838,7 @@ where
                 )
             })?;
             items.push(format!(
-                    "    (let configRoot = {config_root}; in {{ name = {}; packageVersion = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
+                    "    (let configRoot = {config_root}; in {{ name = {}; version = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
                     nix_string(&member.package),
                     nix_string(package_version),
                     nix_string(&format!("/{entry_point}")),
@@ -897,26 +887,8 @@ fn render_selected_provider_module_list(
             })
             .collect::<Result<Vec<_>>>()?
             .join(" ");
-        let artifact_locators = selected
-            .artifact_locators
-            .iter()
-            .map(|(selector, artifact)| {
-                let selector_json = serde_json::to_string(selector)
-                    .context("encoding selected package-output selector")?;
-                let artifact_json = serde_json::to_string(artifact)
-                    .context("encoding authenticated artifact reference")?;
-                let path = render_output_path(&artifact.store_path, locked)?;
-                Ok(format!(
-                    "{} = {{ artifactReference = builtins.fromJSON {}; path = {path}; }};",
-                    nix_string(&selector_json),
-                    nix_string(&artifact_json),
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?
-            .join(" ");
-
         items.push(format!(
-            "    (let configRoot = {authenticated_root}; in {{ name = {}; packageVersion = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependencies} }}; }}; artifactLocators = {{ {artifact_locators} }}; }})",
+            "    (let configRoot = {authenticated_root}; in {{ name = {}; version = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependencies} }}; }}; }})",
             nix_string(&selected.package),
             nix_string(&selected.version),
             nix_string(&format!("/{}", selected.locator.path.as_str())),
@@ -1333,11 +1305,11 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("module = configRoot + \"/module.nix\""));
-        assert!(text.contains("baselineSystem = baseLib.evalHostConfig"));
-        assert!(text.contains("baseLib.mergeImageManifest"));
-        assert!(text.contains("manifest = mergedManifest //"));
+        assert_eq!(text.matches("baseLib.evalHostConfig").count(), 1, "{text}");
+        assert!(!text.contains("baseLib.mergeImageManifest"), "{text}");
+        assert!(text.contains("manifest = finalManifest"));
         assert!(!text.contains("mergeImageDefaults ="));
-        assert!(text.contains("installAtBoot.config"), "{text}");
+        assert!(!text.contains("installAtBoot.config"), "{text}");
         assert!(
             !text.contains("credentials = baseLib.lib.recursiveUpdate"),
             "{text}"
@@ -1396,7 +1368,7 @@ mod tests {
                 Some(Sha256Digest::of_bytes(b"web module NAR").to_string()),
             )]
         );
-        assert!(rendered.contains("packageVersion = \"1.0.0\""));
+        assert!(rendered.contains("version = \"1.0.0\""));
         assert!(rendered.contains("module = configRoot + \"/abilities/module.nix\""));
     }
 
@@ -1443,7 +1415,10 @@ mod tests {
             iteration: 0,
         };
         let text = evaluator.render_entry_nix(&attempt).unwrap();
-        assert!(text.contains("packageModules = [ ]"), "{text}");
+        assert!(
+            text.contains("authenticatedModules = builtins.map"),
+            "{text}"
+        );
     }
 
     #[test]

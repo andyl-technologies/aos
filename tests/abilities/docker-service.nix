@@ -7,7 +7,8 @@
     lib.evalModules {
       inherit lib;
       specialArgs = {inherit pkgs;};
-      modules = [
+      modules =
+        ([
         ../../modules/abilities/default.nix
         ../../modules/services/docker.nix
         ({lib, ...}: {
@@ -29,14 +30,15 @@
             aos.services.docker = serviceConfig;
           };
         })
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "docker-engine";
           inherit (pkgs.docker-engine) version;
           module = pkgs.docker-engine.module + "/module.nix";
         }
-      ];
+      ]));
+
     };
 
   disabled = evaluate {enable = false;};

@@ -10,7 +10,8 @@
   };
   evaluation = lib.evalModules {
     inherit lib pkgs;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       {
         config.aos.abilities.environment = {
@@ -19,15 +20,16 @@
           stage = "host";
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "aos";
         version = pkgs.aos.version;
         module = pkgs.aos.module + "/module.nix";
       }
-    ];
-    selectedProviderModules = [selectedConfigurationProvider];
+    ]) ++ ([selectedConfigurationProvider]));
+
+
   };
   abilities = evaluation.config.aos.abilities;
   implementation = abilities.implementations."aos:configuration-materialization";

@@ -17,7 +17,8 @@
   evaluate = module:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         {
           aos.abilities.environment = {
@@ -28,11 +29,12 @@
           aos.services.abilityCrucible.enable = false;
         }
         module
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         (packageModule "aos-ability-boundary-observer" package)
         (packageModule "aos-ability-crucible" cruciblePackage)
-      ];
+      ]));
+
     };
   managed = evaluate {};
   external = evaluate {

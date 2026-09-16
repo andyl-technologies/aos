@@ -71,7 +71,8 @@
   evaluate = bindings:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         ../../modules/systemd/system.nix
         {
@@ -87,8 +88,8 @@
             aos.config.unitGraph.enable = true;
           };
         }
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "aos";
           module = aosModule;
@@ -103,7 +104,8 @@
             config.aos.abilities.instances.manager = {};
           };
         }
-      ];
+      ]));
+
       specialArgs = {
         inherit pkgs;
         provenance = {

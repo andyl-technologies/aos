@@ -40,7 +40,8 @@
   ];
   evaluated = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       {
         aos.abilities.environment = {
@@ -49,13 +50,14 @@
           stage = "host";
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "consumer";
         module.config.aos.abilities = contributions;
       }
-    ];
+    ]));
+
   };
   abilities = evaluated.config.aos.abilities;
   ingress = abilities.requests."consumer:kerberos-ingress";

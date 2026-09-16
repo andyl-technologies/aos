@@ -178,7 +178,7 @@ fn host_package_selection_rejects_a_mutable_input_path() {
         registry_snapshot: None,
     };
 
-    let error = super::load_host_selection(&cmd)
+    let error = super::load_host_selection(&cmd, &[])
         .expect_err("pure package selection must reject a mutable host path");
     assert!(
         error.to_string().contains("must be pinned in /nix/store"),

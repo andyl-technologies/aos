@@ -175,10 +175,6 @@
       if builtins.isAttrs args && args ? runtimeModules
       then args.runtimeModules
       else [];
-    packageModules =
-      if builtins.isAttrs args && args ? packageModules
-      then args.packageModules
-      else [];
     systemModules = builtins.filter builtins.isPath moduleList;
     baseLibProbe = {
       aos.config.evalAtBoot = {
@@ -191,7 +187,7 @@
     # the sole authoritative configuration fixed point.
     selectionEvaluation = lib.evalModules {
       modules = modules ++ moduleList ++ [baseLibProbe];
-      inherit pkgs lib operatorModules runtimeModules packageModules;
+      inherit pkgs lib operatorModules runtimeModules;
       specialArgs = moduleSpecialArgs;
     };
     selectedAbilityPackagesFrom = packages: let
@@ -222,7 +218,6 @@
     allSelectedAbilityPackages = selectedAbilityPackagesFrom (
       hostSelectedAbilityPackages ++ initrdSelectedAbilityPackages
     );
-    callerPackageNames = builtins.map (record: record.name) packageModules;
     nativeAbilityPackageModulesFor = selectedPackages:
       builtins.map (package: {
         name = package.pname or package.name;
@@ -232,17 +227,17 @@
           self = builtins.toString package;
           dependencies = {};
         };
-      }) (builtins.filter
-        (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
-        selectedPackages);
-    finalPackageModules = packageModules ++ nativeAbilityPackageModulesFor hostSelectedAbilityPackages;
-    allPackageModules = packageModules ++ nativeAbilityPackageModulesFor allSelectedAbilityPackages;
+      })
+      selectedPackages;
+    finalPackageModules = nativeAbilityPackageModulesFor hostSelectedAbilityPackages;
+    allPackageModules = nativeAbilityPackageModulesFor allSelectedAbilityPackages;
+    authenticatedModules = builtins.map lib.authenticatedModule;
     selectedPackagesByName = builtins.listToAttrs (builtins.map (package: {
         name = package.pname or package.name;
         value = package;
       })
       allSelectedAbilityPackages);
-    selectedProviderModulesFor = abilityBindings: let
+    selectedProviderModuleRecordsFor = abilityBindings: let
       selectedImplementationNames = builtins.attrNames (builtins.listToAttrs (builtins.map (binding: {
           name = binding.implementation;
           value = true;
@@ -278,7 +273,7 @@
             "selected provider '${implementationName}' has a module locator outside package '${providerPackageName}'"
             {
               name = providerPackageName;
-              packageVersion = package.version or "0";
+              version = package.version or "0";
               inherit configRoot;
               module = configRoot + "/${locator.path}";
               outputs = {
@@ -325,12 +320,12 @@
               };
             }
           ]
-          ++ [
-            {
-              config = lib.mkMerge selectionEvaluation.config.aos.abilities.stages.initrd.intent;
-            }
-          ]
-          ++ selectionEvaluation.config.aos.abilities.stages.initrd.modules;
+          ++ builtins.map
+          (intent: {config = intent;})
+          selectionEvaluation.config.aos.abilities.stages.initrd.intent
+          ++ selectionEvaluation.config.aos.abilities.stages.initrd.modules
+          ++ authenticatedModules initrdPackageModules
+          ++ authenticatedModules (selectedProviderModuleRecordsFor abilityBindings);
         inherit pkgs lib operatorModules;
         runtimeModules =
           runtimeModules
@@ -340,13 +335,11 @@
               instances = synthesizedProviderInstancesFor abilityBindings;
             };
           };
-         packageModules = initrdPackageModules;
-         selectedProviderModules = selectedProviderModulesFor abilityBindings;
-         specialArgs = moduleSpecialArgs;
-       };
-     initrdAbilityEvaluation = import ./lib/build/selected-ability-bindings.nix {inherit lib;} {
-       evaluate = evaluateSelectedInitrd;
-     };
+        specialArgs = moduleSpecialArgs;
+      };
+    initrdAbilityEvaluation = import ./lib/build/selected-ability-bindings.nix {inherit lib;} {
+      evaluate = evaluateSelectedInitrd;
+    };
     # Determine the resolved image ABI from the complete caller module list.
     # The base library bundles only source-backed system modules, so without
     # carrying this value explicitly an inline image override would leave the
@@ -378,7 +371,9 @@
                 stage = "host";
               };
             }
-          ];
+          ]
+          ++ authenticatedModules finalPackageModules
+          ++ authenticatedModules (selectedProviderModuleRecordsFor abilityBindings);
         inherit pkgs lib operatorModules;
         runtimeModules =
           runtimeModules
@@ -388,8 +383,6 @@
               instances = synthesizedProviderInstancesFor abilityBindings;
             };
           };
-        packageModules = finalPackageModules;
-        selectedProviderModules = selectedProviderModulesFor abilityBindings;
         specialArgs = moduleSpecialArgs // {inherit initrdAbilityEvaluation;};
       };
   in
@@ -481,7 +474,21 @@
   );
   qualificationPackageNames =
     pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
-  nativeAdapterMatrix = nativeAdapterMatrixCohort.nativeAdapterMatrix;
+  nativeAdapterPackages = [
+    pkgs.nginx
+    pkgs.aos
+    pkgs.systemd
+    pkgs.aos-systemd-provider
+  ];
+  nativeAdapterMatrix = import ./qualification/modules/_generated-provider-subjects.nix {
+    inherit lib;
+    packages = nativeAdapterPackages;
+    regressions = [
+      "checks.fleet.runtime-module-composition"
+      "checks.fleet.k3s-control-plane-worker"
+      "checks.fleet.system-image-rollback"
+    ];
+  };
   releaseQualification = import ./qualification {
     inherit lib nativeAdapterMatrix;
     packageNames = qualificationPackageNames;
@@ -556,15 +563,15 @@
     };
   in
     testing.mkQualificationAbilityScenario ({
-      name = "aos-qualification-${scenarioId}";
-      identity = qualificationExecutorIdentity;
-      inherit scenarioId;
-      checks = qualificationRequirementChecks scenarioId;
-      testScript = spec.qualification.testScript or spec.testScript;
-      stagingHubUrl = spec.qualification.stagingHubUrl or null;
-      inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
-    }
-    // lib.optionalAttrs (cohorts != null) {inherit cohorts;});
+        name = "aos-qualification-${scenarioId}";
+        identity = qualificationExecutorIdentity;
+        inherit scenarioId;
+        checks = qualificationRequirementChecks scenarioId;
+        testScript = spec.qualification.testScript or spec.testScript;
+        stagingHubUrl = spec.qualification.stagingHubUrl or null;
+        inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
+      }
+      // lib.optionalAttrs (cohorts != null) {inherit cohorts;});
   predecessorMatrixCohort = cohort:
     cohort
     // {
@@ -576,7 +583,7 @@
       };
       report = {kind = "matrix";};
     };
-  nativeAdapterMatrixCohort = import ./tests/fleet/ability-native-power-loss.nix {
+  nativeAdapterMatrixCohort = import ./tests/fleet/runtime-module-composition.nix {
     inherit lib mkSystem pkgs;
     qualificationImage = true;
   };
@@ -654,11 +661,10 @@
   nativeAdapterQualifiedCells = nativeAdapterMatrix.applicable_cell_ids;
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
-    ability-crucible-baseline =
-      mkNativeAbilityScenario {
-        scenarioId = "ability-crucible-baseline";
-        source = ./tests/fleet/ability-crucible-baseline.nix;
-      };
+    ability-crucible-baseline = mkNativeAbilityScenario {
+      scenarioId = "ability-crucible-baseline";
+      source = ./tests/fleet/ability-crucible-baseline.nix;
+    };
     ability-native-adapter-matrix = testing.mkQualificationAbilityScenario {
       name = "aos-qualification-ability-native-adapter-matrix";
       identity = qualificationExecutorIdentity;
@@ -678,12 +684,13 @@
             inherit (nativeEffectReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
-        ++ lib.imap (index: cohort: predecessorMatrixCohort {
-          id = "provider-effect-boundary-rollout-${builtins.toString index}";
-          qualifiedCells = cohort.qualification.qualifiedCells;
-          inherit (cohort) testScript;
-          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-        })
+        ++ lib.imap (index: cohort:
+          predecessorMatrixCohort {
+            id = "provider-effect-boundary-rollout-${builtins.toString index}";
+            qualifiedCells = cohort.qualification.qualifiedCells;
+            inherit (cohort) testScript;
+            inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          })
         nativeEffectRolloutCohorts
         ++ [
           {
@@ -725,12 +732,13 @@
             inherit (nativeCancellationForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
-        ++ lib.imap (index: cohort: predecessorMatrixCohort {
-          id = "provider-cancellation-rollout-${builtins.toString index}";
-          qualifiedCells = cohort.qualification.qualifiedCells;
-          inherit (cohort) testScript;
-          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-        })
+        ++ lib.imap (index: cohort:
+          predecessorMatrixCohort {
+            id = "provider-cancellation-rollout-${builtins.toString index}";
+            qualifiedCells = cohort.qualification.qualifiedCells;
+            inherit (cohort) testScript;
+            inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          })
         nativeCancellationRolloutCohorts
         ++ [
           {
@@ -756,11 +764,10 @@
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
-    ability-native-recovery =
-      mkNativeAbilityScenario {
-        scenarioId = "ability-native-recovery";
-        source = ./tests/fleet/runtime-module-composition.nix;
-      };
+    ability-native-recovery = mkNativeAbilityScenario {
+      scenarioId = "ability-native-recovery";
+      source = ./tests/fleet/runtime-module-composition.nix;
+    };
   };
   recoveryPackageScenario =
     if hostPlatform.isLinux
@@ -1833,7 +1840,7 @@ in {
       system = discoverSystems.server;
     };
     config-provenance = import ./lib/testing/config-provenance.nix {
-      inherit pkgs mkSystem;
+      inherit pkgs lib mkSystem;
       serverModule = ./systems/server.nix;
     };
     nginx-config = import ./tests/packages/nginx-config.nix {

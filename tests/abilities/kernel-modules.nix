@@ -26,7 +26,8 @@
   };
   evaluated = lib.evalModules {
     inherit lib;
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       {
         aos.abilities = {
@@ -50,8 +51,8 @@
           };
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "kmod";
         inherit (pkgs.kmod) version;
@@ -64,8 +65,9 @@
           {config.aos.abilities = request;}
         ];
       }
-    ];
-    selectedProviderModules = [selectedProvider];
+    ]) ++ ([selectedProvider]));
+
+
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);

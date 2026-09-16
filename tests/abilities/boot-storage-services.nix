@@ -11,7 +11,8 @@
   evaluate = stage: modules: packages:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         {
           aos.abilities.environment = {
@@ -20,8 +21,9 @@
             inherit stage;
           };
         }
-      ] ++ modules;
-      packageModules = builtins.map packageModule packages;
+      ] ++ modules)
+        ++ builtins.map lib.authenticatedModule ((builtins.map packageModule packages));
+
     };
   host = evaluate "host" [] [pkgs.aos-boot-storage];
   initrd = evaluate "initrd" [

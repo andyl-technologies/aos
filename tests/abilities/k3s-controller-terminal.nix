@@ -29,7 +29,8 @@
     };
     evaluated = lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         {
           aos.abilities = {
@@ -53,8 +54,8 @@
             };
           };
         }
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "k3s-combined";
           version = pkgs.k3s-combined.version;
@@ -87,8 +88,9 @@
             };
           };
         }
-      ];
-      selectedProviderModules = [selectedProvider];
+      ]) ++ ([selectedProvider]));
+
+
     };
   in {
     inherit childRequestKey;

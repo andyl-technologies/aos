@@ -6,7 +6,8 @@
   evaluate = verifierConfig:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         {
           aos.abilities.environment = {
@@ -16,14 +17,15 @@
           };
           aos.services.attestationVerifier = verifierConfig;
         }
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "aos";
           version = pkgs.aos.version;
           module = pkgs.aos.module + "/module.nix";
         }
-      ];
+      ]));
+
     };
   disabled = evaluate {};
   disabledRequests = disabled.config.aos.abilities.requests;

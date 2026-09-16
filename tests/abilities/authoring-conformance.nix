@@ -578,8 +578,9 @@
   };
   evaluateImplementation = implementation:
     (lib.evalModules {
-      modules = [lib.abilities.module];
-      packageModules = [
+      modules =
+        ([lib.abilities.module])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "authoring";
           module.config.aos.abilities = {
@@ -587,7 +588,8 @@
             implementations.test = implementation;
           };
         }
-      ];
+      ]));
+
     })
     .config
     .aos
@@ -616,8 +618,9 @@
       guarantees = ["authoring"];
     };
   guaranteeReferenceEvaluation = lib.evalModules {
-    modules = [lib.abilities.module];
-    packageModules = [
+    modules =
+      ([lib.abilities.module])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "authoring";
         module.config.aos.abilities = {
@@ -625,7 +628,8 @@
           interfaces.test = guaranteeReferenceDeclaration;
         };
       }
-    ];
+    ]));
+
   };
   projectAbilityConfig = packageName: evaluation:
     (lib.abilities.projectPackage {
@@ -635,13 +639,15 @@
     })
     .value;
   missingGuaranteeReferenceEvaluation = lib.evalModules {
-    modules = [lib.abilities.module];
-    packageModules = [
+    modules =
+      ([lib.abilities.module])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "missing";
         module.config.aos.abilities.interfaces.test = guaranteeReferenceDeclaration;
       }
-    ];
+    ]));
+
   };
   missingGuaranteeReference = builtins.tryEval (builtins.deepSeq (
       projectAbilityConfig "missing" missingGuaranteeReferenceEvaluation
@@ -671,11 +677,12 @@
     lib.abilities.interfaceDocumentFromDeclaration implementationInterface
   );
   sharedImplementationEvaluation = lib.evalModules {
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       {config.aos.abilities.interfaces.shared = implementationInterface;}
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "authoring";
         module.config.aos.abilities.implementations.shared =
@@ -684,14 +691,16 @@
             interface = sharedInterfaceIdentity;
           };
       }
-    ];
+    ]));
+
   };
   sharedImplementationProjection = projectAbilityConfig "authoring" sharedImplementationEvaluation;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceGuarantees = serviceManagement.guaranteeAliases;
   coreGuaranteeProviderEvaluation = lib.evalModules {
-    modules = [lib.abilities.module];
-    packageModules = [
+    modules =
+      ([lib.abilities.module])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "core-guarantee-provider";
         module.config.aos.abilities.implementations = {
@@ -713,12 +722,14 @@
             };
         };
       }
-    ];
+    ]));
+
   };
   coreGuaranteeProviderProjection =
     projectAbilityConfig "core-guarantee-provider" coreGuaranteeProviderEvaluation;
   sharedImplementationFixedPoint = lib.evalModules {
-    modules = [
+    modules =
+      ([
       lib.abilities.module
       {
         config.aos.abilities = {
@@ -726,8 +737,8 @@
           interfaces.shared = implementationInterface;
         };
       }
-    ];
-    packageModules = [
+    ])
+      ++ builtins.map lib.authenticatedModule (([
       {
         name = "authoring";
         module.config.aos.abilities = {
@@ -742,7 +753,8 @@
           };
         };
       }
-    ];
+    ]));
+
   };
   packageModuleFor = package: {
     name = package;
@@ -758,11 +770,13 @@
     };
   };
   combinedPackageEvaluation = lib.evalModules {
-    modules = [lib.abilities.module];
-    packageModules = [
+    modules =
+      ([lib.abilities.module])
+      ++ builtins.map lib.authenticatedModule (([
       (packageModuleFor "alpha")
       (packageModuleFor "beta")
-    ];
+    ]));
+
   };
   instanceIdentityEvaluation = lib.evalModules {
     inherit lib;

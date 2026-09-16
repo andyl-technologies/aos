@@ -21,7 +21,8 @@
   evaluate = bindings:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         lib.abilities.module
         {
           config.aos.abilities = {
@@ -34,8 +35,8 @@
             inherit bindings;
           };
         }
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "aos-filesystem-provider";
           inherit (pkgs.aos-filesystem-provider) version;
@@ -67,8 +68,9 @@
             };
           };
         }
-      ];
-      selectedProviderModules = [selectedProvider];
+      ]) ++ ([selectedProvider]));
+
+
       specialArgs = {
         inherit pkgs;
         provenance = {

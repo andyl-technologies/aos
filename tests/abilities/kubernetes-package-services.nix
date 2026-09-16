@@ -11,7 +11,8 @@
   evaluatePackages = consumerPackages: configuration:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         ../../modules/abilities/default.nix
         {
           aos.abilities.environment = {
@@ -21,10 +22,11 @@
           };
         }
         configuration
-      ];
-      packageModules = builtins.map packageModule (
+      ])
+        ++ builtins.map lib.authenticatedModule ((builtins.map packageModule (
         [pkgs.aos-kernel-tunable-provider] ++ consumerPackages
-      );
+      )));
+
     };
   evaluate = package: configuration:
     evaluatePackages [package] configuration;

@@ -7,7 +7,8 @@
     lib.evalModules {
       inherit lib;
       specialArgs = {inherit pkgs;};
-      modules = [
+      modules =
+        ([
         ../../modules/abilities/default.nix
         ../../modules/security/firewall.nix
         ({lib, ...}: {
@@ -29,14 +30,15 @@
             aos.firewall = firewallConfig;
           };
         })
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "nftables";
           inherit (pkgs.nftables) version;
           module = pkgs.nftables.module + "/module.nix";
         }
-      ];
+      ]));
+
     };
 
   disabled = evaluate {enable = false;};

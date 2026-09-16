@@ -24,7 +24,7 @@
     else throw "${package.pname}:${implementation} selects a non-canonical provider module output";
 in {
   name = package.pname;
-  packageVersion = package.version;
+  version = package.version;
   configRoot = root;
   module = root + "/${locator.path}";
   outputs = {

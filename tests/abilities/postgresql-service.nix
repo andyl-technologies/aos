@@ -27,7 +27,8 @@
   evaluate = postgresqlConfig:
     lib.evalModules {
       inherit lib;
-      modules = [
+      modules =
+        ([
         ../../modules/abilities/default.nix
         {
           options.assertions = lib.mkOption {
@@ -38,13 +39,14 @@
           aos.abilities.environment = environment;
           postgresql = postgresqlConfig;
         }
-      ];
-      packageModules = [
+      ])
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "postgresql";
           module = pkgs.postgresql.module + "/module.nix";
         }
-      ];
+      ]));
+
     };
   disabled = evaluate {};
   standalone = evaluate {

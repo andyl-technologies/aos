@@ -44,6 +44,18 @@
   };
   isNoDefault = v: builtins.isAttrs v && v ? _type && v._type == "noDefault";
 
+  # Resolver-authenticated modules enter the ordinary `modules` list. The
+  # private wrapper retains provenance and import bounds without constructing
+  # a second package-module evaluation graph.
+  authenticatedModule = record: {
+    _type = "aos-authenticated-module";
+    inherit record;
+  };
+  isAuthenticatedModule = module:
+    builtins.isAttrs module
+    && builtins.attrNames module == ["_type" "record"]
+    && module._type == "aos-authenticated-module";
+
   # Documentation extraction is declaration-only and must never turn a lazy
   # default into a build, store reference, secret, or evaluator effect. This
   # closed normalizer admits only bounded JSON-shaped values. `tryEval` at the
@@ -664,21 +676,6 @@
     # same priority as the platform host but distinct engine provenance so
     # provisioning writes can be rejected and input identity remains auditable.
     runtimeModules ? [],
-    # Config modules fetched from authenticated package outputs. Each record is
-    # `{ name; module; configRoot; outputs; }`; every field is resolver supplied
-    # from authenticated package metadata. `module` must be
-    # `<configRoot>/module.nix`; recursive imports must remain path literals
-    # below that root. `outputs` contains only `self` and authenticated runtime
-    # dependency outputs, replacing ambient package-set traversal. Definitions
-    # from the module and its imports are stamped `package:<name>` for artifact
-    # ownership. Write authority comes from the declarations and definition
-    # provenance in this same module graph.
-    packageModules ? [],
-    # Resolver-selected provider modules use the same authenticated package
-    # provenance and confined import rules. The resolver maps the selected
-    # implementation's signed ModuleLocator into the package wrapper's exact
-    # source-side module tree; the entry may lie anywhere below that tree.
-    selectedProviderModules ? [],
     # Nested submodule evaluation retains resolver provenance for priority and
     # ownership, but the outer evaluation already validates the same authored
     # config at its full absolute option path. Re-checking a nested relative
@@ -837,66 +834,81 @@
       collectModules = provenance: importRoot: moduleOutputs: packageIdentity: propagateToImports: mods:
         builtins.concatLists (
           builtins.map (
-            mod: let
-              evaled =
-                evalModule {
-                  config = visibleConfigFor provenance;
-                  options = optionsTree;
-                  pkgs =
-                    if moduleOutputs == null
-                    then pkgs
-                    else {};
-                  lib = moduleLib;
-                  extraArgs =
-                    extraArgs
-                    // specialArgs
-                    // {provenance = provenanceQueries;}
-                    // (
+            mod:
+              if isAuthenticatedModule mod
+              then let
+                record = validateAuthenticatedRecord mod.record;
+              in
+                if provenance != "@base"
+                then throw "evalModules: authenticated module wrappers are resolver-owned top-level inputs"
+                else
+                  collectModules
+                  "package:${record.name}"
+                  record.configRoot
+                  record.outputs
+                  {inherit (record) name version;}
+                  true
+                  [{imports = [record.module];}]
+              else let
+                evaled =
+                  evalModule {
+                    config = visibleConfigFor provenance;
+                    options = optionsTree;
+                    pkgs =
                       if moduleOutputs == null
-                      then {}
-                      else {outputs = moduleOutputs;}
-                    )
-                    // (
-                      if packageIdentity == null
-                      then {}
-                      else {
+                      then pkgs
+                      else {};
+                    lib = moduleLib;
+                    extraArgs =
+                      extraArgs
+                      // specialArgs
+                      // {provenance = provenanceQueries;}
+                      // (
+                        if moduleOutputs == null
+                        then {}
+                        else {outputs = moduleOutputs;}
+                      )
+                      // (
+                        if packageIdentity == null
+                        then {}
+                        else {
                           packageName = packageIdentity.name;
                           packageVersion = packageIdentity.version;
                         }
-                    );
-                }
-                mod;
-            in
-              collectModules
-              (
-                if propagateToImports
-                then provenance
-                else if provenance == "@host" || provenance == "@host-import"
-                then "@host-import"
-                else if provenance == "@runtime" || provenance == "@runtime-import"
-                then "@runtime-import"
-                else "@base"
-              )
-              (
-                if propagateToImports
-                then importRoot
-                else null
-              )
-              (
-                if propagateToImports
-                then moduleOutputs
-                else null
-              )
-              (
-                if propagateToImports
-                then packageIdentity
-                else null
-              )
-              propagateToImports
-              (confinedPackageImports provenance importRoot evaled.imports)
-              ++ [
-                (evaled // {_provenance = provenance;})
-              ]
+                      );
+                  }
+                  mod;
+              in
+                collectModules
+                (
+                  if propagateToImports
+                  then provenance
+                  else if provenance == "@host" || provenance == "@host-import"
+                  then "@host-import"
+                  else if provenance == "@runtime" || provenance == "@runtime-import"
+                  then "@runtime-import"
+                  else "@base"
+                )
+                (
+                  if propagateToImports
+                  then importRoot
+                  else null
+                )
+                (
+                  if propagateToImports
+                  then moduleOutputs
+                  else null
+                )
+                (
+                  if propagateToImports
+                  then packageIdentity
+                  else null
+                )
+                propagateToImports
+                (confinedPackageImports provenance importRoot evaled.imports)
+                ++ [
+                  (evaled // {_provenance = provenance;})
+                ]
           )
           mods
         );
@@ -917,15 +929,22 @@
           if builtins.isPath module || builtins.isString module
           then builtins.toString module
           else "";
+        rootType =
+          if builtins.isPath root && builtins.pathExists root
+          then builtins.readFileType root
+          else null;
         components = strings.splitString "/" moduleString;
       in
         moduleString
         != ""
-        && strings.hasPrefix "${rootString}/" moduleString
+        && (
+          (rootType == "directory" && strings.hasPrefix "${rootString}/" moduleString)
+          || (rootType == "regular" && moduleString == rootString)
+        )
         && !builtins.any (component: component == "." || component == "..") components
         && builtins.pathExists module;
 
-      validatedPackageModules = builtins.map (record: let
+      validateAuthenticatedRecord = record: let
         keys =
           if builtins.isAttrs record
           then builtins.attrNames record
@@ -941,51 +960,19 @@
             || keys == ["module" "name" "outputs" "version"]
             || keys == ["configRoot" "module" "name" "outputs"]
             || keys == ["configRoot" "module" "name" "outputs" "version"])
-        then throw "evalModules: packageModules entries must contain module/name, optionally with outputs, or the resolver-authenticated configRoot/outputs form"
+        then throw "evalModules: authenticated module records must contain module/name and optional configRoot/outputs/version"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
         then throw "evalModules: invalid resolver-supplied package provenance name"
         else if
           configRoot
           != null
-          && (!builtins.isPath configRoot
-            || !builtins.isPath record.module
-            || (
-              if builtins.readFileType configRoot == "directory"
-              then builtins.toString record.module != "${builtins.toString configRoot}/module.nix"
-              else builtins.readFileType configRoot != "regular" || record.module != configRoot
-            ))
+          && (!builtins.isPath configRoot || !builtins.isPath record.module || !validProviderModule configRoot record.module)
         then throw "evalModules: package '${record.name}' module is outside its authenticated source boundary"
         else if record ? outputs && !validPackageOutputs record.outputs
         then throw "evalModules: package '${record.name}' has invalid resolver-supplied outputs"
         else if !builtins.isString (record.version or "0")
         then throw "evalModules: package '${record.name}' has invalid resolver-supplied version"
-        else record // {inherit configRoot;} // {outputs = record.outputs or null;} // {version = record.version or "0";})
-      packageModules;
-
-      validatedProviderModules = builtins.map (record: let
-        keys =
-          if builtins.isAttrs record
-          then builtins.attrNames record
-          else [];
-        configRoot = record.configRoot or null;
-      in
-        if
-          !builtins.isAttrs record
-          || keys != ["configRoot" "module" "name" "outputs" "packageVersion"]
-        then throw "evalModules: selectedProviderModules entries must contain exactly configRoot/module/name/outputs/packageVersion"
-        else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
-        then throw "evalModules: invalid resolver-supplied provider package provenance name"
-        else if !validPackageOutputs record.outputs
-        then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied outputs"
-        else if
-          !builtins.isPath configRoot
-          || !builtins.isPath record.module
-          || !validProviderModule configRoot record.module
-        then throw "evalModules: selected provider module for '${record.name}' escapes or is absent from its authenticated root"
-        else if !builtins.isString record.packageVersion || record.packageVersion == ""
-        then throw "evalModules: selected provider module for '${record.name}' has an invalid resolver-supplied version"
-        else record)
-      selectedProviderModules;
+        else record // {inherit configRoot;} // {outputs = record.outputs or null;} // {version = record.version or "0";};
 
       packageOwnedRoots = lists.unique (builtins.map
         (decl: builtins.head decl.path)
@@ -996,30 +983,11 @@
             && strings.hasPrefix "package:" (decl.provenance or ""))
           allOptionDecls));
 
-      evaluatedPackageModules = builtins.concatLists (builtins.map (record:
-        collectModules "package:${record.name}" record.configRoot record.outputs {inherit (record) name version;} true [record.module])
-      validatedPackageModules);
-
-      evaluatedProviderModules = builtins.concatLists (builtins.map (record:
-        collectModules
-        "package:${record.name}"
-        record.configRoot
-        record.outputs
-        {
-          inherit (record) name;
-          version = record.packageVersion;
-        }
-        true
-        [record.module])
-      validatedProviderModules);
-
       # Image modules carry `@base`; operator (host.nix) modules carry
       # `@host`. Appended last so their tier-75 defs also win any
       # `lastValue` tie at equal priority, matching "the operator overrides".
       evaluatedModules =
         collectModules "@base" null null null false ([internalModule] ++ modules)
-        ++ evaluatedPackageModules
-        ++ evaluatedProviderModules
         ++ collectModules "@host" null null null false operatorModules
         ++ collectModules "@runtime" null null null false runtimeModules;
 
@@ -1328,7 +1296,11 @@
         # Resolver-authenticated package names in deterministic evaluation
         # order. Manifest renderers use this to discover package-private
         # projection options without granting packages a shared write root.
-        packageNames = builtins.map (record: record.name) validatedPackageModules;
+        packageNames = lists.unique (builtins.map
+          (module: strings.removePrefix "package:" module._provenance)
+          (builtins.filter
+            (module: strings.hasPrefix "package:" (module._provenance or ""))
+            evaluatedModules));
 
         ownerOfOption = path: let
           defs = builtins.concatLists (builtins.map (d:
@@ -1762,7 +1734,7 @@
       in
         evalModules ({
             modules = modules ++ extraModules;
-            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enforcePackageAuthorship enforceRuntimeDeclarations;
+            inherit pkgs lib extraArgs specialArgs operatorModules enforcePackageAuthorship enforceRuntimeDeclarations;
           }
           // builtins.removeAttrs args ["modules"]);
 
@@ -1835,6 +1807,7 @@
     result;
 in {
   inherit
+    authenticatedModule
     evalModules
     mkOption
     mkIf

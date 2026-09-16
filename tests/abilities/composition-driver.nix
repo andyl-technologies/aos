@@ -309,7 +309,7 @@ args @ {lib, ...}: let
     lib.evalModules {
       inherit lib;
       modules =
-        [
+        ([
           lib.abilities.module
           {
             config.aos.abilities = {
@@ -322,8 +322,8 @@ args @ {lib, ...}: let
             };
           }
         ]
-        ++ roundAdditions;
-      packageModules = [
+        ++ roundAdditions)
+        ++ builtins.map lib.authenticatedModule (([
         {
           name = "provider";
           module = {imports = [providerModule] ++ providerAdditions;};
@@ -332,7 +332,8 @@ args @ {lib, ...}: let
           name = "consumer";
           module = {imports = [consumerModule] ++ consumerAdditions;};
         }
-      ];
+      ]));
+
     };
   evaluated = evaluate {};
   abilities = evaluated.config.aos.abilities;

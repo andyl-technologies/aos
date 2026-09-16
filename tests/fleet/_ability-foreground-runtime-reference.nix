@@ -4,9 +4,6 @@
   mkSystem,
   pkgs,
   guestTools ? false,
-  effectQualification ? false,
-  providerStateQualification ? false,
-  transitionTransform ? transition: transition,
 }: let
   reference = import ./_ability-runtime-reference.nix {
     inherit
@@ -14,9 +11,6 @@
       mkSystem
       pkgs
       guestTools
-      effectQualification
-      providerStateQualification
-      transitionTransform
       ;
   };
   observerFixture = import ./_ability-execution-observer.nix {
