@@ -43,6 +43,7 @@
   platform = cfg.platform;
   plan = cfg.plan;
   rawImage = plan.rawImage;
+  convertedMetadataFilename = "image-info.json";
 
   # Convert a raw image to another format via qemu-img and emit a per-format
   # manifest. The manifest retains the canonical boot/partition facts from
@@ -105,7 +106,7 @@
                | .sha256 = $sha256
                | .compatibleTargets = $compatibleTargets
                | .virtualSizeBytes = $expectedVirtualSize' \
-              ${rawImage}/${plan.rawMetadataFilename} > $out/image-info.json
+              ${rawImage}/${plan.rawMetadataFilename} > $out/${convertedMetadataFilename}
 
           '';
         }
@@ -143,7 +144,11 @@
     };
 
   convertedImages = let
-    finish = baseImage: plan.finishConvertedImage {inherit baseImage;};
+    finish = baseImage:
+      plan.finishConvertedImage {
+        inherit baseImage;
+        metadataFilename = convertedMetadataFilename;
+      };
   in {
     qcow2 = finish (convertImage {
       format = "qcow2";
@@ -165,15 +170,15 @@
     });
   };
 
-  artifactFor = format: bundle: filename: {
+  artifactFor = format: bundle: diskFilename: metadataFilename: {
     disk = projectFile {
       name = "aos-image-${config.aos.system.name}-${format}-disk";
-      source = "${bundle}/${filename}";
+      source = "${bundle}/${diskFilename}";
       description = "AOS ${config.aos.system.name} ${format} disk artifact";
     };
     info = projectFile {
       name = "aos-image-${config.aos.system.name}-${format}-info";
-      source = "${bundle}/image-info.json";
+      source = "${bundle}/${metadataFilename}";
       description = "AOS ${config.aos.system.name} ${format} image metadata";
     };
   };
@@ -376,10 +381,10 @@ in {
         inherit (convertedImages) qcow2 vmdk vhd;
       };
       system.build.imageArtifacts = {
-        raw = artifactFor "raw" rawImage plan.rawDiskFilename;
-        qcow2 = artifactFor "qcow2" convertedImages.qcow2 "aos-${config.aos.system.name}.qcow2";
-        vmdk = artifactFor "vmdk" convertedImages.vmdk "aos-${config.aos.system.name}.vmdk";
-        vhd = artifactFor "vhd" convertedImages.vhd "aos-${config.aos.system.name}.vhd";
+        raw = artifactFor "raw" rawImage plan.rawDiskFilename plan.rawMetadataFilename;
+        qcow2 = artifactFor "qcow2" convertedImages.qcow2 "aos-${config.aos.system.name}.qcow2" convertedMetadataFilename;
+        vmdk = artifactFor "vmdk" convertedImages.vmdk "aos-${config.aos.system.name}.vmdk" convertedMetadataFilename;
+        vhd = artifactFor "vhd" convertedImages.vhd "aos-${config.aos.system.name}.vhd" convertedMetadataFilename;
       };
       system.build.checks.image-budget = plan.budgetCheck;
       system.build.initialBootExecutable = plan.initialBootExecutable;

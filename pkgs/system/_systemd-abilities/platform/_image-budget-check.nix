@@ -4,6 +4,7 @@
   lib,
   pkgs,
   image,
+  metadataFilename,
   rootfs,
   uki,
   name,
@@ -29,7 +30,7 @@ in
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
       INITRD = "${config.system.build.initrd}/initrd.img";
       UKI = uki;
-      IMAGE_INFO = "${image}/image-info.json";
+      IMAGE_INFO = "${image}/${metadataFilename}";
       MAX_ROOT_BYTES = toString (budgets.maxRootMiB * mib);
       MAX_INITRD_BYTES = toString (budgets.maxInitrdMiB * mib);
       MAX_UKI_BYTES = toString (budgets.maxBootExecutableMiB * mib);

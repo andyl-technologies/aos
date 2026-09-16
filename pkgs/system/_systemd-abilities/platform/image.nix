@@ -100,7 +100,7 @@
     };
     rawImage = import ./_image-builder.nix {
       pkgs = imagePackages;
-      inherit lib bootArtifacts rawDiskFilename rootfs runtimeClosureAudit targetPlatform;
+      inherit lib bootArtifacts rawDiskFilename rawMetadataFilename rootfs runtimeClosureAudit targetPlatform;
       system = {inherit config;};
       inherit name;
     };
@@ -108,6 +108,7 @@
       pkgs = imagePackages;
       inherit config lib runtimeClosureAudit;
       image = rawImage;
+      metadataFilename = rawMetadataFilename;
       inherit name rootfs;
       uki = "${rawImage.ukiA}/${rawImage.ukiAStoreFilename}";
     };
@@ -124,10 +125,13 @@
   in {
     _type = "aos-image-build-plan";
     inherit budgetCheck installBundle rawDiskFilename rawImage rawMetadataFilename;
-    finishConvertedImage = {baseImage}:
+    finishConvertedImage = {
+      baseImage,
+      metadataFilename,
+    }:
       import ./_converted-image.nix {
         pkgs = imagePackages;
-        inherit baseImage config lib rawImage targetPlatform;
+        inherit baseImage config lib metadataFilename rawImage targetPlatform;
       };
     unsignedAssembly = rawImage.unsignedAssembly;
     initialBootExecutable = rawImage.uki;
