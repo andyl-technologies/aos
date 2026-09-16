@@ -13,12 +13,14 @@
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
   };
-  imageRolloutFixture = import ./_image-rollout-runtime-reference.nix {
-    inherit lib pkgs;
-  };
   selectedPackageEntries =
     fixture.orderedPackages
-    ++ imageRolloutFixture.orderedPackages;
+    ++ [
+      {
+        name = "aos";
+        package = pkgs.aos;
+      }
+    ];
   selectedPackages = builtins.attrValues (builtins.listToAttrs (map (entry: {
       name = builtins.unsafeDiscardStringContext (builtins.toString entry.package);
       value = entry.package;
@@ -31,9 +33,9 @@
     regressions = [
       "checks.fleet.runtime-module-composition"
       "checks.fleet.ability-native-foreground-container"
-      "checks.fleet.ability-native-image-rollout"
       "checks.fleet.k3s-control-plane-worker"
       "checks.fleet.ability-native-power-loss"
+      "checks.fleet.system-image-rollback"
     ];
   };
   adapterByName = name: let
