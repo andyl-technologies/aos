@@ -695,7 +695,7 @@
   networkConfigurationRealization = types.record {
     fields = {
       schema = types.enum ["aos.systemd.network-configuration-realization/v1"];
-      systemd = types.artifactReference;
+      systemd = types.artifactSelector;
     };
   };
   networkConfigurationEffectsRequirement = {

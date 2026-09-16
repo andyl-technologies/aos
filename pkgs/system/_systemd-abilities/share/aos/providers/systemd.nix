@@ -436,10 +436,6 @@
     };
 
   composeNetworkConfiguration = {resources, ...}: let
-    systemdLocator = artifactLocatorFor (lib.abilities.packageOutput {});
-    systemdReference =
-      {_type = "aos-artifact-reference";}
-      // systemdLocator.artifactReference;
     realizationSchemas = networkConfigurationController.desiredType._abilitySchema.fields.schema.values or [];
     realizationSchema =
       if builtins.length realizationSchemas != 1
@@ -456,7 +452,7 @@
       }) resources;
       realizations = builtins.mapAttrs (_: _: {
         schema = realizationSchema;
-        systemd = systemdReference;
+        systemd = lib.abilities.packageOutput {};
       }) resources;
     };
 

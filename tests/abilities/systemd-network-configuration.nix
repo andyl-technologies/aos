@@ -68,33 +68,34 @@
   evaluate = bindings:
     lib.evalModules {
       inherit lib;
-      modules = [
-        lib.abilities.module
-        ../../modules/systemd/system.nix
-        {
-          config.aos.abilities = {
-            environment = {
-              authority = "test";
-              key = "systemd-network";
-              stage = "host";
+      modules =
+        [
+          lib.abilities.module
+          ../../modules/systemd/system.nix
+          {
+            config.aos.abilities = {
+              environment = {
+                authority = "test";
+                key = "systemd-network";
+                stage = "host";
+              };
+              instances."systemd:manager" = {};
+              inherit bindings;
             };
-            instances."systemd:manager" = {};
-            inherit bindings;
-          };
-        }
-      ];
-      packageModules = [
-        {
-          name = "systemd";
-          inherit (pkgs.systemd) version;
-          module = pkgs.systemd.module + "/module.nix";
-        }
-        {
-          name = "consumer";
-          module = consumer;
-        }
-      ];
-      selectedProviderModules = [selectedSystemdProvider];
+          }
+        ]
+        ++ builtins.map lib.authenticatedModule [
+          {
+            name = "systemd";
+            inherit (pkgs.systemd) version;
+            module = pkgs.systemd.module + "/module.nix";
+          }
+          {
+            name = "consumer";
+            module = consumer;
+          }
+          selectedSystemdProvider
+        ];
       specialArgs = {
         inherit pkgs;
         provenance = {
