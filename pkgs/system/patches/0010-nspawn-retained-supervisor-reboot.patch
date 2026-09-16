@@ -273,44 +273,22 @@ index 2190b37..3c17e60 100644
  #if HAVE_SECCOMP
  static scmp_filter_ctx arg_seccomp = NULL;
  #endif
-@@ -468,6 +472,8 @@ static int help(void) {
-                "                            Permit/prohibit specific system calls\n"
-                "     --aos-payload-seccomp-profile=PROFILE\n"
-                "                            Apply a compiled AOS payload filter before exec\n"
-+               "     --aos-lifecycle-profile=PROFILE\n"
-+               "                            Retain the supervisor across authenticated payload reboots\n"
-                "     --aos-root-mount-fd=NAME\n"
-                "                            Consume the named AOS supervisor-only root mount\n"
-                "  -Z --selinux-context=SECLABEL\n"
-@@ -724,6 +730,7 @@ static int parse_argv(int argc, char *argv[]) {
-                 ARG_VERITY_DATA,
-                 ARG_SYSTEM_CALL_FILTER,
-                 ARG_AOS_PAYLOAD_SECCOMP_PROFILE,
-+                ARG_AOS_LIFECYCLE_PROFILE,
-                 ARG_AOS_ROOT_DIRECTORY_FD,
-                 ARG_RLIMIT,
-                 ARG_HOSTNAME,
-@@ -807,6 +814,7 @@ static int parse_argv(int argc, char *argv[]) {
-                 { "verity-data",            required_argument, NULL, ARG_VERITY_DATA            },
-                 { "system-call-filter",     required_argument, NULL, ARG_SYSTEM_CALL_FILTER     },
-                 { "aos-payload-seccomp-profile", required_argument, NULL, ARG_AOS_PAYLOAD_SECCOMP_PROFILE },
-+                { "aos-lifecycle-profile", required_argument, NULL, ARG_AOS_LIFECYCLE_PROFILE },
-                 { "aos-root-mount-fd", required_argument, NULL, ARG_AOS_ROOT_DIRECTORY_FD },
-                 { "rlimit",                 required_argument, NULL, ARG_RLIMIT                 },
-                 { "oom-score-adjust",       required_argument, NULL, ARG_OOM_SCORE_ADJUST       },
-@@ -1417,6 +1425,12 @@ static int parse_argv(int argc, char *argv[]) {
-                         arg_aos_root_directory_fd = true;
+@@ -1153,6 +1157,15 @@ static int parse_argv(int argc, char *argv[]) {
+                         arg_aos_payload_seccomp_profile = opts.arg;
                          break;
  
-+                case ARG_AOS_LIFECYCLE_PROFILE:
-+                        if (arg_aos_lifecycle_profile || !streq(optarg, AOS_NSPAWN_LIFECYCLE_PROFILE_V1))
-+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid or repeated AOS lifecycle profile.");
++                OPTION_LONG("aos-lifecycle-profile", "PROFILE",
++                            "Retain the supervisor across authenticated payload reboots"):
++                        if (arg_aos_lifecycle_profile || !streq(opts.arg, AOS_NSPAWN_LIFECYCLE_PROFILE_V1))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
++                                                       "Invalid or repeated AOS lifecycle profile.");
++
 +                        arg_aos_lifecycle_profile = true;
 +                        break;
 +
-                 case ARG_RLIMIT: {
-                         const char *eq;
-                         _cleanup_free_ char *name = NULL;
+                 OPTION_LONG("aos-root-mount-fd", "NAME",
+                             "Consume the named AOS supervisor-only root mount"):
+                         if (arg_aos_root_directory_fd || !streq(opts.arg, AOS_ROOT_DIRECTORY_FD_NAME))
 @@ -2967,7 +2981,7 @@ static int recursive_chown(const char *directory, uid_t shift, uid_t range) {
   * That is, success is indicated by a return value of zero, and an
   * error is indicated by a non-zero value.
@@ -388,9 +366,9 @@ index 2190b37..3c17e60 100644
          if (DEBUG_LOGGING) {
                  _cleanup_free_ char *joined = strv_join(tags, " ");
  
-@@ -4680,16 +4712,41 @@ static int nspawn_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t r
-                         (void) sd_notifyf(/* unset_environment= */ false, "STATUS=Container running.");
-         }
+@@ -4800,10 +4831,37 @@ static int nspawn_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t r
+ 
+         (void) forward_fd_store(tags, fds);
  
 -        return 0;
 +        return 1;
@@ -408,6 +386,7 @@ index 2190b37..3c17e60 100644
 +                if (r <= 0)
 +                        return r;
 +        }
++
 +        return -E2BIG;
 +}
 +
@@ -418,6 +397,7 @@ index 2190b37..3c17e60 100644
 +                return true;
 +        if (sigpending(&pending) < 0)
 +                return true; /* Uncertainty cannot authorize a new payload. */
++
 +        return sigismember(&pending, SIGTERM) > 0 || sigismember(&pending, SIGINT) > 0;
  }
  
@@ -425,6 +405,8 @@ index 2190b37..3c17e60 100644
 +static int setup_notify_parent(sd_event *event, int fd, NspawnNotifyContext *context, sd_event_source **notify_event_source) {
          int r;
  
+         assert(notify_event_source);
+@@ -4811,7 +4869,7 @@ static int setup_notify_parent(sd_event *event, int fd, PidRef *inner_child_pid,
          if (fd < 0)
                  return 0;
  
@@ -521,7 +503,7 @@ index 2190b37..3c17e60 100644
                  goto finish;
  
 +        if (arg_aos_lifecycle_profile &&
-+            (!arg_privileged || arg_start_mode != START_BOOT || !arg_keep_unit || !arg_machine ||
++            (arg_runtime_scope != RUNTIME_SCOPE_SYSTEM || arg_start_mode != START_BOOT || !arg_keep_unit || !arg_machine ||
 +             arg_register || arg_background || arg_cleanup || !FLAGS_SET(arg_settings_mask, _SETTINGS_MASK_ALL) ||
 +             !arg_aos_payload_seccomp_profile || !arg_no_new_privileges ||
 +             arg_userns_mode != USER_NAMESPACE_FIXED || arg_uid_shift == 0 || arg_uid_range < 65536 ||

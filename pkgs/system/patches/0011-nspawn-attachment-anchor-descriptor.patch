@@ -86,47 +86,25 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
  static char *arg_template = NULL;
  static char *arg_chdir = NULL;
  static char *arg_pivot_root_new = NULL;
-@@ -476,6 +477,8 @@
-                "                            Retain the supervisor across authenticated payload reboots\n"
-                "     --aos-root-mount-fd=NAME\n"
-                "                            Consume the named AOS supervisor-only root mount\n"
-+               "     --aos-attachment-anchor-fd=NAME\n"
-+               "                            Install the named AOS destination anchor read-only\n"
-                "  -Z --selinux-context=SECLABEL\n"
-                "                            Set the SELinux security context to be used by\n"
-                "                            processes in the container\n"
-@@ -732,6 +735,7 @@
-                 ARG_AOS_PAYLOAD_SECCOMP_PROFILE,
-                 ARG_AOS_LIFECYCLE_PROFILE,
-                 ARG_AOS_ROOT_DIRECTORY_FD,
-+                ARG_AOS_ATTACHMENT_ANCHOR_FD,
-                 ARG_RLIMIT,
-                 ARG_HOSTNAME,
-                 ARG_NO_NEW_PRIVILEGES,
-@@ -816,6 +820,7 @@
-                 { "aos-payload-seccomp-profile", required_argument, NULL, ARG_AOS_PAYLOAD_SECCOMP_PROFILE },
-                 { "aos-lifecycle-profile", required_argument, NULL, ARG_AOS_LIFECYCLE_PROFILE },
-                 { "aos-root-mount-fd", required_argument, NULL, ARG_AOS_ROOT_DIRECTORY_FD },
-+                { "aos-attachment-anchor-fd", required_argument, NULL, ARG_AOS_ATTACHMENT_ANCHOR_FD },
-                 { "rlimit",                 required_argument, NULL, ARG_RLIMIT                 },
-                 { "oom-score-adjust",       required_argument, NULL, ARG_OOM_SCORE_ADJUST       },
-                 { "cpu-affinity",           required_argument, NULL, ARG_CPU_AFFINITY           },
-@@ -1425,6 +1430,15 @@
+@@ -1173,7 +1174,18 @@
+ 
                          arg_aos_root_directory_fd = true;
                          break;
  
-+                case ARG_AOS_ATTACHMENT_ANCHOR_FD:
++                OPTION_LONG("aos-attachment-anchor-fd", "NAME",
++                            "Install the named AOS destination anchor read-only"):
 +                        if (arg_aos_attachment_anchor_fd ||
-+                            !streq(optarg, AOS_ATTACHMENT_ANCHOR_FD_NAME))
++                            !streq(opts.arg, AOS_ATTACHMENT_ANCHOR_FD_NAME))
 +                                return log_error_errno(
 +                                                SYNTHETIC_ERRNO(EINVAL),
 +                                                "Invalid or repeated AOS attachment-anchor descriptor role.");
++
 +                        arg_aos_attachment_anchor_fd = true;
 +                        break;
 +
-                 case ARG_AOS_LIFECYCLE_PROFILE:
-                         if (arg_aos_lifecycle_profile || !streq(optarg, AOS_NSPAWN_LIFECYCLE_PROFILE_V1))
-                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid or repeated AOS lifecycle profile.");
+                 OPTION_LONG("restrict-address-families", "LIST", "Restrict socket address families to the given allowlist"):
+                         r = parse_address_families(opts.arg, &arg_restrict_address_families, &arg_restrict_address_families_is_allowlist);
+                         if (r < 0)
 @@ -3964,10 +3978,83 @@
                   (arg_userns_ownership != USER_NAMESPACE_OWNERSHIP_AUTO) ? DISSECT_IMAGE_IDENTITY_UID : 0);
  }
@@ -360,7 +338,7 @@ diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
          FOREACH_ELEMENT(c, cases) {
                  int r;
  
-                 ASSERT_OK(r = safe_fork("(aos-root-role)", FORK_WAIT, NULL));
+                 ASSERT_OK(r = pidref_safe_fork("(aos-root-role)", FORK_WAIT, NULL));
                  if (r == 0) {
                          _cleanup_free_ char *pid = NULL, *alias = NULL;
 -                        int source, root = -EBADF, lock = -EBADF;

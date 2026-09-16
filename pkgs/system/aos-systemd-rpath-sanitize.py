@@ -11,10 +11,11 @@ import subprocess
 DUMMY_STORE_PREFIX = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-"
 REVIEWED_DUMMY_RPATHS = frozenset(
     {
-        f"{DUMMY_STORE_PREFIX}attr-2.5.2/lib",
+        f"{DUMMY_STORE_PREFIX}attr-2.6.0/lib",
         f"{DUMMY_STORE_PREFIX}device-mapper-2.03.28/lib",
-        f"{DUMMY_STORE_PREFIX}json-c-0.18/lib",
+        f"{DUMMY_STORE_PREFIX}json-c-0.19/lib",
         f"{DUMMY_STORE_PREFIX}libaio-0.3.113/lib",
+        f"{DUMMY_STORE_PREFIX}libunistring-1.4.2/lib",
     }
 )
 REQUIRED_ROOT_NAMES = frozenset({"out", "tools"})
@@ -30,6 +31,7 @@ REVIEWED_OUTPUT_ELFS = frozenset(
         "bin/networkctl",
         "bin/oomctl",
         "bin/resolvectl",
+        "bin/storagectl",
         "bin/systemctl",
         "bin/systemd-ac-power",
         "bin/systemd-analyze",
@@ -49,6 +51,7 @@ REVIEWED_OUTPUT_ELFS = frozenset(
         "bin/systemd-inhibit",
         "bin/systemd-machine-id-setup",
         "bin/systemd-mount",
+        "bin/systemd-mstack",
         "bin/systemd-mute-console",
         "bin/systemd-notify",
         "bin/systemd-nspawn",
@@ -58,6 +61,7 @@ REVIEWED_OUTPUT_ELFS = frozenset(
         "bin/systemd-run",
         "bin/systemd-socket-activate",
         "bin/systemd-stdio-bridge",
+        "bin/systemd-sysinstall",
         "bin/systemd-sysusers",
         "bin/systemd-tmpfiles",
         "bin/systemd-tty-ask-password-agent",
@@ -69,12 +73,12 @@ REVIEWED_OUTPUT_ELFS = frozenset(
         "lib/libnss_myhostname.so.2",
         "lib/libnss_resolve.so.2",
         "lib/libnss_systemd.so.2",
-        "lib/libsystemd.so.0.42.0",
-        "lib/libudev.so.1.7.12",
+        "lib/libsystemd.so.0.44.0",
+        "lib/libudev.so.1.7.14",
         "lib/security/pam_systemd.so",
         "lib/security/pam_systemd_loadkey.so",
-        "lib/systemd/libsystemd-core-259.so",
-        "lib/systemd/libsystemd-shared-259.so",
+        "lib/systemd/libsystemd-core-261.so",
+        "lib/systemd/libsystemd-shared-261.so",
     }
 )
 REVIEWED_DUMMY_LOCATIONS = frozenset(

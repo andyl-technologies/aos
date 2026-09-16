@@ -169,7 +169,7 @@ index 3788de0..b819a8f 100644
  static int add_syscall_filters(
                  scmp_filter_ctx ctx,
                  uint32_t arch,
-@@ -246,6 +382,11 @@ int setup_seccomp(uint64_t cap_list_retain, char **syscall_allow_list, char **sy
+@@ -259,6 +396,11 @@ int setup_seccomp(
  
  #else
  
@@ -178,26 +178,28 @@ index 3788de0..b819a8f 100644
 +                               "AOS payload profile requires a systemd build with seccomp support.");
 +}
 +
- int setup_seccomp(uint64_t cap_list_retain, char **syscall_allow_list, char **syscall_deny_list) {
+ int setup_seccomp(uint64_t cap_list_retain, char **syscall_allow_list, char **syscall_deny_list, Set *restrict_address_families, bool restrict_address_families_is_allowlist) {
          return 0;
  }
 diff --git a/src/nspawn/nspawn-seccomp.h b/src/nspawn/nspawn-seccomp.h
-index f0a7d98..1936fd0 100644
+index 52232ad..ecf754c 100644
 --- a/src/nspawn/nspawn-seccomp.h
 +++ b/src/nspawn/nspawn-seccomp.h
-@@ -3,4 +3,7 @@
+@@ -3,6 +3,9 @@
  
  #include "shared-forward.h"
  
 +#define AOS_NSPAWN_PAYLOAD_SECCOMP_PROFILE_V1 "aos-sandbox-payload-v1"
 +
- int setup_seccomp(uint64_t cap_list_retain, char **syscall_allow_list, char **syscall_deny_list);
 +int setup_aos_payload_seccomp(void);
+ int setup_seccomp(
+                 uint64_t cap_list_retain,
+                 char **syscall_allow_list,
 diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
-index 67615d2..991d468 100644
+index 99070ea..fbfba2c 100644
 --- a/src/nspawn/nspawn.c
 +++ b/src/nspawn/nspawn.c
-@@ -223,6 +223,7 @@ static MountSettingsMask arg_mount_settings = MOUNT_APPLY_APIVFS_RO|MOUNT_APPLY_
+@@ -235,6 +235,7 @@ static MountSettingsMask arg_mount_settings = MOUNT_APPLY_APIVFS_RO|MOUNT_APPLY_
  static VeritySettings arg_verity_settings = VERITY_SETTINGS_DEFAULT;
  static char **arg_syscall_allow_list = NULL;
  static char **arg_syscall_deny_list = NULL;
@@ -205,51 +207,27 @@ index 67615d2..991d468 100644
  #if HAVE_SECCOMP
  static scmp_filter_ctx arg_seccomp = NULL;
  #endif
-@@ -463,6 +464,8 @@ static int help(void) {
-                "     --no-new-privileges    Set PR_SET_NO_NEW_PRIVS flag for container payload\n"
-                "     --system-call-filter=LIST|~LIST\n"
-                "                            Permit/prohibit specific system calls\n"
-+               "     --aos-payload-seccomp-profile=PROFILE\n"
-+               "                            Apply a compiled AOS payload filter before exec\n"
-                "  -Z --selinux-context=SECLABEL\n"
-                "                            Set the SELinux security context to be used by\n"
-                "                            processes in the container\n"
-@@ -716,6 +719,7 @@ static int parse_argv(int argc, char *argv[]) {
-                 ARG_ROOT_HASH_SIG,
-                 ARG_VERITY_DATA,
-                 ARG_SYSTEM_CALL_FILTER,
-+                ARG_AOS_PAYLOAD_SECCOMP_PROFILE,
-                 ARG_RLIMIT,
-                 ARG_HOSTNAME,
-                 ARG_NO_NEW_PRIVILEGES,
-@@ -797,6 +801,7 @@ static int parse_argv(int argc, char *argv[]) {
-                 { "root-hash-sig",          required_argument, NULL, ARG_ROOT_HASH_SIG          },
-                 { "verity-data",            required_argument, NULL, ARG_VERITY_DATA            },
-                 { "system-call-filter",     required_argument, NULL, ARG_SYSTEM_CALL_FILTER     },
-+                { "aos-payload-seccomp-profile", required_argument, NULL, ARG_AOS_PAYLOAD_SECCOMP_PROFILE },
-                 { "rlimit",                 required_argument, NULL, ARG_RLIMIT                 },
-                 { "oom-score-adjust",       required_argument, NULL, ARG_OOM_SCORE_ADJUST       },
-                 { "cpu-affinity",           required_argument, NULL, ARG_CPU_AFFINITY           },
-@@ -1388,6 +1393,18 @@ static int parse_argv(int argc, char *argv[]) {
+@@ -1137,6 +1138,19 @@ static int parse_argv(int argc, char *argv[]) {
                          break;
                  }
  
-+                case ARG_AOS_PAYLOAD_SECCOMP_PROFILE:
++                OPTION_LONG("aos-payload-seccomp-profile", "PROFILE",
++                            "Apply a compiled AOS payload filter before exec"):
 +                        if (arg_aos_payload_seccomp_profile)
 +                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
 +                                                       "AOS payload seccomp profile may be specified only once.");
-+                        if (!streq(optarg, AOS_NSPAWN_PAYLOAD_SECCOMP_PROFILE_V1))
++                        if (!streq(opts.arg, AOS_NSPAWN_PAYLOAD_SECCOMP_PROFILE_V1))
 +                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
 +                                                       "Unknown AOS payload seccomp profile '%s'.",
-+                                                       optarg);
++                                                       opts.arg);
 +
-+                        arg_aos_payload_seccomp_profile = optarg;
++                        arg_aos_payload_seccomp_profile = opts.arg;
 +                        break;
 +
-                 case ARG_RLIMIT: {
-                         const char *eq;
-                         _cleanup_free_ char *name = NULL;
-@@ -3679,6 +3696,15 @@ static int inner_child(
+                 OPTION_LONG("restrict-address-families", "LIST", "Restrict socket address families to the given allowlist"):
+                         r = parse_address_families(opts.arg, &arg_restrict_address_families, &arg_restrict_address_families_is_allowlist);
+                         if (r < 0)
+@@ -3688,6 +3702,15 @@ static int inner_child(
  
          (void) fdset_close_others(fds);
  
@@ -297,7 +275,7 @@ index 0000000..a0c27a1
 +        ASSERT_ERROR_ERRNO(syscall(__NR_clone3, NULL, 0), ENOSYS);
 +        ASSERT_ERROR_ERRNO(syscall(__NR_clone, CLONE_NEWNS | SIGCHLD, NULL, NULL, NULL, 0), EPERM);
 +
-+        ASSERT_OK(r = safe_fork("(aos-seccomp-clone)", FORK_WAIT, NULL));
++        ASSERT_OK(r = pidref_safe_fork("(aos-seccomp-clone)", FORK_WAIT, NULL));
 +        if (r == 0)
 +                _exit(EXIT_SUCCESS);
 +}
@@ -308,7 +286,7 @@ index 0000000..a0c27a1
 +        if (!is_seccomp_available())
 +                return (void) log_tests_skipped("Seccomp not available");
 +
-+        ASSERT_OK(r = safe_fork("(aos-seccomp-profile)", FORK_WAIT, NULL));
++        ASSERT_OK(r = pidref_safe_fork("(aos-seccomp-profile)", FORK_WAIT, NULL));
 +        if (r == 0) {
 +                test_profile_child();
 +                _exit(EXIT_SUCCESS);

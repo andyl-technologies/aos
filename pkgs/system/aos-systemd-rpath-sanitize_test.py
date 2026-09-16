@@ -42,7 +42,7 @@ class RpathSanitizerTests(unittest.TestCase):
     def test_removes_only_reviewed_placeholders_and_preserves_order(self) -> None:
         real_a = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-a/lib"
         real_b = "/nix/store/11111111111111111111111111111111-b/lib"
-        dummy = f"{sanitizer.DUMMY_STORE_PREFIX}json-c-0.18/lib"
+        dummy = f"{sanitizer.DUMMY_STORE_PREFIX}json-c-0.19/lib"
 
         self.assertEqual(
             sanitizer.sanitize_rpath(f"{real_a}:{dummy}:{real_b}"),
@@ -65,7 +65,7 @@ class RpathSanitizerTests(unittest.TestCase):
             sanitizer.sanitize_rpath("/nix/store/safe/lib::/nix/store/also-safe/lib")
 
     def test_plans_both_named_roots_before_mutation(self) -> None:
-        dummy = f"{sanitizer.DUMMY_STORE_PREFIX}json-c-0.18/lib"
+        dummy = f"{sanitizer.DUMMY_STORE_PREFIX}json-c-0.19/lib"
         temporary, roots, rpaths = self.make_roots(
             {
                 "out/bin/a": f"/nix/store/safe-a/lib:{dummy}",
@@ -83,7 +83,7 @@ class RpathSanitizerTests(unittest.TestCase):
         self.assertEqual([entry[0] for entry in plan], [roots["out"] / "bin/a", roots["tools"] / "bin/b"])
 
     def test_rejects_stale_missing_review_before_mutation(self) -> None:
-        dummy = f"{sanitizer.DUMMY_STORE_PREFIX}json-c-0.18/lib"
+        dummy = f"{sanitizer.DUMMY_STORE_PREFIX}json-c-0.19/lib"
         temporary, roots, rpaths = self.make_roots(
             {"out/bin/a": "/nix/store/safe-a/lib"}
         )
@@ -100,7 +100,7 @@ class RpathSanitizerTests(unittest.TestCase):
         install.assert_not_called()
 
     def test_rejects_placeholder_moved_to_other_output_or_elf(self) -> None:
-        dummy = f"{sanitizer.DUMMY_STORE_PREFIX}json-c-0.18/lib"
+        dummy = f"{sanitizer.DUMMY_STORE_PREFIX}json-c-0.19/lib"
         temporary, roots, rpaths = self.make_roots(
             {"tools/bin/moved": f"/nix/store/safe/lib:{dummy}"}
         )

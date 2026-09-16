@@ -575,7 +575,7 @@ in
         script = ''
           version_output="$($out/lib/systemd/systemd --version)"
           version_line="$(echo "$version_output" | head -n 1)"
-          if [ "$version_line" != "systemd 259 (${version})" ]; then
+          if [ "$version_line" != "systemd 261 (${version})" ]; then
             echo "ERROR: unexpected systemd version: $version_line" >&2
             exit 1
           fi

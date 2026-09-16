@@ -136,44 +136,22 @@ index 3b51496..2190b37 100644
  static char *arg_template = NULL;
  static char *arg_chdir = NULL;
  static char *arg_pivot_root_new = NULL;
-@@ -466,6 +468,8 @@ static int help(void) {
-                "                            Permit/prohibit specific system calls\n"
-                "     --aos-payload-seccomp-profile=PROFILE\n"
-                "                            Apply a compiled AOS payload filter before exec\n"
-+               "     --aos-root-mount-fd=NAME\n"
-+               "                            Consume the named AOS supervisor-only root mount\n"
-                "  -Z --selinux-context=SECLABEL\n"
-                "                            Set the SELinux security context to be used by\n"
-                "                            processes in the container\n"
-@@ -720,6 +724,7 @@ static int parse_argv(int argc, char *argv[]) {
-                 ARG_VERITY_DATA,
-                 ARG_SYSTEM_CALL_FILTER,
-                 ARG_AOS_PAYLOAD_SECCOMP_PROFILE,
-+                ARG_AOS_ROOT_DIRECTORY_FD,
-                 ARG_RLIMIT,
-                 ARG_HOSTNAME,
-                 ARG_NO_NEW_PRIVILEGES,
-@@ -802,6 +807,7 @@ static int parse_argv(int argc, char *argv[]) {
-                 { "verity-data",            required_argument, NULL, ARG_VERITY_DATA            },
-                 { "system-call-filter",     required_argument, NULL, ARG_SYSTEM_CALL_FILTER     },
-                 { "aos-payload-seccomp-profile", required_argument, NULL, ARG_AOS_PAYLOAD_SECCOMP_PROFILE },
-+                { "aos-root-mount-fd", required_argument, NULL, ARG_AOS_ROOT_DIRECTORY_FD },
-                 { "rlimit",                 required_argument, NULL, ARG_RLIMIT                 },
-                 { "oom-score-adjust",       required_argument, NULL, ARG_OOM_SCORE_ADJUST       },
-                 { "cpu-affinity",           required_argument, NULL, ARG_CPU_AFFINITY           },
-@@ -1405,6 +1411,12 @@ static int parse_argv(int argc, char *argv[]) {
-                         arg_aos_payload_seccomp_profile = optarg;
+@@ -1151,6 +1152,15 @@ static int parse_argv(int argc, char *argv[]) {
+                         arg_aos_payload_seccomp_profile = opts.arg;
                          break;
  
-+                case ARG_AOS_ROOT_DIRECTORY_FD:
-+                        if (arg_aos_root_directory_fd || !streq(optarg, AOS_ROOT_DIRECTORY_FD_NAME))
-+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid or repeated AOS root descriptor role.");
++                OPTION_LONG("aos-root-mount-fd", "NAME",
++                            "Consume the named AOS supervisor-only root mount"):
++                        if (arg_aos_root_directory_fd || !streq(opts.arg, AOS_ROOT_DIRECTORY_FD_NAME))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
++                                                       "Invalid or repeated AOS root descriptor role.");
++
 +                        arg_aos_root_directory_fd = true;
 +                        break;
 +
-                 case ARG_RLIMIT: {
-                         const char *eq;
-                         _cleanup_free_ char *name = NULL;
+                 OPTION_LONG("restrict-address-families", "LIST", "Restrict socket address families to the given allowlist"):
+                         r = parse_address_families(opts.arg, &arg_restrict_address_families, &arg_restrict_address_families_is_allowlist);
+                         if (r < 0)
 @@ -3067,7 +3079,7 @@ static int on_request_stop(sd_bus_message *m, void *userdata, sd_bus_error *erro
  static int pick_paths(void) {
          int r;
@@ -251,7 +229,7 @@ index 3b51496..2190b37 100644
 +                /* Descriptor roots have no pathname identity for image lookup,
 +                 * snapshots, registration, or settings discovery. Keep this
 +                 * setup channel confined to the closed AOS directory profile. */
-+                if (!arg_privileged || arg_start_mode != START_BOOT ||
++                if (arg_runtime_scope != RUNTIME_SCOPE_SYSTEM || arg_start_mode != START_BOOT ||
 +                    !arg_keep_unit || !arg_machine || arg_register || arg_background || arg_cleanup ||
 +                    !FLAGS_SET(arg_settings_mask, _SETTINGS_MASK_ALL) ||
 +                    !arg_aos_payload_seccomp_profile ||
@@ -274,16 +252,16 @@ index 3b51496..2190b37 100644
          if (arg_cleanup)
                  return do_cleanup();
  
-@@ -6217,7 +6283,7 @@ static int run(int argc, char *argv[]) {
- 
-                         free_and_replace(arg_directory, np);
-                         remove_directory = true;
+@@ -6336,7 +6401,7 @@ static int run(int argc, char *argv[]) {
+                                 log_oom();
+                                 goto finish;
+                         }
 -                } else {
 +                } else if (!arg_aos_root_directory_fd) {
                          r = chase_and_update(&arg_directory, arg_template ? CHASE_NONEXISTENT : 0);
                          if (r < 0)
                                  goto finish;
-@@ -6268,7 +6334,11 @@ static int run(int argc, char *argv[]) {
+@@ -6390,7 +6455,11 @@ static int run(int argc, char *argv[]) {
                          }
                  }
  
@@ -296,7 +274,7 @@ index 3b51496..2190b37 100644
                          _cleanup_free_ char *b = NULL;
                          const char *p;
                          int check_os_release, is_os_tree;
-@@ -6532,9 +6602,26 @@ static int run(int argc, char *argv[]) {
+@@ -6756,10 +6825,27 @@ static int run(int argc, char *argv[]) {
          }
  
          for (;;) {
@@ -318,12 +296,13 @@ index 3b51496..2190b37 100644
 +                }
 +
                  r = run_container(
+                                 runtime_dir,
                                  rootdir,
 -                                mount_fd,
 +                                arg_aos_root_directory_fd ? aos_mount_fd : mount_fd,
                                  dissected_image,
+                                 mstack,
                                  userns_fd,
-                                 fds,
 diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
 new file mode 100644
 index 0000000..ce64fdf
@@ -406,7 +385,7 @@ index 0000000..ce64fdf
 +        FOREACH_ELEMENT(c, cases) {
 +                int r;
 +
-+                ASSERT_OK(r = safe_fork("(aos-root-role)", FORK_WAIT, NULL));
++                ASSERT_OK(r = pidref_safe_fork("(aos-root-role)", FORK_WAIT, NULL));
 +                if (r == 0) {
 +                        _cleanup_free_ char *pid = NULL, *alias = NULL;
 +                        int source, root = -EBADF, lock = -EBADF;
