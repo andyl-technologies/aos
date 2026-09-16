@@ -187,6 +187,14 @@
     if platformMode
     then resolvedPackageContracts
     else lib.unique (lib.concatMap (contract: contract.retainedPackageContractArtifacts) contracts);
+  retainedBootReferences = retainedPackageContractArtifacts ++ checkedRuntimeRoots;
+  retainBootReferences = lib.concatStringsSep "\n" (builtins.genList (index: let
+      reference = builtins.elemAt retainedBootReferences index;
+    in ''
+      ln -s ${lib.escapeShellArg (builtins.toString reference)} \
+        "$out/retained-references/${builtins.toString index}"
+    '')
+    (builtins.length retainedBootReferences));
   runtimeRootPaths = map builtins.toString runtimeRoots;
   checkedRuntimeRoots =
     if
@@ -237,7 +245,10 @@
     exportReferencesGraph.staticAbilityRuntime = checkedRuntimeRoots;
 
     outputChecks.out = {};
-    unsafeDiscardReferences.out = true;
+    # Bootable contracts are themselves closure roots. Their checked package
+    # documents and runtime roots must remain live after the builder exits.
+    # Container publication retains those inputs through its separate closure.
+    unsafeDiscardReferences.out = artifactClass == "container";
     dontStrip = true;
     dontNukeRefs = true;
 
@@ -250,6 +261,10 @@
             ${lib.escapeShellArg (builtins.toString assemblySpec)} \
             "$NIX_ATTRS_JSON_FILE" \
             "$out"
+          ${lib.optionalString (artifactClass == "bootable") ''
+            mkdir -p "$out/retained-references"
+            ${retainBootReferences}
+          ''}
         '';
       }
     ];

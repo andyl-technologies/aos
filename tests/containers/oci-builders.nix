@@ -165,6 +165,23 @@
       runtimeRoots = [applicationRoot pkgs.ability-package-smoke];
     };
   amd64AbilityContract = abilityContractFor {architecture = "amd64";};
+  bootableAbilityContract = oci.mkStaticAbilityContract {
+    pname = "bootable-static-abilities-reference-fixture";
+    artifactClass = "bootable";
+    executionStage = "host";
+    platform = {
+      os = "linux";
+      architecture = "amd64";
+    };
+    targetPlatform = {
+      system = "linux";
+      architecture = "x86_64";
+    };
+    packageProjections = [smokePackageProjection];
+    runtimeRoots = [application pkgs.ability-package-smoke];
+  };
+  bootableResolvedPackageDocument =
+    builtins.head bootableAbilityContract.retainedPackageContractArtifacts;
   resolvedSmokePackageDocument =
     builtins.head amd64AbilityContract.retainedPackageContractArtifacts;
   changedAmd64AbilityContract = abilityContractFor {
@@ -642,6 +659,7 @@ in
     pname = "aos-oci-builder-check";
     version = "1";
     src = null;
+    outputChecks.out = {};
     buildDeps = [
       pkgs.coreutils
       pkgs.diffutils
@@ -678,6 +696,7 @@ in
     ];
     dontStrip = true;
     dontNukeRefs = true;
+    exportReferencesGraph.bootableContract = [bootableAbilityContract.artifact];
 
     phases = [
       {
@@ -690,6 +709,13 @@ in
             echo "FAIL: $1" >&2
             exit 1
           }
+
+          jq -e --arg path ${lib.escapeShellArg (builtins.toString bootableResolvedPackageDocument)} \
+            '.bootableContract | any(.path == $path)' "$NIX_ATTRS_JSON_FILE" >/dev/null \
+            || fail "bootable contract did not retain its checked package document"
+          jq -e --arg path ${lib.escapeShellArg (builtins.toString application)} \
+            '.bootableContract | any(.path == $path)' "$NIX_ATTRS_JSON_FILE" >/dev/null \
+            || fail "bootable contract did not retain its runtime root"
 
           test -f ${forgedMarkerImageProbe}/semantic-validator-observed-forged-marker \
             || fail "image layout bypassed static ability semantic validation"
