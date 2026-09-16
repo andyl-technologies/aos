@@ -1223,6 +1223,7 @@
       "root-a-device"
       "storage-provisioning-state-ready"
       "storage-provisioning-plan-ready"
+      "verity-root-mapping-ready"
       "verity-root-verified"
     ];
   };

@@ -5,7 +5,6 @@
   bash,
   coreutils,
   rust,
-  systemd,
   util-linux,
 }: let
   source = ../../crates/aos-boot-identity;
@@ -70,7 +69,7 @@ in
     src = source;
 
     buildDeps = [rust];
-    runtimeDeps = [bash coreutils systemd util-linux];
+    runtimeDeps = [bash coreutils util-linux];
     propagatedDeps = [];
     abilities = ./_aos-boot-identity;
 

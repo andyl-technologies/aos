@@ -30,6 +30,7 @@
       parameters.milestone = name;
     };
   bootIdentity = systemMilestone "boot-identity" "boot-identity-validated";
+  verityRootMapping = systemMilestone "verity-root-mapping" "verity-root-mapping-ready";
   deviceEvents = systemMilestone "device-events" "device-settle";
   initrdStageExecution = systemMilestone "initrd-stage" "initrd-stage-executed";
   initrdFilesystems = systemMilestone "initrd-filesystems" "initrd-filesystems";
@@ -66,6 +67,7 @@
         prerequisites = [];
         after = [
           (resultOf "boot-identity" "readiness-resource")
+          (resultOf "verity-root-mapping" "readiness-resource")
           (resultOf "initrd-stage" "readiness-resource")
           (resultOf "device-events" "readiness-resource")
         ];
@@ -75,6 +77,7 @@
         ];
         requires = [
           (resultOf "boot-identity" "readiness-resource")
+          (resultOf "verity-root-mapping" "readiness-resource")
         ];
         wants = [(resultOf "device-events" "readiness-resource")];
         requisite = [];
@@ -103,6 +106,7 @@
   };
   fragments = [
     bootIdentity
+    verityRootMapping
     deviceEvents
     initrdStageExecution
     initrdFilesystems

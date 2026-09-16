@@ -745,7 +745,7 @@ let
     "security/_cryptsetup/module.nix" = "target-independent-source";
     "system/_kmod-abilities.nix" = "target-independent-source";
     "system/_kmod-provider.nix" = "target-independent-source";
-    "system/_systemd-abilities.nix" = "target-independent-source";
+    "system/_systemd-abilities/core.nix" = "target-independent-source";
     "system/_systemd-provider.nix" = "target-independent-source";
     "system/_systemd-service-document.nix" = "target-independent-source";
     "system/_systemd-service-provider-lib.nix" = "target-independent-source";
@@ -803,6 +803,8 @@ let
     "filesystem/_aos-zfs-provider/pool-provider.nix" = "linux-only-config-source";
     "system/_aos-storage-provisioning-provider/module.nix" = "linux-only-config-source";
     "system/_aos-storage-provisioning-provider/provider.nix" = "linux-only-config-source";
+    "system/_systemd-abilities/module.nix" = "target-independent-source";
+    "system/_systemd-abilities/verity-root.nix" = "linux-only-config-source";
     "kubernetes/_cilium-abilities/module.nix" = "linux-only-config-source";
     "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
