@@ -355,13 +355,13 @@
       != ["/run/aos"]
     then throw "package config rendering must write only beneath /run/aos"
     else if system.config.systemd.services.aos-graph-compile.serviceConfig.ProtectSystem != "strict"
-    then throw "the graph compiler must run with ProtectSystem=strict"
+    then throw "activation preflight must run with ProtectSystem=strict"
     else if
       system.config.systemd.services.aos-graph-compile.serviceConfig.ReadWritePaths
       != ["/run/aos" "/run/systemd/system"]
-    then throw "the graph compiler must write only its transaction and runtime unit roots"
+    then throw "activation preflight must write only its transaction and runtime unit roots"
     else if !system.config.systemd.services.aos-graph-compile.serviceConfig.NoNewPrivileges
-    then throw "the graph compiler must not gain privileges"
+    then throw "activation preflight must not gain privileges"
     else if imageBootCommitLifecycle.service != "image-boot-commit"
     then throw "the stock system must author typed image-transition finalization"
     else if system.config.systemd.services.aos-eval.serviceConfig ? SuccessExitStatus
