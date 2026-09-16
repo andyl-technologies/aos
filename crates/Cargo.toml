@@ -41,6 +41,7 @@ members = [
     "aos-kubernetes-provider",
     "aos-kernel-tunable-provider",
     "aos-ebpf-lsm-provider",
+    "aos-ebpf-net-policy-provider",
     "aos-nix-store-provider",
     "aos-systemd-provider",
     "aos-boot-preparation-provider",

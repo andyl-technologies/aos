@@ -1,0 +1,16 @@
+[package]
+name = "aos-ebpf-net-policy-provider"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+aos-ability-model.workspace = true
+aos-contract.workspace = true
+aos-provider-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

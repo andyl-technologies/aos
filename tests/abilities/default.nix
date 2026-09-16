@@ -583,6 +583,9 @@
   securityEbpfLsmNative = import ./security-ebpf-lsm-native.nix {
     inherit pkgs lib;
   };
+  securityEbpfNetworkNative = import ./security-ebpf-network-native.nix {
+    inherit pkgs lib;
+  };
   securityPolkitNative = import ./security-polkit-native.nix {
     inherit pkgs lib;
   };
@@ -1028,6 +1031,7 @@ in
   assert baseHardeningNative;
   assert securityAuditNative;
   assert securityEbpfLsmNative;
+  assert securityEbpfNetworkNative;
   assert securityPolkitNative;
   assert securitySelinuxNative;
   assert securitySshNative;
