@@ -99,7 +99,7 @@ pub use catalog::{
 pub use dormant_broker_session::{
     DormantNetworkBrokerAdmissionV1, DormantNetworkBrokerCallErrorV1,
     DormantNetworkBrokerCallsiteV1, DormantNetworkBrokerCompositionV1,
-    DormantNetworkBrokerObservationV1,
+    DormantNetworkBrokerObservationV1, DormantResolvedNetworkBrokerCompositionV1,
 };
 pub use kernel_observation::{
     ExpectedAddressPairV1, ExpectedRouteV1, ExpectedVethV1, NetworkKernelExpectationV1,

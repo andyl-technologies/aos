@@ -444,6 +444,19 @@ impl NetworkLifecycleAdmissionCoordinator {
         }
     }
 
+    // Keep authority access inside the coordinator so a session adapter cannot
+    // authenticate a catalog record with substitute trust material.
+    pub(crate) fn resolve_session_request_preparation(
+        &self,
+        preparations: &NetworkPreparationCatalogV1,
+        assignment: aos_sandbox_core::BrokerAssignment,
+        requested_handle: Option<[u8; 32]>,
+    ) -> Result<(AuthenticatedNetworkPreparationV1, NetworkKernelPlanV1), NetworkBrokerError> {
+        preparations
+            .authenticate_plan_for_assignment(&self.authority, assignment, requested_handle)
+            .map_err(Into::into)
+    }
+
     /// Verifies and journals one new-namespace intent against both journals.
     ///
     /// This is the production creation path once lifecycle state exists. It

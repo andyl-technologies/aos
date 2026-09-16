@@ -13,10 +13,11 @@ use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
+use crate::authorization::decode_assignment;
 use crate::{
     AuthenticatedNetworkPreparationV1, NetworkAdmissionOutcome, NetworkBrokerError,
     NetworkKernelPlanV1, NetworkLifecycleAdmissionCoordinator, NetworkLifecycleAdmissionOutcome,
-    NetworkNamespaceCatalogV1,
+    NetworkNamespaceCatalogV1, NetworkPreparationCatalogV1,
 };
 
 mod sealed {
@@ -155,73 +156,210 @@ impl DormantNetworkBrokerCallsiteV1 for DormantNetworkBrokerCompositionV1<'_> {
         protocol_version: ProtocolVersion,
         protected_boot_id: [u8; 16],
     ) -> Result<DormantNetworkBrokerObservationV1, DormantNetworkBrokerCallErrorV1> {
-        let current_boot_id = KernelBootId::current()
-            .map_err(|_| DormantNetworkBrokerCallErrorV1::StaleKernel)?
-            .into_bytes();
-        if current_boot_id != protected_boot_id
-            || ObjectDigest::from_bytes(Sha256::digest(request_body).into()) != request_body_digest
-        {
-            return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
-        }
-
-        let current_clock = protected_paired_clock_sample()?;
-        if current_clock.host_boot_id() != protected_boot_id
-            || self
-                .last_boottime_nanoseconds
-                .is_some_and(|floor| current_clock.boottime_nanoseconds() < floor)
-        {
-            return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
-        }
-        self.last_boottime_nanoseconds = Some(current_clock.boottime_nanoseconds());
-        let semantics = CanonicalNetworkSemanticsV1::decode(
+        let (semantics, current_clock) = validate_authenticated_request(
             request_body,
+            request_id,
+            request_body_digest,
             peer,
             policy,
-            current_clock.boottime_nanoseconds(),
-        )
-        .map_err(|_| DormantNetworkBrokerCallErrorV1::StaleKernel)?;
-        if semantics.header().request_id() != &request_id
-            || semantics.header().protocol_version() != protocol_version
-        {
-            return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
-        }
-
-        let admission = match semantics.operation() {
-            NetworkOperation::Prepare { .. } => {
-                DormantNetworkBrokerAdmissionV1::Preparation(self.coordinator.admit_apply_intent(
-                    request_body,
-                    artifacts,
-                    self.preparation,
-                    protocol_version,
-                    peer,
-                    policy,
-                    &current_clock,
-                )?)
-            }
-            NetworkOperation::ArmLease { .. }
-            | NetworkOperation::RenewLease { .. }
-            | NetworkOperation::Disarm { .. }
-            | NetworkOperation::Destroy { .. } => DormantNetworkBrokerAdmissionV1::Lifecycle(
-                self.coordinator.admit_lifecycle_intent(
-                    request_body,
-                    artifacts,
-                    self.preparation,
-                    self.kernel_plan,
-                    self.namespaces,
-                    protocol_version,
-                    peer,
-                    policy,
-                    &current_clock,
-                )?,
-            ),
-        };
-        let commitment = network_observation_commitment(request_id, request_body_digest, admission);
-        Ok(DormantNetworkBrokerObservationV1 {
+            protocol_version,
+            protected_boot_id,
+            &mut self.last_boottime_nanoseconds,
+        )?;
+        admit_authenticated_request(
+            self.coordinator,
+            self.preparation,
+            self.kernel_plan,
+            self.namespaces,
+            request_body,
             request_id,
-            admission,
-            commitment,
-        })
+            request_body_digest,
+            artifacts,
+            peer,
+            policy,
+            protocol_version,
+            &semantics,
+            &current_clock,
+        )
     }
+}
+
+/// Resolves each authenticated request against protected preparation history.
+///
+/// Unlike [`DormantNetworkBrokerCompositionV1`], this composition does not pin
+/// one assignment at construction. It derives the assignment and optional
+/// handle from the authenticated body, then requires the protected preparation
+/// catalog to reproduce one exact authenticated resolution and kernel plan.
+pub struct DormantResolvedNetworkBrokerCompositionV1<'a> {
+    coordinator: &'a mut NetworkLifecycleAdmissionCoordinator,
+    preparations: &'a NetworkPreparationCatalogV1,
+    namespaces: &'a NetworkNamespaceCatalogV1,
+    last_boottime_nanoseconds: Option<u64>,
+}
+
+impl<'a> DormantResolvedNetworkBrokerCompositionV1<'a> {
+    /// Constructs the multi-assignment Network broker-session callsite.
+    #[must_use]
+    pub const fn new(
+        coordinator: &'a mut NetworkLifecycleAdmissionCoordinator,
+        preparations: &'a NetworkPreparationCatalogV1,
+        namespaces: &'a NetworkNamespaceCatalogV1,
+    ) -> Self {
+        Self {
+            coordinator,
+            preparations,
+            namespaces,
+            last_boottime_nanoseconds: None,
+        }
+    }
+}
+
+impl sealed::Sealed for DormantResolvedNetworkBrokerCompositionV1<'_> {}
+
+impl DormantNetworkBrokerCallsiteV1 for DormantResolvedNetworkBrokerCompositionV1<'_> {
+    fn consume_authenticated_apply(
+        &mut self,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        request_body_digest: ObjectDigest,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+    ) -> Result<DormantNetworkBrokerObservationV1, DormantNetworkBrokerCallErrorV1> {
+        let (semantics, current_clock) = validate_authenticated_request(
+            request_body,
+            request_id,
+            request_body_digest,
+            peer,
+            policy,
+            protocol_version,
+            protected_boot_id,
+            &mut self.last_boottime_nanoseconds,
+        )?;
+        let assignment = decode_assignment(request_body)
+            .map_err(|_| DormantNetworkBrokerCallErrorV1::StaleKernel)?;
+        let requested_handle = semantics.operation().network_handle().copied();
+        let (preparation, kernel_plan) = self.coordinator.resolve_session_request_preparation(
+            self.preparations,
+            assignment,
+            requested_handle,
+        )?;
+
+        admit_authenticated_request(
+            self.coordinator,
+            &preparation,
+            &kernel_plan,
+            self.namespaces,
+            request_body,
+            request_id,
+            request_body_digest,
+            artifacts,
+            peer,
+            policy,
+            protocol_version,
+            &semantics,
+            &current_clock,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_authenticated_request(
+    request_body: &[u8],
+    request_id: [u8; 16],
+    request_body_digest: ObjectDigest,
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    protocol_version: ProtocolVersion,
+    protected_boot_id: [u8; 16],
+    last_boottime_nanoseconds: &mut Option<u64>,
+) -> Result<(CanonicalNetworkSemanticsV1, RawPairedClockSample), DormantNetworkBrokerCallErrorV1> {
+    let current_boot_id = KernelBootId::current()
+        .map_err(|_| DormantNetworkBrokerCallErrorV1::StaleKernel)?
+        .into_bytes();
+    if current_boot_id != protected_boot_id
+        || ObjectDigest::from_bytes(Sha256::digest(request_body).into()) != request_body_digest
+    {
+        return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+    }
+
+    let current_clock = protected_paired_clock_sample()?;
+    if current_clock.host_boot_id() != protected_boot_id
+        || last_boottime_nanoseconds
+            .is_some_and(|floor| current_clock.boottime_nanoseconds() < floor)
+    {
+        return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+    }
+    *last_boottime_nanoseconds = Some(current_clock.boottime_nanoseconds());
+    let semantics = CanonicalNetworkSemanticsV1::decode(
+        request_body,
+        peer,
+        policy,
+        current_clock.boottime_nanoseconds(),
+    )
+    .map_err(|_| DormantNetworkBrokerCallErrorV1::StaleKernel)?;
+    if semantics.header().request_id() != &request_id
+        || semantics.header().protocol_version() != protocol_version
+    {
+        return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+    }
+
+    Ok((semantics, current_clock))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn admit_authenticated_request(
+    coordinator: &mut NetworkLifecycleAdmissionCoordinator,
+    preparation: &AuthenticatedNetworkPreparationV1,
+    kernel_plan: &NetworkKernelPlanV1,
+    namespaces: &NetworkNamespaceCatalogV1,
+    request_body: &[u8],
+    request_id: [u8; 16],
+    request_body_digest: ObjectDigest,
+    artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    protocol_version: ProtocolVersion,
+    semantics: &CanonicalNetworkSemanticsV1,
+    current_clock: &RawPairedClockSample,
+) -> Result<DormantNetworkBrokerObservationV1, DormantNetworkBrokerCallErrorV1> {
+    let admission = match semantics.operation() {
+        NetworkOperation::Prepare { .. } => {
+            DormantNetworkBrokerAdmissionV1::Preparation(coordinator.admit_apply_intent(
+                request_body,
+                artifacts,
+                preparation,
+                protocol_version,
+                peer,
+                policy,
+                current_clock,
+            )?)
+        }
+        NetworkOperation::ArmLease { .. }
+        | NetworkOperation::RenewLease { .. }
+        | NetworkOperation::Disarm { .. }
+        | NetworkOperation::Destroy { .. } => {
+            DormantNetworkBrokerAdmissionV1::Lifecycle(coordinator.admit_lifecycle_intent(
+                request_body,
+                artifacts,
+                preparation,
+                kernel_plan,
+                namespaces,
+                protocol_version,
+                peer,
+                policy,
+                current_clock,
+            )?)
+        }
+    };
+    let commitment = network_observation_commitment(request_id, request_body_digest, admission);
+    Ok(DormantNetworkBrokerObservationV1 {
+        request_id,
+        admission,
+        commitment,
+    })
 }
 
 fn protected_paired_clock_sample() -> Result<RawPairedClockSample, DormantNetworkBrokerCallErrorV1>

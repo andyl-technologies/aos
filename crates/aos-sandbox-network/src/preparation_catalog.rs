@@ -358,6 +358,42 @@ pub struct NetworkPreparationCatalogV1 {
 }
 
 impl NetworkPreparationCatalogV1 {
+    // Session dispatch selects by the authenticated complete assignment and,
+    // for lifecycle methods, the body-bound opaque handle. Recompilation from
+    // protected typed inputs prevents a stale or caller-supplied kernel plan.
+    pub(crate) fn authenticate_plan_for_assignment(
+        &self,
+        authority: &NetworkAuthorityV1,
+        assignment: BrokerAssignment,
+        requested_handle: Option<[u8; 32]>,
+    ) -> Result<
+        (
+            AuthenticatedNetworkPreparationV1,
+            crate::NetworkKernelPlanV1,
+        ),
+        NetworkPreparationCatalogError,
+    > {
+        let mut matching = self.records.values().filter(|record| {
+            record.assignment.assignment().ok() == Some(assignment)
+                && requested_handle.is_none_or(|handle| record.network_handle == handle)
+        });
+        let record = matching
+            .next()
+            .ok_or(NetworkPreparationCatalogError::InvalidCandidate)?;
+        if matching.next().is_some() {
+            return Err(NetworkPreparationCatalogError::IdentityConflict);
+        }
+
+        let resolution = record.resolution()?;
+        let preparation = record.authenticate(authority)?;
+        let namespace = self.plan_for_resolution(record.network_handle, &resolution)?;
+        let policy = self.program_for_resolution(record.network_handle, &resolution)?;
+        let kernel_plan = crate::NetworkKernelPlanV1::compile(assignment, namespace, policy)
+            .map_err(|_| NetworkPreparationCatalogError::InvalidCandidate)?;
+
+        Ok((preparation, kernel_plan))
+    }
+
     /// Opens a root-owned catalog and advances it to trusted newer policy.
     ///
     /// The state directory must satisfy the protected journal's root-owned
