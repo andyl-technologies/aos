@@ -7,7 +7,7 @@
 }: let
   abilityTypes = lib.abilities.types;
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
-  serviceTypes = lib.abilities.interfaces.serviceManagement.types;
+  networkBootstrap = lib.abilities.interfaces.networkConfiguration.interface.types.bootstrap;
   runtimeArtifact = lib.abilities.packageOutput {output = "metadataRuntime";};
   registrySnapshot =
     config.aos.abilities.interfaces."${packageName}:synchronized-registry-snapshot".methods.observe.outputs.registry-snapshot.schema;
@@ -19,12 +19,6 @@
   boundedText = abilityTypes.string {
     # Leave room for the envelope and evidence below the handler result bound.
     maxLength = 131072;
-    syntax = null;
-  };
-  networkSeed = abilityTypes.string {
-    # Metadata renderers produce a small networkd document. Keep the separate
-    # runtime output well below the provider-result envelope bound.
-    maxLength = 32768;
     syntax = null;
   };
   trustedKeyFile = abilityTypes.taggedUnion {
@@ -198,14 +192,6 @@
       instance_facts_sha256 = abilityTypes.digest;
     };
   };
-  seedParameters = abilityTypes.record {
-    fields = {
-      request = storage.requestType;
-      network_seed = abilityTypes.deferredResult (abilityTypes.optional networkSeed);
-      storage_view = abilityTypes.deferredResult abilityTypes.resourceReference;
-      storage_path = abilityTypes.deferredResult serviceTypes.storagePath;
-    };
-  };
   authorizationObservation = abilityTypes.record {
     fields = {
       schema = abilityTypes.enum ["aos.metadata.provisioning-authorization-observation/v1"];
@@ -232,13 +218,6 @@
       schema = abilityTypes.enum ["aos.configuration.provisioning-evaluation-observation/v1"];
       manifest_sha256 = optional abilityTypes.digest;
       state = abilityTypes.enum ["ready" "evaluated"];
-    };
-  };
-  seedObservation = abilityTypes.record {
-    fields = {
-      schema = abilityTypes.enum ["aos.metadata.provisioning-network-seed-observation/v1"];
-      content_sha256 = optional abilityTypes.digest;
-      state = abilityTypes.enum ["ready" "absent" "seeded"];
     };
   };
   output = schema: description: {
@@ -307,7 +286,7 @@
     parameters = authorizationParameters;
     evidence = authorizationObservation;
     outputs.authorized-provisioning-input = output authorizedInput "Returns the exact authenticated host module and base-library identity.";
-    outputs.network-seed = output (abilityTypes.optional networkSeed) "Returns the optional metadata-derived network seed for the post-provisioning storage view.";
+    outputs.network-bootstrap = output (abilityTypes.optional networkBootstrap) "Returns optional semantic early-network facts for the selected portable network provider.";
   };
   authorizationDeclaration = lib.abilities.declareInterface {
     name = "aos.metadata.storage-provisioning-input-authorization";
@@ -358,25 +337,6 @@
     aggregation = aggregation evaluatorAlias;
     guarantees = [];
   };
-  seedAlias = "storage-provisioning-network-seeder";
-  seedMethod = method {
-    name = "seed";
-    description = "Writes the authorized metadata network seed through the exact realized storage view.";
-    parameters = seedParameters;
-    evidence = seedObservation;
-    outputs = {};
-  };
-  seedDeclaration = lib.abilities.declareInterface {
-    name = "aos.metadata.storage-provisioning-network-seed";
-    description = "Seeds metadata-derived networking into an authorized post-provisioning storage view.";
-    abi = 1;
-    requestType = storage.requestType;
-    methods.seed = seedMethod;
-    outputs = {};
-    inherit (storage.declaration) lifecycle;
-    aggregation = aggregation seedAlias;
-    guarantees = [];
-  };
   handler = role: arguments: result: {
     artifact = runtimeArtifact;
     entryPoint = "libexec/aos-${role}";
@@ -397,7 +357,6 @@ in {
       ${authorizationAlias} = authorizationDeclaration;
       ${observerAlias} = observerDeclaration;
       ${evaluatorAlias} = evaluatorDeclaration;
-      ${seedAlias} = seedDeclaration;
     };
 
     implementations = {
@@ -453,19 +412,6 @@ in {
         desiredType = null;
         requiredFeatures = [];
       };
-      ${seedAlias} = {
-        description = "Seeds metadata networking through the package-owned metadata runtime.";
-        artifact = runtimeArtifact;
-        interface = lib.abilities.interfaceIdentity (
-          lib.abilities.interfaceDocumentFromDeclaration seedDeclaration
-        );
-        methods = ["seed"];
-        guarantees = [];
-        handlerDescriptor = handler seedAlias seedParameters seedObservation;
-        providerModule = null;
-        desiredType = null;
-        requiredFeatures = [];
-      };
     };
 
     instances = lib.mkIf (config.aos.abilities.environment != null) {
@@ -473,7 +419,6 @@ in {
       ${authorizationAlias}.implementation = authorizationAlias;
       ${observerAlias}.implementation = observerAlias;
       ${evaluatorAlias}.implementation = evaluatorAlias;
-      ${seedAlias}.implementation = seedAlias;
     };
   };
 }
