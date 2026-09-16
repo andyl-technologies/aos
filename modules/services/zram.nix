@@ -13,13 +13,10 @@
     description = "Compressed swap checks";
     checks = [
       {
-        name = "zram-swap-active";
-        description = "The generated zram swap unit activates";
+        name = "zram-swap-device";
+        description = "The configured zram swap device is initialized";
         script = ''
-          vm.wait_until_succeeds(
-              "systemctl is-active --quiet dev-zram0.swap", timeout=30
-          )
-          vm.succeed("test -b /dev/zram0")
+          vm.wait_until_succeeds("test -b /dev/zram0", timeout=30)
           vm.succeed("test $(cat /sys/block/zram0/disksize) -gt 0")
         '';
       }

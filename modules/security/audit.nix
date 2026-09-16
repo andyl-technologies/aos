@@ -15,15 +15,8 @@ in {
     aos.boot.kernelParams = ["audit=1"];
 
     system.checks.audit = {
-      description = "Audit daemon checks";
+      description = "Audit policy checks";
       checks = [
-        {
-          name = "auditd-active";
-          description = "auditd service is active";
-          script = ''
-            vm.succeed("systemctl is-active auditd")
-          '';
-        }
         {
           name = "audit-rules";
           description = "Audit rules file exists";

@@ -18,13 +18,13 @@
     description = "BIND DNS service checks";
     checks = [
       {
-        name = "named-active";
-        description = "named reaches its ready state";
+        name = "dns-query";
+        description = "named answers a DNS request through its configured listener";
         script = ''
           vm.wait_until_succeeds(
-              "systemctl is-active --quiet named.service", timeout=30
+              "dig -p ${toString config.aos.services.bind.port} @127.0.0.1 version.bind TXT CH +short",
+              timeout=30,
           )
-          vm.succeed("dig -p ${toString config.aos.services.bind.port} @127.0.0.1 version.bind TXT CH +short")
         '';
       }
     ];

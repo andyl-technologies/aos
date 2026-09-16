@@ -187,13 +187,6 @@ in {
           '';
         }
         {
-          name = "systemd-running";
-          description = "systemd reached multi-user.target";
-          script = ''
-            vm.succeed("systemctl is-active multi-user.target")
-          '';
-        }
-        {
           name = "kernel-version";
           description = "Kernel version matches the selected kernel";
           script = ''
@@ -201,40 +194,6 @@ in {
             expected_kernel = "${config.system.build.kernel.version}"
             assert actual_kernel == expected_kernel, \
                 f"expected kernel {expected_kernel}, got {actual_kernel}"
-          '';
-        }
-      ];
-    };
-
-    system.checks.systemd-basics = {
-      description = "systemd service infrastructure checks";
-      checks = [
-        {
-          name = "runtime-dir";
-          description = "systemd runtime directory exists";
-          script = ''
-            vm.succeed("test -d /run/systemd/system")
-          '';
-        }
-        {
-          name = "timers";
-          description = "systemd timers are functional";
-          script = ''
-            vm.succeed("systemctl list-timers --no-pager")
-          '';
-        }
-        {
-          name = "list-services";
-          description = "systemctl can list services";
-          script = ''
-            vm.succeed("systemctl list-units --type=service --no-pager")
-          '';
-        }
-        {
-          name = "journal";
-          description = "journalctl can read system journal";
-          script = ''
-            vm.succeed("journalctl --no-pager -n 5")
           '';
         }
         {

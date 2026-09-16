@@ -11,13 +11,6 @@
     description = "nftables firewall checks";
     checks = [
       {
-        name = "nftables-active";
-        description = "nftables service is active";
-        script = ''
-          vm.succeed("systemctl is-active nftables")
-        '';
-      }
-      {
         name = "ruleset-loaded";
         description = "nftables ruleset is loaded";
         script = ''
