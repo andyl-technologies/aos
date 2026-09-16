@@ -550,6 +550,24 @@ impl NetworkLifecycleStateStore {
         })
     }
 
+    pub(crate) fn ambiguous_idempotent_dispatch(
+        &self,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+    ) -> Result<AmbiguousNetworkLifecycleDispatchV1, NetworkLifecycleStateError> {
+        let record = self.exact_current(request_id, effect_digest)?;
+        if !matches!(
+            record.action,
+            NetworkNamespaceLifecycleActionV1::Arm
+                | NetworkNamespaceLifecycleActionV1::Renew
+                | NetworkNamespaceLifecycleActionV1::Disarm
+        ) {
+            return Err(NetworkLifecycleStateError::InvalidTransition);
+        }
+
+        ambiguous_dispatch(record)
+    }
+
     pub(crate) fn commit_verified(
         &mut self,
         authority: &NetworkAuthorityV1,

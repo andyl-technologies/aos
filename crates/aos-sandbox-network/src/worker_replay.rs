@@ -1,10 +1,12 @@
-//! Durable exactly-once claims for privileged Network preparation workers.
+//! Durable claims for privileged Network workers.
 //!
 //! A broker request remains replayable bytes even though its in-memory dispatch
 //! permit is non-reconstructible. The fixed worker therefore commits one claim
 //! to this separately root-owned ledger before its first namespace, policy, or
-//! link mutation. An existing request ID always rejects, including an exact
-//! byte-for-byte replay; recovery never turns a claim back into effect authority.
+//! link mutation. Preparation and destructive lifecycle effects reject every
+//! replay. Non-destructive lifecycle effects may admit an exact byte-for-byte
+//! replay because each fixed step is replacement-style and idempotent. A
+//! reused request ID with different effect bytes always rejects.
 
 use std::path::Path;
 
@@ -145,6 +147,40 @@ impl NetworkWorkerReplayLedger {
             return Err(NetworkWorkerProtocolError::ReplayStore);
         }
         Ok(())
+    }
+
+    /// Claims a fresh effect or admits an exact idempotent lifecycle replay.
+    ///
+    /// The caller must restrict this entry point to lifecycle actions whose
+    /// complete ordered step sequence is safe to repeat. A reused request ID
+    /// with any different effect, plan, or dispatch commitment is rejected.
+    pub(crate) fn claim_idempotent_lifecycle(
+        &mut self,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        kernel_plan_digest: ObjectDigest,
+        dispatch_digest: ObjectDigest,
+    ) -> Result<(), NetworkWorkerProtocolError> {
+        let claim = WorkerClaimV1 {
+            request_id,
+            effect_digest,
+            kernel_plan_digest,
+            dispatch_digest,
+        };
+        if let Some(existing) = self.journal.get(RecordNamespace::Effect, &request_id) {
+            return if decode_claim(existing)? == claim {
+                Ok(())
+            } else {
+                Err(NetworkWorkerProtocolError::Replay)
+            };
+        }
+
+        self.claim(
+            request_id,
+            effect_digest,
+            kernel_plan_digest,
+            dispatch_digest,
+        )
     }
 }
 
@@ -330,6 +366,32 @@ mod tests {
                 ObjectDigest::from_bytes([9; 32]),
                 ObjectDigest::from_bytes([8; 32]),
                 ObjectDigest::from_bytes([7; 32]),
+            ),
+            Err(NetworkWorkerProtocolError::Replay)
+        );
+    }
+
+    #[test]
+    fn idempotent_lifecycle_claim_admits_only_an_exact_replay() {
+        let directory = TempDir::new().expect("temporary directory");
+        let mut ledger = NetworkWorkerReplayLedger::open_for_test(directory.path()).expect("open");
+        claim(&mut ledger, 1);
+
+        assert_eq!(
+            ledger.claim_idempotent_lifecycle(
+                [1; 16],
+                ObjectDigest::from_bytes([2; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([4; 32]),
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            ledger.claim_idempotent_lifecycle(
+                [1; 16],
+                ObjectDigest::from_bytes([9; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([4; 32]),
             ),
             Err(NetworkWorkerProtocolError::Replay)
         );

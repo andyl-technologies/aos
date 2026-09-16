@@ -552,6 +552,37 @@ impl DormantNetworkBrokerCallsiteV1 for ProductionNetworkBrokerCompositionV1<'_>
                             .namespace_for_handle(*network_handle)
                             .ok_or(DormantNetworkBrokerCallErrorV1::StaleKernel)?;
                         let target_namespace_identity = target.identity();
+
+                        if matches!(
+                            recovery.action(),
+                            NetworkNamespaceLifecycleActionV1::Arm
+                                | NetworkNamespaceLifecycleActionV1::Renew
+                                | NetworkNamespaceLifecycleActionV1::Disarm
+                        ) {
+                            let permit = self
+                                .coordinator
+                                .recover_idempotent_lifecycle_effect(request_id, effect_digest)?;
+                            let dispatch = self.coordinator.issue_lifecycle_worker_dispatch(
+                                permit,
+                                request_body,
+                                preparation.clone(),
+                                kernel_plan.clone(),
+                            )?;
+                            let trusted_current_fence =
+                                self.coordinator.trusted_lifecycle_fence(&dispatch)?;
+                            let execution = self.lifecycle_executor.execute_once(
+                                self.coordinator.authority(),
+                                &dispatch,
+                                &trusted_current_fence,
+                                target,
+                            )?;
+                            if execution.action() != recovery.action()
+                                || execution.desired_state() != recovery.desired_state()
+                            {
+                                return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+                            }
+                        }
+
                         let proof = self.observation_executor.observe_recovery_once(
                             recovery,
                             &kernel_plan,
