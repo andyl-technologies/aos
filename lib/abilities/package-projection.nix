@@ -318,7 +318,9 @@
         package_probe = projectedPackageProbe.value;
       };
   };
+  nativeAbilities = abilities.packageAbilitiesFromProjection projectionValue;
 in {
   value = projectionValue;
   selectors = artifactSelectors;
+  abilities = nativeAbilities;
 }
