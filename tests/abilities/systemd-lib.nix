@@ -1,7 +1,7 @@
-# lib/testing/systemd-lib.nix — Stage-2 regression check.
+# tests/abilities/systemd-lib.nix — Stage-2 regression check.
 #
-# Exercises the three ported nixpkgs files (lib/modules/systemd/lib.nix,
-# lib/modules/systemd/unit-options.nix, lib/modules/systemd/types.nix) in
+# Exercises the three ported nixpkgs files (pkgs/system/_systemd-abilities/platform/render.nix,
+# pkgs/system/_systemd-abilities/platform/unit-options.nix, pkgs/system/_systemd-abilities/platform/types.nix) in
 # isolation from the rest of the AOS module tree. Builds a synthetic
 # `systemd.services` option using the typed submodule stack, drives a
 # handful of representative services through it, and asserts both at
@@ -27,11 +27,11 @@
   pkgs,
   lib,
 }: let
-  systemdLib = import ../modules/systemd/lib.nix {inherit lib pkgs;};
-  systemdUnitOptions = import ../modules/systemd/unit-options.nix {
+  systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
+  systemdUnitOptions = import ../../pkgs/system/_systemd-abilities/platform/unit-options.nix {
     inherit lib systemdLib;
   };
-  systemdTypes = import ../modules/systemd/types.nix {
+  systemdTypes = import ../../pkgs/system/_systemd-abilities/platform/types.nix {
     inherit lib systemdLib systemdUnitOptions;
   };
 
@@ -212,8 +212,8 @@
       msg = "systemd-lib: script-only ExecStart should be a job-script placeholder, got '${scriptOnlyExec}'";
     }
     {
-      cond = lib.hasPrefix "/nix/store/" scriptOnlyJob.path;
-      msg = "systemd-lib: script-only job-script path should be a store path, got '${scriptOnlyJob.path}'";
+      cond = scriptOnlyJob.path == scriptOnlyJob.placeholder;
+      msg = "systemd-lib: pure job-script plan should retain its placeholder path, got '${scriptOnlyJob.path}'";
     }
     {
       cond = directOnlyExec == "/bin/true";
@@ -282,10 +282,7 @@ in
     version = "0";
     src = null;
 
-    # Force the compiled script derivations into the closure:
-    # `jobScripts` entries are now records; the build-side derivation is the
-    # `.drv` field (was a bare derivation/path before the split).
-    buildDeps = map (j: j.drv) svc.with-environment.jobScripts;
+    buildDeps = [];
 
     phases = [
       {

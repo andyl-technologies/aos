@@ -38,7 +38,26 @@
         treeContributions);
   managerConfiguration = config.aos.manager.selected.configuration;
   managerConfigurationOutput = managerConfiguration.buildOutput {
-    inherit (pkgs) runCommand;
+    inherit (pkgs) runCommand writeTextFile;
+  };
+  managerInitrd = managerConfiguration.buildInitrd {
+    inherit (pkgs) mkDerivation runCommand writeTextFile;
+    buildTools = {
+      inherit
+        (pkgs.buildPackages)
+        aos-ability-contract-validator
+        coreutils
+        findutils
+        gzip
+        jq
+        mkDerivation
+        tar
+        ;
+      packageRuntime = pkgs.buildPackages.aos.packageRuntime;
+    };
+    targetPlatform = {
+      inherit (pkgs.stdenv.hostPlatform.constraints) os cpu abi features;
+    };
   };
   # --- composefs / EROFS inputs (spec v12 §5.3) ---
   #
@@ -329,8 +348,27 @@ in {
       ## The initrd derivation providing initrd.img.
       initrd = lib.mkOption {
         type = lib.types.package;
-        contributable = true;
         description = "The initrd derivation providing initrd.img.";
+      };
+
+      initrdStaticAbilityContract = lib.mkOption {
+        type = lib.types.package;
+        readOnly = true;
+        description = "Static ability contract embedded in the selected initrd artifact.";
+      };
+
+      initrdSourceStageBundle = lib.mkOption {
+        type = lib.types.package;
+        readOnly = true;
+        internal = true;
+        description = "Checked source-stage plan embedded in the selected initrd artifact.";
+      };
+
+      managerConfiguration = lib.mkOption {
+        type = lib.types.package;
+        readOnly = true;
+        internal = true;
+        description = "Single package-owned materialization of the selected manager configuration.";
       };
 
       ## Colon-joined PATH derived from `environment.systemPackages`.
@@ -391,6 +429,11 @@ in {
   config = lib.mkMerge [
     {environment.etc = treeContributionEntries;}
     {
+    system.build.initrd = managerInitrd.artifact;
+    system.build.initrdStaticAbilityContract = managerInitrd.staticAbilityContract;
+    system.build.initrdSourceStageBundle = managerInitrd.sourceStageBundle;
+    system.build.managerConfiguration = managerConfigurationOutput;
+
     # --- composefs lower for /etc (spec v12 §5.3) --------------------
     #
     # `etcBasedir` materialises octal-mode entries as regular files

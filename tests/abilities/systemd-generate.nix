@@ -1,12 +1,12 @@
-# lib/testing/systemd-generate.nix — Stage-3 full-pipeline check.
+# tests/abilities/systemd-generate.nix — Stage-3 full-pipeline check.
 #
-# Drives `modules/systemd/system.nix` end-to-end: declare a handful of
+# Drives `pkgs/system/_systemd-abilities/platform/system.nix` end-to-end: declare a handful of
 # representative services / timers via the typed `systemd.*` options,
 # evalModules with the real system.nix module, force-build the resulting
 # `system.build.systemdSystemUnits` derivation, and inspect its output
 # directory to assert that every expected file and symlink was produced.
 #
-# Complements `lib/testing/systemd-lib.nix`, which tests the individual
+# Complements `tests/abilities/systemd-lib.nix`, which tests the individual
 # `*-ToUnit` renderers and the `script → ExecStart` compilation in
 # isolation. This file exercises the glue between those renderers,
 # `generateUnits`, and the actual `$out/etc/systemd/system/` layout so
@@ -19,8 +19,8 @@
   pkgs,
   lib,
 }: let
-  systemdModule = import ../../modules/systemd/system.nix;
-  systemdLib = import ../modules/systemd/lib.nix {inherit lib pkgs;};
+  systemdModule = import ./_systemd-platform-module.nix;
+  systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
 
   # Minimal module set: just system.nix plus a synthetic config module
   # that declares a handful of services covering the patterns we care
@@ -152,11 +152,14 @@
     ))
     .success;
 
-  systemUnits = result.config.system.build.systemdSystemUnits;
   pureUnits = result.config.system.build.systemdUnitBodies;
   # Standalone systemd evaluation exposes the same manifest-shaped slice that
   # the full base build binds to `system.build.configManifest`.
   manifest = result.config.system.build.systemdMaterializationData;
+  systemUnits = systemdLib.materializeUnits {
+    type = "system";
+    inherit (manifest) etc jobScripts;
+  };
   manifestSystemdEntries = lib.filterAttrs (path: _entry: lib.hasPrefix "systemd/system/" path) manifest.etc;
   expectedMaterializedPaths = builtins.map (path: lib.removePrefix "systemd/system/" path) (builtins.attrNames manifestSystemdEntries);
   expectedMaterializedPathsText = lib.concatStringsSep "\n" expectedMaterializedPaths + "\n";
@@ -568,5 +571,5 @@ in
       }
     ];
 
-    meta.description = "Stage-3 end-to-end check for modules/systemd/system.nix";
+    meta.description = "Stage-3 end-to-end check for pkgs/system/_systemd-abilities/platform/system.nix";
   }

@@ -20,7 +20,7 @@
 ##!   * the `roothash=<hex>` token on the kernel command line (build-injected),
 ##!   * `systemd.verity_root_data=` / `systemd.verity_root_hash=` device hints,
 ##! via `systemd-veritysetup-generator` (confirmed present + unstripped in the
-##! initrd: lib/testing/systemd-verity.nix). `root=` then follows the mapper
+##! initrd: tests/abilities/systemd-verity.nix). `root=` then follows the mapper
 ##! device through `aos.filesystems.rootDevice`.
 ##!
 ##! Options under aos.security.verity:

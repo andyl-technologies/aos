@@ -87,6 +87,7 @@
   };
   bootPreparationHandoff = lib.abilities.interfaces.bootPreparation.interfaces.handoff;
   bootPreparationHandoffAlias = bootPreparationHandoff.alias;
+  systemManagerAlias = lib.abilities.interfaces.systemManager.interfaces.manager.alias;
   serviceResourceFields = serviceManagement.types.serviceDeclaration._abilitySchema.fields;
   serviceImplementationNames = builtins.filter (featureName: let
     selected = allServiceInterfaces.${featureName};
@@ -136,6 +137,19 @@
     requests = {};
     outputs = {};
   };
+
+  provideSystemManager = context: let
+    managerReference = {
+      _type = "aos-artifact-reference";
+    }
+    // (artifactLocatorFor (lib.abilities.packageOutput {})).artifactReference;
+  in
+    emptyResult
+    // {
+      outputs = builtins.mapAttrs (_: _: {
+        selected-manager = managerReference;
+      }) context.requests;
+    };
 
   bindingFor = bindings: requestName: let
     matches =
@@ -1221,6 +1235,9 @@ in {
         provide = provideBootPreparationHandoff;
         compose = composeBootPreparationHandoff;
         transition = _: lib.abilities.transitionFragment {};
+      };
+      ${systemManagerAlias} = {
+        provide = provideSystemManager;
       };
       ${implementationAlias} = {
         inherit provide compose;

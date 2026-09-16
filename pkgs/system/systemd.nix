@@ -34,6 +34,15 @@
   linux-pam,
   tpm2-tss,
   coreutils,
+  cpio,
+  e2fsprogs,
+  findutils,
+  gptfdisk,
+  grep,
+  iproute2,
+  jq,
+  less,
+  sed,
   bash,
   python3-pefile,
   python3-pyelftools,
@@ -48,6 +57,17 @@
 
   systemdRuntimeDeps = [
     bash
+    coreutils
+    cpio
+    e2fsprogs
+    findutils
+    gawk
+    gptfdisk
+    grep
+    iproute2
+    jq
+    less
+    sed
     util-linux
     kmod
     zlib

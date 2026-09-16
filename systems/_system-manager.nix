@@ -1,6 +1,13 @@
 ##! Exact system-manager selection shared by current system variants.
-{pkgs, ...}: {
-  environment.systemPackages = [pkgs.systemd];
+{config, lib, pkgs, ...}: {
+  environment.systemPackages =
+    [pkgs.systemd]
+    ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable pkgs.aos-systemd-var-policy;
+
+  aos.boot.initrd.packageRoots = lib.mkIf (
+    config.aos.boot.secureBoot.measuredBoot.enable
+    && config.aos.boot.storage.backend != "zfs-zvol"
+  ) [pkgs.aos-systemd-var-policy];
 
   aos.abilities.instances."systemd:system-manager-provider".implementation =
     "systemd:system-manager";

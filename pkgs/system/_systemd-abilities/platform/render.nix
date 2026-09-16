@@ -11,7 +11,7 @@
 #   - Top-level signature takes only `{ lib, pkgs }`. The upstream
 #     `{ config, lib, pkgs, utils }` binding is split: `cfg.package` /
 #     `cfg.packages` / `cfg.globalEnvironment` are handled at the module
-#     seam in modules/systemd/system.nix (see spec §4.2), `utils` is
+#     seam in pkgs/system/_systemd-abilities/platform/system.nix (see spec §4.2), `utils` is
 #     inlined (only `escapeSystemdPath` was needed, ported below).
 #   - `makeJobScript` no longer returns a bare `writeShellScriptBin` path.
 #     On-host evaluation reroutes it to a pure data record carrying the job
@@ -42,7 +42,7 @@
 #     is now a pure `{ name, lib, config, ... }:` submodule fragment.
 #   - `serviceToUnit` no longer reads `cfg.globalEnvironment`. The
 #     globalEnvironment merge is applied at the module seam in
-#     modules/systemd/system.nix before definitions reach this library
+#     pkgs/system/_systemd-abilities/platform/system.nix before definitions reach this library
 #     (spec §4.2).
 #   - `stage2ServiceConfig` uses `pkgs.grep` / `pkgs.sed` / `pkgs.systemd`
 #     (not `pkgs.gnugrep` / `pkgs.gnused` / `cfg.package`), matching
@@ -771,19 +771,11 @@ in rec {
     scriptName = replaceStrings ["\\" "@"] ["-" "_"] (shellEscape name);
     key = "${unit}:${slot}.${builtins.toString index}";
     body = "#!${pkgs.bash}/bin/bash\nset -e\n\n${text}\n";
-    drv = pkgs.writeTextFile {
-      name = "aos-job-script-${scriptName}";
-      executable = true;
-      destination = "/aos-job-scripts/${key}";
-      text = body;
-      # Same build-time syntax guard writeShellScriptBin applied.
-      checkPhase = ''${pkgs.bash}/bin/bash -n "$target"'';
-    };
   in {
-    inherit key name scriptName text drv;
-    # Absolute build-side path for `Exec*=`; carries store context that pins
-    # `drv` into the closure (so referencing `path` alone is enough).
-    path = "${drv}/aos-job-scripts/${key}";
+    inherit key name scriptName text;
+    # Unit rendering is a pure package projection. The selected manager's
+    # opaque builder replaces this token after materializing the script.
+    path = "#aos-jobscript:${key}#";
     # Verbatim body for `manifest.jobScripts[key].text`.
     body = body;
     mode = "0755";
@@ -1030,7 +1022,7 @@ in rec {
 
   # serviceToUnit — pure function of `def`. Upstream's
   # `env = cfg.globalEnvironment // def.environment;` merge has moved
-  # out to modules/systemd/system.nix (spec §4.2) — `def.environment`
+  # out to pkgs/system/_systemd-abilities/platform/system.nix (spec §4.2) — `def.environment`
   # here is already the merged result.
   #
   # All six `X-*` switch-to-configuration emissions from upstream are
