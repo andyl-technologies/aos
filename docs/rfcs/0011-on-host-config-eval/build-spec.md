@@ -1182,7 +1182,7 @@ The trait isolates the thin per-platform knowledge layer (endpoint, header, labe
 /// Implementors encode one platform's documented contract (endpoint
 /// paths, required headers, payload encoding, facts locations) over the
 /// shared `aos_net::TransferEngine`. The trait is the only seam the
-/// dispatcher knows about; selection is by `PLATFORM_ID` from `detect`.
+/// dispatcher knows about; selection uses the typed result from `detect`.
 #[async_trait::async_trait]
 pub trait PlatformFetcher: Send + Sync {
     /// Stable platform identifier carried by `DetectedPlatform`
@@ -1293,7 +1293,7 @@ provider invocation; it is not cross-stage authority.
 
 ### 3.4 QEMU `fw_cfg`
 
-- **Detect:** QEMU DMI classification. `PLATFORM_ID=qemu`; no mount or network.
+- **Detect:** QEMU DMI classification returns `qemu`; no mount or network.
 - **`fetch_user_data`:** read the `fw_cfg` blob via `std::fs` from
   `/sys/firmware/qemu_fw_cfg/by_name/<name>/raw`. AOS convention:
   `<name>` is `opt/org.andyl/host-nix` or

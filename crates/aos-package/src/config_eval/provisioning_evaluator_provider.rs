@@ -44,7 +44,7 @@ struct EvaluationObservation {
 /// # Errors
 ///
 /// Returns an error when the selected ABI, checked authority, retained input,
-/// restricted evaluation, or provider result is invalid.
+/// complete configuration evaluation, or provider result is invalid.
 pub async fn run_from_process() -> Result<()> {
     let arguments = std::env::args_os().collect::<Vec<_>>();
     ensure!(

@@ -4,7 +4,7 @@
 # metadata transport, repartitioning, config evaluation, and activation in one boot.
 #
 #   * the initrd authenticating literal platform-provided host.nix,
-#   * restricted evaluation projecting its typed swap + var plan,
+#   * complete initrd evaluation projecting its typed swap + var plan,
 #   * systemd-repart carving that plan in the
 #     trailing free space of the grown per-run image disk,
 #   * `aos-config-seed` scaffolding the empty per-gen /etc lower,

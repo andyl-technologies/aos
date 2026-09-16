@@ -78,7 +78,7 @@ pub struct AuthorizedProvisioningInput {
     pub authorization: ProvisioningAuthorization,
     /// Carries normalized platform facts as explicitly unauthenticated observations.
     pub facts: ObservedInstanceFacts,
-    /// Pins the exact module library used for restricted evaluation.
+    /// Pins the exact module library used for complete initrd evaluation.
     pub base_library: BaseLibraryIdentity,
 }
 
@@ -292,7 +292,7 @@ fn hex_digest(bytes: &[u8]) -> String {
         })
 }
 
-/// Closed JSON product of restricted initrd evaluation.
+/// Closed storage-plan projection from complete initrd evaluation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProvisioningPlan {
