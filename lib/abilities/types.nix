@@ -209,6 +209,19 @@
     };
 
   decorateRecord = context: file: schema: normalizedFields: optionalFields: let
+    fieldNames = builtins.attrNames normalizedFields;
+    requiredFields = builtins.filter
+      (name: !(builtins.elem name optionalFields))
+      fieldNames;
+    recordCheck = value:
+      builtins.isAttrs value
+      && builtins.all (name: builtins.hasAttr name value) requiredFields
+      && builtins.all (name: builtins.elem name fieldNames) (builtins.attrNames value)
+      && builtins.all
+      (name:
+        !(builtins.hasAttr name value)
+        || normalizedFields.${name}.option.type.check value.${name})
+      fieldNames;
     submoduleType = moduleTypes.submodule {
       _file = file;
       _module.strict = true;
@@ -217,6 +230,7 @@
     base =
       submoduleType
       // {
+        check = recordCheck;
         merge = location: definitions: let
           merged = builtins.removeAttrs (submoduleType.merge location definitions) ["_module"];
           omittedNullFields = builtins.filter (
@@ -788,7 +802,8 @@ in rec {
       check = value:
         builtins.isAttrs value
         && builtins.hasAttr tag value
-        && builtins.hasAttr value.${tag} variants;
+        && builtins.hasAttr value.${tag} variants
+        && variants.${value.${tag}}.check value;
       merge = location: definitions: let
         value = (builtins.elemAt definitions (builtins.length definitions - 1)).value;
         variant =
@@ -826,11 +841,13 @@ in rec {
     decorate description schema (type
       // {
         inherit name description;
-        check = value: type.check value && validates schema value;
+        check = value:
+          type.check value
+          && schemas.constraintsSatisfied schema.constraints value;
         merge = location: definitions: let
           merged = type.merge location definitions;
         in
-          if validates schema merged
+          if schemas.constraintsSatisfied schema.constraints merged
           then merged
           else throw "The option '${builtins.concatStringsSep "." location}' is not valid for ${description}.";
       });

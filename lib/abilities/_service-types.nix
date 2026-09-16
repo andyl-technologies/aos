@@ -154,21 +154,33 @@
       };
       default = [];
     };
-    after = types.list {
-      element = types.deferredResult types.resourceReference;
-      maxItems = 256;
+    after = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
     };
-    before = types.list {
-      element = types.deferredResult types.resourceReference;
-      maxItems = 256;
+    before = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
     };
-    requires = types.list {
-      element = types.deferredResult types.resourceReference;
-      maxItems = 256;
+    requires = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
     };
-    wants = types.list {
-      element = types.deferredResult types.resourceReference;
-      maxItems = 256;
+    wants = {
+      type = types.list {
+        element = types.deferredResult types.resourceReference;
+        maxItems = 256;
+      };
+      default = [];
     };
     requisite = {
       type = types.list {
