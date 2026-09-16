@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import pathlib
 import sys
+import tempfile
 
 
 def load(path: pathlib.Path):
@@ -68,6 +70,19 @@ def main() -> None:
 
     specification["applicability"]["applicable_cell_ids"] = []
     rejected(module, specification)
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        artifact = pathlib.Path(temporary_directory) / "matrix.json"
+        artifact.write_bytes(module.canonical(specification))
+        assert module.read_canonical_json(artifact) == specification
+
+        artifact.write_text(json.dumps(specification, indent=2), encoding="utf-8")
+        try:
+            module.read_canonical_json(artifact)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("equivalent non-canonical matrix bytes were accepted")
 
 
 if __name__ == "__main__":

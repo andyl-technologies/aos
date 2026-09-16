@@ -718,15 +718,7 @@ pub(crate) mod tests {
             canonical::from_slice(&fixture.envelope, "fixture manifest")?;
         let mut manifest = envelope.payload;
         let mut policy = crate::test_support::qualification::contract()?;
-        let native_matrix_spec =
-            crate::qualification_evidence::native_adapter_matrix_spec_from_surface(
-                crate::test_support::qualification::native_adapter_surface(),
-            )?;
-        let native_matrix_digest = Sha256Digest::of_bytes(canonical::to_vec(&native_matrix_spec)?);
-        let native_matrix_check = format!(
-            "native-adapter-matrix-v1-sha256-{}",
-            native_matrix_digest.hex()
-        );
+        let native_matrix_spec = crate::test_support::qualification::native_adapter_matrix_spec();
         let native_matrix_requirement = policy
             .requirements
             .iter_mut()
@@ -734,7 +726,9 @@ pub(crate) mod tests {
                 requirement.id == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT
             })
             .context("fixture contract lacks the native-adapter matrix")?;
-        native_matrix_requirement.checks = vec![native_matrix_check];
+        native_matrix_requirement.checks =
+            vec![crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_CHECK.into()];
+        native_matrix_requirement.matrix_spec = Some(native_matrix_spec);
         policy.package_rules = plan
             .packages
             .iter()
@@ -840,11 +834,10 @@ pub(crate) mod tests {
                 let native_adapter_matrix = if case.requirement_id
                     == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT
                 {
-                    let surface = crate::test_support::qualification::native_adapter_surface();
-                    let spec = crate::qualification_evidence::native_adapter_matrix_spec_from_surface(
-                        surface,
-                    )?;
-                    let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&spec)?);
+                    let spec = case
+                        .matrix_spec
+                        .clone()
+                        .context("matrix fixture case lacks its exact specification")?;
                     let component = |name: &str, component_digest: Sha256Digest| {
                         crate::qualification_evidence::NativeAdapterMatrixComponentIdentity {
                             name: name.into(),
@@ -860,7 +853,6 @@ pub(crate) mod tests {
                             status:
                                 crate::qualification_evidence::NativeAdapterMatrixEnvironmentStatus::Production,
                             platform: Platform::X86_64Linux,
-                            spec_digest,
                             scenario_registry_digest: executor_digest,
                             candidate_subjects_digest: case.subjects_digest,
                             predecessor_manifest_digest: case
@@ -982,8 +974,6 @@ pub(crate) mod tests {
                             schema_version:
                                 crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_OBSERVATION_V1
                                     .into(),
-                            spec,
-                            spec_digest,
                             environment: matrix_environment,
                             cells,
                         };
@@ -997,7 +987,10 @@ pub(crate) mod tests {
                     let matrix_check = case
                         .checks
                         .iter()
-                        .find(|check| check.starts_with("native-adapter-matrix-v1-sha256-"))
+                        .find(|check| {
+                            check.as_str()
+                                == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_CHECK
+                        })
                         .context("matrix fixture case lacks its policy check")?;
                     checks.insert(
                         matrix_check.clone(),

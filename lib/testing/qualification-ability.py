@@ -1934,14 +1934,12 @@ class Scenario:
         qemu_match = re.search(r"version ([0-9][A-Za-z0-9.+_-]*)", qemu_output)
         if qemu_match is None:
             raise RuntimeError("QEMU returned an unsupported version identity")
-        spec_digest = raw_digest(self.matrix_spec)
         package_qualification_subject = self.native_adapter_package_subject()
         scenario_registry_digest = raw_digest(read_json(SCENARIO_REGISTRY))
         environment = {
             "schema_version": "aos.release.native-adapter-matrix-environment/v1",
             "status": "production",
             "platform": PLATFORM,
-            "spec_digest": spec_digest,
             "scenario_registry_digest": scenario_registry_digest,
             "candidate_subjects_digest": self.case["subjects_digest"],
             "predecessor_manifest_digest": self.case["predecessor"][
@@ -2026,7 +2024,6 @@ class Scenario:
             "environment": environment,
             "native_adapter_matrix": {
                 "schema_version": "aos.release.native-adapter-matrix-observation/v1",
-                "spec_digest": spec_digest,
                 "environment": environment,
                 "cells": cells,
             },

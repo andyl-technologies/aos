@@ -36,7 +36,7 @@ pub fn contract() -> Result<QualificationContract> {
     ]
     .into_iter()
     .map(|(id, phase, scope, production_only)| {
-        json!({
+        let mut requirement = json!({
             "id": id,
             "phase": phase,
             "scope": scope,
@@ -46,9 +46,14 @@ pub fn contract() -> Result<QualificationContract> {
             "regressions": [],
             "invalidated_by": ["subject", "policy", "executor", "environment"],
             "measurements": measurements_for(id),
-        })
+        });
+        if id == "ability-native-adapter-matrix" {
+            requirement["checks"] = json!(["native-adapter-matrix"]);
+            requirement["matrix_spec"] = native_adapter_matrix_spec();
+        }
+        Ok(requirement)
     })
-    .collect::<Vec<_>>();
+    .collect::<Result<Vec<_>>>()?;
 
     let image_targets = [
         ("disk-x86_64-linux", "x86_64-linux", "kvm", "q35"),
@@ -102,6 +107,98 @@ pub fn contract() -> Result<QualificationContract> {
             "trains": {},
         },
     }))?)
+}
+
+fn native_adapter_matrix_spec() -> Value {
+    let descriptor = format!("sha256:{}", "a".repeat(64));
+    let state_format = format!("sha256:{}", "b".repeat(64));
+    let cell_id = "fixture/aos.fixture-effects/abi-1/apply/interrupt";
+    let applicability = json!({
+        "required_resource_lifetimes": [],
+        "requires_state_format": false,
+    });
+    let disposition = json!({"kind": "exact", "value": "reconciled"});
+    let postconditions = [json!({
+        "evidence_kind": "journal-timeline",
+        "name": "durable-attempt-state-classified",
+    })];
+    let adapter = json!({
+        "adapter": "fixture",
+        "conformance_families": ["durability-recovery"],
+        "interface_abi": 1,
+        "interface_descriptor": descriptor,
+        "interface_name": "aos.fixture-effects",
+        "methods": [{"method": "apply", "required_target_access": "exclusive-write"}],
+        "observation_kind": "fixture-observation",
+        "provider_contract": {
+            "lifecycle": {"persistent_delete_method": null},
+            "resource_lifetimes": ["persistent"],
+            "state_format": state_format,
+        },
+        "provider_implementation": {
+            "contract": "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture-contract",
+            "implementation": "fixture-implementation",
+            "observer": {
+                "artifact": {
+                    "path": "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture-observer",
+                    "selector": {
+                        "_type": "aos-package-output-selector",
+                        "package": "fixture-observer",
+                        "output": "out",
+                    },
+                },
+                "entry_point": "bin/fixture-observer",
+                "arguments": {"kind": "record"},
+                "result": {"kind": "record"},
+            },
+        },
+        "scope": "host-resource",
+    });
+    let scenario = json!({
+        "applicability": applicability,
+        "boundary": "after-acquisition",
+        "candidate": "same",
+        "disposition": disposition,
+        "failure": "injected-interruption",
+        "family": "durability-recovery",
+        "id": "interrupt",
+        "postconditions": postconditions,
+        "predecessor": "same",
+    });
+    json!({
+        "schema": "aos.qualification.native-adapter-matrix-spec/v1",
+        "surface": {
+            "adapters": [adapter],
+            "families": ["durability-recovery"],
+            "invalidation_dimensions": ["subject", "policy", "executor", "environment"],
+            "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+            "scenarios": [scenario],
+            "schema": "aos.qualification.native-adapter-surface/v1",
+        },
+        "cells": [{
+            "id": cell_id,
+            "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+            "adapter": "fixture",
+            "interface": {"name": "aos.fixture-effects", "abi": 1, "descriptor": descriptor},
+            "method": "apply",
+            "required_target_access": "exclusive-write",
+            "scope": "host-resource",
+            "boundary": "after-acquisition",
+            "failure": "injected-interruption",
+            "predecessor": "same",
+            "candidate": "same",
+            "disposition": disposition,
+            "applicability": applicability,
+            "postconditions": ["durable-attempt-state-classified"],
+            "postcondition_kinds": {"durable-attempt-state-classified": "journal-timeline"},
+            "invalidated_by": ["subject", "policy", "executor", "environment"],
+        }],
+        "applicability": {
+            "schema": "aos.qualification.native-adapter-matrix-applicability/v1",
+            "applicable_cell_ids": [cell_id],
+            "inapplicable_cells": [],
+        },
+    })
 }
 
 fn threshold(

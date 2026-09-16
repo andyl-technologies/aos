@@ -28,8 +28,8 @@ use aos_release::qualification::QualificationPhase;
 use aos_release::qualification::claims::CompatibilityAssessment;
 use aos_release::qualification::environment::EnvironmentInventory;
 use aos_release::qualification_evidence::{
-    CheckObservation, NATIVE_ADAPTER_MATRIX_REQUIREMENT, NativeAdapterMatrixObservation,
-    QualificationObservation, native_adapter_matrix_check,
+    CheckObservation, NATIVE_ADAPTER_MATRIX_CHECK, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
+    NativeAdapterMatrixObservation, QualificationObservation, native_adapter_matrix_check,
     validate_native_adapter_matrix_observation,
 };
 use reqwest::header::{CONTENT_RANGE, RANGE};
@@ -42,7 +42,6 @@ use crate::cli::{
 };
 
 const SCENARIO_REPORT_V1: &str = "aos.release.qualification-scenario-report/v1";
-const NATIVE_ADAPTER_MATRIX_CHECK_PREFIX: &str = "native-adapter-matrix-v1-sha256-";
 
 /// Immutable executable selection, produced by `mkQualificationExecutor`.
 #[derive(Clone, Deserialize, Serialize)]
@@ -248,7 +247,7 @@ fn build_response(
         let check_name = case
             .checks
             .iter()
-            .find(|check| check.starts_with(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX))
+            .find(|check| check.as_str() == NATIVE_ADAPTER_MATRIX_CHECK)
             .ok_or_else(|| anyhow::anyhow!("native adapter matrix case lacks its policy check"))?;
         let mut checks = fields.checks;
         checks.insert(
@@ -321,12 +320,12 @@ fn validate_report_fields(
         let matrix_checks = case
             .checks
             .iter()
-            .filter(|check| check.starts_with(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX))
+            .filter(|check| check.as_str() == NATIVE_ADAPTER_MATRIX_CHECK)
             .collect::<Vec<_>>();
         let required = case
             .checks
             .iter()
-            .filter(|check| !check.starts_with(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX))
+            .filter(|check| check.as_str() != NATIVE_ADAPTER_MATRIX_CHECK)
             .collect::<std::collections::BTreeSet<_>>();
         let actual = report
             .checks
@@ -767,6 +766,7 @@ mod tests {
             target: None,
             subjects: vec!["package/example/x86_64-linux".into()],
             checks: vec!["anonymous-download".into(), "functional-behavior".into()],
+            matrix_spec: None,
             method: aos_release::qualification::QualificationMethod::Automated,
             predecessor: None,
         }
@@ -873,11 +873,6 @@ mod tests {
             }],
             "families": ["durability-recovery"],
             "invalidation_dimensions": ["subject", "policy", "executor", "environment"],
-            "limits": {
-                "max_adapters": 1,
-                "max_methods": 1,
-                "max_scenarios": 1,
-            },
             "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
             "scenarios": [{
                 "applicability": {
@@ -900,25 +895,17 @@ mod tests {
                 "predecessor": "same",
             }],
             "schema": "aos.qualification.native-adapter-surface/v1",
-            "subject_schema": "aos.qualification.native-adapter-subject/v1",
         }))?;
-        let surface_digest = Sha256Digest::of_bytes(canonical::to_vec(&surface)?);
         Ok(serde_json::from_value(serde_json::json!({
             "schema": "aos.qualification.native-adapter-matrix-spec/v1",
             "applicability": {
                 "schema": "aos.qualification.native-adapter-matrix-applicability/v1",
-                "required_production_vm_cells": 1,
+                "applicable_cell_ids": [
+                    "fixture/aos.fixture-effects/abi-1/apply/interruption"
+                ],
                 "inapplicable_cells": [],
             },
             "surface": surface,
-            "subject": {
-                "schema": "aos.qualification.native-adapter-subject/v1",
-                "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
-                "surface_digest": surface_digest,
-                "adapter_count": 1,
-                "method_count": 1,
-                "scenario_count": 1,
-            },
             "cells": [{
                 "id": "fixture/aos.fixture-effects/abi-1/apply/interruption",
                 "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
@@ -951,16 +938,14 @@ mod tests {
     }
 
     fn matrix_case() -> Result<aos_release::qualification_evidence::QualificationCase> {
-        let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&matrix_spec()?)?);
+        let spec = matrix_spec()?;
         let mut case = package_case();
         case.id = "ability-native-adapter-matrix/release".into();
         case.requirement_id = NATIVE_ADAPTER_MATRIX_REQUIREMENT.into();
         case.package_role = None;
         case.subjects = vec!["package/example/x86_64-linux".into()];
-        case.checks = vec![format!(
-            "native-adapter-matrix-v1-sha256-{}",
-            spec_digest.hex()
-        )];
+        case.checks = vec![NATIVE_ADAPTER_MATRIX_CHECK.into()];
+        case.matrix_spec = Some(spec);
         case.predecessor = Some(
             aos_release::qualification_evidence::QualificationPredecessor {
                 registry: "andyl/testing".into(),
@@ -980,12 +965,10 @@ mod tests {
 
         let case = matrix_case()?;
         let spec = matrix_spec()?;
-        let spec_digest = Sha256Digest::of_bytes(canonical::to_vec(&spec)?);
         let environment = NativeAdapterMatrixEnvironment {
             schema_version: "aos.release.native-adapter-matrix-environment/v1".into(),
             status: NativeAdapterMatrixEnvironmentStatus::Unqualified,
             platform: Platform::X86_64Linux,
-            spec_digest,
             scenario_registry_digest: Sha256Digest::of_bytes(MATRIX_REGISTRY_BYTES),
             candidate_subjects_digest: case.subjects_digest,
             predecessor_manifest_digest: case
@@ -1030,8 +1013,6 @@ mod tests {
             .collect::<Result<Vec<_>>>()?;
         let matrix = NativeAdapterMatrixObservation {
             schema_version: NATIVE_ADAPTER_MATRIX_OBSERVATION_V1.into(),
-            spec,
-            spec_digest,
             environment: environment.clone(),
             cells,
         };
