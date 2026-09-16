@@ -1478,7 +1478,7 @@ Grounding files:
 `crates/aos-package/src/credential_artifact.rs`,
 `crates/aos-package/src/types.rs`,
 `lib/build/{rootfs.nix,package-root-image.nix}`,
-`pkgs/boot/aos-uki.nix`, `pkgs/system/_systemd-abilities/platform/_image-builder.nix`,
+`pkgs/system/_systemd-abilities/platform/_uki-builder.nix`, `pkgs/system/_systemd-abilities/platform/_image-builder.nix`,
 `modules/base/{boot.nix,filesystems.nix,system.nix}`,
 `modules/services/ignition.nix`.
 
@@ -1947,7 +1947,7 @@ and key-free: the anchoring needs only `root.roothash` (key-independent); the
 `root.roothash.p7s` is the optional SB-db-keyed in-kernel roothash signature that
 `pkgs/security/aos-verity-root-guard.nix` validates against the SB db.
 
-### 4.2 Build side — `pkgs/boot/aos-uki.nix` (the load-bearing append)
+### 4.2 Build side — `pkgs/system/_systemd-abilities/platform/_uki-builder.nix` (the load-bearing append)
 
 Add optional arg `rootHashFile ? null`. In the build phase, when set, append the
 **build-time** hash to the materialized cmdline before ukify

@@ -78,7 +78,7 @@ packaged). For CI: ephemeral, per-run, clearly test-named
 
 ### 4. Sign the artifacts
 
-- **UKI** — `pkgs/boot/aos-uki.nix`: add **optional** `secureBootKey` /
+- **UKI** — `pkgs/system/_systemd-abilities/platform/_uki-builder.nix`: add **optional** `secureBootKey` /
   `secureBootCert` args; when present, pass
   `--secureboot-private-key`/`--secureboot-certificate` to `ukify build`
   (`:71-77`). Absent → today's reproducible unsigned UKI. Fix the docstring

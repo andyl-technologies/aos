@@ -6,9 +6,9 @@
   image,
   lib,
   pkgs,
+  zfs,
 }: let
   storage = config.aos.boot.storage;
-  zfs = config.aos.filesystems.zfs.package;
 in
   pkgs.mkDerivation {
     pname = "aos-${config.aos.system.name}-zfs-installer";

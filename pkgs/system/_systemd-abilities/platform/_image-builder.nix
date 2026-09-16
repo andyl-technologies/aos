@@ -26,7 +26,9 @@
   name,
   runtimeClosureAudit,
   bootArtifacts,
+  rawDiskFilename,
   rootfs,
+  targetPlatform,
 }: let
   kernelParams = bootArtifacts.kernelParams;
   kernelParamsB = bootArtifacts.kernelParamsB;
@@ -41,7 +43,7 @@
   guidFrom = seed: let
     digest = builtins.hashString "sha256" seed;
   in "${builtins.substring 0 8 digest}-${builtins.substring 8 4 digest}-${builtins.substring 12 4 digest}-${builtins.substring 16 4 digest}-${builtins.substring 20 12 digest}";
-  identitySeed = "aos-image:${version}:${lib.system}:${name}";
+  identitySeed = "aos-image:${version}:${targetPlatform.system}:${name}";
   rootfsPname = "aos-image-${name}-rootfs";
   verityDigest = builtins.hashString "sha256" "aos-rootfs:verity:${rootfsPname}:aos-root";
   verityUuid = "${builtins.substring 0 8 verityDigest}-${builtins.substring 8 4 verityDigest}-4${builtins.substring 13 3 verityDigest}-8${builtins.substring 17 3 verityDigest}-${builtins.substring 20 12 verityDigest}";
@@ -76,8 +78,8 @@
     };
   };
   dpsType =
-    dpsTypes.${lib.platform.constraints.cpu}
-    or (throw "no DPS root partition types for ${lib.system}");
+    dpsTypes.${targetPlatform.cpu}
+    or (throw "no DPS root partition types for ${targetPlatform.system}");
   rootGuid = dpsType.root;
   verityGuid = dpsType.verity;
   rootFsType = system.config.aos.filesystems.rootFsType;
@@ -185,7 +187,7 @@
           ${pkgs.jq}/bin/jq -cS -n \
             --arg schema aos.image.assembly-recipe/v2 \
             --arg release ${lib.escapeShellArg version} \
-            --arg platform ${lib.escapeShellArg lib.system} \
+            --arg platform ${lib.escapeShellArg targetPlatform.system} \
             --arg variant ${lib.escapeShellArg name} \
             --arg kernelRelease ${lib.escapeShellArg system.config.system.build.kernel.version} \
             --arg kernelParams ${lib.escapeShellArg kernelParams} \
@@ -293,7 +295,7 @@
         '';
       }
     ];
-    meta.description = "Public-only unsigned AOS image assembly for ${lib.system}";
+    meta.description = "Public-only unsigned AOS image assembly for ${targetPlatform.system}";
   };
 
   imageDrv = pkgs.mkDerivation ({
@@ -333,10 +335,10 @@
       UKI_MEASUREMENT_PATH = "${ukiA}/${ukiAStoreFilename}.measurement";
       UKI_MEASUREMENT_SIG_PATH = "${ukiA}/${ukiAStoreFilename}.measurement.sig";
       IMAGE_NAME = name;
-      IMAGE_FILENAME = "aos-${name}.img.zst";
+      IMAGE_FILENAME = rawDiskFilename;
       IMAGE_VERSION = version;
-      IMAGE_ARCHITECTURE = lib.platform.constraints.cpu;
-      IMAGE_PLATFORM = lib.system;
+      IMAGE_ARCHITECTURE = targetPlatform.cpu;
+      IMAGE_PLATFORM = targetPlatform.system;
       IMAGE_KERNEL_PARAMS = kernelParams;
       IMAGE_ROOT_FS_TYPE = rootFsType;
       MAX_ROOT_MIB = toString budgets.maxRootMiB;

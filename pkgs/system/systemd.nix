@@ -35,14 +35,22 @@
   tpm2-tss,
   coreutils,
   cpio,
+  binutils,
+  dosfstools,
   e2fsprogs,
+  erofs-utils,
   findutils,
+  gcc-libs,
   gptfdisk,
   grep,
   iproute2,
   jq,
   less,
+  mtools,
+  qemu,
+  sbsigntools,
   sed,
+  tar,
   bash,
   python3-pefile,
   python3-pyelftools,
@@ -59,15 +67,23 @@
     bash
     coreutils
     cpio
+    binutils
+    dosfstools
     e2fsprogs
+    erofs-utils
     findutils
+    gcc-libs
     gawk
     gptfdisk
     grep
     iproute2
     jq
     less
+    mtools
+    qemu
+    sbsigntools
     sed
+    tar
     util-linux
     kmod
     zlib

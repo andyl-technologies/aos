@@ -3,7 +3,7 @@
 ##! Anchors the read-only erofs root (carrying the base lib + on-host evaluator
 ##! closure) to measured boot via dm-verity. The Merkle root hash of the root
 ##! image is produced at build time (lib/build/rootfs.nix `verity = true`), baked
-##! into the UKI `.cmdline` section as `roothash=<hex>` (pkgs/boot/aos-uki.nix),
+##! into the UKI `.cmdline` section as `roothash=<hex>` (pkgs/system/_systemd-abilities/platform/_uki-builder.nix),
 ##! and thereby measured into PCR 11 and covered by the whole-PE Authenticode
 ##! signature. Tampering the root either fails dm-verity at read time (boot fails
 ##! closed) or requires a new root hash → a new `.cmdline` → a new PCR 11 the
@@ -98,7 +98,7 @@ in {
 
     # systemd-veritysetup-generator parameters. The generator unions the
     # `roothash=<hex>` token (baked into the measured .cmdline at build time by
-    # pkgs/boot/aos-uki.nix) with these device hints to assemble
+    # pkgs/system/_systemd-abilities/platform/_uki-builder.nix) with these device hints to assemble
     # `/dev/mapper/root`. NOTE: the dracut-style verity.data=/verity.hash=
     # /verity.roothash= params are wrong for a systemd initrd and are gone.
     aos.boot.kernelParams = [

@@ -5,6 +5,7 @@
   lib,
   pkgs,
   rawImage,
+  targetPlatform,
 }:
 if !config.aos.boot.recovery.enable
 then baseImage
@@ -56,8 +57,8 @@ else
           jq -S -n \
             --arg schema aos.recovery-bundle/v1 \
             --arg release ${lib.escapeShellArg config.aos.system.version} \
-            --arg architecture ${lib.escapeShellArg lib.platform.constraints.cpu} \
-            --arg platform ${lib.escapeShellArg lib.system} \
+            --arg architecture ${lib.escapeShellArg targetPlatform.cpu} \
+            --arg platform ${lib.escapeShellArg targetPlatform.system} \
             --argjson module_abi ${toString config.aos.system.moduleAbi} \
             --argjson recovery_abi ${toString config.aos.boot.recovery.abi} \
             --argjson components "$components" \
