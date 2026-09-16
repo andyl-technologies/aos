@@ -383,6 +383,22 @@ impl StageExecutionEvidence {
         };
         Ok(&retained.resource)
     }
+
+    fn validate_exact_retained_resource(&self, expected: &ResourceReference) -> Result<()> {
+        let matching = self
+            .retained_resources
+            .iter()
+            .filter(|retained| &retained.resource == expected)
+            .collect::<Vec<_>>();
+        let [retained] = matching.as_slice() else {
+            bail!("initrd stage execution did not retain exactly one transaction-storage resource")
+        };
+        ensure!(
+            retained.output.as_str() == "retained-resource",
+            "initrd transaction-storage resource came from an unexpected output"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -637,6 +653,10 @@ fn run_initrd_stage_with(
         _ => bail!("initrd stage journal differs from the authenticated resolved plan"),
     };
     drop(journal);
+    let StageEvent::SourceCompleted { execution, .. } = &completed else {
+        bail!("initrd stage did not produce checked source completion")
+    };
+    execution.validate_exact_retained_resource(&transaction_storage.resource)?;
 
     let checkpoint = StageCheckpoint {
         schema: CHECKPOINT_SCHEMA.to_string(),
@@ -1350,6 +1370,23 @@ mod tests {
         validate_transaction_storage_path(Path::new(
             "/run/aos-boot-transaction-storage/aos/initrd-stage-journal",
         ))?;
+        let evidence = StageExecutionEvidence {
+            plan: PlanId(sha256_digest(b"storage-plan")),
+            bundle: sha256_digest(b"storage-bundle"),
+            terminal: TerminalResult::Succeeded,
+            retained_resources: vec![StageRetainedResource {
+                operation: OperationId {
+                    plan: PlanId(sha256_digest(b"storage-plan")),
+                    operation: aos_ability_model::ScopedOperationKey {
+                        scope: aos_ability_model::ScopePath::root(),
+                        key: LocalKey::new("materialize-transaction-storage")?,
+                    },
+                },
+                output: LocalKey::new("retained-resource")?,
+                resource: resource.clone(),
+            }],
+        };
+        evidence.validate_exact_retained_resource(&resource)?;
 
         let mut wrong_lifetime = resource;
         wrong_lifetime.lifetime = ResourceLifetime::Persistent;
