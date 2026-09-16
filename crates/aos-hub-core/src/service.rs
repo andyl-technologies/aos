@@ -37477,6 +37477,35 @@ mod cache_upload_tests {
     }
 
     #[tokio::test]
+    async fn package_tooling_schema_authorizes_before_lookup() {
+        let (service, db, _lease, underprivileged_auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("tooling-auth", "Tooling auth").await.unwrap();
+        db.create_managed_registry(org_id, "", "packages", "private", &[], true)
+            .await
+            .unwrap();
+        let request = pb::GetPackageDocumentationSchemaRequest {
+            registry: "tooling-auth/packages".into(),
+            package: "missing".into(),
+            version: String::new(),
+            platform: String::new(),
+            release: String::new(),
+        };
+
+        assert!(matches!(
+            service
+                .get_package_documentation_schema(None, request.clone())
+                .await,
+            Err(RpcError::Unauthenticated(_))
+        ));
+        assert!(matches!(
+            service
+                .get_package_documentation_schema(Some(&underprivileged_auth), request)
+                .await,
+            Err(RpcError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn deployment_reports_require_the_exact_live_enrollment() {
         let (service, db, _lease, reporter_auth) = injected_service(vec![], vec![]).await;
         let org_id = db
