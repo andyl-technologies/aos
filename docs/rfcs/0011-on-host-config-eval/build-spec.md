@@ -1409,16 +1409,16 @@ ext4.
 The hard ordering is:
 
 ```text
-durable-state-detect → metadata-fetch → authorize exact host.nix
-  → complete initrd fixed point → project plan → Rust validate/render
-  → dry-run every disk → mutate every disk → commit GPT provenance marker
+observe durable marker → detect platform → acquire and authorize exact host.nix
+  → complete initrd fixed point → observe and validate plan
+  → dry-run every disk → commit storage effects and GPT provenance marker
   → aos-var-crypt/mount-var → switch_root → full aos-eval
 ```
 
-The renderer adds `aos-provisioning-pending-v1` using the reserved GPT type GUID
-in the same transaction as the root-disk definitions and orders the root target
-before every secondary device. Only after every device succeeds does the unit
-relabel it to `aos-provenance-operator-v1` or
+The selected storage provider adds `aos-provisioning-pending-v1` using the
+reserved GPT type GUID in the same transaction as the root-disk definitions and
+orders the root target before every secondary device. Only after every device
+succeeds does the provider relabel it to `aos-provenance-operator-v1` or
 `aos-provenance-fallback-v1`. A pending marker fails closed for recovery. A
 committed marker freezes all future disk mutation, while metadata acquisition,
 complete advisory evaluation, dry-run comparison, and full runtime
