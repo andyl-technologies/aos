@@ -24,6 +24,7 @@ use aos_ability_validate::{
     resolve_package_projection,
 };
 use aos_contract::Sha256Digest;
+use aos_release::inventory::DerivationInventoryV1;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -37,7 +38,7 @@ pub(crate) struct ResolvedContractArtifact {
 
 /// Exact release-entry inventory used to bind symbolic package outputs.
 pub(crate) struct PackageContractSelectorRegistry {
-    outputs: BTreeMap<(String, String, String), Vec<(String, String)>>,
+    outputs: BTreeMap<(String, String, String), Vec<(Option<String>, String)>>,
 }
 
 impl PackageContractSelectorRegistry {
@@ -52,9 +53,59 @@ impl PackageContractSelectorRegistry {
                     entry.output.clone(),
                 ))
                 .or_insert_with(Vec::new)
-                .push((entry.version.clone(), entry.store_path.clone()));
+                .push((Some(entry.version.clone()), entry.store_path.clone()));
         }
         Self { outputs }
+    }
+
+    /// Indexes only the selected package contract's evaluated selector bindings.
+    pub(crate) fn from_inventory_contract(
+        inventory: &DerivationInventoryV1,
+        owner: &str,
+    ) -> Result<Self> {
+        inventory.validate()?;
+
+        let package = inventory
+            .packages
+            .iter()
+            .find(|package| package.name == owner)
+            .with_context(|| format!("evaluated inventory does not contain package {owner:?}"))?;
+        let contract = package
+            .contract
+            .as_ref()
+            .with_context(|| format!("evaluated package {owner:?} has no package contract"))?;
+        let mut outputs = BTreeMap::new();
+        for selector in &contract.selectors {
+            let selected_name = if selector.package == "self" {
+                owner
+            } else {
+                &selector.package
+            };
+            let selected = inventory
+                .packages
+                .iter()
+                .find(|package| package.name == selected_name)
+                .with_context(|| {
+                    format!(
+                        "package contract selector {}:{} has no evaluated package",
+                        selector.package, selector.output
+                    )
+                })?;
+            let version = selected
+                .publication
+                .as_ref()
+                .map(|publication| publication.version.clone());
+            outputs
+                .entry((
+                    selected_name.to_string(),
+                    inventory.platform.as_str().to_string(),
+                    selector.output.clone(),
+                ))
+                .or_insert_with(Vec::new)
+                .push((version, selector.store_path.clone()));
+        }
+
+        Ok(Self { outputs })
     }
 
     fn select(&self, owner: (&str, &str, &str), selector: &PackageOutputSelector) -> Result<&str> {
@@ -71,7 +122,9 @@ impl PackageContractSelectorRegistry {
             .get(&(package.to_string(), owner.2.to_string(), output.to_string()))
             .into_iter()
             .flatten()
-            .filter(|(version, _)| package != owner.0 || version == owner.1)
+            .filter(|(version, _)| {
+                package != owner.0 || version.as_deref().is_some_and(|version| version == owner.1)
+            })
             .collect::<Vec<_>>();
         match candidates.as_slice() {
             [(_, store_path)] => Ok(store_path),
@@ -261,6 +314,12 @@ fn read_projection_interfaces(
 mod tests {
     use super::{PackageContractSelectorRegistry, PackageOutputSelector};
     use crate::registry::release::RegistryReleaseEntry;
+    use aos_release::inventory::{
+        DERIVATION_INVENTORY_V1, DerivationContractDocument, DerivationInventoryV1,
+        DerivationOutput, DerivationPackage, DerivationPackageContract,
+        DerivationSelectorResolution, PackagePublicationMetadata,
+    };
+    use aos_release::platform::Platform;
 
     fn entry(package: &str, version: &str, output: &str, path: &str) -> RegistryReleaseEntry {
         RegistryReleaseEntry {
@@ -338,5 +397,107 @@ mod tests {
                 .unwrap(),
             "/nix/store/owner-v2"
         );
+    }
+
+    #[test]
+    fn evaluated_inventory_is_the_exact_selector_authority() {
+        let inventory = DerivationInventoryV1 {
+            schema_version: DERIVATION_INVENTORY_V1.to_string(),
+            platform: Platform::X86_64Linux,
+            packages: vec![
+                DerivationPackage {
+                    name: "owner".to_string(),
+                    publication: Some(publication("1.0.0", "Owner")),
+                    source_store_paths: vec![
+                        "/nix/store/ssssssssssssssssssssssssssssssss-owner-source".to_string(),
+                    ],
+                    derivation: "/nix/store/dddddddddddddddddddddddddddddddd-owner.drv".to_string(),
+                    outputs: vec![DerivationOutput {
+                        name: "out".to_string(),
+                        derivation: None,
+                        store_path: "/nix/store/11111111111111111111111111111111-owner".to_string(),
+                    }],
+                    contract: Some(DerivationPackageContract {
+                        document: DerivationContractDocument {
+                            derivation:
+                                "/nix/store/cccccccccccccccccccccccccccccccc-owner-contract.drv"
+                                    .to_string(),
+                            store_path:
+                                "/nix/store/22222222222222222222222222222222-owner-contract"
+                                    .to_string(),
+                        },
+                        selectors: vec![DerivationSelectorResolution {
+                            package: "provider".to_string(),
+                            output: "out".to_string(),
+                            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-provider"
+                                .to_string(),
+                        }],
+                    }),
+                },
+                DerivationPackage {
+                    name: "provider".to_string(),
+                    publication: Some(publication("7.0.0", "Provider")),
+                    source_store_paths: vec![
+                        "/nix/store/ssssssssssssssssssssssssssssssss-provider-source".to_string(),
+                    ],
+                    derivation: "/nix/store/ffffffffffffffffffffffffffffffff-provider.drv"
+                        .to_string(),
+                    outputs: vec![
+                        DerivationOutput {
+                            name: "extra".to_string(),
+                            derivation: None,
+                            store_path:
+                                "/nix/store/33333333333333333333333333333333-provider-extra"
+                                    .to_string(),
+                        },
+                        DerivationOutput {
+                            name: "out".to_string(),
+                            derivation: None,
+                            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-provider"
+                                .to_string(),
+                        },
+                    ],
+                    contract: None,
+                },
+            ],
+        };
+        let registry =
+            PackageContractSelectorRegistry::from_inventory_contract(&inventory, "owner").unwrap();
+
+        assert_eq!(
+            registry
+                .select(
+                    ("owner", "1.0.0", "x86_64-linux"),
+                    &selector("provider", "out")
+                )
+                .unwrap(),
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-provider"
+        );
+        assert!(
+            registry
+                .select(
+                    ("owner", "1.0.0", "aarch64-linux"),
+                    &selector("provider", "out")
+                )
+                .is_err()
+        );
+        assert!(
+            registry
+                .select(
+                    ("owner", "1.0.0", "x86_64-linux"),
+                    &selector("provider", "extra")
+                )
+                .is_err()
+        );
+    }
+
+    fn publication(version: &str, description: &str) -> PackagePublicationMetadata {
+        PackagePublicationMetadata {
+            version: version.to_string(),
+            description: description.to_string(),
+            homepage: None,
+            license_expression: "Apache-2.0".to_string(),
+            maintainers: vec!["AOS".to_string()],
+        }
     }
 }

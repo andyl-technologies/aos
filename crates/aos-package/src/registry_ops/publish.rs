@@ -49,35 +49,28 @@ use std::path::{Path, PathBuf};
 /// `apr publish <STORE_PATH>` — records a built Nix store path in the
 /// registry.
 ///
-/// Introspects the store path (NAR hash and size, closure size, direct
-/// references, and the source derivation when known), writes or merges the
-/// entry in `packages/<letter>/<name>.toml`, and regenerates the closure
-/// adjacency file under `closures/`. Unless `--no-commit` is set, the
-/// touched paths are committed (SSH-signed when `--key`/`--key-id` is
-/// given) and the dumb-HTTP object store is refreshed.
+/// Ordinary package publication selects the exact primary output from the
+/// target's evaluated derivation inventory. Package metadata, generated
+/// documentation, named outputs, and any package contract are authored from
+/// that one record and committed atomically with the complete realization
+/// graph.
 ///
-/// Package name and version are parsed from the store path basename and can
-/// be overridden. Platform is read from the output's AOS target-platform
-/// marker, falling back to the producer's native platform for legacy outputs;
-/// `--platform` may override only an unstamped output or agree with its stamp.
-/// `--image-payload`, `--image-disk`,
+/// Manual metadata, source overrides, and `--no-commit` apply only to sysroot
+/// image entries. `--image-payload`, `--image-disk`,
 /// `--image-info`, `--image-format`, and `--image-contract-schema` groups attach
 /// disk bytes and an opaque provider-owned artifact contract to the platform entry;
-/// `--sysroot` marks
-/// the package as a system root, `--previous` records the predecessor
-/// version for delta upgrades, and `--source-drv` records explicit source
-/// provenance for prebuilt binaries whose deriver is not visible to Nix.
+/// `--sysroot` marks the package as a system root, and `--previous` records the
+/// predecessor version for delta upgrades.
 ///
 /// # Errors
 ///
-/// Fails when required package distribution metadata is missing, empty, or a
-/// legacy placeholder; when the registry has no writable authoring clone;
-/// when the package name is not safe for registry package paths; when the
-/// platform name is not safe for package metadata; when the image arguments are not
-/// given in triples or their files/metadata disagree, when the `nix path-info` /
-/// `nix-store` queries fail for the store path, when a file write, the commit,
-/// or the object-store refresh
-/// fails. Policy-bearing internal components also fail
+/// Fails when the requested ordinary path is absent from the evaluated target
+/// inventory, authenticated publication metadata is incomplete, the registry
+/// has no writable authoring clone, or the registry tree is dirty. Sysroot
+/// publication also fails when required manual metadata is absent or its image
+/// argument groups disagree. Both modes fail when Nix introspection, file
+/// authoring, signing, committing, or object-store refresh fails.
+/// Policy-bearing internal components also fail
 /// when published directly, and aggregate roots fail unless their restricted
 /// component and corresponding source are direct runtime references.
 ///
@@ -112,6 +105,32 @@ pub async fn publish(
     let registry_name = resolve_registry_name(config, registry)?;
     let registry_dir = config.scope.registries_path().join(&registry_name);
 
+    if !sysroot {
+        return super::inventory_publish::publish_evaluated_package(
+            config,
+            &registry_dir,
+            &registry_name,
+            store_path,
+            name_override,
+            version_override,
+            platform_override,
+            description,
+            homepage,
+            license,
+            maintainer,
+            previous,
+            source_drv,
+            bless,
+            no_ca,
+            no_commit,
+            message,
+            key,
+            key_id,
+            printer,
+        )
+        .await;
+    }
+
     publish_to_registry_directory(
         config,
         &registry_dir,
@@ -125,6 +144,7 @@ pub async fn publish(
         license,
         maintainer,
         sysroot,
+        false,
         previous,
         source_drv,
         image_payload_paths,
@@ -164,6 +184,7 @@ pub(crate) async fn publish_to_registry_directory(
     license: Option<&str>,
     maintainer: Option<&str>,
     sysroot: bool,
+    documentation_authorized: bool,
     previous: Option<&str>,
     source_drv: Option<&str>,
     image_payload_paths: &[String],
@@ -257,16 +278,20 @@ pub(crate) async fn publish_to_registry_directory(
             &platform,
         )?);
     }
-    let documentation = publish_package_documentation(
-        pkg_name,
-        pkg_version,
-        &platform,
-        description,
-        homepage,
-        license,
-        &info,
-        source_info.as_ref(),
-    )?;
+    let documentation = documentation_authorized
+        .then(|| {
+            publish_package_documentation(
+                pkg_name,
+                pkg_version,
+                &platform,
+                description,
+                homepage,
+                license,
+                &info,
+                source_info.as_ref(),
+            )
+        })
+        .transpose()?;
     let mut local_provenance_signer;
     let provenance_signer: &mut dyn ProvenanceSigner =
         if let Some(signer) = external_provenance_signer {
@@ -278,7 +303,7 @@ pub(crate) async fn publish_to_registry_directory(
             &mut local_provenance_signer
         };
 
-    let _publish_lock = RegistryPublishLock::acquire(&dir)?;
+    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(&dir)?;
 
     printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
@@ -294,12 +319,17 @@ pub(crate) async fn publish_to_registry_directory(
         String::new()
     };
 
-    let documentation_attestation = bind_documentation_provenance(
-        publish_documentation_attestation_meta(pkg_name, pkg_version, &platform, &info)?,
-        pkg_name,
-        &platform,
-        &documentation.metadata,
-    )?;
+    let documentation_attestation = documentation
+        .as_ref()
+        .map(|documentation| {
+            bind_documentation_provenance(
+                publish_documentation_attestation_meta(pkg_name, pkg_version, &platform, &info)?,
+                pkg_name,
+                &platform,
+                &documentation.metadata,
+            )
+        })
+        .transpose()?;
     let new_content = build_package_toml_with_documentation(
         &content,
         pkg_name,
@@ -314,23 +344,31 @@ pub(crate) async fn publish_to_registry_directory(
         previous,
         &image_infos,
         source_info.as_ref(),
-        Some(&documentation.metadata),
-        Some(&documentation_attestation),
+        documentation
+            .as_ref()
+            .map(|documentation| &documentation.metadata),
+        documentation_attestation.as_ref(),
     )?;
-    let provenance_artifact = Some(
-        publish_documentation_provenance_artifact(
-            &name,
-            pkg_name,
-            pkg_version,
-            &platform,
-            &info,
-            source_info.as_ref(),
-            &documentation.metadata,
-            &documentation_attestation,
-            provenance_signer,
+    let provenance_artifact = if let (Some(documentation), Some(attestation)) =
+        (documentation.as_ref(), documentation_attestation.as_ref())
+    {
+        Some(
+            publish_documentation_provenance_artifact(
+                &name,
+                pkg_name,
+                pkg_version,
+                &platform,
+                &info,
+                source_info.as_ref(),
+                &documentation.metadata,
+                attestation,
+                provenance_signer,
+            )
+            .await?,
         )
-        .await?,
-    );
+    } else {
+        None
+    };
 
     std::fs::write(&toml_path, &new_content)?;
     let provenance_path = if let Some(artifact) = &provenance_artifact {
@@ -362,19 +400,24 @@ pub(crate) async fn publish_to_registry_directory(
             );
         }
     }
-    let documentation_store_report = write_store_files(
-        &dir,
-        &documentation.info.path,
-        content_addressed,
-        bless,
-        printer,
-    )
-    .with_context(|| {
-        format!(
-            "writing store/ realisation graph for documentation {}",
-            documentation.info.path
-        )
-    })?;
+    let documentation_store_report = documentation
+        .as_ref()
+        .map(|documentation| {
+            write_store_files(
+                &dir,
+                &documentation.info.path,
+                content_addressed,
+                bless,
+                printer,
+            )
+            .with_context(|| {
+                format!(
+                    "writing store/ realisation graph for documentation {}",
+                    documentation.info.path
+                )
+            })
+        })
+        .transpose()?;
     let transparency_log_path = if let Some(artifact) = &provenance_artifact {
         let provenance_file_path = provenance_path
             .as_ref()
@@ -408,8 +451,10 @@ pub(crate) async fn publish_to_registry_directory(
             &report.summary(),
         );
     }
-    printer.kv("Documentation", &documentation.info.path);
-    printer.kv("Documentation graph", &documentation_store_report.summary());
+    if let (Some(documentation), Some(report)) = (&documentation, &documentation_store_report) {
+        printer.kv("Documentation", &documentation.info.path);
+        printer.kv("Documentation graph", &report.summary());
+    }
     if let Some(artifact) = &provenance_artifact {
         printer.kv("Provenance", &artifact.path);
     }
@@ -574,6 +619,7 @@ pub(crate) async fn publish_canonical_release_entry(
         Some(license),
         Some(maintainer),
         false,
+        true,
         None,
         None,
         &[],
@@ -623,7 +669,7 @@ pub(crate) fn publish_canonical_named_output(
     validate_store_path_release_policy(&info)?;
     resolve_publish_platform(&info.path, Some(platform))?;
 
-    let _publish_lock = RegistryPublishLock::acquire(dir)?;
+    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     let letter = first_letter(package);
     let toml_path = dir
         .join("packages")
@@ -685,7 +731,7 @@ pub(crate) async fn publish_package_contract(
         .join("packages")
         .join(letter)
         .join(format!("{package}.toml"));
-    let _publish_lock = RegistryPublishLock::acquire(dir)?;
+    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     let content = fs::read_to_string(&toml_path)
         .with_context(|| format!("reading primary package entry {}", toml_path.display()))?;
     let parsed = parse_package_file(&content)?;

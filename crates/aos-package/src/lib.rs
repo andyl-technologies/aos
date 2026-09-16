@@ -1494,26 +1494,26 @@ pub enum RegistryCommand {
     Publish {
         /// Nix store path to publish
         store_path: String,
-        /// Package name override
+        /// Package name for a manually described sysroot
         #[arg(long)]
         name: Option<String>,
-        /// Version override
+        /// Package version for a manually described sysroot
         #[arg(long)]
         version: Option<String>,
         /// Platform override
         #[arg(long)]
         platform: Option<String>,
-        /// Package description
-        #[arg(long, required = true)]
+        /// Package description for a manually described sysroot
+        #[arg(long)]
         description: Option<String>,
-        /// Package homepage
+        /// Package homepage for a manually described sysroot
         #[arg(long)]
         homepage: Option<String>,
-        /// Package license
-        #[arg(long, required = true)]
+        /// Package license for a manually described sysroot
+        #[arg(long)]
         license: Option<String>,
-        /// Package maintainer
-        #[arg(long, required = true)]
+        /// Package maintainer for a manually described sysroot
+        #[arg(long)]
         maintainer: Option<String>,
         /// Mark this package as a system toplevel (sysroot)
         #[arg(long)]
