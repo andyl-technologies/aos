@@ -54,17 +54,15 @@
     kernel = targetKernel;
     systemdSystemPresets = empty;
   };
-  rootfs = import ../../pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix {
+  buildSystemdTestRootfs = import ../../pkgs/system/_systemd-abilities/testing/rootfs.nix {
     pkgs = cross.buildPackages;
     lib = cross.lib;
+  };
+  rootfs = buildSystemdTestRootfs {
     system = fakeSystem;
     kernel = {
       package = targetKernel;
       configuration.moduleTree = "${targetKernel}/lib/modules";
-    };
-    closureInfoFor = import ../../lib/build/closure-info.nix {
-      pkgs = cross.buildPackages;
-      lib = cross.lib;
     };
     pname = "${testName}-rootfs";
     shrinkToFit = false;

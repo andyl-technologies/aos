@@ -26,10 +26,11 @@
   fcLib = import ./firecracker.nix {inherit pkgs lib;};
   kernel = pkgs.linux;
 
-  # These VMs exercise the selected systemd image platform directly, including
-  # its root layout and ext4 test-image policy.
-  mkRootfs = import ../../pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix;
-  closureInfoFor = import ../build/closure-info.nix {inherit pkgs lib;};
+  # These VMs exercise the selected systemd image platform through its
+  # package-owned test constructor.
+  buildSystemdTestRootfs = import ../../pkgs/system/_systemd-abilities/testing/rootfs.nix {
+    inherit lib pkgs;
+  };
 
   # ---------------------------------------------------------------------------
   # Build a rootfs ext4 image for VM testing
@@ -340,8 +341,8 @@
         var/etc/systemd/system/aos-test.target.wants/aos-test-agent.service
     '';
 
-    rootfs = mkRootfs {
-      inherit pkgs lib system closureInfoFor;
+    rootfs = buildSystemdTestRootfs {
+      inherit system;
       kernel = system.config.aos.kernel.selected;
       managerConfiguration = system.config.system.build.managerConfiguration;
       managerRootfsPlan = system.config.aos.manager.selected.configuration.rootfs;
