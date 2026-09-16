@@ -14,12 +14,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::document::TerminalResult;
-use aos_ability_model::plan::ResourceRevision;
 use aos_ability_model::{
-    ExecutionStage, LocalKey, OperationId, PlanId, ResourceLifetime, ResourceReference, RevisionId,
+    ExecutionStage, LocalKey, OperationId, PlanId, ResourceLifetime, ResourceReference,
     TransactionId,
 };
-use aos_ability_plan::ResolutionPolicyDocument;
 use aos_ability_runtime::journal::{FileJournal, JournalLimits, JournalPayload, JournalRecord};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -468,22 +466,24 @@ struct TransactionStorageRealization {
 fn selected_transaction_storage(
     resolved_stage_bytes: &[u8],
 ) -> Result<TransactionStorageSelection> {
-    let checked = super::build_stage::decode_resolved_stage(resolved_stage_bytes)?;
+    let checked = super::source_stage::decode_source_stage(resolved_stage_bytes)?;
     ensure!(
-        checked.environment.stage == ExecutionStage::Initrd,
-        "resolved ability stage does not select the initrd environment"
+        checked
+            .plan()
+            .binding_plan()
+            .environment()
+            .environment
+            .stage
+            == ExecutionStage::Initrd,
+        "source ability stage does not select the initrd environment"
     );
 
     let matching_resources = checked
-        .fixed_point
+        .bundle()
+        .fixed_point()
         .resolved_resources
         .values()
-        .map(|value| {
-            serde_json::from_value::<ResourceRevision>(value.as_json().clone())
-                .context("decoding resolved initrd resource")
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
+        .map(|value| &value.revision)
         .filter(|revision| {
             revision.kind.as_str() == TRANSACTION_STORAGE_INTERFACE
                 && revision
@@ -503,8 +503,9 @@ fn selected_transaction_storage(
     );
 
     let matching_bindings = checked
-        .fixed_point
-        .checked_bindings
+        .plan()
+        .binding_plan()
+        .bindings()
         .iter()
         .filter(|binding| {
             binding.interface.name == revision.kind
@@ -751,30 +752,32 @@ fn validate_resolved_initrd_stage_evidence(
     resolved_stage_bytes: &[u8],
     execution: &StageExecutionEvidence,
 ) -> Result<()> {
-    let checked = super::build_stage::decode_resolved_stage(resolved_stage_bytes)?;
+    let checked = super::source_stage::decode_source_stage(resolved_stage_bytes)?;
     ensure!(
-        checked.environment.stage == ExecutionStage::Initrd,
-        "resolved ability stage does not select the initrd environment"
+        checked
+            .plan()
+            .binding_plan()
+            .environment()
+            .environment
+            .stage
+            == ExecutionStage::Initrd,
+        "source ability stage does not select the initrd environment"
     );
     ensure!(
-        checked.bundle.transition_authority_digest().is_none(),
-        "fresh initrd execution unexpectedly carries teardown authority"
-    );
-    ensure!(
-        execution.plan == checked.plan.id() && execution.bundle == checked.bundle.digest()?,
-        "retained initrd execution differs from the checked plan bundle"
+        execution.plan == checked.plan().id() && execution.bundle == checked.digest(),
+        "retained initrd execution differs from the checked source bundle"
     );
     for retained in &execution.retained_resources {
         ensure!(
-            retained.operation.plan == checked.plan.id(),
+            retained.operation.plan == checked.plan().id(),
             "retained initrd resource names another plan"
         );
         let operation = checked
-            .plan
+            .plan()
             .operation(&retained.operation.operation)
             .context("retained initrd resource names an unknown operation")?;
         let method = checked
-            .plan
+            .plan()
             .operation_method(operation)
             .context("retained initrd resource has no checked method")?;
         let output = method
@@ -795,55 +798,46 @@ fn execute_resolved_initrd_stage(
     transaction_root: &Path,
     transaction: TransactionId,
 ) -> Result<StageExecutionEvidence> {
-    let checked = super::build_stage::decode_resolved_stage(resolved_stage_bytes)?;
+    let checked = super::source_stage::decode_source_stage(resolved_stage_bytes)?;
     ensure!(
-        checked.environment.stage == ExecutionStage::Initrd,
-        "resolved ability stage does not select the initrd environment"
-    );
-    ensure!(
-        checked.bundle.transition_authority_digest().is_none(),
-        "fresh initrd execution unexpectedly carries teardown authority"
+        checked
+            .plan()
+            .binding_plan()
+            .environment()
+            .environment
+            .stage
+            == ExecutionStage::Initrd,
+        "source ability stage does not select the initrd environment"
     );
 
     let supported_features = super::native_activation::supported_native_ability_features()?;
     let packages = super::static_packages::verified_initrd_packages(contract_bytes)
         .context("authenticating initrd handler packages")?;
     let dispatcher =
-        super::handler_dispatch::HandlerDispatcher::for_static_plan(&checked.plan, &packages)
+        super::handler_dispatch::HandlerDispatcher::for_static_plan(checked.plan(), &packages)
             .context("constructing initrd handler dispatcher")?;
     let stage_directory = transaction_root
         .join("ability-stage-runtime")
         .join("initrd");
-    let mut session = super::transaction_store::AbilityTransactionSession::open_stage(
-        &checked.plan,
+    let mut session = super::transaction_store::AbilityTransactionSession::open_source_stage(
+        checked.plan(),
         transaction.clone(),
         JournalLimits::default(),
         stage_directory,
         supported_features.clone(),
-        checked.bundle.clone(),
+        checked.bundle().clone(),
         packages.clone(),
     )
     .context("opening durable initrd ability transaction")?;
 
-    let resolution_policy = selected_resolution_policy(&checked)?;
-    let scope = super::ability_policy::CurrentAuthorityScope {
-        plan: checked.plan.id(),
-        transaction,
-    };
-    let current_policy = super::ability_policy::PublishingNativeAdmissionPolicy::new(
-        &scope,
-        RevisionId(checked.bundle.desired_policy_digest()),
-        resolution_policy,
-        None,
-        None,
-        supported_features,
-        60_000,
-        false,
-    );
+    let current_policy = super::ability_policy::SourceStageAdmissionPolicy::new(
+        checked.bundle().authority(),
+        checked.plan(),
+    )?;
     let cancellation = super::cancellation::AbilityCancellationGuard::install()
         .context("installing initrd ability cancellation listeners")?;
     let mut observer = super::execution_observer::AbilityExecutionBoundaryObserver::load(
-        checked.fixed_point.execution_observer.as_ref(),
+        checked.bundle().fixed_point().execution_observer.as_ref(),
     )
     .context("opening initrd execution observation channel")?;
     let terminal = dispatcher.run_static_to_terminal(
@@ -874,33 +868,13 @@ fn execute_resolved_initrd_stage(
             .then_with(|| left.output.cmp(&right.output))
     });
     let evidence = StageExecutionEvidence {
-        plan: checked.plan.id(),
-        bundle: checked.bundle.digest()?,
+        plan: checked.plan().id(),
+        bundle: checked.digest(),
         terminal,
         retained_resources,
     };
     evidence.validate()?;
     Ok(evidence)
-}
-
-fn selected_resolution_policy(
-    checked: &super::build_stage::CheckedResolvedBuildStage,
-) -> Result<ResolutionPolicyDocument> {
-    let binding = checked.plan.binding_plan().document();
-    let matching = checked
-        .bundle
-        .desired_policies()
-        .iter()
-        .filter(|policy| {
-            policy.desired_state == binding.desired_state
-                && policy.environment == binding.environment
-                && policy.policy_revision == binding.policy_revision
-        })
-        .collect::<Vec<_>>();
-    let [policy] = matching.as_slice() else {
-        bail!("initrd binding plan does not select exactly one authenticated resolution policy")
-    };
-    Ok((*policy).clone())
 }
 
 fn receive_initrd_stage_with(

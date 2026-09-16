@@ -741,28 +741,15 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: RuntimeConfigCommand,
     },
-    /// Hidden: produce one authenticated build-stage planning snapshot.
-    #[command(name = "__ability-plan-build-stage", hide = true)]
-    AbilityPlanBuildStage {
-        /// Canonical adapter specification carrying existing checked inputs.
+    /// Hidden: materialize one source-composed stage from its completed fixed point.
+    #[command(name = "__ability-materialize-source-stage", hide = true)]
+    AbilityMaterializeSourceStage {
+        /// Canonical materialization specification carrying the checked inputs.
         #[arg(long)]
         spec: PathBuf,
-        /// Canonical planning snapshot to write.
+        /// Canonical source-stage bundle to write.
         #[arg(long)]
         out: PathBuf,
-    },
-    /// Hidden: resolve one authenticated build-stage ability fixed point.
-    #[command(name = "__ability-build-stage", hide = true)]
-    AbilityBuildStage {
-        /// Canonical adapter specification carrying existing checked inputs.
-        #[arg(long)]
-        spec: PathBuf,
-        /// Canonical resolved stage projection to write.
-        #[arg(long)]
-        out: PathBuf,
-        /// Private directory for generated restricted-evaluator source.
-        #[arg(long = "eval-root")]
-        eval_root: PathBuf,
     },
     /// Hidden: complete initrd ability work and release journal ownership.
     #[command(name = "__ability-stage-run", hide = true)]
@@ -1106,8 +1093,7 @@ impl PackageCommand {
                 | PackageCommand::Materialize { .. }
                 | PackageCommand::AbilityActivationPreflight { .. }
                 | PackageCommand::AbilityActivate { .. }
-                | PackageCommand::AbilityPlanBuildStage { .. }
-                | PackageCommand::AbilityBuildStage { .. }
+                | PackageCommand::AbilityMaterializeSourceStage { .. }
                 | PackageCommand::AbilityStageRun { .. }
                 | PackageCommand::AbilityStageValidate { .. }
                 | PackageCommand::AbilityStageReceive { .. }
@@ -1128,8 +1114,7 @@ impl PackageCommand {
             | PackageCommand::AbilityActivationPreflight { .. }
             | PackageCommand::AbilityActivate { .. } => LiveAos,
             PackageCommand::AbilityStageRun { .. }
-            | PackageCommand::AbilityPlanBuildStage { .. }
-            | PackageCommand::AbilityBuildStage { .. }
+            | PackageCommand::AbilityMaterializeSourceStage { .. }
             | PackageCommand::AbilityStageValidate { .. }
             | PackageCommand::AbilityStageReceive { .. } => Portable,
             PackageCommand::Switch { .. } => AosRoot,
@@ -3539,16 +3524,8 @@ pub async fn run(
         );
     }
 
-    if let PackageCommand::AbilityPlanBuildStage { spec, out } = command {
-        return config_eval::build_stage::plan_build_stage(spec, out);
-    }
-    if let PackageCommand::AbilityBuildStage {
-        spec,
-        out,
-        eval_root,
-    } = command
-    {
-        return config_eval::build_stage::resolve_build_stage(spec, out, eval_root);
+    if let PackageCommand::AbilityMaterializeSourceStage { spec, out } = command {
+        return config_eval::source_stage::materialize_source_stage(spec, out);
     }
     if let PackageCommand::AbilityStageRun {
         stage,
@@ -3885,11 +3862,8 @@ pub async fn run(
         PackageCommand::Schema { .. } => {
             unreachable!("Schema is handled before ApmConfig::load")
         }
-        PackageCommand::AbilityPlanBuildStage { .. } => {
-            unreachable!("AbilityPlanBuildStage is handled before ApmConfig::load")
-        }
-        PackageCommand::AbilityBuildStage { .. } => {
-            unreachable!("AbilityBuildStage is handled before ApmConfig::load")
+        PackageCommand::AbilityMaterializeSourceStage { .. } => {
+            unreachable!("AbilityMaterializeSourceStage is handled before ApmConfig::load")
         }
         PackageCommand::AbilityStageRun { .. } => {
             unreachable!("AbilityStageRun is handled before ApmConfig::load")

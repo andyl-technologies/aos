@@ -373,6 +373,110 @@ pub(crate) struct PublishingNativeAdmissionPolicy {
         Option<NativeCurrentAdmissionPolicy<RootOwnedCurrentAuthoritySource, SystemMonotonicClock>>,
 }
 
+/// Admits initrd dispatch directly from one checked source-composed plan.
+///
+/// The immutable binding set is the source bundle's authority. Provider
+/// assignments and resource states remain observed runtime inputs, but each
+/// publication must correspond exactly to a provider selected by that plan.
+#[derive(Clone, Debug)]
+pub(crate) struct SourceStageAdmissionPolicy {
+    authority: Sha256Digest,
+    plan: PlanId,
+    bindings: Vec<Binding>,
+    provider_assignments: Vec<ProviderAssignment>,
+    resource_observations: Vec<CurrentResourceObservation>,
+}
+
+impl SourceStageAdmissionPolicy {
+    /// Constructs source admission from the checked bundle authority.
+    pub(crate) fn new(
+        authority: Sha256Digest,
+        plan: &CheckedEffectPlan,
+    ) -> Result<Self, CurrentAuthorityError> {
+        let mut bindings = plan.binding_plan().document().bindings.clone();
+        bindings.sort_by(|left, right| left.id.cmp(&right.id));
+        if bindings.windows(2).any(|pair| pair[0].id == pair[1].id) {
+            return Err(invalid("source plan repeats a binding identity"));
+        }
+        Ok(Self {
+            authority,
+            plan: plan.id(),
+            bindings,
+            provider_assignments: Vec::new(),
+            resource_observations: Vec::new(),
+        })
+    }
+
+    /// Replaces live observations after checking their source-plan subjects.
+    pub(crate) fn publish_observations(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        mut resources: Vec<CurrentResourceObservation>,
+    ) -> Result<(), CurrentAuthorityError> {
+        if plan.id() != self.plan {
+            return Err(invalid("source observations name another checked plan"));
+        }
+        let mut assignments = assignments.to_vec();
+        assignments.sort_by(|left, right| {
+            left.provider
+                .cmp(&right.provider)
+                .then_with(|| left.interface.cmp(&right.interface))
+        });
+        if assignments.windows(2).any(|pair| {
+            pair[0].provider == pair[1].provider && pair[0].interface == pair[1].interface
+        }) {
+            return Err(invalid("source observations repeat a provider assignment"));
+        }
+        for assignment in &assignments {
+            if !self.bindings.iter().any(|binding| {
+                binding.provider == assignment.provider
+                    && binding.interface == assignment.interface
+                    && binding.implementation == assignment.implementation
+            }) {
+                return Err(invalid(
+                    "observed provider assignment differs from the source binding authority",
+                ));
+            }
+        }
+        resources.sort_by(|left, right| left.resource.cmp(&right.resource));
+        if resources
+            .windows(2)
+            .any(|pair| pair[0].resource == pair[1].resource)
+        {
+            return Err(invalid("source observations repeat a resource identity"));
+        }
+        self.provider_assignments = assignments;
+        self.resource_observations = resources;
+        Ok(())
+    }
+
+    fn binding<'a>(&'a self, binding: &Binding) -> Result<&'a Binding, CurrentAuthorityError> {
+        self.bindings
+            .binary_search_by(|candidate| candidate.id.cmp(&binding.id))
+            .ok()
+            .map(|index| &self.bindings[index])
+            .filter(|authorized| *authorized == binding)
+            .ok_or_else(|| invalid("source authority does not contain the checked binding"))
+    }
+
+    fn assignment<'a>(
+        &'a self,
+        binding: &Binding,
+    ) -> Result<&'a ProviderAssignment, CurrentAuthorityError> {
+        self.provider_assignments
+            .iter()
+            .find(|assignment| {
+                assignment.provider == binding.provider
+                    && assignment.interface == binding.interface
+                    && assignment.implementation == binding.implementation
+            })
+            .ok_or_else(|| {
+                invalid("live provider assignment differs from the source binding authority")
+            })
+    }
+}
+
 impl PublishingNativeAdmissionPolicy {
     /// Constructs a transaction-scoped publisher and admission policy.
     #[must_use]
@@ -781,6 +885,128 @@ impl TrustedAdmissionPolicy for PublishingNativeAdmissionPolicy {
                 AuthorityRejection::new(RuntimeAuthorityRole::CurrentAuthorityPublication, error)
             })?
             .acquire_dispatch_fence(plan, binding, operation, method, purpose)
+    }
+}
+
+impl TrustedAuthoritySnapshot for SourceStageAdmissionPolicy {
+    type Error = CurrentAuthorityError;
+
+    fn authorize_role(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        method: &MethodReference,
+        purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
+    ) -> Result<(), Self::Error> {
+        require_checked_membership(plan, binding, operation, self.plan)?;
+        self.binding(binding)?;
+        match role {
+            RuntimeAuthorityRole::ProviderMethodImplementation => {
+                require_purpose_method(operation, method, purpose)?;
+                plan.authorize_invocation(operation, method)
+                    .map_err(|error| {
+                        invalid(format!(
+                            "checked source invocation is unauthorized: {error}"
+                        ))
+                    })?;
+            }
+            RuntimeAuthorityRole::AssignmentIncarnation => {
+                self.assignment(binding)?;
+            }
+            RuntimeAuthorityRole::CallerBindingGrant
+            | RuntimeAuthorityRole::EnforcementPlatformGuarantee
+            | RuntimeAuthorityRole::CurrentAuthorityPublication => {}
+        }
+        Ok(())
+    }
+
+    fn authorize_resources(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        expected_provider: Option<&ProviderAssignment>,
+        resources: &[ResourceAdmissionEvidence],
+    ) -> Result<(), Self::Error> {
+        require_checked_membership(plan, binding, operation, self.plan)?;
+        self.binding(binding)?;
+        let assignment = self.assignment(binding)?;
+        if expected_provider.is_some_and(|expected| expected != assignment) {
+            return Err(invalid(
+                "durable provider assignment differs from the source observation",
+            ));
+        }
+        if operation.accesses.len() != resources.len() {
+            return Err(invalid(
+                "resource evidence count differs from the checked source operation",
+            ));
+        }
+        for (access, evidence) in operation.accesses.iter().zip(resources) {
+            if evidence.resource() != &access.resource {
+                return Err(invalid("resource evidence names another checked resource"));
+            }
+            let observed_assignment = evidence
+                .provider_assignment()
+                .ok_or_else(|| invalid("resource evidence has no exact provider assignment"))?;
+            if evidence.provider_incarnation() != Some(&observed_assignment.incarnation)
+                || !self
+                    .provider_assignments
+                    .iter()
+                    .any(|candidate| candidate == observed_assignment)
+            {
+                return Err(invalid(
+                    "resource evidence differs from source-authorized live assignments",
+                ));
+            }
+            let observed = self
+                .resource_observations
+                .iter()
+                .find(|observation| observation.resource == access.resource)
+                .map(|observation| observation.state)
+                .ok_or_else(|| invalid("source admission lacks a resource observation"))?;
+            let matches = match (evidence.revision_observation(), observed) {
+                (ResourceRevisionObservation::Absent, CurrentResourceState::Absent) => true,
+                (
+                    ResourceRevisionObservation::Present(evidence_revision),
+                    CurrentResourceState::Present { revision }
+                    | CurrentResourceState::Stopped { revision }
+                    | CurrentResourceState::Divergent { revision },
+                ) => evidence_revision == revision,
+                (ResourceRevisionObservation::Unknown, CurrentResourceState::Divergent { .. }) => {
+                    true
+                }
+                _ => false,
+            };
+            if !matches {
+                return Err(invalid(
+                    "resource evidence differs from the source stage observation",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl TrustedAdmissionPolicy for SourceStageAdmissionPolicy {
+    type DispatchFence = Self;
+
+    fn acquire_dispatch_fence(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        _method: &MethodReference,
+        _purpose: InvocationPurpose,
+    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
+        require_checked_membership(plan, binding, operation, self.plan).map_err(|error| {
+            AuthorityRejection::new(RuntimeAuthorityRole::CurrentAuthorityPublication, error)
+        })?;
+        self.binding(binding).map_err(|error| {
+            AuthorityRejection::new(RuntimeAuthorityRole::CurrentAuthorityPublication, error)
+        })?;
+        Ok(self.clone())
     }
 }
 
