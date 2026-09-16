@@ -674,6 +674,9 @@
   authoringConformance = import ./authoring-conformance.nix {
     inherit pkgs lib;
   };
+  kernelPlatformSelection = import ./kernel-platform-selection.nix {
+    inherit pkgs lib;
+  };
   disabledRsyncProjection = pkgs.rsync.abilities;
   selectedChronySystem = mkSystem {
     modules = [
@@ -1063,6 +1066,7 @@ in
   assert systemdStageMilestones;
   assert initrdSecurityServices;
   assert initrdBootSubstrate;
+  assert kernelPlatformSelection;
   assert baseKernelNative;
   assert baseNixDbNative;
   assert baseNetworkingNative;

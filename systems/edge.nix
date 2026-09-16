@@ -14,6 +14,7 @@
 }: {
   imports = [
     ./_artifact-backend.nix
+    ./_kernel.nix
     ./_system-manager.nix
   ];
 
