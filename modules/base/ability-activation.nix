@@ -96,10 +96,5 @@ in {
     aos.boot.initrd.extraPackages = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable [
       pkgs.aos.packageRuntime
     ];
-
-    environment.etc."aos/static-ability-contract.json" = {
-      source = "${staticAbilityContract}/contract.json";
-      mode = "0444";
-    };
   };
 }
