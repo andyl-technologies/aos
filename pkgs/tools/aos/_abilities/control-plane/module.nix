@@ -1,8 +1,7 @@
 ##! Package-owned on-host configuration control-plane services.
 ##!
-##! The module retains the generation-zero fetch, render, activation, graph,
-##! and preset behavior while expressing every cross-resource edge through
-##! typed service and activation-group outputs.
+##! The module exposes checked-plan preflight and activation through typed
+##! service resources. Selected providers own all resource convergence.
 {
   config,
   lib,
@@ -12,7 +11,6 @@
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
-  interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "control-plane";
   runtimeArtifact = lib.abilities.packageOutput {output = "packageRuntime";};
@@ -26,25 +24,11 @@
   };
   packageRuntimeCommand = arguments:
     command runtimeArtifact "bin/aos-package-runtime" arguments;
-  bashCommand = script: arguments:
-    command
-    (lib.abilities.packageOutput {package = "bash";})
-    "bin/bash"
-    (["-euo" "pipefail" "-c" script "aos-control-plane"] ++ arguments);
 
-  networkReadiness = serviceManagement.forProducer {
-    inherit consumerInstance;
-    key = "network-readiness";
-    interface = interfaces.networkReadiness;
-    parameters = {
-      scope = "configured-connectivity";
-      address_families = ["ipv4" "ipv6"];
-    };
-  };
   activationGroup = key: description: after: members: requiredMembers:
     serviceManagement.forProducer {
       inherit consumerInstance key;
-      interface = interfaces.activationGroup;
+      interface = serviceManagement.interfaces.activationGroup;
       parameters = {
         name = key;
         enabled = false;
@@ -52,10 +36,6 @@
         required_members = requiredMembers;
       };
     };
-  fetchGroup = activationGroup "aos-fetch" "AOS package fetch wing" [] [] [];
-  renderGroup = activationGroup "aos-config-render" "AOS package render wing" [
-    (resultOf "aos-fetch" "activation-resource")
-  ] [] [];
   configGroup = activationGroup "aos-config" "AOS on-host config applied" [] [] [
     (resultOf "aos-activate-lifecycle" "service-resource")
   ];
@@ -156,70 +136,6 @@
       inherit serviceTypes consumerInstance declaration;
     };
 
-  fetchTemplate = service {
-    service = "aos-pkg-fetch";
-    enabled = false;
-    instantiation = {
-      kind = "template";
-      template = "package";
-    };
-    manager_identity = {
-      name = "aos-pkg-fetch";
-      aliases = [];
-    };
-    lifecycle = lifecycle {
-      description = "Fetch AOS package closure %i";
-      start = packageRuntimeCommand ["fetch" "%i"];
-      restart = "on-failure";
-      restartDelayMillis = 5000;
-      remainAfterExit = true;
-      timeoutMillis = 180000;
-    };
-    dependencies = defaultDependencies // {
-      after = [(resultOf "network-readiness" "readiness-resource")];
-      wants = [(resultOf "network-readiness" "readiness-resource")];
-    };
-    readiness = readiness 180000;
-    start_policy = {
-      accepted_exit_statuses = [];
-      restart_preventing_exit_statuses = [];
-      rate_interval_millis = 120000;
-      rate_burst = 5;
-    };
-    isolation = isolatedService "host" ["/nix" "/run/aos" "/var/lib/apm"];
-    linux_isolation = linuxIsolation {
-      addressFamilies = ["ipv4" "ipv6" "unix"];
-      hardenKernel = false;
-    };
-  };
-  renderTemplate = service {
-    service = "aos-pkg-install";
-    enabled = false;
-    instantiation = {
-      kind = "template";
-      template = "package";
-    };
-    manager_identity = {
-      name = "aos-pkg-install";
-      aliases = [];
-    };
-    lifecycle = lifecycle {
-      description = "Render AOS package config %i";
-      start = packageRuntimeCommand ["render-one" "%i"];
-      restart = "never";
-      restartDelayMillis = 0;
-      remainAfterExit = true;
-      timeoutMillis = 60000;
-    };
-    inherit (defaultDependencies) after before requires wants;
-    readiness = readiness 60000;
-    identity = identity "0077";
-    isolation = isolatedService "inaccessible" ["/run/aos"];
-    linux_isolation = linuxIsolation {
-      addressFamilies = ["unix"];
-      hardenKernel = true;
-    };
-  };
   graphCompile = service {
     service = "aos-graph-compile";
     enabled = true;
@@ -228,13 +144,11 @@
       aliases = [];
     };
     lifecycle = lifecycle {
-      description = "Compile the AOS config eval output into a systemd unit graph";
+      description = "Authenticate and preflight the checked AOS activation plan";
       start = packageRuntimeCommand [
-        "__graph-compile"
+        "__ability-activation-preflight"
         "--manifest"
         cfg.manifest
-        "--graph"
-        cfg.graph
       ];
       restart = "never";
       restartDelayMillis = 0;
@@ -242,7 +156,6 @@
       timeoutMillis = 90000;
     };
     dependencies = defaultDependencies // {
-      before = [(resultOf "aos-preset-lifecycle" "service-resource")];
       prerequisites = [
         (resultOf "configuration-evaluation-lifecycle" "service-resource")
       ];
@@ -257,61 +170,41 @@
     ];
     readiness = readiness 90000;
     identity = identity "0077";
-    isolation = isolatedService "inaccessible" ["/run/aos" "/run/systemd/system"];
+    isolation = isolatedService "inaccessible" ["/run/aos"];
     linux_isolation = linuxIsolation {
       addressFamilies = ["unix"];
       hardenKernel = true;
     };
   };
-  activationScript = ''
-    set +e
-    aos-package-runtime __activate-config \
-      --manifest "$1" \
-      --graph "$2" \
-      --module-abi "$3" ${lib.optionalString (config.aos.boot.secureBoot.measuredBoot.enable or false) "--require-attestation-quote"}
-    rc=$?
-    set -e
-
-    if [ "$rc" -eq 4 ]; then
-      echo "aos-activate: /etc swap is indeterminate; entering rescue mode" >&2
-      systemctl --no-block isolate rescue.target
-    fi
-    if [ "$rc" -eq 6 ]; then
-      echo "aos-activate: committed a degraded host configuration" >&2
-      exit 0
-    fi
-    exit "$rc"
-  '';
   activate = service {
     service = "aos-activate";
-    enabled = false;
+    enabled = true;
     manager_identity = {
       name = "aos-activate";
       aliases = [];
     };
     lifecycle = lifecycle {
-      description = "Commit the evaluated AOS host configuration";
-      start = bashCommand activationScript [
-        cfg.manifest
-        cfg.graph
-        (builtins.toString (config.aos.system.moduleAbi or 1))
-      ];
+      description = "Execute the checked AOS host activation plan";
+      start = packageRuntimeCommand (
+        [
+          "__ability-activate"
+          "--manifest"
+          cfg.manifest
+          "--module-abi"
+          (builtins.toString (config.aos.system.moduleAbi or 1))
+        ]
+        ++ lib.optional (config.aos.boot.secureBoot.measuredBoot.enable or false) "--require-attestation-quote"
+      );
       restart = "on-failure";
       restartDelayMillis = 2000;
       remainAfterExit = true;
       timeoutMillis = 180000;
     };
     dependencies = defaultDependencies // {
-      after = [
-        (resultOf "aos-fetch" "activation-resource")
-        (resultOf "aos-config-render" "activation-resource")
-      ];
-      wants = [
-        (resultOf "aos-fetch" "activation-resource")
-        (resultOf "aos-config-render" "activation-resource")
-      ];
+      after = [(resultOf "aos-graph-compile-lifecycle" "service-resource")];
       prerequisites = [
         (resultOf "package-profile-convergence-lifecycle" "service-resource")
+        (resultOf "aos-graph-compile-lifecycle" "service-resource")
       ];
     };
     conditions.all = [
@@ -329,72 +222,9 @@
       rate_interval_millis = 30000;
       rate_burst = 3;
     };
-    environment = {
-      variables = {};
-      search_path = [
-        runtimeArtifact
-        (lib.abilities.packageOutput {package = "systemd";})
-      ];
-    };
-  };
-  presetScript = ''
-    systemctl preset-all --preset-mode=enable-only
-
-    targets="$(
-      systemctl list-unit-files 'aos-pkg-*.target' \
-        --type=target \
-        --state=enabled \
-        --no-legend \
-        --no-pager 2>/dev/null \
-        | while read -r unit _rest; do
-            [ -n "$unit" ] && printf '%s\n' "$unit"
-          done
-    )"
-
-    if [ -n "$targets" ]; then
-      systemctl start --no-block $targets
-    fi
-  '';
-  preset = service {
-    service = "aos-preset";
-    enabled = true;
-    manager_identity = {
-      name = "aos-preset";
-      aliases = [];
-    };
-    lifecycle = lifecycle {
-      description = "Apply AOS package preset policy";
-      start = bashCommand presetScript [];
-      restart = "never";
-      restartDelayMillis = 0;
-      remainAfterExit = true;
-      timeoutMillis = 90000;
-    };
-    dependencies = defaultDependencies // {
-      after = [
-        (resultOf "aos-graph-compile-lifecycle" "service-resource")
-        (resultOf "aos-activate-lifecycle" "service-resource")
-      ];
-      wants = [(resultOf "aos-graph-compile-lifecycle" "service-resource")];
-    };
-    readiness = readiness 90000;
-    environment = {
-      variables = {};
-      search_path = [(lib.abilities.packageOutput {package = "systemd";})];
-    };
   };
 
-  fragments = [
-    networkReadiness
-    fetchGroup
-    renderGroup
-    configGroup
-    fetchTemplate
-    renderTemplate
-    graphCompile
-    activate
-    preset
-  ];
+  fragments = [configGroup graphCompile activate];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.aos.config.unitGraph = {
@@ -406,12 +236,7 @@ in {
     manifest = lib.mkOption {
       type = serviceTypes.hostPath;
       default = "/run/aos/manifest.json";
-      description = "The eval-produced data contract the graph compiler reads.";
-    };
-    graph = lib.mkOption {
-      type = serviceTypes.hostPath;
-      default = "/run/aos/graph.json";
-      description = "The eval-produced cross-package DAG the graph compiler reads.";
+      description = "The eval-produced checked activation data contract.";
     };
   };
 

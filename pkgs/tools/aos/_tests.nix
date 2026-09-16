@@ -2018,11 +2018,6 @@ in {
         cat > "$work/host-build-sysroot.sh" << 'SCRIPT'
         set -eu
         @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/etc"
-        {
-          printf '%s\n' '#!@AOS_BASH@/bin/bash'
-          printf '%s\n' 'printf "host sysroot fixture activated\n"'
-        } > "$out/activate"
-        @AOS_COREUTILS@/bin/chmod +x "$out/activate"
         printf '%s\n' "host sysroot payload" > "$out/etc/host-sysroot-release"
         SCRIPT
         cat > "$work/host-build-sysroot-image.sh" << 'SCRIPT'
