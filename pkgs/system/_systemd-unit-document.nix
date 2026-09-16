@@ -33,7 +33,8 @@
     value = {
       inherit encoding prefix source suffix;
     };
-    key = "s-${builtins.hashString "sha256" (builtins.toJSON value)}";
+    identity = lib.abilities.identityKeyFor "aos.systemd.unit-substitution-key/v1" value;
+    key = "s-${identity}";
   in
     document "${markerPrefix}${key}${markerSuffix}" {${key} = value;};
 

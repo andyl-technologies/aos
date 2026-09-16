@@ -7,6 +7,11 @@
   pkgs,
   ...
 }: let
+  # This digest only stabilizes human-readable derivation names. The complete
+  # rendering input remains an explicit derivation input through `passAsFile`.
+  derivationDisplayName = prefix: content:
+    "${prefix}-${builtins.hashString "sha256" content}";
+
   implementationAlias = "systemd-packaged-unit";
   implementationName = "${packageName}:${implementationAlias}";
   packagedUnitEffectsInterface = lib.abilities.interfaceIdentity (
@@ -553,7 +558,8 @@
     then value
     else throw "systemd dependency is not an exact ResourceReference";
 
-  resourceIdentity = resource: builtins.toJSON resource;
+  resourceIdentity =
+    lib.abilities.identityKeyFor "aos.ability.resource-id-key/v1";
   resourcesByIdentity = builtins.foldl' (resources: resource: let
     identity = resourceIdentity resource.resource;
   in
@@ -987,7 +993,7 @@
   staticArtifactFor = resource: let
     realization = builtins.toJSON resource.realization;
     rendered =
-      pkgs.runCommand "systemd-ability-${builtins.hashString "sha256" realization}" {
+      pkgs.runCommand (derivationDisplayName "systemd-ability" realization) {
         inherit realization;
         passAsFile = ["realization"];
       } ''
@@ -1003,7 +1009,7 @@
       inherit (resource) realization;
     };
     rendered =
-      pkgs.runCommand "systemd-native-resource-${builtins.hashString "sha256" input}" {
+      pkgs.runCommand (derivationDisplayName "systemd-native-resource" input) {
         realization = input;
         passAsFile = ["realization"];
       } ''
@@ -1031,7 +1037,7 @@
           desired = resource.value;
           inherit (resource) realization;
         };
-        rendered = pkgs.runCommand "systemd-network-configuration-${builtins.hashString "sha256" input}" {
+        rendered = pkgs.runCommand (derivationDisplayName "systemd-network-configuration" input) {
           realization = input;
           passAsFile = ["realization"];
         } ''

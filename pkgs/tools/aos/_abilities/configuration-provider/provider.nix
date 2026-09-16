@@ -33,8 +33,9 @@
     then builtins.head matches
     else throw "configuration provider request must have one exact incoming binding";
   pathForResource = resource: let
-    digest = builtins.hashString "sha256" (builtins.toJSON resource);
-  in "/run/aos/configurations/${resource.key}-${digest}";
+    identity =
+      lib.abilities.identityKeyFor "aos.configuration.materialized-resource-path/v1" resource;
+  in "/run/aos/configurations/${resource.key}-${identity}";
   providerIdentity = instance: binding:
     if instance == null
     then config.aos.abilities.instanceIdentities.${binding.providerInstance}

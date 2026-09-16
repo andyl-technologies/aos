@@ -1,6 +1,6 @@
 ##! Pure systemd service realization helpers.
 {lib}: let
-  hash = value: builtins.hashString "sha256" (builtins.toJSON value);
+  identityKeyFor = lib.abilities.identityKeyFor;
 
   normalizedResourceId = resource: {
     provider = {
@@ -20,7 +20,8 @@
   unitNameForResource = resource: let
     normalized = normalizedResourceId resource;
     readableKey = checkedLocalKey "systemd service resource key" normalized.key;
-  in "aos-${readableKey}-${hash normalized}.service";
+    identity = identityKeyFor "aos.systemd.service-unit-key/v1" normalized;
+  in "aos-${readableKey}-${identity}.service";
 
   unitIdentityForResource = resource: {
     kind = "unit";
@@ -44,9 +45,10 @@
       resource = normalized;
       inherit template;
     };
+    unitKey = identityKeyFor "aos.systemd.template-unit-key/v1" identity;
   in {
     kind = "unit";
-    unit_name = "aos-${readableTemplate}-${hash identity}@.service";
+    unit_name = "aos-${readableTemplate}-${unitKey}@.service";
   };
 
   templateInstanceIdentity = templateUnit: instance: {
@@ -62,9 +64,10 @@
       resource = normalized;
       socket = readableKey;
     };
+    unitKey = identityKeyFor "aos.systemd.socket-unit-key/v1" identity;
   in
     if managerName == null
-    then "aos-${readableKey}-${hash identity}.socket"
+    then "aos-${readableKey}-${unitKey}.socket"
     else "${checkedLocalKey "systemd public socket name" managerName}.socket";
 in {
   inherit
