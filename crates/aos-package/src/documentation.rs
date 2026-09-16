@@ -899,63 +899,11 @@ fn print_exact_option(
             ""
         }
     );
-    for block in option.description {
-        println!("{}", render_prose_block(&block));
+    let description = aos_doc_model::render_prose_plain(&option.description);
+    if !description.is_empty() {
+        println!("{description}");
     }
     Ok(())
-}
-
-fn render_prose_block(block: &aos_doc_model::ProseBlock) -> String {
-    match block {
-        aos_doc_model::ProseBlock::Paragraph { spans } => spans
-            .iter()
-            .map(|span| match span {
-                aos_doc_model::InlineSpan::Text { text }
-                | aos_doc_model::InlineSpan::Code { text } => text.as_str(),
-                aos_doc_model::InlineSpan::Link { label, .. } => label.as_str(),
-            })
-            .collect::<Vec<_>>()
-            .join(""),
-        aos_doc_model::ProseBlock::Code { text, .. } => text.clone(),
-        aos_doc_model::ProseBlock::List { items, .. } => items
-            .iter()
-            .map(|item| {
-                format!(
-                    "- {}",
-                    item.iter()
-                        .map(render_prose_block)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        aos_doc_model::ProseBlock::Note { severity, blocks } => format!(
-            "{:?}: {}",
-            severity,
-            blocks
-                .iter()
-                .map(render_prose_block)
-                .collect::<Vec<_>>()
-                .join(" ")
-        ),
-        aos_doc_model::ProseBlock::Definitions { entries } => entries
-            .iter()
-            .map(|entry| {
-                format!(
-                    "{}: {}",
-                    entry.term,
-                    entry
-                        .body
-                        .iter()
-                        .map(render_prose_block)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
 }
 
 async fn serve(scope: ProfileScope, listen: &str, once: bool, printer: &Printer) -> Result<()> {

@@ -3,9 +3,7 @@
 use super::console_render::urlencode;
 use super::render::escape;
 use crate::db::documentation_node_key;
-use aos_doc_model::{
-    DocumentedValue, InlineSpan, LinkTarget, OptionDocument, OptionType, ProseBlock,
-};
+use aos_doc_model::{DocumentedValue, LinkTarget, OptionDocument, OptionType, ProseBlock};
 use std::fmt::Write as _;
 
 pub(super) fn node_href(slug: &str, release: &str, key: &str) -> String {
@@ -37,205 +35,8 @@ fn link_href(target: &LinkTarget, slug: &str, release: &str) -> Option<String> {
     }
 }
 
-/// Renders inline text with backtick code spans; everything is escaped.
-fn inline_text(text: &str) -> String {
-    let mut html = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(open) = rest.find('`') {
-        let (before, after) = rest.split_at(open);
-        html.push_str(&escape(before));
-        match after[1..].find('`') {
-            Some(close) => {
-                let _ = write!(html, "<code>{}</code>", escape(&after[1..1 + close]));
-                rest = &after[close + 2..];
-            }
-            None => {
-                html.push_str(&escape(after));
-                rest = "";
-            }
-        }
-    }
-    html.push_str(&escape(rest));
-    html
-}
-
-/// Streams a paragraph's spans into HTML blocks.
-///
-/// Producers publish option descriptions as one text span holding the raw
-/// source prose: hard-wrapped lines, blank lines between paragraphs, backtick
-/// code, bullet or numbered lines, and fenced code. Those conventions are
-/// rendered structurally here so a description reads as paragraphs and lists
-/// rather than one run of text. Typed code and link spans stay inline.
-struct ParagraphWriter {
-    html: String,
-    current: String,
-}
-
-impl ParagraphWriter {
-    fn new() -> Self {
-        Self {
-            html: String::new(),
-            current: String::new(),
-        }
-    }
-
-    fn inline(&mut self, fragment: &str) {
-        if !self.current.is_empty() && !self.current.ends_with(' ') && !fragment.starts_with(' ') {
-            self.current.push(' ');
-        }
-        self.current.push_str(fragment);
-    }
-
-    fn flush(&mut self) {
-        let text = self.current.trim();
-        if !text.is_empty() {
-            let _ = write!(self.html, "<p>{text}</p>");
-        }
-        self.current.clear();
-    }
-
-    fn text(&mut self, text: &str) {
-        let lines = text.lines().collect::<Vec<_>>();
-        let mut index = 0;
-        while index < lines.len() {
-            let line = lines[index];
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                self.flush();
-                index += 1;
-            } else if let Some(fence) = trimmed.strip_prefix("```") {
-                self.flush();
-                let language = fence.trim();
-                let mut body = Vec::new();
-                index += 1;
-                while index < lines.len() && lines[index].trim() != "```" {
-                    body.push(lines[index]);
-                    index += 1;
-                }
-                index += 1;
-                let _ = write!(
-                    self.html,
-                    "<pre><code data-language=\"{}\">{}</code></pre>",
-                    escape(language),
-                    escape(&body.join("\n"))
-                );
-            } else if let Some((ordered, first)) = list_item(trimmed) {
-                self.flush();
-                let tag = if ordered { "ol" } else { "ul" };
-                let _ = write!(self.html, "<{tag}>");
-                let mut item = first.to_string();
-                index += 1;
-                loop {
-                    let next = lines.get(index).map(|line| line.trim());
-                    match next {
-                        Some(next) if !next.is_empty() && list_item(next).is_none() => {
-                            item.push(' ');
-                            item.push_str(next);
-                            index += 1;
-                        }
-                        _ => {
-                            let _ = write!(self.html, "<li>{}</li>", inline_text(item.trim()));
-                            match next.and_then(list_item) {
-                                Some((_, first)) => {
-                                    item = first.to_string();
-                                    index += 1;
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                }
-                let _ = write!(self.html, "</{tag}>");
-            } else {
-                self.inline(&inline_text(trimmed));
-                index += 1;
-            }
-        }
-        if text.ends_with(' ') {
-            self.current.push(' ');
-        }
-    }
-}
-
-/// Recognizes `- item`, `* item`, or `1. item`, returning ordering and body.
-fn list_item(line: &str) -> Option<(bool, &str)> {
-    if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
-        return Some((false, rest));
-    }
-    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
-    if digits > 0 {
-        if let Some(rest) = line[digits..].strip_prefix(". ") {
-            return Some((true, rest));
-        }
-    }
-    None
-}
-
 pub(super) fn prose(blocks: &[ProseBlock], slug: &str, release: &str) -> String {
-    let mut html = String::new();
-    for block in blocks {
-        match block {
-            ProseBlock::Paragraph { spans } => {
-                let mut writer = ParagraphWriter::new();
-                for span in spans {
-                    match span {
-                        InlineSpan::Text { text } => writer.text(text),
-                        InlineSpan::Code { text } => {
-                            writer.inline(&format!("<code>{}</code>", escape(text)));
-                        }
-                        InlineSpan::Link { label, target } => {
-                            match link_href(target, slug, release) {
-                                Some(href) => writer.inline(&format!(
-                                    "<a href=\"{}\">{}</a>",
-                                    escape(&href),
-                                    escape(label)
-                                )),
-                                None => writer.inline(&escape(label)),
-                            }
-                        }
-                    }
-                }
-                writer.flush();
-                html.push_str(&writer.html);
-            }
-            ProseBlock::Code { language, text } => {
-                let _ = write!(
-                    html,
-                    "<pre><code data-language=\"{}\">{}</code></pre>",
-                    escape(language),
-                    escape(text)
-                );
-            }
-            ProseBlock::List { ordered, items } => {
-                let tag = if *ordered { "ol" } else { "ul" };
-                let _ = write!(html, "<{tag}>");
-                for item in items {
-                    let _ = write!(html, "<li>{}</li>", prose(item, slug, release));
-                }
-                let _ = write!(html, "</{tag}>");
-            }
-            ProseBlock::Note { severity, blocks } => {
-                let _ = write!(
-                    html,
-                    "<aside class=\"doc-note\"><strong>{severity:?}</strong>{}</aside>",
-                    prose(blocks, slug, release)
-                );
-            }
-            ProseBlock::Definitions { entries } => {
-                html.push_str("<dl>");
-                for entry in entries {
-                    let _ = write!(
-                        html,
-                        "<dt>{}</dt><dd>{}</dd>",
-                        escape(&entry.term),
-                        prose(&entry.body, slug, release)
-                    );
-                }
-                html.push_str("</dl>");
-            }
-        }
-    }
-    html
+    aos_doc_model::render_prose_html_with_links(blocks, |target| link_href(target, slug, release))
 }
 
 fn value_panel(label: &str, value: &DocumentedValue) -> String {
@@ -313,6 +114,7 @@ pub(super) fn option(option: &OptionDocument, slug: &str, release: &str) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_doc_model::InlineSpan;
 
     fn paragraph(text: &str) -> Vec<ProseBlock> {
         vec![ProseBlock::Paragraph {
@@ -357,6 +159,34 @@ mod tests {
             html,
             "<p>See <code>host.nix</code> and the guide. <a href=\"https://example.com/\">docs</a></p>"
         );
-        assert_eq!(inline_text("an `unclosed tick"), "an `unclosed tick");
+        assert_eq!(
+            prose(&paragraph("an `unclosed tick"), "org/main", "1.0.0"),
+            "<p>an `unclosed tick</p>"
+        );
+    }
+
+    #[test]
+    fn hosting_context_resolves_package_links_and_suppresses_source_links() {
+        let blocks = vec![ProseBlock::Paragraph {
+            spans: vec![
+                InlineSpan::Link {
+                    label: "nginx".into(),
+                    target: LinkTarget::Package {
+                        package: "nginx".into(),
+                    },
+                },
+                InlineSpan::Link {
+                    label: "module".into(),
+                    target: LinkTarget::Source {
+                        path: "module.nix".into(),
+                    },
+                },
+            ],
+        }];
+
+        assert_eq!(
+            prose(&blocks, "org/main", "1.0.0"),
+            "<p><a href=\"/org/main/-/packages/nginx?release=1.0.0\">nginx</a> module</p>"
+        );
     }
 }
