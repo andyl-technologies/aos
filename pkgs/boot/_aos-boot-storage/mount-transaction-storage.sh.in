@@ -1,0 +1,45 @@
+#!@bash@
+set -euo pipefail
+
+PATH=@coreutils@/bin:@util_linux@/bin:@util_linux@/sbin
+export PATH
+
+target=$1
+shift
+
+mountpoint -q "$target" && exit 0
+mkdir -p "$target"
+
+candidates=()
+loader_var=/sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+if [ -r "$loader_var" ]; then
+  loader_uuid=$(dd if="$loader_var" bs=1 skip=4 status=none | tr -d '\000' | tr 'A-F' 'a-f')
+  case "$loader_uuid" in
+    ????????-????-????-????-????????????) candidates+=("/dev/disk/by-partuuid/$loader_uuid") ;;
+  esac
+fi
+if [ "$#" -eq 1 ]; then
+  candidates+=("$1")
+elif [ "${#candidates[@]}" -eq 0 ]; then
+  echo "aos-boot-transaction-storage: firmware did not identify the booted ESP" >&2
+  exit 1
+fi
+
+for candidate in "${candidates[@]}"; do
+  [ -b "$candidate" ] || continue
+  configured_match=false
+  for device in "$@"; do
+    if [ -b "$device" ] && [ "$(readlink -f "$candidate")" = "$(readlink -f "$device")" ]; then
+      configured_match=true
+      break
+    fi
+  done
+  [ "$configured_match" = true ] || continue
+  if mount -t vfat -o rw,noatime,fmask=0077,dmask=0077 "$candidate" "$target"; then
+    install -d -m 0700 "$target/aos/initrd-stage-journal"
+    exit 0
+  fi
+done
+
+echo "aos-boot-transaction-storage: no configured EFI System Partition could be mounted" >&2
+exit 1

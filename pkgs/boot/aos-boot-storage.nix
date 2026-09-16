@@ -1,6 +1,7 @@
 ##! aos-boot-storage - EFI System Partition and initrd ZFS helpers
 {
   bash,
+  aos-storage-provisioning-provider,
   coreutils,
   jq,
   lib,
@@ -81,6 +82,7 @@ in
 
     buildDeps = [coreutils perl];
     runtimeDeps = [
+      aos-storage-provisioning-provider
       bash
       coreutils
       jq
@@ -95,12 +97,26 @@ in
         name = "install";
         script = ''
           mkdir -p "$out/bin"
+          mkdir -p "$out/share/aos/providers"
+
+          ln -s \
+            ${aos-storage-provisioning-provider}/bin/aos-boot-transaction-storage-provider \
+            "$out/bin/aos-boot-transaction-storage-provider"
+          cp ${./_aos-boot-storage/transaction-storage-provider.nix} \
+            "$out/share/aos/providers/boot-transaction-storage.nix"
 
           cp ${./_aos-boot-storage/mount-esp.sh.in} "$out/bin/aos-mount-esp"
           substituteInPlace "$out/bin/aos-mount-esp" \
             --replace-fail '@bash@' '${bash}/bin/bash' \
             --replace-fail '@coreutils@' '${coreutils}' \
             --replace-fail '@jq@' '${jq}' \
+            --replace-fail '@util_linux@' '${util-linux}'
+
+          cp ${./_aos-boot-storage/mount-transaction-storage.sh.in} \
+            "$out/bin/aos-mount-transaction-storage"
+          substituteInPlace "$out/bin/aos-mount-transaction-storage" \
+            --replace-fail '@bash@' '${bash}/bin/bash' \
+            --replace-fail '@coreutils@' '${coreutils}' \
             --replace-fail '@util_linux@' '${util-linux}'
 
           cp ${./_aos-boot-storage/sync-esps.sh.in} "$out/bin/aos-sync-esps"
@@ -116,6 +132,7 @@ in
             --replace-fail '@bash@' '${bash}/bin/bash'
 
           ${bash}/bin/bash -n "$out/bin/aos-mount-esp"
+          ${bash}/bin/bash -n "$out/bin/aos-mount-transaction-storage"
           ${bash}/bin/bash -n "$out/bin/aos-sync-esps"
           ${bash}/bin/bash -n "$out/bin/aos-zfs-unlock"
           chmod 0755 "$out/bin/"*

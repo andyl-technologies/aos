@@ -161,21 +161,23 @@ in {
       aos.boot.storage.resolvedDevices = resolvedDevices;
       aos.filesystems.espDevice = lib.mkDefault (builtins.head cfg.espDevices);
       environment.systemPackages = [pkgs.aos-boot-storage];
+      aos.boot.initrd.extraPackages = [pkgs.aos-boot-storage];
+      aos.abilities.stages.initrd = {
+        packages = [pkgs.aos-boot-storage pkgs.systemd];
+        intent = [
+          {aos.boot.storageServices.espDevices = cfg.espDevices;}
+        ];
+      };
     }
     (lib.mkIf (cfg.backend == "zfs-zvol") {
       aos.kernel.modulePackages = [zfsPackage];
       aos.boot.initrd.modulePackages = [zfsPackage];
-      aos.boot.initrd.extraPackages = [pkgs.aos-boot-storage zfsPackage];
+      aos.boot.initrd.extraPackages = [zfsPackage];
       aos.boot.initrd.loadModules = ["zfs"];
       aos.abilities.stages.initrd = {
-        packages = [
-          pkgs.aos-boot-storage
-          pkgs.systemd
-        ];
         intent = [
           {
             aos.boot.storageServices = {
-              espDevices = cfg.espDevices;
               zfs = {
                 enable = true;
                 inherit (cfg.zfs) poolName encryptionRoot sealedKeyPath;

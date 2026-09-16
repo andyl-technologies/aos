@@ -10,10 +10,102 @@
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "boot-storage";
+  transactionStorageAlias = "boot-transaction-storage-view";
+  transactionStorageEffectsAlias = "boot-transaction-storage-view-effects";
+  transactionStorageInterfaceName = "aos.boot.transaction-storage-view";
+  transactionStorageRoot = "/run/aos-boot-transaction-storage";
+  transactionStoragePath = "${transactionStorageRoot}/aos/initrd-stage-journal";
   stage =
     if config.aos.abilities.environment == null
     then null
     else config.aos.abilities.environment.stage;
+
+  protectedOutput = phase: lifetime: description: schema: {
+    inherit phase lifetime description schema;
+    visibility = "protected";
+  };
+  transactionStorageRequest = lib.abilities.types.record {
+    fields = {
+      name = lib.abilities.types.localKey;
+      purpose = lib.abilities.types.enum ["initrd-stage-journal"];
+    };
+  };
+  transactionStorageObservation = lib.abilities.types.record {
+    fields = {
+      schema = lib.abilities.types.enum ["aos.boot.transaction-storage-observation/v1"];
+      expected = transactionStorageRequest;
+      realized = {
+        type = lib.abilities.types.optional lib.abilities.types.executionPath;
+        optional = true;
+      };
+      state = lib.abilities.types.enum ["absent" "ready" "unknown"];
+    };
+  };
+  transactionStorageMethod = {
+    description = "Materializes the selected ESP-backed initrd stage journal.";
+    semantics = {
+      requiredTargetAccess = "exclusive-write";
+      stopsProvider = false;
+    };
+    parameters = transactionStorageRequest;
+    targetResource = transactionStorageInterfaceName;
+    permittedOperations = ["materialize"];
+    guarantees = [];
+    outputs = {
+      observation = protectedOutput "runtime" "attempt" "Reports the exact ESP transaction view state." transactionStorageObservation;
+      retained-resource = protectedOutput "runtime" "transaction" "References the exact retained ESP transaction view." lib.abilities.types.resourceReference;
+      storage-path = protectedOutput "runtime" "transaction" "Returns the exact materialized journal path." lib.abilities.types.executionPath;
+    };
+    outcome = {
+      completionEvidence = transactionStorageObservation;
+      observationEvidence = transactionStorageObservation;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+  transactionStorageDeclaration = lib.abilities.declareInterface {
+    name = transactionStorageInterfaceName;
+    description = "Materializes an ESP-backed transaction journal before mutable storage is available.";
+    abi = 1;
+    requestType = transactionStorageRequest;
+    methods.materialize = transactionStorageMethod;
+    outputs = {
+      storage-path = protectedOutput "planning" "transaction" "Returns the selected ESP journal path." lib.abilities.types.executionPath;
+      storage-resource = protectedOutput "planning" "transaction" "References the exact ESP journal resource." lib.abilities.types.resourceReference;
+    };
+    lifecycle.persistentDeleteMethod = null;
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = transactionStorageAlias;
+    };
+    guarantees = [];
+  };
+  transactionStorageIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration transactionStorageDeclaration
+  );
+  transactionStorageEffectsDeclaration =
+    transactionStorageDeclaration
+    // {
+      name = "aos.boot.transaction-storage-view-effects";
+      outputs = {};
+      aggregation =
+        transactionStorageDeclaration.aggregation
+        // {
+          controllerGroup = transactionStorageEffectsAlias;
+        };
+    };
+  transactionStorageEffectsIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration transactionStorageEffectsDeclaration
+  );
+  transactionStorageRealization = lib.abilities.types.record {
+    fields = {
+      schema = lib.abilities.types.enum ["aos.boot.transaction-storage-realization/v1"];
+      path = lib.abilities.types.executionPath;
+    };
+  };
 
   bootCommit = {
     _type = "aos-request-output-reference";
@@ -155,12 +247,14 @@
       }
     ];
   };
-  unlockArguments = [
-    cfg.zfs.poolName
-    cfg.zfs.encryptionRoot
-    cfg.zfs.sealedKeyPath
-    (toString (builtins.length cfg.espDevices))
-  ] ++ cfg.espDevices ++ cfg.zfs.expectedDevices;
+  unlockArguments =
+    [
+      cfg.zfs.poolName
+      cfg.zfs.encryptionRoot
+      cfg.zfs.sealedKeyPath
+      (toString (builtins.length cfg.espDevices))
+    ]
+    ++ cfg.espDevices ++ cfg.zfs.expectedDevices;
   zfsUnlock = service {
     key = "aos-zfs-unlock";
     description = "Import and unlock immutable ZFS boot storage";
@@ -199,6 +293,36 @@
       directory_mode = "0755";
     };
   };
+  transactionStorageMount = service {
+    key = "aos-boot-transaction-storage";
+    description = "Materialize the ESP-backed initrd transaction journal";
+    entryPoint = "aos-mount-transaction-storage";
+    arguments = [transactionStorageRoot] ++ cfg.espDevices;
+    dependencies = {
+      prerequisites = [];
+      after = [deviceSettleReadiness];
+      before = [sysrootReadiness];
+      requires = [deviceSettleReadiness];
+      wants = [];
+      requisite = [];
+      conflicts = [];
+      binds_to = [];
+      part_of = [];
+      upholds = [];
+      required_by = [sysrootReadiness];
+      wanted_by = [];
+      required_mounts = [];
+      implicit_dependencies = false;
+    };
+    conditions.all = [
+      {
+        kind = "path";
+        predicate = "exists";
+        path = "/sys/firmware/efi";
+        negated = false;
+      }
+    ];
+  };
   fragments = [
     earlySystem
     localFilesystems
@@ -209,6 +333,7 @@
     mountEsp
     syncEsps
     zfsUnlock
+    transactionStorageMount
   ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
@@ -272,9 +397,64 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) contributions
-      );
+      aos.abilities = lib.mkMerge [
+        (lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions))
+        {
+          interfaces = {
+            ${transactionStorageAlias} = transactionStorageDeclaration;
+            ${transactionStorageEffectsAlias} = transactionStorageEffectsDeclaration;
+          };
+          implementations = {
+            ${transactionStorageAlias} = {
+              description = "Selects the exact ESP-backed initrd transaction journal.";
+              interface = transactionStorageIdentity;
+              artifact = lib.abilities.packageOutput {};
+              methods = ["materialize"];
+              guarantees = [];
+              requirements.effects = {
+                alias = "effects";
+                description = "Invokes the checked ESP transaction-view terminal.";
+                accepted_interfaces = [transactionStorageEffectsIdentity];
+                methods = ["materialize"];
+                guarantees = [];
+                strength = "required";
+                fallback = null;
+              };
+              providerModule = {
+                artifact = lib.abilities.packageOutput {};
+                path = "share/aos/providers/boot-transaction-storage.nix";
+              };
+              desiredType = transactionStorageRealization;
+              requiredFeatures = [];
+            };
+            ${transactionStorageEffectsAlias} = {
+              description = "Authenticates the package-materialized ESP transaction journal.";
+              interface = transactionStorageEffectsIdentity;
+              artifact = lib.abilities.packageOutput {};
+              methods = ["materialize"];
+              guarantees = [];
+              handlerDescriptor = {
+                artifact = lib.abilities.packageOutput {};
+                entryPoint = "bin/aos-boot-transaction-storage-provider";
+                arguments = transactionStorageRequest;
+                result = transactionStorageObservation;
+              };
+              providerModule = null;
+              desiredType = null;
+              requiredFeatures = [];
+            };
+          };
+          requirementTemplates.${transactionStorageAlias} = {
+            description = "Requires the selected ESP-backed initrd transaction journal.";
+            inherit (transactionStorageIdentity) abi descriptor;
+            interface = transactionStorageIdentity.name;
+            methods = ["materialize"];
+            guarantees = [];
+            strength = "required";
+            fallback = null;
+          };
+        }
+      ];
     }
     (lib.mkIf (stage == "host") {
       aos.abilities = lib.mkMerge [
@@ -293,6 +473,25 @@ in {
         (serviceManagement.splitContribution deviceSettle).configured
         (serviceManagement.splitContribution kernelModules).configured
         (serviceManagement.splitContribution zfsUnlock).configured
+      ];
+    })
+    (lib.mkIf (stage == "initrd") {
+      aos.abilities = lib.mkMerge [
+        {instances.${consumerInstance} = {};}
+        {
+          requests.${transactionStorageAlias} = {
+            requirement = transactionStorageAlias;
+            consumer = consumerInstance;
+            scope = ["initrd-stage-journal"];
+            parameters = {
+              name = "initrd-stage-journal";
+              purpose = "initrd-stage-journal";
+            };
+          };
+        }
+        (serviceManagement.splitContribution deviceSettle).configured
+        (serviceManagement.splitContribution sysroot).configured
+        (serviceManagement.splitContribution transactionStorageMount).configured
       ];
     })
   ];

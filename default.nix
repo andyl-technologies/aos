@@ -249,11 +249,9 @@
             };
           }
         ]
-        ++ [
-          {
-            config = lib.mkMerge selectionEvaluation.config.aos.abilities.stages.initrd.intent;
-          }
-        ]
+        ++ builtins.map
+        (intent: {config = intent;})
+        selectionEvaluation.config.aos.abilities.stages.initrd.intent
         ++ selectionEvaluation.config.aos.abilities.stages.initrd.modules;
       inherit pkgs lib operatorModules runtimeModules;
       packageModules = initrdPackageModules;

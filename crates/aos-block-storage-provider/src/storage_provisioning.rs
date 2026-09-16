@@ -14,9 +14,8 @@ use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{AbilityValue, ResourceReference, RevisionId};
 use aos_provider_protocol::ResourceContext;
 use aos_storage_provisioning::{
-    FALLBACK_LABEL, OPERATOR_LABEL, PENDING_LABEL, PartitionSpec, ProvisioningPlan, REPART_DIR,
-    REPART_TARGETS_FILE, StoragePlan, normalize_marker_uuid, render_provisioning_plan,
-    validate_provisioning_plan,
+    FALLBACK_LABEL, OPERATOR_LABEL, PENDING_LABEL, PartitionSpec, ProvisioningPlan, StoragePlan,
+    assign_missing_partition_uuids, normalize_marker_uuid, validate_provisioning_plan,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -28,6 +27,10 @@ const REALIZATION_SCHEMA: &str = "aos.storage.provisioning-realization/v1";
 const CONTEXT_SCHEMA: &str = "aos.storage.provisioning-context/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.storage-provisioning-observation/v1";
 const SCRATCH_ROOT: &str = "/run/aos/storage-provisioning";
+const REPART_DIR: &str = "repart.d";
+const REPART_TARGETS_FILE: &str = "repart-targets";
+const STORAGE_PLAN_FILE: &str = "provisioning-plan.json";
+const SENTINEL_TYPE_GUID: &str = "163bea60-58c7-46e7-b69a-6846a5a688af";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -389,6 +392,112 @@ fn render(desired: &Desired, target: &ResourceReference) -> Result<RenderedPlan>
         &desired.plan.marker_uuid,
     )?;
     Ok(RenderedPlan { directory })
+}
+
+/// Renders one validated plan into private transient systemd-repart inputs.
+fn render_provisioning_plan(
+    scratch_dir: &Path,
+    plan: &mut ProvisioningPlan,
+    measured_boot: bool,
+    marker_label: &str,
+    marker_uuid: &str,
+) -> Result<Vec<PathBuf>> {
+    validate_provisioning_plan(plan, measured_boot)?;
+    ensure!(
+        matches!(
+            marker_label,
+            PENDING_LABEL | OPERATOR_LABEL | FALLBACK_LABEL
+        ),
+        "unsupported provisioning marker label '{marker_label}'"
+    );
+    let marker_uuid = normalize_marker_uuid(marker_uuid)?;
+    assign_missing_partition_uuids(plan, &marker_uuid);
+    fs::write(
+        scratch_dir.join(STORAGE_PLAN_FILE),
+        serde_json::to_vec_pretty(plan).context("serializing provisioning plan")?,
+    )
+    .context("writing provisioning-plan.json")?;
+
+    let root = scratch_dir.join(REPART_DIR);
+    if root.exists() {
+        fs::remove_dir_all(&root).with_context(|| format!("clearing {}", root.display()))?;
+    }
+    fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
+
+    let mut groups: BTreeMap<&str, Vec<(&str, &PartitionSpec)>> = BTreeMap::new();
+    for (name, partition) in &plan.storage.partitions {
+        groups
+            .entry(partition.device.as_deref().unwrap_or("root"))
+            .or_default()
+            .push((name, partition));
+    }
+
+    let mut targets = String::new();
+    let mut written = Vec::new();
+    let mut groups: Vec<_> = groups.into_iter().collect();
+    // Commit the pending root-disk marker before another device can change.
+    // A crash is then distinguishable from a never-started first boot.
+    groups.sort_by_key(|(device, _)| (*device != "root", *device));
+    for (index, (device, mut partitions)) in groups.into_iter().enumerate() {
+        partitions.sort_by_key(|(name, partition)| (partition.grow, partition.priority, *name));
+        let directory_name = format!("{index:04}");
+        let directory = root.join(&directory_name);
+        fs::create_dir_all(&directory)
+            .with_context(|| format!("creating {}", directory.display()))?;
+        targets.push_str(device);
+        targets.push('\t');
+        targets.push_str(&directory_name);
+        targets.push('\n');
+
+        for (position, (name, partition)) in partitions.into_iter().enumerate() {
+            let path = directory.join(format!("{:04}-{name}.conf", position + 10));
+            fs::write(&path, render_partition(partition, measured_boot))
+                .with_context(|| format!("writing {}", path.display()))?;
+            written.push(path);
+        }
+        if device == "root" {
+            let marker = directory.join("0000-aos-provisioning-marker.conf");
+            fs::write(
+                &marker,
+                format!(
+                    "[Partition]\nType={SENTINEL_TYPE_GUID}\nLabel={marker_label}\nUUID={marker_uuid}\nSizeMinBytes=1M\nSizeMaxBytes=1M\nPriority=1000000\n"
+                ),
+            )
+            .with_context(|| format!("writing {}", marker.display()))?;
+            written.push(marker);
+        }
+    }
+    fs::write(scratch_dir.join(REPART_TARGETS_FILE), targets)
+        .context("writing repart target index")?;
+    Ok(written)
+}
+
+fn render_partition(partition: &PartitionSpec, measured_boot: bool) -> String {
+    let mut result = format!(
+        "[Partition]\nType={}\nLabel={}\nSizeMinBytes={}\nWeight={}\nGrowFileSystem={}\n",
+        partition.partition_type,
+        partition.label,
+        partition.size_min,
+        partition.weight,
+        if partition.grow_fs { "yes" } else { "no" },
+    );
+    if let Some(maximum) = partition.size_max.as_deref() {
+        result.push_str(&format!("SizeMaxBytes={maximum}\n"));
+    } else if !partition.grow {
+        result.push_str(&format!("SizeMaxBytes={}\n", partition.size_min));
+    }
+    let format = if partition.label == "var" && !measured_boot && partition.format.is_none() {
+        Some("ext4")
+    } else {
+        partition.format.as_deref()
+    };
+    if let Some(format) = format {
+        result.push_str(&format!("Format={format}\n"));
+    }
+    if let Some(uuid) = partition.uuid.as_deref() {
+        result.push_str(&format!("UUID={uuid}\n"));
+    }
+    result
 }
 
 fn shared_plan(plan: &DesiredPlan) -> ProvisioningPlan {

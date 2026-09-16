@@ -147,10 +147,10 @@
     name = "aos-initrd-ability-intent";
     destination = "/module.nix";
     text = ''
-      { lib, ... }: {
-        config = lib.mkMerge (
-          builtins.fromJSON ${builtins.toJSON (builtins.toJSON abilityIntent)}
-        );
+      { ... }: {
+        imports = builtins.map
+          (intent: { config = intent; })
+          (builtins.fromJSON ${builtins.toJSON (builtins.toJSON abilityIntent)});
       }
     '';
   };

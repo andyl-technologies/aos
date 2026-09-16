@@ -1,4 +1,4 @@
-//! Strict validation and `systemd-repart` rendering for the evaluated
+//! Strict semantic validation and canonicalization for the evaluated
 //! `aos.provisioning.storage` projection.
 //!
 //! Nix supplies defaults and merges operator definitions. Rust treats the
@@ -9,19 +9,12 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use aos_ability_model::ResourceReference;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Directory below the metadata stash for rendered definitions.
-pub const REPART_DIR: &str = "repart.d";
-/// Canonical validated projection below the metadata stash.
-pub const STORAGE_PLAN_FILE: &str = "provisioning-plan.json";
-/// Tab-separated target and definition-directory index.
-pub const REPART_TARGETS_FILE: &str = "repart-targets";
 /// Temporary GPT marker created in the same repart transaction as storage.
 pub const PENDING_LABEL: &str = "aos-provisioning-pending-v1";
 /// Durable marker for a plan derived from operator `host.nix`.
@@ -568,97 +561,6 @@ pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) 
     Ok(())
 }
 
-/// Renders a validated plan into per-device transient repart definitions.
-///
-/// The root-disk definition set also contains a pending marker. The initrd
-/// relabels that marker only after every planned device succeeds, making the
-/// one-time commit durable and crash-observable.
-///
-/// # Errors
-///
-/// Returns an error when validation fails or outputs cannot be atomically
-/// replaced.
-pub fn render_provisioning_plan(
-    stash_dir: &Path,
-    plan: &mut ProvisioningPlan,
-    measured_boot: bool,
-    marker_label: &str,
-    marker_uuid: &str,
-) -> Result<Vec<PathBuf>> {
-    validate_provisioning_plan(plan, measured_boot)?;
-    if !matches!(
-        marker_label,
-        PENDING_LABEL | OPERATOR_LABEL | FALLBACK_LABEL
-    ) {
-        bail!("unsupported provisioning marker label '{marker_label}'");
-    }
-    let marker_uuid = normalize_marker_uuid(marker_uuid)?;
-    assign_missing_partition_uuids(plan, &marker_uuid);
-    std::fs::write(
-        stash_dir.join(STORAGE_PLAN_FILE),
-        serde_json::to_vec_pretty(plan).context("serializing provisioning plan")?,
-    )
-    .context("writing provisioning-plan.json")?;
-
-    let root = stash_dir.join(REPART_DIR);
-    if root.exists() {
-        std::fs::remove_dir_all(&root).with_context(|| format!("clearing {}", root.display()))?;
-    }
-    std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
-
-    let mut groups: BTreeMap<&str, Vec<(&str, &PartitionSpec)>> = BTreeMap::new();
-    for (name, partition) in &plan.storage.partitions {
-        groups
-            .entry(partition.device.as_deref().unwrap_or("root"))
-            .or_default()
-            .push((name, partition));
-    }
-
-    let mut targets = String::new();
-    let mut written = Vec::new();
-    let mut groups: Vec<_> = groups.into_iter().collect();
-    // The root disk must commit its pending marker before another device can
-    // be changed. A crash after that point is therefore observable and cannot
-    // be mistaken for an untouched first boot.
-    groups.sort_by_key(|(device, _)| (*device != "root", *device));
-    for (index, (device, mut partitions)) in groups.into_iter().enumerate() {
-        // A grow-to-fill partition must be placed after every bounded
-        // partition regardless of its authored priority.
-        partitions.sort_by_key(|(name, partition)| (partition.grow, partition.priority, *name));
-        let dir_name = format!("{index:04}");
-        let dir = root.join(&dir_name);
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        targets.push_str(device);
-        targets.push('\t');
-        targets.push_str(&dir_name);
-        targets.push('\n');
-
-        for (position, (name, partition)) in partitions.into_iter().enumerate() {
-            let path = dir.join(format!("{:04}-{name}.conf", position + 10));
-            std::fs::write(&path, render_partition(partition, measured_boot))
-                .with_context(|| format!("writing {}", path.display()))?;
-            written.push(path);
-        }
-        if device == "root" {
-            // The marker is a fixed-size, high-priority definition placed
-            // before operator partitions. Priority prevents repart from
-            // dropping the commit record under space pressure.
-            let sentinel = dir.join("0000-aos-provisioning-marker.conf");
-            std::fs::write(
-                &sentinel,
-                format!(
-                    "[Partition]\nType={SENTINEL_TYPE_GUID}\nLabel={marker_label}\nUUID={marker_uuid}\nSizeMinBytes=1M\nSizeMaxBytes=1M\nPriority=1000000\n"
-                ),
-            )
-            .with_context(|| format!("writing {}", sentinel.display()))?;
-            written.push(sentinel);
-        }
-    }
-    std::fs::write(stash_dir.join(REPART_TARGETS_FILE), targets)
-        .context("writing repart target index")?;
-    Ok(written)
-}
-
 /// Validates and normalizes an existing GPT marker UUID.
 ///
 /// # Errors
@@ -669,7 +571,11 @@ pub fn normalize_marker_uuid(value: &str) -> Result<String> {
     Ok(value.to_ascii_lowercase())
 }
 
-fn assign_missing_partition_uuids(plan: &mut ProvisioningPlan, marker_uuid: &str) {
+/// Assigns deterministic UUIDs to partitions that do not already carry one.
+///
+/// The derivation binds each UUID to the durable plan marker, target device,
+/// logical name, and label without choosing a storage backend representation.
+pub fn assign_missing_partition_uuids(plan: &mut ProvisioningPlan, marker_uuid: &str) {
     for (name, partition) in &mut plan.storage.partitions {
         if partition.uuid.is_some() {
             continue;
@@ -715,34 +621,6 @@ fn format_uuid(bytes: [u8; 16]) -> String {
         bytes[14],
         bytes[15],
     )
-}
-
-fn render_partition(partition: &PartitionSpec, measured_boot: bool) -> String {
-    let partition_type = partition.partition_type.as_str();
-    let mut result = format!(
-        "[Partition]\nType={partition_type}\nLabel={}\nSizeMinBytes={}\nWeight={}\nGrowFileSystem={}\n",
-        partition.label,
-        partition.size_min,
-        partition.weight,
-        if partition.grow_fs { "yes" } else { "no" },
-    );
-    if let Some(max) = partition.size_max.as_deref() {
-        result.push_str(&format!("SizeMaxBytes={max}\n"));
-    } else if !partition.grow {
-        result.push_str(&format!("SizeMaxBytes={}\n", partition.size_min));
-    }
-    let format = if partition.label == "var" && !measured_boot && partition.format.is_none() {
-        Some("ext4")
-    } else {
-        partition.format.as_deref()
-    };
-    if let Some(format) = format {
-        result.push_str(&format!("Format={format}\n"));
-    }
-    if let Some(uuid) = partition.uuid.as_deref() {
-        result.push_str(&format!("UUID={uuid}\n"));
-    }
-    result
 }
 
 fn validate_label(value: &str, kind: &str) -> Result<()> {
