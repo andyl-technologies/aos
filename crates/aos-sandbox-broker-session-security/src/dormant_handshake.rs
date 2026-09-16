@@ -301,6 +301,19 @@ pub struct DormantBrokerTerminalReplayV1(ProtectedBrokerOutcomeReplayV1);
 #[must_use = "reopen and send the exact signed descriptor table or retain replay custody"]
 pub struct DormantBrokerDescriptorTerminalReplayV1(DormantBrokerTerminalReplayV1);
 
+impl DormantBrokerDescriptorTerminalReplayV1 {
+    /// Returns the replayed request's validated but still untrusted authorization artifacts.
+    ///
+    /// The sealed Host adapter must authenticate these exact artifacts again
+    /// before it may reopen response descriptors.
+    #[must_use]
+    pub fn authorization_artifacts(
+        &self,
+    ) -> Option<&aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts> {
+        self.0.0.request().authorization()
+    }
+}
+
 /// Retains a revalidated terminal replay with its exact reopened descriptor order.
 #[must_use = "send or retain the exact protected replay and every reopened descriptor"]
 pub struct DormantReadyBrokerDescriptorTerminalReplayV1 {
@@ -366,6 +379,36 @@ pub enum DormantBrokerExecutionErrorV1<Domain> {
 pub struct DormantBrokerOutcomeUnknownV1 {
     request: DormantReceivedBrokerRequestV1,
     observation: Option<ProtectedBrokerDomainResponseV1>,
+}
+
+/// Retains an exact descriptor-bearing replay of one in-flight request.
+///
+/// The request and descriptor table remain opaque and inseparable. Production
+/// recovery may re-enter only the method-selected domain adapter; callers
+/// cannot extract an FD or turn possibly-applied work into a generic error.
+#[must_use = "resolve the exact in-flight effect or retain replay custody"]
+pub struct DormantBrokerDescriptorInFlightReplayV1 {
+    custody: DormantBrokerOutcomeUnknownV1,
+    descriptors: Vec<OwnedFd>,
+}
+
+impl DormantBrokerOutcomeUnknownV1 {
+    pub(crate) fn into_unobserved_request(self) -> Result<DormantReceivedBrokerRequestV1, Self> {
+        if self.observation.is_some() {
+            Err(self)
+        } else {
+            Ok(self.request)
+        }
+    }
+}
+
+impl DormantBrokerDescriptorInFlightReplayV1 {
+    pub(crate) fn into_recovery_request(self) -> DormantReceivedBrokerDescriptorRequestV1 {
+        DormantReceivedBrokerDescriptorRequestV1 {
+            request: self.custody.request.0,
+            descriptors: self.descriptors,
+        }
+    }
 }
 
 /// Retains one exact authenticated Mount Acquire/Release request across recovery.
@@ -778,8 +821,8 @@ pub enum DormantBrokerDescriptorRequestReceiveProgressV1 {
     Pending,
     /// The request and exact descriptor table are durably admitted.
     Received(DormantReceivedBrokerDescriptorRequestV1),
-    /// The request exactly replays an in-flight effect; duplicate FDs were closed.
-    InFlightReplay(DormantBrokerOutcomeUnknownV1),
+    /// The request exactly replays an in-flight effect with its FD table retained.
+    InFlightReplay(DormantBrokerDescriptorInFlightReplayV1),
     /// The request exactly replays a protected terminal response; duplicate FDs were closed.
     TerminalReplay(DormantBrokerTerminalReplayV1),
     /// The protected response requires domain-reopened ancillary descriptors.
@@ -3679,12 +3722,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
             crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::InFlightReplay {
                 request,
             } => {
-                drop(descriptors);
                 return Ok(
                     DormantBrokerDescriptorRequestReceiveProgressV1::InFlightReplay(
-                        DormantBrokerOutcomeUnknownV1 {
-                            request: DormantReceivedBrokerRequestV1(request),
-                            observation: None,
+                        DormantBrokerDescriptorInFlightReplayV1 {
+                            custody: DormantBrokerOutcomeUnknownV1 {
+                                request: DormantReceivedBrokerRequestV1(request),
+                                observation: None,
+                            },
+                            descriptors,
                         },
                     ),
                 );
@@ -3784,12 +3829,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
             crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::InFlightReplay {
                 request,
             } => {
-                drop(descriptors);
                 return Ok(
                     DormantBrokerDescriptorRequestReceiveProgressV1::InFlightReplay(
-                        DormantBrokerOutcomeUnknownV1 {
-                            request: DormantReceivedBrokerRequestV1(request),
-                            observation: None,
+                        DormantBrokerDescriptorInFlightReplayV1 {
+                            custody: DormantBrokerOutcomeUnknownV1 {
+                                request: DormantReceivedBrokerRequestV1(request),
+                                observation: None,
+                            },
+                            descriptors,
                         },
                     ),
                 );

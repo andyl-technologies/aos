@@ -6,11 +6,11 @@
 //! service must reconnect and reopen the fixed journal.
 
 use crate::{
-    DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorRequestReceiveProgressV1,
-    DormantBrokerDescriptorTerminalReplayV1, DormantBrokerOutcomeUnknownV1,
-    DormantBrokerRequestReceiveProgressV1, DormantBrokerSessionHandshakeErrorV1,
-    DormantBrokerTerminalReplayV1, DormantReceivedBrokerDescriptorRequestV1,
-    DormantReceivedBrokerRequestV1,
+    DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorInFlightReplayV1,
+    DormantBrokerDescriptorRequestReceiveProgressV1, DormantBrokerDescriptorTerminalReplayV1,
+    DormantBrokerOutcomeUnknownV1, DormantBrokerRequestReceiveProgressV1,
+    DormantBrokerSessionHandshakeErrorV1, DormantBrokerTerminalReplayV1,
+    DormantReceivedBrokerDescriptorRequestV1, DormantReceivedBrokerRequestV1,
 };
 
 /// Reports a fail-closed production request-receipt failure.
@@ -43,7 +43,7 @@ pub enum ProductionHostBrokerRequestEventV1 {
     /// A new request and its authenticated method-selected FD table are admitted.
     Request(DormantReceivedBrokerDescriptorRequestV1),
     /// The request exactly repeats an effect whose outcome remains unknown.
-    InFlightReplay(DormantBrokerOutcomeUnknownV1),
+    InFlightReplay(DormantBrokerDescriptorInFlightReplayV1),
     /// The request exactly repeats a protected descriptor-free terminal result.
     TerminalReplay(DormantBrokerTerminalReplayV1),
     /// The terminal result must reopen its Host-owned descriptors before resend.

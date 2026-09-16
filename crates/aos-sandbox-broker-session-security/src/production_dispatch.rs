@@ -16,7 +16,8 @@ use crate::{
     DormantMountBrokerEffectAdapterV1, DormantMountBrokerInventoryAdapterV1,
     DormantMountCatalogPreparationAdapterV1, DormantNetworkBrokerEffectAdapterV1,
     DormantReceivedBrokerDescriptorRequestV1, DormantReceivedBrokerRequestV1,
-    DormantStorageBrokerEffectAdapterV1, ProductionBrokerResponseErrorV1,
+    DormantStorageBrokerEffectAdapterV1, ProductionBrokerRequestEventV1,
+    ProductionBrokerResponseErrorV1, ProductionHostBrokerRequestEventV1,
     ProtectedBrokerOutcomeCommitResultV1,
 };
 
@@ -80,6 +81,185 @@ pub enum ProductionMountBrokerDispatchErrorV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Completes one normalized Host request or replay event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after consuming the session when durable domain
+    /// recovery, descriptor reopening, protected commit, or bounded response
+    /// transport cannot complete exactly.
+    pub async fn complete_host_request_event(
+        self,
+        event: ProductionHostBrokerRequestEventV1,
+        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+        publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        match event {
+            ProductionHostBrokerRequestEventV1::Request(request) => {
+                self.dispatch_host_request_to_completion(
+                    request,
+                    host,
+                    publisher,
+                    deadline_boottime_nanoseconds,
+                )
+                .await
+            }
+            ProductionHostBrokerRequestEventV1::InFlightReplay(replay) => {
+                self.dispatch_host_request_to_completion(
+                    replay.into_recovery_request(),
+                    host,
+                    publisher,
+                    deadline_boottime_nanoseconds,
+                )
+                .await
+            }
+            ProductionHostBrokerRequestEventV1::TerminalReplay(replay) => {
+                self.finish_authenticated_terminal_replay(replay, deadline_boottime_nanoseconds)
+            }
+            ProductionHostBrokerRequestEventV1::DescriptorTerminalReplay(replay) => {
+                let artifacts = replay
+                    .authorization_artifacts()
+                    .cloned()
+                    .ok_or(ProductionBrokerResponseErrorV1::DescriptorReplay)?;
+                self.finish_host_descriptor_terminal_replay(
+                    replay,
+                    host,
+                    &artifacts,
+                    deadline_boottime_nanoseconds,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Completes one normalized Storage request or replay event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after consuming the session when durable Storage
+    /// recovery, protected commit, or bounded response transport cannot finish.
+    pub fn complete_storage_request_event(
+        self,
+        event: ProductionBrokerRequestEventV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        match event {
+            ProductionBrokerRequestEventV1::Request(request) => self
+                .dispatch_storage_request_to_completion(
+                    request,
+                    storage,
+                    deadline_boottime_nanoseconds,
+                ),
+            ProductionBrokerRequestEventV1::InFlightReplay(replay) => {
+                let request = replay
+                    .into_unobserved_request()
+                    .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?;
+                self.dispatch_storage_request_to_completion(
+                    request,
+                    storage,
+                    deadline_boottime_nanoseconds,
+                )
+            }
+            ProductionBrokerRequestEventV1::TerminalReplay(replay) => {
+                self.finish_authenticated_terminal_replay(replay, deadline_boottime_nanoseconds)
+            }
+            ProductionBrokerRequestEventV1::DescriptorTerminalReplay(_) => {
+                Err(ProductionBrokerResponseErrorV1::DescriptorReplay)
+            }
+        }
+    }
+
+    /// Completes one normalized Network request or replay event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after consuming the session when durable Network
+    /// recovery, protected commit, or bounded response transport cannot finish.
+    pub fn complete_network_request_event(
+        self,
+        event: ProductionBrokerRequestEventV1,
+        network: &mut dyn aos_sandbox_network::DormantNetworkBrokerCallsiteV1,
+        catalog: &aos_sandbox_network::NetworkNamespaceCatalogV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        match event {
+            ProductionBrokerRequestEventV1::Request(request) => self
+                .dispatch_network_request_to_completion(
+                    request,
+                    network,
+                    catalog,
+                    deadline_boottime_nanoseconds,
+                ),
+            ProductionBrokerRequestEventV1::InFlightReplay(replay) => {
+                let request = replay
+                    .into_unobserved_request()
+                    .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?;
+                self.dispatch_network_request_to_completion(
+                    request,
+                    network,
+                    catalog,
+                    deadline_boottime_nanoseconds,
+                )
+            }
+            ProductionBrokerRequestEventV1::TerminalReplay(replay) => {
+                self.finish_authenticated_terminal_replay(replay, deadline_boottime_nanoseconds)
+            }
+            ProductionBrokerRequestEventV1::DescriptorTerminalReplay(_) => {
+                Err(ProductionBrokerResponseErrorV1::DescriptorReplay)
+            }
+        }
+    }
+
+    /// Completes one normalized Mount request or replay event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after consuming the session when durable Mount/source
+    /// recovery, protected commit, or bounded response transport cannot finish.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_mount_request_event<Transport>(
+        self,
+        event: ProductionBrokerRequestEventV1,
+        mount: &mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1,
+        catalog_scope: Option<aos_sandbox_mount::host_scope::ObservedMountScope>,
+        source_owner: &mut aos_sandbox_mount::source_acquisition::FixedMountSourceAcquisitionOwnerV2,
+        root_session: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
+        provider: &mut aos_sandbox_source_provider::FixedProviderOwnerV1,
+        backend: &mut Transport,
+        canonical_catalog_publication: &[u8],
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1>
+    where
+        Transport: aos_sandbox_source_provider::SourceProviderBackendTransportV1 + ?Sized,
+    {
+        let request = match event {
+            ProductionBrokerRequestEventV1::Request(request) => request,
+            ProductionBrokerRequestEventV1::InFlightReplay(replay) => replay
+                .into_unobserved_request()
+                .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?,
+            ProductionBrokerRequestEventV1::TerminalReplay(replay) => {
+                return self
+                    .finish_authenticated_terminal_replay(replay, deadline_boottime_nanoseconds);
+            }
+            ProductionBrokerRequestEventV1::DescriptorTerminalReplay(_) => {
+                return Err(ProductionBrokerResponseErrorV1::DescriptorReplay);
+            }
+        };
+        self.dispatch_mount_request_to_completion(
+            request,
+            mount,
+            catalog_scope,
+            source_owner,
+            root_session,
+            provider,
+            backend,
+            canonical_catalog_publication,
+            deadline_boottime_nanoseconds,
+        )
+    }
+
     /// Dispatches and completes one Host request through all recovery branches.
     ///
     /// This is the consuming production path from durably admitted Host
