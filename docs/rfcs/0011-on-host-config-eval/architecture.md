@@ -198,27 +198,26 @@ The chain below is the end state: native metadata acquisition, authenticated
 first-boot storage, systemd-native substrate, and stage-2 evaluation. Ignition
 and its configuration format are absent.
 
-There are two projections of the same authenticated `host.nix`. The initrd
-evaluates only the closed `aos.provisioning` subtree from the in-image base
-library. It has no registry client, package config modules, or `system.build`
-read and therefore does not form the full evaluator/toplevel closure cycle.
-After switch-root, stage 2 performs the complete resolve/eval fixpoint where
-registry trust, DNS, package modules, and the writable store are available.
+The initrd uses the same complete module evaluator as every other stage. Its
+frozen `initrdEvaluationInputs` contain the authenticated base library, selected
+package/provider modules, ordinary ability instances, requests, and bindings.
+The complete fixed point is evaluated once, then the storage provider projects
+the provisioning plan from that result. After switch-root, the host stage runs
+its own complete fixed point over the modules selected for that stage.
 
 ### Ordered chain
 
 **Initrd**:
 
-1. `aos-metadata-detect.service` — writes
-   `/run/aos-metadata/platform.env`.
-2. `aos-metadata-network.service` — baseline DHCP over the initrd
-   `80-dhcp.network` (no config-driven networking yet).
-3. `aos-metadata-fetch.service` fetches exact literal `host.nix` bytes (or
-   resolves a hash-pinned transport pointer).
-4. `aos-metadata-authorize.service` applies the image's `platform` or
-   `signed` policy to those bytes.
-5. The restricted evaluator reads `aos.provisioning`, Rust validates the
-   normalized plan, and the renderer emits per-device `repart.d`. With no
+1. The selected detector returns a typed platform result and early-network
+   requirement.
+2. The checked network-readiness binding prepares the selected substrate.
+3. The selected acquirer returns exact literal `host.nix` bytes (or resolves a
+   hash-pinned transport pointer), its signature, facts, and network bootstrap.
+4. The selected authorizer applies the image's `platform` or `signed` policy
+   directly to that typed result.
+5. The complete initrd evaluator projects `aos.provisioning`; Rust validates
+   the normalized plan, and the renderer emits per-device `repart.d`. With no
    `host.nix` on an uncommitted host, the same path evaluates the base default
    module. Present-but-invalid input never falls through to defaults. With a
    committed marker, a valid current plan is advisory and invalid/unavailable

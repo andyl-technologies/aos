@@ -1128,7 +1128,7 @@ Files an implementer touches: `modules/systemd/graph.nix` (new, the §1 template
 # Metadata and one-time provisioning implementation contract
 
 > [`provisioning.md`](provisioning.md) is authoritative: literal authenticated
-> `host.nix`, restricted `aos.provisioning` evaluation, strict Rust validation
+> `host.nix`, complete initrd fixed-point evaluation, strict Rust validation
 > of the evaluated result, and a pending/committed GPT provenance protocol.
 
 Returning the drop-in RFC markdown contract.
@@ -1140,36 +1140,37 @@ Returning the drop-in RFC markdown contract.
 > Historical scope only. This is not an implementation contract.
 
 The agent acquires bytes, applies the selected host trust policy, and preserves
-exact accepted `host.nix` bytes. A restricted Nix invocation evaluates only the
-closed `aos.provisioning` projection in initrd, after which Rust validates and
-renders storage. With no host input, that same projection supplies defaults.
+exact accepted `host.nix` bytes. The common complete evaluator consumes frozen
+`initrdEvaluationInputs`, including authenticated selected package/provider
+modules and ordinary ability composition. The storage provider projects
+`aos.provisioning` from that result, after which Rust validates and renders
+storage. With no host input, that same fixed point supplies defaults.
 
 ## 1. Command surface
 
 ```text
-aos metadata detect      # DMI/SMBIOS/ISO → /run/aos-metadata/platform.env (+cidata mount)
-aos metadata fetch       # platform → exact host.nix transport + facts
-aos metadata authorize   # platform|signed policy → exact accepted host.nix
-aos metadata eval-provisioning # restricted Nix → validated transient repart.d
-aos metadata persist-provisioning # first-commit evidence + reusable definitions
-aos metadata cache-runtime       # cache only an input that produced a manifest
-aos metadata restore-runtime     # hash-check and restore last evaluated input
+detect platform          # selected provider → DetectedPlatform
+acquire metadata         # DetectedPlatform → AcquiredMetadata + network bootstrap
+authorize input          # AcquiredMetadata + policy → AuthorizedProvisioningInput
+observe plan             # authorized input + marker → CanonicalProvisioningPlan
 ```
 
-- `detect` absorbs `pkgs/boot/aos-platform-detect.nix` verbatim (the asset-tag → vendor → bios → product table at lines 64–123) into `std::fs` reads of `/sys/class/dmi/id/*`. It writes `platform.env`; the typed detection result carries the network requirement to the selected network-readiness provider.
+- `detect` owns the asset-tag → vendor → bios → product decision table and
+  returns a typed result carrying the network requirement.
 - `detect` also performs the **config-drive probe** (the net-new mount helper, [§8](#8-net-new-pieces)) so that an offline ISO/vfat channel short-circuits the cloud path exactly as `aos-platform-detect.nix:51` does today for the `aos-metadata` label.
-- `fetch` selects a `Box<dyn PlatformFetcher>` from `PLATFORM_ID` and writes only under `/run/aos-metadata`.
+- `acquire` selects a `Box<dyn PlatformFetcher>` from the typed detected
+  platform and returns exact payload, signature, facts, and network bootstrap
+  values without an ambient state file.
 - `authorize` accepts platform delivery by default or verifies exact
   `host.nix` with the `aos-config` SSHSIG namespace in signed mode.
-- `eval-provisioning` evaluates only the schema bundled in the base library;
-  strict Rust validation rejects unsafe evaluated values before rendering.
+- `observe plan` calls the common complete evaluator with the frozen initrd
+  inputs; strict Rust validation rejects invalid evaluated values before
+  rendering.
 
-The initrd graph is `aos-metadata-detect.service` →
-`aos-metadata-network.service` → `aos-metadata-fetch.service` →
-`aos-metadata-authorize.service` → `aos-provisioning-eval.service` →
-`aos-repart.service`. Every phase uses
-`DefaultDependencies=no` and `RemainAfterExit=yes`; authorization failure is
-fatal before repart.
+The initrd ability graph binds these operations to selected package-owned
+providers. A service-management package may project that checked graph into
+native units, but unit names and dependency mechanics are backend details.
+Authorization failure remains fatal before storage effects.
 
 ## 2. The `PlatformFetcher` trait
 
@@ -1184,7 +1185,7 @@ The trait isolates the thin per-platform knowledge layer (endpoint, header, labe
 /// dispatcher knows about; selection is by `PLATFORM_ID` from `detect`.
 #[async_trait::async_trait]
 pub trait PlatformFetcher: Send + Sync {
-    /// Stable platform identifier, matching `PLATFORM_ID` in platform.env
+    /// Stable platform identifier carried by `DetectedPlatform`
     /// (e.g. "aws", "nocloud", "config-drive", "qemu", "aos-metadata").
     fn platform_id(&self) -> &'static str;
 
@@ -1260,29 +1261,35 @@ The engine's `AuthStore` and `AuthStore::refresh_token` (OAuth2, `auth.rs:219`) 
 
 ## 3. Offline-channel fetcher contracts
 
-All offline channels resolve to a **mounted directory** under `/run/aos-metadata` produced by `detect`'s config-drive mount helper ([§8](#8-net-new-pieces)). The fetcher then reads files from that directory — no network. The mount helper records the resolved mountpoint in `platform.env` as `METADATA_DIR=<path>`.
+All offline channels resolve to a private mounted directory produced by the
+selected detector's config-drive helper ([§8](#8-net-new-pieces)). The typed
+acquisition context carries that directory to the fetcher within the same
+provider invocation; it is not cross-stage authority.
 
 ### 3.1 `aos-metadata` ISO (AOS-native channel)
 
-- **Detect:** `blkid -L aos-metadata` (already done by `aos-platform-detect.nix:51`); mount read-only at `/run/aos-metadata/media`. Sets `PLATFORM_ID=aos-metadata`, `METADATA_DIR=/run/aos-metadata/media`, and reports no network requirement through the typed detection result.
-- **`fetch_user_data`:** read `${METADATA_DIR}/host.nix` plus optional
-  `${METADATA_DIR}/host.nix.sig` as exact operator input.
-- **`fetch_facts`:** read optional `${METADATA_DIR}/facts.json` if the operator pre-baked it; else `Facts::default()`.
+- **Detect:** `blkid -L aos-metadata`; mount read-only in private invocation
+  scratch and return `aos-metadata` with no network requirement.
+- **`fetch_user_data`:** read `<media>/host.nix` plus optional
+  `<media>/host.nix.sig` as exact operator input.
+- **`fetch_facts`:** read optional `<media>/facts.json` if the operator pre-baked it; else `Facts::default()`.
 
 ### 3.2 NoCloud `cidata`
 
-- **Detect:** `blkid -L cidata` (ISO9660 **or** vfat); mount RO at `/run/aos-metadata/media`. `PLATFORM_ID=nocloud`.
-- **`fetch_user_data`:** read `${METADATA_DIR}/user-data` as literal
+- **Detect:** `blkid -L cidata` (ISO9660 **or** vfat); mount read-only in
+  private invocation scratch and return `nocloud`.
+- **`fetch_user_data`:** read `<media>/user-data` as literal
   `host.nix` (not cloud-init YAML); a sibling `user-data.sig` supplies the
   detached exact-input SSHSIG when present.
-- **`fetch_facts`:** parse `${METADATA_DIR}/meta-data` (YAML — the vendored crate, [§8](#8-net-new-pieces)): `local-hostname` → `hostname`, `instance-id` → `instance_id`. `${METADATA_DIR}/network-config` (NoCloud netplan-v1/v2 YAML), when present, parses into `Facts::network` ([§6](#6-static-networking-seed)).
+- **`fetch_facts`:** parse `<media>/meta-data` (YAML — the vendored crate, [§8](#8-net-new-pieces)): `local-hostname` → `hostname`, `instance-id` → `instance_id`. `<media>/network-config` (NoCloud netplan-v1/v2 YAML), when present, parses into `Facts::network` ([§6](#6-static-networking-seed)).
 
 ### 3.3 config-drive `config-2` (OpenStack)
 
-- **Detect:** `blkid -L config-2`; mount RO at `/run/aos-metadata/media`. `PLATFORM_ID=config-drive`.
-- **`fetch_user_data`:** read `${METADATA_DIR}/openstack/latest/user_data` as
+- **Detect:** `blkid -L config-2`; mount read-only in private invocation
+  scratch and return `config-drive`.
+- **`fetch_user_data`:** read `<media>/openstack/latest/user_data` as
   literal `host.nix`; use sibling `user_data.sig` as the exact-input signature.
-- **`fetch_facts`:** parse `${METADATA_DIR}/openstack/latest/meta_data.json` (JSON, `serde_json`): `.hostname`, `.uuid` → `instance_id`, `.keys[].data` / `.public_keys` → `ssh_authorized_keys`, `.devices` → `disk_ids`. Parse `${METADATA_DIR}/openstack/latest/network_data.json` → `Facts::network` ([§6](#6-static-networking-seed)) — this is the metadata-delivered network for OpenStack.
+- **`fetch_facts`:** parse `<media>/openstack/latest/meta_data.json` (JSON, `serde_json`): `.hostname`, `.uuid` → `instance_id`, `.keys[].data` / `.public_keys` → `ssh_authorized_keys`, `.devices` → `disk_ids`. Parse `<media>/openstack/latest/network_data.json` → `Facts::network` ([§6](#6-static-networking-seed)) — this is the metadata-delivered network for OpenStack.
 
 ### 3.4 QEMU `fw_cfg`
 
@@ -1322,80 +1329,30 @@ The cloud exemplar; the GCP / Azure / DigitalOcean / OpenStack-IMDS fetchers fol
   - `network/interfaces/macs/` listing → `mac_to_iface`.
   - AWS provides DHCP, so `Facts::network` is normally `None`.
 
-## 5. Stash format
+## 5. Typed operation results
 
-The stash is a child of the initrd `/run` so it survives `mount --move /run /sysroot/run` during switch_root (same rationale as `modules/services/ignition.nix:62–65`). Stage-2 stages it into the evaluator root `/run/aos-eval/`.
-
-```text
-/run/aos-metadata/
-├── platform.env            # PLATFORM_ID=<id>  [+ METADATA_DIR=<path>] [+ NEED_NETWORK=1]
-├── user-data               # exact acquired input bytes
-├── user-data.sig           # detached whole-input SSHSIG, when supplied
-├── host.nix                # exact policy-accepted operator config
-├── provisioning-plan.json  # canonical validated early projection
-├── repart-targets          # stable device → definition directory index
-├── repart.d/               # rendered transient per-device definitions
-├── storage-coherence       # coherent | divergent | unavailable after commit
-├── facts.json              # normalized Facts (see §2), serde_json
-├── network/                # rendered networkd seed for DHCP-less clouds (see §6)
-│   └── 10-aos-seed.network
-├── .metadata-result.json   # acquisition record
-└── .provisioning-result.json # authorization and accepted-content record
-```
-
-`platform.env` (consumed via systemd `EnvironmentFile`, same as today):
+Metadata state crosses operations only as checked values in the resolved
+ability plan:
 
 ```text
-PLATFORM_ID=aws
-METADATA_DIR=/run/aos-metadata/media   # only for offline channels
+DetectedPlatform
+  → AcquiredMetadata { host_module, host_module_signature, facts }
+  → AuthorizedProvisioningInput { source, host_module, hashes, signer, facts }
+  → CanonicalProvisioningPlan
 ```
 
-`.metadata-result.json` — the acquisition marker:
+There is no metadata stash, environment file, completion-marker JSON, or
+provider-neutral path authority. Exact authorized input may be retained through
+the standard content-object ability when a later stage needs it. The selected
+storage provider may write private scratch such as rendered repart definitions;
+those files implement that provider and are not inputs to another provider.
 
-```json
-{
-  "platform_id": "aws",
-  "fetched_user_data": true,
-  "user_data_source": "imds",
-  "user_data_sha256": "…",
-  "sig_present": false,
-  "facts_hash": "…",
-  "network_seed_written": false,
-  "timestamp": "2026-06-26T00:00:00Z"
-}
-```
+### 5.1 Typed facts → `host-facts.nix`
 
-`.provisioning-result.json` records `trust_mode`, `platform_id`,
-`input_sha256`, `host_nix_sha256`, optional `signer`, and
-`storage_plan_rendered`. Those fields bind stage-2 to the initrd decision.
-
-Stage-2 staging: `aos-eval.service` links `host.nix`, `facts.json`, and the
-validation record into `/run/aos-eval/`, confirms the accepted host hash, and
-renders `host-facts.nix` ([§5.1](#51-factsjson--host-factsnix)).
-
-The durable state directory is `/var/lib/aos-provisioning`:
-
-```text
-audit.json                    # immutable first-commit evidence
-initial-plan.json             # immutable normalized first-commit plan
-desired/provisioning-plan.json
-desired/repart-targets
-desired/repart.d/             # usable for explicit later-device provisioning
-current/host.nix
-current/host.nix.sig
-current/facts.json
-current/.metadata-result.json
-current/.provisioning-result.json
-```
-
-`desired/` is atomically replaced after a valid current projection.
-`current/` is atomically replaced only after full stage-2 evaluation produced
-a manifest. Restore verifies the recorded host hash before copying anything
-back into the runtime stash.
-
-### 5.1 `facts.json` → `host-facts.nix`
-
-Facts enter eval **only** as typed `host.facts.*` declared inputs (D9), keeping eval a pure function of `(modules + host.nix + facts)`. Stage-2 renders `/run/aos-eval/host-facts.nix` from `facts.json`:
+Facts enter evaluation only as typed `host.facts.*` declared inputs (D9),
+keeping evaluation a pure function of `(modules + host.nix + facts)`. The
+configuration evaluator materializes `host-facts.nix` inside its private
+evaluator boundary:
 
 ```nix
 # /run/aos-eval/host-facts.nix — rendered, not operator-authored.
@@ -1423,32 +1380,24 @@ Binding constraints:
 On clouds with no DHCP server (DigitalOcean static/anchor IPs, OpenStack `network_data.json`), the gen-0 DHCP seed (`modules/services/ignition.nix:795` `80-dhcp.network`) gets no lease, so stage-2 has no route to the registry and eval deadlocks. The **initrd `fetch` phase** therefore parses the platform network config and seeds a minimal static networkd config — a *substrate fact*, not operator config.
 
 - **Parsed inputs:** OpenStack `network_data.json` (`.networks[]`: `link`, `ip_address`, `netmask`/cidr, `gateway`; `.links[]`: `ethernet_mac_address`); NoCloud `network-config` (netplan v1/v2 YAML); DigitalOcean IMDS `/metadata/v1/interfaces/public/0/{ipv4,anchor_ipv4}` + `/dns/nameservers`. Normalized into `Facts::network` (`StaticNetwork { iface_match, addresses, routes, dns }`).
-- **Output (two locations):**
-  1. `/run/aos-metadata/network/10-aos-seed.network` (recorded in the stash for attestation).
-  2. The gen-0 `/var/etc` lower (so stage-2 networkd reads it before any config-gen): `mount-var`-time write of `/sysroot/var/etc/systemd/network/10-aos-seed.network`. This is the only `/var/etc` write the agent performs, and it carries **no security decision** (just an IP/route — like the IP itself).
-- **networkd file written:**
-
-  ```ini
-  # 10-aos-seed.network — substrate-fact static seed (DHCP-less cloud).
-  [Match]
-  MACAddress=0a:1b:2c:3d:4e:5f
-  [Network]
-  Address=203.0.113.10/24
-  Gateway=203.0.113.1
-  DNS=67.207.67.2
-  ```
-
+- **Output:** acquisition returns a typed network-bootstrap value. The checked
+  graph passes it to the selected network-configuration provider, which owns
+  any backend rendering. A systemd implementation may render a transient
+  networkd unit; that file is private provider state rather than metadata
+  authority.
 - **Supersession:** the operator's *declared* network config in `host.nix` takes effect at the first `activate.sh.in` /etc swap and supersedes the seed. The seed exists only to give stage-2 a route to fetch config modules; it is not authoritative.
-- The seed is written **only** when `Facts::network.is_some()`; DHCP clouds (AWS/GCP) skip it (recorded as `network_seed_written: false`).
+- The bootstrap value is present only when `Facts::network.is_some()`; DHCP
+  clouds (AWS/GCP) omit it.
 
 ## 7. Authenticated one-time provisioning projection
 
 `host.nix` may define `aos.provisioning.storage.partitions`, an attribute set
 whose closed schema is declared by `modules/base/provisioning.nix`. The initrd
-imports the ABI-pinned base library and exact authorized host module under
-`restrict-eval=true` and `allow-import-from-derivation=false`. It does not load
-runtime package modules. Undeclared runtime definitions remain lazy and cannot
-affect the early result.
+evaluates the exact authorized host module with frozen
+`initrdEvaluationInputs`, including the authenticated selected package/provider
+modules and ordinary ability graph, under `restrict-eval=true` and
+`allow-import-from-derivation=false`. The storage plan is projected from that
+single complete fixed point.
 
 Rust deserializes the evaluated `aos.provisioning-plan/v1` JSON with unknown
 fields denied. It permits `null` for the root disk or stable
@@ -1461,7 +1410,7 @@ The hard ordering is:
 
 ```text
 durable-state-detect → metadata-fetch → authorize exact host.nix
-  → restricted aos.provisioning eval → Rust validate/render
+  → complete initrd fixed point → project plan → Rust validate/render
   → dry-run every disk → mutate every disk → commit GPT provenance marker
   → aos-var-crypt/mount-var → switch_root → full aos-eval
 ```
@@ -1472,7 +1421,7 @@ before every secondary device. Only after every device succeeds does the unit
 relabel it to `aos-provenance-operator-v1` or
 `aos-provenance-fallback-v1`. A pending marker fails closed for recovery. A
 committed marker freezes all future disk mutation, while metadata acquisition,
-restricted advisory evaluation, dry-run comparison, and full runtime
+complete advisory evaluation, dry-run comparison, and full runtime
 evaluation continue. With no host input, the same schema defaults are evaluated
 and committed as fallback provenance; there is no image-baked parallel layout.
 
@@ -1889,9 +1838,9 @@ committed, stage 2 may evaluate only the image-authored empty module and records
 that distinct no-input case as `trust_mode = "image"`; it is never a fallback
 from a failed platform or signed authorization.
 
-Authorization occurs before restricted evaluation. Stage-2 does not repeat
-the trust decision over mutable input: it verifies that `/run/aos-eval/host.nix`
-has the content hash recorded by initrd, then evaluates those exact bytes.
+Authorization occurs before complete evaluation. A later stage does not repeat
+the trust decision over mutable input: it consumes the retained content object,
+verifies its authenticated identity, and evaluates those exact bytes.
 
 ### 3.2 Verification algorithm
 

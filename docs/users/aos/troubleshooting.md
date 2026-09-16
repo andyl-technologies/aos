@@ -57,14 +57,10 @@ Common causes are:
 Check the current transient state when a recovery shell is available:
 
 ```sh
-cat /run/aos-metadata/platform.env
-cat /run/aos-metadata/provisioning-plan.json
-
-if test -r /run/aos-metadata/storage-coherence; then
-  cat /run/aos-metadata/storage-coherence
-else
-  echo "storage coherence was not evaluated this boot"
-fi
+systemctl status aos-ability-initrd-controller.service
+journalctl -b -u aos-ability-initrd-controller.service
+cat /run/aos/storage-provisioning/provisioning-plan.json
+find /run/aos/storage-provisioning/repart.d -maxdepth 3 -type f -print
 ```
 
 `divergent` means the host already committed a different storage plan. Reimage

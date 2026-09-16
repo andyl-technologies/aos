@@ -294,11 +294,6 @@ test -s /run/aos/manifest.json && echo "host input evaluated"
 cat /run/aos/activation.json
 readlink /var/lib/profiles/system/current
 cat /var/lib/profiles/system/state.json
-
-cat /var/lib/aos-provisioning/audit.json
-if test -r /run/aos-metadata/storage-coherence; then
-  cat /run/aos-metadata/storage-coherence
-fi
 ```
 
 An evaluated manifest proves only that module evaluation converged. The current

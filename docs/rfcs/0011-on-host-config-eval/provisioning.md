@@ -45,17 +45,14 @@ authentication, and the boundary between the golden image and host policy.
    GPT state is the sole storage-mutation gate; an image provisioned
    out-of-band must carry a committed provenance marker.
 
-## Why a restricted initrd evaluation exists
+## Why a complete initrd evaluation exists
 
-`/var` must exist before switch-root, but the full configuration evaluator runs
-after switch-root because package configuration modules may need registry
-resolution and networking. Deferring all of `host.nix` therefore makes
-first-boot storage configuration impossible.
-
-The storage projection is closed: it uses only the base module library,
-`host.nix`, and image-provided provisioning defaults. It has no package roots,
-registry fixpoint, network access, or `system.build` output. Stock Nix runs in
-the measured initrd with:
+`/var` must exist before switch-root, so first-boot storage policy must be
+evaluated in initrd. The initrd does not use a reduced evaluator: it freezes the
+authenticated base library, selected package/provider modules, and ordinary
+ability composition into `initrdEvaluationInputs`, then calls the common
+`evalCompleteConfig` entry point. The storage plan is a projection of that one
+complete fixed point. Stock Nix runs in the measured initrd with:
 
 ```text
 nix-instantiate --store dummy:// --eval --strict --json
@@ -67,12 +64,9 @@ nix-instantiate --store dummy:// --eval --strict --json
   <eval-root>/entry.nix
 ```
 
-The AOS module engine is intentionally non-strict for this projection:
-
-- no evaluation-global `_module.strict = true`;
-- no evaluation-global `_module.freeformType`;
-- no read of `config.system.build.*`;
-- only `config.aos.provisioning` is forced.
+The common module engine applies the same option typing, assertions, selected
+package modules, and ability composition checks used by other stages. The
+provider then forces only the plan value it owns from the completed result.
 
 These are compatibility invariants, not incidental implementation details.
 A regression check evaluates a `host.nix` containing an undeclared,
@@ -185,38 +179,22 @@ persisted definition directory under
 
 ## Metadata and trust
 
-The native metadata agent performs:
+The initrd ability graph performs:
 
 ```text
-aos metadata detect     # platform/config-drive discovery
-aos metadata fetch      # exact user-data + detached signature + facts
-aos metadata authorize  # platform/signed policy -> accepted host.nix
-aos metadata eval-provisioning
-                        # restricted eval -> typed plan JSON
+detect platform         # -> DetectedPlatform
+acquire metadata        # -> AcquiredMetadata + network bootstrap
+authorize input         # -> AuthorizedProvisioningInput
+observe plan            # -> CanonicalProvisioningPlan
 ```
 
-The stash under `/run/aos-metadata` contains:
-
-```text
-platform.env
-user-data
-user-data.sig                 # optional detached SSHSIG
-host.nix                      # policy-accepted exact bytes
-facts.json
-.metadata-result.json
-.provisioning-result.json     # trust evidence and host.nix hash
-provisioning-plan.json        # evaluated, normalized data
-repart-targets                # target to definition-directory index
-repart.d/                     # generated per-device definitions
-```
-
-`/run` is moved across switch-root. Stage 2 verifies the recorded hash before
-evaluating the same bytes. Metadata acquisition and full evaluation run again
-on every boot so runtime policy can change independently of the one-time
-storage commit. If fresh acquisition or authorization fails after provisioning,
-stage 2 restores the last fully evaluated, hash-checked input from
-`/var/lib/aos-provisioning/current`; it never promotes a partially fetched or
-unevaluated input.
+These are checked operation results, not files in a provider-neutral stash.
+Retention across stages uses the content-object ability and preserves the
+authenticated value identity. Metadata acquisition and full evaluation run
+again on every boot so runtime policy can change independently of the one-time
+storage commit. A retained input is addressed and authenticated through the
+content-object ability; a partially fetched or unevaluated value is never
+promoted.
 
 ### Platform policy
 
@@ -251,8 +229,8 @@ INITRD
     |          -> report coherent/divergent/unavailable; never mutate
     |
     `-- no committed marker:
-          host.nix present -> restricted aos.provisioning eval
-          host.nix absent  -> restricted default provisioning eval
+          host.nix present -> complete initrd fixed point
+          host.nix absent  -> complete fixed point with image defaults
                     |
                     v
               Rust validation
@@ -302,7 +280,7 @@ mutation failure blocks switch-root and emits a console diagnostic. The
 mutating `systemd-repart` exit status is always propagated.
 
 On later boots the committed GPT marker is a storage-mutation gate, not a
-configuration gate. Acquisition, authorization, the restricted projection,
+configuration gate. Acquisition, authorization, the complete initrd projection,
 and full stage-2 evaluation run again. A valid current storage projection is
 compared with the live disks using `systemd-repart --dry-run`; pending work is
 reported as divergence and requires factory reset. Missing or invalid current
