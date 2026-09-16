@@ -125,12 +125,13 @@ Signed-mode public anchors are therefore copied into the measured initrd.
 Public verification keys are safe to share; per-instance secret injection is
 neither necessary nor desirable.
 
-The restricted initrd evaluator and the full stage-2 evaluator consume the same
-accepted `host.nix` bytes carried through `/run` and confirm their recorded
-hash. On an unprovisioned machine, a platform authorization failure or a
-signed-mode missing/bad signature fails closed before disk mutation. After the
-GPT provenance record is committed, early metadata/eval failures warn and
-continue with the existing disk layout and last committed config generation.
+The common complete evaluator receives distinct frozen input sets for initrd
+and stage 2. Both sets contain the same accepted `host.nix` bytes carried
+through `/run` and confirm their recorded hash. On an unprovisioned machine, a
+platform authorization failure or a signed-mode missing/bad signature fails
+closed before disk mutation. After the GPT provenance record is committed,
+early metadata/eval failures warn and continue with the existing disk layout
+and last committed config generation.
 
 **Per-host config does not break attestation** — it breaks whole-image
 attestation (no single golden manifest hash fleet-wide), but not
