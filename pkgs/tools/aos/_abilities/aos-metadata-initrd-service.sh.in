@@ -1,0 +1,120 @@
+#!@bash@/bin/bash
+set -eu
+
+operation=$1
+shift
+
+provisioning_marker() {
+    if [[ -e /dev/disk/by-partlabel/aos-provenance-operator-v1 ]]; then
+        printf '%s\t%s\n' operator /dev/disk/by-partlabel/aos-provenance-operator-v1
+    elif [[ -e /dev/disk/by-partlabel/aos-provenance-fallback-v1 ]]; then
+        printf '%s\t%s\n' fallback /dev/disk/by-partlabel/aos-provenance-fallback-v1
+    fi
+}
+
+continue_after_provisioning() {
+    local stash_dir=$1
+    local failure=$2
+
+    if [[ -e "$stash_dir/provisioned" ]]; then
+        printf 'aos-metadata: %s after provisioning; continuing with the active runtime generation\n' \
+            "$failure" >&2
+        exit 0
+    fi
+}
+
+case "$operation" in
+    detect-state)
+        stash_dir=$1
+        udevadm settle || true
+        if [[ -e /dev/disk/by-partlabel/aos-provenance-operator-v1 \
+            || -e /dev/disk/by-partlabel/aos-provenance-fallback-v1 ]]; then
+            mkdir -p "$stash_dir"
+            : > "$stash_dir/provisioned"
+        fi
+        ;;
+
+    detect-platform)
+        stash_dir=$1
+        if aos-metadata-runtime detect; then
+            exit 0
+        fi
+        continue_after_provisioning "$stash_dir" "detection failed"
+        exit 1
+        ;;
+
+    network-ready)
+        # The service's typed readiness dependency starts and orders the
+        # selected network provider. This command only records completion.
+        ;;
+
+    fetch)
+        stash_dir=$1
+        if aos-metadata-runtime fetch; then
+            exit 0
+        fi
+        continue_after_provisioning "$stash_dir" "fetch failed"
+        exit 1
+        ;;
+
+    authorize)
+        stash_dir=$1
+        trust=$2
+        trusted_keys_dir=${3-}
+        authorize_arguments=(authorize --trust "$trust")
+        if [[ "$trust" == signed ]]; then
+            authorize_arguments+=(--trusted-config-keys-dir "$trusted_keys_dir")
+        fi
+        if aos-metadata-runtime "${authorize_arguments[@]}"; then
+            exit 0
+        fi
+        if [[ -e "$stash_dir/provisioned" ]]; then
+            echo "aos-metadata: authorization failed after provisioning; ignoring the new input" >&2
+            exit 0
+        fi
+        echo "aos-metadata: authorizing $trust host.nix failed; refusing first-boot provisioning" >&2
+        exit 1
+        ;;
+
+    evaluate-provisioning)
+        stash_dir=$1
+        base_library=$2
+        measured_boot=$3
+        committed_arguments=()
+        marker_record=$(provisioning_marker)
+        if [[ -n "$marker_record" ]]; then
+            IFS=$'\t' read -r committed_source marker <<< "$marker_record"
+            marker_uuid=$(lsblk -ndo PARTUUID "$marker")
+            committed_arguments=(
+                --committed-source "$committed_source"
+                --marker-uuid "$marker_uuid"
+            )
+        fi
+
+        if [[ -e /dev/disk/by-partlabel/aos-provenance-operator-v1 \
+            && ! -e "$stash_dir/host.nix" ]]; then
+            echo "aos-provisioning: no current authorized host.nix; skipping advisory storage drift evaluation" >&2
+            exit 0
+        fi
+
+        evaluation_arguments=(eval-provisioning --base-lib "$base_library")
+        if [[ "$measured_boot" == true ]]; then
+            evaluation_arguments+=(--measured-boot)
+        fi
+        evaluation_arguments+=("${committed_arguments[@]}")
+        if aos-metadata-runtime "${evaluation_arguments[@]}"; then
+            exit 0
+        fi
+        if ((${#committed_arguments[@]} != 0)); then
+            echo "aos-provisioning: current storage intent is invalid or differs from committed provenance; factory reset is required to apply it" >&2
+            exit 0
+        fi
+        echo "aos-provisioning: restricted provisioning evaluation failed; refusing first-boot disk mutation" >&2
+        exit 1
+        ;;
+
+    *)
+        echo "aos-metadata-initrd-service: unsupported operation: $operation" >&2
+        exit 64
+        ;;
+esac

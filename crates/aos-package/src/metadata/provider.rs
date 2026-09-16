@@ -6,7 +6,6 @@
 //! cross-provider data channel.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -15,7 +14,8 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, ResourceReference,
+    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, MethodReference,
+    ResourceReference,
 };
 use aos_net::{BootstrapLinkSelector, BootstrapNetwork};
 use aos_provider_protocol::{
@@ -61,18 +61,19 @@ enum MetadataRole {
 }
 
 impl MetadataRole {
-    fn from_entry_point(entry_point: &OsStr) -> Result<Self> {
-        let name = Path::new(entry_point)
-            .file_name()
-            .and_then(OsStr::to_str)
-            .context("metadata handler entry point is not valid UTF-8")?;
-
-        match name {
-            "aos-storage-provisioning-input-authorizer" => Ok(Self::Authorization),
-            "aos-storage-provisioning-configuration-evaluator" => Ok(Self::ConfigurationEvaluation),
-            "aos-storage-provisioning-plan-observer" => Ok(Self::PlanObservation),
-            "aos-storage-provisioning-platform-detector" => Ok(Self::PlatformDetection),
-            _ => bail!("entry point does not select a checked metadata handler role"),
+    fn from_method(method: &MethodReference) -> Result<Self> {
+        match (method.interface.name.as_str(), method.method.as_str()) {
+            ("aos.metadata.storage-provisioning-input-authorization", "authorize") => {
+                Ok(Self::Authorization)
+            }
+            ("aos.configuration.storage-provisioning-evaluation", "evaluate") => {
+                Ok(Self::ConfigurationEvaluation)
+            }
+            ("aos.metadata.storage-provisioning-plan", "observe") => Ok(Self::PlanObservation),
+            ("aos.metadata.storage-provisioning-platform-detection", "detect") => {
+                Ok(Self::PlatformDetection)
+            }
+            _ => bail!("interface method does not select a checked metadata handler role"),
         }
     }
 
@@ -209,10 +210,6 @@ struct EvaluationObservation {
 /// restricted evaluation, or provider result is invalid.
 pub async fn run_provider_from_process() -> Result<()> {
     let arguments = std::env::args_os().collect::<Vec<_>>();
-    let entry_point = arguments
-        .first()
-        .context("metadata handler process has no entry point")?;
-    let role = MetadataRole::from_entry_point(entry_point)?;
     ensure!(
         arguments.len() == 3 && arguments[1] == HANDLER_ABI_ARGUMENT,
         "expected --aos-primitive-v1 and one purpose"
@@ -232,11 +229,15 @@ pub async fn run_provider_from_process() -> Result<()> {
 
     let value = match purpose {
         "admit" => {
-            let request = aos_contract::canonical::from_slice(&input, "metadata admission")?;
+            let request: AdmissionRequest =
+                aos_contract::canonical::from_slice(&input, "metadata admission")?;
+            let role = MetadataRole::from_method(&request.method)?;
             serde_json::to_value(admit(role, request)?)?
         }
         "effect" | "reconcile" | "cancel" => {
-            let invocation = aos_contract::canonical::from_slice(&input, "metadata invocation")?;
+            let invocation: Invocation =
+                aos_contract::canonical::from_slice(&input, "metadata invocation")?;
+            let role = MetadataRole::from_method(&invocation.method)?;
             serde_json::to_value(invoke(role, invocation, purpose).await?)?
         }
         purpose => bail!("unsupported metadata provider purpose {purpose:?}"),
@@ -996,45 +997,58 @@ fn purpose_name(purpose: InvocationPurpose) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
+    use std::num::NonZeroU32;
     use std::os::unix::fs::{MetadataExt as _, symlink};
+
+    use aos_ability_model::{InterfaceKey, InterfaceName};
+    use aos_contract::Sha256Digest;
 
     use super::*;
 
+    fn method_reference(interface: &str, method: &str) -> MethodReference {
+        MethodReference {
+            interface: InterfaceKey {
+                name: InterfaceName::new(interface).expect("interface name"),
+                abi: NonZeroU32::new(1).expect("non-zero ABI version"),
+                descriptor: Sha256Digest::of_bytes(interface.as_bytes()),
+            },
+            method: LocalKey::new(method).expect("method name"),
+        }
+    }
+
     #[test]
-    fn package_entry_points_select_closed_metadata_roles() {
+    fn authenticated_methods_select_closed_metadata_roles() {
         let cases = [
             (
-                "aos-storage-provisioning-platform-detector",
+                "aos.metadata.storage-provisioning-platform-detection",
                 MetadataRole::PlatformDetection,
                 "detect",
             ),
             (
-                "aos-storage-provisioning-input-authorizer",
+                "aos.metadata.storage-provisioning-input-authorization",
                 MetadataRole::Authorization,
                 "authorize",
             ),
             (
-                "aos-storage-provisioning-plan-observer",
+                "aos.metadata.storage-provisioning-plan",
                 MetadataRole::PlanObservation,
                 "observe",
             ),
             (
-                "aos-storage-provisioning-configuration-evaluator",
+                "aos.configuration.storage-provisioning-evaluation",
                 MetadataRole::ConfigurationEvaluation,
                 "evaluate",
             ),
         ];
 
-        for (entry_point, expected, method) in cases {
-            let role = MetadataRole::from_entry_point(OsStr::new(entry_point))
-                .expect("package role entry point parses");
+        for (interface, expected, method) in cases {
+            let role = MetadataRole::from_method(&method_reference(interface, method))
+                .expect("authenticated interface method selects a role");
             assert_eq!(role, expected);
             validate_method(role, method).expect("role method matches");
         }
         assert!(
-            MetadataRole::from_entry_point(OsStr::new("aos-metadata-provisioning-provider"))
-                .is_err()
+            MetadataRole::from_method(&method_reference("aos.metadata.unknown", "detect")).is_err()
         );
     }
 
