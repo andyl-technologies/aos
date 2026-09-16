@@ -150,7 +150,7 @@
   #   mkSystem ./path.nix                              — single module path
   #   mkSystem [ ./a.nix ./b.nix ]                     — list of modules
   #   mkSystem { modules = [...]; specialArgs = {}; }   — full attrset
-  mkSystem = args: let
+  mkSystemState = args: let
     moduleList =
       if builtins.isList args
       then args
@@ -287,13 +287,18 @@
       enableAbilitySelection = true;
       specialArgs = moduleSpecialArgs // {inherit initrdAbilityEvaluation initrdStaticContract;};
     };
-  in
-    builtins.seq
-    (lib.abilities.checkedProviderModuleEvaluation {
-      before = hostPackageEvaluation.config.aos.abilities;
-      after = finalHostEvaluation.config.aos.abilities;
-    })
-    finalHostEvaluation;
+  in {
+    qualificationProjection = abilityEvaluation.qualificationProjection;
+    system = builtins.seq
+      (lib.abilities.checkedProviderModuleEvaluation {
+        before = hostPackageEvaluation.config.aos.abilities;
+        after = finalHostEvaluation.config.aos.abilities;
+      })
+      finalHostEvaluation;
+  };
+  mkSystem = args: (mkSystemState args).system;
+  mkAbilityQualificationProjection = args:
+    (mkSystemState args).qualificationProjection;
 
   # Auto-discover system definitions from ./systems/*.nix
   discoverSystems = let
@@ -344,10 +349,11 @@
   # ---------------------------------------------------------------------------
 
   # The default system used for eval/build checks and package integration tests.
-  serverSystem = mkSystem {
+  serverSystemState = mkSystemState {
     modules = [./systems/server.nix];
     systemName = "server";
   };
+  serverSystem = serverSystemState.system;
   # Single-VM checks use a writable ext4 test disk assembled by
   # lib/testing/vm.nix. Evaluate their system with the matching root contract;
   # the production server system remains EROFS + dm-verity and is exercised by
@@ -479,7 +485,8 @@
       report = {kind = "matrix";};
     };
   nativeAdapterMatrixCohort = import ./tests/fleet/ability-native-power-loss.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem mkAbilityQualificationProjection pkgs;
+    qualificationProjection = serverSystemState.qualificationProjection;
     qualificationImage = true;
   };
   nativeAdapterPrimaryCells = [
@@ -497,10 +504,6 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-  nativeEffectForegroundCohort = import ./tests/fleet/ability-native-effect-boundaries-foreground.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
   nativeEffectRolloutCohorts = map (cellId:
     import ./tests/fleet/_ability-effect-boundary-rollout-cohort.nix {
       inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
@@ -513,10 +516,6 @@
     matrix = nativeAdapterMatrix.spec;
   };
   nativeProviderStateReferenceCohort = import ./tests/fleet/ability-native-provider-state-reference.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
-  nativeProviderStateForegroundCohort = import ./tests/fleet/ability-native-provider-state-foreground.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
@@ -538,20 +537,12 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-  nativeCancellationForegroundCohort = import ./tests/fleet/ability-native-cancellation-foreground.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
 
   nativeProviderNegativeCells = import ./tests/fleet/_ability-provider-negative-cells.nix {
     inherit lib;
     matrix = nativeAdapterMatrix.spec;
   };
   nativeProviderNegativeReference = import ./tests/fleet/ability-native-provider-negative-reference.nix {
-    inherit lib mkSystem pkgs nativeAdapterMatrix;
-    qualificationImage = true;
-  };
-  nativeProviderNegativeForeground = import ./tests/fleet/ability-native-provider-negative-foreground.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
@@ -615,11 +606,9 @@
       ++ nativeEffectBoundaryCells.groups.reference
       ++ nativeEffectBoundaryCells.groups.systemdManager
       ++ nativeEffectBoundaryCells.groups.rollout
-      ++ nativeEffectBoundaryCells.groups.foreground
       ++ nativeProviderStateCells.all
       ++ nativeCancellationSystemdCells
       ++ nativeCancellationCells.groups.reference
-      ++ nativeCancellationCells.groups.foreground
       ++ nativeCancellationCells.groups.rollout
       ++ nativeProviderNegativeCells.all;
     cellsById = builtins.listToAttrs (map (cell: {
@@ -681,12 +670,6 @@
         nativeEffectRolloutCohorts
         ++ [
           {
-            id = "provider-effect-boundaries-foreground";
-            qualifiedCells = nativeEffectBoundaryCells.groups.foreground;
-            inherit (nativeEffectForegroundCohort) testScript;
-            inherit (nativeEffectForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-          {
             id = "provider-state-reference";
             qualifiedCells = nativeProviderStateCells.groups.reference;
             inherit (nativeProviderStateReferenceCohort) testScript;
@@ -694,12 +677,6 @@
           }
         ]
         ++ [
-          {
-            id = "provider-state-foreground";
-            qualifiedCells = nativeProviderStateCells.groups.foreground;
-            inherit (nativeProviderStateForegroundCohort) testScript;
-            inherit (nativeProviderStateForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
           {
             id = "provider-cancellation-systemd";
             qualifiedCells = nativeCancellationSystemdCells;
@@ -711,12 +688,6 @@
             qualifiedCells = nativeCancellationCells.groups.reference;
             inherit (nativeCancellationReferenceCohort) testScript;
             inherit (nativeCancellationReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-          {
-            id = "supported-cancellation-foreground";
-            qualifiedCells = nativeCancellationCells.groups.foreground;
-            inherit (nativeCancellationForegroundCohort) testScript;
-            inherit (nativeCancellationForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
         ++ lib.imap (index: cohort: predecessorMatrixCohort {
@@ -732,12 +703,6 @@
             qualifiedCells = nativeProviderNegativeCells.groups.reference;
             inherit (nativeProviderNegativeReference) testScript;
             inherit (nativeProviderNegativeReference.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-          {
-            id = "provider-negative-foreground";
-            qualifiedCells = nativeProviderNegativeCells.groups.foreground-process;
-            inherit (nativeProviderNegativeForeground) testScript;
-            inherit (nativeProviderNegativeForeground.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "provider-negative-systemd-manager";
@@ -934,7 +899,7 @@
     loadSpec = filename: let
       specModule = import (./tests/fleet + "/${filename}");
       availableArgs = {
-        inherit lib pkgs mkSystem;
+        inherit lib pkgs mkSystem mkAbilityQualificationProjection;
         inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
         systems = discoverSystems;
         # Fleet checks consume the exact local-platform production subject and
@@ -1639,7 +1604,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem containerImages containerDefinitions releaseQualificationExecutor;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkAbilityQualificationProjection containerImages containerDefinitions releaseQualificationExecutor;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.

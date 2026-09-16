@@ -2,6 +2,7 @@
 {
   lib,
   packages,
+  bindings,
   scenarioPolicy ? builtins.fromJSON (builtins.readFile ../native-adapter-scenarios.json),
   regressions,
 }: let
@@ -28,6 +29,9 @@
       }) (postconditionsFor scenario);
     };
   selectedPackages = builtins.filter (package: package ? abilities) packages;
+  selectedImplementationKeys = lib.unique (map
+    (binding: binding.implementation)
+    (builtins.attrValues bindings));
   selectExact = context: predicate: values: let
     matches = builtins.filter predicate values;
   in
@@ -44,6 +48,7 @@
       package.contract.value.interface_documents).document;
   selectedImplementations = builtins.concatMap (package: let
     projection = package.contract.value;
+    packageName = projection.package.name;
   in
     map (name: let
       implementation = providerByName package name;
@@ -51,7 +56,9 @@
       inherit package name implementation;
       qualification = projection.qualification.implementations.${name};
       interface = interfaceByIdentity package implementation.interface;
-    }) (builtins.attrNames projection.qualification.implementations))
+    }) (builtins.filter
+      (name: builtins.elem "${packageName}:${name}" selectedImplementationKeys)
+      (builtins.attrNames projection.qualification.implementations)))
   selectedPackages;
   containerExecutionDeclarations = map (entry: let
     identity = interfaceIdentity entry.interface;
@@ -226,6 +233,7 @@
   check = "native-adapter-matrix";
 in
   assert packages != [];
+  assert bindings != {};
   assert builtins.attrNames scenarioPolicy == expectedScenarioPolicyKeys;
   assert scenarioPolicy.invalidation_dimensions != [];
   assert unique scenarioPolicy.invalidation_dimensions;

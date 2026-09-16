@@ -180,4 +180,9 @@ in {
     initrdEnvironment
     initrdAbilityEvaluation
     ;
+
+  qualificationProjection = {
+    packages = hostSelectedAbilityPackages;
+    bindings = hostAbilityBindings;
+  };
 }

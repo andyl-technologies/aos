@@ -16,7 +16,6 @@ from typing import Any
 
 PROVIDER_STATE_ROOTS = {
     "credential-delivery": ["/var/lib/aos/ability-runtime/credentials"],
-    "foreground-process": ["/var/lib/aos/ability-runtime/foreground-process"],
     "host-network-policy": ["/var/lib/aos/ability-runtime/network-policy"],
     "host-storage": ["/var/lib/aos/ability-runtime/storage"],
     "managed-configuration": ["/var/lib/aos/ability-runtime/managed-configuration"],
@@ -119,33 +118,6 @@ def observe_operation(
     return observe_exact(matches[0], operation, resource_map)
 
 
-def observe_canonical_foreground(
-    operation: dict[str, Any], resource_map: dict[str, Any]
-) -> dict[str, Any]:
-    """Observes only the canonical receipt slot for one foreground resource."""
-
-    resource = operation["target"]["resource"]
-    resource_digest = domain_digest(
-        "aos.ability.foreground-process-state-key/v1", resource
-    )
-    path = (
-        "/var/lib/aos/ability-runtime/foreground-process/processes/"
-        f"{resource_digest}.json"
-    )
-    documents = []
-    if runtime.succeed(f"test -f {shlex.quote(path)}; echo $?").strip() == "0":
-        payload = runtime.succeed(f"{COREUTILS}/cat {shlex.quote(path)}")
-        documents = [(path, json.loads(payload))]
-    mapping = exact_mapping(resource_map, resource)
-    live = live_observation_with_documents(
-        "foreground-process", operation, documents, mapping
-    )
-    return {
-        "resource": resource,
-        "owner-count": len(documents),
-        "live": live,
-    }
-
 def inject_foreign_owner(
     adapter: str, operation: dict[str, Any], resource_map: dict[str, Any]
 ) -> None:
@@ -168,9 +140,6 @@ def inject_foreign_owner(
         install_foreign_systemd_authority(operation, mapping)
         return
     documents = resource_documents(adapter, resource)
-    if not documents and adapter == "foreground-process":
-        install_absent_foreground_resource(operation)
-        return
     if not documents and adapter in {
         "credential-delivery",
         "host-network-policy",
@@ -349,43 +318,6 @@ def install_absent_foreign_host_resource(
     }
 
 
-def install_absent_foreground_resource(operation: dict[str, Any]) -> None:
-    """Copies a distinct live process receipt into the absent target's state slot."""
-
-    resource = operation["resource"]
-    source_receipts = [
-        (path, document)
-        for path, document in provider_documents(
-            PROVIDER_STATE_ROOTS["foreground-process"]
-        )
-        if document.get("schema") == "aos.ability.foreground-process-state/v1"
-        and document.get("request", {}).get("resource") != resource
-        and document.get("identity") is not None
-    ]
-    if len(source_receipts) != 1:
-        raise RuntimeError("foreground start needs one distinct live process receipt")
-
-    source_path, receipt = source_receipts[0]
-    resource_digest = domain_digest(
-        "aos.ability.foreground-process-state-key/v1", resource
-    )
-    target_path = (
-        "/var/lib/aos/ability-runtime/foreground-process/processes/"
-        f"{resource_digest}.json"
-    )
-    original = runtime.succeed(f"{COREUTILS}/cat {shlex.quote(source_path)}").encode()
-    runtime.succeed(
-        f"{COREUTILS}/cp {shlex.quote(source_path)} {shlex.quote(target_path)}"
-    )
-    if json.loads(original) != receipt:
-        raise RuntimeError("foreground source receipt changed while it was copied")
-    INJECTED_MARKERS[_resource_key(resource)] = {
-        "path": target_path,
-        "original": None,
-        "cleanup": [],
-    }
-
-
 def write_canonical_provider_file(path: str, value: Any) -> None:
     """Atomically replaces one exact provider marker as the fleet root."""
 
@@ -556,17 +488,6 @@ def live_observation_with_documents(
     kind = _adapter_claim(adapter).get("observation_kind")
     if not isinstance(kind, str):
         raise RuntimeError("qualification claim does not select one observation kind")
-    if kind == "foreground-process":
-        observed_operation = operation
-        if documents:
-            receipt_resource = documents[0][1].get("request", {}).get("resource")
-            if receipt_resource is not None:
-                observed_operation = dict(operation)
-                observed_operation["target"] = dict(operation["target"])
-                observed_operation["target"]["resource"] = receipt_resource
-        return EFFECT_ORACLES.foreground_process_snapshot(
-            observed_operation, documents
-        )
     if kind == "filesystem":
         return exact_filesystem_snapshot(operation, documents)
     if kind == "network":

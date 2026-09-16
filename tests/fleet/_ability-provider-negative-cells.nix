@@ -27,7 +27,6 @@
       "nginx-validation"
       "service-management"
     ];
-    foreground-process = byAdapters ["foreground-process"];
     systemd-manager = byAdapters ["systemd-manager"];
     kubernetes-object = byAdapters ["kubernetes-object"];
     systemd-bootstrap = byAdapters ["systemd-bootstrap"];
@@ -36,7 +35,6 @@
   };
   all =
     groups.reference
-    ++ groups.foreground-process
     ++ groups.systemd-manager
     ++ groups.kubernetes
     ++ groups.rollout;

@@ -20,11 +20,6 @@ in {
 
   config.qualification = {
     containerExecution.stages = {
-      application-container = {
-        scope = "application-container-process";
-        status = "qualified";
-        evidence = ["checks.fleet.ability-native-foreground-container"];
-      };
       host = {
         scope = "host-manager";
         status = "qualified";
