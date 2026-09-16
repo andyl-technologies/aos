@@ -1673,6 +1673,10 @@ in rec {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
     };
+    packageStoreReadView = import ./package-store-read-view.nix {
+      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
+      types = abilityTypes;
+    };
     kernelTunables = import ./kernel-tunables.nix {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
@@ -1713,6 +1717,7 @@ in rec {
         // interfaces.bootPreparation.declarations
         // interfaces.imageRolloutPlatform.declarations
         // interfaces.bootTransactionStorage.declarations
+        // interfaces.packageStoreReadView.declarations
         // interfaces.kernelTunables.declarations
         // interfaces.networkConfiguration.declarations
         // interfaces.blockStorage.declarations
