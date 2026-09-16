@@ -11,6 +11,7 @@
 pub mod composition;
 pub mod resolution;
 pub mod snapshot;
+pub mod source_stage;
 pub mod transition;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -29,6 +30,11 @@ pub use resolution::{
 pub use snapshot::{
     PLANNING_SNAPSHOT_MAX_BYTES, PLANNING_SNAPSHOT_SCHEMA, PlanningReplayInputs, PlanningSnapshot,
     PlanningSnapshotError, ResolutionSnapshot, VerifiedPlanningSnapshot,
+};
+pub use source_stage::{
+    CheckedSourceStageBundle, SOURCE_STAGE_BUNDLE_MAX_BYTES, SOURCE_STAGE_BUNDLE_SCHEMA,
+    SourceStageBundle, SourceStageBundleError, SourceStageFixedPoint, SourceStageStaticContract,
+    SourceStageTransitionProvenance,
 };
 pub use transition::{
     AuthorizedTransitionBinding, RUNTIME_OBSERVATIONS_SCHEMA, ResourceChange, ResourceChangeKind,
