@@ -2,9 +2,16 @@
 {
   serviceInterfaces,
   serviceTypes,
+  types,
   interfaceDocumentFromDeclaration,
   interfaceIdentity,
 }: let
+  declarationReferenceFor = consumerInstance: localKey: let
+    qualified = builtins.match "([^:]+):[^:]+" consumerInstance;
+  in
+    if types.declarationKey.check consumerInstance && qualified != null
+    then "${builtins.head qualified}:${localKey}"
+    else localKey;
   featureInterfaces = {
     lifecycle = serviceInterfaces.lifecycle;
     template_definition = serviceInterfaces.templateDefinition;
@@ -666,14 +673,14 @@
       then [featureInterfaces.lifecycle.guaranteesByKind.instance]
       else [];
     coreRequirementTemplates = builtins.listToAttrs (builtins.map (feature: {
-        name = featureInterfaces.${feature}.alias;
+        name = declarationReferenceFor consumerInstance featureInterfaces.${feature}.alias;
         value = requirementFor featureInterfaces.${feature} (methodsFor feature) (guaranteesFor feature);
       })
       enabledFeatures);
     coreRequests = builtins.listToAttrs (builtins.map (feature: {
-        name = "${checked.service}-${feature}";
+        name = declarationReferenceFor consumerInstance "${checked.service}-${feature}";
         value = {
-          requirement = featureInterfaces.${feature}.alias;
+          requirement = declarationReferenceFor consumerInstance featureInterfaces.${feature}.alias;
           consumer = consumerInstance;
           scope = [checked.service];
           parameters = requestParameters checked feature;
@@ -683,14 +690,14 @@
     featureKeys = builtins.map (feature: feature.key) featureContributions;
     requirementAliases = builtins.map (feature: feature.requirementAlias) featureContributions;
     externalRequirementTemplates = builtins.listToAttrs (builtins.map (feature: {
-        name = feature.requirementAlias;
+        name = declarationReferenceFor consumerInstance feature.requirementAlias;
         value = feature.requirement;
       })
       featureContributions);
     externalRequests = builtins.listToAttrs (builtins.map (feature: {
-        name = "${checked.service}-${feature.key}";
+        name = declarationReferenceFor consumerInstance "${checked.service}-${feature.key}";
         value = {
-          requirement = feature.requirementAlias;
+          requirement = declarationReferenceFor consumerInstance feature.requirementAlias;
           consumer = consumerInstance;
           scope = [checked.service];
           parameters =
@@ -777,9 +784,9 @@
       else checked;
     interface = serviceInterfaces.managedConfiguration;
     contribution = {
-      requirementTemplates.${interface.alias} = requirementFor interface interface.methods [];
-      requests.${validated.name} = {
-        requirement = interface.alias;
+      requirementTemplates.${declarationReferenceFor consumerInstance interface.alias} = requirementFor interface interface.methods [];
+      requests.${declarationReferenceFor consumerInstance validated.name} = {
+        requirement = declarationReferenceFor consumerInstance interface.alias;
         consumer = consumerInstance;
         scope = [validated.name];
         parameters = validated;
@@ -820,11 +827,11 @@
       else if !storageViewPairsValid
       then throw "storage views must pair retained-resource and planned-path outputs from one allocation request"
       else {
-        requirementTemplates.${selectedInterface.alias} = requirementFor selectedInterface selectedMethods [];
+        requirementTemplates.${declarationReferenceFor consumerInstance selectedInterface.alias} = requirementFor selectedInterface selectedMethods [];
         requests = builtins.listToAttrs (builtins.map (producer: {
-            name = producer.key;
+            name = declarationReferenceFor consumerInstance producer.key;
             value = {
-              requirement = selectedInterface.alias;
+              requirement = declarationReferenceFor consumerInstance selectedInterface.alias;
               consumer = consumerInstance;
               scope = [producer.key];
               inherit (producer) parameters;

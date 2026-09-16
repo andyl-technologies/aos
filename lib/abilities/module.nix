@@ -104,6 +104,10 @@
     if package == null
     then name
     else "${package}:${name}";
+  qualifyReference = package: name:
+    if package == null || declarationKeyType.check name
+    then name
+    else qualify package name;
   qualifyGuarantees = package: guarantees:
     builtins.map (guarantee:
       if builtins.isString guarantee
@@ -201,7 +205,7 @@
           implementation =
             if value.implementation == null
             then null
-            else qualify package value.implementation;
+            else qualifyReference package value.implementation;
         }
       )
     else if collection == "requests"
@@ -216,12 +220,12 @@
       }
       // (
         if value ? requirement
-        then {requirement = qualify package value.requirement;}
+        then {requirement = qualifyReference package value.requirement;}
         else {}
       )
       // (
         if value ? consumer
-        then {consumer = qualify package value.consumer;}
+        then {consumer = qualifyReference package value.consumer;}
         else {}
       )
     else if collection == "requirementTemplates"
@@ -1643,7 +1647,9 @@ in {
       in
         if builtins.all requestAccepted (builtins.attrValues requests)
         then withLifetime
-        else throw "An ability request does not match its requirement interface request type.";
+        else let
+          rejected = builtins.filter (name: !requestAccepted requests.${name}) (builtins.attrNames requests);
+        in throw "Ability request(s) do not match their requirement interface request type: ${builtins.concatStringsSep ", " rejected}";
       description = "Concrete ability requests emitted by configured instances.";
     };
     bindings = mkOption {
