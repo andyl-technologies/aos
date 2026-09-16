@@ -316,10 +316,6 @@
       layers = [baseLayerA applicationLayer abilityLayer metadata];
       runtimeAudit = audit;
       inherit abilityContract;
-      platform = {
-        inherit architecture;
-        os = "linux";
-      };
       referenceName = "aos-fixture:latest";
       annotations = {
         "org.opencontainers.image.title" = "AOS OCI builder fixture";
@@ -397,10 +393,6 @@
     layers = [baseLayerA applicationDelta abilityLayer metadata];
     runtimeAudit = runtimeAudit;
     abilityContract = forgedPlatformAbilityContract;
-    platform = {
-      architecture = "amd64";
-      os = "linux";
-    };
     config.entrypoint = ["/bin/base-tool"];
   };
   multiPlatform = oci.mkMultiPlatformIndex {
@@ -441,11 +433,6 @@
     packageRegistry = abilityPackageRegistry;
     packageRoots = [pkgs.ability-package-smoke];
     runtimeRoots = [application];
-  });
-  wrongPlatformContract = tryBuilder (mkPlatformImage {
-    architecture = "amd64";
-    pname = "oci-wrong-platform-contract-eval";
-    abilityContract = arm64AbilityContract;
   });
   aggregateContractMismatch = tryBuilder (oci.mkMultiPlatformIndex {
     pname = "oci-aggregate-contract-mismatch-eval";
@@ -546,6 +533,20 @@
     builtins.readFile ../../crates/aos-oci-types/tests/reference-vectors.json
   );
   accepts = validator: value: (builtins.tryEval (validator "test vector" value)).success;
+  openPlatform = oci.common.validatePlatform {
+    os = "otheros";
+    architecture = "riscv64";
+  };
+  tryPlatform = platform:
+    builtins.tryEval (builtins.deepSeq (oci.common.validatePlatform platform) true);
+  missingPlatformOs = tryPlatform {
+    architecture = "riscv64";
+  };
+  inventedPlatformField = tryPlatform {
+    os = "otheros";
+    architecture = "riscv64";
+    vendor = "forged";
+  };
   evalContracts = assert validStickyMode.success;
   assert !(amd64AbilityContract ? outPath);
   assert builtins.isAttrs amd64AbilityContract.artifact;
@@ -563,8 +564,14 @@
   assert !missingFilePayload.success;
   assert !ambiguousFilePayload.success;
   assert !hostFileSource.success;
+  assert openPlatform == {
+    os = "otheros";
+    architecture = "riscv64";
+    variant = null;
+  };
+  assert !missingPlatformOs.success;
+  assert !inventedPlatformField.success;
   assert !absentAbilityPayload.success;
-  assert !wrongPlatformContract.success;
   assert !aggregateContractMismatch.success;
   assert !evidenceContractMismatch.success;
   assert lib.all (accepts oci.common.validateRepository) referenceVectors.repositories.valid;

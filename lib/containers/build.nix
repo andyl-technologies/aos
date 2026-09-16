@@ -350,9 +350,6 @@
       layers = closureLayers ++ [facadeLayer metadataLayer];
       inherit runtimeAudit;
       abilityContract = staticAbilityContract;
-      platform = {
-        inherit (container.platform) os architecture;
-      };
       inherit referenceName;
       annotations = releaseAnnotations;
       indexAnnotations = releaseAnnotations;
