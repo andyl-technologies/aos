@@ -166,7 +166,7 @@ in {
         pkgs.aos-boot-transaction-storage-provider
       ];
       aos.abilities.stages.initrd = {
-        intent = [
+        modules = [
           {aos.boot.storageServices.espDevices = cfg.espDevices;}
         ];
       };
@@ -177,7 +177,7 @@ in {
       aos.boot.initrd.packageRoots = [zfsPackage];
       aos.boot.initrd.loadModules = ["zfs"];
       aos.abilities.stages.initrd = {
-        intent = [
+        modules = [
           {
             aos.boot.storageServices = {
               zfs = {

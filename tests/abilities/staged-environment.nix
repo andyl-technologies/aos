@@ -3,6 +3,44 @@
   lib,
   mkSystem,
 }: let
+  nixFilesUnder = directory: let
+    entries = builtins.readDir directory;
+  in
+    builtins.concatMap (name: let
+      entry = entries.${name};
+      path = directory + "/${name}";
+    in
+      if entry == "directory"
+      then nixFilesUnder path
+      else if entry == "regular" && lib.hasSuffix ".nix" name
+      then [path]
+      else [])
+    (builtins.attrNames entries);
+  compact = source:
+    builtins.replaceStrings [" " "\n" "\r" "\t"] ["" "" "" ""] source;
+  hasLegacyInitrdIntent = source: let
+    normalized = compact source;
+    nestedDefinitions = builtins.tail (
+      lib.splitString "aos.abilities.stages.initrd=" normalized
+    );
+    nestedDefinitionHasIntent = tail: let
+      body = builtins.head (builtins.split "}" tail);
+    in
+      lib.hasPrefix "{" tail && lib.hasInfix "intent=" body;
+  in
+    lib.hasInfix "aos.abilities.stages.initrd.intent=" normalized
+    || builtins.any nestedDefinitionHasIntent nestedDefinitions;
+  productionNixFiles =
+    builtins.concatMap nixFilesUnder [
+      ../../lib
+      ../../modules
+      ../../pkgs
+      ../../systems
+    ]
+    ++ [../../default.nix];
+  legacyInitrdIntentFiles = builtins.filter
+    (path: hasLegacyInitrdIntent (builtins.readFile path))
+    productionNixFiles;
   system = mkSystem {
     systemName = "staged-environment-test";
     modules = [
@@ -34,6 +72,13 @@
   initrd = system.config.system.build.initrdAbilityGraph;
   host = system.config.aos.abilities;
 in
+  assert hasLegacyInitrdIntent "aos.abilities.stages.initrd.intent = [];";
+  assert hasLegacyInitrdIntent ''
+    aos.abilities.stages.initrd = {
+      intent = [];
+    };
+  '';
+  assert legacyInitrdIntentFiles == [];
   assert initrd.environment == {
     authority = "system-image";
     key = "staged-environment-test";
