@@ -277,7 +277,7 @@
     request = "aos-boot-storage:aos-mount-esp-lifecycle";
     output = "service-resource";
   };
-  graphCompile = resultOf "aos-graph-compile-lifecycle" "service-resource";
+  activationPreflight = resultOf "aos-graph-compile-lifecycle" "service-resource";
   activation = resultOf "aos-activate-lifecycle" "service-resource";
   configurationReady = resultOf "aos-config" "activation-resource";
   multiUserReadiness = resultOf "multi-user" "readiness-resource";
@@ -303,9 +303,9 @@
       ++ lib.optional cfg.measuredBoot "--require-attestation-quote"
     );
     serviceDependencies = dependencies {
-      after = [mountEsp graphCompile activation configurationReady];
+      after = [mountEsp activationPreflight activation configurationReady];
       before = [multiUserReadiness];
-      requires = [mountEsp graphCompile];
+      requires = [mountEsp activationPreflight];
       wantedBy = [multiUserReadiness];
     };
     enabled = true;

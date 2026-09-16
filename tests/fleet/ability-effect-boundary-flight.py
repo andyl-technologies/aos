@@ -390,7 +390,7 @@ def operation_boundaries(
 
 
 def kill_candidate_runtime() -> None:
-    """Kills exactly one candidate `__activate-config` process."""
+    """Kills exactly one candidate `__ability-activate` process."""
 
     killed = runtime.succeed(
         textwrap.dedent(
@@ -404,7 +404,7 @@ def kill_candidate_runtime() -> None:
               process=''${{process%/exe}}
               command=$({COREUTILS}/tr '\\000' ' ' < "/proc/$process/cmdline" 2>/dev/null || true)
               case " $command " in
-                *" __activate-config "*) matches="$matches $process" ;;
+                *" __ability-activate "*) matches="$matches $process" ;;
               esac
             done
             set -- $matches
@@ -426,7 +426,7 @@ def cancel_switch(unit: str) -> int:
         f"test \"$({COREUTILS}/readlink /proc/$process/exe)\" = "
         f"{shlex.quote(PACKAGE_RUNTIME)}; "
         f"{COREUTILS}/tr '\\000' ' ' < /proc/$process/cmdline "
-        f"| {GREP} -F ' __activate-config ' >/dev/null",
+        f"| {GREP} -F ' __ability-activate ' >/dev/null",
         timeout=120,
     )
     process = runtime.succeed(

@@ -136,7 +136,7 @@
       inherit serviceTypes consumerInstance declaration;
     };
 
-  graphCompile = service {
+  activationPreflight = service {
     service = "aos-graph-compile";
     enabled = true;
     manager_identity = {
@@ -224,7 +224,7 @@
     };
   };
 
-  fragments = [configGroup graphCompile activate];
+  fragments = [configGroup activationPreflight activate];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.aos.config.unitGraph = {

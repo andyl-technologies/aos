@@ -207,7 +207,7 @@ to make it agree with an unintended layout.
 ## Recover a failed configuration activation
 
 An error can occur during evaluation, package fetch/render, secret resolution,
-EROFS materialization, `/etc` replacement, or unit reconciliation. First
+EROFS materialization, `/etc` replacement, or provider convergence. First
 determine the active pointer and transaction-bound activation result:
 
 ```sh

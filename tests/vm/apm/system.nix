@@ -116,17 +116,6 @@
               )
             )}
 
-            # Activation script
-            cat > $out/activate << 'ACTIVATEEOF'
-            #!${pkgs.bash}/bin/bash
-            set -euo pipefail
-            echo "Activating ${pname} ${version}"
-            ${pkgs.coreutils}/bin/mkdir -p /tmp
-            echo "${version}" > /tmp/activated-${version}
-            echo "${version}" > /tmp/activated-current
-            ACTIVATEEOF
-            chmod +x $out/activate
-
             ${
               if kernelPath != null
               then ''
@@ -703,8 +692,7 @@ in {
 
       if [ -e /var/lib/profiles/system/state.json ] || \
         [ -e /var/lib/profiles/system/current ] || \
-        [ -e /var/lib/profiles/system/gen-1 ] || \
-        [ -e /tmp/activated-2026.03 ]; then
+        [ -e /var/lib/profiles/system/gen-1 ]; then
         fail "rejected system activation must not create generation state"
       else
         pass "rejected system activation leaves generation state untouched"
@@ -759,8 +747,7 @@ in {
       fi
       assert_store_valid "$TOPLEVEL_STORE" "system toplevel after scoped mirror install"
       if [ -e /var/lib/profiles/system/state.json ] || \
-        [ -e /var/lib/profiles/system/current ] || \
-        [ -e /tmp/activated-2026.03 ]; then
+        [ -e /var/lib/profiles/system/current ]; then
         fail "rejected scoped system install must not activate the sysroot"
       else
         pass "rejected scoped system install leaves generation state untouched"
@@ -845,8 +832,6 @@ in {
       }
       test "$(${pkgs.jq}/bin/jq '.current' /var/lib/profiles/system/state.json)" = "2"
       test "$(readlink /var/lib/profiles/system/current)" = "gen-2"
-      test ! -e /tmp/activated-2026.03
-
       echo "==> system-rollback fail-closed boundary PASSED"
     '';
   };

@@ -387,9 +387,7 @@ aos-provisioning-persist
 aos-host-config-restore
 aos-eval
   -> aos-host-config-cache
-  -> aos-graph-compile
-     -> aos-fetch.target
-     -> aos-config-render.target
+  -> aos-graph-compile (checked-plan preflight)
      -> aos-activate
      -> aos-config.target
 ```

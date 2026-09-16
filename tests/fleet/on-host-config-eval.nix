@@ -215,8 +215,8 @@ in {
       image_default.succeed("systemctl is-active --quiet aos-config.target")
 
 
-      # Reaching these units proves graph compilation synchronously awaited the
-      # activation proof, rather than merely observing an eval manifest.
+      # Reaching these units proves checked activation completed before the
+      # configuration target, rather than merely producing an eval manifest.
       wait_for_activation(runtime)
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-activate.service", timeout=300

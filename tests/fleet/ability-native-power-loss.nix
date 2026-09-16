@@ -780,7 +780,7 @@ in {
                 command=$({COREUTILS}/tr '\\000' ' ' \
                   < "/proc/$process/cmdline" 2>/dev/null || true)
                 case " $command " in
-                  *" __activate-config "*) matches="$matches $process" ;;
+                  *" __ability-activate "*) matches="$matches $process" ;;
                 esac
               done
               set -- $matches

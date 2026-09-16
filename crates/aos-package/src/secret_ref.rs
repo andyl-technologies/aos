@@ -170,13 +170,11 @@ fn is_credstore_source(source: &str) -> bool {
         || source.starts_with("/usr/lib/credstore")
 }
 
-/// The mockable activation seam: encrypt, write, and restart (build-spec §2.3
-/// steps 4-8).
+/// The mockable credential-authoring seam for encryption and durable writes.
 ///
-/// The production implementation is `credential_artifact.rs`
-/// (`run_systemd_creds_encrypt` → `write_credential_source` →
-/// `CredentialReconciliation::apply`); tests inject a recording mock so the
-/// dispatch and the no-plaintext invariant are exercised off-host.
+/// Tests inject a recording sink so resolver dispatch and the no-plaintext
+/// invariant can be exercised without a host credential provider. Checked
+/// credential and service providers own runtime delivery and consumer restart.
 pub trait CredstoreSink {
     /// Step 4: obtain the plaintext bytes for `sr` via its resolver. For
     /// [`ResolverKind::Tpm2Credstore`] the bytes are already present and this is
