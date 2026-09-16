@@ -27,6 +27,7 @@
   runtimeClosureAudit,
   bootArtifacts,
   rawDiskFilename,
+  rawMetadataFilename,
   rootfs,
   targetPlatform,
 }: let
@@ -737,7 +738,7 @@
                   {number: 3, label: "root-a-hash", type: "verity", filesystem: "dm-verity", sizeMiB: $hashSizeMiB, offsetBytes: $hashOffsetBytes, sizeBytes: $hashPartitionSizeBytes},
                   {number: 5, label: "root-b-hash", type: "verity", filesystem: "dm-verity", sizeMiB: $hashSizeMiB, offsetBytes: $hashBOffsetBytes, sizeBytes: $hashBPartitionSizeBytes}
                 ]''}' \
-              > $out/image-info.json
+              > $out/${rawMetadataFilename}
 
             ${lib.optionalString recoveryEnabled ''
               component() {
@@ -761,7 +762,7 @@
                   component recovery-uki-b recovery-b.efi
                   component recovery-entry-a recovery-a.conf
                   component recovery-entry-b recovery-b.conf
-                  component image-metadata image-info.json
+                  component image-metadata ${lib.escapeShellArg rawMetadataFilename}
                 } | ${pkgs.jq}/bin/jq -s .
               )
               ${pkgs.jq}/bin/jq -S -n \
@@ -820,7 +821,7 @@
                 uki-a.efi uki-b.efi \
                 recovery-a.efi recovery-b.efi \
                 recovery-a.conf recovery-b.conf \
-                image-info.json recovery-bundle.json recovery-bundle.json.sig; do
+                ${rawMetadataFilename} recovery-bundle.json recovery-bundle.json.sig; do
                 cp "${imageDrv}/$component" "$destination/$component"
               done
             '';

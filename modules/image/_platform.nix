@@ -2,6 +2,7 @@
 {lib, ...}: let
   consumer = "image:builder";
   builderInterface = lib.abilities.interfaces.imageBuilder.interfaces.builder;
+  artifactFilenameType = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._+-]*";
   selectedBuilderType = lib.types.submodule {
     config._module.strict = true;
 
@@ -23,7 +24,7 @@
         description = "Human-readable selected image-builder name.";
       };
       normalArtifactPath = lib.mkOption {
-        type = lib.types.nonEmptyStr;
+        type = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._+/-]*";
         description = "Firmware-relative path of the normal boot artifact.";
       };
       package = lib.mkOption {
@@ -58,7 +59,7 @@
         description = "Optional selected-provider installation bundle.";
       };
       rawDiskFilename = lib.mkOption {
-        type = lib.types.nonEmptyStr;
+        type = artifactFilenameType;
         description = "Filename of the compressed raw disk inside its artifact.";
       };
       rawImage = lib.mkOption {
@@ -66,7 +67,7 @@
         description = "Selected provider's compressed raw disk artifact.";
       };
       rawMetadataFilename = lib.mkOption {
-        type = lib.types.nonEmptyStr;
+        type = artifactFilenameType;
         description = "Filename of image metadata inside the raw artifact.";
       };
       recoveryBootExecutableA = lib.mkOption {

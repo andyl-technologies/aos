@@ -3,6 +3,7 @@
   baseImage,
   config,
   lib,
+  metadataFilename,
   pkgs,
   rawImage,
   targetPlatform,
@@ -51,7 +52,7 @@ else
               component recovery-uki-b recovery-b.efi
               component recovery-entry-a recovery-a.conf
               component recovery-entry-b recovery-b.conf
-              component image-metadata image-info.json
+              component image-metadata ${lib.escapeShellArg metadataFilename}
             } | jq -s .
           )
           jq -S -n \
