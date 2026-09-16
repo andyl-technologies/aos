@@ -27,7 +27,7 @@
   disabled = evaluate "host" [] [
     (packageModule pkgs.aos-boot-identity)
     (packageModule pkgs.aos-verity-root-guard)
-    (packageModule pkgs.aos-var-policy-migrate)
+    (packageModule pkgs.aos-systemd-var-policy)
     (packageModule pkgs.systemd)
   ];
   configured =
@@ -49,7 +49,7 @@
     ] [
       (packageModule pkgs.aos-boot-identity)
       (packageModule pkgs.aos-verity-root-guard)
-      (packageModule pkgs.aos-var-policy-migrate)
+      (packageModule pkgs.aos-systemd-var-policy)
       (packageModule pkgs.systemd)
     ];
   requests = configured.config.aos.abilities.requests;
@@ -61,9 +61,9 @@
   };
   guardDependencies = request "aos-verity-root-guard" "aos-verity-root-verify-dependencies";
   guardFailure = request "aos-verity-root-guard" "aos-verity-root-verify-failure_policy";
-  measuredVarLifecycle = request "aos-var-policy-migrate" "aos-var-crypt-lifecycle";
-  measuredVarDependencies = request "aos-var-policy-migrate" "aos-var-crypt-dependencies";
-  measuredVarCondition = request "aos-var-policy-migrate" "aos-var-crypt-conditions";
+  measuredVarLifecycle = request "aos-systemd-var-policy" "aos-var-crypt-lifecycle";
+  measuredVarDependencies = request "aos-systemd-var-policy" "aos-var-crypt-dependencies";
+  measuredVarCondition = request "aos-systemd-var-policy" "aos-var-crypt-conditions";
   identityGuardDependencies = request "aos-boot-identity" "aos-boot-identity-guard-dependencies";
   identityGuardFailure = request "aos-boot-identity" "aos-boot-identity-guard-failure_policy";
   systemdVerityDependencies = request "systemd" "aos-systemd-verity-root-setup-dependencies";
@@ -78,6 +78,11 @@
     modules = [../../systems/server-verity.nix];
   };
   secureVerityIntent = secureVeritySystem.config.aos.abilities.stages.initrd.intent;
+  secureVerityPackages =
+    builtins.map
+    (package: package.pname)
+    secureVeritySystem.config.aos.abilities.stages.initrd.packages;
+  secureBootModule = builtins.readFile ../../modules/base/secure-boot.nix;
   intentValuesAt = path:
     builtins.concatMap
     (fragment:
@@ -86,11 +91,13 @@
       (lib.attrByPath path null fragment))
     secureVerityIntent;
 in
-  assert disabled.config.aos.abilities.requests == {};
+  assert builtins.all
+  (requestName: !(lib.hasPrefix "aos-systemd-var-policy:" requestName))
+  (builtins.attrNames disabled.config.aos.abilities.requests);
   assert builtins.attrNames configured.config.aos.abilities.instances
   == [
     "aos-boot-identity:boot-identity"
-    "aos-var-policy-migrate:measured-var"
+    "aos-systemd-var-policy:measured-var"
     "aos-verity-root-guard:verity-root-verification"
     "systemd:systemd-verity-root"
   ];
@@ -112,15 +119,15 @@ in
   ];
   assert measuredVarDependencies.after
   == [
-    (output "aos-var-policy-migrate:boot-identity" "readiness-resource")
-    (output "aos-var-policy-migrate:initrd-stage" "readiness-resource")
-    (output "aos-var-policy-migrate:device-events" "readiness-resource")
-    (output "aos-var-policy-migrate:verity-root" "readiness-resource")
+    (output "aos-systemd-var-policy:boot-identity" "readiness-resource")
+    (output "aos-systemd-var-policy:initrd-stage" "readiness-resource")
+    (output "aos-systemd-var-policy:device-events" "readiness-resource")
+    (output "aos-systemd-var-policy:verity-root" "readiness-resource")
   ];
   assert measuredVarDependencies.requires
   == [
-    (output "aos-var-policy-migrate:boot-identity" "readiness-resource")
-    (output "aos-var-policy-migrate:verity-root" "readiness-resource")
+    (output "aos-systemd-var-policy:boot-identity" "readiness-resource")
+    (output "aos-systemd-var-policy:verity-root" "readiness-resource")
   ];
   assert measuredVarDependencies.implicit_dependencies;
   assert measuredVarCondition.all
@@ -131,15 +138,15 @@ in
       negated = true;
     }
   ];
-  assert (request "aos-var-policy-migrate" "boot-identity").milestone
+  assert (request "aos-systemd-var-policy" "boot-identity").milestone
   == "boot-identity-validated";
-  assert (request "aos-var-policy-migrate" "initrd-stage").milestone
+  assert (request "aos-systemd-var-policy" "initrd-stage").milestone
   == "initrd-stage-executed";
-  assert (request "aos-var-policy-migrate" "device-events").milestone == "device-settle";
-  assert (request "aos-var-policy-migrate" "initrd-filesystems").milestone
+  assert (request "aos-systemd-var-policy" "device-events").milestone == "device-settle";
+  assert (request "aos-systemd-var-policy" "initrd-filesystems").milestone
   == "initrd-filesystems";
-  assert (request "aos-var-policy-migrate" "persistent-state").milestone == "var";
-  assert (request "aos-var-policy-migrate" "verity-root").milestone
+  assert (request "aos-systemd-var-policy" "persistent-state").milestone == "var";
+  assert (request "aos-systemd-var-policy" "verity-root").milestone
   == "verity-root-verified";
   assert (request "aos-verity-root-guard" "verity-root-mapping").milestone
   == "verity-root-mapping-ready";
@@ -155,6 +162,10 @@ in
   assert intentValuesAt ["aos" "security" "verityRootVerification" "enable"] == [true];
   assert intentValuesAt ["aos" "security" "measuredVar" "enable"] == [true];
   assert intentValuesAt ["aos" "security" "measuredVar" "requireVerity"] == [true];
+  assert builtins.elem "systemd" secureVerityPackages;
+  assert builtins.elem "aos-systemd-var-policy" secureVerityPackages;
+  assert !(lib.hasInfix "pkgs.systemd" secureBootModule);
+  assert !(lib.hasInfix "pkgs.aos-systemd-var-policy" secureBootModule);
   assert guardDependencies.required_by
   == [
     (output "aos-verity-root-guard:persistent-state" "readiness-resource")

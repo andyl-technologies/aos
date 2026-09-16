@@ -1,4 +1,4 @@
-##! aos-var-policy-migrate — recovery-authorized TPM enrollment replacement
+##! aos-systemd-var-policy — systemd TPM enrollment and unlock provider
 {
   lib,
   mkDerivation,
@@ -11,8 +11,8 @@
   util-linux,
 }:
 mkDerivation {
-  pname = "aos-var-policy-migrate";
-  abilities = ./_aos-var-policy-migrate/module.nix;
+  pname = "aos-systemd-var-policy";
+  abilities = ./_aos-systemd-var-policy/module.nix;
   qualification.packageProbe = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
@@ -520,7 +520,7 @@ mkDerivation {
           -e 's|@e2fsprogs@|${e2fsprogs}|g' \
           -e 's|@systemd@|${systemd}|g' \
           -e 's|@util-linux@|${util-linux}|g' \
-          ${./_aos-var-policy-migrate/aos-var-crypt.sh} \
+          ${./_aos-systemd-var-policy/aos-var-crypt.sh} \
           > $out/bin/aos-var-crypt
         chmod 0755 $out/bin/aos-var-crypt
       '';
@@ -528,8 +528,8 @@ mkDerivation {
   ];
 
   passthru.evidenceSources = [
-    ./aos-var-policy-migrate.nix
-    ./_aos-var-policy-migrate/aos-var-crypt.sh
+    ./aos-systemd-var-policy.nix
+    ./_aos-systemd-var-policy/aos-var-crypt.sh
   ];
 
   meta = {

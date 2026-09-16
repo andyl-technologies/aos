@@ -60,11 +60,11 @@
     .build
     .initrdAbilityGraph
     .requests
-    ."aos-var-policy-migrate:aos-var-crypt-dependencies"
+    ."aos-systemd-var-policy:aos-var-crypt-dependencies"
     .parameters;
   verityReadiness = {
     _type = "aos-request-output-reference";
-    request = "aos-var-policy-migrate:verity-root";
+    request = "aos-systemd-var-policy:verity-root";
     output = "readiness-resource";
   };
   ukiBMedia = effectiveSystem: let
@@ -229,7 +229,7 @@ in {
       TPM2_CHECKQUOTE = "${pkgs.tpm2-tools}/bin/tpm2_checkquote"
       TPM2_PCREXTEND = "${pkgs.tpm2-tools}/bin/tpm2_pcrextend"
       TPM2_PCRREAD = "${pkgs.tpm2-tools}/bin/tpm2_pcrread"
-      VAR_POLICY_MIGRATE = "${pkgs.aos-var-policy-migrate}/bin/aos-var-policy-migrate"
+      VAR_POLICY_MIGRATE = "${pkgs.aos-systemd-var-policy}/bin/aos-var-policy-migrate"
       VARDEV = "/dev/disk/by-partlabel/var"
       MOUNT = "${pkgs.util-linux}/bin/mount"
       UMOUNT = "${pkgs.util-linux}/bin/umount"

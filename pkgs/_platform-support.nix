@@ -474,7 +474,7 @@ let
     "aos-storage-format-provider"
     "aos-storage-provisioning-provider"
     "aos-zfs-provider"
-    "aos-var-policy-migrate"
+    "aos-systemd-var-policy"
     "aos-verity-root-guard"
     "attr"
     "audit"

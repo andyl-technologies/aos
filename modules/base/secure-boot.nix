@@ -315,9 +315,9 @@ in {
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = ''
-          Path to the PCR-policy public key (PEM). Embedded in the UKI's
-          `.pcrpkey` section and used by `systemd-cryptenroll
-          --tpm2-public-key` to seal `/var`. Required with pcrPrivateKey.
+          Path to the PCR-policy public key (PEM). The selected boot and
+          persistent-state providers publish and enforce this policy.
+          Required with pcrPrivateKey.
         '';
       };
 
@@ -529,10 +529,7 @@ in {
       ];
 
       # Ship the PCR public key into the initrd for first-boot sealing.
-      aos.boot.initrd.extraPackages =
-        [pcrKeyForInitrd]
-        ++ lib.optional (config.aos.boot.storage.backend != "zfs-zvol") pkgs.aos-var-policy-migrate;
-      environment.systemPackages = [pkgs.aos-var-policy-migrate];
+      aos.boot.initrd.extraPackages = [pcrKeyForInitrd];
       environment.etc."aos/pcr-sign.pem".source = "${pcrKeyForInitrd}/pcr.pem";
     })
 
@@ -541,10 +538,6 @@ in {
     # that are absent from the smaller selection and initrd option trees.
     (lib.mkIf (cfg.measuredBoot.enable && config.aos.boot.storage.backend != "zfs-zvol") {
       aos.abilities.stages.initrd = {
-        packages = [
-          pkgs.aos-var-policy-migrate
-          pkgs.systemd
-        ];
         intent = [
           {
             aos.security.measuredVar = {

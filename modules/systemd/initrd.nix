@@ -196,6 +196,27 @@ in {
   };
 
   config = {
+    # The selected initrd manager owns its package implementations. Security
+    # policy contributes only provider-neutral intent; it does not select a
+    # manager or a TPM token format from the generic secure-boot module.
+    aos.abilities.stages.initrd.packages =
+      [pkgs.systemd]
+      ++ lib.optional
+      (config.aos.boot.secureBoot.measuredBoot.enable
+        && config.aos.boot.storage.backend != "zfs-zvol")
+      pkgs.aos-systemd-var-policy;
+
+    aos.boot.initrd.extraPackages =
+      lib.optional
+      (config.aos.boot.secureBoot.measuredBoot.enable
+        && config.aos.boot.storage.backend != "zfs-zvol")
+      pkgs.aos-systemd-var-policy;
+
+    environment.systemPackages =
+      lib.optional
+      config.aos.boot.secureBoot.measuredBoot.enable
+      pkgs.aos-systemd-var-policy;
+
     # Re-run stage-1 config oneshots against the real /etc in stage-2.
     #
     # systemd-modules-load / systemd-sysctl / systemd-tmpfiles-setup run once
