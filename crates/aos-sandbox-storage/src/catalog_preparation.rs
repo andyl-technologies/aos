@@ -987,6 +987,7 @@ mod tests {
             domains(),
             plan,
             Some(WorkspaceRootPolicyV1::create_initialize()),
+            None,
         )
         .unwrap()
     }
@@ -997,6 +998,10 @@ mod tests {
         let root_policy_digest = catalog
             .execution_binding()
             .map(|binding| binding.root_policy_digest())
+            .unwrap_or_else(|_| ObjectDigest::from_bytes([0; 32]));
+        let clone_identity_digest = catalog
+            .execution_binding()
+            .map(|binding| binding.clone_identity_digest())
             .unwrap_or_else(|_| ObjectDigest::from_bytes([0; 32]));
         RetainedStorageCatalogPreparationV1 {
             operation_id: [34; 16],
@@ -1015,6 +1020,7 @@ mod tests {
             lease_digest: ObjectDigest::from_bytes([42; 32]),
             assignment_digest: ObjectDigest::from_bytes([43; 32]),
             root_policy_digest,
+            clone_identity_digest,
             resolver_policy_binding: StorageResolverPolicyBindingV1::from_authenticated_parts(
                 48,
                 ObjectDigest::from_bytes([49; 32]),
@@ -1042,8 +1048,8 @@ mod tests {
             <[u8; 32]>::from(Sha256::digest(&encoded)),
             // Independently reproduced from the complete sole-v1 field order.
             [
-                205, 75, 40, 56, 73, 119, 213, 116, 222, 99, 130, 118, 150, 56, 150, 51, 164, 84,
-                76, 42, 247, 122, 30, 232, 204, 229, 181, 10, 182, 137, 44, 2,
+                130, 195, 136, 98, 244, 156, 146, 221, 54, 215, 5, 0, 188, 96, 227, 167, 89, 198,
+                142, 150, 237, 36, 143, 125, 129, 224, 63, 51, 8, 228, 223, 237,
             ]
         );
     }

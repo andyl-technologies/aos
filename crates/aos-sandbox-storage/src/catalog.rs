@@ -22,6 +22,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::StorageOperation;
 use crate::clone_identity::CloneIdentityRequirementV1;
+#[cfg(test)]
+use crate::root_policy::PortableRootAttributesV1;
 use crate::root_policy::WorkspaceRootPolicyV1;
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSCAT1";
@@ -917,7 +919,30 @@ impl ResolvedCatalogCommitmentV1 {
             CatalogPlanV1::CreateWorkspace { .. } => {
                 (Some(WorkspaceRootPolicyV1::create_initialize()), None)
             }
-            CatalogPlanV1::Clone { .. } => (None, None),
+            CatalogPlanV1::Clone { source, .. } => {
+                let source_metadata_record_digest =
+                    ObjectDigest::from_bytes(source.version_handle());
+                let root_attributes = PortableRootAttributesV1::new(0, 0, 0o755)
+                    .map_err(|_| CatalogSemanticError::InvalidRootPolicy)?;
+                let root_policy = WorkspaceRootPolicyV1::clone_preserve(
+                    source.guid(),
+                    root_attributes,
+                    source_metadata_record_digest,
+                )
+                .map_err(|_| CatalogSemanticError::InvalidRootPolicy)?;
+                let clone_identity = CloneIdentityRequirementV1::new_for_test(
+                    source.guid(),
+                    source_metadata_record_digest,
+                    0,
+                    0,
+                    1,
+                    0,
+                    source_metadata_record_digest,
+                )
+                .map_err(|_| CatalogSemanticError::InvalidIdentityPolicy)?;
+
+                (Some(root_policy), Some(clone_identity))
+            }
             _ => (None, None),
         };
         Self::new_at_format(generation, domains, plan, root_policy, clone_identity)
@@ -1166,35 +1191,44 @@ fn validate_identity_policy(
         return Err(CatalogSemanticError::InvalidRootPolicy);
     }
 
-    match (plan, root_policy, clone_identity) {
-        (CatalogPlanV1::CreateWorkspace { .. }, Some(policy), None)
-            if policy.is_create_initialize() =>
-        {
+    match plan {
+        CatalogPlanV1::CreateWorkspace { .. } => match (root_policy, clone_identity) {
+            (Some(policy), None) if policy.is_create_initialize() => Ok(()),
+            (_, Some(_)) => Err(CatalogSemanticError::InvalidIdentityPolicy),
+            _ => Err(CatalogSemanticError::InvalidRootPolicy),
+        },
+        CatalogPlanV1::Clone { source, .. } => {
+            let policy = root_policy.ok_or(CatalogSemanticError::InvalidRootPolicy)?;
+            if policy.source_snapshot_guid() != Some(source.guid()) {
+                return Err(CatalogSemanticError::InvalidRootPolicy);
+            }
+
+            let requirement = clone_identity.ok_or(CatalogSemanticError::InvalidIdentityPolicy)?;
+            if requirement.source_snapshot_guid() != source.guid()
+                || policy.source_metadata_record_digest()
+                    != Some(requirement.source_metadata_record_digest())
+                || policy.root_attributes().uid() > requirement.maximum_portable_uid()
+                || policy.root_attributes().gid() > requirement.maximum_portable_gid()
+            {
+                return Err(CatalogSemanticError::InvalidIdentityPolicy);
+            }
+
             Ok(())
         }
-        (CatalogPlanV1::Clone { source, .. }, Some(policy), Some(requirement))
-            if policy.source_snapshot_guid() == Some(source.guid())
-                && requirement.source_snapshot_guid() == source.guid()
-                && policy.source_metadata_record_digest()
-                    == Some(requirement.source_metadata_record_digest())
-                && policy.root_attributes().uid() <= requirement.maximum_portable_uid()
-                && policy.root_attributes().gid() <= requirement.maximum_portable_gid() =>
-        {
-            Ok(())
+        CatalogPlanV1::Snapshot { .. }
+        | CatalogPlanV1::HoldSnapshot { .. }
+        | CatalogPlanV1::ReleaseHold { .. }
+        | CatalogPlanV1::SetQuota { .. }
+        | CatalogPlanV1::DestroyDataset { .. }
+        | CatalogPlanV1::DestroySnapshot { .. } => {
+            if clone_identity.is_some() {
+                Err(CatalogSemanticError::InvalidIdentityPolicy)
+            } else if root_policy.is_some() {
+                Err(CatalogSemanticError::InvalidRootPolicy)
+            } else {
+                Ok(())
+            }
         }
-        (
-            CatalogPlanV1::Snapshot { .. }
-            | CatalogPlanV1::HoldSnapshot { .. }
-            | CatalogPlanV1::ReleaseHold { .. }
-            | CatalogPlanV1::SetQuota { .. }
-            | CatalogPlanV1::DestroyDataset { .. }
-            | CatalogPlanV1::DestroySnapshot { .. },
-            None,
-            None,
-        ) => Ok(()),
-        (CatalogPlanV1::Clone { .. }, _, _) => Err(CatalogSemanticError::InvalidIdentityPolicy),
-        (_, _, Some(_)) => Err(CatalogSemanticError::InvalidIdentityPolicy),
-        _ => Err(CatalogSemanticError::InvalidRootPolicy),
     }
 }
 
@@ -1734,8 +1768,8 @@ mod tests {
         assert_eq!(
             baseline.digest().as_bytes(),
             &[
-                216, 186, 52, 180, 173, 228, 60, 177, 201, 6, 176, 247, 56, 117, 83, 200, 102, 67,
-                244, 96, 99, 110, 67, 194, 59, 30, 119, 39, 81, 195, 115, 37,
+                144, 73, 225, 67, 33, 106, 192, 236, 131, 44, 19, 61, 63, 179, 129, 156, 119, 9,
+                68, 69, 115, 100, 205, 79, 84, 9, 131, 104, 179, 236, 167, 82,
             ]
         );
         assert_eq!(baseline.binding().generation(), 7);
@@ -1745,8 +1779,8 @@ mod tests {
         assert_eq!(
             raw_bytes_digest,
             [
-                111, 81, 241, 106, 252, 178, 113, 237, 161, 30, 218, 11, 189, 226, 122, 59, 65,
-                156, 189, 182, 153, 169, 238, 16, 246, 13, 37, 20, 10, 208, 125, 158,
+                219, 28, 201, 33, 51, 37, 123, 88, 178, 187, 227, 59, 90, 55, 229, 219, 188, 255,
+                95, 17, 56, 125, 79, 25, 168, 207, 173, 238, 174, 247, 198, 145,
             ]
         );
         assert!(
@@ -1836,6 +1870,7 @@ mod tests {
             domains(),
             create_plan,
             Some(create_policy),
+            None,
         )
         .unwrap();
         let recovered =
@@ -1856,7 +1891,7 @@ mod tests {
             destination: PlannedSnapshot::from_catalog(dataset.clone(), "revision-2").unwrap(),
         };
         let snapshot =
-            ResolvedCatalogCommitmentV1::new_execution_v1(8, domains(), snapshot_plan, None)
+            ResolvedCatalogCommitmentV1::new_execution_v1(8, domains(), snapshot_plan, None, None)
                 .unwrap();
         assert_eq!(
             snapshot.execution_binding().unwrap().root_policy_digest(),
@@ -1883,11 +1918,22 @@ mod tests {
             ObjectDigest::from_bytes([44; 32]),
         )
         .unwrap();
+        let clone_identity = CloneIdentityRequirementV1::new_for_test(
+            source.guid(),
+            ObjectDigest::from_bytes([44; 32]),
+            1000,
+            1001,
+            1,
+            0,
+            ObjectDigest::from_bytes([45; 32]),
+        )
+        .unwrap();
         let clone = ResolvedCatalogCommitmentV1::new_execution_v1(
             9,
             domains(),
             clone_plan.clone(),
             Some(clone_policy),
+            Some(clone_identity),
         )
         .unwrap();
         assert_eq!(
@@ -1896,7 +1942,13 @@ mod tests {
         );
 
         assert_eq!(
-            ResolvedCatalogCommitmentV1::new_execution_v1(9, domains(), clone_plan.clone(), None),
+            ResolvedCatalogCommitmentV1::new_execution_v1(
+                9,
+                domains(),
+                clone_plan.clone(),
+                None,
+                None,
+            ),
             Err(CatalogSemanticError::InvalidRootPolicy)
         );
         let wrong_source = WorkspaceRootPolicyV1::clone_preserve(
@@ -1911,6 +1963,7 @@ mod tests {
                 domains(),
                 clone_plan.clone(),
                 Some(wrong_source),
+                Some(clone_identity),
             ),
             Err(CatalogSemanticError::InvalidRootPolicy)
         );
@@ -1921,6 +1974,7 @@ mod tests {
                 domains(),
                 clone_plan,
                 Some(directly_invalid),
+                Some(clone_identity),
             ),
             Err(CatalogSemanticError::InvalidRootPolicy)
         );
@@ -1942,6 +1996,7 @@ mod tests {
                 ancestor: ancestor(),
             },
             Some(WorkspaceRootPolicyV1::create_initialize()),
+            None,
         )
         .unwrap();
         let policy_field = catalog.canonical_bytes().len() - 69;

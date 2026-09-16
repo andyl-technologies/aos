@@ -514,7 +514,11 @@ fn missing_initial_clone_repair_binds_source_policy_and_ordinal_one() {
     assert_eq!(origin_hold.snapshot_guid(), source.guid());
     assert_eq!(origin_hold.hold_id().as_bytes(), [33; 16]);
     assert_eq!(expected_root_policy.source_snapshot_guid(), Some(12));
-    assert!(expected_root_policy.source_metadata_commitment().is_some());
+    assert!(
+        expected_root_policy
+            .source_metadata_record_digest()
+            .is_some()
+    );
 
     let mut substituted_source = broker
         .plan_workspace_pin_repair_admission_observation(

@@ -160,12 +160,10 @@ mod tests {
         SandboxId,
     };
 
-    use super::inventory::{
-        AuthenticatedSnapshotRootMetadataV1, CheckedSnapshotRootMetadataRecordV1,
-        ProtectedSnapshotInventoryV1,
-    };
+    use super::inventory::{AuthenticatedSnapshotMetadataV1, ProtectedSnapshotInventoryV1};
     use super::*;
     use crate::root_policy::PortableRootAttributesV1;
+    use crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1;
     use crate::{
         ActiveHoldEvidence, CatalogPlanV1, HoldId, ManagedDatasetRoot, ProjectAncestorPolicyV1,
         ReservationPolicy, ResolvedDataset, ResolvedSnapshot, StorageDomainsV1,
@@ -243,25 +241,31 @@ mod tests {
         let clone_source =
             ResolvedSnapshot::from_catalog(archive.clone(), "source", 33, [34; 32]).unwrap();
         let authenticated_row = |snapshot: &ResolvedSnapshot, commitment_byte| {
-            let checked_metadata = CheckedSnapshotRootMetadataRecordV1::new(
+            let checked_metadata = CheckedSnapshotMetadataRecordV1::new_for_test(
+                [40; 16],
+                ObjectDigest::from_bytes([41; 32]),
+                ObjectDigest::from_bytes([42; 32]),
+                CatalogBindingV1::from_publisher(1, ObjectDigest::from_bytes([43; 32])).unwrap(),
                 snapshot.guid(),
                 snapshot.dataset().guid(),
-                PortableRootAttributesV1::new(501, 20, 0o6750).unwrap(),
                 snapshot.dataset().storage_handle(),
-                snapshot.version_handle(),
+                ObjectDigest::from_bytes([44; 32]),
+                PortableRootAttributesV1::new(501, 20, 0o6750).unwrap(),
+                501,
+                20,
+                1,
+                0,
                 ObjectDigest::from_bytes([commitment_byte; 32]),
             )
             .unwrap();
-            let authenticated_metadata =
-                AuthenticatedSnapshotRootMetadataV1::authenticate_for_test(
-                    &checked_metadata.canonical_bytes(),
-                    checked_metadata.record_digest(),
-                )
-                .unwrap();
+            let authenticated_metadata = AuthenticatedSnapshotMetadataV1::authenticate_for_test(
+                &checked_metadata.canonical_bytes(),
+                checked_metadata.record_digest(),
+            )
+            .unwrap();
 
             ProtectedSnapshotInventoryV1::authenticated_for_test(
                 snapshot.clone(),
-                checked_metadata.content_commitment(),
                 authenticated_metadata,
             )
             .unwrap()
@@ -481,19 +485,27 @@ mod tests {
     #[test]
     fn clone_metadata_authentication_rejects_tampering() {
         let attributes = PortableRootAttributesV1::new(501, 20, 0o6750).unwrap();
-        let metadata = CheckedSnapshotRootMetadataRecordV1::new(
+        let metadata = CheckedSnapshotMetadataRecordV1::new_for_test(
+            [40; 16],
+            ObjectDigest::from_bytes([41; 32]),
+            ObjectDigest::from_bytes([42; 32]),
+            CatalogBindingV1::from_publisher(1, ObjectDigest::from_bytes([43; 32])).unwrap(),
             33,
             27,
-            attributes,
             [28; 32],
-            [34; 32],
+            ObjectDigest::from_bytes([44; 32]),
+            attributes,
+            501,
+            20,
+            1,
+            0,
             ObjectDigest::from_bytes([35; 32]),
         )
         .unwrap();
         let mut bytes = metadata.canonical_bytes();
         bytes[20] ^= 1;
         assert_eq!(
-            AuthenticatedSnapshotRootMetadataV1::authenticate_for_test(
+            AuthenticatedSnapshotMetadataV1::authenticate_for_test(
                 &bytes,
                 metadata.record_digest(),
             ),

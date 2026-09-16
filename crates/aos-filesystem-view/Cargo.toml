@@ -25,6 +25,7 @@ rustix = { workspace = true, features = ["fs", "process", "time"] }
 name = "semantic_no_alloc"
 path = "tests/semantic_no_alloc.rs"
 harness = false
+required-features = ["test-fixtures"]
 
 [lints]
 workspace = true

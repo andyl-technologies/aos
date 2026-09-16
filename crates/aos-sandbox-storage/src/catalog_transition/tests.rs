@@ -8,10 +8,8 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::root_policy::{PortableRootAttributesV1, WorkspaceRootPolicyV1};
-use crate::{
-    PlannedDataset, PlannedSnapshot, ProjectAncestorPolicyV1, StorageDomainsV1,
-    resolver::inventory::CheckedSnapshotRootMetadataRecordV1,
-};
+use crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1;
+use crate::{PlannedDataset, PlannedSnapshot, ProjectAncestorPolicyV1, StorageDomainsV1};
 
 fn domains() -> StorageDomainsV1 {
     StorageDomainsV1::new(
@@ -40,6 +38,7 @@ fn catalog(generation: u64, name: &str) -> ResolvedCatalogCommitmentV1 {
             ancestor,
         },
         Some(WorkspaceRootPolicyV1::create_initialize()),
+        None,
     )
     .unwrap()
 }
@@ -57,6 +56,7 @@ fn snapshot_catalog(
             source,
             destination,
         },
+        None,
         None,
     )
     .unwrap()
@@ -193,12 +193,20 @@ fn v1_chain_authenticates_snapshot_metadata_and_rejects_unknown_versions() {
     )
     .unwrap();
     let snapshot_catalog = snapshot_catalog(9, source.clone(), "snapshot-proof");
-    let snapshot_metadata = CheckedSnapshotRootMetadataRecordV1::new(
+    let snapshot_metadata = CheckedSnapshotMetadataRecordV1::new_for_test(
+        [82; 16],
+        ObjectDigest::from_bytes([83; 32]),
+        ObjectDigest::from_bytes([84; 32]),
+        snapshot_catalog.binding(),
         79,
         source.guid(),
-        PortableRootAttributesV1::new(1000, 1001, 0o2750).unwrap(),
         source.storage_handle(),
-        [80; 32],
+        ObjectDigest::from_bytes([85; 32]),
+        PortableRootAttributesV1::new(1000, 1001, 0o2750).unwrap(),
+        1000,
+        1001,
+        1,
+        0,
         ObjectDigest::from_bytes([81; 32]),
     )
     .unwrap();
@@ -247,13 +255,10 @@ fn v1_chain_authenticates_snapshot_metadata_and_rejects_unknown_versions() {
             .unwrap();
     assert_eq!(resolver.binding(), snapshot_transition.result_binding());
     assert_eq!(resolver.snapshots().len(), 1);
-    assert_eq!(
-        resolver.snapshots()[0].root_metadata(),
-        Some(snapshot_metadata)
-    );
+    assert_eq!(resolver.snapshots()[0].metadata(), Some(snapshot_metadata));
 
     let mut missing_metadata = snapshot_transition.transition.clone();
-    missing_metadata.result_state.snapshot_root_metadata.clear();
+    missing_metadata.result_state.snapshot_metadata.clear();
     let authenticated =
         format::encode_transition_payload(&missing_metadata, key_id, &secret).unwrap();
     assert!(matches!(
@@ -261,11 +266,11 @@ fn v1_chain_authenticates_snapshot_metadata_and_rejects_unknown_versions() {
         Err(StorageStateError::CorruptRecord)
     ));
 
-    for mutation in 0..4 {
+    for mutation in 0..3 {
         let mut tampered = snapshot_transition.transition.clone();
         let metadata = tampered
             .result_state
-            .snapshot_root_metadata
+            .snapshot_metadata
             .values_mut()
             .next()
             .unwrap();
@@ -275,7 +280,6 @@ fn v1_chain_authenticates_snapshot_metadata_and_rejects_unknown_versions() {
             }
             1 => metadata.record_digest[0] ^= 1,
             2 => metadata.record[19] ^= 1,
-            3 => metadata.content_commitment[0] ^= 1,
             _ => unreachable!(),
         }
         let authenticated = format::encode_transition_payload(&tampered, key_id, &secret).unwrap();
@@ -417,9 +421,16 @@ fn snapshot_capacity_includes_variable_root_metadata_digest() {
         .unwrap();
 
     let synthetic_guid = u64::MAX;
-    let synthetic_metadata = maximum_snapshot_root_metadata_wire(&catalog, synthetic_guid)
-        .unwrap()
-        .unwrap();
+    let synthetic_metadata = maximum_snapshot_metadata_record(
+        operation_id,
+        ObjectDigest::from_bytes([95; 32]),
+        mutation_digest,
+        &catalog,
+        synthetic_guid,
+        ObjectDigest::from_bytes([u8::MAX; 32]),
+    )
+    .unwrap()
+    .unwrap();
     let synthetic_result = predecessor
         .apply_with_snapshot_metadata(
             operation_id,
@@ -435,7 +446,11 @@ fn snapshot_capacity_includes_variable_root_metadata_digest() {
         &predecessor,
         &synthetic_result,
         Some(synthetic_guid),
-        ObjectDigest::from_bytes([u8::MAX; 32]),
+        snapshot_commit_observation_digest(
+            ObjectDigest::from_bytes([u8::MAX; 32]),
+            synthetic_metadata.record_digest(),
+        )
+        .unwrap(),
     )
     .unwrap();
     let synthetic_bytes =
@@ -460,13 +475,21 @@ fn snapshot_capacity_includes_variable_root_metadata_digest() {
         (99, 99, 0o111),
         (u8::MAX, u64::MAX - 1, 0o7777),
     ] {
-        let metadata = CheckedSnapshotRootMetadataRecordV1::new(
+        let metadata = CheckedSnapshotMetadataRecordV1::new_for_test(
+            operation_id,
+            ObjectDigest::from_bytes([95; 32]),
+            mutation_digest,
+            catalog.binding(),
             snapshot_guid,
             source.guid(),
+            source.storage_handle(),
+            ObjectDigest::from_bytes([pattern; 32]),
             PortableRootAttributesV1::new(u32::from(pattern), u32::MAX - u32::from(pattern), mode)
                 .unwrap(),
-            source.storage_handle(),
-            [pattern; 32],
+            u32::from(pattern),
+            u32::MAX - u32::from(pattern),
+            1,
+            0,
             ObjectDigest::from_bytes([pattern; 32]),
         )
         .unwrap();

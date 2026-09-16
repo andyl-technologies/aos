@@ -2009,7 +2009,7 @@ fn directory_limits_foreign_handles_and_cached_substitution_fail_closed() {
         raw_handle_id,
         node_id,
         record_id,
-        range: root_range,
+        range: Some(root_range),
         state,
     };
     let before_release = (

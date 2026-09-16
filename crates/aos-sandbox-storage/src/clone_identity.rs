@@ -68,6 +68,29 @@ impl CloneIdentityRequirementV1 {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        source_snapshot_guid: u64,
+        source_metadata_record_digest: ObjectDigest,
+        maximum_portable_uid: u32,
+        maximum_portable_gid: u32,
+        distinct_inode_count: u64,
+        directory_entry_count: u64,
+        identity_tree_digest: ObjectDigest,
+    ) -> Result<Self, CloneIdentityRequirementError> {
+        let requirement = Self {
+            source_snapshot_guid,
+            source_metadata_record_digest,
+            maximum_portable_uid,
+            maximum_portable_gid,
+            distinct_inode_count,
+            directory_entry_count,
+            identity_tree_digest,
+        };
+        requirement.validate()?;
+        Ok(requirement)
+    }
+
     /// Reconstructs the requirement from its exact canonical representation.
     ///
     /// # Errors

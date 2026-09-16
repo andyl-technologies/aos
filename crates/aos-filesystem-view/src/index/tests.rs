@@ -2654,7 +2654,7 @@ fn prepared_presentation_rejects_identity_acl_and_nlink_failures() {
     .unwrap_or_else(|error| panic!("owner-unmapped map failed: {error}"));
     let owner_unmapped = crate::PresentationPlan::new(owner_unmapped, crate::AclCapability::Posix);
     assert!(matches!(
-        crate::PreparedPresentation::prepare(&index, &owner_unmapped, 1, [0; 32], limits),
+        crate::PreparedPresentation::prepare(&index, &owner_unmapped, 1, [1; 32], limits),
         Err(crate::PresentationError::Identity(
             crate::IdentityMapError::UnmappedIdentity
         ))
@@ -2675,7 +2675,7 @@ fn prepared_presentation_rejects_identity_acl_and_nlink_failures() {
     .unwrap_or_else(|error| panic!("owner map failed: {error}"));
     let plan = crate::PresentationPlan::new(owners_only, crate::AclCapability::Posix);
     assert!(matches!(
-        crate::PreparedPresentation::prepare(&index, &plan, 1, [0; 32], limits),
+        crate::PreparedPresentation::prepare(&index, &plan, 1, [1; 32], limits),
         Err(crate::PresentationError::Identity(
             crate::IdentityMapError::UnmappedIdentity
         ))
@@ -2684,7 +2684,7 @@ fn prepared_presentation_rejects_identity_acl_and_nlink_failures() {
     let unsupported =
         crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Unsupported);
     assert!(matches!(
-        crate::PreparedPresentation::prepare(&index, &unsupported, 1, [0; 32], limits),
+        crate::PreparedPresentation::prepare(&index, &unsupported, 1, [1; 32], limits),
         Err(crate::PresentationError::Identity(
             crate::IdentityMapError::AclUnsupported
         ))
@@ -2716,7 +2716,7 @@ fn prepared_presentation_rejects_identity_acl_and_nlink_failures() {
             &index,
             &reordered,
             1,
-            [0; 32],
+            [1; 32],
             crate::PresentationLimits::new(4, 7, 3),
         ),
         Err(crate::PresentationError::Identity(
@@ -2727,7 +2727,7 @@ fn prepared_presentation_rejects_identity_acl_and_nlink_failures() {
     index.layout.root_nlink = u64::from(u32::MAX) + 1;
     let plan = crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Posix);
     assert!(matches!(
-        crate::PreparedPresentation::prepare(&index, &plan, 1, [0; 32], limits),
+        crate::PreparedPresentation::prepare(&index, &plan, 1, [1; 32], limits),
         Err(crate::PresentationError::LinkCountOverflow)
     ));
 }

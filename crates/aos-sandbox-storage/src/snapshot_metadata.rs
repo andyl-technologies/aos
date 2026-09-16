@@ -157,6 +157,46 @@ impl CheckedSnapshotMetadataRecordV1 {
         Ok(Self { parts })
     }
 
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_for_test(
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        mutation_digest: ObjectDigest,
+        request_catalog: CatalogBindingV1,
+        snapshot_guid: u64,
+        source_dataset_guid: u64,
+        source_storage_handle: [u8; 32],
+        zfs_observation_digest: ObjectDigest,
+        root_attributes: PortableRootAttributesV1,
+        maximum_portable_uid: u32,
+        maximum_portable_gid: u32,
+        distinct_inode_count: u64,
+        directory_entry_count: u64,
+        identity_tree_digest: ObjectDigest,
+    ) -> Result<Self, SnapshotMetadataError> {
+        Self::new(SnapshotMetadataRecordPartsV1 {
+            operation_id,
+            request_digest,
+            mutation_digest,
+            request_catalog,
+            snapshot_guid,
+            source_dataset_guid,
+            source_storage_handle,
+            source_creation_operation_id: [201; 16],
+            source_publication_record_digest: ObjectDigest::from_bytes([202; 32]),
+            source_pin_attempt_id: [203; 16],
+            source_pin_record_digest: ObjectDigest::from_bytes([204; 32]),
+            zfs_observation_digest,
+            root_attributes,
+            maximum_portable_uid,
+            maximum_portable_gid,
+            distinct_inode_count,
+            directory_entry_count,
+            identity_tree_digest,
+        })
+    }
+
     /// Reconstructs a record from the sole exact 384-byte representation.
     ///
     /// # Errors

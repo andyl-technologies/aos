@@ -3199,6 +3199,27 @@ impl StorageTransactionStore {
         observed: &PostconditionPolicyV1,
         observed_object_guid: Option<u64>,
         zfs_observation_digest: ObjectDigest,
+    ) -> Result<CommittedStorageResultV1, StorageStateError> {
+        self.commit_observed_with_supplement(
+            operation_id,
+            mutation_digest,
+            catalog,
+            observed,
+            observed_object_guid,
+            zfs_observation_digest,
+            CatalogCommitSupplementV1::None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_observed_with_supplement(
+        &mut self,
+        operation_id: [u8; 16],
+        mutation_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        observed: &PostconditionPolicyV1,
+        observed_object_guid: Option<u64>,
+        zfs_observation_digest: ObjectDigest,
         supplement: CatalogCommitSupplementV1,
     ) -> Result<CommittedStorageResultV1, StorageStateError> {
         self.ensure_authority_readable()?;
@@ -3210,16 +3231,18 @@ impl StorageTransactionStore {
             return Err(StorageStateError::InvalidTransition);
         }
 
-        let transition = self.catalog_transitions.prepare_transition(
-            operation_id,
-            mutation_digest,
-            catalog,
-            observed_object_guid,
-            zfs_observation_digest,
-            supplement,
-            self.key.key_id,
-            &self.key.secret,
-        )?;
+        let transition = self
+            .catalog_transitions
+            .prepare_transition_with_supplement(
+                operation_id,
+                mutation_digest,
+                catalog,
+                observed_object_guid,
+                zfs_observation_digest,
+                supplement,
+                self.key.key_id,
+                &self.key.secret,
+            )?;
         if let Some(metadata) = transition.snapshot_metadata() {
             self.validate_snapshot_metadata_authority(metadata, &record, catalog)?;
         }
@@ -5347,6 +5370,7 @@ mod tests {
                 ancestor: policy,
             },
             Some(WorkspaceRootPolicyV1::create_initialize()),
+            None,
         )
         .unwrap();
         (catalog, ancestor)
@@ -8172,7 +8196,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_is_rejected_before_any_durable_state_change() {
+    fn snapshot_prepares_before_the_observed_metadata_commit() {
         let directory = TempDir::new().unwrap();
         let catalog = snapshot_catalog(7);
         let operation_id = [47; 16];
@@ -8183,11 +8207,14 @@ mod tests {
         let before = store.journal_sequence_for_test();
 
         assert!(matches!(
-            store.begin(operation_id, request_digest, &catalog),
-            Err(StorageStateError::InvalidValue)
+            store.begin(operation_id, request_digest, &catalog).unwrap(),
+            BeginStorageTransaction::Prepared { .. }
         ));
-        assert_eq!(store.journal_sequence_for_test(), before);
-        assert_eq!(store.phase(operation_id).unwrap(), None);
+        assert!(store.journal_sequence_for_test() > before);
+        assert_eq!(
+            store.phase(operation_id).unwrap(),
+            Some(DurableStoragePhase::Prepared)
+        );
     }
 
     #[test]

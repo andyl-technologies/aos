@@ -338,6 +338,29 @@ impl StorageCatalogTransitionProvider {
         catalog: &ResolvedCatalogCommitmentV1,
         object_guid: Option<u64>,
         zfs_observation_digest: ObjectDigest,
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+    ) -> Result<PreparedCatalogTransition, StorageStateError> {
+        self.prepare_transition_with_supplement(
+            operation_id,
+            mutation_digest,
+            catalog,
+            object_guid,
+            zfs_observation_digest,
+            CatalogCommitSupplementV1::None,
+            key_id,
+            secret,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_transition_with_supplement(
+        &self,
+        operation_id: [u8; 16],
+        mutation_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        object_guid: Option<u64>,
+        zfs_observation_digest: ObjectDigest,
         supplement: CatalogCommitSupplementV1,
         key_id: [u8; 16],
         secret: &[u8; 32],
@@ -408,7 +431,7 @@ impl StorageCatalogTransitionProvider {
         key_id: [u8; 16],
         secret: &[u8; 32],
     ) -> Result<PreparedCatalogTransition, StorageStateError> {
-        self.prepare_transition(
+        self.prepare_transition_with_supplement(
             operation_id,
             mutation_digest,
             catalog,

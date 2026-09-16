@@ -1058,7 +1058,13 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         let record = self.index.authenticate_node(&entry.record)?;
         let semantic = match entry.projected {
             Some(_) => entry.semantic,
-            None => semantic_key(&record)?,
+            None => {
+                let derived = semantic_key(&record)?;
+                if entry.semantic != derived {
+                    return Err(InodeError::InternalInvariant);
+                }
+                derived
+            }
         };
         let hash = semantic_hash(&self.connection_key, semantic);
         if find_semantic(&self.semantics, &hash, semantic) != Some(node_id) {

@@ -13,16 +13,34 @@ use aos_filesystem_view::{
     IdentityMap, IndexContentView, IndexExpectation, IndexNodeBodyView, IndexStaging, InitRequest,
     InodeError, InodeTable, InodeTableLimits, LookupReply, MetadataConnection,
     MetadataTransportLimits, ObjectSource, PreparedPresentation, PresentationError,
-    PresentationLimits, PresentationPlan, ROOT_NODE_ID, ReplyScratch, RequestBudget,
-    TreeCompileLimits, TreeCompiler, Uninterrupted, WorkerError, WorkerLimits, validate_index,
+    PresentationLimits, PresentationPlan, ProjectionLimits, ROOT_NODE_ID, ReplyScratch,
+    RequestBudget, RequestCheckpoint, RequestControl, RequestControlState, TreeCompileLimits,
+    TreeCompiler, WorkerError, WorkerLimits, compile_view_projection, validate_index,
 };
-use aos_sandbox_core::format::{encode_directory, encode_tree};
+
+struct TestControl;
+
+impl RequestControl for TestControl {
+    fn state(&self, _checkpoint: RequestCheckpoint) -> RequestControlState {
+        RequestControlState::Continue
+    }
+
+    fn monotonic_now_ns(&self) -> Option<u64> {
+        Some(1)
+    }
+}
+
+#[allow(non_upper_case_globals)]
+const Uninterrupted: TestControl = TestControl;
+use aos_sandbox_core::format::{encode_directory, encode_tree, encode_view};
 use aos_sandbox_core::model::{
-    Acl, AclEntry, ContentLayout, Directory, DirectoryEntry, Extent, FileNode, FilesystemMetadata,
-    Node, SparseContent, SymlinkNode, Tree, Xattr,
+    Acl, AclEntry, CacheDomain, CacheDomainKind, ContentLayout, Directory, DirectoryEntry, Extent,
+    FileNode, FilesystemMetadata, Node, SparseContent, SymlinkNode, Tree, View, ViewConsistency,
+    ViewMutation, ViewSource, Xattr,
 };
 use aos_sandbox_core::{
-    FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, PathName, descriptor_for_bytes,
+    CacheDomainId, DecodeLimits, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, PathName,
+    Revision, ViewId, descriptor_for_bytes,
 };
 
 // This harness-free binary runs only `main` and starts no threads. Global
@@ -293,6 +311,48 @@ fn main() {
     let prepared = prepared.unwrap_or_else(|error| panic!("preparation failed: {error}"));
     assert_eq!(preparation_allocations, 0);
 
+    let view = View::new(
+        ViewSource::ImmutableTree { tree: tree.clone() },
+        Vec::new(),
+        ViewConsistency::Immutable,
+        ViewMutation::ReadOnly,
+        FeatureRef::new("aos.sandbox.identity.posix32", 1, 0)
+            .unwrap_or_else(|error| panic!("identity feature failed: {error}")),
+        CacheDomain::new(CacheDomainKind::Private, CacheDomainId::from_bytes([3; 16])),
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("view failed: {error}"));
+    let view_bytes = encode_view(&view);
+    let view_descriptor = descriptor_for_bytes(
+        MediaType::new("application/vnd.aos.sandbox.view.v1+cbor")
+            .unwrap_or_else(|error| panic!("view media failed: {error}")),
+        &view_bytes,
+    );
+    let projection = compile_view_projection(
+        &view_bytes,
+        &view_descriptor,
+        ViewId::from_bytes([4; 16]),
+        Revision::new(1),
+        &index,
+        ProjectionLimits {
+            decode: DecodeLimits {
+                maximum_bytes: 64 * 1024,
+                maximum_collection_items: 1024,
+                maximum_total_items: 4096,
+                maximum_byte_string_bytes: 64 * 1024,
+                maximum_text_bytes: 255,
+                maximum_depth: 32,
+            },
+            maximum_actions: 1,
+            maximum_source_records: 128,
+            maximum_projected_nodes: 128,
+            maximum_path_components: 64,
+            maximum_path_bytes: 1_048_576,
+            maximum_working_bytes: 16 * 1_048_576,
+        },
+    )
+    .unwrap_or_else(|error| panic!("projection failed: {error}"));
+
     let (transport_result, transport_allocations) = measure_allocations(|| {
         prepared.validate_transport_representation(MetadataTransportLimits {
             maximum_records: 3,
@@ -344,7 +404,8 @@ fn main() {
     let worker_limits =
         WorkerLimits::new(4096, 16, 1024, 1_048_576).with_maximum_forget_entries(16);
     let worker_budget = RequestBudget::new(4096, 16, 1024).with_forget_entries(16);
-    let mut worker = MetadataConnection::new(
+    let mut worker = MetadataConnection::new_test_fixture(
+        &projection,
         &prepared,
         [60; 32],
         InodeTableLimits::new(16, 1_048_576, 16, 16, 8),

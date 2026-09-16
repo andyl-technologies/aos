@@ -2132,7 +2132,7 @@ impl StorageAdmissionCoordinator {
                 let transaction =
                     ZfsTransaction::from_catalog(prepared.operation(), prepared.catalog())?;
                 let entry = prepared.entry();
-                let committed = self.transactions.commit_observed(
+                let committed = self.transactions.commit_observed_with_supplement(
                     entry.operation_id(),
                     entry.mutation_digest(),
                     prepared.catalog(),
@@ -4962,6 +4962,7 @@ mod tests {
             base.domains(),
             base.plan().clone(),
             Some(WorkspaceRootPolicyV1::create_initialize()),
+            None,
         )
         .unwrap()
     }
@@ -5194,6 +5195,7 @@ mod tests {
                 ancestor: policy.project_ancestor().clone(),
             },
             Some(WorkspaceRootPolicyV1::create_initialize()),
+            None,
         )
         .unwrap()
     }
@@ -5425,6 +5427,7 @@ mod tests {
             policy.domains(),
             plan,
             Some(WorkspaceRootPolicyV1::create_initialize()),
+            None,
         )
         .unwrap()
     }
@@ -13615,12 +13618,10 @@ mod tests {
                 )
                 .is_err()
         );
-        let wrong = fixture.artifacts(
+        let wrong = fixture.artifacts_for_node(
             &original_request,
             &original_catalog,
-            300,
-            BrokerAudience::Mount,
-            ProtocolId::MountBroker,
+            NodeId::from_bytes([80; 16]),
         );
         assert!(
             broker

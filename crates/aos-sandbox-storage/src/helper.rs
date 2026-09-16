@@ -567,7 +567,7 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
                 .ok_or(ZfsHelperError::PostconditionMismatch)?,
             _ => crate::snapshot_metadata::CatalogCommitSupplementV1::None,
         };
-        let result = store.commit_observed(
+        let result = store.commit_observed_with_supplement(
             context.entry.operation_id(),
             context.entry.mutation_digest(),
             &context.catalog,

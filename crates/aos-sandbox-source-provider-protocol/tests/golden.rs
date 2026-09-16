@@ -2,13 +2,102 @@
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::*;
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
 const NOW: i64 = 1_800_000_100;
 const DEADLINE: i64 = 1_800_001_000;
 const LEASE_ISSUED: i64 = 1_800_000_000;
 const LEASE_EXPIRES: i64 = 1_800_000_500;
+
+#[derive(Clone, Debug)]
+struct SourceProviderTrustAnchorV1 {
+    signer: SourceProviderSigningKeyV1,
+    public_key: [u8; 32],
+    proof_capabilities: u8,
+    route_id: [u8; 16],
+    route_generation: u64,
+    route_digest: ObjectDigest,
+    catalog_generation: u64,
+    catalog_digest: ObjectDigest,
+    resource_generation: u64,
+    resource_id: [u8; 32],
+    resource_digest: ObjectDigest,
+    selection_generation: u64,
+    selection_digest: ObjectDigest,
+    revoked: bool,
+    superseded: Option<u64>,
+}
+
+impl SourceProviderTrustAnchorV1 {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        authority_id: [u8; 16],
+        authority_generation: u64,
+        authority_digest: ObjectDigest,
+        key_id: [u8; 16],
+        key_generation: u64,
+        public_key: [u8; 32],
+        usage: SourceProviderKeyUsageV1,
+        proof_capabilities: u8,
+        route_id: [u8; 16],
+        route_generation: u64,
+        route_digest: ObjectDigest,
+        catalog_generation: u64,
+        catalog_digest: ObjectDigest,
+        resource_generation: u64,
+        resource_id: [u8; 32],
+        resource_digest: ObjectDigest,
+        selection_generation: u64,
+        selection_digest: ObjectDigest,
+        revoked: bool,
+        superseded: Option<u64>,
+    ) -> Result<Self, SourceProviderTrustError> {
+        let verifying_key = VerifyingKey::from_bytes(&public_key)
+            .map_err(|_| SourceProviderTrustError::InvalidPublicKey)?;
+        if verifying_key.is_weak() {
+            return Err(SourceProviderTrustError::InvalidPublicKey);
+        }
+        if superseded.is_some_and(|generation| generation <= key_generation) {
+            return Err(SourceProviderTrustError::InactiveKey);
+        }
+        let public_key_digest = ObjectDigest::from_bytes(Sha256::digest(public_key).into());
+        let signer = SourceProviderSigningKeyV1::new(
+            authority_id,
+            authority_generation,
+            authority_digest,
+            key_id,
+            key_generation,
+            public_key_digest,
+            usage,
+        )?;
+
+        Ok(Self {
+            signer,
+            public_key,
+            proof_capabilities,
+            route_id,
+            route_generation,
+            route_digest,
+            catalog_generation,
+            catalog_digest,
+            resource_generation,
+            resource_id,
+            resource_digest,
+            selection_generation,
+            selection_digest,
+            revoked,
+            superseded,
+        })
+    }
+}
+
+struct FixtureTrust {
+    trust_set: SourceProviderTrustSetV1,
+    root_current: SourceProviderCurrentAuthorityV1,
+    provider_current: SourceProviderCurrentAuthorityV1,
+    catalog_floor: ProviderCatalogFloorV1,
+}
 
 fn digest(byte: u8) -> ObjectDigest {
     ObjectDigest::from_bytes([byte; 32])
@@ -36,7 +125,7 @@ fn root_signer(key: &SigningKey) -> SourceProviderSigningKeyV1 {
         digest(33),
         [34; 16],
         35,
-        SourceProviderKeyUsageV1::RootMountQuery,
+        SourceProviderKeyUsageV1::RootMountRecord,
         key,
     )
     .unwrap_or_else(|error| panic!("Root Mount signer: {error}"))
@@ -49,21 +138,18 @@ fn provider_signer(key: &SigningKey) -> SourceProviderSigningKeyV1 {
         digest(9),
         [10; 16],
         11,
-        SourceProviderKeyUsageV1::ProviderReceipt,
+        SourceProviderKeyUsageV1::ProviderOutcome,
         key,
     )
     .unwrap_or_else(|error| panic!("provider signer: {error}"))
 }
 
-fn provider_authority(key: &SigningKey) -> ProviderAuthorityV1 {
+fn provider_authority(key: &SigningKey) -> SourceProviderAuthorityV1 {
     let signer = provider_signer(key);
-    ProviderAuthorityV1::new(
+    SourceProviderAuthorityV1::new(
         signer.authority_id(),
         signer.authority_generation(),
         signer.authority_digest(),
-        signer.key_id(),
-        signer.key_generation(),
-        signer.public_key_digest(),
     )
     .unwrap_or_else(|error| panic!("provider authority: {error}"))
 }
@@ -183,7 +269,7 @@ fn provider_trust_with_identity_and_route(
         key_id,
         key_generation,
         *key.verifying_key().as_bytes(),
-        SourceProviderKeyUsageV1::ProviderReceipt,
+        SourceProviderKeyUsageV1::ProviderOutcome,
         ALL_PROOF_CLASS_CAPABILITIES,
         route_id,
         route_generation,
@@ -199,6 +285,418 @@ fn provider_trust_with_identity_and_route(
         None,
     )
     .unwrap_or_else(|error| panic!("current provider trust: {error}"))
+}
+
+fn hello_signer(
+    anchor: &SourceProviderTrustAnchorV1,
+    role: SourceProviderPeerRole,
+) -> (SigningKey, SourceProviderSigningKeyV1) {
+    let (key_bytes, key_id, key_generation, usage) = match role {
+        SourceProviderPeerRole::RootMount => (
+            [49; 32],
+            [36; 16],
+            37,
+            SourceProviderKeyUsageV1::RootMountHello,
+        ),
+        SourceProviderPeerRole::Provider => (
+            [41; 32],
+            [12; 16],
+            13,
+            SourceProviderKeyUsageV1::ProviderHello,
+        ),
+    };
+    let key = SigningKey::from_bytes(&key_bytes);
+    let signer = SourceProviderSigningKeyV1::for_signing_key(
+        anchor.signer.authority_id(),
+        anchor.signer.authority_generation(),
+        anchor.signer.authority_digest(),
+        key_id,
+        key_generation,
+        usage,
+        &key,
+    )
+    .unwrap_or_else(|error| panic!("hello signer: {error}"));
+
+    (key, signer)
+}
+
+fn fixture_trust(
+    root: &SourceProviderTrustAnchorV1,
+    provider: &SourceProviderTrustAnchorV1,
+    current_route: &ProtectedSourceProviderRouteV1,
+) -> Result<FixtureTrust, SourceProviderTrustError> {
+    let route_matches = |anchor: &SourceProviderTrustAnchorV1| {
+        anchor.route_id == current_route.route_id()
+            && anchor.route_generation == current_route.route_generation()
+            && anchor.route_digest == current_route.route_digest()
+    };
+    if !route_matches(root)
+        || !route_matches(provider)
+        || provider.signer.authority_id() != current_route.provider_authority_id()
+    {
+        return Err(SourceProviderTrustError::RouteMismatch);
+    }
+
+    let (root_hello_key, root_hello_signer) = hello_signer(root, SourceProviderPeerRole::RootMount);
+    let (provider_hello_key, provider_hello_signer) =
+        hello_signer(provider, SourceProviderPeerRole::Provider);
+
+    let root_authority = SourceProviderAuthorityV1::new(
+        root.signer.authority_id(),
+        root.signer.authority_generation(),
+        root.signer.authority_digest(),
+    )?;
+    let provider_authority = SourceProviderAuthorityV1::new(
+        provider.signer.authority_id(),
+        provider.signer.authority_generation(),
+        provider.signer.authority_digest(),
+    )?;
+    let mut authorities = vec![
+        SourceProviderAuthorityTrustV1::new(
+            root_authority.clone(),
+            0,
+            i64::MAX,
+            SourceProviderAuthorityTrustStateV1::Trusted,
+        )?,
+        SourceProviderAuthorityTrustV1::new(
+            provider_authority.clone(),
+            0,
+            i64::MAX,
+            SourceProviderAuthorityTrustStateV1::Trusted,
+        )?,
+    ];
+    authorities.sort_by_key(|entry| {
+        (
+            entry.authority().authority_id(),
+            entry.authority().authority_generation(),
+        )
+    });
+
+    let traffic_state = |anchor: &SourceProviderTrustAnchorV1| {
+        if anchor.revoked {
+            SourceProviderKeyTrustStateV1::Revoked
+        } else if anchor.superseded.is_some() {
+            SourceProviderKeyTrustStateV1::Superseded
+        } else {
+            SourceProviderKeyTrustStateV1::Eligible
+        }
+    };
+    let mut keys = vec![
+        SourceProviderKeyTrustV1::new(
+            root_hello_signer.clone(),
+            *root_hello_key.verifying_key().as_bytes(),
+            0,
+            i64::MAX,
+            SourceProviderKeyTrustStateV1::Eligible,
+            0,
+        )?,
+        SourceProviderKeyTrustV1::new(
+            root.signer.clone(),
+            root.public_key,
+            0,
+            i64::MAX,
+            traffic_state(root),
+            root.superseded.unwrap_or(0),
+        )?,
+        SourceProviderKeyTrustV1::new(
+            provider_hello_signer.clone(),
+            *provider_hello_key.verifying_key().as_bytes(),
+            0,
+            i64::MAX,
+            SourceProviderKeyTrustStateV1::Eligible,
+            0,
+        )?,
+        SourceProviderKeyTrustV1::new(
+            provider.signer.clone(),
+            provider.public_key,
+            0,
+            i64::MAX,
+            traffic_state(provider),
+            provider.superseded.unwrap_or(0),
+        )?,
+    ];
+    keys.sort_by_key(|entry| {
+        let signer = entry.signer();
+        (
+            signer.authority_id(),
+            signer.authority_generation(),
+            signer.usage() as u8,
+            signer.key_id(),
+            signer.key_generation(),
+        )
+    });
+
+    let trust_generation = 1;
+    let revocation_generation = 1;
+    let revocation_digest = digest(204);
+    let trust_digest = source_provider_trust_set_digest_v1(
+        trust_generation,
+        revocation_generation,
+        revocation_digest,
+        &authorities,
+        &keys,
+    );
+    let trust_set = SourceProviderTrustSetV1::new(
+        trust_generation,
+        trust_digest,
+        revocation_generation,
+        revocation_digest,
+        authorities,
+        keys,
+    )?;
+    let root_current = SourceProviderCurrentAuthorityV1::new(
+        SourceProviderPeerRole::RootMount,
+        root_authority,
+        root_hello_signer,
+        root.signer.clone(),
+        ALL_PROOF_CLASS_CAPABILITIES,
+        current_route,
+        &trust_set,
+    )?;
+    let provider_current = SourceProviderCurrentAuthorityV1::new(
+        SourceProviderPeerRole::Provider,
+        provider_authority,
+        provider_hello_signer,
+        provider.signer.clone(),
+        provider.proof_capabilities,
+        current_route,
+        &trust_set,
+    )?;
+    let catalog_floor = ProviderCatalogFloorV1::new(
+        provider.signer.authority_id(),
+        current_route.resource_namespace_digest(),
+        provider.catalog_generation,
+        provider.catalog_digest,
+    )?;
+
+    Ok(FixtureTrust {
+        trust_set,
+        root_current,
+        provider_current,
+        catalog_floor,
+    })
+}
+
+fn verify_hello(
+    value: &SignedSourceProviderHelloV1,
+    trust: &SourceProviderTrustAnchorV1,
+) -> Result<(), SourceProviderSignatureError> {
+    if trust.revoked || trust.superseded.is_some() || value.signer() != &trust.signer {
+        return Err(SourceProviderSignatureError::SignerMismatch);
+    }
+
+    aos_sandbox_source_provider_protocol::verify_hello(value, &trust.public_key)
+}
+
+fn verify_request(
+    value: &SignedSourceProviderRequestV1,
+    trust: &SourceProviderTrustAnchorV1,
+) -> Result<(), SourceProviderSignatureError> {
+    if trust.revoked || trust.superseded.is_some() || value.signer() != &trust.signer {
+        return Err(SourceProviderSignatureError::SignerMismatch);
+    }
+
+    aos_sandbox_source_provider_protocol::verify_request(value, &trust.public_key)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn authenticate_session(
+    expected_client_nonce: [u8; 32],
+    root_mount_hello: SignedSourceProviderHelloV1,
+    provider_hello: SignedSourceProviderHelloV1,
+    root_trust: &SourceProviderTrustAnchorV1,
+    provider_trust: &SourceProviderTrustAnchorV1,
+    connection_peer: SourceProviderProcessIdentityV1,
+    nominated_record_subject: SourceProviderProcessIdentityV1,
+    current_route: &ProtectedSourceProviderRouteV1,
+) -> Result<SourceProviderSessionV1, SourceProviderTrustError> {
+    let trust = fixture_trust(root_trust, provider_trust, current_route)?;
+
+    SourceProviderSessionV1::authenticate(
+        expected_client_nonce,
+        NOW,
+        root_mount_hello,
+        provider_hello,
+        &trust.trust_set,
+        &trust.root_current,
+        &trust.provider_current,
+        connection_peer,
+        nominated_record_subject,
+        current_route,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_acquire(
+    signed_request: &SignedSourceProviderRequestV1,
+    response: &AcquireSourceResponseV1,
+    session: &SourceProviderSessionV1,
+    root_trust: &SourceProviderTrustAnchorV1,
+    provider_trust: &SourceProviderTrustAnchorV1,
+    current_route: &ProtectedSourceProviderRouteV1,
+    context: &SourceProviderVerificationContextV1,
+    descriptor_roles: &[SourceProviderDescriptorRole],
+    observation: Option<SourceRootObservationV1>,
+) -> Result<
+    VerifiedSourceProviderDispositionV1<VerifiedSourceAcquisitionV1>,
+    SourceProviderVerificationError,
+> {
+    let trust = fixture_trust(root_trust, provider_trust, current_route)?;
+    let verified = aos_sandbox_source_provider_protocol::verify_acquire(
+        signed_request,
+        response,
+        session,
+        &trust.trust_set,
+        &trust.root_current,
+        &trust.provider_current,
+        current_route,
+        &trust.catalog_floor,
+        None,
+        context,
+        descriptor_roles,
+        observation,
+    )?;
+
+    if let Some(acquisition) = verified.result() {
+        let resource = acquisition.selection_floor().resource();
+        let below_resource_floor = resource.resource_generation()
+            < provider_trust.resource_generation
+            || (resource.resource_generation() == provider_trust.resource_generation
+                && (resource.resource_id() != provider_trust.resource_id
+                    || resource.resource_digest() != provider_trust.resource_digest));
+        let below_selection_floor = resource.selection_generation()
+            < provider_trust.selection_generation
+            || (resource.selection_generation() == provider_trust.selection_generation
+                && resource.selection_digest() != provider_trust.selection_digest);
+        if below_resource_floor || below_selection_floor {
+            return Err(SourceProviderVerificationError::Rollback);
+        }
+    }
+
+    Ok(verified)
+}
+
+fn release_selection_floor(
+    signed_request: &SignedSourceProviderRequestV1,
+    provider_trust: &SourceProviderTrustAnchorV1,
+    current_route: &ProtectedSourceProviderRouteV1,
+    trust_set: &SourceProviderTrustSetV1,
+) -> Result<SourceSelectionFloorV1, SourceProviderVerificationError> {
+    let request = decode_release_request(signed_request.subject())?;
+    let resource = SourceResourceV1::new(
+        current_route.resource_namespace_digest(),
+        provider_trust.resource_id,
+        provider_trust.resource_generation,
+        provider_trust.resource_digest,
+        provider_trust.catalog_generation,
+        provider_trust.catalog_digest,
+        provider_trust.selection_generation,
+        provider_trust.selection_digest,
+    )?;
+
+    Ok(SourceSelectionFloorV1::new(
+        request.acquisition_id(),
+        provider_trust.signer.authority_id(),
+        current_route.route_id(),
+        resource,
+        provider_trust.signer.clone(),
+        request.lease_id(),
+        request.lease_digest(),
+        1,
+        digest(205),
+        digest(206),
+        trust_set.trust_generation(),
+        trust_set.trust_digest(),
+        trust_set.revocation_generation(),
+        trust_set.revocation_digest(),
+    )?)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_release(
+    signed_request: &SignedSourceProviderRequestV1,
+    response: &ReleaseSourceResponseV1,
+    session: &SourceProviderSessionV1,
+    root_trust: &SourceProviderTrustAnchorV1,
+    provider_trust: &SourceProviderTrustAnchorV1,
+    current_route: &ProtectedSourceProviderRouteV1,
+    context: &SourceProviderVerificationContextV1,
+    descriptor_roles: &[SourceProviderDescriptorRole],
+) -> Result<
+    VerifiedSourceProviderDispositionV1<VerifiedSourceReleaseV1>,
+    SourceProviderVerificationError,
+> {
+    let trust = fixture_trust(root_trust, provider_trust, current_route)?;
+    let selection_floor = release_selection_floor(
+        signed_request,
+        provider_trust,
+        current_route,
+        &trust.trust_set,
+    )?;
+
+    aos_sandbox_source_provider_protocol::verify_release(
+        signed_request,
+        response,
+        session,
+        &trust.trust_set,
+        &trust.root_current,
+        &trust.provider_current,
+        current_route,
+        &selection_floor,
+        context,
+        descriptor_roles,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_source_inventory(
+    signed_request: &SignedSourceProviderRequestV1,
+    response: &InventorySourceResponseV1,
+    session: &SourceProviderSessionV1,
+    root_trust: &SourceProviderTrustAnchorV1,
+    provider_trust: &SourceProviderTrustAnchorV1,
+    current_route: &ProtectedSourceProviderRouteV1,
+    context: &SourceProviderVerificationContextV1,
+    descriptor_roles: &[SourceProviderDescriptorRole],
+) -> Result<
+    VerifiedSourceProviderDispositionV1<VerifiedSourceInventoryV1>,
+    SourceProviderVerificationError,
+> {
+    let trust = fixture_trust(root_trust, provider_trust, current_route)?;
+
+    let verified = aos_sandbox_source_provider_protocol::verify_source_inventory(
+        signed_request,
+        response,
+        session,
+        &trust.trust_set,
+        &trust.root_current,
+        &trust.provider_current,
+        current_route,
+        &trust.catalog_floor,
+        &[],
+        context,
+        descriptor_roles,
+    )?;
+
+    if let Some(inventory) = verified.result() {
+        for entry in inventory.signed_inventory().subject().entries() {
+            let resource = entry.resource();
+            let below_resource_floor = resource.resource_generation()
+                < provider_trust.resource_generation
+                || (resource.resource_generation() == provider_trust.resource_generation
+                    && (resource.resource_id() != provider_trust.resource_id
+                        || resource.resource_digest() != provider_trust.resource_digest));
+            let below_selection_floor = resource.selection_generation()
+                < provider_trust.selection_generation
+                || (resource.selection_generation() == provider_trust.selection_generation
+                    && resource.selection_digest() != provider_trust.selection_digest);
+            if below_resource_floor || below_selection_floor {
+                return Err(SourceProviderVerificationError::Rollback);
+            }
+        }
+    }
+
+    Ok(verified)
 }
 
 fn process_identity(
@@ -266,11 +764,26 @@ fn session_with_options(
     let provider_key = SigningKey::from_bytes(&[42; 32]);
     let root_signer = root_signer(&root_key);
     let provider_signer = provider_signer(&provider_key);
+    let root_trust = trust_anchor(&root_signer, &root_key, 0, false, None);
+    let provider_trust = trust_anchor(
+        &provider_signer,
+        &provider_key,
+        ALL_PROOF_CLASS_CAPABILITIES,
+        false,
+        None,
+    );
+    let current_route = route();
+    let trust = fixture_trust(&root_trust, &provider_trust, &current_route)?;
+    let (root_hello_key, root_hello_signer) =
+        hello_signer(&root_trust, SourceProviderPeerRole::RootMount);
+    let (provider_hello_key, provider_hello_signer) =
+        hello_signer(&provider_trust, SourceProviderPeerRole::Provider);
     let root_hello = SourceProviderHelloV1::new(
         SourceProviderPeerRole::RootMount,
         client_nonce,
         [51; 16],
         client_boot,
+        root_signer.clone(),
         provider_signer.clone(),
         [70; 16],
         71,
@@ -281,13 +794,14 @@ fn session_with_options(
         requested_kernel_coupled,
     )
     .unwrap_or_else(|error| panic!("root hello: {error}"));
-    let signed_root_hello = sign_hello(root_hello, root_signer.clone(), &root_key)
+    let signed_root_hello = sign_hello(root_hello, root_hello_signer, &root_hello_key)
         .unwrap_or_else(|error| panic!("signed root hello: {error}"));
     let provider_hello = SourceProviderHelloV1::new(
         SourceProviderPeerRole::Provider,
         server_nonce,
         process_instance,
         server_boot,
+        provider_signer.clone(),
         root_signer.clone(),
         [70; 16],
         71,
@@ -298,25 +812,22 @@ fn session_with_options(
         advertised_kernel_coupled,
     )
     .unwrap_or_else(|error| panic!("provider hello: {error}"));
-    let signed_provider_hello = sign_hello(provider_hello, provider_signer.clone(), &provider_key)
-        .unwrap_or_else(|error| panic!("signed provider hello: {error}"));
+    let signed_provider_hello =
+        sign_hello(provider_hello, provider_hello_signer, &provider_hello_key)
+            .unwrap_or_else(|error| panic!("signed provider hello: {error}"));
     let identity = process_identity(4000, 5000, digest(73));
 
     SourceProviderSessionV1::authenticate(
         client_nonce,
+        NOW,
         signed_root_hello,
         signed_provider_hello,
-        &trust_anchor(&root_signer, &root_key, 0, false, None),
-        &trust_anchor(
-            &provider_signer,
-            &provider_key,
-            ALL_PROOF_CLASS_CAPABILITIES,
-            false,
-            None,
-        ),
+        &trust.trust_set,
+        &trust.root_current,
+        &trust.provider_current,
         identity.clone(),
         identity,
-        &route(),
+        &current_route,
     )
 }
 
@@ -929,7 +1440,7 @@ fn every_method_and_status_rechecks_current_session_trust_route_and_boot() {
         digest(33),
         [35; 16],
         36,
-        SourceProviderKeyUsageV1::RootMountQuery,
+        SourceProviderKeyUsageV1::RootMountRecord,
         &replacement_root_key,
     )
     .unwrap_or_else(|error| panic!("replacement Root Mount signer: {error}"));
@@ -1135,7 +1646,7 @@ fn typed_acquire_wire_and_independent_golden_are_stable() {
     assert_eq!(decode_message(&bytes), Ok(message));
     assert_eq!(
         sha256(&bytes),
-        "2060c813dbf1e85c6f4d39c36311aab2e96179acba95efc913770b4e0578c952"
+        "12e1f836844b4318179e343848f45e11041ac92d02c0ede690ac6d487411ba95"
     );
 }
 
@@ -1200,24 +1711,35 @@ fn signed_hello_transcript_is_fresh_exact_and_independently_golden() {
 
     assert_eq!(
         sha256(&client),
-        "a329a8399ad07fc7a65340aa45e0a1ba6fd47d4c59fe62036d9e34acc8843cd4"
+        "083da572ebc34d5297befc103768c5d55f6aefa49a8860ad47069d303a585ee1"
     );
     assert_eq!(
         sha256(&server),
-        "a0be7a9f24bf49f931a08bcc08260664ac5acf02cfd0ea179a9d9c37ae3f068b"
+        "17646a3751557abda9c3fc2d59a149a4265c31cc6bb8d6ba8012ba36e0d8adfc"
     );
     assert_eq!(
         hex::encode(session.binding().as_bytes()),
-        "14a2d952c59ba283cb2f218598ef25e3cbf0bc645d59df381b87fcb6e953a9f6"
+        "f2938172e6dfbc8a2dc17cc730b95813f5f10975dc42a3fc8c228604bebbfe1b"
     );
     let provider_key = SigningKey::from_bytes(&[42; 32]);
+    let provider_traffic_signer = provider_signer(&provider_key);
+    let provider_trust = trust_anchor(
+        &provider_traffic_signer,
+        &provider_key,
+        ALL_PROOF_CLASS_CAPABILITIES,
+        false,
+        None,
+    );
+    let (provider_hello_key, provider_hello_signer) =
+        hello_signer(&provider_trust, SourceProviderPeerRole::Provider);
     assert!(
         SourceProviderHelloV1::new(
             SourceProviderPeerRole::RootMount,
             [0; 32],
             [51; 16],
             [5; 16],
-            provider_signer(&provider_key),
+            root_signer(&SigningKey::from_bytes(&[50; 32])),
+            provider_traffic_signer.clone(),
             [70; 16],
             71,
             digest(72),
@@ -1253,8 +1775,8 @@ fn signed_hello_transcript_is_fresh_exact_and_independently_golden() {
         verify_hello(
             &changed,
             &trust_anchor(
-                &provider_signer(&provider_key),
-                &provider_key,
+                &provider_hello_signer,
+                &provider_hello_key,
                 ALL_PROOF_CLASS_CAPABILITIES,
                 false,
                 None
@@ -1268,7 +1790,7 @@ fn signed_hello_transcript_is_fresh_exact_and_independently_golden() {
     let provider_signer = provider_signer(&provider_key);
     let identity = process_identity(4000, 5000, digest(73));
     assert!(
-        SourceProviderSessionV1::authenticate(
+        authenticate_session(
             [53; 32],
             session.signed_root_mount_hello().clone(),
             session.signed_provider_hello().clone(),
@@ -1288,7 +1810,7 @@ fn signed_hello_transcript_is_fresh_exact_and_independently_golden() {
     );
     let identity = process_identity(4000, 5000, digest(73));
     assert!(
-        SourceProviderSessionV1::authenticate(
+        authenticate_session(
             [53; 32],
             session.signed_root_mount_hello().clone(),
             session.signed_provider_hello().clone(),
@@ -1307,7 +1829,7 @@ fn signed_hello_transcript_is_fresh_exact_and_independently_golden() {
         .is_err()
     );
     assert!(
-        SourceProviderSessionV1::authenticate(
+        authenticate_session(
             [55; 32],
             session.signed_root_mount_hello().clone(),
             session.signed_provider_hello().clone(),
@@ -1330,6 +1852,7 @@ fn signed_hello_transcript_is_fresh_exact_and_independently_golden() {
         [54; 32],
         [52; 16],
         [5; 16],
+        provider_signer.clone(),
         root_signer.clone(),
         [70; 16],
         71,
@@ -1340,11 +1863,11 @@ fn signed_hello_transcript_is_fresh_exact_and_independently_golden() {
         true,
     )
     .unwrap_or_else(|error| panic!("wrong server hello: {error}"));
-    let wrong_server = sign_hello(wrong_server, provider_signer.clone(), &provider_key)
+    let wrong_server = sign_hello(wrong_server, provider_hello_signer, &provider_hello_key)
         .unwrap_or_else(|error| panic!("signed wrong server hello: {error}"));
     let identity = process_identity(4000, 5000, digest(73));
     assert!(
-        SourceProviderSessionV1::authenticate(
+        authenticate_session(
             [53; 32],
             session.signed_root_mount_hello().clone(),
             wrong_server,
@@ -1500,10 +2023,10 @@ fn lease_and_all_typed_response_goldens_are_stable() {
         inventory_response.signed_status().to_canonical_bytes(),
     ];
     let status_goldens = [
-        "9c44f2ff4035684b987e6480f75f1776e67312747b88fc914c48823324b95818",
-        "5722a0522cd66b4155a1d5776cffb7d3ea88b17333e57b4a41e174a67076678f",
-        "12c5c095d19572cc750ebe07fdfe0a87a4821877eb08b9885270ddd52f6fd5c6",
-        "2229cbce498fa6e7f14d32d1ed44c2d7a71935c436086777bbfe2ac5e3b1accf",
+        "c58ed75e9521389e2998b5601b2933fac65c9329e68eb2f4d9e30c329f784207",
+        "bc084bc9deeaf09ed3b0e8f048a7112fb6b710318629fbc574f407b2c56f5089",
+        "cf966e9e817651b493c54db7b3b102563f66611acfce86068662c951de94b20a",
+        "23e3ff31720b2136800eb451e5164e8ed176f6e0942761caba499ffa1b2a1674",
     ];
     for (bytes, expected) in status_vectors.iter().zip(status_goldens) {
         assert_eq!(sha256(bytes), expected);
@@ -1522,11 +2045,11 @@ fn lease_and_all_typed_response_goldens_are_stable() {
         .unwrap_or_else(|error| panic!("Inventory message: {error}")),
     ];
     let expected = [
-        "6bdb7643aa7b125a2fe54f29c8fab1a871f4d15dc746bad2dbf754864f55e151",
-        "efa2eb20c3cedd8ca78aea7d6ad12bbf85cd16a2b890cf6337b2e0707757098b",
-        "61921fa1240d7306307cd9f1026fac8d1cc11751b724004044f8edf2cac3e109",
-        "1190273fb887a70ee40ca30875d880745ee037380487c054d8abe4eb25882087",
-        "3ab513cba451a2f171fe0efac676549d0c92bb138b8aedf9513192c2f136ae33",
+        "b2cc51e72d201b72e98426d7c1673ebb56032bf63b3d0589c1b43e21e35cda7d",
+        "3e84ebc9c46f8fbd479d734baf7a79ff76f186e309dc3523e9cb8681ffa6d2c6",
+        "6a259d58b2f35e6435d4e3bf2ffe73f5e2eaf67a7fc549f29e9c41f4c98a481d",
+        "2d9a58ecccb635638d53835a25d897688bf474a47229dddc2798c06f0a2aa5bf",
+        "e7d7d30c10d1d9f128fd659764ad61b5b5700264a3569637514ee22438800e5b",
     ];
     for (bytes, expected_digest) in vectors.into_iter().zip(expected) {
         assert_eq!(sha256(&bytes), expected_digest);
@@ -2348,7 +2871,7 @@ fn release_and_inventory_composites_verify_complete_and_closed_statuses() {
     .unwrap_or_else(|error| panic!("release response message: {error}"));
     assert_eq!(
         sha256(&release_message),
-        "18a1119d67bba0a7f779fd748b487ff22fb25b85f2ece54a62d634213eb16c85"
+        "7165205969c98c6746bc0e55d9c61301124305fe2b4a64b8c691ce1f00766d08"
     );
     assert!(matches!(
         verify_release(
@@ -2429,7 +2952,7 @@ fn release_and_inventory_composites_verify_complete_and_closed_statuses() {
     .unwrap_or_else(|error| panic!("inventory response message: {error}"));
     assert_eq!(
         sha256(&inventory_message),
-        "2863749fdd29837743cd4c6de89c7f7149d3ff3f1bd669da8ef4cdce538c2369"
+        "fbf736a037bfcb0b474fa2e46a9f1f4ba216a7371b41f44863e6149677b8e30b"
     );
     assert!(matches!(
         verify_source_inventory(
@@ -3106,11 +3629,13 @@ fn maximum_inventory_remains_wire_representable() {
     for ordinal in 1..=MAXIMUM_INVENTORY_ENTRIES {
         let mut lease_id = [0; 16];
         lease_id[12..].copy_from_slice(&(ordinal as u32).to_be_bytes());
+        let mut acquisition_id = [0; 32];
+        acquisition_id[28..].copy_from_slice(&(ordinal as u32).to_be_bytes());
         entries.push(
             SourceProviderInventoryEntryV1::new(
                 lease_id,
                 digest(37),
-                digest(2),
+                ObjectDigest::from_bytes(acquisition_id),
                 InventoryLeaseStateV1::Active,
                 resource.clone(),
                 2,
@@ -3175,7 +3700,7 @@ fn nominated_subject_must_equal_the_pinned_provider_session() {
     let nominated = process_identity(4001, 5000, digest(73));
 
     assert!(
-        SourceProviderSessionV1::authenticate(
+        authenticate_session(
             [53; 32],
             valid.signed_root_mount_hello().clone(),
             valid.signed_provider_hello().clone(),

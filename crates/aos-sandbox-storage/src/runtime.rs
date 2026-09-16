@@ -1346,7 +1346,6 @@ impl StorageBrokerRuntime {
         }
         let operation = semantics.operation();
         let result = match apply_admission_route(operation) {
-            StorageApplyAdmissionRoute::Held => return Err(StorageRuntimeError::Recovery),
             StorageApplyAdmissionRoute::Workspace => {
                 let metadata = semantics
                     .workspace_metadata()
@@ -2023,7 +2022,6 @@ fn validate_identity_ranges(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StorageApplyAdmissionRoute {
-    Held,
     Workspace,
     Generic,
 }
@@ -2645,7 +2643,7 @@ mod tests {
             ),
             (
                 StorageOperation::Snapshot { storage_handle },
-                StorageApplyAdmissionRoute::Held,
+                StorageApplyAdmissionRoute::Generic,
             ),
             (
                 StorageOperation::HoldSnapshot {
@@ -2719,12 +2717,12 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_apply_route_remains_held() {
+    fn snapshot_apply_route_uses_the_generic_admission_path() {
         assert_eq!(
             apply_admission_route(StorageOperation::Snapshot {
                 storage_handle: [1; 32],
             }),
-            StorageApplyAdmissionRoute::Held
+            StorageApplyAdmissionRoute::Generic
         );
     }
 

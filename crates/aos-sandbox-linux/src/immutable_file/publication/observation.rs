@@ -495,6 +495,7 @@ mod tests {
         FsVerityPublicationRoot {
             identity: inspect_root(directory.as_fd()).unwrap(),
             directory: directory.as_fd().try_clone_to_owned().unwrap(),
+            protected_path: None,
         }
     }
 

@@ -20,6 +20,7 @@ pkg-config = "0.3"
 
 [dev-dependencies]
 aos-sandbox-core.workspace = true
+aos-filesystem-view = { workspace = true, features = ["test-fixtures"] }
 
 [lints]
 workspace = true

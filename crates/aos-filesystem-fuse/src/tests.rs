@@ -11,14 +11,18 @@ use std::os::unix::net::UnixStream;
 use aos_filesystem_view::{
     AclCapability, DirectoryHandleLimits, INDEX_MEDIA_TYPE, IdMapExtent, IdentityMap,
     IndexExpectation, IndexStaging, InodeTableLimits, ObjectSource, PreparedPresentation,
-    PresentationLimits, PresentationPlan, ROOT_NODE_ID, TreeCompileLimits, TreeCompiler,
-    WorkerLimits, validate_index,
+    PresentationLimits, PresentationPlan, ProjectionLimits, ROOT_NODE_ID, TreeCompileLimits,
+    TreeCompiler, WorkerLimits, compile_view_projection, validate_index,
 };
-use aos_sandbox_core::format::{encode_directory, encode_tree};
+use aos_sandbox_core::format::{encode_directory, encode_tree, encode_view};
 use aos_sandbox_core::model::{
-    ContentLayout, Directory, DirectoryEntry, FileNode, FilesystemMetadata, Node, SymlinkNode, Tree,
+    CacheDomain, CacheDomainKind, ContentLayout, Directory, DirectoryEntry, FileNode,
+    FilesystemMetadata, Node, SymlinkNode, Tree, View, ViewConsistency, ViewMutation, ViewSource,
 };
-use aos_sandbox_core::{MediaType, ObjectDescriptor, ObjectDigest, PathName, descriptor_for_bytes};
+use aos_sandbox_core::{
+    CacheDomainId, DecodeLimits, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, PathName,
+    Revision, ViewId, descriptor_for_bytes,
+};
 
 use super::*;
 
@@ -152,6 +156,45 @@ fn with_file_size(
         },
     )
     .unwrap();
+    let view = View::new(
+        ViewSource::ImmutableTree { tree: tree.clone() },
+        Vec::new(),
+        ViewConsistency::Immutable,
+        ViewMutation::ReadOnly,
+        FeatureRef::new("aos.sandbox.identity.posix32", 1, 0).unwrap(),
+        CacheDomain::new(CacheDomainKind::Private, CacheDomainId::from_bytes([3; 16])),
+        Vec::new(),
+    )
+    .unwrap();
+    let view_bytes = encode_view(&view);
+    let view_descriptor = descriptor_for_bytes(
+        MediaType::new("application/vnd.aos.sandbox.view.v1+cbor").unwrap(),
+        &view_bytes,
+    );
+    let projection = compile_view_projection(
+        &view_bytes,
+        &view_descriptor,
+        ViewId::from_bytes([4; 16]),
+        Revision::new(1),
+        &index,
+        ProjectionLimits {
+            decode: DecodeLimits {
+                maximum_bytes: 64 * 1024,
+                maximum_collection_items: 1024,
+                maximum_total_items: 4096,
+                maximum_byte_string_bytes: 64 * 1024,
+                maximum_text_bytes: 255,
+                maximum_depth: 32,
+            },
+            maximum_actions: 1,
+            maximum_source_records: 128,
+            maximum_projected_nodes: 128,
+            maximum_path_components: 64,
+            maximum_path_bytes: 1_048_576,
+            maximum_working_bytes: 16 * 1_048_576,
+        },
+    )
+    .unwrap();
     let extent = IdMapExtent {
         portable_start: 0,
         presented_start: 0,
@@ -165,7 +208,8 @@ fn with_file_size(
         PreparedPresentation::prepare(&index, &plan, 1, [8; 32], PresentationLimits::new(4, 0, 2))
             .unwrap();
     let worker_limits = WorkerLimits::new(4096, 16, 4096, 65536).with_maximum_forget_entries(16);
-    let worker = MetadataConnection::new(
+    let worker = MetadataConnection::new_test_fixture(
+        &projection,
         &presentation,
         [9; 32],
         InodeTableLimits::new(32, 1_048_576, 64, 16, 16),

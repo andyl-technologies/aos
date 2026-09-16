@@ -3,15 +3,38 @@
 use std::cell::Cell;
 use std::io::Cursor;
 
-use aos_sandbox_core::model::{ContentLayout, FilesystemMetadata};
-use aos_sandbox_core::{MediaType, ObjectDescriptor, ObjectDigest, descriptor_for_bytes};
+use aos_sandbox_core::format::encode_view;
+use aos_sandbox_core::model::{
+    CacheDomain, CacheDomainKind, ContentLayout, FilesystemMetadata, View, ViewConsistency,
+    ViewMutation, ViewSource,
+};
+use aos_sandbox_core::{
+    CacheDomainId, DecodeLimits, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, Revision,
+    ViewId, descriptor_for_bytes,
+};
 
 use super::*;
 use crate::index::{IndexNode, IndexRecord, StructuralIndexBuilder};
 use crate::{
     AclCapability, IdMapExtent, IdentityMap, IndexExpectation, IndexStaging, PresentationLimits,
-    PresentationPlan, ROOT_NODE_ID, validate_index,
+    PresentationPlan, ProjectionLimits, ROOT_NODE_ID, ValidatedViewProjection,
+    compile_view_projection, validate_index,
 };
+
+struct TestControl;
+
+impl RequestControl for TestControl {
+    fn state(&self, _checkpoint: RequestCheckpoint) -> RequestControlState {
+        RequestControlState::Continue
+    }
+
+    fn monotonic_now_ns(&self) -> Option<u64> {
+        Some(1)
+    }
+}
+
+#[allow(non_upper_case_globals)]
+const Uninterrupted: TestControl = TestControl;
 
 struct Fixture {
     bytes: Vec<u8>,
@@ -37,6 +60,54 @@ impl Fixture {
             },
         )
         .unwrap_or_else(|error| panic!("validation failed: {error}"))
+    }
+
+    fn projection<'index, 'bytes>(
+        &self,
+        index: &'index ValidatedIndex<'bytes>,
+    ) -> ValidatedViewProjection<'index, 'bytes> {
+        let view = View::new(
+            ViewSource::ImmutableTree {
+                tree: self.tree.clone(),
+            },
+            Vec::new(),
+            ViewConsistency::Immutable,
+            ViewMutation::ReadOnly,
+            FeatureRef::new("aos.sandbox.identity.posix32", 1, 0)
+                .unwrap_or_else(|error| panic!("identity feature failed: {error}")),
+            CacheDomain::new(CacheDomainKind::Private, CacheDomainId::from_bytes([3; 16])),
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("view failed: {error}"));
+        let view_bytes = encode_view(&view);
+        let media = MediaType::new("application/vnd.aos.sandbox.view.v1+cbor")
+            .unwrap_or_else(|error| panic!("view media failed: {error}"));
+        let descriptor = descriptor_for_bytes(media, &view_bytes);
+
+        compile_view_projection(
+            &view_bytes,
+            &descriptor,
+            ViewId::from_bytes([4; 16]),
+            Revision::new(1),
+            index,
+            ProjectionLimits {
+                decode: DecodeLimits {
+                    maximum_bytes: 64 * 1024,
+                    maximum_collection_items: 1024,
+                    maximum_total_items: 4096,
+                    maximum_byte_string_bytes: 64 * 1024,
+                    maximum_text_bytes: 255,
+                    maximum_depth: 32,
+                },
+                maximum_actions: 1,
+                maximum_source_records: 128,
+                maximum_projected_nodes: 128,
+                maximum_path_components: 64,
+                maximum_path_bytes: 1_048_576,
+                maximum_working_bytes: 16 * 1_048_576,
+            },
+        )
+        .unwrap_or_else(|error| panic!("projection failed: {error}"))
     }
 }
 
@@ -185,6 +256,10 @@ impl RequestControl for StopAt {
             RequestControlState::Continue
         }
     }
+
+    fn monotonic_now_ns(&self) -> Option<u64> {
+        Some(1)
+    }
 }
 
 struct StopOnNth {
@@ -205,6 +280,10 @@ impl RequestControl for StopOnNth {
             self.remaining.set(remaining - 1);
             RequestControlState::Continue
         }
+    }
+
+    fn monotonic_now_ns(&self) -> Option<u64> {
+        Some(1)
     }
 }
 
@@ -229,12 +308,14 @@ fn metadata_transport_limits() -> MetadataTransportLimits {
 fn transport_preflight_is_controlled_and_does_not_initialize_connection() {
     let fixture = fixture();
     let index = fixture.validate();
+    let projection = fixture.projection(&index);
     let plan = plan();
     let presentation =
         PreparedPresentation::prepare(&index, &plan, 1, [89; 32], PresentationLimits::new(5, 0, 2))
             .unwrap_or_else(|error| panic!("presentation failed: {error}"));
     let make_worker = |key| {
-        MetadataConnection::new(
+        MetadataConnection::new_test_fixture(
+            &projection,
             &presentation,
             key,
             inode_limits(),
@@ -261,7 +342,7 @@ fn transport_preflight_is_controlled_and_does_not_initialize_connection() {
             true,
         ),
     ] {
-        let worker = make_worker([checkpoint as u8; 32]);
+        let worker = make_worker([(checkpoint as u8) + 1; 32]);
         let result = worker.validate_transport_representation(
             metadata_transport_limits(),
             &StopAt { checkpoint, state },
@@ -284,12 +365,14 @@ fn transport_preflight_is_controlled_and_does_not_initialize_connection() {
 fn opendir_synchronous_reply_commits_once_without_post_reply_cancellation() {
     let fixture = fixture();
     let index = fixture.validate();
+    let projection = fixture.projection(&index);
     let plan = plan();
     let presentation =
         PreparedPresentation::prepare(&index, &plan, 1, [93; 32], PresentationLimits::new(5, 0, 2))
             .unwrap_or_else(|error| panic!("presentation failed: {error}"));
     let make_worker = |key| {
-        MetadataConnection::new(
+        MetadataConnection::new_test_fixture(
+            &projection,
             &presentation,
             key,
             inode_limits(),
@@ -336,11 +419,11 @@ fn opendir_synchronous_reply_commits_once_without_post_reply_cancellation() {
             )
             .is_ok()
     );
-    // A replay is fatal to this connection even though its original handle
-    // remains active; teardown discards it without another protocol reply.
+    // A replay is an integrity failure even though its original handle remains
+    // active; teardown discards it without another protocol reply.
     assert!(matches!(
         worker.commit_opendir_after_reply(&mut pending),
-        Err(WorkerError::Stale)
+        Err(WorkerError::IntegrityFailure)
     ));
     assert_eq!(worker.teardown().directory_handles, 1);
 
@@ -366,26 +449,30 @@ fn opendir_synchronous_reply_commits_once_without_post_reply_cancellation() {
 
     let mut foreign = make_worker([96; 32]);
     initialize(&mut foreign);
-    let mut pending = worker
+    let mut owner = make_worker([97; 32]);
+    initialize(&mut owner);
+    let mut pending = owner
         .prepare_opendir(ROOT_NODE_ID, full_budget(), &Uninterrupted)
         .unwrap_or_else(|error| panic!("prepare failed: {error}"));
     assert!(matches!(
         foreign.commit_opendir_after_reply(&mut pending),
-        Err(WorkerError::Stale)
+        Err(WorkerError::IntegrityFailure)
     ));
     assert_eq!(foreign.teardown().directory_handles, 0);
-    assert_eq!(worker.teardown().pending_directory_handles, 1);
+    assert_eq!(owner.teardown().pending_directory_handles, 1);
 }
 
 #[test]
 fn singleton_forget_and_directory_node_association_are_independent_of_batching() {
     let fixture = fixture();
     let index = fixture.validate();
+    let projection = fixture.projection(&index);
     let plan = plan();
     let presentation =
         PreparedPresentation::prepare(&index, &plan, 1, [91; 32], PresentationLimits::new(5, 0, 2))
             .unwrap_or_else(|error| panic!("presentation failed: {error}"));
-    let mut worker = MetadataConnection::new(
+    let mut worker = MetadataConnection::new_test_fixture(
+        &projection,
         &presentation,
         [92; 32],
         inode_limits(),
@@ -513,11 +600,13 @@ fn singleton_forget_and_directory_node_association_are_independent_of_batching()
 fn init_lookup_getattr_readlink_and_rejections_are_bounded() {
     let fixture = fixture();
     let index = fixture.validate();
+    let projection = fixture.projection(&index);
     let plan = plan();
     let presentation =
         PreparedPresentation::prepare(&index, &plan, 1, [4; 32], PresentationLimits::new(5, 0, 2))
             .unwrap_or_else(|error| panic!("presentation failed: {error}"));
-    let mut worker = MetadataConnection::new(
+    let mut worker = MetadataConnection::new_test_fixture(
+        &projection,
         &presentation,
         [5; 32],
         inode_limits(),
@@ -715,7 +804,8 @@ fn init_lookup_getattr_readlink_and_rejections_are_bounded() {
         );
     }
 
-    let mut minimal = MetadataConnection::new(
+    let mut minimal = MetadataConnection::new_test_fixture(
+        &projection,
         &presentation,
         [71; 32],
         inode_limits(),
@@ -749,11 +839,13 @@ fn init_lookup_getattr_readlink_and_rejections_are_bounded() {
 fn opendir_readdir_pages_replay_and_partial_publication_are_exact() {
     let fixture = fixture();
     let index = fixture.validate();
+    let projection = fixture.projection(&index);
     let plan = plan();
     let presentation =
         PreparedPresentation::prepare(&index, &plan, 1, [6; 32], PresentationLimits::new(5, 0, 2))
             .unwrap_or_else(|error| panic!("presentation failed: {error}"));
-    let mut worker = MetadataConnection::new(
+    let mut worker = MetadataConnection::new_test_fixture(
+        &projection,
         &presentation,
         [7; 32],
         inode_limits(),
@@ -823,7 +915,8 @@ fn opendir_readdir_pages_replay_and_partial_publication_are_exact() {
         ),
         Err(WorkerError::Stale)
     ));
-    let mut foreign = MetadataConnection::new(
+    let mut foreign = MetadataConnection::new_test_fixture(
+        &projection,
         &presentation,
         [70; 32],
         inode_limits(),
@@ -1008,11 +1101,13 @@ fn opendir_readdir_pages_replay_and_partial_publication_are_exact() {
 fn forget_cancellation_handles_and_growth_fail_closed() {
     let fixture = fixture();
     let index = fixture.validate();
+    let projection = fixture.projection(&index);
     let plan = plan();
     let presentation =
         PreparedPresentation::prepare(&index, &plan, 1, [8; 32], PresentationLimits::new(5, 0, 2))
             .unwrap_or_else(|error| panic!("presentation failed: {error}"));
-    let mut worker = MetadataConnection::new(
+    let mut worker = MetadataConnection::new_test_fixture(
+        &projection,
         &presentation,
         [9; 32],
         inode_limits(),
