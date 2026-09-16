@@ -19,6 +19,12 @@ in
   then
     import ./_go-darwin.nix {
       inherit mkDerivation version src stdenv;
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        role = "public-package";
+      };
       pname = "go-1_20";
       nativeGo = buildPackages.go-1_20;
       description = "Go 1.20 bootstrap — Darwin-hosted toolchain built with native Go 1.20";
@@ -27,12 +33,24 @@ in
   then
     import ./_go-linux-cross.nix {
       inherit mkDerivation version src stdenv;
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        role = "public-package";
+      };
       pname = "go-1_20";
       nativeGo = buildPackages.go-1_20;
       description = "Go 1.20 bootstrap — cross-built Linux-hosted toolchain";
     }
   else
     mkDerivation {
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        role = "public-package";
+      };
       pname = "go-1_20";
       qualification.packageProbe = lib.qualification.commandProbe {
         "primary" = {

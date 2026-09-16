@@ -27,6 +27,12 @@
   controllerOnly ? false,
 }: let
   version = "0.1.0";
+  platformSupport = {
+    build = [{abi = ["gnu"]; os = ["linux"];}];
+    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    target = [];
+    role = "public-package";
+  };
   buildRustDev =
     if stdenv.isCross
     then buildPackages.rust.dev
@@ -172,6 +178,7 @@
     buildDeps = [buildRustDev];
   };
   controller = mkCargoPackage {
+    inherit platformSupport;
     pname = "crucible-controller";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
@@ -456,6 +463,7 @@
     qemuSourcePackage = qemu-crucible-source;
   };
   suite = mkDerivation {
+    inherit platformSupport;
     pname = "crucible";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

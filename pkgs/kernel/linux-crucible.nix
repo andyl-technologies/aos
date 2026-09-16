@@ -65,6 +65,12 @@
     "net.ifnames=0"
   ];
   kernel = (linuxFixtureWith extraConfig).overrideAttrs (prev: {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "linux-crucible";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

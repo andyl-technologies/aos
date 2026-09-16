@@ -21,6 +21,7 @@
   changeId,
   prevRust,
   llvm,
+  platformSupport,
   needsDownloadRustc ? false,
   useBootstrapToml ? false,
   disableLld ? false,
@@ -61,6 +62,7 @@ in
         zlib
         needsDownloadRustc
         qualification
+        platformSupport
         ;
       disableLld = disableDarwinLld;
       nativeRust = buildPackages.${prevRust.pname};
@@ -74,7 +76,7 @@ in
   else if stdenv.isCross && stdenv.hostPlatform.isLinux
   then
     import ./_rust-linux-hosted.nix {
-      inherit mkDerivation pname version src changeId configFileName qualification;
+      inherit mkDerivation pname version src changeId configFileName qualification platformSupport;
       inherit buildPackages stdenv curl openssl zlib needsDownloadRustc disableLld;
       nativeRust = buildPackages.${prevRust.pname};
       nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
@@ -83,7 +85,7 @@ in
     }
   else
     mkDerivation {
-      inherit pname version src qualification;
+      inherit pname version src qualification platformSupport;
 
       buildDeps = [
         gnumake

@@ -9,6 +9,12 @@
   version = "2026_07_28.f8df3f1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "passt";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

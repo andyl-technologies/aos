@@ -14,6 +14,7 @@
 }: {
   version,
   srcHash,
+  platformSupport,
   # Projects (LLVM_ENABLE_PROJECTS)
   projects ? [
     "clang"
@@ -61,6 +62,7 @@
 in
   mkDerivation {
     pname = "llvm";
+    inherit platformSupport;
     inherit version qualification;
 
     src = fetchurl {

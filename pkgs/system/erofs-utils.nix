@@ -34,6 +34,12 @@
   version = "1.9.4";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "erofs-utils";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

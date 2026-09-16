@@ -34,6 +34,12 @@
   hostTools = "cert-to-efi-sig-list sign-efi-sig-list efi-updatevar efi-readvar cert-to-efi-hash-list hash-to-efi-sig-list sig-list-to-certs";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "efitools";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

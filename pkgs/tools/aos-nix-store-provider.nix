@@ -56,6 +56,12 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-nix-store-provider";
     qualification.packageProbe = lib.qualification.providerExecutableProbe {
       name = "aos-nix-store-provider";

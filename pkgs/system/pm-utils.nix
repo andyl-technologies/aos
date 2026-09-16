@@ -16,6 +16,12 @@
   runtimePath = "${coreutils}/bin:${grep}/bin:${util-linux}/bin:${util-linux}/sbin:${kmod}/bin:${procps-ng}/bin:${procps-ng}/sbin:${kbd}/bin:${dbus}/bin";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "pm-utils";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

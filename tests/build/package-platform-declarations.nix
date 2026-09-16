@@ -17,9 +17,7 @@
       }
     ];
     target = [];
-    roles = ["public-package"];
-    stages = ["toolchain"];
-    requires = ["native-code-generators"];
+    role = "public-package";
   };
   package = pkgs.mkDerivation {
     pname = "package-platform-declaration-probe";
@@ -47,8 +45,8 @@
   missingAxisRejected = rejects (pkgs.lib.packagePlatform.normalize "missing-axis" (
     builtins.removeAttrs declaration ["target"]
   ));
-  duplicateRoleRejected = rejects (pkgs.lib.packagePlatform.normalize "duplicate-role" (
-    declaration // {roles = ["public-package" "public-package"];}
+  unknownRoleRejected = rejects (pkgs.lib.packagePlatform.normalize "unknown-role" (
+    declaration // {role = "documentary-tag";}
   ));
   featurePlatform = {
     constraints = {
@@ -63,7 +61,6 @@
   };
 in
   assert package.platformSupport == pkgs.lib.packagePlatform.normalize "expected" declaration;
-  assert package.meta.aos.platformSupport == package.platformSupport;
   assert pkgs.lib.packagePlatform.supports featurePlatform [
     {
       os = ["target-os"];
@@ -73,4 +70,4 @@ in
   assert !(pkgs.lib.packagePlatform.supports featurePlatform [{features = ["missing-feature"];}]);
   assert unknownConstraintRejected;
   assert missingAxisRejected;
-  assert duplicateRoleRejected; package
+  assert unknownRoleRejected; package

@@ -8,6 +8,12 @@
   pluginSource = builtins.readFile ./crucible-qemu-trace-plugin.c;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "crucible-qemu-trace-plugin";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

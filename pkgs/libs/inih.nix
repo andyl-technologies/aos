@@ -56,6 +56,12 @@
     else "-shared -Wl,-soname,${sharedLibrary}";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "inih";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {

@@ -29,6 +29,7 @@
   build,
   srcHash,
   prevJdk,
+  platformSupport,
   repoSuffix ? "u",
   extraConfigureFlags ? [],
   extraBuildDeps ? [],
@@ -235,6 +236,7 @@
 in
   mkDerivation {
     pname = "openjdk-${toString major}";
+    inherit platformSupport;
     inherit version qualification;
 
     src = fetchurl {

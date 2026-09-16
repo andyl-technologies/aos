@@ -41,13 +41,14 @@ in
 {
   pname,
   evidenceSources,
+  platformSupport,
 }:
 let
   roleSpec = (import ./_k3s-config/roles.nix).${pname};
   launcher = common.launcher pname roleSpec.command;
 in
 mkDerivation {
-  inherit pname;
+  inherit pname platformSupport;
   inherit (k3s) version;
   qualification.packageProbe = lib.qualification.commandProbe {
     primary = {

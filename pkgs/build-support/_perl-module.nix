@@ -4,6 +4,7 @@
   perl,
 }: {
   pname,
+  platformSupport,
   version,
   src,
   sourceRoot,
@@ -20,7 +21,7 @@
   runtimeClosureManifest = builtins.concatStringsSep "\n" (map builtins.toString runtimeClosure);
 in
   mkDerivation {
-    inherit pname version src qualification;
+    inherit pname version src qualification platformSupport;
 
     buildDeps = [perl];
     runtimeDeps = runtimeClosure;

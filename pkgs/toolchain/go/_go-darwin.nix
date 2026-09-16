@@ -7,6 +7,7 @@
 {
   mkDerivation,
   pname,
+  platformSupport,
   version,
   src,
   nativeGo,
@@ -31,7 +32,7 @@
     else nativeCc;
 in
   mkDerivation {
-    inherit pname version src qualification;
+    inherit pname version src qualification platformSupport;
     inherit update;
 
     buildDeps = [nativeGo];

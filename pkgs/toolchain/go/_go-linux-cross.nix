@@ -7,6 +7,7 @@
 {
   mkDerivation,
   pname,
+  platformSupport,
   version,
   src,
   nativeGo,
@@ -18,7 +19,7 @@
   toolDirectory = "${targetOs}_${targetArch}";
 in
   mkDerivation {
-    inherit pname version src;
+    inherit pname version src platformSupport;
 
     buildDeps = [nativeGo];
     runtimeDeps = [];

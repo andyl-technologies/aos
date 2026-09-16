@@ -8,6 +8,7 @@
 {
   mkDerivation,
   pname,
+  platformSupport,
   version,
   src,
   changeId,
@@ -96,7 +97,7 @@ in
   then throw "${pname}: native LLVM ${nativeLlvmVersion} does not match target LLVM ${targetLlvmVersion}"
   else
     mkDerivation {
-      inherit pname version src outputs qualification;
+      inherit pname version src outputs qualification platformSupport;
 
       buildDeps =
         [
