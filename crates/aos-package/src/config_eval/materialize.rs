@@ -136,8 +136,6 @@ pub struct ConfigManifest {
     pub graph: ManifestGraph,
     /// Per-package projected non-secret configuration.
     pub config: BTreeMap<String, serde_json::Value>,
-    /// Per-package credential handles, never secret values.
-    pub credentials: BTreeMap<String, serde_json::Value>,
     /// Ownership index used for fail-closed degraded projection.
     pub ownership: ManifestOwnership,
 }
@@ -394,17 +392,6 @@ impl ConfigManifest {
                 &format!("config.{package}"),
             )?;
         }
-        for (package, credentials) in &self.credentials {
-            validate_secret_refs(package, credentials)?;
-            validate_json_store_paths(
-                credentials,
-                &pinned_store_paths,
-                &self.ownership.store_paths,
-                Some(package),
-                &self.graph,
-                &format!("credentials.{package}"),
-            )?;
-        }
         for path in self.etc.keys() {
             let mut ancestor = path.as_str();
             while let Some((parent, _)) = ancestor.rsplit_once('/') {
@@ -426,7 +413,6 @@ impl ConfigManifest {
         if let Some(package) = self
             .config
             .keys()
-            .chain(self.credentials.keys())
             .find(|package| !package_set.contains(package.as_str()))
         {
             bail!("manifest package-owned state names absent package {package:?}");
@@ -483,30 +469,6 @@ impl ConfigManifest {
         )?;
         Ok(())
     }
-}
-
-/// Validates that evaluated credentials contain references, never plaintext.
-fn validate_secret_refs(package: &str, value: &serde_json::Value) -> Result<()> {
-    let handles = value
-        .as_object()
-        .with_context(|| format!("credentials.{package} must be an object"))?;
-    for (name, value) in handles {
-        let reference: crate::secret_ref::SecretRef = serde_json::from_value(value.clone())
-            .with_context(|| {
-                format!(
-                    "credentials.{package}.{name} must contain only name, source, encrypted, units, ref, and package-authored ciphertext"
-                )
-            })?;
-        crate::types::validate_credential_name(name)
-            .with_context(|| format!("invalid credential handle credentials.{package}.{name}"))?;
-        if reference.name != *name {
-            bail!("credentials.{package}.{name} changes its credential name");
-        }
-        reference.validate_reference().with_context(|| {
-            format!("invalid credential reference credentials.{package}.{name}")
-        })?;
-    }
-    Ok(())
 }
 
 fn validate_runtime_pin(package: &str, pin: &RuntimePackagePin) -> Result<()> {
@@ -2144,7 +2106,6 @@ mod tests {
         object.insert("packageOutputs".into(), serde_json::json!({}));
         object.insert("graph".into(), serde_json::json!({"edges": {}}));
         object.insert("config".into(), serde_json::json!({}));
-        object.insert("credentials".into(), serde_json::json!({}));
         let hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let store_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         object.insert(

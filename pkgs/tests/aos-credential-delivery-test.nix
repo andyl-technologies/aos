@@ -6,9 +6,9 @@
   coreutils,
 }: let
   consumer = writeTextFile {
-    name = "aos-secret-reference-test-consumer";
+    name = "aos-credential-delivery-test-consumer";
     executable = true;
-    destination = "/bin/aos-secret-reference-test-consumer";
+    destination = "/bin/aos-credential-delivery-test-consumer";
     text = ''
       #!${bash}/bin/bash
       set -euo pipefail
@@ -35,27 +35,27 @@
   };
 in
   mkDerivation {
-    pname = "aos-secret-reference-test";
+    pname = "aos-credential-delivery-test";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The consumer is valid Bash and references the declared join-token credential and state files.";
         "files" = {};
-        "input" = "The installed secret-reference consumer script.";
+        "input" = "The installed credential-delivery consumer script.";
         "operation" = "Parse the script and inspect its credential and state contracts.";
         "steps" = [
           {
             "argv" = [
               "@python@"
               "-c"
-              "import pathlib, subprocess\nscript = pathlib.Path(\"@out@/bin/aos-secret-reference-test-consumer\").resolve()\nresult = subprocess.run([\"@bash@\", \"-n\", script], capture_output=True)\nsource = script.read_text()\nassert result.returncode == 0 and \"CREDENTIALS_DIRECTORY/join-token\" in source\nassert \"attempt-count\" in source and \"delivery-mode\" in source\nprint(\"aos-secret-reference-test data passed\")\n"
+              "import pathlib, subprocess\nscript = pathlib.Path(\"@out@/bin/aos-credential-delivery-test-consumer\").resolve()\nresult = subprocess.run([\"@bash@\", \"-n\", script], capture_output=True)\nsource = script.read_text()\nassert result.returncode == 0 and \"credential=$1\" in source\nassert \"attempt-count\" in source and \"delivery-mode\" in source\nprint(\"aos-credential-delivery-test data passed\")\n"
             ];
             "exit_code" = 0;
             "stderr" = {
               "exact" = "";
             };
             "stdout" = {
-              "exact" = "aos-secret-reference-test data passed\n";
+              "exact" = "aos-credential-delivery-test data passed\n";
             };
           }
         ];
@@ -71,12 +71,12 @@ in
             "argv" = [
               "@python@"
               "-c"
-              "import pathlib, sys\nif pathlib.Path(\"@out@/share/credentials/join-token\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"aos-secret-reference-test rejected invalid input\\n\")\nraise SystemExit(7)\n"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/share/credentials/join-token\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"aos-credential-delivery-test rejected invalid input\\n\")\nraise SystemExit(7)\n"
             ];
             "exit_code" = 7;
             "observes_rejection" = true;
             "stderr" = {
-              "exact" = "aos-secret-reference-test rejected invalid input\n";
+              "exact" = "aos-credential-delivery-test rejected invalid input\n";
             };
             "stdout" = {
               "exact" = "";
@@ -96,16 +96,16 @@ in
         name = "install";
         script = ''
           mkdir -p "$out/bin"
-          ln -s ${consumer}/bin/aos-secret-reference-test-consumer \
-            "$out/bin/aos-secret-reference-test-consumer"
+          ln -s ${consumer}/bin/aos-credential-delivery-test-consumer \
+            "$out/bin/aos-credential-delivery-test-consumer"
         '';
       }
     ];
 
-    abilities = ./_aos-secret-reference-test/module.nix;
+    abilities = ./_aos-credential-delivery-test/module.nix;
 
     meta = {
-      description = "Fleet fixture for secretRef activation";
+      description = "Fleet fixture for typed credential delivery";
       license = "Apache-2.0";
     };
   }

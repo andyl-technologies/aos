@@ -1431,9 +1431,6 @@ fn enrich_runtime_projection(
     object
         .entry("config")
         .or_insert_with(|| serde_json::json!({}));
-    object
-        .entry("credentials")
-        .or_insert_with(|| serde_json::json!({}));
     let packages: Vec<String> = runtime.packages.keys().cloned().collect();
     object.insert("packages".into(), serde_json::to_value(&packages)?);
     object.insert(

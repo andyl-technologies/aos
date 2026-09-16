@@ -87,7 +87,6 @@
     initrdImplementations."aos-boot-transaction-storage-provider:boot-transaction-storage-view";
   transactionStorageEffects =
     initrdImplementations."aos-boot-transaction-storage-provider:boot-transaction-storage-view-effects";
-  recoveryDependencies = request initrdRequests "aos-boot-preparations" "aos-credential-recovery-dependencies";
   seedDependencies = request initrdRequests "aos-boot-preparations" "aos-config-seed-dependencies";
   installerScript = builtins.readFile ../../modules/image/install-zfs.sh.in;
   unlockScript = builtins.readFile ../../pkgs/boot/_aos-boot-storage/zfs-unlock.sh.in;
@@ -219,26 +218,9 @@ in
   == lib.abilities.packageOutput {package = "aos-boot-transaction-storage-provider";};
   assert transactionStorageEffects.handlerDescriptor.entryPoint
   == "bin/aos-boot-transaction-storage-provider";
-  assert recoveryDependencies.after
-  == [
-    (preparationsMilestone "sysroot")
-    (preparationsMilestone "var")
-    (preparationsMilestone "nix-overlay")
-  ];
-  assert recoveryDependencies.requires == recoveryDependencies.after;
-  assert recoveryDependencies.before
-  == [
-    (resultOf "aos-boot-preparations:aos-config-seed-lifecycle" "service-resource")
-    (preparationsMilestone "etc-overlay")
-    preparationsEarlySystem
-    (preparationsMilestone "switch-root")
-  ];
-  assert recoveryDependencies.required_by == [preparationsEarlySystem];
-  assert !recoveryDependencies.implicit_dependencies;
   assert seedDependencies.after
   == [
     (preparationsMilestone "var")
-    (resultOf "aos-boot-preparations:aos-credential-recovery-lifecycle" "service-resource")
     (preparationsMilestone "run-etc")
   ];
   assert seedDependencies.requires == seedDependencies.after;

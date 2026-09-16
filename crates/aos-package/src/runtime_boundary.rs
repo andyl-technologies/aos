@@ -171,8 +171,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::Verify { .. }
         | PackageCommand::Source { .. }
         | PackageCommand::Credential(_) => false,
-        PackageCommand::RecoverCredentialTransactions
-        | PackageCommand::AttestService
+        PackageCommand::AttestService
         | PackageCommand::LoadEbpfLsmPolicies { .. }
         | PackageCommand::Eval { .. }
         | PackageCommand::EvalRetained { .. }
@@ -235,7 +234,6 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Unhold { .. }
         | PackageCommand::Clean { .. }
         | PackageCommand::Gc
-        | PackageCommand::RecoverCredentialTransactions
         | PackageCommand::AttestService
         | PackageCommand::LoadEbpfLsmPolicies { .. }
         | PackageCommand::Eval { .. }

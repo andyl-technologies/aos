@@ -475,7 +475,6 @@ in {
                   "-exec sed -n '1,120p' {} ';' 2>&1 || true"
               ))
               for unit in (
-                  "aos-credential-recovery.service",
                   "aos-host-config-restore.service",
                   "aos-firstboot-reeval.service",
                   "aos-nix-db.service",

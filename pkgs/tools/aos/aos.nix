@@ -18,6 +18,7 @@
   aos-verity-root-guard,
   aos-ebpf-net-policy,
   aos-ebpf-lsm-policy,
+  aos-systemd-provider,
   checkpolicy,
   cmake,
   coreutils,
@@ -97,7 +98,7 @@
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
   apmRuntimeTools =
     apmPortableRuntimeTools
-    ++ lib.optionals (!isDarwinCross) [systemd util-linux];
+    ++ lib.optionals (!isDarwinCross) [aos-systemd-provider systemd util-linux];
   referenceRemovalArguments = dependencies:
     builtins.concatStringsSep " \\\n            " (map (dependency: "-t ${dependency}") dependencies);
   runtimeBinPath = tools:
@@ -560,6 +561,7 @@ in
                   ;;
                 apm|aos-package-runtime)
                   cat << 'APM_ENVIRONMENT'
+      ${lib.optionalString (!isDarwinCross) ''export AOS_CREDENTIAL_ENCRYPT_PROVIDER="${aos-systemd-provider}/bin/aos-systemd-provider"''}
       export AOS_NIX_STORE="${nix}/bin/nix-store"
       export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       export AOS_MCOPY="${mtools}/bin/mcopy"

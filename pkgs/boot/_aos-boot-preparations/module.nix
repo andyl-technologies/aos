@@ -1,4 +1,4 @@
-##! Package-owned initrd credential recovery and configuration seeding.
+##! Package-owned initrd configuration seeding.
 {
   config,
   lib,
@@ -108,32 +108,6 @@
       };
     };
 
-  credentialRecovery = service {
-    key = "aos-credential-recovery";
-    description = "Recover interrupted AOS credential publication";
-    operation = "recover-credentials";
-    dependencies = {
-      prerequisites = [];
-      after = [sysrootReadiness varReadiness nixOverlayReadiness];
-      before = [
-        (resultOf "aos-config-seed-lifecycle" "service-resource")
-        etcOverlayReadiness
-        earlySystemReadiness
-        switchRootReadiness
-      ];
-      requires = [sysrootReadiness varReadiness nixOverlayReadiness];
-      wants = [];
-      requisite = [];
-      conflicts = [];
-      binds_to = [];
-      part_of = [];
-      upholds = [];
-      required_by = [earlySystemReadiness];
-      wanted_by = [];
-      required_mounts = [];
-      implicit_dependencies = false;
-    };
-  };
   configurationSeed = service {
     key = "aos-config-seed";
     description = "Seed the per-generation /etc lower for on-host configuration";
@@ -142,13 +116,11 @@
       prerequisites = [];
       after = [
         varReadiness
-        (resultOf "aos-credential-recovery-lifecycle" "service-resource")
         runEtcReadiness
       ];
       before = [etcOverlayReadiness earlySystemReadiness switchRootReadiness];
       requires = [
         varReadiness
-        (resultOf "aos-credential-recovery-lifecycle" "service-resource")
         runEtcReadiness
       ];
       wants = [];
@@ -171,7 +143,6 @@
     nixOverlay
     etcOverlay
     runEtc
-    credentialRecovery
     configurationSeed
   ];
   baseContributions = builtins.map serviceManagement.splitContribution baseFragments;

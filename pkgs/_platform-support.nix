@@ -434,7 +434,7 @@ let
     "aos-hub-dialect-tests"
     "aos-hub-e2e"
     "aos-hub-worker-do-e2e"
-    "aos-secret-reference-test"
+    "aos-credential-delivery-test"
     "aos-system-image-e2e-fixture"
     "aos-test-agent"
     "bazel-bootstrap"
@@ -846,7 +846,7 @@ let
     "tests/_aos-ability-boundary-observer/module.nix" = "linux-only-config-source";
     "tests/_aos-ability-boundary-observer/settings.nix" = "target-independent-source";
     "tests/_aos-ability-boundary-observer.py" = "target-independent-source";
-    "tests/_aos-secret-reference-test/module.nix" = "linux-only-config-source";
+    "tests/_aos-credential-delivery-test/module.nix" = "linux-only-config-source";
     "tests/_aos-test-agent/module.nix" = "linux-only-config-source";
     "tests/_desired-config-test/module.nix" = "linux-only-config-source";
     "tests/_desired-prune-test/module.nix" = "linux-only-config-source";

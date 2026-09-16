@@ -4,6 +4,7 @@
   mkCargoPackage,
   aosWorkspaceSource,
   aosWorkspaceVendor,
+  systemd,
 }: let
   version = "0.1.0";
   src = aosWorkspaceSource;
@@ -17,12 +18,13 @@ in
     };
 
     inherit version src cargoDeps;
+    cargoEnv.AOS_SYSTEMD_CREDS = "${systemd}/bin/systemd-creds";
     cargoRoot = "crates";
     cargoFlags = "-p aos-systemd-provider";
     cargoTestFlags = "-p aos-systemd-provider";
     doCheck = true;
 
-    runtimeDeps = [];
+    runtimeDeps = [systemd];
 
     meta = {
       description = "Authenticated systemd ability provider";

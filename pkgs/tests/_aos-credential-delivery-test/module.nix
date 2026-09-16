@@ -4,14 +4,14 @@
   lib,
   ...
 }: let
-  cfg = config.aos-secret-reference-test;
+  cfg = config.aos-credential-delivery-test;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   inherit (lib.abilities) resultOf;
 
   state = serviceManagement.forProducer {
-    consumerInstance = "aos-secret-reference-test";
+    consumerInstance = "aos-credential-delivery-test";
     key = "state";
     interface = serviceManagement.interfaces.persistentStorageAllocation;
     parameters = {
@@ -21,7 +21,7 @@
     };
   };
   credentialSource = serviceManagement.forProducer {
-    consumerInstance = "aos-secret-reference-test";
+    consumerInstance = "aos-credential-delivery-test";
     key = "join-token-source";
     interface = serviceManagement.interfaces.namedCredential;
     parameters = {
@@ -30,7 +30,7 @@
     };
   };
   credential = serviceManagement.forProducer {
-    consumerInstance = "aos-secret-reference-test";
+    consumerInstance = "aos-credential-delivery-test";
     key = "join-token";
     interface = serviceManagement.interfaces.credentialDelivery;
     parameters = {
@@ -41,7 +41,7 @@
   };
   service = serviceManagement.forService {
     inherit serviceTypes;
-    consumerInstance = "aos-secret-reference-test";
+    consumerInstance = "aos-credential-delivery-test";
     declaration = {
       service = "main";
       enabled = true;
@@ -55,7 +55,7 @@
           {
             executable = {
               artifact = lib.abilities.packageOutput {};
-              entry_point = "bin/aos-secret-reference-test-consumer";
+              entry_point = "bin/aos-credential-delivery-test-consumer";
               arguments = [
                 (resultOf "join-token" "credential-path")
                 (resultOf "state" "storage-path")
@@ -94,7 +94,7 @@
   };
   fragments = [state credentialSource credential service];
 in {
-  options.aos-secret-reference-test = {
+  options.aos-credential-delivery-test = {
     enable = lib.mkOption {
       type = abilityTypes.boolean;
       default = true;
@@ -125,7 +125,7 @@ in {
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
-        [{instances.aos-secret-reference-test = {};}]
+        [{instances.aos-credential-delivery-test = {};}]
         ++ builtins.map
         (fragment: (serviceManagement.splitContribution fragment).configured)
         fragments

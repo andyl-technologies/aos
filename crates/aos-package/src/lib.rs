@@ -46,7 +46,6 @@ pub mod config;
 pub mod config_eval;
 pub mod config_trust;
 pub(crate) mod credential;
-pub(crate) mod credential_artifact;
 pub mod deps;
 pub mod desired;
 pub mod documentation;
@@ -139,7 +138,6 @@ pub mod remove;
 pub mod resolve;
 pub mod rollback;
 mod runtime_boundary;
-pub mod secret_ref;
 pub mod security;
 pub mod source;
 pub mod sshkey;
@@ -522,9 +520,6 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: ApmRegistryCommand,
     },
-    /// Hidden: recover an interrupted credential publication transaction.
-    #[command(name = "recover-credential-transactions", hide = true)]
-    RecoverCredentialTransactions,
     /// Hidden: produce the host package-attestation quote for the service controller.
     #[command(name = "__attest-service", hide = true)]
     AttestService,
@@ -1097,8 +1092,7 @@ impl PackageCommand {
     pub fn is_runtime_internal(&self) -> bool {
         matches!(
             self,
-            PackageCommand::RecoverCredentialTransactions
-                | PackageCommand::AttestService
+            PackageCommand::AttestService
                 | PackageCommand::Attest {
                     command: AttestCommand::VerifyBootCommit { .. }
                         | AttestCommand::VerifyRolloutBootCommit { .. }
@@ -1138,9 +1132,7 @@ impl PackageCommand {
             | PackageCommand::AbilityBuildStage { .. }
             | PackageCommand::AbilityStageValidate { .. }
             | PackageCommand::AbilityStageReceive { .. } => Portable,
-            PackageCommand::RecoverCredentialTransactions | PackageCommand::Switch { .. } => {
-                AosRoot
-            }
+            PackageCommand::Switch { .. } => AosRoot,
             PackageCommand::Install { .. }
             | PackageCommand::Remove { .. }
             | PackageCommand::Autoremove
@@ -3748,11 +3740,6 @@ pub async fn run(
         return Ok(());
     }
 
-    if let PackageCommand::RecoverCredentialTransactions = command {
-        return credential_artifact::recover_credential_transactions(
-            &credential_artifact::aos_root_path(),
-        );
-    }
     if let PackageCommand::AbilityPlanBuildStage { spec, out } = command {
         return config_eval::build_stage::plan_build_stage(spec, out);
     }
@@ -4046,7 +4033,7 @@ pub async fn run(
             fetch,
             verify,
         } => source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await,
-        PackageCommand::Credential(command) => credential::run(&config, command, printer),
+        PackageCommand::Credential(command) => credential::run(command, printer),
         PackageCommand::Rollback {
             generation,
             system: rollback_system,
@@ -4078,9 +4065,6 @@ pub async fn run(
         }
         PackageCommand::Registry { command, .. } => {
             run_apm_registry(&config, command, printer).await
-        }
-        PackageCommand::RecoverCredentialTransactions => {
-            unreachable!("RecoverCredentialTransactions is handled before ApmConfig::load")
         }
         PackageCommand::LoadEbpfLsmPolicies { .. } => {
             unreachable!("LoadEbpfLsmPolicies is handled before ApmConfig::load")

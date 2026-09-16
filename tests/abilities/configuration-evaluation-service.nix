@@ -121,13 +121,11 @@ in
   == [
     (resultOf "aos:local-filesystems" "readiness-resource")
     (resultOf "aos:network-readiness" "readiness-resource")
-    (resultOf "aos:aos-credential-recovery-lifecycle" "service-resource")
     (resultOf "aos:registry-synchronization-lifecycle" "service-resource")
   ];
   assert dependencies.requires
   == [
     (resultOf "aos:local-filesystems" "readiness-resource")
-    (resultOf "aos:aos-credential-recovery-lifecycle" "service-resource")
   ];
   assert dependencies.wanted_by
   == [(resultOf "aos:user-sessions-ready" "readiness-resource")];

@@ -29,7 +29,7 @@
       receiver_stage = "host";
       preparations = [
         (lib.abilities.resultOf "configuration-seed" "preparation-resource")
-        (lib.abilities.resultOf "credential-recovery" "preparation-resource")
+        (lib.abilities.resultOf "policy-seed" "preparation-resource")
       ];
     };
   };
@@ -50,9 +50,9 @@
         name = "consumer";
         module.config.aos.abilities = lib.mkMerge [
           {instances.host = {};}
-          (prepare "credential-recovery" [])
+          (prepare "policy-seed" [])
           (prepare "configuration-seed" [
-            (lib.abilities.resultOf "credential-recovery" "preparation-resource")
+            (lib.abilities.resultOf "policy-seed" "preparation-resource")
           ])
           handoffRequest
         ];
@@ -62,9 +62,9 @@
   abilities = evaluated.config.aos.abilities;
   authoredHandoff = abilities.requests."consumer:boot-preparation-handoff";
   authoredSeed = abilities.requests."consumer:configuration-seed";
-  credentialReference = {
+  policySeedReference = {
     _type = "aos-request-output-reference";
-    request = "consumer:credential-recovery";
+    request = "consumer:policy-seed";
     output = "preparation-resource";
   };
   literalPreparationKeys = builtins.tryEval (builtins.deepSeq (
@@ -75,7 +75,7 @@
             config.request = {
               source_stage = "initrd";
               receiver_stage = "host";
-              preparations = ["configuration-seed" "credential-recovery"];
+              preparations = ["configuration-seed" "policy-seed"];
             };
           }
         ];
@@ -92,14 +92,14 @@ in
   assert preparation.declaration.methods.prepare.semantics.requiredTargetAccess == "exclusive-write";
   assert preparation.declaration.methods.observe.semantics.requiredTargetAccess == "read";
   assert handoff.declaration.methods.receive.semantics.requiredTargetAccess == "exclusive-write";
-  assert authoredSeed.parameters.prerequisites == [credentialReference];
+  assert authoredSeed.parameters.prerequisites == [policySeedReference];
   assert authoredHandoff.parameters.preparations == [
     {
       _type = "aos-request-output-reference";
       request = "consumer:configuration-seed";
       output = "preparation-resource";
     }
-    credentialReference
+    policySeedReference
   ];
   assert !literalPreparationKeys.success;
   assert abilities.requirementTemplates."consumer:boot-preparation".methods

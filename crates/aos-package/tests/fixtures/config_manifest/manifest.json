@@ -96,7 +96,6 @@
     }
   },
   "config": {},
-  "credentials": {},
   "ownership": {
     "etc": {
       "example.conf": "example"
