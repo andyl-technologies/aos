@@ -318,6 +318,10 @@ in
   ];
   assert rolloutTerminalImplementation.handlerDescriptor.entryPoint
   == "libexec/aos-image-rollout-provider";
+  assert rolloutComposition.realizations.machine == {
+    schema = "aos.image-rollout.realization/v1";
+    health-command = "${rolloutParameters.candidate.toplevel}/health";
+  };
   assert builtins.length rolloutTransition.decisions == 1;
   assert builtins.length rolloutTransition.merges == 1;
   assert builtins.all (operation:

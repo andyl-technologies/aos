@@ -43,7 +43,10 @@
   rolloutMethods = rolloutDeclaration.methods;
   rolloutObservation = imagePlatformInterfaces.rollout.observationType;
   rolloutRealizationType = abilityTypes.record {
-    fields.schema = abilityTypes.enum ["aos.image-rollout.realization/v1"];
+    fields = {
+      schema = abilityTypes.enum ["aos.image-rollout.realization/v1"];
+      health-command = abilityTypes.executionPath;
+    };
   };
   rolloutTerminalDeclaration = lib.abilities.declareInterface {
     name = "aos.apm.ab-image-rollout-terminal";
