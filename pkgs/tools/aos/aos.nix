@@ -617,8 +617,7 @@ in
             storage-provisioning-platform-detector \
             storage-provisioning-input-authorizer \
             storage-provisioning-plan-observer \
-            storage-provisioning-configuration-evaluator \
-            storage-provisioning-network-seeder
+            storage-provisioning-configuration-evaluator
           do
             ln -s .aos-metadata-provider "$metadataRuntime/libexec/aos-$role"
           done
@@ -711,8 +710,7 @@ in
           storage-provisioning-platform-detector \
           storage-provisioning-input-authorizer \
           storage-provisioning-plan-observer \
-          storage-provisioning-configuration-evaluator \
-          storage-provisioning-network-seeder
+          storage-provisioning-configuration-evaluator
         do
           test -x "$metadataRuntime/libexec/aos-$role"
         done

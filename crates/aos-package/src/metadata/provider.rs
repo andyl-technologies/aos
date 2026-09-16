@@ -1,10 +1,9 @@
-//! Ability handler for provisioning metadata, plan evaluation, and network seeding.
+//! Ability handler for provisioning metadata and configuration evaluation.
 //!
 //! The handler keeps acquisition scratch private to one invocation. Exact host
-//! bytes cross into plan evaluation only through the protected runtime output;
-//! the optional network seed crosses through a separate protected output and is
-//! written only through an observed post-provisioning storage view. No path
-//! below the metadata stash is a cross-provider data channel.
+//! bytes and semantic early-network facts cross into later operations only
+//! through protected typed outputs. No path below the metadata stash is a
+//! cross-provider data channel.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -18,6 +17,7 @@ use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, ResourceReference,
 };
+use aos_net::{BootstrapLinkSelector, BootstrapNetwork};
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
@@ -46,18 +46,14 @@ use crate::config_eval::provisioning_evaluator::{self, EvaluationParameters, MAN
 const AUTHORIZATION_OBSERVATION: &str = "aos.metadata.provisioning-authorization-observation/v1";
 const DETECTION_OBSERVATION: &str = "aos.metadata.provisioning-platform-observation/v1";
 const PLAN_OBSERVATION: &str = "aos.metadata.provisioning-plan-observation/v1";
-const NETWORK_SEED_OBSERVATION: &str = "aos.metadata.provisioning-network-seed-observation/v1";
 const EVALUATION_OBSERVATION: &str = "aos.configuration.provisioning-evaluation-observation/v1";
 const PROVIDER_CONTEXT: &str = "aos.metadata.provisioning-provider-context/v1";
-const STORAGE_VIEW_OBSERVATION: &str = "aos.ability.storage-view-observation/v1";
-const MAX_NETWORK_SEED_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum MetadataRole {
     Authorization,
     ConfigurationEvaluation,
-    NetworkSeed,
     PlanObservation,
     PlatformDetection,
 }
@@ -72,7 +68,6 @@ impl MetadataRole {
         match name {
             "aos-storage-provisioning-input-authorizer" => Ok(Self::Authorization),
             "aos-storage-provisioning-configuration-evaluator" => Ok(Self::ConfigurationEvaluation),
-            "aos-storage-provisioning-network-seeder" => Ok(Self::NetworkSeed),
             "aos-storage-provisioning-plan-observer" => Ok(Self::PlanObservation),
             "aos-storage-provisioning-platform-detector" => Ok(Self::PlatformDetection),
             _ => bail!("entry point does not select a checked metadata handler role"),
@@ -83,7 +78,6 @@ impl MetadataRole {
         match self {
             Self::Authorization => "authorize",
             Self::ConfigurationEvaluation => "evaluate",
-            Self::NetworkSeed => "seed",
             Self::PlanObservation => "observe",
             Self::PlatformDetection => "detect",
         }
@@ -93,7 +87,6 @@ impl MetadataRole {
         match self {
             Self::Authorization => authorization_observation(None, "ready"),
             Self::ConfigurationEvaluation => evaluation_observation(None, "ready"),
-            Self::NetworkSeed => network_seed_observation(None, "ready"),
             Self::PlanObservation => plan_observation(None, "ready"),
             Self::PlatformDetection => detection_observation(None, "ready"),
         }
@@ -157,28 +150,10 @@ struct PlanParameters {
     authorized_input: AuthorizedProvisioningInput,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NetworkSeedParameters {
-    request: ProvisioningIntent,
-    network_seed: Option<String>,
-    storage_view: ResourceReference,
-    storage_path: String,
-}
-
 #[derive(Debug)]
 struct AuthorizationOutputs {
     authorized_input: AuthorizedProvisioningInput,
-    network_seed: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StorageViewObservation {
-    schema: String,
-    expected: AbilityValue,
-    realized: Option<String>,
-    state: String,
+    network_bootstrap: Option<AbilityValue>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -212,15 +187,6 @@ struct PlanObservation {
     schema: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<CanonicalProvisioningSource>,
-    state: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(deny_unknown_fields)]
-struct NetworkSeedObservation {
-    schema: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content_sha256: Option<String>,
     state: &'static str,
 }
 
@@ -405,8 +371,8 @@ async fn invoke(
                         ability_value(serde_json::to_value(outputs.authorized_input)?)?,
                     ),
                     (
-                        "network-seed",
-                        ability_value(serde_json::to_value(outputs.network_seed)?)?,
+                        "network-bootstrap",
+                        ability_value(serde_json::to_value(outputs.network_bootstrap)?)?,
                     ),
                 ])?,
             )
@@ -453,24 +419,6 @@ async fn invoke(
                 )])?,
             )
         }
-        MetadataRole::NetworkSeed => {
-            let parameters: NetworkSeedParameters = decode(&invocation.request.inputs)?;
-            ensure!(
-                parameters.request == intent,
-                "network seed request differs from the checked resource"
-            );
-            let content_sha256 = seed_network(&parameters, &invocation.request.resources)?;
-            let state = if content_sha256.is_some() {
-                "seeded"
-            } else {
-                "absent"
-            };
-            completed_result(
-                &invocation,
-                network_seed_observation(content_sha256, state)?,
-                BTreeMap::new(),
-            )
-        }
     }
 }
 
@@ -509,8 +457,7 @@ async fn authorize(
             var_etc_root: None,
         })
         .await?;
-        let network_seed = read_network_seed(&stash_dir)?;
-        let facts = read_observed_instance_facts(&stash_dir)?;
+        let (facts, network_bootstrap) = read_observed_instance_facts(&stash_dir)?;
 
         let trusted_key_files = trusted_key_files(&configuration.trusted_config_keys)?;
         let trusted_key_dir = scratch.path().join("trusted-config-keys");
@@ -559,7 +506,7 @@ async fn authorize(
         validate_authorized_provisioning_input(&input)?;
         Ok(AuthorizationOutputs {
             authorized_input: input,
-            network_seed,
+            network_bootstrap,
         })
     }
     .await;
@@ -629,30 +576,50 @@ fn finish_config_drive<T>(
 
 fn read_observed_instance_facts(
     stash_dir: &Path,
-) -> Result<aos_storage_provisioning::ObservedInstanceFacts> {
+) -> Result<(
+    aos_storage_provisioning::ObservedInstanceFacts,
+    Option<AbilityValue>,
+)> {
     let bytes =
         fs::read(stash_dir.join("facts.json")).context("reading normalized instance facts")?;
     let facts: super::fetcher::Facts =
         serde_json::from_slice(&bytes).context("decoding normalized instance facts")?;
-    observed_instance_facts(serde_json::to_value(facts)?)
+    let facts = super::facts_render::canonicalize_host_facts(&facts)?;
+    let network_bootstrap = facts
+        .network
+        .as_ref()
+        .filter(|network| network.is_seedable())
+        .map(network_bootstrap)
+        .transpose()?;
+    let observed = observed_instance_facts(serde_json::to_value(facts)?)?;
+
+    Ok((observed, network_bootstrap))
 }
 
-fn read_network_seed(stash_dir: &Path) -> Result<Option<String>> {
-    let path = stash_dir
-        .join("network")
-        .join(super::staticnet::SEED_FILENAME);
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("reading metadata network seed"),
+fn network_bootstrap(network: &super::fetcher::StaticNetwork) -> Result<AbilityValue> {
+    let selector = if let Some(mac) = network
+        .mac
+        .as_ref()
+        .filter(|mac| super::fetcher::is_canonical_mac(mac))
+    {
+        BootstrapLinkSelector::Mac(mac.clone())
+    } else if let Some(name) = network
+        .interface_name
+        .as_ref()
+        .filter(|name| super::fetcher::is_exact_interface_name(name))
+    {
+        BootstrapLinkSelector::Name(name.clone())
+    } else {
+        bail!("seedable metadata network has no exact link selector")
     };
-    ensure!(
-        bytes.len() <= MAX_NETWORK_SEED_BYTES,
-        "metadata network seed exceeds the interface bound"
-    );
-    Ok(Some(
-        String::from_utf8(bytes).context("metadata network seed is not UTF-8")?,
-    ))
+
+    BootstrapNetwork {
+        selector,
+        addresses: network.addresses.clone(),
+        gateway: network.gateway.clone(),
+        dns: network.dns.clone(),
+    }
+    .into_ability_value()
 }
 
 fn observe_plan(
@@ -679,118 +646,6 @@ fn observe_plan(
         marker_uuid,
         nix_instantiate: nix_instantiate.to_path_buf(),
     })
-}
-
-fn seed_network(
-    parameters: &NetworkSeedParameters,
-    resources: &[ResourceContext],
-) -> Result<Option<String>> {
-    let view = exact_context(&parameters.storage_view, resources)?;
-    ensure!(
-        view.reference
-            .operations
-            .iter()
-            .any(|operation| operation.as_str() == "observe"),
-        "network seed storage view lacks observation authority"
-    );
-    let bound = validate_resource_context(view)?;
-    let observation: StorageViewObservation = decode(&view.observation)?;
-    ensure!(
-        observation.schema == STORAGE_VIEW_OBSERVATION
-            && observation.expected == bound.resource_spec.value
-            && observation.state == "ready"
-            && observation.realized.as_deref() == Some(parameters.storage_path.as_str()),
-        "network seed storage view is not the exact realized input"
-    );
-    ensure!(
-        bound
-            .resource_spec
-            .value
-            .as_json()
-            .get("access")
-            .and_then(serde_json::Value::as_str)
-            == Some("read-write"),
-        "network seed storage view is not writable"
-    );
-
-    let Some(seed) = &parameters.network_seed else {
-        return Ok(None);
-    };
-    ensure!(
-        seed.len() <= MAX_NETWORK_SEED_BYTES,
-        "metadata network seed exceeds the interface bound"
-    );
-    let root = checked_absolute_path(&parameters.storage_path, "network seed storage path")?;
-    let root = fs::canonicalize(&root).context("resolving network seed storage path")?;
-    ensure!(
-        root.is_dir(),
-        "network seed storage path is not a directory"
-    );
-    let directory = checked_seed_directory(&root)?;
-    let destination = directory.join(super::staticnet::SEED_FILENAME);
-    match fs::symlink_metadata(&destination) {
-        Ok(metadata) => ensure!(
-            metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
-            "network seed destination is not a regular file"
-        ),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("inspecting network seed destination"),
-    }
-    write_seed_atomically(&directory, &destination, seed.as_bytes())?;
-    Ok(Some(digest(seed.as_bytes())))
-}
-
-fn checked_absolute_path(value: &str, description: &str) -> Result<PathBuf> {
-    let path = PathBuf::from(value);
-    ensure!(path.is_absolute(), "{description} is not absolute");
-    ensure!(
-        path.components()
-            .all(|component| matches!(component, Component::RootDir | Component::Normal(_))),
-        "{description} is not normalized"
-    );
-    Ok(path)
-}
-
-fn checked_seed_directory(root: &Path) -> Result<PathBuf> {
-    let mut directory = root.to_path_buf();
-    for component in ["etc", "systemd", "network"] {
-        directory.push(component);
-        match fs::symlink_metadata(&directory) {
-            Ok(metadata) => ensure!(
-                metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
-                "network seed directory traverses a non-directory or symbolic link"
-            ),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir(&directory).with_context(|| {
-                    format!("creating network seed directory {}", directory.display())
-                })?;
-            }
-            Err(error) => return Err(error).context("inspecting network seed directory"),
-        }
-        let resolved = fs::canonicalize(&directory)?;
-        ensure!(
-            resolved.starts_with(root),
-            "network seed directory escapes its storage view"
-        );
-    }
-    Ok(directory)
-}
-
-fn write_seed_atomically(directory: &Path, destination: &Path, contents: &[u8]) -> Result<()> {
-    let mut temporary = Builder::new()
-        .prefix(".aos-network-seed-")
-        .tempfile_in(directory)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o644))?;
-    temporary.write_all(contents)?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(destination)
-        .map_err(|error| error.error)
-        .context("installing metadata network seed")?;
-    fs::File::open(directory)?.sync_all()?;
-    Ok(())
 }
 
 fn publish_blob_output(slot: &str, contents: &[u8]) -> Result<()> {
@@ -1057,17 +912,6 @@ fn plan_observation(
     })?)
 }
 
-fn network_seed_observation(
-    content_sha256: Option<String>,
-    state: &'static str,
-) -> Result<AbilityValue> {
-    ability_value(serde_json::to_value(NetworkSeedObservation {
-        schema: NETWORK_SEED_OBSERVATION,
-        content_sha256,
-        state,
-    })?)
-}
-
 fn evaluation_observation(
     manifest_sha256: Option<String>,
     state: &'static str,
@@ -1167,11 +1011,6 @@ mod tests {
                 MetadataRole::ConfigurationEvaluation,
                 "evaluate",
             ),
-            (
-                "aos-storage-provisioning-network-seeder",
-                MetadataRole::NetworkSeed,
-                "seed",
-            ),
         ];
 
         for (entry_point, expected, method) in cases {
@@ -1187,36 +1026,26 @@ mod tests {
     }
 
     #[test]
-    fn network_seed_is_written_atomically_with_fixed_mode() {
-        let root = tempfile::tempdir().expect("temporary storage view");
-        let directory = checked_seed_directory(root.path()).expect("checked seed directory");
-        let destination = directory.join(super::super::staticnet::SEED_FILENAME);
+    fn canonical_network_facts_become_one_semantic_bootstrap_value() {
+        let network = super::super::fetcher::StaticNetwork {
+            mac: Some("02:00:00:00:00:01".to_string()),
+            interface_name: Some("ens3".to_string()),
+            addresses: vec!["192.0.2.10/24".to_string()],
+            gateway: Some("192.0.2.1".to_string()),
+            dns: vec!["192.0.2.53".to_string()],
+        };
 
-        write_seed_atomically(&directory, &destination, b"[Match]\nName=eth0\n")
-            .expect("network seed write");
+        let value = network_bootstrap(&network).expect("semantic bootstrap");
 
         assert_eq!(
-            fs::read_to_string(&destination).expect("network seed contents"),
-            "[Match]\nName=eth0\n"
+            BootstrapNetwork::from_validated(&value).expect("bootstrap projection"),
+            BootstrapNetwork {
+                selector: BootstrapLinkSelector::Mac("02:00:00:00:00:01".to_string()),
+                addresses: vec!["192.0.2.10/24".to_string()],
+                gateway: Some("192.0.2.1".to_string()),
+                dns: vec!["192.0.2.53".to_string()],
+            }
         );
-        assert_eq!(
-            fs::metadata(destination)
-                .expect("network seed metadata")
-                .mode()
-                & 0o7777,
-            0o644
-        );
-    }
-
-    #[test]
-    fn network_seed_rejects_symbolic_link_ancestor() {
-        let root = tempfile::tempdir().expect("temporary storage view");
-        let outside = tempfile::tempdir().expect("outside directory");
-        symlink(outside.path(), root.path().join("etc")).expect("symbolic link");
-
-        let error = checked_seed_directory(root.path()).expect_err("symbolic link is rejected");
-
-        assert!(error.to_string().contains("symbolic link"));
     }
 
     #[test]
