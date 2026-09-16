@@ -145,6 +145,9 @@ pub struct PackageRule {
 pub struct QualificationRequirement {
     /// Stable requirement identity across release classes.
     pub id: String,
+    /// Exact evaluated native-adapter matrix for the matrix requirement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_spec: Option<crate::qualification_evidence::NativeAdapterMatrixSpec>,
     /// Hold point that requires the result.
     pub phase: QualificationPhase,
     /// Subject population, expanded from the signed artifact matrix.
@@ -316,6 +319,27 @@ impl QualificationContract {
         for gate in &self.requirements {
             nonempty_strings(&gate.checks, "acceptance conditions")?;
             claims::merge_measurements(&mut BTreeMap::new(), &gate.measurements)?;
+            if gate.id == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT {
+                let spec = gate.matrix_spec.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "native adapter matrix requirement lacks its exact specification"
+                    )
+                })?;
+                crate::qualification_evidence::validate_native_adapter_matrix_spec(spec)?;
+                if gate
+                    .checks
+                    .iter()
+                    .filter(|check| {
+                        check.as_str() == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_CHECK
+                    })
+                    .count()
+                    != 1
+                {
+                    bail!("native adapter matrix requirement lacks its stable acceptance check");
+                }
+            } else if gate.matrix_spec.is_some() {
+                bail!("non-matrix qualification requirement carries a native adapter matrix");
+            }
             for identity in ["subject", "policy", "executor", "environment"] {
                 if !gate.invalidated_by.iter().any(|value| value == identity) {
                     bail!("requirement {} omits invalidation by {identity}", gate.id);

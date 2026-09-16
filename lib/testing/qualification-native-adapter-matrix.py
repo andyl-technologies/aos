@@ -57,6 +57,18 @@ def read_json(path: pathlib.Path) -> Any:
         return json.load(source)
 
 
+def read_canonical_json(path: pathlib.Path) -> Any:
+    """Reads one canonical JSON artifact and rejects equivalent encodings."""
+
+    raw = path.read_bytes()
+    if len(raw) > 16 * 1024 * 1024:
+        raise RuntimeError(f"qualification input is oversized: {path}")
+    value = json.loads(raw)
+    if canonical(value) != raw:
+        raise RuntimeError("matrix specification is not its authoritative canonical bytes")
+    return value
+
+
 def applicable_cells(spec: dict[str, Any]) -> list[dict[str, Any]]:
     """Returns the authoritative applicable partition after reference checks."""
 
@@ -103,10 +115,9 @@ def main() -> None:
     """Writes an exact, uniformly unqualified matrix report."""
 
     request = read_json(REQUEST)
-    spec = read_json(SPEC)
+    spec = read_canonical_json(SPEC)
     scenario_registry = read_json(SCENARIO_REGISTRY)
     case = request["qualification_case"]
-    spec_digest = sha256(spec)
     if (
         request["policy_id"] != "ability-native-adapter-matrix"
         or case["requirement_id"] != "ability-native-adapter-matrix"
@@ -123,7 +134,6 @@ def main() -> None:
         "schema_version": "aos.release.native-adapter-matrix-environment/v1",
         "status": "unqualified",
         "platform": request["platform"],
-        "spec_digest": spec_digest,
         "scenario_registry_digest": sha256(scenario_registry),
         "candidate_subjects_digest": case["subjects_digest"],
         "predecessor_manifest_digest": case["predecessor"]["manifest_digest"],
@@ -169,7 +179,6 @@ def main() -> None:
         "environment": environment,
         "native_adapter_matrix": {
             "schema_version": "aos.release.native-adapter-matrix-observation/v1",
-            "spec_digest": spec_digest,
             "environment": environment,
             "cells": cells,
         },
