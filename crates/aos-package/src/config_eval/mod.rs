@@ -529,7 +529,7 @@ pub struct EvalCommand {
     /// The delivered leaf `host.nix` path.
     pub host_nix: PathBuf,
     /// Ordered runtime operator module entrypoints from one immutable set.
-    pub runtime_modules: Vec<PathBuf>,
+    pub runtime_modules: Vec<EvaluatorInput>,
     /// Immutable runtime source root, including when the ordered set is empty.
     pub runtime_module_root: Option<PathBuf>,
     /// Active generation sampled before evaluation for activation CAS.
@@ -603,12 +603,7 @@ fn prepare_evaluator_inputs(cmd: &EvalCommand) -> Result<PreparedEvaluatorInputs
         ),
     };
     let base_lib = EvaluatorInput::in_store_view(cmd.base_lib.clone(), &cmd.store_view)?;
-    let runtime_modules = cmd
-        .runtime_modules
-        .iter()
-        .cloned()
-        .map(|identity| EvaluatorInput::in_store_view(identity, &cmd.store_view))
-        .collect::<Result<Vec<_>>>()?;
+    let runtime_modules = cmd.runtime_modules.clone();
     let facts_json = match (&cmd.retained_host_inputs, &cmd.facts_json) {
         (Some(retained), Some(_)) => Some(
             cmd.store_view
@@ -1240,8 +1235,15 @@ fn enrich_manifest(
         Some(retained) => PathBuf::from(&retained.host_nix.store_path),
         None => add_fixed_input_to_store(&prepared.host_nix.read_path)?,
     };
-    let runtime_modules =
-        runtime_module_manifest_input(&cmd.runtime_modules, cmd.runtime_module_root.as_deref())?;
+    let runtime_module_identities = cmd
+        .runtime_modules
+        .iter()
+        .map(|input| input.identity.clone())
+        .collect::<Vec<_>>();
+    let runtime_modules = runtime_module_manifest_input(
+        &runtime_module_identities,
+        cmd.runtime_module_root.as_deref(),
+    )?;
 
     let computed_host_hash = sha256_identity(&host_bytes);
     let computed_facts_hash = sha256_identity(&facts_identity);
@@ -1902,10 +1904,9 @@ fn reeval_cross_abi_with_source(
 
 pub(crate) fn retained_runtime_modules(
     manifest: &materialize::ConfigManifest,
-) -> Result<Vec<PathBuf>> {
+) -> Result<Vec<EvaluatorInput>> {
     let store_view = manifest.inputs.store_view.clone();
     retained_runtime_modules_in_store_view(manifest, &store_view)
-        .map(|inputs| inputs.into_iter().map(|input| input.identity).collect())
 }
 
 fn retained_runtime_modules_in_store_view(
