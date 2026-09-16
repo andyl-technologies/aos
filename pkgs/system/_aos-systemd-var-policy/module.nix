@@ -1,4 +1,4 @@
-##! Package-owned measured-boot encryption and TPM2 sealing of persistent state.
+##! Systemd-owned measured-boot encryption and TPM2 sealing of persistent state.
 {
   config,
   lib,

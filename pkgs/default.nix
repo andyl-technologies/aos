@@ -1375,7 +1375,7 @@
     "aos-system-image-e2e-fixture"
     "aos-test-agent"
     "aos-test-driver"
-    "aos-var-policy-migrate"
+    "aos-systemd-var-policy"
     "aos-verity-root-guard"
     "aos-vm"
     "crucible"
