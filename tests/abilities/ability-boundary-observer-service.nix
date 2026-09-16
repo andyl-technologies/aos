@@ -88,11 +88,12 @@ in
   assert external.config.aos.abilities.requests."aos-ability-boundary-observer:endpoint".parameters
   == {
     hosting = "external-test-mount";
-    service_resource = null;
     socket_path = "/run/aos-instrumentation/controller.sock";
   };
   assert !(external.config.aos.abilities.requests ? "aos-ability-boundary-observer:controller-lifecycle");
-  assert forwardedAbilities.requirementTemplates."aos-ability-boundary-observer:forward-endpoint"
+  assert builtins.removeAttrs
+  forwardedAbilities.requirementTemplates."aos-ability-boundary-observer:forward-endpoint"
+  ["localKey" "package"]
   == {
     description = "Discovers the selected protected execution observer endpoint.";
     interface = "aos.execution.observation-endpoint";
@@ -138,6 +139,8 @@ in
       ];
       mode = "0600";
       remove_on_stop = true;
+      after = [];
+      binds_to = [];
       prerequisites = [
         (outputReference "aos-ability-boundary-observer:runtime-storage" "retained-resource")
       ];
@@ -146,8 +149,11 @@ in
   assert implementation.artifact == lib.abilities.packageOutput {package = "aos-ability-boundary-observer";};
   assert implementation.providerModule
   == {
-    artifact = lib.abilities.packageOutput {package = "aos-ability-boundary-observer";};
-    path = "share/aos/providers/ability-boundary-observer-endpoint.nix";
+    artifact = lib.abilities.packageOutput {
+      package = "aos-ability-boundary-observer";
+      output = "module";
+    };
+    path = "endpoint-provider.nix";
   };
   assert provided.resourceFragments == {};
   assert provided.outputs."aos-ability-boundary-observer:endpoint".socket-path == "/run/aos-instrumentation/controller.sock";

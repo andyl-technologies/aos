@@ -42,7 +42,7 @@
     inherit lifecycle aggregation;
     guarantees = [];
   };
-  provider = import ./provider.nix;
+  provider = import ./provider.nix {inherit lib;};
 in {
   config.aos.abilities = {
     interfaces.http-backend = declaration;

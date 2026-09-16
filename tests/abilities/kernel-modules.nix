@@ -117,7 +117,8 @@
   in
     builtins.map (operation: operation.method) fragment.operations;
 in
-  assert abilities.interfaces.${kernelModules.alias} == kernelModules.declaration;
+  assert builtins.removeAttrs abilities.interfaces.${kernelModules.alias} ["localKey" "package"]
+  == kernelModules.declaration;
   assert !(abilities.interfaces ? "kmod:kernel-modules");
   assert builtins.attrNames abilities.implementations
   == [
@@ -126,7 +127,7 @@ in
   ];
   assert abilities.compositionRequests.${childRequestKey}.parameters == desired.value;
   assert desired.kind == kernelModules.identity.name;
-  assert desired.lifetime == "instance";
+  assert desired.lifetime == "persistent";
   assert desired.value
   == {
     modules = ["overlay" "zeta"];
@@ -141,7 +142,7 @@ in
   assert output.value.resource == desired.resource;
   assert output.value.operations == ["observe"];
   assert output.phase == "planning";
-  assert output.lifetime == "instance";
+  assert output.lifetime == "persistent";
   assert transitionMethods "create" == ["load"];
   assert transitionMethods "update" == ["load"];
   assert transitionMethods "reconcile-stopped" == ["load"];

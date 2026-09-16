@@ -1,5 +1,5 @@
 ##! Reference provider that authenticates and aggregates HTTP backend endpoints.
-let
+{lib}: let
   validateEndpoint = endpoint:
     if endpoint.address != "127.0.0.1"
     then throw "HTTP backend must use the IPv4 loopback address"
@@ -39,19 +39,7 @@ let
     controllers = [];
   };
 
-  transition = _context: {
-    schema = "aos.ability.transition-fragment/v1";
-    operations = [];
-    decisions = [];
-    merges = [];
-    edges = [];
-    exports = [];
-    imports = [];
-    links = [];
-    handoffs = [];
-    provider_readiness = [];
-    obligations = [];
-  };
+  transition = _context: lib.abilities.transitionFragment {};
 in {
   inherit compose transition;
 }
