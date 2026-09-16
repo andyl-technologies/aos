@@ -145,6 +145,26 @@
   authoredPlatform = {
     _type = "aos-image-builder";
     artifact = selectedBuilderOutput;
+    identity = {
+      schema = "aos.image.identity/v1";
+      builder = {
+        name = "systemd-boot";
+        artifact = selectedBuilderOutput;
+      };
+      target = {
+        system = lib.system;
+        cpu = lib.platform.constraints.cpu;
+      };
+      release = {
+        name = config.aos.system.name;
+        version = config.aos.system.version;
+        "state-version" = config.aos.system.stateVersion;
+        "module-abi" = config.aos.system.moduleAbi;
+        "config-input-abi" = config.aos.system.configInputAbi;
+      };
+      kernel = config.aos.kernel.selected.identity;
+      boot."normal-artifact-path" = normalArtifactPath;
+    };
     name = "systemd-boot";
     package = systemdPackage;
     inherit normalArtifactPath;
