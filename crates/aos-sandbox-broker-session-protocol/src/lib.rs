@@ -82,8 +82,9 @@ pub use profile::{
     BrokerSessionAuthorizationPresenceV1, BrokerSessionMethodFeatureV1,
     BrokerSessionMethodProfileV1, BrokerSessionNegotiationError,
     BrokerSessionSuccessBodyPresenceV1, authenticated_broker_method_profile_v1,
-    authenticated_request_predecode_maximum_bytes_v1, maximum_broker_session_request_bytes_v1,
-    supported_broker_session_version_v1,
+    authenticated_broker_methods_for_role_v1, authenticated_request_predecode_maximum_bytes_v1,
+    maximum_broker_session_request_bytes_v1, production_broker_client_hello_v1,
+    production_broker_server_hello_v1, supported_broker_session_version_v1,
 };
 pub use projection::{
     AUTHENTICATED_HOST_QUERY_CLEARED_MAXIMUM_BYTES, AUTHENTICATED_HOST_QUERY_MAXIMUM_BYTES,

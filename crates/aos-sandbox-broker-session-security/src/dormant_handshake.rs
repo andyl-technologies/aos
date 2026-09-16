@@ -5,7 +5,7 @@
 //! in [`crate::handshake`], and this facade registers no listener, route,
 //! service registration, background task, or broker effect.
 
-use std::os::fd::OwnedFd;
+use std::os::fd::{BorrowedFd, OwnedFd};
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerDescriptorDisposition, BrokerDescriptorDispositionEntry, BrokerDescriptorEntry,
@@ -13,8 +13,10 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerResponseEnvelope, HostCatalogPublicationStatus, PublishHostCatalogResponse,
 };
 use aos_sandbox_broker_session_protocol::{
+    AUTHENTICATED_RESPONSE_MAXIMUM_BYTES, BrokerSessionProtocolV1,
     ProtectedBrokerSessionVerificationContextV1, decode_canonical_response_v1,
     hello_message::{BrokerClientHello, BrokerServerHello},
+    production_broker_client_hello_v1, production_broker_server_hello_v1,
 };
 use aos_sandbox_core::ProtocolVersion;
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
@@ -86,6 +88,21 @@ pub enum DormantControllerClientHandshakeProgressV1 {
 }
 
 impl DormantControllerClientHandshakeV1 {
+    /// Borrows the adopted socket for readiness polling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after a fatal transport failure closes the socket.
+    pub fn as_fd(&self) -> Result<BorrowedFd<'_>, DormantBrokerSessionHandshakeErrorV1> {
+        self.0.as_fd().map_err(Into::into)
+    }
+
+    /// Reports whether the next handshake flight waits for writable readiness.
+    #[must_use]
+    pub const fn wants_write(&self) -> bool {
+        self.0.wants_write()
+    }
+
     /// Advances exactly one receive or send flight on the adopted socket.
     ///
     /// # Errors
@@ -123,6 +140,21 @@ pub enum DormantBrokerEndpointHandshakeProgressV1 {
 }
 
 impl DormantBrokerEndpointHandshakeV1 {
+    /// Borrows the adopted socket for readiness polling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after a fatal transport failure closes the socket.
+    pub fn as_fd(&self) -> Result<BorrowedFd<'_>, DormantBrokerSessionHandshakeErrorV1> {
+        self.0.as_fd().map_err(Into::into)
+    }
+
+    /// Reports whether the next handshake flight waits for writable readiness.
+    #[must_use]
+    pub const fn wants_write(&self) -> bool {
+        self.0.wants_write()
+    }
+
     /// Advances exactly one send or receive flight on the adopted socket.
     ///
     /// # Errors
@@ -4585,6 +4617,54 @@ impl DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl ProtectedBrokerSessionFixedCustodyV1 {
+    /// Adopts a controller-side socket using the complete production profile.
+    ///
+    /// The method set, features, protocol version, and ceilings come only from
+    /// the authenticated broker registry. Callers select the fixed protocol
+    /// and audience but cannot supply a partial or downgraded hello.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported role profile, wrong fixed endpoint
+    /// role, stale kernel or protected custody, or handshake construction
+    /// failure.
+    pub fn begin_production_client_handshake(
+        self,
+        socket: SeqpacketSocket,
+        protocol: BrokerSessionProtocolV1,
+        audience: Audience,
+    ) -> Result<DormantControllerClientHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
+        let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        let hello = production_broker_client_hello_v1(protocol, audience, maximum_response_bytes)
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        self.begin_client_handshake(socket, hello)
+    }
+
+    /// Adopts a service-side socket using the complete production profile.
+    ///
+    /// The method set, features, protocol version, and ceilings come only from
+    /// the authenticated broker registry. Callers cannot advertise a partial
+    /// implementation while using this production constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported role profile, wrong fixed endpoint
+    /// role, stale kernel or protected custody, or handshake construction
+    /// failure.
+    pub fn begin_production_broker_handshake(
+        self,
+        socket: SeqpacketSocket,
+        protocol: BrokerSessionProtocolV1,
+        audience: Audience,
+    ) -> Result<DormantBrokerEndpointHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
+        let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        let hello = production_broker_server_hello_v1(protocol, audience, maximum_response_bytes)
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        self.begin_broker_handshake(socket, hello)
+    }
+
     /// Adopts an already-connected socket into the fixed client hello flight.
     ///
     /// This performs no connect, listener, registration, routing, descriptor,

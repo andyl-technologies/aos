@@ -79,6 +79,102 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 22] = [
 /// Number of non-sentinel methods in the authenticated broker profile.
 pub const AUTHENTICATED_BROKER_METHOD_COUNT_V1: usize = AUTHENTICATED_BROKER_METHODS_V1.len();
 
+/// Returns the complete canonical method profile for one endpoint role.
+///
+/// The returned methods are in registry order and include every method that
+/// production must advertise or require for the selected protocol and
+/// audience. This is the sole all-method hello profile; callers cannot
+/// accidentally omit a feature-conditioned method while claiming production
+/// readiness.
+#[must_use]
+pub fn authenticated_broker_methods_for_role_v1(
+    protocol: BrokerSessionProtocolV1,
+    audience: Audience,
+) -> Vec<BrokerMethod> {
+    AUTHENTICATED_BROKER_METHODS_V1
+        .into_iter()
+        .filter(|method| {
+            authenticated_broker_method_profile_v1(*method).is_some_and(|profile| {
+                profile.protocol() == protocol && profile.audience() == audience
+            })
+        })
+        .collect()
+}
+
+/// Builds the canonical production client hello for one endpoint role.
+///
+/// The hello requires Broker Session Authentication 1.0 and every additional
+/// feature needed by its complete method profile. Protected endpoint custody
+/// subsequently supplies the process identity, nonce, context, and signature.
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionNegotiationError`] when the protocol/audience pair
+/// has no registered methods or the response ceiling is outside the closed
+/// authenticated profile.
+pub fn production_broker_client_hello_v1(
+    protocol: BrokerSessionProtocolV1,
+    audience: Audience,
+    maximum_response_bytes: u32,
+) -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    let methods = authenticated_broker_methods_for_role_v1(protocol, audience);
+    if methods.is_empty() {
+        return Err(BrokerSessionNegotiationError::Methods);
+    }
+    if !valid_response_maximum(maximum_response_bytes) {
+        return Err(BrokerSessionNegotiationError::Ceiling);
+    }
+    let (major, minor) = supported_broker_session_version_v1(protocol);
+
+    Ok(BrokerClientHello {
+        protocol_major: u32::from(major),
+        protocol_minor: u32::from(minor),
+        audience: audience.into(),
+        required_features: production_features_for_methods(&methods),
+        maximum_response_bytes,
+        required_methods: methods.into_iter().map(Into::into).collect(),
+        ..Default::default()
+    })
+}
+
+/// Builds the canonical production broker hello for one endpoint role.
+///
+/// The result advertises the exact version, complete method set, and all
+/// feature conditions for the selected role. Protected endpoint custody later
+/// supplies the process identity, nonce, client transcript link, and signature.
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionNegotiationError`] when the protocol/audience pair
+/// has no registered methods, the request maximum is not the fixed protocol
+/// maximum, or the response ceiling is outside the authenticated profile.
+pub fn production_broker_server_hello_v1(
+    protocol: BrokerSessionProtocolV1,
+    audience: Audience,
+    maximum_response_bytes: u32,
+) -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    let methods = authenticated_broker_methods_for_role_v1(protocol, audience);
+    if methods.is_empty() {
+        return Err(BrokerSessionNegotiationError::Methods);
+    }
+    if !valid_response_maximum(maximum_response_bytes) {
+        return Err(BrokerSessionNegotiationError::Ceiling);
+    }
+    let maximum_request_bytes = u32::try_from(maximum_broker_session_request_bytes_v1(protocol))
+        .map_err(|_| BrokerSessionNegotiationError::Ceiling)?;
+    let (major, minor) = supported_broker_session_version_v1(protocol);
+
+    Ok(BrokerServerHello {
+        protocol_major: u32::from(major),
+        protocol_minor: u32::from(minor),
+        features: production_features_for_methods(&methods),
+        maximum_request_bytes,
+        maximum_response_bytes,
+        methods: methods.into_iter().map(Into::into).collect(),
+        ..Default::default()
+    })
+}
+
 /// Defines whether a method carries the established authorization quartet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BrokerSessionAuthorizationPresenceV1 {
@@ -426,6 +522,66 @@ pub const fn maximum_broker_session_request_bytes_v1(protocol: BrokerSessionProt
     }
 }
 
+fn valid_response_maximum(maximum_response_bytes: u32) -> bool {
+    let minimum = AUTHENTICATED_RESPONSE_MINIMUM_BYTES as u32;
+    let maximum = AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32;
+
+    (minimum..=maximum).contains(&maximum_response_bytes)
+}
+
+fn production_features_for_methods(methods: &[BrokerMethod]) -> Vec<Feature> {
+    let mut require_signed_plan_lease = false;
+    let mut require_mount_source_acquisition = false;
+
+    for method in methods {
+        let Some(profile) = authenticated_broker_method_profile_v1(*method) else {
+            continue;
+        };
+        for feature in profile.required_features() {
+            match feature {
+                BrokerSessionMethodFeatureV1::SignedPlanLease => {
+                    require_signed_plan_lease = true;
+                }
+                BrokerSessionMethodFeatureV1::MountSourceAcquisition => {
+                    require_mount_source_acquisition = true;
+                }
+            }
+        }
+    }
+
+    let mut features = vec![Feature {
+        namespace: BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE.to_owned(),
+        major: 1,
+        minor: 0,
+        ..Default::default()
+    }];
+    if require_signed_plan_lease {
+        features.push(Feature {
+            namespace: SIGNED_PLAN_LEASE_FEATURE.to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        });
+    }
+    if require_mount_source_acquisition {
+        features.push(Feature {
+            namespace: MOUNT_SOURCE_ACQUISITION_FEATURE.to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        });
+    }
+    features.sort_by(|left, right| {
+        left.namespace
+            .len()
+            .cmp(&right.namespace.len())
+            .then_with(|| left.namespace.as_bytes().cmp(right.namespace.as_bytes()))
+            .then_with(|| left.major.cmp(&right.major))
+            .then_with(|| left.minor.cmp(&right.minor))
+    });
+    features
+}
+
 pub(crate) fn validate_authenticated_negotiation_v1(
     client: &BrokerClientHello,
     broker: &BrokerServerHello,
@@ -690,5 +846,85 @@ const fn is_mount_source_acquisition_method(method: BrokerMethod) -> bool {
             false
         }
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RESPONSE_MAXIMUM: u32 = 65_536;
+
+    #[test]
+    fn production_hello_profiles_cover_every_registered_endpoint_role() {
+        let profiles = [
+            (
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                6,
+                2,
+            ),
+            (
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_ROOT_MOUNT,
+                1,
+                2,
+            ),
+            (
+                BrokerSessionProtocolV1::Storage,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                4,
+                2,
+            ),
+            (
+                BrokerSessionProtocolV1::Mount,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                8,
+                3,
+            ),
+            (
+                BrokerSessionProtocolV1::Network,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                3,
+                2,
+            ),
+        ];
+
+        for (protocol, audience, method_count, feature_count) in profiles {
+            let client =
+                production_broker_client_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
+            let broker =
+                production_broker_server_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
+            let (major, minor) = supported_broker_session_version_v1(protocol);
+
+            assert_eq!(client.required_methods.len(), method_count);
+            assert_eq!(broker.methods.len(), method_count);
+            assert_eq!(client.required_features.len(), feature_count);
+            assert_eq!(broker.features.len(), feature_count);
+            validate_authenticated_negotiation_v1(
+                &client, &broker, protocol, major, minor, audience,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn production_hello_profiles_reject_unregistered_roles_and_ceilings() {
+        assert!(
+            production_broker_client_hello_v1(
+                BrokerSessionProtocolV1::Storage,
+                Audience::AUDIENCE_ROOT_MOUNT,
+                RESPONSE_MAXIMUM,
+            )
+            .is_err()
+        );
+        assert!(
+            production_broker_server_hello_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                1,
+            )
+            .is_err()
+        );
     }
 }

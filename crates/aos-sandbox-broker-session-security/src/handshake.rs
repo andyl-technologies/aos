@@ -7,7 +7,7 @@
 //! resulting transcript with the adopted socket and protected journal owner.
 //! They register no peer, transport, descriptor, service, or effect authority.
 
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES, CLIENT_HELLO_MAXIMUM_BYTES,
@@ -57,6 +57,14 @@ struct HandshakeIoTrace {
 
 #[allow(dead_code, reason = "used by the sealed handshake typestates")]
 impl HandshakeCarrier {
+    fn as_fd(&self) -> Result<BorrowedFd<'_>, DormantBrokerSessionHandshakeErrorV1> {
+        match &self.transport {
+            HandshakeTransport::Ordinary(socket) => socket.as_fd(),
+            HandshakeTransport::Descriptor(socket) => socket.as_fd(),
+        }
+        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)
+    }
+
     fn ordinary(socket: SeqpacketSocket) -> Result<Self, HandshakeError> {
         let peer = ProcessEvidence::capture_peer(socket.peer())?;
         Ok(Self {
@@ -1056,6 +1064,18 @@ impl DormantControllerClientHandshakeV1 {
             },
         }
     }
+
+    pub(super) fn as_fd(&self) -> Result<BorrowedFd<'_>, DormantBrokerSessionHandshakeErrorV1> {
+        match &self.state {
+            DormantClientHandshakeStateV1::AwaitPublication(state) => state.carrier.as_fd(),
+            DormantClientHandshakeStateV1::SendHello(state) => state.carrier.as_fd(),
+            DormantClientHandshakeStateV1::AwaitBrokerHello(state) => state.carrier.as_fd(),
+        }
+    }
+
+    pub(super) const fn wants_write(&self) -> bool {
+        matches!(self.state, DormantClientHandshakeStateV1::SendHello(_))
+    }
 }
 
 enum DormantBrokerHandshakeStateV1 {
@@ -1151,6 +1171,22 @@ impl DormantBrokerEndpointHandshakeV1 {
                 Transition::Failed(error) => Err(error.into()),
             },
         }
+    }
+
+    pub(super) fn as_fd(&self) -> Result<BorrowedFd<'_>, DormantBrokerSessionHandshakeErrorV1> {
+        match &self.state {
+            DormantBrokerHandshakeStateV1::SendPublication(state) => state.carrier.as_fd(),
+            DormantBrokerHandshakeStateV1::AwaitClientHello(state) => state.carrier.as_fd(),
+            DormantBrokerHandshakeStateV1::SendHello(state) => state.carrier.as_fd(),
+        }
+    }
+
+    pub(super) const fn wants_write(&self) -> bool {
+        matches!(
+            self.state,
+            DormantBrokerHandshakeStateV1::SendPublication(_)
+                | DormantBrokerHandshakeStateV1::SendHello(_)
+        )
     }
 }
 

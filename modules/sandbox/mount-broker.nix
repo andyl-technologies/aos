@@ -79,6 +79,8 @@ in {
         ListenSequentialPacket = "/run/aos/sandbox-mount/control.sock";
         FileDescriptorName = "aos-sandbox-mount";
         Service = "aos-sandbox-mountd.service";
+        PassCredentials = true;
+        PassPIDFD = true;
         SocketUser = "aos-sandboxd";
         SocketGroup = "aos-sandboxd";
         SocketMode = "0600";

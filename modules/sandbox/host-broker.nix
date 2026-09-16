@@ -87,6 +87,8 @@ in {
         ListenSequentialPacket = "/run/aos/sandbox-host/control.sock";
         FileDescriptorName = "aos-sandbox-host";
         Service = "aos-sandbox-hostd.service";
+        PassCredentials = true;
+        PassPIDFD = true;
         SocketUser = "aos-sandboxd";
         # RootMount has no DAC-override capability. Give its root group the
         # narrow socket access path; hostd still verifies its exact service

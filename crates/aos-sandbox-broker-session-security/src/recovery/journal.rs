@@ -245,6 +245,8 @@ pub enum ProtectedBrokerSessionFixedEndpointV1 {
     ControllerHostClient,
     /// Uses the Host-service broker custody root.
     HostBroker,
+    /// Uses the RootMount-side Host client custody root.
+    RootMountHostClient,
     /// Uses the controller-side Storage client custody root.
     ControllerStorageClient,
     /// Uses the Storage-service broker custody root.
@@ -711,6 +713,10 @@ fn fixed_endpoint(
         Endpoint::HostBroker => (
             "/var/lib/aos/sandbox-host/broker-session",
             FixedEndpointRole::Broker,
+        ),
+        Endpoint::RootMountHostClient => (
+            "/var/lib/aos/sandbox-mount/broker-session/host",
+            FixedEndpointRole::Client,
         ),
         Endpoint::ControllerStorageClient => (
             "/var/lib/aos/sandboxd/broker-session/storage",
