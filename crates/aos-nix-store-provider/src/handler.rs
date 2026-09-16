@@ -1,6 +1,7 @@
 //! Command dispatch and local Nix store database realization.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt as _;
@@ -23,18 +24,47 @@ use aos_provider_protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::artifact::{ContentArtifactProvider, INTERFACE_NAME as ARTIFACT_INTERFACE_NAME};
+use crate::artifact::ContentArtifactProvider;
 use crate::process::ProcessStoreCommands;
 #[cfg(test)]
 use crate::process::argument_batches;
 
-const INTERFACE_NAME: &str = "aos.nix.store-database-effects";
 const REALIZATION_SCHEMA: &str = "aos.nix.store-database-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.nix-store-database-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.nix.store-database-context/v1";
 const DATABASE_PATH: &str = "/nix/var/nix/db/db.sqlite";
 const MAX_REGISTRATION_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_REGISTRATION_RECORDS: usize = 1_000_000;
+
+/// Selects one package-declared Nix store handler role.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NixStoreRole {
+    /// Converges and observes the local Nix store database.
+    Database,
+    /// Commits, observes, and removes persistent content-addressed objects.
+    ContentAddressedObject,
+}
+
+impl NixStoreRole {
+    /// Resolves a closed role from a package-installed handler entry point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the executable name is not one of the entry
+    /// points published by the Nix store provider package.
+    pub fn from_entry_point(entry_point: &OsStr) -> Result<Self> {
+        let name = Path::new(entry_point)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .context("Nix store handler entry point is not valid UTF-8")?;
+
+        match name {
+            "aos-nix-store-database-effects" => Ok(Self::Database),
+            "aos-content-addressed-object" => Ok(Self::ContentAddressedObject),
+            _ => bail!("entry point does not select a checked Nix store handler role"),
+        }
+    }
+}
 
 /// Handles package-owned local Nix store abilities.
 pub struct NixStoreProvider {
@@ -63,7 +93,7 @@ impl NixStoreProvider {
     /// Returns an error when the wire schema, authority, provider context, or
     /// selected executable is invalid, or when a requested database command
     /// cannot complete within its supplied deadline.
-    pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
+    pub fn handle(&self, role: NixStoreRole, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
         let result = match purpose {
             "admit" => {
                 let request: AdmissionRequest = aos_contract::canonical::from_slice(
@@ -75,10 +105,11 @@ impl NixStoreProvider {
                     request.schema == ADMISSION_REQUEST_SCHEMA,
                     "unsupported admission schema"
                 );
-                if request.method.interface.name.as_str() == ARTIFACT_INTERFACE_NAME {
-                    serde_json::to_value(self.artifacts.admit(request)?)?
-                } else {
-                    serde_json::to_value(self.admit(request)?)?
+                match role {
+                    NixStoreRole::Database => serde_json::to_value(self.admit(request)?)?,
+                    NixStoreRole::ContentAddressedObject => {
+                        serde_json::to_value(self.artifacts.admit(request)?)?
+                    }
                 }
             }
             "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
@@ -93,10 +124,11 @@ impl NixStoreProvider {
                     purpose == purpose_name(invocation.purpose),
                     "invocation purpose differs from argv"
                 );
-                if invocation.method.interface.name.as_str() == ARTIFACT_INTERFACE_NAME {
-                    serde_json::to_value(self.artifacts.invoke(invocation)?)?
-                } else {
-                    serde_json::to_value(self.invoke(invocation)?)?
+                match role {
+                    NixStoreRole::Database => serde_json::to_value(self.invoke(invocation)?)?,
+                    NixStoreRole::ContentAddressedObject => {
+                        serde_json::to_value(self.artifacts.invoke(invocation)?)?
+                    }
                 }
             }
             _ => bail!("unsupported command-handler purpose {purpose:?}"),
@@ -107,11 +139,7 @@ impl NixStoreProvider {
     }
 
     fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
-        validate_method(
-            &request.method.interface.name.to_string(),
-            request.method.method.as_str(),
-            &request.semantics,
-        )?;
+        validate_method(request.method.method.as_str(), &request.semantics)?;
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
 
@@ -162,11 +190,7 @@ impl NixStoreProvider {
             invocation.method_is_bound(),
             "invocation method differs from durable recovery authority"
         );
-        validate_method(
-            &invocation.method.interface.name.to_string(),
-            invocation.method.method.as_str(),
-            &invocation.semantics,
-        )?;
+        validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
 
         let request = &invocation.request;
         validate_resource_contexts(&request.resources)?;
@@ -707,11 +731,7 @@ fn validate_request(request: &DatabaseRequest) -> Result<()> {
     Ok(())
 }
 
-fn validate_method(interface: &str, method: &str, semantics: &MethodSemantics) -> Result<()> {
-    ensure!(
-        interface == INTERFACE_NAME,
-        "selected interface is not owned by Nix"
-    );
+fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
     let access = match method {
         "converge" => AccessMode::ExclusiveWrite,
         "observe" => AccessMode::Read,
@@ -900,6 +920,24 @@ mod tests {
 
     fn lock_error<T>(_: std::sync::PoisonError<T>) -> anyhow::Error {
         anyhow::anyhow!("test lock is poisoned")
+    }
+
+    #[test]
+    fn entry_points_select_only_package_declared_roles() {
+        assert_eq!(
+            NixStoreRole::from_entry_point(OsStr::new("aos-nix-store-database-effects"))
+                .expect("database entry point selects its role"),
+            NixStoreRole::Database
+        );
+        assert_eq!(
+            NixStoreRole::from_entry_point(OsStr::new("aos-content-addressed-object"))
+                .expect("artifact entry point selects its role"),
+            NixStoreRole::ContentAddressedObject
+        );
+        assert!(
+            NixStoreRole::from_entry_point(OsStr::new("aos-nix-store-provider")).is_err(),
+            "the unqualified provider entry point must not select a role"
+        );
     }
 
     #[test]

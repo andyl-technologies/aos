@@ -33,7 +33,6 @@ use serde_json::json;
 use crate::handler::{ability_value, decode_value, remaining};
 use crate::process::ProcessStoreCommands;
 
-pub(super) const INTERFACE_NAME: &str = "aos.artifact.content-addressed-object";
 const REALIZATION_SCHEMA: &str = "aos.artifact.content-addressed-object-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.artifact.content-addressed-object-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.artifact.content-addressed-object-context/v1";
@@ -65,11 +64,7 @@ impl ContentArtifactProvider {
 
     /// Admits one effect-free object operation.
     pub(super) fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
-        validate_method(
-            request.method.interface.name.as_str(),
-            request.method.method.as_str(),
-            &request.semantics,
-        )?;
+        validate_method(request.method.method.as_str(), &request.semantics)?;
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
 
@@ -127,13 +122,8 @@ impl ContentArtifactProvider {
             invocation.method_is_bound(),
             "invocation method differs from durable recovery authority"
         );
+        validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
         validate_method(
-            invocation.method.interface.name.as_str(),
-            invocation.method.method.as_str(),
-            &invocation.semantics,
-        )?;
-        validate_method(
-            invocation.request.method.interface.name.as_str(),
             invocation.request.method.method.as_str(),
             &invocation.request.semantics,
         )?;
@@ -639,11 +629,7 @@ fn validate_realization(realization: &ContentObjectRealization) -> Result<()> {
     Ok(())
 }
 
-fn validate_method(interface: &str, method: &str, semantics: &MethodSemantics) -> Result<()> {
-    ensure!(
-        interface == INTERFACE_NAME,
-        "selected interface is not content-addressed object persistence"
-    );
+fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
     let expected = match method {
         "commit" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         "observe" => MethodSemantics::ordinary(AccessMode::Read),

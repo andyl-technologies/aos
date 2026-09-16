@@ -83,6 +83,8 @@
   effectsInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."aos-nix-store-provider:nix-store-database-effects"
   );
+  effectsHandler = abilities.implementations."aos-nix-store-provider:nix-store-database-effects".handlerDescriptor;
+  artifactHandler = abilities.implementations."aos-nix-store-provider:content-addressed-object".handlerDescriptor;
   transitionMethods = kind: let
     active = builtins.elem kind ["create" "update" "reconcile-stopped" "reconcile-divergent"];
     binding = {
@@ -129,12 +131,15 @@ in
   assert abilities.interfaces ? "aos-nix-store-provider:nix-store-database";
   assert builtins.attrNames abilities.implementations
   == [
+    "aos-nix-store-provider:content-addressed-object"
     "aos-nix-store-provider:nix-store-database"
     "aos-nix-store-provider:nix-store-database-effects"
   ];
   assert abilities.compositionRequests.${childRequestKey}.parameters == desired.value;
+  assert effectsHandler.entryPoint == "libexec/aos-nix-store-database-effects";
+  assert artifactHandler.entryPoint == "libexec/aos-content-addressed-object";
   assert desired.kind == "aos.nix.store-database";
-  assert desired.lifetime == "instance";
+  assert desired.lifetime == "persistent";
   assert desired.value
   == {
     scope = "local";
@@ -156,7 +161,7 @@ in
   assert readiness.value.resource == desired.resource;
   assert readiness.value.operations == ["observe"];
   assert readiness.phase == "planning";
-  assert readiness.lifetime == "instance";
+  assert readiness.lifetime == "persistent";
   assert transitionMethods "create" == ["converge"];
   assert transitionMethods "update" == ["converge"];
   assert transitionMethods "reconcile-stopped" == ["converge"];

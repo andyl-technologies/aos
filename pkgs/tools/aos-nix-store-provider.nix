@@ -59,7 +59,7 @@ in
     pname = "aos-nix-store-provider";
     qualification.packageProbe = lib.qualification.providerExecutableProbe {
       name = "aos-nix-store-provider";
-      entryPoint = "bin/aos-nix-store-provider";
+      entryPoint = "libexec/aos-nix-store-database-effects";
     };
 
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
@@ -81,11 +81,19 @@ in
 
     postInstall = ''
       mkdir -p "$out/libexec" "$out/share/aos/providers"
+      mv "$out/bin/aos-nix-store-provider" \
+        "$out/libexec/.aos-nix-store-provider"
+      ln -s .aos-nix-store-provider \
+        "$out/libexec/aos-nix-store-database-effects"
+      ln -s .aos-nix-store-provider \
+        "$out/libexec/aos-content-addressed-object"
       ln -s ${nix}/bin/nix-store "$out/libexec/nix-store"
       cp ${./_nix-store-provider.nix} \
         "$out/share/aos/providers/nix-store-database.nix"
-      test -x "$out/bin/aos-nix-store-provider"
-      if patchelf --print-interpreter "$out/bin/aos-nix-store-provider" \
+      test -x "$out/libexec/aos-nix-store-database-effects"
+      test -x "$out/libexec/aos-content-addressed-object"
+      test ! -e "$out/bin/aos-nix-store-provider"
+      if patchelf --print-interpreter "$out/libexec/.aos-nix-store-provider" \
           > "$TMPDIR/aos-nix-store-provider.interpreter" 2>/dev/null; then
         printf 'aos-nix-store-provider unexpectedly has ELF interpreter: '
         cat "$TMPDIR/aos-nix-store-provider.interpreter"
@@ -97,6 +105,5 @@ in
       description = "AOS package-owned local Nix store database provider";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
-      mainProgram = "aos-nix-store-provider";
     };
   }
