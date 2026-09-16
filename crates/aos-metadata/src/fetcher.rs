@@ -3,7 +3,7 @@
 //! A fetcher encodes one platform's documented user-data + instance-metadata
 //! contract (endpoint paths, required headers, payload encoding, facts
 //! locations) over the shared HTTP surface ([`crate::http`]). It is
-//! the only seam the dispatcher knows about; selection is by `PLATFORM_ID`
+//! the only seam the dispatcher knows about; selection uses the typed result
 //! from `detect`.
 //!
 //! # Trust boundary
@@ -30,7 +30,7 @@ use super::http::MetadataHttp;
 ///
 /// Implementors encode one platform's documented contract over the shared
 /// [`MetadataHttp`] surface (or, for offline channels, a mounted directory).
-/// The dispatcher selects one by `PLATFORM_ID` and calls
+/// The dispatcher selects one from the typed platform identifier and calls
 /// [`fetch_user_data`](PlatformFetcher::fetch_user_data) then
 /// [`fetch_facts`](PlatformFetcher::fetch_facts).
 ///

@@ -104,10 +104,10 @@ pub struct FetchedMetadata {
     pub facts: Facts,
 }
 
-/// Select the [`PlatformFetcher`] for a `PLATFORM_ID`, given the resolved
-/// offline `metadata_dir` (when one was mounted by `detect`).
+/// Selects the [`PlatformFetcher`] for a typed detection result.
 ///
-/// Offline channels need their mounted directory; cloud channels ignore it.
+/// Offline channels use the private mounted directory carried by the result;
+/// cloud channels ignore it.
 /// Detection emits only identifiers with an explicit capability. A manually
 /// supplied or stale unknown identifier fails closed instead of silently
 /// discarding possible control-plane provisioning data.

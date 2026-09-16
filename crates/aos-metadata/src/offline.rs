@@ -52,7 +52,7 @@ pub struct AosMetadataFetcher {
 }
 
 impl AosMetadataFetcher {
-    /// Read from the mounted `aos-metadata` directory (`METADATA_DIR`).
+    /// Reads from the invocation-private mounted `aos-metadata` directory.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into() }
     }

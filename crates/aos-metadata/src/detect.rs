@@ -9,7 +9,7 @@
 //! Detection order:
 //!
 //! 1. **Config-drive probe** — `blkid -L {aos-metadata,cidata,config-2}`; a hit
-//!    mounts RO and short-circuits with `METADATA_DIR` set and no network.
+//!    mounts RO and returns a private acquisition directory with no network.
 //! 2. **Asset tag** — Azure writes a fixed chassis asset tag.
 //! 3. **`sys_vendor`** — the bulk of cloud platforms.
 //! 4. **`bios_vendor`** — AWS Nitro bare-metal.
@@ -172,8 +172,7 @@ fn read_dmi(sysfs_root: &Path, key: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Decide the `PLATFORM_ID` from DMI strings, porting the Nix decision table
-/// verbatim.
+/// Decides the provider platform identifier from DMI strings.
 ///
 /// Pure over its inputs (no I/O), so it is exhaustively table-tested. Returns
 /// the platform id; never empty (falls back to `"metal"`).
