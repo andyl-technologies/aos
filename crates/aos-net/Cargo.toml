@@ -4,46 +4,67 @@ version = "0.1.0"
 edition = "2021"
 license.workspace = true
 
+[features]
+default = ["transfer"]
+transfer = [
+    "dep:async-trait",
+    "dep:aws-config",
+    "dep:aws-sdk-s3",
+    "dep:bytes",
+    "dep:digest",
+    "dep:futures-util",
+    "dep:hex",
+    "dep:rand",
+    "dep:reqwest",
+    "dep:serde",
+    "dep:sha2",
+    "dep:ssh2",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:tracing",
+    "dep:url",
+]
+
 [dependencies]
 aos-ability-model = { workspace = true }
 
 # HTTP
-reqwest = { workspace = true, features = ["stream"] }
-url = { workspace = true }
-bytes = "1"
+reqwest = { workspace = true, features = ["stream"], optional = true }
+url = { workspace = true, optional = true }
+bytes = { version = "1", optional = true }
 
 # Async
-tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util"] }
-async-trait = { workspace = true }
-futures-util = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util"], optional = true }
+async-trait = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 
 # Hashing
-sha2 = { workspace = true }
-digest = "0.10"
-hex = { workspace = true }
+sha2 = { workspace = true, optional = true }
+digest = { version = "0.10", optional = true }
+hex = { workspace = true, optional = true }
 
 # S3
-aws-sdk-s3 = { workspace = true }
-aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
 
 # SSH/SFTP
-ssh2 = { workspace = true }
+ssh2 = { workspace = true, optional = true }
 
 # Streaming IO
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, optional = true }
 
 # Serialization (for auth token refresh)
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
 
 # Logging
-tracing = { workspace = true }
+tracing = { workspace = true, optional = true }
 
 # Misc
-rand = { workspace = true }
+rand = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

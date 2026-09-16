@@ -109,7 +109,7 @@
     // {
       "test:network-effects" = {
         request = child.request;
-        implementation = "systemd:systemd-network-configuration-effects";
+        implementation = "systemd:network-configuration-effects";
         providerInstance = "systemd:manager";
         slot = child.slot;
       };
@@ -117,8 +117,66 @@
   abilities = resolved.config.aos.abilities;
   resource = builtins.head (builtins.attrValues abilities.desiredResources);
   networkInterface = lib.abilities.interfaces.networkConfiguration.interface;
+  effectsInterface = networkInterface.effects;
+  transition = abilities.implementations."systemd:network-configuration".transition;
+  transitionOperation = kind: let
+    method =
+      if kind == "remove"
+      then "remove"
+      else "apply";
+    fragment = transition {
+      provider = resource.resource.provider;
+      operation_scope = ["network-configuration"];
+      before.resources = [resource];
+      after.resources = [resource];
+      changes = [
+        {
+          inherit kind;
+          inherit (resource) resource;
+          current = null;
+          desired = null;
+        }
+      ];
+      authorized_bindings = [
+        {
+          authority.role =
+            if kind == "remove"
+            then "teardown"
+            else "desired";
+          binding = {
+            id = "network-configuration-effects";
+            interface = effectsInterface.identity;
+            caller_grant = {
+              methods = effectsInterface.methods;
+              resources = [
+                {
+                  inherit (resource) resource;
+                  access = "exclusive-write";
+                  operations = [method];
+                }
+              ];
+            };
+          };
+        }
+      ];
+      controllers = [
+        {
+          inherit (resource) resource;
+          controller = {
+            provider = resource.resource.provider;
+            group = "network-configuration";
+          };
+        }
+      ];
+    };
+  in
+    builtins.head fragment.operations;
+  applyOperation = transitionOperation "create";
+  removeOperation = transitionOperation "remove";
 in
   assert child.requirement == "network-configuration-effects";
+  assert child.declaration.parameters == {};
+  assert effectsInterface.identity.name == "aos.network.configuration-effects";
   assert abilities.compositionPendingRequests == {};
   assert resource.kind == "aos.network.configuration";
   assert !(resource.value ? bootstrap);
@@ -126,9 +184,16 @@ in
   assert resource.realization.systemd.store_path == artifactReference.store_path;
   assert builtins.isFunction abilities.implementations."systemd:network-configuration".transition;
   assert abilities.implementations."systemd:network-configuration".handlerDescriptor == null;
-  assert abilities.implementations."systemd:systemd-network-configuration-effects".providerModule == null;
+  assert abilities.implementations."systemd:network-configuration-effects".providerModule == null;
+  assert abilities.implementations."systemd:network-configuration-effects".interface == effectsInterface.alias;
+  assert !(abilities.interfaces ? "systemd:systemd-network-configuration-effects");
   assert lib.abilities.types.schemaOf "network apply method" networkInterface.declaration.methods.apply.parameters
   == lib.abilities.types.schemaOf "network apply input" networkInterface.types.applyInput;
   assert (lib.abilities.types.schemaOf "network apply input" networkInterface.types.applyInput).fields.bootstrap.value
   == lib.abilities.types.schemaOf "network bootstrap" networkInterface.types.bootstrap;
+  assert applyOperation.interface == effectsInterface.identity;
+  assert applyOperation.method == "apply";
+  assert applyOperation.target.interface == networkInterface.identity;
+  assert applyOperation.inputs.value == {bootstrap = null;};
+  assert removeOperation.method == "remove";
   assert builtins.length resolved.config.systemd.providerNetworkConfigurationArtifacts == 1; true

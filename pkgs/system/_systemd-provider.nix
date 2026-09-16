@@ -447,10 +447,7 @@
         requirement = "network-configuration-effects";
         scope = ["network-configuration-effects"];
         slot = key;
-        parameters = {
-          kind = "network-configuration";
-          desired = resource.value;
-        };
+        parameters = {};
       }) resources;
       realizations = builtins.mapAttrs (_: _: {
         schema = "aos.systemd.network-configuration-realization/v1";

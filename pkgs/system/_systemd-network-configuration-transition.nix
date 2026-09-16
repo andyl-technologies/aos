@@ -14,13 +14,9 @@
     ])
   context.changes;
   methodFor = kind:
-    if kind == "create"
-    then "create"
-    else if kind == "update"
-    then "update"
-    else if kind == "remove"
+    if kind == "remove"
     then "remove"
-    else "reconcile";
+    else "apply";
   authorityFor = change:
     if change.kind == "remove"
     then "teardown"
@@ -87,7 +83,6 @@
     inputs = {
       source = "literal";
       value = {
-        kind = "network-configuration";
         bootstrap = null;
       };
     };

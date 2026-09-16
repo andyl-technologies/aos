@@ -14,7 +14,7 @@ aos-contract = { workspace = true }
 aos-core = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-cache = { workspace = true }
-aos-net = { workspace = true }
+aos-net = { workspace = true, features = ["transfer"] }
 aos-oci-types = { workspace = true }
 aos-provider-protocol = { workspace = true }
 aos-remote = { workspace = true }
