@@ -275,7 +275,32 @@ impl SeqpacketSocket {
         if maximum_bytes == 0 || expected_descriptors == 0 || expected_descriptors > 5 {
             return Err(SeqpacketError::InvalidMaximum);
         }
-        let result = self.receive_descriptor_inner(maximum_bytes, expected_descriptors);
+        let result = self.receive_descriptor_inner(maximum_bytes, expected_descriptors, false);
+        if result.as_ref().is_err_and(SeqpacketError::is_fatal) {
+            self.fd.take();
+        }
+        result
+    }
+
+    /// Receives one record carrying either no descriptor or exactly one descriptor.
+    ///
+    /// This profile lets a higher-level authenticated envelope select between
+    /// ordinary and single-descriptor methods only after the packet has been
+    /// consumed. The higher layer must reject any mismatch between the decoded
+    /// method and the returned descriptor count before using the descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns the ordinary bounded-record errors and rejects every descriptor
+    /// count other than zero or one.
+    pub fn receive_with_optional_descriptor(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, SeqpacketError> {
+        if maximum_bytes == 0 {
+            return Err(SeqpacketError::InvalidMaximum);
+        }
+        let result = self.receive_descriptor_inner(maximum_bytes, 1, true);
         if result.as_ref().is_err_and(SeqpacketError::is_fatal) {
             self.fd.take();
         }
@@ -362,6 +387,7 @@ impl SeqpacketSocket {
         &self,
         maximum_bytes: usize,
         expected_descriptors: usize,
+        allow_empty: bool,
     ) -> Result<descriptor_subject::ReceivedDescriptorRecord, SeqpacketError> {
         let mut probe = [0_u8; 1];
         let preview = uapi::recv_seqpacket(
@@ -376,7 +402,7 @@ impl SeqpacketSocket {
         drop(descriptor_subject::validate_ancillary(
             preview.ancillary,
             expected_descriptors,
-            false,
+            allow_empty,
         )?);
         if preview.bytes == 0 {
             return Err(SeqpacketError::EmptyRecord);
@@ -406,7 +432,7 @@ impl SeqpacketSocket {
         let (subject, descriptors) = descriptor_subject::validate_ancillary(
             received.ancillary,
             expected_descriptors,
-            false,
+            allow_empty,
         )?;
         Ok(descriptor_subject::ReceivedDescriptorRecord::from_parts(
             payload,
@@ -1306,6 +1332,57 @@ mod tests {
             Err(SeqpacketError::Ancillary("SCM_RIGHTS is forbidden"))
         ));
         assert!(matches!(receiver.as_fd(), Err(SeqpacketError::Closed)));
+    }
+
+    #[test]
+    fn optional_descriptor_receive_admits_only_zero_or_one_right() {
+        let (mut ordinary_sender, mut ordinary_receiver) = pair();
+        ordinary_receiver
+            .enable_record_subjects()
+            .expect("enable ordinary record subjects");
+        ordinary_sender
+            .send(b"ordinary")
+            .expect("send ordinary record");
+
+        let ordinary = ordinary_receiver
+            .receive_with_optional_descriptor(64)
+            .expect("receive descriptor-free record");
+        assert_eq!(ordinary.payload(), b"ordinary");
+        assert!(ordinary.descriptors().is_empty());
+
+        let (mut descriptor_sender, mut descriptor_receiver) = pair();
+        descriptor_receiver
+            .enable_record_subjects()
+            .expect("enable descriptor record subjects");
+        let file = std::fs::File::open("/dev/null").expect("open test descriptor");
+        descriptor_sender
+            .send_with_descriptors(b"publication", &[file.as_fd()])
+            .expect("send single descriptor");
+
+        let publication = descriptor_receiver
+            .receive_with_optional_descriptor(64)
+            .expect("receive single-descriptor record");
+        assert_eq!(publication.payload(), b"publication");
+        assert_eq!(publication.descriptors().len(), 1);
+
+        let (mut excess_sender, mut excess_receiver) = pair();
+        excess_receiver
+            .enable_record_subjects()
+            .expect("enable excess record subjects");
+        excess_sender
+            .send_with_descriptors(b"excess", &[file.as_fd(), file.as_fd()])
+            .expect("send excess descriptors");
+
+        assert!(matches!(
+            excess_receiver.receive_with_optional_descriptor(64),
+            Err(SeqpacketError::Ancillary(
+                "inexact SCM_RIGHTS descriptor table"
+            ))
+        ));
+        assert!(matches!(
+            excess_receiver.as_fd(),
+            Err(SeqpacketError::Closed)
+        ));
     }
 
     #[test]

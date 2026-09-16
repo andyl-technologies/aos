@@ -263,6 +263,12 @@ pub enum ProtectedBrokerSessionFixedEndpointV1 {
     NetworkBroker,
 }
 
+impl ProtectedBrokerSessionFixedEndpointV1 {
+    pub(crate) fn production_socket_path(self) -> &'static str {
+        fixed_endpoint(self).socket_path
+    }
+}
+
 pub(crate) enum FixedEndpointCustodyV1 {
     Client(ProtectedBrokerSessionClientV1),
     Broker(ProtectedBrokerSessionBrokerV1),

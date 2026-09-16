@@ -7,6 +7,7 @@
 //! complete the fixed protected handshake before leaving this module.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
@@ -219,9 +220,11 @@ impl ProductionBrokerSessionActivationV1 {
                     "a fixed descriptor name is absent",
                 ),
             )?;
+            let listener = RecordSubjectListener::from_owned(descriptor)?;
+            listener.require_local_filesystem_path(Path::new(endpoint.production_socket_path()))?;
             listeners.push(FixedListenerV1 {
                 endpoint: *endpoint,
-                listener: RecordSubjectListener::from_owned(descriptor)?,
+                listener,
             });
         }
         if !supplied.is_empty() {

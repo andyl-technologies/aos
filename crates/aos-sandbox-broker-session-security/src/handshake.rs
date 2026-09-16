@@ -1557,6 +1557,60 @@ impl DormantAuthenticatedBrokerSessionV1 {
         Ok((admission, descriptors))
     }
 
+    pub(super) fn receive_authenticated_optional_descriptor_request(
+        &mut self,
+    ) -> Result<
+        (
+            crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1,
+            Vec<OwnedFd>,
+        ),
+        DormantBrokerSessionHandshakeErrorV1,
+    > {
+        let maximum = aos_sandbox_broker_session_protocol::maximum_broker_session_request_bytes_v1(
+            self.transcript.protocol(),
+        );
+        let record = self
+            .socket
+            .receive_with_optional_descriptor(maximum)
+            .map_err(|error| match error {
+                SeqpacketError::WouldBlock | SeqpacketError::Interrupted => {
+                    DormantBrokerSessionHandshakeErrorV1::Transport
+                }
+                _ => DormantBrokerSessionHandshakeErrorV1::RemoteInvalid,
+            })?;
+        let bound = self
+            .socket
+            .bind_received_descriptors(record)
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
+        let credentials = bound.subject().credentials();
+        let peer_credentials = bound.peer().credentials();
+        if !bound
+            .subject()
+            .is_alive()
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
+            || credentials.pid() != peer_credentials.pid()
+            || credentials.uid() != peer_credentials.uid()
+            || credentials.gid() != peer_credentials.gid()
+            || bound.subject().initial_info() != bound.peer().initial_info()
+        {
+            return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+        }
+        let now = protected_boottime_nanoseconds()
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
+        let (packet, _, descriptors, _) = bound.into_parts();
+        let admission = self
+            .owner
+            .admit_received_request(
+                &packet,
+                descriptors.len(),
+                &self.transcript,
+                self.socket.peer(),
+                now,
+            )
+            .map_err(DormantBrokerSessionHandshakeErrorV1::Protected)?;
+        Ok((admission, descriptors))
+    }
+
     fn from_client(
         root: &'static str,
         session: InertProvisionalClientSession,

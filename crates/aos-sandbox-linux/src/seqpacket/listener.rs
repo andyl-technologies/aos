@@ -11,6 +11,8 @@
 //! independently and rejected, never repaired, if either option is missing.
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::Component;
 use std::path::Path;
 
 use super::descriptor_subject::DescriptorSubjectSocket;
@@ -95,6 +97,42 @@ impl RecordSubjectListener {
         uapi::require_seqpacket_identity(self.fd.as_fd()).map_err(map_kernel_error)
     }
 
+    /// Verifies the exact filesystem pathname bound to this listener.
+    ///
+    /// Abstract, unnamed, unterminated, and noncanonical local addresses are
+    /// rejected rather than compared as filesystem paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `expected` is not one normalized absolute path,
+    /// `getsockname(2)` fails, or the retained listener is bound elsewhere.
+    pub fn require_local_filesystem_path(&self, expected: &Path) -> Result<(), SeqpacketError> {
+        let expected_bytes = expected.as_os_str().as_bytes();
+        let normalized = expected.is_absolute()
+            && expected_bytes.len() > 1
+            && !expected_bytes.contains(&0)
+            && expected_bytes[1..]
+                .split(|byte| *byte == b'/')
+                .all(|component| !component.is_empty() && !matches!(component, b"." | b".."))
+            && expected
+                .components()
+                .all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
+        if !normalized {
+            return Err(SeqpacketError::Kernel(crate::Error::invalid(
+                "record subject listener path",
+                "must be a normalized absolute path",
+            )));
+        }
+        let observed = uapi::unix_socket_local_filesystem_path(self.fd.as_fd())?;
+        if observed != expected_bytes {
+            return Err(SeqpacketError::Kernel(crate::Error::invalid(
+                "record subject listener path",
+                "differs from the fixed endpoint",
+            )));
+        }
+        Ok(())
+    }
+
     /// Accepts one child with independently checked inherited identity options.
     ///
     /// An older child queued before listener configuration is closed, not
@@ -153,7 +191,6 @@ mod tests {
     use crate::Error;
     use std::ffi::OsStr;
     use std::os::fd::AsRawFd;
-    use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::FileTypeExt as _;
 
     fn configured_listener() -> RecordSubjectListener {
@@ -168,6 +205,16 @@ mod tests {
         let path = directory.path().join("record-subject.sock");
         let mut listener = RecordSubjectListener::bind(&path, 1).expect("bind listener");
 
+        listener
+            .require_local_filesystem_path(&path)
+            .expect("validate exact listener path");
+        assert!(matches!(
+            listener.require_local_filesystem_path(&directory.path().join("other.sock")),
+            Err(SeqpacketError::Kernel(Error::InvalidInput {
+                field: "record subject listener path",
+                ..
+            }))
+        ));
         assert!(
             std::fs::symlink_metadata(&path)
                 .expect("socket metadata")
@@ -338,7 +385,7 @@ mod tests {
             uapi::enable_test_socket_option(fd.as_fd(), enabled).expect("enable only one option");
             // Use an otherwise-unused high FD to avoid incidental low-FD reuse
             // by concurrently running tests between rejection and observation.
-            let high = uapi::duplicate_at_least(fd.as_fd(), 1024).expect("duplicate test FD");
+            let high = uapi::duplicate_at_least(fd.as_fd(), 512).expect("duplicate test FD");
             let raw = high.as_raw_fd();
             assert!(RecordSubjectListener::from_owned(high).is_err());
             assert!(!uapi::raw_fd_is_open(raw));

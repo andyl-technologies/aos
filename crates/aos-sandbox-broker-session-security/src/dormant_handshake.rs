@@ -595,6 +595,29 @@ impl DormantReceivedBrokerRequestV1 {
     }
 }
 
+impl DormantReceivedBrokerDescriptorRequestV1 {
+    /// Returns the authenticated method selected by the signed request.
+    #[must_use]
+    pub const fn method(&self) -> BrokerMethod {
+        self.request.method()
+    }
+
+    /// Converts a descriptor-free request into ordinary broker custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged request and its descriptors when any descriptor
+    /// was transferred. Callers must route that custody through the exact
+    /// descriptor-bearing method instead.
+    pub fn into_descriptor_free_request(self) -> Result<DormantReceivedBrokerRequestV1, Self> {
+        if self.descriptors.is_empty() {
+            Ok(DormantReceivedBrokerRequestV1(self.request))
+        } else {
+            Err(self)
+        }
+    }
+}
+
 /// Classifies protected request preparation and durable ambiguity.
 #[must_use = "recover ambiguous durable state before sending"]
 pub enum DormantBrokerRequestPreparationV1 {
@@ -3642,6 +3665,104 @@ impl DormantAuthenticatedBrokerSessionV1 {
             request: request.clone(),
             descriptors,
         };
+        Ok(match self.0.append_authenticated_request(&request)? {
+            ProtectedBrokerRequestCommitResultV1::Committed => {
+                DormantBrokerDescriptorRequestReceiveProgressV1::Received(
+                    DormantReceivedBrokerDescriptorRequestV1 {
+                        request,
+                        descriptors: retained.descriptors,
+                    },
+                )
+            }
+            ProtectedBrokerRequestCommitResultV1::RecoveryRequired { error, recovery } => {
+                DormantBrokerDescriptorRequestReceiveProgressV1::SuccessorRecoveryRequired {
+                    error,
+                    recovery,
+                    request: retained,
+                }
+            }
+        })
+    }
+
+    /// Receives any authenticated Host request with its method-selected FD table.
+    ///
+    /// Ordinary Host methods carry no descriptors and `PublishCatalog` carries
+    /// exactly one. The protected method decoder validates that relationship
+    /// before this method returns descriptor custody. This avoids selecting a
+    /// transport profile from unauthenticated packet bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for transport, subject, descriptor-role, semantic, or
+    /// protected-currentness failure. Descriptors never escape ambiguous state.
+    pub fn receive_authenticated_host_request(
+        &mut self,
+    ) -> Result<DormantBrokerDescriptorRequestReceiveProgressV1, DormantBrokerSessionHandshakeErrorV1>
+    {
+        let (admission, descriptors) =
+            match self.0.receive_authenticated_optional_descriptor_request() {
+                Ok(value) => value,
+                Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
+                    return Ok(DormantBrokerDescriptorRequestReceiveProgressV1::Pending);
+                }
+                Err(error) => return Err(error.into()),
+            };
+        let (request, initialize) = match admission {
+            crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::New {
+                request,
+                requires_initialization,
+            } => (request, requires_initialization),
+            crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::InFlightReplay {
+                request,
+            } => {
+                drop(descriptors);
+                return Ok(
+                    DormantBrokerDescriptorRequestReceiveProgressV1::InFlightReplay(
+                        DormantBrokerOutcomeUnknownV1 {
+                            request: DormantReceivedBrokerRequestV1(request),
+                            observation: None,
+                        },
+                    ),
+                );
+            }
+            crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::TerminalReplay {
+                replay,
+            } => {
+                drop(descriptors);
+                let replay = DormantBrokerTerminalReplayV1(replay);
+                return Ok(if replay.0.response_descriptor_roles()?.is_empty() {
+                    DormantBrokerDescriptorRequestReceiveProgressV1::TerminalReplay(replay)
+                } else {
+                    DormantBrokerDescriptorRequestReceiveProgressV1::DescriptorTerminalReplay(
+                        DormantBrokerDescriptorTerminalReplayV1(replay),
+                    )
+                });
+            }
+        };
+        let retained = DormantUnconfirmedBrokerDescriptorRequestV1 {
+            request: request.clone(),
+            descriptors,
+        };
+        if initialize {
+            return Ok(match self.0.initialize_authenticated_request(&request)? {
+                ProtectedBrokerSessionInitializationResultV1::Initialized => {
+                    DormantBrokerDescriptorRequestReceiveProgressV1::Received(
+                        DormantReceivedBrokerDescriptorRequestV1 {
+                            request,
+                            descriptors: retained.descriptors,
+                        },
+                    )
+                }
+                ProtectedBrokerSessionInitializationResultV1::RecoveryRequired {
+                    error,
+                    recovery,
+                } => DormantBrokerDescriptorRequestReceiveProgressV1::InitializationRecoveryRequired {
+                    error,
+                    recovery,
+                    request: retained,
+                },
+            });
+        }
         Ok(match self.0.append_authenticated_request(&request)? {
             ProtectedBrokerRequestCommitResultV1::Committed => {
                 DormantBrokerDescriptorRequestReceiveProgressV1::Received(
