@@ -534,6 +534,19 @@ fn wrong_binding_method_and_context_are_rejected() {
         .expect("checked binding fixture");
     let missing = BindingId(LocalKey::new("missing-binding").expect("binding"));
     assert!(selected_binding(checked.binding_plan(), &missing).is_err());
+    let fixed_resource = &checked.binding_plan().document().resources[0];
+    let mut fixed_spec = ResourceSpec {
+        resource: fixed_resource.resource.clone(),
+        kind: fixed_resource.kind.clone(),
+        lifetime: fixed_resource.lifetime,
+        value: fixed_resource.value.clone(),
+        realization: fixed_resource.realization.clone(),
+        revision: fixed_resource.revision,
+    };
+    validate_fixed_point_resource(checked.binding_plan(), &fixed_spec)
+        .expect("exact fixed-point resource");
+    fixed_spec.value = AbilityValue::new(serde_json::Value::Bool(false)).expect("wrong value");
+    assert!(validate_fixed_point_resource(checked.binding_plan(), &fixed_spec).is_err());
 
     let (binding, interface, assignment, target) = fixture();
     let method = MethodReference {

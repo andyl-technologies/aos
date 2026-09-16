@@ -282,6 +282,7 @@ impl BoundHandlerClient {
             method: selector.method,
         };
 
+        validate_fixed_point_resources(bindings, &target)?;
         validate_template(&binding, &interface, &assignment, &method, &target)?;
         let transport = BoundCommandHandler::new(package, assignment.clone(), interface.clone())
             .context("authenticating bound-handler executable")?;
@@ -628,6 +629,40 @@ fn selected_binding<'a>(
     bindings
         .binding(binding)
         .context("bound-handler selector names no checked binding")
+}
+
+fn validate_fixed_point_resources(
+    bindings: &CheckedBindingPlan,
+    target: &BoundHandlerTarget,
+) -> Result<()> {
+    validate_fixed_point_resource(bindings, &target.resource)?;
+    for context in &target.resources {
+        let bound = aos_provider_protocol::validate_resource_context(context)?;
+        validate_fixed_point_resource(bindings, &bound.resource_spec)?;
+    }
+    Ok(())
+}
+
+fn validate_fixed_point_resource(
+    bindings: &CheckedBindingPlan,
+    resource: &ResourceSpec,
+) -> Result<()> {
+    let expected = bindings
+        .document()
+        .resources
+        .binary_search_by(|candidate| candidate.resource.cmp(&resource.resource))
+        .ok()
+        .map(|index| &bindings.document().resources[index])
+        .context("bound-handler resource is absent from the checked fixed point")?;
+    ensure!(
+        expected.kind == resource.kind
+            && expected.lifetime == resource.lifetime
+            && expected.value == resource.value
+            && expected.realization == resource.realization
+            && expected.revision == resource.revision,
+        "bound-handler resource differs from the checked fixed point"
+    );
+    Ok(())
 }
 
 fn validate_template(
