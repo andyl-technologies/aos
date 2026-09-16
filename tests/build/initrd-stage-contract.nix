@@ -170,7 +170,17 @@ in
             export AOS_NIX_EVAL_STORE="$runtime_store"
             export NIX_REMOTE="$runtime_store"
 
+            store_view=$(${pkgs.jq}/bin/jq -cnS \
+              --arg readRoot "$TMPDIR/static-contract-runtime-store/nix/store" \
+              --arg staticContract "$host_static_contract/contract.json" \
+              '{
+                identity_root: "/nix/store",
+                read_root: $readRoot,
+                schema: "aos.package-store.read-view-locator/v1",
+                static_contract: $staticContract
+              }')
             ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __eval \
+              --store-view "$store_view" \
               --host-nix ${emptyHost} \
               --base-lib "$base_lib" \
               --facts ${emptyFacts} \
@@ -178,11 +188,8 @@ in
               --out "$runtime_eval/manifest.json" \
               --eval-root "$runtime_eval"
             ${pkgs.jq}/bin/jq -e \
-              --arg contract "$host_static_contract" '
-              .etc."aos/static-ability-contract.json".kind == "store-symlink"
-              and .etc."aos/static-ability-contract.json".target
-                == ($contract + "/contract.json")
-              and .ownership.etc."aos/static-ability-contract.json" == "@base"
+              --argjson storeView "$store_view" '
+              .inputs.store_view == $storeView
             ' "$runtime_eval/manifest.json" >/dev/null
 
             validate_contract() {
