@@ -30,6 +30,7 @@
     "tar"
     "util-linux"
     "zstd"
+    "zfs"
   ];
   dependencyOutputs = builtins.map packageOutput dependencyNames;
   artifactFor = name: packageArtifactFor (packageOutput name);
@@ -117,7 +118,7 @@
           pkgs = imagePackages;
           inherit config lib bootArtifacts budgetCheck;
           image = rawImage;
-          zfs = config.aos.filesystems.zfs.package;
+          zfs = artifactFor "zfs";
         }
       else null;
   in {
