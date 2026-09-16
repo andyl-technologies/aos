@@ -1686,6 +1686,7 @@ in rec {
         evalModules
         interfaceDocumentFromDeclaration
         guaranteeIdentity
+        identityKeyFor
         interfaceIdentity
         normalizeSemanticValue
         normalizePackageOutputSelectors
@@ -1773,20 +1774,18 @@ in rec {
 
   compositionRequirementKey = args: let
     checked = requireAttrs "composition requirement identity" ["implementation" "alias"] args;
-  in "composition:requirement-${builtins.hashString "sha256" (builtins.toJSON {
-    schema = "aos.ability.composition-requirement-key/v1";
+  in "composition:requirement-${identityKeyFor "aos.ability.composition-requirement-key/v1" {
     implementation = requireDeclarationKey "composition implementation" checked.implementation;
     alias = requireLocalKey "composition requirement alias" checked.alias;
-  })}";
+  }}";
 
   compositionRequestKey = args: let
     checked = requireAttrs "composition request identity" ["implementation" "providerInstance" "key"] args;
-  in "composition:request-${builtins.hashString "sha256" (builtins.toJSON {
-    schema = "aos.ability.composition-request-key/v1";
+  in "composition:request-${identityKeyFor "aos.ability.composition-request-key/v1" {
     implementation = requireDeclarationKey "composition implementation" checked.implementation;
     provider_instance = requireDeclarationKey "composition provider instance" checked.providerInstance;
     key = requireLocalKey "composition request key" checked.key;
-  })}";
+  }}";
 
   packageOutput = args: let
     checked = requireAttrs "package output selector" ["package" "output"] args;

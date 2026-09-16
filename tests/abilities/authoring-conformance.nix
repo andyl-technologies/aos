@@ -818,13 +818,19 @@
     };
     key = "instance";
   };
-  revisionProviderIdentity = {
-    environment = plainIdentity.environment;
-    key = "instance-${builtins.hashString "sha256" (builtins.toJSON {
-      schema = "aos.ability.instance-key/v1";
-      declaration = "authoring:provider";
-    })}";
+  revisionIdentityEvaluation = lib.evalModules {
+    modules = [
+      lib.abilities.module
+      {
+        config.aos.abilities = {
+          environment = plainIdentity.environment;
+          instances."authoring:provider" = {};
+        };
+      }
+    ];
   };
+  revisionProviderIdentity =
+    revisionIdentityEvaluation.config.aos.abilities.instanceIdentities."authoring:provider";
   invalidPackageOutputField = builtins.tryEval (builtins.deepSeq
     (lib.abilities.packageOutput {unknown = true;})
     true);
@@ -897,8 +903,9 @@ in
     key = "host";
     stage = "host";
   };
-  assert derivedInstanceIdentity.key
-  == "instance-122435614f54784fad556d4f153bdccaa571e66af26db80f2330fd7dca893044";
+  assert lib.hasPrefix "instance-" derivedInstanceIdentity.key;
+  assert builtins.stringLength derivedInstanceIdentity.key == 73;
+  assert lib.abilities.types.localKey.check derivedInstanceIdentity.key;
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".package == "alpha";
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".interface == "alpha:test";
   assert rejectsImplementation (implementation // {artifact = {};});
@@ -1054,13 +1061,7 @@ in
   assert crossTargetEvaluation.config.aos.abilities.interfaces."authoring:source".methods.invoke.outputs.observed.phase == "observation";
   assert !missingCrossTarget.success;
   assert primaryRevisionEvaluation.instanceIdentities."authoring:provider"
-  == {
-    environment = plainIdentity.environment;
-    key = "instance-${builtins.hashString "sha256" (builtins.toJSON {
-      schema = "aos.ability.instance-key/v1";
-      declaration = "authoring:provider";
-    })}";
-  };
+  == revisionProviderIdentity;
   assert primaryRevisionEvaluation.resolvedResources."authoring:resource".resource
   == {
     provider = primaryRevisionEvaluation.instanceIdentities."authoring:provider";

@@ -4,12 +4,24 @@
 ##! projection, invokes selected pure constructors, merges compatible resource
 ##! facets, and attaches the sole write controller's realization.
 {
+  abilityIdentityKeyFor,
   config,
   lib,
   ...
 }: let
   abilities = config.aos.abilities;
   authoredRequests = abilities.requests;
+
+  providerSelectionKey = binding:
+    abilityIdentityKeyFor "aos.ability.provider-selection-key/v1" {
+      inherit (binding) implementation providerInstance;
+    };
+  resourceIdentityKey =
+    abilityIdentityKeyFor "aos.ability.resource-id-key/v1";
+  requestOutputKey = request: output:
+    abilityIdentityKeyFor "aos.ability.request-output-key/v1" {
+      inherit request output;
+    };
 
   fail = message: throw "ability composition: ${message}";
   guaranteeFor = reference:
@@ -173,10 +185,7 @@
   };
   selections = builtins.map selection (builtins.attrNames abilities.bindings);
   selectionGroupKey = entry:
-    builtins.hashString "sha256" (builtins.toJSON {
-      implementation = entry.binding.implementation;
-      providerInstance = entry.binding.providerInstance;
-    });
+    providerSelectionKey entry.binding;
   selectionGroups = groupBy selectionGroupKey selections;
 
   childContextFor = groupKey:
@@ -277,7 +286,7 @@
       })
     (builtins.attrNames group.result.resourceFragments))
   provisionGroups);
-  fragmentsByResource = groupBy (entry: builtins.hashString "sha256" (builtins.toJSON entry.resource)) fragmentEntries;
+  fragmentsByResource = groupBy (entry: resourceIdentityKey entry.resource) fragmentEntries;
 
   requestedMethods = entry:
     if builtins.hasAttr entry.request.requirement abilities.requirementTemplates
@@ -351,10 +360,7 @@
   provisionGroups);
   plannedResources = mergedResources ++ publishedPlanningResources;
   resourcesByController = groupBy (resource:
-    builtins.hashString "sha256" (builtins.toJSON {
-      implementation = resource.controller.binding.implementation;
-      providerInstance = resource.controller.binding.providerInstance;
-    }))
+    providerSelectionKey resource.controller.binding)
   mergedResources;
 
   composeGroup = resources: let
@@ -464,7 +470,7 @@
 
   desiredResources = builtins.listToAttrs (builtins.concatLists (builtins.map (composition:
     builtins.map (resource: {
-      name = "resource-${builtins.hashString "sha256" (builtins.toJSON resource.resource)}";
+      name = "resource-${resourceIdentityKey resource.resource}";
       value = {
         inherit (resource) resource kind lifetime value;
         controller = resource.controller.bindingName;
@@ -533,10 +539,7 @@
     else builtins.mapAttrs (_: values: (builtins.head values).value) byName;
   expectedOutputEntries = builtins.concatLists (builtins.map (entry:
     builtins.map (outputName: {
-      key = builtins.hashString "sha256" (builtins.toJSON {
-        request = entry.binding.request;
-        output = outputName;
-      });
+      key = requestOutputKey entry.binding.request outputName;
       requestName = entry.binding.request;
       inherit outputName;
     })
@@ -552,10 +555,7 @@
   actualOutputEntries = builtins.concatLists (builtins.map (group:
     builtins.concatLists (builtins.map (requestName:
       builtins.map (outputName: {
-        key = builtins.hashString "sha256" (builtins.toJSON {
-          request = requestName;
-          output = outputName;
-        });
+        key = requestOutputKey requestName outputName;
         inherit requestName outputName;
         output = outputFor group requestName outputName group.result.outputs.${requestName}.${outputName};
       })
