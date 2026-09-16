@@ -86,11 +86,11 @@ rule either too strict or vacuous.
 | C2 | Job scripts need a build | Render now emits job-script **text** into the manifest; materializer writes gen-local; P0 excludes job-script bytes. (F2-A.) | architecture.md, implementation-plan.md |
 | M-facts | Instance facts are an unrecorded host-varying input | Facts are a **first-class recorded input**: `facts_hash` (+ retained `facts.json`) in the manifest `inputs` and the `gen-attestation` record, distinct from the operator-authored provisioning input. | trust-and-secrets.md, README.md, module-system.md |
 | M-gen0key | Gen-0 SSH key seeded from unauthenticated IMDS before policy acceptance | **Removed** the carve-out. No `authorized_keys` is seeded from the facts channel before the selected provisioning trust policy accepts input; pre-eval reachability comes only from image-baked or accepted provisioning input. | provisioning.md |
-| M-repart-order / locus | Full host.nix eval cannot precede first-boot repart | Evaluate only the closed `aos.provisioning` projection from authenticated `host.nix` in initrd. Independently validate its pure JSON result, then render repart definitions. The full registry/package fixpoint remains stage 2. | provisioning.md |
+| M-repart-order / locus | Full host-stage registry resolution cannot precede first-boot repart | Evaluate the complete image-fixed initrd graph with its authenticated package/provider modules and exact source-composed bindings. Independently validate its typed storage-plan projection before effects. Registry-selected host additions remain stage 2. | provisioning.md |
 | M-dual-config-language | A JSON storage bundle duplicates `host.nix` and creates two sources of truth | Removed the bundle schema. Cloud user-data is literal `host.nix`; a minimal URL/hash/signature pointer is transport metadata only. All storage intent lives at `aos.provisioning.storage`. | provisioning.md |
 | M-provisioning-replay | Convergent repart on every boot lets later metadata changes mutate a committed host | Add a pending/committed GPT provenance protocol. Pending fails closed for recovery; committed boots still acquire/evaluate runtime configuration and dry-run the storage projection, but can never reopen disk mutation. | provisioning.md |
 | M-image-policy | Server/debug/workload policy was selected by the golden image despite host.nix being primary | Define an explicit image/host boundary; split mixed profiles and move roles, desired packages, identity, services, runtime security, and observability into host.nix. | image-host-boundary.md |
-| M-static-ip | DHCP-less metadata-network clouds deadlock | The initrd `aos metadata` agent parses platform network config and seeds **static `networkd`** into the gen-0 `/var/etc` lower, so stage-2 has a route without DHCP. | provisioning.md |
+| M-static-ip | DHCP-less metadata-network clouds deadlock | The selected initrd metadata provider returns typed bootstrap-network facts consumed by the selected network provider, so stage 2 has a route without DHCP. | provisioning.md |
 | M-partial-commit | Degraded partial /etc ≠ hash(manifest) | The degraded generation is content-addressed over the **re-projected** manifest (full manifest minus un-fetched packages), re-hashed; the gen records the dropped set. Reproducible from (inputs + recorded drop-set). | orchestration.md, generations.md |
 | M-forgeable-file | Priority-75/conscription key on forgeable `_file` | Provenance is assigned by the **resolver from the authenticated fetch source** (signed package identity / policy-accepted host.nix store path); module-supplied `_file` is **ignored** for priority and conscription. | module-system.md |
 | M-read-absent | Fixpoint throw doesn't name a read of an absent root | Two discovery mechanisms separated: writes-to-undeclared (strict throw) vs reads-of-absent-root (resolver detects the raw missing-attr and dispatches on its root segment — `SystemRoots` for shared roots, else structural by-name lookup); throw-string parsing remains isolated and fixture-tested. | module-system.md |
@@ -105,8 +105,8 @@ rule either too strict or vacuous.
   measured production evaluator.
 - Runtime re-eval: every boot reacquires/authorizes `host.nix` and performs
   full evaluation; only storage mutation is first-boot-only.
-- `activate.sh.in` now prepares through the native `aos metadata` agent; no
-  Ignition binary remains in the production activation path.
+- Metadata preparation now runs through selected package-owned typed
+  providers; no Ignition binary remains in the production activation path.
 - `-Dfirstboot=false` is build-**disabled** (not just stripped); prefer
   manifest-rendered hostname. Noted.
 - "materialization not building" sharpened: no compiler/configure/derivation

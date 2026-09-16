@@ -306,7 +306,7 @@ Attach `metadata.iso` as a CD-ROM for the first boot. The
 the complete metadata lifecycle and storage recipe reference is in
 [Understand and operate `host.nix`](host-nix.md).
 
-The native network metadata agents support AWS IMDSv2, GCP, Azure,
+The native network metadata providers support AWS IMDSv2, GCP, Azure,
 DigitalOcean, and OpenStack. Other clouds, bare metal, Hyper-V, VMware, and
 VirtualBox use image defaults unless an offline metadata or config drive is
 attached. AOS does not infer an unrecorded provider metadata protocol.

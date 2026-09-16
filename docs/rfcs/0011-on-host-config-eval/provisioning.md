@@ -11,18 +11,19 @@ authentication, and the boundary between the golden image and host policy.
 
 ## Invariants
 
-1. **One configuration source.** The metadata agent accepts literal `host.nix`
-   bytes. It never accepts a JSON storage plan, Ignition document, Butane
-   document, cloud-init configuration, or raw `repart.d`.
+1. **One configuration source.** The selected metadata provider accepts
+   literal `host.nix` bytes. It never accepts a JSON storage plan, Ignition
+   document, Butane document, cloud-init configuration, or raw `repart.d`.
 2. **Transport is not configuration.** A provider-size escape hatch may carry
    only `{ url, sha256, signature_url }`. It locates and authenticates the
    exact `host.nix` bytes; it cannot express host state.
 3. **Authenticate before interpretation.** The selected `platform` or `signed`
    policy authorizes the exact `host.nix` bytes before the initrd evaluates
    `aos.provisioning` or mutates a disk.
-4. **Closed early projection.** The initrd evaluates only the declared
-   `aos.provisioning` subtree. Undeclared stage-2 configuration is neither
-   merged into the result nor forced.
+4. **One complete fixed point.** The initrd evaluates its ordinary base,
+   system, authenticated package, and selected provider modules with exact
+   source-composed bindings. The storage plan is projected from that result;
+   no reduced provisioning evaluator or parallel option tree exists.
 5. **Validate twice.** Nix option types validate the operator-facing language.
    A versioned Rust data contract independently validates the evaluated plan
    before rendering `repart.d`.

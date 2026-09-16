@@ -83,7 +83,7 @@ Offline media is checked before DMI-based cloud detection.
 | AWS | Native user-data as literal Nix or a pointer document | Pointer `sig_url` only |
 | GCP, Azure, DigitalOcean, OpenStack | Native user-data as literal Nix | Not available through native metadata |
 
-The native network metadata agents support AWS IMDSv2, GCP, Azure,
+The native network metadata providers support AWS IMDSv2, GCP, Azure,
 DigitalOcean, and OpenStack. Other providers are treated as bare metal unless
 an offline metadata or config drive is attached; AOS does not guess at an
 unrecorded provider API.
