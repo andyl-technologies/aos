@@ -707,6 +707,12 @@ in rec {
     type
     // {
       check = v: type.check v && check v;
+      merge = loc: defs: let
+        value = type.merge loc defs;
+      in
+        if check value
+        then value
+        else throw "The option '${showLoc loc}' does not satisfy its additional type constraint.";
     };
 
   ## A string that matches a regular expression (POSIX ERE).
