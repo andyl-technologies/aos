@@ -27,7 +27,10 @@
   mkReferenceGraph,
 }: let
   common = import ./common.nix {inherit lib;};
-  checkedPackageOrigin = import ./checked-package-origin.nix {inherit common;};
+  checkedPackageOrigin = import ./checked-package-origin.nix {
+    abilities = lib.abilities;
+    inherit common;
+  };
   baseDependencies = {
     inherit lib mkDerivation coreutils findutils gzip jq tar common;
   };

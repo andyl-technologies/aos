@@ -52,7 +52,8 @@
       "instances"
       "requests"
     ];
-    introducedDeclarations = builtins.filter
+    introducedDeclarations =
+      builtins.filter
       (collection:
         builtins.attrNames after.${collection}
         != builtins.attrNames before.${collection})
@@ -1151,7 +1152,8 @@
       sourceSchema = schemas.validateSchema "canonical-json source schema" checked.source_schema;
     in
       if
-        canonicalJsonTarget.kind == "string"
+        canonicalJsonTarget.kind
+        == "string"
         && builtins.isInt checked.max_bytes
         && checked.max_bytes > 0
         && checked.max_bytes <= canonicalJsonTarget.max_length
@@ -1737,10 +1739,14 @@ in rec {
     singletonSchemaDiscriminator
     transitionFragment
     ;
-  inherit (authenticatedPackageOutputs)
+  inherit
+    (authenticatedPackageOutputs)
     authenticatedPackageOutputFor
     authenticatedPackageOutputsFor
     authenticatedPackageModuleRecordFor
+    authenticatedPackageProjectionFor
+    checkedAuthenticatedPackageProjection
+    authenticatedProjectionOutputFor
     selectAuthenticatedPackageModuleRecords
     ;
   types = abilityTypes;

@@ -23,7 +23,10 @@
   artifactClass ? "container",
   executionStage ? null,
 }: let
-  packageOrigins = import ./checked-package-origin.nix {inherit common;};
+  packageOrigins = import ./checked-package-origin.nix {
+    abilities = lib.abilities;
+    inherit common;
+  };
   supportedArtifactClasses = ["container" "bootable"];
   supportedExecutionStages = ["initrd" "host"];
   schema =
@@ -86,7 +89,8 @@
         && entry.contract.value.package.version == entry.payload.version)
       selectedPackages
       && lib.all (entry:
-        entry.origin.package.name == entry.contract.value.package.name
+        entry.origin.package.name
+        == entry.contract.value.package.name
         && entry.origin.package.version == entry.contract.value.package.version
         && entry.origin.package.document == builtins.toString entry.contract.document)
       selectedPackages
