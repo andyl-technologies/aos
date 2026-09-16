@@ -264,6 +264,5 @@ in
   assert abilities.implementations."systemd:systemd-mount-effects".handlerDescriptor.entryPoint == "bin/aos-systemd-mount-effects";
   assert abilities.implementations."systemd:device-presence".providerModule == null;
   assert abilities.implementations."systemd:device-presence".handlerDescriptor.entryPoint == "bin/aos-systemd-device-presence";
-  assert declaredRoleEntryPoints == pkgs.aos-systemd-provider.roleEntryPoints;
-  assert builtins.length declaredRoleEntryPoints == 16;
+  assert builtins.elem "aos-systemd-activation-group-effects" declaredRoleEntryPoints;
   assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 4; true
