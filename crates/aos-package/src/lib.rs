@@ -356,9 +356,9 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: OptionsCommand,
     },
-    /// Export the canonical package-documentation schema or package model
+    /// Export the canonical documentation artifact schema or a checked package tooling response
     Schema {
-        /// Installed package whose exact structured model should be exported
+        /// Installed package whose exact checked tooling response should be exported
         package: Option<String>,
         /// Hub root URL for a remote package lookup
         #[arg(long)]

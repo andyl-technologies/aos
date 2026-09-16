@@ -780,12 +780,19 @@ message GetDocumentationArtifactRequest {
   string document_sha256 = 2;
 }
 
-message GetPackageDocumentationSchemaRequest {}
+message GetPackageDocumentationSchemaRequest {
+  string registry = 1;
+  string package = 2;
+  string version = 3;
+  string platform = 4;
+  string release = 5;
+}
 
 message GetPackageDocumentationSchemaResponse {
-  string schema = 1;
-  string media_type = 2;
-  bytes json_schema = 3;
+  PackageDocumentationIdentity documentation_identity = 1;
+  PackageAbilityReferenceIdentity ability_reference_identity = 2;
+  bytes canonical_json = 3;
+  string etag = 4;
 }
 
 message ListChannelsRequest {

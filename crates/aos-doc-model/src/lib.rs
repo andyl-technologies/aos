@@ -30,6 +30,7 @@ mod ability_nar;
 mod ability_reference;
 mod ability_render;
 mod nar;
+mod tooling;
 
 pub use ability_deployment::{
     ABILITY_DEPLOYMENT_OVERLAY_SCHEMA, AbilityDeploymentExport, AbilityDeploymentObservation,
@@ -46,6 +47,11 @@ pub use ability_reference::{
     MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference, ability_reference_supported_features,
 };
 pub use nar::decode_single_file_nar;
+pub use tooling::{
+    MAX_PACKAGE_TOOLING_RESPONSE_BYTES, PACKAGE_TOOLING_RESPONSE_FORMAT,
+    PACKAGE_TOOLING_RESPONSE_SCHEMA, PackageToolingIdentity, PackageToolingMethodSchema,
+    PackageToolingResponse,
+};
 
 /// Renders one checked package ability reference as a safe HTML fragment.
 ///
@@ -182,9 +188,9 @@ pub struct PackageDocumentation {
 /// Transient package documentation view derived from one metadata document and
 /// its checked signed package ability projection.
 ///
-/// This is the shared frontend boundary. Options, provided abilities, and
-/// consumed abilities all come from `ability_reference`; renderers must not
-/// join or restate those declarations independently.
+/// This transient view supports human rendering and search. Serialized schema
+/// consumers use [`PackageToolingResponse`], which additionally binds both
+/// source identities and revalidates every derived option and method row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageDocumentationProjection {
     /// Retains the separately signed package metadata document.
