@@ -248,9 +248,8 @@ pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<Canonical
 
 /// Evaluates one authenticated provisioning intent into the canonical ability plan.
 ///
-/// Unlike the legacy initrd compatibility command, this function returns the
-/// typed runtime value directly and does not materialize repart definitions or
-/// a cross-provider plan file.
+/// Returns the typed runtime value without materializing provider-specific
+/// repart definitions or a cross-provider plan file.
 ///
 /// # Errors
 ///
