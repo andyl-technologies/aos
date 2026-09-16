@@ -20,7 +20,6 @@
             hostNix = "/run/aos-metadata/host.nix";
             baseLib = "/aos-toplevel/base-lib";
             moduleAbi = 7;
-            desired = "/etc/aos/packages.d/desired.toml";
             manifest = "/run/aos/manifest.json";
             evalRoot = "/run/aos-eval";
             provisioningState = "/var/lib/aos-provisioning";
@@ -98,8 +97,6 @@ in
           "/aos-toplevel/base-lib"
           "--module-abi"
           "7"
-          "--desired"
-          "/etc/aos/packages.d/desired.toml"
           "--out"
           "/run/aos/manifest.json"
           "--eval-root"

@@ -508,8 +508,6 @@ pub struct EvalCommand {
     pub base_lib: PathBuf,
     /// Optional normalized metadata facts file.
     pub facts_json: Option<PathBuf>,
-    /// Optional desired-package document projected into a typed operator module.
-    pub desired: Option<PathBuf>,
     /// The running image's base-lib ABI.
     pub module_abi: u32,
     /// Where to write the converged manifest (only on success).
@@ -650,11 +648,6 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         .context("pinning authorized host.nix before pure evaluation")?;
     let cmd = &pinned_cmd;
 
-    let mut evaluation_runtime_modules = cmd.runtime_modules.clone();
-    if let Some(desired_module) = materialize_desired_packages_module(cmd)? {
-        evaluation_runtime_modules.push(desired_module);
-    }
-
     // The by-name config-module resolver is the on-host registry set: it reads
     // each package's authenticated package module. This replaces
     // the removed registry-wide provides index. When apm config is
@@ -666,7 +659,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         validate_registry_authority(&resolver, snapshot)?;
     }
 
-    let mut seed_set = load_host_selection(cmd, &evaluation_runtime_modules)?;
+    let mut seed_set = load_host_selection(cmd, &cmd.runtime_modules)?;
 
     let evaluator = stock::StockNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
     // Resolve the selected names before evaluation. This both pins the exact
@@ -704,7 +697,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         }
         let inputs = FixpointInputs {
             host_nix: cmd.host_nix.clone(),
-            runtime_modules: evaluation_runtime_modules.clone(),
+            runtime_modules: cmd.runtime_modules.clone(),
             base_lib: cmd.base_lib.clone(),
             facts_json: cmd.facts_json.clone().filter(|path| path.is_file()),
             seed_set,
@@ -2121,38 +2114,6 @@ fn load_host_selection(
         .filter(|package| seen.insert(package.clone()))
         .map(WorkingSetMember::seed)
         .collect())
-}
-
-/// Converts the desired-package document into one immutable typed module.
-///
-/// The resulting module enters both package selection and the complete module
-/// fixed point. No package name is parsed or unioned beside the option system.
-fn materialize_desired_packages_module(cmd: &EvalCommand) -> Result<Option<PathBuf>> {
-    let desired = cmd.desired.as_deref();
-    let Some(path) = desired else {
-        return Ok(None);
-    };
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let packages = crate::desired::load_desired_packages(path)?;
-    let package_json =
-        serde_json::to_string(&packages).context("serializing desired package module input")?;
-    let encoded_json =
-        serde_json::to_string(&package_json).context("encoding desired package module input")?;
-    let source = format!(
-        "# Generated from authenticated desired-package input; do not edit.\n\
-         {{ lib, ... }}: {{\n\
-        \x20 aos.apm.desiredPackages = lib.mkAfter (builtins.fromJSON {encoded_json});\n\
-         }}\n"
-    );
-    let module = cmd.eval_root.join("desired-packages.nix");
-    std::fs::write(&module, source)
-        .with_context(|| format!("writing desired package module {}", module.display()))?;
-    add_fixed_input_to_store(&module)
-        .map(Some)
-        .context("pinning desired package module before pure evaluation")
 }
 
 #[cfg(test)]

@@ -31,8 +31,6 @@ pub struct ServiceCommand {
     pub base_lib: PathBuf,
     /// Fallback module ABI when the running image omits it.
     pub module_abi: u32,
-    /// Optional desired package selection file.
-    pub desired: PathBuf,
     /// Destination for the converged manifest.
     pub out: PathBuf,
     /// Private evaluator scratch directory.
@@ -79,8 +77,6 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
         running_module_abi(Path::new(RUNNING_OS_RELEASE))?.unwrap_or(command.module_abi);
     let (runtime_modules, runtime_module_root, expected_current_generation) =
         active_runtime_modules(Path::new(ACTIVE_MANIFEST), Path::new(SYSTEM_STATE))?;
-    let desired = command.desired.is_file().then(|| command.desired.clone());
-
     let result = run_eval_command(&EvalCommand {
         host_nix,
         runtime_modules,
@@ -88,7 +84,6 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
         expected_current_generation,
         base_lib: command.base_lib.clone(),
         facts_json: Some(PathBuf::from(super::stock::DEFAULT_FACTS_PATH)),
-        desired,
         module_abi,
         out: command.out.clone(),
         eval_root: command.eval_root.clone(),

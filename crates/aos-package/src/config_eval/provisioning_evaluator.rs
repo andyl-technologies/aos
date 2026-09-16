@@ -136,7 +136,6 @@ pub(crate) fn evaluate(parameters: EvaluationParameters) -> Result<EvaluationOut
         expected_current_generation: None,
         base_lib,
         facts_json: Some(pinned_facts),
-        desired: None,
         module_abi,
         out: out.clone(),
         eval_root,

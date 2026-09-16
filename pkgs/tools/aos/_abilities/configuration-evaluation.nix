@@ -374,8 +374,6 @@
                 cfg.baseLib
                 "--module-abi"
                 (toString cfg.moduleAbi)
-                "--desired"
-                cfg.desired
                 "--out"
                 cfg.manifest
                 "--eval-root"
@@ -583,12 +581,6 @@ in {
       default = 1;
       internal = true;
       description = "Fallback module ABI when the running image omits it.";
-    };
-    desired = lib.mkOption {
-      type = lib.abilities.types.executionPath;
-      default = "/etc/aos/packages.d/desired.toml";
-      internal = true;
-      description = "Optional desired package selection file.";
     };
     manifest = lib.mkOption {
       type = lib.abilities.types.executionPath;

@@ -85,12 +85,6 @@ in {
       '';
     };
 
-    desired = lib.mkOption {
-      type = lib.types.str;
-      default = "/etc/aos/packages.d/desired.toml";
-      description = "Desired-package TOML whose `packages` seed the working set.";
-    };
-
     manifest = lib.mkOption {
       type = lib.types.str;
       default = "/run/aos/manifest.json";
@@ -107,7 +101,6 @@ in {
         then "/aos-toplevel/base-lib"
         else toString cfg.baseLib;
       moduleAbi = cfg.moduleAbi;
-      desired = cfg.desired;
       manifest = cfg.manifest;
       evalRoot = "/run/aos-eval";
       provisioningState = provisioningStateDir;

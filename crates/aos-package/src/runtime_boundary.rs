@@ -111,7 +111,6 @@ pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Resu
 fn requires_host_runtime(command: &PackageCommand) -> bool {
     match command {
         PackageCommand::Install {
-            from,
             system,
             image,
             kexec,
@@ -119,7 +118,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
             live,
             drain,
             ..
-        } => *system || from.is_some() || image.is_some() || *kexec || *reboot || *live || *drain,
+        } => *system || image.is_some() || *kexec || *reboot || *live || *drain,
         PackageCommand::Update { system, .. }
         | PackageCommand::Search { system, .. }
         | PackageCommand::Show { system, .. }

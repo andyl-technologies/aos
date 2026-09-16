@@ -1055,10 +1055,7 @@ class Scenario:
     def _exercise_configuration_and_packages(self, machine: VirtualMachine) -> None:
         self._stage_registry(machine)
         machine.ssh(
-            "set -eu; "
-            "printf 'packages = [\"cryptsetup\", \"curl\", \"iproute2\", "
-            "\"nginx\"]\\n' >/run/desired.toml; "
-            "apm install --system --from /run/desired.toml --yes",
+            "apm install --system cryptsetup curl iproute2 nginx --yes",
             timeout=1200,
         )
         machine.ssh(
@@ -1279,19 +1276,6 @@ http {
         machine.ssh("grep -Fx one /etc/qualification-generation")
         machine.ssh("test $(hostname) = qualification-one")
 
-        machine.ssh(
-            "set -eu; printf 'packages = []\\n' >/run/desired.toml; "
-            "apm install --system --from /run/desired.toml --yes",
-            timeout=600,
-        )
-        machine.ssh("test ! -x /bin/nginx")
-        machine.ssh(
-            "set -eu; "
-            "printf 'packages = [\"cryptsetup\", \"curl\", \"iproute2\", "
-            "\"nginx\"]\\n' >/run/desired.toml; "
-            "apm install --system --from /run/desired.toml --yes",
-            timeout=1200,
-        )
         machine.ssh("systemctl restart qualification-nginx.service")
         self._assert_persistent_workload(machine)
 

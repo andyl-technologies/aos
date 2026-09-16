@@ -202,9 +202,6 @@ pub enum PackageCommand {
     Install {
         /// Package names to install
         packages: Vec<String>,
-        /// Reconcile packages from a desired-package TOML file
-        #[arg(long = "from")]
-        from: Option<PathBuf>,
         /// Install from a specific registry
         #[arg(long)]
         registry: Option<String>,
@@ -562,9 +559,6 @@ pub enum PackageCommand {
         /// Normalized metadata facts consumed as declared host inputs
         #[arg(long = "facts", default_value = config_eval::stock::DEFAULT_FACTS_PATH)]
         facts_json: PathBuf,
-        /// A desired.toml whose `packages` seed the working set
-        #[arg(long)]
-        desired: Option<PathBuf>,
         /// The running image's base-lib module_abi
         #[arg(long = "module-abi")]
         module_abi: u32,
@@ -606,9 +600,6 @@ pub enum PackageCommand {
         /// Fallback module ABI when the running image omits it.
         #[arg(long = "module-abi", default_value_t = 1)]
         module_abi: u32,
-        /// Optional desired package selection file.
-        #[arg(long, default_value = "/etc/aos/packages.d/desired.toml")]
-        desired: PathBuf,
         /// Destination for the converged manifest.
         #[arg(long, default_value = config_eval::stock::DEFAULT_MANIFEST_PATH)]
         out: PathBuf,
@@ -714,9 +705,6 @@ pub enum PackageCommand {
         /// Normalized metadata facts consumed by the same eval transaction
         #[arg(long = "facts", default_value = config_eval::stock::DEFAULT_FACTS_PATH)]
         facts_json: PathBuf,
-        /// A desired.toml whose `packages` seed the working set
-        #[arg(long)]
-        desired: Option<PathBuf>,
         /// The running image's base-lib module_abi
         #[arg(long = "module-abi")]
         module_abi: Option<u32>,
@@ -3231,7 +3219,6 @@ async fn apply_runtime_worktree(
             expected_current_generation: Some(expected_current_generation),
             base_lib,
             facts_json: Some(facts_json),
-            desired: None,
             module_abi,
             out: candidate,
             eval_root: eval_root.to_path_buf(),
@@ -3395,7 +3382,6 @@ pub async fn run(
         expected_current_generation,
         base_lib,
         facts_json,
-        desired,
         module_abi,
         out,
         eval_root,
@@ -3412,7 +3398,6 @@ pub async fn run(
             expected_current_generation: *expected_current_generation,
             base_lib: base_lib.clone(),
             facts_json: Some(facts_json.clone()),
-            desired: desired.clone(),
             module_abi: *module_abi,
             out: out.clone(),
             eval_root: eval_root.clone(),
@@ -3447,7 +3432,6 @@ pub async fn run(
         host_nix,
         base_lib,
         module_abi,
-        desired,
         out,
         eval_root,
         provisioning_state,
@@ -3459,7 +3443,6 @@ pub async fn run(
             host_nix: host_nix.clone(),
             base_lib: base_lib.clone(),
             module_abi: *module_abi,
-            desired: desired.clone(),
             out: out.clone(),
             eval_root: eval_root.clone(),
             provisioning_state: provisioning_state.clone(),
@@ -3577,7 +3560,6 @@ pub async fn run(
         base_label,
         base_lib,
         facts_json,
-        desired,
         module_abi,
         eval_root,
         trusted_config_keys_dir,
@@ -3644,7 +3626,6 @@ pub async fn run(
                 expected_current_generation: Some(expected_current_generation),
                 base_lib,
                 facts_json: Some(facts_json.clone()),
-                desired: desired.clone(),
                 module_abi,
                 out: candidate,
                 eval_root: eval_root.clone(),
@@ -3809,7 +3790,6 @@ pub async fn run(
     match command {
         PackageCommand::Install {
             packages,
-            from,
             registry,
             download_only,
             no_deps,
@@ -3823,26 +3803,7 @@ pub async fn run(
             ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
-            if let Some(path) = from {
-                if !*install_system {
-                    anyhow::bail!("apm install --from requires --system");
-                }
-                if !packages.is_empty() {
-                    anyhow::bail!("apm install --from cannot be combined with package names");
-                }
-                if registry.is_some()
-                    || *download_only
-                    || *reinstall
-                    || *no_deps
-                    || image_fmt.is_some()
-                    || image_output.is_some()
-                {
-                    anyhow::bail!(
-                        "apm install --from cannot be combined with registry, download, reinstall, dependency, or image options"
-                    );
-                }
-                desired::reconcile_from_file(&config, path, dry_run, yes, printer).await
-            } else if *install_system || image_fmt.is_some() {
+            if *install_system || image_fmt.is_some() {
                 let transition_mode = parse_system_transition_mode(*reboot);
                 sysroot::install_system(
                     &config,
