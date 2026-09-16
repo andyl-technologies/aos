@@ -1,8 +1,8 @@
 ##! Provider-neutral immutable disk image policy and format assembly.
 ##!
 ##! The exact checked image-builder binding produces the raw image plan. This
-##! module builds the manager-neutral root filesystem and converts the selected
-##! raw artifact into delivery formats without interpreting bootloader layout.
+##! module converts the selected raw artifact into delivery formats without
+##! interpreting its root filesystem or bootloader layout.
 ##!
 ##! Supported formats:
 ##!   raw   — raw GPT disk image (base, bootable via dd or losetup)
@@ -22,13 +22,8 @@
       type = lib.types.addCheck lib.types.int (value: value > 0);
       inherit default description;
     };
-  rootfsArtifacts = import ./_rootfs.nix {
-    inherit pkgs lib;
-    system = {inherit config;};
-    name = config.aos.system.name;
-  };
   runtimeRoots =
-    [config.system.build.toplevel config.system.build.kernel]
+    [config.system.build.toplevel config.aos.kernel.selected.package]
     ++ cfg.hostConfigClosures;
   runtimeClosureAudit = import ../../lib/build/runtime-closure-audit.nix {
     inherit pkgs lib;
@@ -357,14 +352,18 @@ in {
     (lib.mkIf (cfg.enable && platform != null) {
       aos.image.plan = platform.build {
         inherit (pkgs) mkDerivation writeTextFile;
+        closureInfoFor = import ../../lib/build/closure-info.nix {
+          inherit pkgs lib;
+        };
         targetPlatform = {
           system = lib.system;
           cpu = lib.platform.constraints.cpu;
         };
         inputs = {
+          kernel = config.aos.kernel.selected;
+          managerConfiguration = config.system.build.managerConfiguration;
+          managerRootfsPlan = config.aos.manager.selected.configuration.rootfs;
           name = config.aos.system.name;
-          rootfs = rootfsArtifacts.rootfs;
-          trustBundle = rootfsArtifacts.activeImageDbCerts;
           inherit runtimeClosureAudit;
         };
       };

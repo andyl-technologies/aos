@@ -54,10 +54,18 @@
     kernel = targetKernel;
     systemdSystemPresets = empty;
   };
-  rootfs = import ../../lib/build/rootfs.nix {
+  rootfs = import ../../pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix {
     pkgs = cross.buildPackages;
     lib = cross.lib;
     system = fakeSystem;
+    kernel = {
+      package = targetKernel;
+      configuration.moduleTree = "${targetKernel}/lib/modules";
+    };
+    closureInfoFor = import ../../lib/build/closure-info.nix {
+      pkgs = cross.buildPackages;
+      lib = cross.lib;
+    };
     pname = "${testName}-rootfs";
     shrinkToFit = false;
     minSizeMiB = 2048;

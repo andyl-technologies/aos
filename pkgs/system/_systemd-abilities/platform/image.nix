@@ -19,10 +19,14 @@
     "dosfstools"
     "e2fsprogs"
     "erofs-utils"
+    "fakeroot"
     "findutils"
     "gcc-libs"
+    "gawk"
     "gptfdisk"
+    "grep"
     "jq"
+    "kmod"
     "mtools"
     "openssl"
     "qemu"
@@ -51,6 +55,7 @@
   in "EFI/Linux/aos-generation-0000000001${lib.optionalString (tries != null) "+${toString tries}"}.efi";
 
   buildImage = {
+    closureInfoFor,
     mkDerivation,
     writeTextFile,
     targetPlatform,
@@ -73,10 +78,14 @@
       dosfstools = artifactFor "dosfstools";
       e2fsprogs = artifactFor "e2fsprogs";
       erofs-utils = artifactFor "erofs-utils";
+      fakeroot = artifactFor "fakeroot";
       findutils = artifactFor "findutils";
       gcc-libs = artifactFor "gcc-libs";
+      gawk = artifactFor "gawk";
       gptfdisk = artifactFor "gptfdisk";
+      grep = artifactFor "grep";
       jq = artifactFor "jq";
+      kmod = artifactFor "kmod";
       mtools = artifactFor "mtools";
       openssl = artifactFor "openssl";
       qemu = artifactFor "qemu";
@@ -89,18 +98,25 @@
       util-linux = artifactFor "util-linux";
       zstd = artifactFor "zstd";
     };
-    inherit (inputs) name rootfs runtimeClosureAudit trustBundle;
+    inherit (inputs) kernel managerConfiguration managerRootfsPlan name runtimeClosureAudit;
+    rootfsArtifacts = import ./_rootfs.nix {
+      pkgs = imagePackages;
+      inherit closureInfoFor kernel lib managerConfiguration managerRootfsPlan name;
+      system = {inherit config;};
+    };
+    inherit (rootfsArtifacts) rootfs;
+    trustBundle = rootfsArtifacts.activeImageDbCerts;
     rawDiskFilename = "aos-${name}.img.zst";
     rawMetadataFilename = "image-info.json";
     bootArtifacts = import ./_boot-artifacts.nix {
       pkgs = imagePackages;
-      inherit lib name rootfs normalArtifactPath targetPlatform;
+      inherit kernel lib name rootfs normalArtifactPath targetPlatform;
       system = {inherit config;};
       activeImageDbCerts = trustBundle;
     };
     rawImage = import ./_image-builder.nix {
       pkgs = imagePackages;
-      inherit lib bootArtifacts rawDiskFilename rawMetadataFilename rootfs runtimeClosureAudit targetPlatform;
+      inherit kernel lib bootArtifacts rawDiskFilename rawMetadataFilename rootfs runtimeClosureAudit targetPlatform;
       system = {inherit config;};
       inherit name;
     };

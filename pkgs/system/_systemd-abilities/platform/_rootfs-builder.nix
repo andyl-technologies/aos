@@ -1,8 +1,9 @@
-##! lib/build/rootfs.nix — shared rootfs population + ext4 image builder
+##! Package-owned immutable root filesystem builder.
 ##!
-##! Produces a populated rootfs tree and an ext4 image of it. Does NOT
-##! assemble partitions — the caller composes boot/var/metadata partitions
-##! around the returned root.img.
+##! This file owns the selected platform's filesystem layout, package links,
+##! filesystem formats, and integrity artifact generation. The generic image
+##! module supplies only authenticated selected-kernel and selected-manager
+##! records plus system policy inputs.
 ##!
 ##! The layout is merged-usr:
 ##!
@@ -54,7 +55,9 @@
 {
   pkgs,
   lib,
+  closureInfoFor,
   system,
+  kernel,
   pname ? "aos-rootfs",
   label ? "aos-root",
   shrinkToFit ? true,
@@ -91,7 +94,11 @@
   firmwarePackages ? [],
 }: let
   toplevel = system.config.system.build.toplevel;
-  kernel = system.config.system.build.kernel;
+  kernelPackage = kernel.package;
+  kernelModuleTree =
+    if kernel.configuration.moduleTree == null
+    then throw "selected image platform requires a kernel module tree"
+    else kernel.configuration.moduleTree;
   checkedManagerRootfsPlan =
     if (managerConfiguration == null) != (managerRootfsPlan == null)
     then throw "rootfs: managerConfiguration and managerRootfsPlan must be supplied together"
@@ -123,9 +130,9 @@
   # duplicate the payload and can pull kernel SDKs into the immutable image.
   # Callers compose capability roots with harness roots; both may retain the
   # same output. Form their union before the strict reference-graph boundary.
-  allClosures = lib.unique (map builtins.toString ([toplevel kernel] ++ managerClosureRoots ++ extraClosures));
+  allClosures = lib.unique (map builtins.toString ([toplevel kernelPackage] ++ managerClosureRoots ++ extraClosures));
 
-  regInfo = import ./closure-info.nix {inherit pkgs lib;} {
+  regInfo = closureInfoFor {
     rootPaths = allClosures;
   };
 
@@ -222,7 +229,7 @@ in
       exportReferencesGraph = closureGraph;
 
       TOPLEVEL = toString toplevel;
-      KERNEL = toString kernel;
+      KERNEL_MODULE_TREE = kernelModuleTree;
       REGINFO = toString regInfo;
       COREUTILS = toString pkgs.coreutils;
       # `$BASH` is a bash built-in pointing at the bash executable
@@ -333,11 +340,11 @@ in
               # ── 4. Kernel modules ───────────────────────────────────────────
               # kmod looks up modules at /lib/modules/$(uname -r); the
               # /lib → usr/lib symlink makes this resolve to usr/lib/modules.
-              ln -sfn "$KERNEL/lib/modules" rootfs/usr/lib/modules
+              ln -sfn "$KERNEL_MODULE_TREE" rootfs/usr/lib/modules
               ${lib.optionalString (kernelModulePackages != []) ''
                 rm rootfs/usr/lib/modules
                 mkdir -p rootfs/usr/lib/modules
-                cp -a "$KERNEL/lib/modules/." rootfs/usr/lib/modules/
+                cp -a "$KERNEL_MODULE_TREE/." rootfs/usr/lib/modules/
                 chmod -R u+w rootfs/usr/lib/modules
                 ${lib.concatMapStringsSep "\n" (package: ''
                     chmod -R u+w rootfs/usr/lib/modules
@@ -592,7 +599,7 @@ in
         ];
 
       meta = {
-        description = "AOS rootfs + ext4 image builder";
+        description = "Selected platform immutable root filesystem";
       };
     }
     // lib.optionalAttrs verity {

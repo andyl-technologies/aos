@@ -99,10 +99,18 @@
     kernel = target.linux;
     systemdSystemPresets = empty;
   };
-  rootfs = import ../../lib/build/rootfs.nix {
+  rootfs = import ../../pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix {
     pkgs = cross.buildPackages;
     lib = cross.lib;
     inherit system;
+    kernel = {
+      package = target.linux;
+      configuration.moduleTree = "${target.linux}/lib/modules";
+    };
+    closureInfoFor = import ../../lib/build/closure-info.nix {
+      pkgs = cross.buildPackages;
+      lib = cross.lib;
+    };
     pname = "linux-workerd-rootfs";
     shrinkToFit = false;
     minSizeMiB = 2048;
