@@ -58,8 +58,8 @@ pub fn run_initrd_stage(
     );
     require_privileged_runtime()?;
 
-    let image = crate::sysroot::running_image_generation_beneath(image_profile, root)
-        .context("authenticating the initrd target image")?;
+    let image = authenticate_immutable_image_beneath(root)
+        .context("authenticating the pre-/var initrd target image")?;
     let boot_id = read_boot_id(Path::new(BOOT_ID_PATH))?;
     let contract_bytes = read_trusted_file(
         Path::new(INITRD_STATIC_CONTRACT_PATH),
@@ -77,7 +77,7 @@ pub fn run_initrd_stage(
         Path::new(INITRD_CHECKPOINT_PATH),
         &contract_bytes,
         &boot_id,
-        ImageIdentity::from_generation(&image),
+        image,
         &resolved_stage_bytes,
     )
 }
@@ -132,8 +132,8 @@ pub fn validate_initrd_stage(from_stage: &str, root: &Path, image_profile: &Path
     );
     require_privileged_runtime()?;
 
-    let image = crate::sysroot::running_image_generation_beneath(image_profile, root)
-        .context("authenticating the initrd target image for stage release")?;
+    let image = authenticate_immutable_image_beneath(root)
+        .context("authenticating the pre-/var initrd target image for stage release")?;
     let boot_id = read_boot_id(Path::new(BOOT_ID_PATH))?;
     let contract_bytes = read_trusted_file(
         Path::new(INITRD_STATIC_CONTRACT_PATH),
@@ -146,14 +146,13 @@ pub fn validate_initrd_stage(from_stage: &str, root: &Path, image_profile: &Path
         Path::new(INITRD_CHECKPOINT_PATH),
         &contract_bytes,
         &boot_id,
-        ImageIdentity::from_generation(&image),
+        image,
     )
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ImageIdentity {
-    generation: u32,
     toplevel: String,
     module_abi: u32,
     base_lib_abi_hash: String,
@@ -163,13 +162,50 @@ struct ImageIdentity {
 impl ImageIdentity {
     fn from_generation(generation: &ImageGeneration) -> Self {
         Self {
-            generation: generation.number,
             toplevel: generation.toplevel.clone(),
             module_abi: generation.module_abi,
             base_lib_abi_hash: generation.base_lib_abi_hash.clone(),
             root_verity_roothash: generation.root_verity_roothash.clone(),
         }
     }
+}
+
+fn authenticate_immutable_image_beneath(root: &Path) -> Result<ImageIdentity> {
+    ensure!(root.is_absolute(), "immutable image root must be absolute");
+    let logical_toplevel = fs::read_link(root.join("aos-toplevel"))
+        .context("reading immutable image toplevel pointer")?;
+    let logical_toplevel_text = logical_toplevel
+        .to_str()
+        .context("immutable image toplevel pointer is not UTF-8")?;
+    super::materialize::validate_canonical_store_path(logical_toplevel_text)
+        .context("validating immutable image toplevel pointer")?;
+
+    let relative_toplevel = logical_toplevel
+        .strip_prefix("/")
+        .context("immutable image toplevel is not absolute")?;
+    let physical_toplevel = root.join(relative_toplevel);
+    let module_abi = read_identity_field(&physical_toplevel, "module-abi")?
+        .parse::<u32>()
+        .context("immutable image has an invalid module ABI")?;
+    let base_lib_abi_hash = read_identity_field(&physical_toplevel, "base-lib-abi-hash")?;
+    let cmdline = fs::read_to_string("/proc/cmdline").context("reading normal boot identity")?;
+    let boot_identity =
+        aos_boot_identity::parse_normal(&cmdline).context("authenticating normal boot identity")?;
+
+    Ok(ImageIdentity {
+        toplevel: logical_toplevel_text.to_string(),
+        module_abi,
+        base_lib_abi_hash,
+        root_verity_roothash: Some(boot_identity.root_hash),
+    })
+}
+
+fn read_identity_field(toplevel: &Path, name: &str) -> Result<String> {
+    let value = fs::read_to_string(toplevel.join("meta").join(name))
+        .with_context(|| format!("reading immutable image {name}"))?;
+    let value = value.trim();
+    ensure!(!value.is_empty(), "immutable image {name} is empty");
+    Ok(value.to_string())
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
