@@ -1,6 +1,7 @@
 ##! systemd-repart implementation of the portable storage-provisioning resource.
 {lib, ...}: let
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
+  contentObject = lib.abilities.interfaces.contentAddressedArtifacts;
   networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
   provisioningPlan = lib.abilities.interfaces.blockStorage.types.provisioningPlan;
   artifact = lib.abilities.packageOutput {};
@@ -103,6 +104,24 @@ in {
         description = "Applies an authorized provisioning bootstrap to the selected persistent host network resource.";
         accepted_interfaces = [networkConfiguration.effects.identity];
         methods = ["apply" "observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+      requirements.authorized-input-object = {
+        alias = "authorized-input-object";
+        description = "Owns the persistent content object carrying the exact authorized provisioning input.";
+        accepted_interfaces = [contentObject.identity];
+        methods = ["observe" "remove"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+      requirements.authorized-input-object-operations = {
+        alias = "authorized-input-object-operations";
+        description = "Commits and observes the authorized provisioning input through the selected portable content-object terminal.";
+        accepted_interfaces = [contentObject.operationInterface.identity];
+        methods = ["commit" "observe"];
         guarantees = [];
         strength = "required";
         fallback = null;

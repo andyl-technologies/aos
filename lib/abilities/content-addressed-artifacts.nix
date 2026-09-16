@@ -104,7 +104,8 @@
     name = "aos.artifact.content-addressed-object-operations";
     description = "Executes checked operations on one controller-owned persistent content object.";
     abi = 1;
-    inherit requestType methods aggregation;
+    inherit requestType methods;
+    aggregation = aggregation // {controllerGroup = operationAlias;};
     outputs = {};
     inherit (declaration) lifecycle;
     guarantees = [];
