@@ -25,8 +25,6 @@ const RUNTIME_GRAPH: &str = "/run/aos/graph.json";
 /// Supplies the image-owned and operator-configurable paths for boot evaluation.
 #[derive(Debug, Clone)]
 pub struct ServiceCommand {
-    /// Exact host module path released by initrd metadata authorization.
-    pub host_nix: PathBuf,
     /// Image-owned base module library.
     pub base_lib: PathBuf,
     /// Fallback module ABI when the running image omits it.
@@ -37,10 +35,6 @@ pub struct ServiceCommand {
     pub out: PathBuf,
     /// Private evaluator scratch directory.
     pub eval_root: PathBuf,
-    /// Durable provisioning evidence and last-known-good input directory.
-    pub provisioning_state: PathBuf,
-    /// Immutable image version recorded with provisioning evidence.
-    pub image_version: String,
     /// Verbosity forwarded to the evaluator.
     pub verbose: u8,
 }
@@ -56,7 +50,6 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
     create_runtime_directories(command)?;
     remove_stale_output(&command.out)?;
     remove_stale_output(Path::new(RUNTIME_GRAPH))?;
-    prepare_provisioning_input(command)?;
     crate::sysroot::reconcile_image_boot_for_config_evaluation(
         Path::new(IMAGE_PROFILE),
         Path::new(SYSTEM_PROFILE),
@@ -70,11 +63,11 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
             command.out.clone(),
             command.verbose,
         );
-        cache_accepted_input(command, result)?;
+        result?;
         return Ok(());
     }
 
-    let (host_nix, image_default_host) = stage_host_module(command)?;
+    let (host_nix, image_default_host, facts_json) = retained_configuration_inputs(command)?;
     let module_abi =
         running_module_abi(Path::new(RUNNING_OS_RELEASE))?.unwrap_or(command.module_abi);
     let (runtime_modules, runtime_module_root, expected_current_generation) =
@@ -87,7 +80,7 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
         runtime_module_root,
         expected_current_generation,
         base_lib: command.base_lib.clone(),
-        facts_json: Some(PathBuf::from(super::stock::DEFAULT_FACTS_PATH)),
+        facts_json,
         desired,
         module_abi,
         out: command.out.clone(),
@@ -99,62 +92,7 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
         image_default_host,
         registry_snapshot: None,
     });
-    cache_accepted_input(command, result)
-}
-
-fn prepare_provisioning_input(command: &ServiceCommand) -> Result<()> {
-    let stash = Path::new(crate::metadata::stash::DEFAULT_STASH_DIR);
-    if !command.host_nix.is_file() {
-        crate::metadata::state::restore_runtime_input(stash, &command.provisioning_state)
-            .context("restoring the last authenticated host input")?;
-    }
-    verify_missing_host_is_image_authored(command)
-}
-
-fn verify_missing_host_is_image_authored(command: &ServiceCommand) -> Result<()> {
-    if command.host_nix.is_file() || !Path::new(SYSTEM_STATE).is_file() {
-        return Ok(());
-    }
-    let state: crate::types::ConfigGenerationState = serde_json::from_slice(
-        &fs::read(SYSTEM_STATE).with_context(|| format!("reading {SYSTEM_STATE}"))?,
-    )
-    .with_context(|| format!("parsing {SYSTEM_STATE}"))?;
-    if state.current == 0 && state.generations.is_empty() {
-        return Ok(());
-    }
-
-    let manifest_path = Path::new(SYSTEM_PROFILE)
-        .join(format!("gen-{}", state.current))
-        .join("manifest.json");
-    let manifest: ConfigManifest = serde_json::from_slice(
-        &fs::read(&manifest_path)
-            .with_context(|| format!("reading {}", manifest_path.display()))?,
-    )
-    .with_context(|| format!("parsing {}", manifest_path.display()))?;
-    manifest.validate()?;
-    if matches!(
-        manifest.inputs.host_nix.trust_mode.as_str(),
-        "image" | "image-default"
-    ) {
-        Ok(())
-    } else {
-        bail!(
-            "operator-backed host input is unavailable for configuration generation {}",
-            state.current
-        )
-    }
-}
-
-fn cache_accepted_input(command: &ServiceCommand, result: Result<()>) -> Result<()> {
-    result?;
-    if command.out.is_file() && command.host_nix.is_file() {
-        crate::metadata::state::cache_runtime_input(
-            Path::new(crate::metadata::stash::DEFAULT_STASH_DIR),
-            &command.provisioning_state,
-        )
-        .context("caching the accepted host input")?;
-    }
-    Ok(())
+    result
 }
 
 fn remove_stale_output(path: &Path) -> Result<()> {
@@ -193,23 +131,38 @@ fn retained_reevaluation_is_required() -> bool {
             .any(|generation| generation.number == state.current)
 }
 
-fn stage_host_module(command: &ServiceCommand) -> Result<(PathBuf, bool)> {
+fn retained_configuration_inputs(
+    command: &ServiceCommand,
+) -> Result<(PathBuf, bool, Option<PathBuf>)> {
     let staged = command.eval_root.join("host.nix");
-    if command.host_nix.is_file() {
-        crate::metadata::verify_binding_main(Path::new(crate::metadata::stash::DEFAULT_STASH_DIR))?;
-        fs::copy(&command.host_nix, &staged).with_context(|| {
-            format!(
-                "copying authenticated host module {} to {}",
-                command.host_nix.display(),
-                staged.display()
-            )
-        })?;
-        return Ok((staged, false));
+    if Path::new(ACTIVE_MANIFEST).is_file() {
+        let manifest: ConfigManifest = serde_json::from_slice(
+            &fs::read(ACTIVE_MANIFEST).with_context(|| format!("reading {ACTIVE_MANIFEST}"))?,
+        )
+        .with_context(|| format!("parsing {ACTIVE_MANIFEST}"))?;
+        manifest.validate()?;
+
+        let host_nix = PathBuf::from(&manifest.inputs.host_nix.store_path);
+        if !host_nix.is_file() {
+            bail!("retained host input is unavailable: {}", host_nix.display());
+        }
+        let facts_json = PathBuf::from(&manifest.inputs.instance_facts.store_path);
+        if !facts_json.is_file() {
+            bail!(
+                "retained instance facts are unavailable: {}",
+                facts_json.display()
+            );
+        }
+        let image_default = matches!(
+            manifest.inputs.host_nix.trust_mode.as_str(),
+            "image" | "image-default"
+        );
+        return Ok((host_nix, image_default, Some(facts_json)));
     }
 
     fs::write(&staged, b"{}\n")
         .with_context(|| format!("writing image-default host module {}", staged.display()))?;
-    Ok((staged, true))
+    Ok((staged, true, None))
 }
 
 fn running_module_abi(path: &Path) -> Result<Option<u32>> {

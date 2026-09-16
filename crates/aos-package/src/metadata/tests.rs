@@ -16,9 +16,7 @@ use super::http::{RecordedHttp, RecordedMethod};
 use super::mount::{CONFIG_DRIVE_LABELS, FakeProbe};
 use super::offline::{AosMetadataFetcher, ConfigDriveFetcher, NoCloudFetcher, QemuFwCfgFetcher};
 use super::stash::{MetadataResult, PlatformEnv, Stash};
-use super::staticnet::{
-    parse_netplan_network_config, parse_openstack_network_data, render_networkd,
-};
+use super::staticnet::{parse_netplan_network_config, parse_openstack_network_data};
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -94,7 +92,7 @@ fn detect_reads_fake_sysfs() {
     std::fs::write(dmi.join("sys_vendor"), "Amazon EC2\n").unwrap();
 
     let probe = FakeProbe::new(); // no config-drive present
-    let env = detect(dir.path(), &probe, Path::new("/run/aos-metadata/media")).unwrap();
+    let env = detect(dir.path(), &probe, &dir.path().join("media")).unwrap();
     assert_eq!(env.platform_id, "aws");
     assert!(env.need_network);
     assert!(env.metadata_dir.is_none());
@@ -596,44 +594,17 @@ fn production_http_timeout_bounds_a_nonresponding_endpoint() {
 }
 
 // ---------------------------------------------------------------------------
-// static-net parse + render
+// static-network metadata parsing
 // ---------------------------------------------------------------------------
 
 #[test]
-fn openstack_network_data_to_networkd() {
+fn openstack_network_data_is_normalized() {
     let json = br#"{"links":[{"id":"tap0","ethernet_mac_address":"0a:1b:2c:3d:4e:5f"}],"networks":[{"link":"tap0","ip_address":"203.0.113.10","netmask":"255.255.255.0","gateway":"203.0.113.1"}],"services":[{"type":"dns","address":"67.207.67.2"}]}"#;
     let net = parse_openstack_network_data(json).unwrap();
-    let rendered = render_networkd(&net).unwrap();
-    assert!(rendered.contains("MACAddress=0a:1b:2c:3d:4e:5f"));
-    assert!(rendered.contains("Address=203.0.113.10/24"));
-    assert!(rendered.contains("Gateway=203.0.113.1"));
-    assert!(rendered.contains("DNS=67.207.67.2"));
-}
-
-#[test]
-fn static_seed_uses_interface_name_and_never_matches_every_link() {
-    let named = StaticNetwork {
-        interface_name: Some("ens3".into()),
-        addresses: vec!["192.0.2.22/24".into()],
-        ..StaticNetwork::default()
-    };
-    let rendered = render_networkd(&named).unwrap();
-    assert!(rendered.contains("[Match]\nName=ens3\n"));
-
-    let unqualified = StaticNetwork {
-        addresses: vec!["192.0.2.22/24".into()],
-        ..StaticNetwork::default()
-    };
-    assert!(!unqualified.is_seedable());
-    assert!(render_networkd(&unqualified).is_err());
-
-    let wildcard = StaticNetwork {
-        interface_name: Some("en*".into()),
-        addresses: vec!["192.0.2.22/24".into()],
-        ..StaticNetwork::default()
-    };
-    assert!(!wildcard.is_seedable());
-    assert!(render_networkd(&wildcard).is_err());
+    assert_eq!(net.mac.as_deref(), Some("0a:1b:2c:3d:4e:5f"));
+    assert_eq!(net.addresses, ["203.0.113.10/24"]);
+    assert_eq!(net.gateway.as_deref(), Some("203.0.113.1"));
+    assert_eq!(net.dns, ["67.207.67.2"]);
 }
 
 #[test]
@@ -782,7 +753,7 @@ fn facts_render_antiquotation_neutralized() {
 fn platform_env_roundtrip() {
     let env = PlatformEnv {
         platform_id: "nocloud".into(),
-        metadata_dir: Some("/run/aos-metadata/media".into()),
+        metadata_dir: Some("/private/transaction/media".into()),
         need_network: false,
     };
     let parsed = PlatformEnv::parse(&env.render());
@@ -819,12 +790,10 @@ fn run_fetch_offline_writes_full_stash() {
     let stash = Stash::open(stash_dir.path()).unwrap();
     let fetcher = ConfigDriveFetcher::new(media.path());
     let http = RecordedHttp::new();
-    let var_etc = tempdir().unwrap();
     block_on(super::run_fetch_with(
         &stash,
         &fetcher,
         &http,
-        Some(var_etc.path()),
         "config-drive",
     ))
     .unwrap();
@@ -840,20 +809,6 @@ fn run_fetch_offline_writes_full_stash() {
     // facts.json present.
     assert!(stash_dir.path().join("facts.json").exists());
 
-    // network seed in stash AND in /var/etc lower.
-    assert!(
-        stash_dir
-            .path()
-            .join("network/10-aos-seed.network")
-            .exists()
-    );
-    assert!(
-        var_etc
-            .path()
-            .join("systemd/network/10-aos-seed.network")
-            .exists()
-    );
-
     // run record reflects the run.
     let result: MetadataResult = serde_json::from_slice(
         &std::fs::read(stash_dir.path().join(".metadata-result.json")).unwrap(),
@@ -862,7 +817,6 @@ fn run_fetch_offline_writes_full_stash() {
     assert_eq!(result.platform_id, "config-drive");
     assert!(result.fetched_user_data);
     assert!(result.sig_present);
-    assert!(result.network_seed_written);
     assert_eq!(result.user_data_source, "config-drive");
     assert!(stash.already_run());
 }
@@ -878,7 +832,6 @@ fn run_fetch_no_user_data_is_failure_safe() {
         &stash,
         &fetcher,
         &http,
-        None,
         "aos-metadata",
     ))
     .unwrap();
@@ -917,7 +870,6 @@ fn no_user_data_selects_schema_defaults_without_authorized_host() {
             user_data_sha256: None,
             sig_present: false,
             facts_hash: "00".repeat(32),
-            network_seed_written: false,
             timestamp: "1970-01-01T00:00:00Z".into(),
         })
         .unwrap();
@@ -955,7 +907,6 @@ fn platform_input_is_preserved_as_exact_host_nix() {
         &stash,
         &fetcher,
         &http,
-        None,
         "aos-metadata",
     ))
     .unwrap();
@@ -1013,7 +964,6 @@ fn signed_host_verifies_exact_input_and_rejects_tampering() {
         &stash,
         &AosMetadataFetcher::new(media.path()),
         &http,
-        None,
         "aos-metadata",
     ))
     .unwrap();
@@ -1043,10 +993,4 @@ fn storage_projection_rejects_malformed_paths_and_identifiers() {
         let plan: ProvisioningPlan = serde_json::from_str(input).unwrap();
         assert!(super::repart::validate_provisioning_plan(&plan, false).is_err());
     }
-}
-
-// Keep StaticNetwork import used even if a future refactor drops a test.
-#[allow(dead_code)]
-fn _assert_static_network_default() -> StaticNetwork {
-    StaticNetwork::default()
 }

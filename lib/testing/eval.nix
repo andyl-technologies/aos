@@ -17,6 +17,7 @@
   imageBootCommitLifecycle = abilityRequests."aos:image-boot-commit-lifecycle".parameters;
   imageBootCommitDependencies = abilityRequests."aos:image-boot-commit-dependencies".parameters;
   initrdAbilityRequests = system.config.system.build.initrdAbilityGraph.requests;
+  initrdAbilityImplementations = system.config.system.build.initrdAbilityGraph.implementations;
   initrdRequest = package: name: initrdAbilityRequests."${package}:${name}".parameters;
   initrdOutput = package: name: output: {
     _type = "aos-request-output-reference";
@@ -294,10 +295,8 @@
         "${pkgs.systemd}/lib/systemd/systemd-networkd-wait-online --any"
         system.config.systemd.services.aos-registry-sync.serviceConfig.ExecStartPre)
     then throw "the registry refresh must wait for a routable managed interface"
-    else if
-      system.config.systemd.services.aos-registry-sync.unitConfig.ConditionPathExists
-      != system.config.aos.config.evalAtBoot.hostNix
-    then throw "registry refresh must run only when operator host policy is present"
+    else if system.config.systemd.services.aos-registry-sync.unitConfig ? ConditionPathExists
+    then throw "registry refresh must not depend on an ambient host-policy path"
     else if !(builtins.hasAttr "aos-graph-compile" system.config.systemd.services)
     then throw "the stock system must emit aos-graph-compile.service"
     else if !(builtins.hasAttr "aos-activate" system.config.systemd.services)
@@ -340,17 +339,14 @@
         system.config.systemd.services.aos-eval.serviceConfig.SystemCallFilter)
     then throw "aos-eval.service must have an allowlisted system-call baseline"
     else if
-      !(builtins.elem
-        "-${system.config.aos.config.evalAtBoot.hostNix}"
-        system.config.systemd.services.aos-eval.serviceConfig.ReadOnlyPaths)
-    then throw "aos-eval.service must bind the delivered host.nix read-only"
+      builtins.any
+      (path: containsStr "/run/aos-metadata" path)
+      system.config.systemd.services.aos-eval.serviceConfig.ReadOnlyPaths
+    then throw "aos-eval.service must not bind an ambient metadata carrier"
     else if system.config.systemd.services.aos-eval.unitConfig ? ConditionPathExists
     then throw "aos-eval.service must evaluate the image-default empty module when operator input is absent"
-    else if
-      !(containsStr
-        "image_default_arg=\"--image-default-host\""
-        system.config.systemd.services.aos-eval.script)
-    then throw "aos-eval.service must enter the authenticated no-input fallback arm"
+    else if !(containsStr "__eval-service" system.config.systemd.services.aos-eval.script)
+    then throw "aos-eval.service must resolve retained manifest inputs through the package runtime"
     else if
       !(builtins.elem
         {
@@ -429,48 +425,23 @@
       system.config.systemd.services.aos-activate.serviceConfig.RestartPreventExitStatus
       != "4"
     then throw "aos-activate.service must reserve failure status for indeterminate commits"
-    else if !(builtins.hasAttr "aos-metadata-fetch" system.config.boot.initrd.systemd.services)
-    then throw "the stock system must emit aos-metadata-fetch.service"
-    else if !(builtins.hasAttr "aos-metadata-authorize" system.config.boot.initrd.systemd.services)
-    then throw "the stock system must emit aos-metadata-authorize.service"
-    else if !(builtins.hasAttr "aos-metadata-network-seed" system.config.boot.initrd.systemd.services)
-    then throw "the stock system must emit aos-metadata-network-seed.service"
-    else if !(builtins.hasAttr "aos-provisioning-eval" system.config.boot.initrd.systemd.services)
-    then throw "the stock system must emit aos-provisioning-eval.service"
-    else if !(builtins.hasAttr "aos-provisioning-persist" system.config.systemd.services)
-    then throw "the stock system must persist provisioning audit evidence"
-    else if !(builtins.hasAttr "aos-host-config-restore" system.config.systemd.services)
-    then throw "the stock system must restore its last fully evaluated host input"
-    else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
-    then throw "the stock system must cache fully evaluated host input"
     else if
-      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
-      ? ConditionPathExists
-    then throw "metadata acquisition must run on provisioned boots"
+      builtins.any
+      (name: builtins.hasAttr name system.config.boot.initrd.systemd.services)
+      ["aos-metadata-fetch" "aos-metadata-authorize" "aos-metadata-network-seed" "aos-provisioning-eval"]
+    then throw "metadata provisioning must execute only through the checked initrd ability stage"
     else if
-      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
-      ? ConditionPathExists
-    then throw "the restricted storage projection must remain available as a post-commit advisory check"
+      (initrdRequest "aos" "provisioning")
+      != system.config.aos.metadata.storageProvisioning.request
+    then throw "the initrd fixed point must contain the exact package-authored storage provisioning request"
     else if
-      !(builtins.elem
-        "mount-var.service"
-        system.config.boot.initrd.systemd.services."aos-metadata-network-seed".requires)
-    then throw "the static metadata network seed must wait for the persistent /var mount"
+      initrdAbilityImplementations."aos:storage-provisioning-platform-detector".handlerDescriptor.entryPoint
+      != "libexec/aos-metadata-provisioning-provider"
+    then throw "the initrd fixed point must route provisioning detection through the AOS metadata provider"
     else if
-      !(builtins.elem
-        "aos-metadata-fetch.service"
-        system.config.boot.initrd.systemd.services."aos-metadata-network-seed".after)
-    then throw "the static metadata network seed must run after acquisition"
-    else if
-      !(builtins.elem
-        "etc-overlay-setup.service"
-        system.config.boot.initrd.systemd.services."aos-metadata-network-seed".before)
-    then throw "the static metadata network seed must precede /etc overlay assembly"
-    else if
-      !(containsStr
-        "/sysroot/var/etc/systemd/network/10-aos-seed.network"
-        system.config.boot.initrd.systemd.services."aos-metadata-network-seed".script)
-    then throw "the static metadata network seed must be installed into the persistent gen-0 lower"
+      initrdAbilityImplementations."aos:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
+      != "libexec/aos-metadata-provisioning-provider"
+    then throw "the initrd fixed point must route provisioning authorization through the AOS metadata provider"
     else if
       system.config.boot.initrd.systemd.network."80-dhcp".networkConfig.LinkLocalAddressing
       != "ipv4"
@@ -479,29 +450,12 @@
     then throw "DHCP-less metadata acquisition requires an initrd route to link-local IMDS"
     else if
       !(builtins.elem
-        "aos-host-config-restore.service"
-        system.config.systemd.services.aos-eval.requires)
-    then throw "aos-eval.service must restore the last known-good input before full evaluation"
-    else if
-      !(builtins.elem
-        "aos-eval.service"
-        system.config.systemd.services."aos-host-config-cache".after)
-    then throw "host input may only be cached after successful full evaluation"
-    else if
-      !(builtins.elem
-        "initrd-root-fs.target"
-        system.config.boot.initrd.systemd.services.aos-metadata-authorize.requiredBy)
-    then throw "initrd-root-fs.target must require provisioning authorization"
-    else if
-      !(builtins.elem
         (initrdOutput "aos-boot-preparations" "initrd-filesystems" "readiness-resource")
         (initrdRequest "aos-boot-preparations" "mount-var-dependencies").required_by)
     then throw "initrd-fs.target must require the persistent /var substrate"
-    else if
-      (initrdRequest "aos-boot-preparations" "mount-var-dependencies").implicit_dependencies
+    else if (initrdRequest "aos-boot-preparations" "mount-var-dependencies").implicit_dependencies
     then throw "the initrd /var mount must not pull stage-2 default dependencies into switch-root"
-    else if
-      (initrdRequest "aos-boot-preparations" "nix-overlay-setup-dependencies").implicit_dependencies
+    else if (initrdRequest "aos-boot-preparations" "nix-overlay-setup-dependencies").implicit_dependencies
     then throw "the initrd /nix overlay must not pull stage-2 default dependencies into switch-root"
     else if
       builtins.elem

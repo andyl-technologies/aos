@@ -555,7 +555,7 @@ pub enum PackageCommand {
         #[arg(long = "base-lib")]
         base_lib: PathBuf,
         /// Normalized metadata facts consumed as declared host inputs
-        #[arg(long = "facts", default_value = config_eval::stock::DEFAULT_FACTS_PATH)]
+        #[arg(long = "facts")]
         facts_json: PathBuf,
         /// A desired.toml whose `packages` seed the working set
         #[arg(long)]
@@ -592,9 +592,6 @@ pub enum PackageCommand {
     /// Hidden: run the complete boot-time configuration evaluation service.
     #[command(name = "__eval-service", hide = true)]
     EvalService {
-        /// Exact host module released by initrd metadata authorization.
-        #[arg(long = "host-nix", default_value = "/run/aos-metadata/host.nix")]
-        host_nix: PathBuf,
         /// Image-owned base module library.
         #[arg(long = "base-lib", default_value = "/aos-toplevel/base-lib")]
         base_lib: PathBuf,
@@ -610,12 +607,6 @@ pub enum PackageCommand {
         /// Private evaluator scratch directory.
         #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
         eval_root: PathBuf,
-        /// Durable provisioning state and last-known-good input directory.
-        #[arg(long = "provisioning-state", default_value = metadata::state::DEFAULT_STATE_DIR)]
-        provisioning_state: PathBuf,
-        /// Immutable image version recorded with provisioning evidence.
-        #[arg(long = "image-version")]
-        image_version: String,
     },
     /// Apply a converged config manifest into a per-generation `/etc` lower.
     ///
@@ -707,8 +698,8 @@ pub enum PackageCommand {
         #[arg(long = "base-lib")]
         base_lib: Option<PathBuf>,
         /// Normalized metadata facts consumed by the same eval transaction
-        #[arg(long = "facts", default_value = config_eval::stock::DEFAULT_FACTS_PATH)]
-        facts_json: PathBuf,
+        #[arg(long = "facts")]
+        facts_json: Option<PathBuf>,
         /// A desired.toml whose `packages` seed the working set
         #[arg(long)]
         desired: Option<PathBuf>,
@@ -2821,7 +2812,6 @@ fn parse_system_transition_mode(reboot: bool) -> SystemTransitionMode {
     }
 }
 
-const DEFAULT_SWITCH_HOST_NIX: &str = "/run/aos-metadata/host.nix";
 const DEFAULT_SWITCH_BASE_LIB: &str = "/aos-toplevel/base-lib";
 const DEFAULT_SWITCH_OS_RELEASE: &str = "/aos-toplevel/os-release";
 const DEFAULT_SYSTEM_GENERATION_PROFILE: &str = "/var/lib/profiles/system";
@@ -2856,19 +2846,12 @@ fn running_module_abi(os_release: &Path) -> Result<u32> {
         .context("running image has an invalid AOS_MODULE_ABI")
 }
 
-fn resolve_default_switch_host(
-    staged_host: &Path,
-    current_manifest: &Path,
-) -> Result<(PathBuf, bool)> {
-    if staged_host.is_file() {
-        return Ok((staged_host.to_path_buf(), false));
-    }
+fn resolve_default_switch_host(current_manifest: &Path) -> Result<(PathBuf, bool)> {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(current_manifest).with_context(|| {
             format!(
-                "reading current configuration manifest {} after {} was absent",
-                current_manifest.display(),
-                staged_host.display()
+                "reading current configuration manifest {}",
+                current_manifest.display()
             )
         })?)
         .with_context(|| format!("parsing current manifest {}", current_manifest.display()))?;
@@ -2879,24 +2862,18 @@ fn resolve_default_switch_host(
         .get("trust_mode")
         .and_then(serde_json::Value::as_str)
         .context("current manifest host input has no trust_mode")?;
-    if !matches!(trust_mode, "image" | "image-default") {
-        bail!(
-            "staged host input {} is absent; restore authenticated metadata or pass --from explicitly",
-            staged_host.display()
-        );
-    }
     let store_path = host
         .get("store_path")
         .and_then(serde_json::Value::as_str)
-        .context("current image-default host input has no retained store path")?;
+        .context("current host input has no retained store path")?;
     let store_path = PathBuf::from(store_path);
     if !store_path.is_file() {
         bail!(
-            "retained image-default host input is unavailable: {}",
+            "retained host input is unavailable: {}",
             store_path.display()
         );
     }
-    Ok((store_path, true))
+    Ok((store_path, matches!(trust_mode, "image" | "image-default")))
 }
 
 fn acquire_runtime_config_lock(worktree: &Path) -> Result<std::fs::File> {
@@ -3430,26 +3407,20 @@ pub async fn run(
     }
 
     if let PackageCommand::EvalService {
-        host_nix,
         base_lib,
         module_abi,
         desired,
         out,
         eval_root,
-        provisioning_state,
-        image_version,
     } = command
     {
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
         let result = config_eval::service::run(&config_eval::service::ServiceCommand {
-            host_nix: host_nix.clone(),
             base_lib: base_lib.clone(),
             module_abi: *module_abi,
             desired: desired.clone(),
             out: out.clone(),
             eval_root: eval_root.clone(),
-            provisioning_state: provisioning_state.clone(),
-            image_version: image_version.clone(),
             verbose,
         });
         if let Err(error) = &result {
@@ -3587,11 +3558,17 @@ pub async fn run(
             resolve_switch_manifest(diff_against.as_deref(), profile)?;
         let (host_nix, image_default_host) = match from {
             Some(path) => (path.clone(), false),
-            None => resolve_default_switch_host(
-                Path::new(DEFAULT_SWITCH_HOST_NIX),
-                &active_manifest_path,
-            )?,
+            None => resolve_default_switch_host(&active_manifest_path)?,
         };
+        let facts_json = facts_json
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(&active_manifest.inputs.instance_facts.store_path));
+        if !facts_json.is_file() {
+            bail!(
+                "retained instance facts are unavailable: {}",
+                facts_json.display()
+            );
+        }
         let (runtime_modules, runtime_module_root) = if runtime_module.is_empty() {
             (
                 config_eval::retained_runtime_modules(&active_manifest)?,
@@ -3629,7 +3606,7 @@ pub async fn run(
                 runtime_module_root: runtime_module_root.clone(),
                 expected_current_generation: Some(expected_current_generation),
                 base_lib,
-                facts_json: Some(facts_json.clone()),
+                facts_json: Some(facts_json),
                 desired: desired.clone(),
                 module_abi,
                 out: candidate,
@@ -6714,7 +6691,6 @@ mod tests {
     #[test]
     fn switch_defaults_to_retained_image_authored_empty_module_only() {
         let tmp = TempDir::new().unwrap();
-        let staged = tmp.path().join("run/aos-metadata/host.nix");
         let retained = tmp.path().join("store/host.nix");
         let manifest = tmp.path().join("manifest.json");
         std::fs::create_dir_all(retained.parent().unwrap()).unwrap();
@@ -6734,7 +6710,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            resolve_default_switch_host(&staged, &manifest).unwrap(),
+            resolve_default_switch_host(&manifest).unwrap(),
             (retained.clone(), true)
         );
 
@@ -6747,13 +6723,9 @@ mod tests {
             }
         });
         std::fs::write(&manifest, serde_json::to_vec(&operator_manifest).unwrap()).unwrap();
-        assert!(resolve_default_switch_host(&staged, &manifest).is_err());
-
-        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
-        std::fs::write(&staged, "{}\n").unwrap();
         assert_eq!(
-            resolve_default_switch_host(&staged, &manifest).unwrap(),
-            (staged, false)
+            resolve_default_switch_host(&manifest).unwrap(),
+            (retained, false)
         );
     }
 

@@ -1,11 +1,10 @@
-//! `aos metadata detect` — platform identification + config-drive probe.
+//! Platform identification and config-drive probing.
 //!
 //! Applies the DMI/SMBIOS asset-tag → vendor → BIOS → product decision order
 //! over `std::fs` reads of `/sys/class/dmi/id/*`, and runs the config-drive
 //! probe first so an offline
-//! channel short-circuits the cloud path. The result is written to
-//! `/run/aos-metadata/platform.env` as `PLATFORM_ID` (+ `METADATA_DIR` for
-//! offline channels, + `NEED_NETWORK` for cloud platforms).
+//! channel short-circuits the cloud path. The result remains inside the
+//! package-owned provider until it is published as a typed operation result.
 //!
 //! Detection order:
 //!
@@ -17,12 +16,12 @@
 //! 5. **`product_name`** — GCP and generic QEMU.
 //! 6. **Fallback** — `metal`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 
 use super::mount::{CONFIG_DRIVE_LABELS, ConfigDriveProbe, platform_for_label};
-use super::stash::{PlatformEnv, Stash};
+use super::stash::PlatformEnv;
 
 /// Metadata acquisition capability associated with a detected platform.
 ///
@@ -112,26 +111,6 @@ pub fn needs_network(platform: &str) -> bool {
     platform_capability(platform) == Some(PlatformCapability::NetworkMetadata)
 }
 
-/// Options for [`run_detect`].
-pub struct DetectOptions {
-    /// Filesystem root for `/sys` reads (default `/`; a tempdir in tests).
-    pub sysfs_root: PathBuf,
-    /// The stash directory to write `platform.env` into.
-    pub stash_dir: PathBuf,
-    /// Mountpoint for an offline config-drive hit.
-    pub media_mountpoint: PathBuf,
-}
-
-impl Default for DetectOptions {
-    fn default() -> Self {
-        Self {
-            sysfs_root: PathBuf::from("/"),
-            stash_dir: PathBuf::from(super::stash::DEFAULT_STASH_DIR),
-            media_mountpoint: PathBuf::from(super::stash::DEFAULT_MEDIA_DIR),
-        }
-    }
-}
-
 /// Run the detection table + config-drive probe and produce a [`PlatformEnv`].
 ///
 /// Pure except for the DMI sysfs reads and the injected `probe`; does not write
@@ -171,16 +150,4 @@ pub fn detect(
         metadata_dir: None,
         need_network,
     })
-}
-
-/// Run `aos metadata detect`: probe, classify, and write `platform.env`.
-///
-/// # Errors
-///
-/// Returns `Err` on probe/mount failure or any write failure.
-pub fn run_detect(opts: &DetectOptions, probe: &dyn ConfigDriveProbe) -> Result<()> {
-    let env = detect(&opts.sysfs_root, probe, &opts.media_mountpoint)?;
-    let stash = Stash::open(&opts.stash_dir)?;
-    stash.write_platform_env(&env)?;
-    Ok(())
 }

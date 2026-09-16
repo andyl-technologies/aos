@@ -5,10 +5,17 @@
   packageName,
   ...
 }: let
+  cfg = config.aos.metadata.storageProvisioning;
   abilityTypes = lib.abilities.types;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
   networkBootstrap = lib.abilities.interfaces.networkConfiguration.interface.types.bootstrap;
   runtimeArtifact = lib.abilities.packageOutput {output = "metadataRuntime";};
+  consumerInstance = "metadata-provisioning";
+  initrdStage =
+    config.aos.abilities.environment
+    != null
+    && config.aos.abilities.environment.stage == "initrd";
   registrySnapshot =
     config.aos.abilities.interfaces."${packageName}:synchronized-registry-snapshot".methods.observe.outputs.registry-snapshot.schema;
 
@@ -372,82 +379,103 @@
     inherit arguments result;
   };
 in {
-  options.aos.metadata.storageProvisioning.authorizationConfiguration = lib.mkOption {
-    type = abilityTypes.optional authorizationConfiguration;
-    default = null;
-    internal = true;
-    readOnly = true;
-    description = "Exact metadata authorization configuration derived once from the final system configuration.";
-  };
-
-  config.aos.abilities = {
-    interfaces = {
-      ${detectionAlias} = detectionDeclaration;
-      ${authorizationAlias} = authorizationDeclaration;
-      ${observerAlias} = observerDeclaration;
-      ${evaluatorAlias} = evaluatorDeclaration;
+  options.aos.metadata.storageProvisioning = {
+    authorizationConfiguration = lib.mkOption {
+      type = abilityTypes.optional authorizationConfiguration;
+      default = null;
+      internal = true;
+      readOnly = true;
+      description = "Exact metadata authorization configuration derived once from the final system configuration.";
     };
-
-    implementations = {
-      ${detectionAlias} = {
-        description = "Detects metadata acquisition requirements through the package-owned metadata runtime.";
-        artifact = runtimeArtifact;
-        interface = lib.abilities.interfaceIdentity (
-          lib.abilities.interfaceDocumentFromDeclaration detectionDeclaration
-        );
-        methods = ["detect"];
-        guarantees = [];
-        handlerDescriptor = handler detectionParameters detectionObservation;
-        providerModule = null;
-        desiredType = null;
-        requiredFeatures = [];
-      };
-      ${authorizationAlias} = {
-        description = "Authorizes metadata input through the package-owned metadata runtime.";
-        artifact = runtimeArtifact;
-        interface = lib.abilities.interfaceIdentity (
-          lib.abilities.interfaceDocumentFromDeclaration authorizationDeclaration
-        );
-        methods = ["authorize"];
-        guarantees = [];
-        handlerDescriptor = handler authorizationParameters authorizationObservation;
-        providerModule = null;
-        desiredType = null;
-        requiredFeatures = [];
-      };
-      ${observerAlias} = {
-        description = "Evaluates authenticated metadata through the package-owned metadata runtime.";
-        artifact = runtimeArtifact;
-        interface = lib.abilities.interfaceIdentity (
-          lib.abilities.interfaceDocumentFromDeclaration observerDeclaration
-        );
-        methods = ["observe"];
-        guarantees = [];
-        handlerDescriptor = handler observerParameters planObservation;
-        providerModule = null;
-        desiredType = null;
-        requiredFeatures = [];
-      };
-      ${evaluatorAlias} = {
-        description = "Evaluates authorized provisioning input through the package-owned full configuration runtime.";
-        artifact = runtimeArtifact;
-        interface = lib.abilities.interfaceIdentity (
-          lib.abilities.interfaceDocumentFromDeclaration evaluatorDeclaration
-        );
-        methods = ["evaluate"];
-        guarantees = [];
-        handlerDescriptor = handler evaluationParameters evaluationObservation;
-        providerModule = null;
-        desiredType = null;
-        requiredFeatures = [];
-      };
-    };
-
-    instances = lib.mkIf (config.aos.abilities.environment != null) {
-      ${detectionAlias}.implementation = detectionAlias;
-      ${authorizationAlias}.implementation = authorizationAlias;
-      ${observerAlias}.implementation = observerAlias;
-      ${evaluatorAlias}.implementation = evaluatorAlias;
+    request = lib.mkOption {
+      type = abilityTypes.optional storage.requestType;
+      default = null;
+      internal = true;
+      readOnly = true;
+      description = "Static first-boot provisioning intent admitted by the initrd ability graph.";
     };
   };
+
+  config.aos.abilities = lib.mkMerge [
+    {
+      interfaces = {
+        ${detectionAlias} = detectionDeclaration;
+        ${authorizationAlias} = authorizationDeclaration;
+        ${observerAlias} = observerDeclaration;
+        ${evaluatorAlias} = evaluatorDeclaration;
+      };
+
+      implementations = {
+        ${detectionAlias} = {
+          description = "Detects metadata acquisition requirements through the package-owned metadata runtime.";
+          artifact = runtimeArtifact;
+          interface = lib.abilities.interfaceIdentity (
+            lib.abilities.interfaceDocumentFromDeclaration detectionDeclaration
+          );
+          methods = ["detect"];
+          guarantees = [];
+          handlerDescriptor = handler detectionParameters detectionObservation;
+          providerModule = null;
+          desiredType = null;
+          requiredFeatures = [];
+        };
+        ${authorizationAlias} = {
+          description = "Authorizes metadata input through the package-owned metadata runtime.";
+          artifact = runtimeArtifact;
+          interface = lib.abilities.interfaceIdentity (
+            lib.abilities.interfaceDocumentFromDeclaration authorizationDeclaration
+          );
+          methods = ["authorize"];
+          guarantees = [];
+          handlerDescriptor = handler authorizationParameters authorizationObservation;
+          providerModule = null;
+          desiredType = null;
+          requiredFeatures = [];
+        };
+        ${observerAlias} = {
+          description = "Evaluates authenticated metadata through the package-owned metadata runtime.";
+          artifact = runtimeArtifact;
+          interface = lib.abilities.interfaceIdentity (
+            lib.abilities.interfaceDocumentFromDeclaration observerDeclaration
+          );
+          methods = ["observe"];
+          guarantees = [];
+          handlerDescriptor = handler observerParameters planObservation;
+          providerModule = null;
+          desiredType = null;
+          requiredFeatures = [];
+        };
+        ${evaluatorAlias} = {
+          description = "Evaluates authorized provisioning input through the package-owned full configuration runtime.";
+          artifact = runtimeArtifact;
+          interface = lib.abilities.interfaceIdentity (
+            lib.abilities.interfaceDocumentFromDeclaration evaluatorDeclaration
+          );
+          methods = ["evaluate"];
+          guarantees = [];
+          handlerDescriptor = handler evaluationParameters evaluationObservation;
+          providerModule = null;
+          desiredType = null;
+          requiredFeatures = [];
+        };
+      };
+
+      instances = lib.mkIf (config.aos.abilities.environment != null) {
+        ${detectionAlias}.implementation = detectionAlias;
+        ${authorizationAlias}.implementation = authorizationAlias;
+        ${observerAlias}.implementation = observerAlias;
+        ${evaluatorAlias}.implementation = evaluatorAlias;
+      };
+    }
+    (lib.mkIf (initrdStage && cfg.request != null) (lib.mkMerge [
+      (serviceManagement.forProducer {
+        inherit consumerInstance;
+        key = "provisioning";
+        interface = storage;
+        methods = ["commit" "observe"];
+        parameters = cfg.request;
+      })
+      {instances.${consumerInstance} = {};}
+    ]))
+  ];
 }

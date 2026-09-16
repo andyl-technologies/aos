@@ -1131,38 +1131,15 @@ fn enrich_manifest(
         .unwrap_or(&retained_facts);
     let facts_store_path = add_fixed_input_to_store(facts_store_source)?;
 
-    let provisioning = cmd
-        .facts_json
-        .as_deref()
-        .and_then(Path::parent)
-        .map(|parent| parent.join(".provisioning-result.json"))
-        .filter(|path| path.is_file())
-        .map(|path| {
-            let bytes = std::fs::read(&path)
-                .with_context(|| format!("reading provisioning result {}", path.display()))?;
-            serde_json::from_slice::<crate::metadata::provisioning::ProvisioningResult>(&bytes)
-                .with_context(|| format!("parsing provisioning result {}", path.display()))
-        })
-        .transpose()?;
     let (platform, trust_mode, signer_key) = if cmd.image_default_host {
         ("image".to_string(), "image".to_string(), None)
     } else {
-        let platform = provisioning.as_ref().map_or_else(
-            || "unknown".to_string(),
-            |record| record.platform_id.clone(),
-        );
-        let trust_mode = provisioning.as_ref().map_or_else(
-            || {
-                if cmd.require_signed_host_nix {
-                    "signed".to_string()
-                } else {
-                    "platform".to_string()
-                }
-            },
-            |record| record.trust_mode.as_str().to_string(),
-        );
-        let signer_key = provisioning.and_then(|record| record.signer);
-        (platform, trust_mode, signer_key)
+        let trust_mode = if cmd.require_signed_host_nix {
+            "signed"
+        } else {
+            "platform"
+        };
+        ("unknown".to_string(), trust_mode.to_string(), None)
     };
     let base_abi_hash = read_base_lib_abi_hash(&cmd.base_lib, cmd.module_abi)?;
     let evaluator_store_hash = evaluator_store_hash(&evaluator)?;

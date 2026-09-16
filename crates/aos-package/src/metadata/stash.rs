@@ -1,24 +1,22 @@
-//! The `/run/aos-metadata` stash format.
+//! Private transaction-local metadata acquisition state.
 //!
-//! The stash is a child of the initrd `/run` so it survives
-//! `mount --move /run /sysroot/run` during switch_root; stage-2 stages it into
-//! the evaluator root `/run/aos-eval/`. Fetch writes raw user-data; only the
-//! initrd authorization phase may produce evaluator-visible `host.nix`.
+//! A provider invocation creates this state beneath its private transaction
+//! scratch directory. Fetch writes raw user-data; authorization may read it,
+//! while only typed operation results cross provider or stage boundaries.
 //!
 //! ```text
-//! /run/aos-metadata/
+//! <transaction-scratch>/stash/
 //! ├── platform.env            # PLATFORM_ID=<id>  [+ METADATA_DIR=<path>]
 //! ├── user-data               # exact fetched bytes
 //! ├── user-data.sig           # detached whole-input SSHSIG (optional)
 //! ├── host.nix                # policy-accepted operator config
 //! ├── facts.json              # normalized Facts (serde_json)
-//! ├── network/10-aos-seed.network   # DHCP-less static seed (optional)
 //! ├── .metadata-result.json   # acquisition record
 //! └── .provisioning-result.json # authorization and binding record
 //! ```
 //!
-//! `platform.env` is consumed via systemd `EnvironmentFile`, so it is rendered
-//! as `KEY=value` lines. `.metadata-result.json` records acquisition.
+//! `platform.env` is a private handoff between acquisition helpers within one
+//! provider invocation. `.metadata-result.json` records acquisition.
 //! `.provisioning-result.json`
 //! records the later trust decision and accepted content hashes.
 
@@ -29,11 +27,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::fetcher::Facts;
-
-/// Default initrd stash directory.
-pub const DEFAULT_STASH_DIR: &str = "/run/aos-metadata";
-/// Mountpoint the config-drive mount helper uses for offline channels.
-pub const DEFAULT_MEDIA_DIR: &str = "/run/aos-metadata/media";
 
 /// The `platform.env` document (systemd `EnvironmentFile` form).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -101,13 +94,11 @@ pub struct MetadataResult {
     pub sig_present: bool,
     /// SHA-256 of the canonical `facts.json` bytes.
     pub facts_hash: String,
-    /// Whether a DHCP-less static network seed was written.
-    pub network_seed_written: bool,
     /// RFC 3339 timestamp of the run.
     pub timestamp: String,
 }
 
-/// The on-disk stash, rooted at a directory (default [`DEFAULT_STASH_DIR`]).
+/// The on-disk stash rooted at provider-owned transaction scratch.
 pub struct Stash {
     dir: PathBuf,
 }
@@ -224,19 +215,6 @@ impl Stash {
         let canonical = serde_json::to_vec(&super::facts_render::normalize_host_facts(facts))
             .context("serializing canonical host facts")?;
         Ok(sha256_hex(&canonical))
-    }
-
-    /// Write the DHCP-less static-network seed into `network/10-aos-seed.network`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` on any write failure.
-    pub fn write_network_seed(&self, contents: &str) -> Result<PathBuf> {
-        let dir = self.dir.join("network");
-        std::fs::create_dir_all(&dir).context("creating stash network dir")?;
-        let path = dir.join(super::staticnet::SEED_FILENAME);
-        std::fs::write(&path, contents).context("writing network seed")?;
-        Ok(path)
     }
 
     /// Write the `.metadata-result.json` run record.

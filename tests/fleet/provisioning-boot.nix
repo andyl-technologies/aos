@@ -107,6 +107,7 @@
   testScript =
     # python
     ''
+      import json
       import re
       import subprocess
       import time
@@ -117,34 +118,43 @@
       # -> mount-var -> aos-config-seed (empty /etc lower) -> overlays ->
       # switch-root -> stage-2 -> baked aos-test-agent.service answered.
       node.succeed("systemctl is-active multi-user.target")
-      node.wait_for_unit("aos-host-config-cache.service", timeout=120)
+      node.wait_for_unit("aos-ability-host-receiver.service", timeout=120)
       if node.succeed(
           "if test -s /run/aos/manifest.json; then echo present; else echo missing; fi"
       ).strip() != "present":
           eval_log = node.succeed(
-              "journalctl -u aos-eval.service -u aos-host-config-cache.service "
+              "journalctl -u aos-eval.service -u aos-ability-host-receiver.service "
               "--no-pager --output=cat"
           ).strip()
           raise AssertionError(
               "full host.nix evaluation did not emit a manifest:\n"
               f"{eval_log}"
           )
-      node.succeed("test -s /run/aos-metadata/.provisioning-result.json")
-      node.succeed("test -s /run/aos-metadata/provisioning-plan.json")
-      node.succeed("test -s /run/aos-metadata/repart-targets")
-      node.succeed("test -s /var/lib/aos-provisioning/audit.json")
-      node.succeed("test -s /var/lib/aos-provisioning/initial-plan.json")
-      node.succeed("test -s /var/lib/aos-provisioning/desired/provisioning-plan.json")
-      node.succeed("test -s /var/lib/aos-provisioning/desired/repart-targets")
-      node.succeed("test -s /var/lib/aos-provisioning/current/host.nix")
-      node.succeed(
-          "case \"$(cat /var/lib/aos-provisioning/audit.json)\" in "
-          "*'\"source\": \"operator\"'*) ;; *) exit 1 ;; esac"
+      node.succeed("test ! -e /run/aos-metadata")
+
+      checkpoint = json.loads(
+          node.succeed("cat /run/aos/ability-stage-handoff/initrd.json")
       )
-      node.succeed(
-          "case \"$(cat /run/aos-metadata/repart.d/*/*.conf)\" in "
-          "*SizeMinBytes=1G*) ;; *) exit 1 ;; esac"
+      assert checkpoint["status"] == "ownership-released", checkpoint
+      boot_id = node.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+      boot_token = boot_id.replace("-", "")
+      transaction = f"initrd-{boot_token}"
+      journal_path = (
+          "/var/lib/profiles/image/ability-stage-transactions/initrd/"
+          f"{transaction}/execution.journal"
       )
+      journal_hex = node.succeed(
+          f"od -An -v -tx1 {journal_path}"
+      ).replace(" ", "").replace("\n", "")
+      for marker in (
+          '"key":"authorize-offline-provisioning"',
+          '"output":"network-bootstrap"',
+          '"key":"apply-network-bootstrap-provisioning"',
+          '"key":"commit-authorized-input-provisioning"',
+          '"output":"artifact-resource"',
+          '"name":"aos.artifact.content-addressed-object"',
+      ):
+          assert marker.encode().hex() in journal_hex, marker
 
       # Identity baked into the image /etc via extendModules.
       hostname = node.succeed("cat /etc/hostname").strip()
@@ -222,24 +232,16 @@
       ).strip()
       assert marker_uuid, "provisioning marker has no AOS-generated UUID"
       assert var_uuid, "omitted var UUID was not materialized by AOS"
-      node.succeed(
-          "case \"$(cat /run/aos-metadata/repart.d/*/*-var.conf)\" in "
-          "*UUID=*) ;; *) exit 1 ;; esac"
-      )
 
       # A second boot must reacquire and fully evaluate host.nix, while the
       # durable marker freezes both host-defined partitions. The restricted
-      # storage projection is advisory and repart reports coherence without
-      # mutating the committed layout.
+      # typed storage observation leaves the committed layout unchanged.
       node.reboot()
       node.wait_until_succeeds(
           "systemctl is-active multi-user.target", timeout=120
       )
-      node.succeed("test -s /run/aos-metadata/host.nix")
-      node.succeed("test -s /run/aos-metadata/.metadata-result.json")
-      node.succeed("test -s /run/aos-metadata/.provisioning-result.json")
+      node.succeed("test ! -e /run/aos-metadata")
       node.succeed("test -s /run/aos/manifest.json")
-      node.succeed("test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent")
       marker_dev_after = node.succeed(
           "readlink -f /dev/disk/by-partlabel/aos-provenance-operator-v1"
       ).strip()
@@ -265,18 +267,14 @@
       assert not failed, f"failed units after provisioned reboot: {failed!r}"
 
       # Detaching metadata after commit must not reopen disk mutation or lose
-      # runtime configuration. Stage 2 restores only the hash-checked input
-      # that previously produced a manifest, while storage coherence is
-      # explicitly unavailable rather than guessed.
+      # runtime configuration. Stage 2 restores only the content-addressed
+      # input retained by the checked initrd stage.
       node.reboot_without_metadata()
       node.wait_until_succeeds(
           "systemctl is-active multi-user.target", timeout=120
       )
-      node.succeed("test -s /run/aos-metadata/host.nix")
+      node.succeed("test ! -e /run/aos-metadata")
       node.succeed("test -s /run/aos/manifest.json")
-      node.succeed(
-          "test \"$(cat /run/aos-metadata/storage-coherence)\" = unavailable"
-      )
       swap_dev_outage = node.succeed(
           "readlink -f /dev/disk/by-partlabel/swap"
       ).strip()
@@ -290,19 +288,12 @@
       )
 
       # A host with no operator input takes the schema-default arm and records
-      # that choice both in GPT and in the durable audit record.
+      # that choice in the durable GPT marker.
       fallback.succeed("systemctl is-active multi-user.target")
       fallback.succeed(
           "test -e /dev/disk/by-partlabel/aos-provenance-fallback-v1"
       )
-      fallback.succeed("test -s /var/lib/aos-provisioning/audit.json")
-      fallback.succeed(
-          "case \"$(cat /var/lib/aos-provisioning/audit.json)\" in "
-          "*'\"source\": \"fallback\"'*) ;; *) exit 1 ;; esac"
-      )
-      fallback.succeed(
-          "test -s /var/lib/aos-provisioning/desired/repart-targets"
-      )
+      fallback.succeed("test ! -e /run/aos-metadata")
       fallback_failed = fallback.succeed(
           "systemctl --failed --no-legend"
       ).strip()
@@ -311,14 +302,12 @@
       )
 
       # A committed fallback machine has no host.nix by definition, but it
-      # still re-evaluates the schema-default arm and reports coherence.
+      # still re-evaluates the schema-default arm from retained stage evidence.
       fallback.reboot()
       fallback.wait_until_succeeds(
           "systemctl is-active multi-user.target", timeout=120
       )
-      fallback.succeed(
-          "test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent"
-      )
+      fallback.succeed("test -s /run/aos/manifest.json")
 
       # The real renderer and repart implementation handle a second stable
       # device in the same first-boot transaction. The whole-machine marker
@@ -341,9 +330,7 @@
           f"data partition parent {data_parent!r} is not extra disk "
           f"{stable_data_parent!r}"
       )
-      multidisk.succeed(
-          "test -s /var/lib/aos-provisioning/desired/repart-targets"
-      )
+      multidisk.succeed("test ! -e /run/aos-metadata")
 
       # An additional desired partition on the extra disk produces pending
       # repart work without mutating it, exercising the live divergence

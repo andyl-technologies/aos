@@ -3,10 +3,9 @@
 ##! Configures the package-owned stage-2 evaluator that drives the resolve/eval
 ##! fixed point over the in-image base library, the
 ##! per-package `config` modules fetched from the registry, and the delivered
-##! leaf `host.nix` (or the image-authored empty module when no operator input
-##! exists). It emits ONLY a manifest (`/run/aos/manifest.json`) and
-##! never activates — a failed eval or fetch leaves the baked or previously
-##! activated configuration running for the operator to fix `host.nix`.
+##! retained manifest inputs (or the image-authored empty module before any
+##! generation exists). It emits ONLY a manifest (`/run/aos/manifest.json`) and
+##! never activates.
 ##!
 ##! This is a structural boot service. Every AOS system runs the evaluator so a
 ##! first boot or image transition with no delivered input still commits a
@@ -17,20 +16,8 @@
   ...
 }: let
   cfg = config.aos.config.evalAtBoot;
-  provisioningStateDir = config.aos.provisioning.stateDir;
 in {
   options.aos.config.evalAtBoot = {
-    hostNix = lib.mkOption {
-      type = lib.types.str;
-      default = "/run/aos-metadata/host.nix";
-      description = ''
-        Path to the leaf `host.nix` delivered by the initrd metadata agent. The
-        metadata stash lives under `/run`, which is moved into the real root
-        during switch_root. When neither this path nor the durable runtime cache
-        exists, evaluation uses the image-authored empty module.
-      '';
-    };
-
     trust = lib.mkOption {
       type = lib.types.enum ["platform" "signed"];
       default = "platform";
@@ -101,7 +88,6 @@ in {
   config = {
     aos.packageRuntime.configurationEvaluation = {
       enable = true;
-      hostNix = cfg.hostNix;
       baseLib =
         if cfg.baseLib == null
         then "/aos-toplevel/base-lib"
@@ -110,8 +96,6 @@ in {
       desired = cfg.desired;
       manifest = cfg.manifest;
       evalRoot = "/run/aos-eval";
-      provisioningState = provisioningStateDir;
-      imageVersion = config.aos.system.version;
       measuredBoot = config.aos.boot.secureBoot.measuredBoot.enable;
       pcrPublicKey = config.aos.boot.secureBoot.measuredBoot._effectivePcrPublicKey;
     };

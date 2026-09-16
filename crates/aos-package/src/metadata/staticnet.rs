@@ -1,11 +1,9 @@
-//! Static-networking seed for DHCP-less clouds.
+//! Static-network metadata parsers for DHCP-less clouds.
 //!
 //! On clouds with no DHCP server (DigitalOcean static/anchor IPs, OpenStack
-//! `network_data.json`), the gen-0 DHCP seed gets no lease, so stage-2 has no
-//! route to the registry and eval deadlocks. The initrd `fetch` phase parses
-//! the platform network config into a [`StaticNetwork`] and renders a minimal
-//! `10-aos-seed.network` — a *substrate fact*, not operator config, carrying
-//! no security decision (just an IP/route).
+//! `network_data.json`), the initial DHCP configuration cannot acquire a
+//! route. The metadata provider parses the platform network config into a
+//! [`StaticNetwork`] that crosses the effect graph as a typed semantic value.
 //!
 //! Parsers:
 //!
@@ -15,80 +13,13 @@
 //! - [`parse_netplan_network_config`] — NoCloud `network-config`
 //!   (netplan v1/v2 YAML `ethernets.<name>.{addresses,gateway4,nameservers}`).
 //!
-//! Renderer: [`render_networkd`] emits the `[Match]`/`[Network]` ini. The seed
-//! is written only when [`StaticNetwork::is_seedable`] holds; the operator's
-//! declared network in `host.nix` supersedes it at the first `/etc` swap.
+//! Parsed values remain semantic facts. The selected portable network provider
+//! receives them through a typed operation result and owns native rendering.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use super::fetcher::StaticNetwork;
-
-/// Filename the seed is written under, in the stash and the `/var/etc` lower.
-pub const SEED_FILENAME: &str = "10-aos-seed.network";
-
-/// Render a [`StaticNetwork`] into a systemd-networkd `.network` unit.
-///
-/// Produces a deterministic `[Match]`/`[Network]` document. When `mac` is set
-/// it becomes `MACAddress=`; otherwise `interface_name` becomes `Name=`. A
-/// seed without either selector is rejected: platform metadata must never
-/// create an unqualified match-all networkd unit.
-///
-/// ```text
-/// # 10-aos-seed.network — substrate-fact static seed (DHCP-less cloud).
-/// [Match]
-/// MACAddress=0a:1b:2c:3d:4e:5f
-/// [Network]
-/// Address=203.0.113.10/24
-/// Gateway=203.0.113.1
-/// DNS=67.207.67.2
-/// ```
-/// Strips control characters (incl. `\n`/`\r`) from an untrusted INI value.
-///
-/// The seed values come from unauthenticated platform metadata; a value with an
-/// embedded newline could otherwise inject a `networkd` directive. Address/MAC/
-/// DNS values never legitimately contain control characters, so dropping them is
-/// lossless for any well-formed input and neutralizes injection.
-fn ini_safe(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
-}
-
-/// # Errors
-///
-/// Returns an error when the network lacks an address or deterministic link
-/// selector.
-pub fn render_networkd(net: &StaticNetwork) -> Result<String> {
-    if !net.is_seedable() {
-        bail!("static network seed requires an address and a MAC or interface name");
-    }
-    let mut out = String::new();
-    out.push_str("# 10-aos-seed.network — substrate-fact static seed (DHCP-less cloud).\n");
-    out.push_str("[Match]\n");
-    if let Some(mac) = net
-        .mac
-        .as_deref()
-        .filter(|value| super::fetcher::is_canonical_mac(value))
-    {
-        out.push_str(&format!("MACAddress={}\n", ini_safe(mac)));
-    } else if let Some(name) = net
-        .interface_name
-        .as_deref()
-        .filter(|value| super::fetcher::is_exact_interface_name(value))
-    {
-        out.push_str(&format!("Name={}\n", ini_safe(name)));
-    }
-    out.push_str("[Network]\n");
-    for addr in &net.addresses {
-        out.push_str(&format!("Address={}\n", ini_safe(addr)));
-    }
-    if let Some(gw) = &net.gateway {
-        out.push_str(&format!("Gateway={}\n", ini_safe(gw)));
-    }
-    for dns in &net.dns {
-        out.push_str(&format!("DNS={}\n", ini_safe(dns)));
-    }
-    Ok(out)
-}
 
 // ---------------------------------------------------------------------------
 // OpenStack network_data.json

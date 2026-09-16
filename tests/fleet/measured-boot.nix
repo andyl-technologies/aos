@@ -618,7 +618,6 @@ in {
               rm -rf /run/runtime-config-attestation-switch
               {APM} switch \
                 --from /run/runtime-config-attested-host.nix \
-                --facts /run/aos-metadata/facts.json \
                 --eval-root /run/runtime-config-attestation-switch
           """, timeout=300)
 
@@ -754,7 +753,7 @@ in {
               {APM} __eval \
                 --host-nix /run/runtime-config-attested-host.nix \
                 --base-lib {inputs['base_lib']['store_path']} \
-                --facts /run/aos-metadata/facts.json \
+                --facts {inputs['instance_facts']['store_path']} \
                 --module-abi {inputs['base_lib']['module_abi']} \
                 --out /run/runtime-config-attestation-rederive/manifest.json \
                 --eval-root /run/runtime-config-attestation-rederive
@@ -973,22 +972,12 @@ in {
       # identity recorded by initrd authorization. Reaching multi-user also
       # proves the mandatory quote was published successfully.
       target.succeed(f"""
-          platform=$({JQ} -er '.platform_id' \
-            /run/aos-metadata/.provisioning-result.json)
           current=$({JQ} -er '.current' /var/lib/profiles/system/state.json)
-          {JQ} -e --arg platform "$platform" \
+          {JQ} -e \
             '.quote_status == "quoted"
              and .inputs.host_nix.trust_mode == "platform"
-             and .inputs.host_nix.platform == $platform' \
+             and (.inputs.host_nix.platform | type == "string")' \
             /var/lib/profiles/system/gen-$current/gen-attestation.json
-      """)
-      target.succeed("""
-          set -eu
-          for file in /var/lib/aos-provisioning/desired/repart.d/*/*-var.conf; do
-            while IFS= read -r line; do
-              case "$line" in Format=*) exit 1 ;; esac
-            done < "$file"
-          done
       """)
 
       # ════ 2. Enroll db → KEK → PK, reboot into enforcing SB ═══════════
@@ -1002,9 +991,7 @@ in {
       # ════ 3. First enforcing boot — /var sealed to the signed policy ══
       wait_multi_user("boot2 (enforcing seal)")
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
-      target.succeed(
-          "test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent"
-      )
+      target.succeed("test ! -e /run/aos-metadata")
       # /var is now a LUKS2 device, mounted via the device-mapper node.
       # isLuks confirms LUKS; the systemd-tpm2 token (a LUKS2-only feature)
       # confirms it was sealed to the TPM. (luksDump prints "Version: 2",

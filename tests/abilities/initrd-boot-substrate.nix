@@ -19,10 +19,34 @@
           stage = "initrd";
         };
         aos.boot.substrateServices.enable = true;
+        aos.metadata.storageProvisioning = {
+          authorizationConfiguration = {
+            schema = "aos.metadata.provisioning-authorization-configuration/v1";
+            trust_mode = "platform";
+            trusted_config_keys = [];
+            base_library = {
+              store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-base-lib";
+              abi_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            };
+          };
+          request = {
+            name = "first-boot";
+            enabled = true;
+            root_device = "/dev/disk/by-partlabel/root-a";
+            measured_boot = false;
+            policy = {
+              initialize = "if-unprovisioned";
+              committed_divergence = "require-factory-reset";
+            };
+            prerequisites = [];
+          };
+        };
       }
     ];
     packageModules = [
       (packageModule pkgs.aos-boot-preparations)
+      (packageModule pkgs.aos)
+      (packageModule pkgs.aos-nix-store-provider)
       (packageModule pkgs.aos-storage-provisioning-provider)
       (packageModule pkgs.systemd)
     ];
@@ -49,6 +73,7 @@
   mountVar = request "aos-boot-preparations" "mount-var-dependencies";
   provisioningEffects =
     implementations."aos-storage-provisioning-provider:storage-provisioning-effects";
+  provisioning = request "aos" "provisioning";
 in
   assert lifecycleNames
   == [
@@ -68,5 +93,21 @@ in
   == [(output "aos-boot-preparations" "initrd-filesystems" "readiness-resource")];
   assert provisioningEffects.handlerDescriptor.entryPoint
   == "bin/aos-storage-provisioning-provider";
+  assert provisioning
+  == {
+    name = "first-boot";
+    enabled = true;
+    root_device = "/dev/disk/by-partlabel/root-a";
+    measured_boot = false;
+    policy = {
+      initialize = "if-unprovisioned";
+      committed_divergence = "require-factory-reset";
+    };
+    prerequisites = [];
+  };
+  assert implementations."aos:storage-provisioning-platform-detector".handlerDescriptor.entryPoint
+  == "libexec/aos-metadata-provisioning-provider";
+  assert implementations."aos:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
+  == "libexec/aos-metadata-provisioning-provider";
   assert (request "aos-boot-preparations" "initrd-stage").milestone
   == "initrd-stage-executed"; true
