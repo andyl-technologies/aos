@@ -7,6 +7,7 @@
   imports = [
     ./base/_filesystem-tree-contributions.nix
     ./base/_kernel-parameter-contributions.nix
+    ./base/_manager-contributions.nix
     ./base/_pam-contributions.nix
     ./base/_runtime-check-contributions.nix
     ./security/_wrapper-contributions.nix

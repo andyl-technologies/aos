@@ -236,13 +236,27 @@ in {
     '';
   };
 
+  options.system.build.systemdEtcEntryOwners = lib.mkOption {
+    type = lib.types.attrsOf lib.types.str;
+    internal = true;
+    readOnly = true;
+    description = "Resolver-authenticated owner of each rendered systemd filesystem entry.";
+  };
+
   options.system.build.systemdMaterializationData = lib.mkOption {
     type = lib.types.attrs;
     internal = true;
-    default = {
-      etc = config.system.build.systemdEtcEntries;
-      jobScripts = config.system.build.systemdJobScripts;
-    };
+    default = let
+      manifest = config.system.build.configManifest or null;
+    in
+      if manifest == null
+      then {
+        etc = config.system.build.systemdEtcEntries;
+        jobScripts = config.system.build.systemdJobScripts;
+      }
+      else {
+        inherit (manifest) etc jobScripts;
+      };
     description = ''
       Manifest-shaped `{ etc; jobScripts; }` data consumed by the builder-side
       unit materializer. The base build module binds this to configManifest;
@@ -271,6 +285,13 @@ in {
     internal = true;
     readOnly = true;
     description = "Resolver-authenticated owner of each rendered systemd unit.";
+  };
+
+  options.system.build.systemdJobScriptOwners = lib.mkOption {
+    type = lib.types.attrsOf lib.types.str;
+    internal = true;
+    readOnly = true;
+    description = "Resolver-authenticated owner of each rendered systemd executable script.";
   };
 
   options.system.build.systemdUnitActions = lib.mkOption {
@@ -561,6 +582,20 @@ in {
     # placeholders here; their text lives in `systemdJobScripts`.
     system.build.systemdUnitBodies = pureSystemUnits;
     system.build.systemdEtcEntries = systemdLib.unitsToEtc pureSystemUnits;
+    system.build.systemdEtcEntryOwners =
+      systemdLib.unitsToOwnership pureSystemUnits unitOwners;
+    system.build.systemdJobScriptOwners = let
+      scriptOwner = key: let
+        matchingUnits =
+          builtins.filter
+          (unit: lib.hasPrefix "${unit}:" key)
+          (builtins.attrNames unitOwners);
+      in
+        if builtins.length matchingUnits == 1
+        then unitOwners.${builtins.head matchingUnits}
+        else throw "systemd executable script ${key} does not identify exactly one unit";
+    in
+      lib.mapAttrs (key: _: scriptOwner key) config.system.build.systemdJobScripts;
     system.build.systemdUnitOwners = unitOwners;
     system.build.systemdUnitActions = typedUnitActions // rawUnitActions;
 

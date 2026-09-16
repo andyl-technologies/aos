@@ -12,7 +12,10 @@
   pkgs,
   ...
 }: {
-  imports = [./_artifact-backend.nix];
+  imports = [
+    ./_artifact-backend.nix
+    ./_system-manager.nix
+  ];
 
   # Image capability: the evaluator, base module library, and activation
   # machinery live on a read-only EROFS root authenticated by dm-verity.
