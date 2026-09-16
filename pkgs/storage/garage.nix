@@ -110,9 +110,9 @@ in
         environment = environmentId;
         key = "credential-provider";
       };
-      qualifiedResultOf = request: output: {
-        _type = "aos-request-output-reference";
-        inherit request output;
+      expectedRequestOutput = localKey: output: {
+        package = self.pname;
+        inherit localKey output;
       };
       secret = name:
         lib.abilities.resourceReference {
@@ -176,7 +176,7 @@ in
       };
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
-      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "garage:" name);
+      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
       invalidRpc = evaluate {enable = true;};
       invalidAdmin = evaluate {
         enable = true;
@@ -230,13 +230,22 @@ in
         && builtins.elem "garage:credential-metrics-token" adminRequests
         && builtins.elem "garage:credential-admin-token" adminWithoutMetricsTokenRequests
         && !(builtins.elem "garage:credential-metrics-token" adminWithoutMetricsTokenRequests)
-        && servicePrincipal.home_directory
-        == qualifiedResultOf "garage:home-storage" "planned-path"
-        && builtins.map (mount: mount.source) mainStorageMounts
+        && lib.abilities.requestOutputIdentity {
+          requests = enabledAbilityConfig.requests;
+          reference = servicePrincipal.home_directory;
+        }
+        == expectedRequestOutput "home-storage" "planned-path"
+        && builtins.map
+        (mount:
+          lib.abilities.requestOutputIdentity {
+            requests = enabledAbilityConfig.requests;
+            reference = mount.source;
+          })
+        mainStorageMounts
         == [
-          (qualifiedResultOf "garage:metadata-storage" "planned-path")
-          (qualifiedResultOf "garage:data-storage" "planned-path")
-          (qualifiedResultOf "garage:runtime-storage" "planned-path")
+          (expectedRequestOutput "metadata-storage" "planned-path")
+          (expectedRequestOutput "data-storage" "planned-path")
+          (expectedRequestOutput "runtime-storage" "planned-path")
         ]
         && configurationSource.kind == "structured-value"
         && configurationSource.format == "toml"

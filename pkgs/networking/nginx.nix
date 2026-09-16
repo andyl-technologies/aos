@@ -275,7 +275,7 @@ in
       };
       assertionsHold = evaluation:
         builtins.all (assertion: assertion.assertion) evaluation.config.assertions;
-      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "nginx:" name);
+      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
       disabledAbilities = disabled.config.aos.abilities;
       cleartextAbilities = cleartext.config.aos.abilities;
       tlsAbilities = tls.config.aos.abilities;
@@ -292,9 +292,9 @@ in
           cleartext.options.nginx.tlsCredentials.certificate
           cleartext.options.nginx.tlsCredentials.privateKey
         ];
-      qualifiedResultOf = request: output: {
-        _type = "aos-request-output-reference";
-        inherit request output;
+      expectedRequestOutput = localKey: output: {
+        package = self.pname;
+        inherit localKey output;
       };
       contractHolds =
         builtins.deepSeq publicOptionSchemas true
@@ -312,11 +312,17 @@ in
         && source.kind == "interpolated-text"
         && builtins.any (fragment: fragment.kind == "artifact-file-path") source.fragments
         && builtins.any (fragment: fragment.kind == "execution-path") source.fragments
-        && builtins.map (mount: mount.source) mainStorage
+        && builtins.map
+        (mount:
+          lib.abilities.requestOutputIdentity {
+            requests = cleartextAbilities.requests;
+            reference = mount.source;
+          })
+        mainStorage
         == [
-          (qualifiedResultOf "nginx:runtime-storage" "planned-path")
-          (qualifiedResultOf "nginx:state-storage" "planned-path")
-          (qualifiedResultOf "nginx:log-storage" "planned-path")
+          (expectedRequestOutput "runtime-storage" "planned-path")
+          (expectedRequestOutput "state-storage" "planned-path")
+          (expectedRequestOutput "log-storage" "planned-path")
         ]
         && !(lib.hasInfix "/etc/nginx" (builtins.toJSON cleartextAbilities.requests))
         && !(lib.hasInfix "/run/credentials" (builtins.toJSON tlsAbilities.requests));

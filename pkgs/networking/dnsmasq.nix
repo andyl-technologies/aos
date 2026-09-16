@@ -151,9 +151,9 @@ in
       configuration = requests."dnsmasq:server-configuration".parameters.source;
       dependencies = requests."dnsmasq:dnsmasq-dependencies".parameters;
       ingress = requests."dnsmasq:network-ingress".parameters;
-      qualifiedResultOf = request: output: {
-        _type = "aos-request-output-reference";
-        inherit request output;
+      expectedRequestOutput = localKey: output: {
+        package = self.pname;
+        inherit localKey output;
       };
       contractHolds =
         self.abilities ? interfaces
@@ -180,8 +180,10 @@ in
             port = 67;
           }
         ]
-        && dependencies.prerequisites
-        == [(qualifiedResultOf "dnsmasq:network-ingress" "readiness-resource")]
+        && builtins.map
+        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
+        dependencies.prerequisites
+        == [(expectedRequestOutput "network-ingress" "readiness-resource")]
         && dependencies.after == []
         && dependencies.requires == [];
     in {

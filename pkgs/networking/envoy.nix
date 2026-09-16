@@ -1281,7 +1281,7 @@ in
         builtins.all (assertion: assertion.assertion) result.config.assertions;
       bootstrapSourceFor = result:
         result.config.aos.abilities.requests."envoy:bootstrap-configuration".parameters.source;
-      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "envoy:" name);
+      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
       disabledConfig = evalConfig {};
       evaluatedConfig = evalConfig {
         enable = true;
@@ -1410,9 +1410,9 @@ in
       mainLifecycle = (credentialTlsAbilityConfig.requests."envoy:main-lifecycle" or {parameters = {};}).parameters;
       mainStorage = (credentialTlsAbilityConfig.requests."envoy:main-storage" or {parameters = {};}).parameters;
       mainResources = (credentialTlsAbilityConfig.requests."envoy:main-resources" or {parameters = {};}).parameters;
-      qualifiedResultOf = request: output: {
-        _type = "aos-request-output-reference";
-        inherit request output;
+      expectedRequestOutput = localKey: output: {
+        package = self.pname;
+        inherit localKey output;
       };
       contractHolds =
         assertionsHoldFor evaluatedConfig
@@ -1443,10 +1443,16 @@ in
         configuration.source.document
         && mainLifecycle.restart == "on-failure"
         && mainLifecycle.restart_delay_millis == 2000
-        && builtins.map (mount: mount.source) mainStorage.mounts
+        && builtins.map
+        (mount:
+          lib.abilities.requestOutputIdentity {
+            requests = credentialTlsAbilityConfig.requests;
+            reference = mount.source;
+          })
+        mainStorage.mounts
         == [
-          (qualifiedResultOf "envoy:state-storage" "planned-path")
-          (qualifiedResultOf "envoy:log-storage" "planned-path")
+          (expectedRequestOutput "state-storage" "planned-path")
+          (expectedRequestOutput "log-storage" "planned-path")
         ]
         && (let
           arguments = (builtins.head mainLifecycle.pre_start).executable.arguments;
@@ -1457,8 +1463,11 @@ in
           && builtins.elemAt arguments 0 == "--mode"
           && builtins.elemAt arguments 1 == "validate"
           && builtins.elemAt arguments 2 == "--config-path"
-          && configurationArgument.request == "envoy:bootstrap-configuration"
-          && configurationArgument.output == "planned-path")
+          && lib.abilities.requestOutputIdentity {
+            requests = credentialTlsAbilityConfig.requests;
+            reference = configurationArgument;
+          }
+          == expectedRequestOutput "bootstrap-configuration" "planned-path")
         && mainResources.open_files.value == 1048576
         && !(lib.hasInfix "/etc/aos/packages/envoy" (builtins.toJSON credentialTlsAbilityConfig.requests))
         && !(lib.hasInfix "/var/log/aos-pkg-envoy" (builtins.toJSON credentialTlsAbilityConfig.requests));

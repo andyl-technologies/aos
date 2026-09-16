@@ -225,9 +225,9 @@ in
       configuration = requests."bind:server-configuration".parameters.source;
       dependencies = requests."bind:named-dependencies".parameters;
       ingress = requests."bind:dns-ingress".parameters;
-      qualifiedResultOf = request: output: {
-        _type = "aos-request-output-reference";
-        inherit request output;
+      expectedRequestOutput = localKey: output: {
+        package = self.pname;
+        inherit localKey output;
       };
       contractHolds =
         self.abilities ? interfaces
@@ -251,8 +251,10 @@ in
             port = 5353;
           }
         ]
-        && dependencies.prerequisites
-        == [(qualifiedResultOf "bind:dns-ingress" "readiness-resource")]
+        && builtins.map
+        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
+        dependencies.prerequisites
+        == [(expectedRequestOutput "dns-ingress" "readiness-resource")]
         && dependencies.after == []
         && dependencies.requires == [];
     in {

@@ -201,7 +201,7 @@ in
         };
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
-      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "etcd:" name);
+      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
       evaluated = evalConfig {
         enable = true;
         name = "node-a";
@@ -257,12 +257,16 @@ in
         both = evaluateTls true true;
       };
       credentialRequests = evaluation:
-        builtins.filter
-        (name: lib.hasPrefix "etcd:credential-" name)
-        (builtins.attrNames evaluation.config.aos.abilities.requests);
-      qualifiedResultOf = request: output: {
-        _type = "aos-request-output-reference";
-        inherit request output;
+        builtins.map
+        (request: request.localKey)
+        (builtins.filter
+          (request:
+            request.package == self.pname
+            && lib.hasPrefix "credential-" request.localKey)
+          (builtins.attrValues evaluation.config.aos.abilities.requests));
+      expectedRequestOutput = localKey: output: {
+        package = self.pname;
+        inherit localKey output;
       };
       disabled = evalConfig {};
       invalidMember = evalConfig {
@@ -317,22 +321,28 @@ in
         && credentialRequests tlsEvaluations.neither == []
         && credentialRequests tlsEvaluations.client
         == [
-          "etcd:credential-client-certificate"
-          "etcd:credential-client-private-key"
-          "etcd:credential-client-trusted-ca"
+          "credential-client-certificate"
+          "credential-client-private-key"
+          "credential-client-trusted-ca"
         ]
         && credentialRequests tlsEvaluations.peer
         == [
-          "etcd:credential-peer-certificate"
-          "etcd:credential-peer-private-key"
-          "etcd:credential-peer-trusted-ca"
+          "credential-peer-certificate"
+          "credential-peer-private-key"
+          "credential-peer-trusted-ca"
         ]
         && credentialRequests tlsEvaluations.both
         == credentialRequests tlsEvaluations.client ++ credentialRequests tlsEvaluations.peer
-        && builtins.map (mount: mount.source) mainStorageMounts
+        && builtins.map
+        (mount:
+          lib.abilities.requestOutputIdentity {
+            requests = enabledAbilityConfig.requests;
+            reference = mount.source;
+          })
+        mainStorageMounts
         == [
-          (qualifiedResultOf "etcd:data-storage" "planned-path")
-          (qualifiedResultOf "etcd:runtime-storage" "planned-path")
+          (expectedRequestOutput "data-storage" "planned-path")
+          (expectedRequestOutput "runtime-storage" "planned-path")
         ]
         && configurationSource.kind == "structured-value"
         && configurationSource.format == "json"
