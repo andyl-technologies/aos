@@ -3052,7 +3052,11 @@ async fn apply_runtime_worktree(
         eval: config_eval::EvalCommand {
             store_view: current.inputs.store_view.clone(),
             host_nix,
-            runtime_modules: snapshot.entrypoints,
+            runtime_modules: snapshot
+                .entrypoints
+                .into_iter()
+                .map(config_eval::EvaluatorInput::canonical)
+                .collect(),
             runtime_module_root: Some(snapshot.store_path),
             expected_current_generation: Some(expected_current_generation),
             base_lib,
@@ -3224,7 +3228,11 @@ pub async fn run(
         let result = config_eval::run_eval_command(&config_eval::EvalCommand {
             store_view,
             host_nix: host_nix.clone(),
-            runtime_modules: runtime_module.clone(),
+            runtime_modules: runtime_module
+                .iter()
+                .cloned()
+                .map(config_eval::EvaluatorInput::canonical)
+                .collect(),
             runtime_module_root: runtime_module_root.clone(),
             expected_current_generation: *expected_current_generation,
             base_lib: base_lib.clone(),
@@ -3437,7 +3445,14 @@ pub async fn run(
                     .map(|runtime| PathBuf::from(&runtime.store_path)),
             )
         } else {
-            (runtime_module.clone(), None)
+            (
+                runtime_module
+                    .iter()
+                    .cloned()
+                    .map(config_eval::EvaluatorInput::canonical)
+                    .collect(),
+                None,
+            )
         };
         let base_lib = match base_lib {
             Some(path) => path.clone(),

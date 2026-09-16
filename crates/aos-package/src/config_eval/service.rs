@@ -219,7 +219,7 @@ fn active_runtime_modules(
     manifest_path: &Path,
     state_path: &Path,
     store_view: &super::store_view::StoreViewLocator,
-) -> Result<(Vec<PathBuf>, Option<PathBuf>, Option<u32>)> {
+) -> Result<(Vec<super::EvaluatorInput>, Option<PathBuf>, Option<u32>)> {
     let bytes = match fs::read(manifest_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -250,7 +250,10 @@ fn active_runtime_modules(
                 "retained runtime module entrypoint is unavailable: {}",
                 read_path.display()
             );
-            Ok(identity_root.join(entry))
+            Ok(super::EvaluatorInput {
+                identity: identity_root.join(entry),
+                read_path,
+            })
         })
         .collect::<Result<Vec<_>>>()?;
     let generation = current_config_generation_number(state_path)?;

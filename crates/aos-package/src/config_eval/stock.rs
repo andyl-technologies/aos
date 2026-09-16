@@ -1049,6 +1049,7 @@ pub(super) fn locked_store_input(path: &Path, expected_nar_hash: Option<&str>) -
     locked_evaluator_input_in(&input, expected_nar_hash, None)
 }
 
+#[cfg(test)]
 pub(super) fn locked_evaluator_input(
     input: &super::EvaluatorInput,
     expected_nar_hash: Option<&str>,
