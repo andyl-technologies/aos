@@ -36,6 +36,8 @@ pub(crate) const MANIFEST_SLOT: &str = "configuration-manifest";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EvaluationParameters {
+    /// Selects the immutable package-store view used by this evaluation.
+    pub(crate) store_view: super::store_view::StoreViewLocator,
     /// Carries the durable storage-provisioning intent.
     pub(crate) request: ProvisioningIntent,
     /// Carries the only value authorized to supply host configuration bytes.
@@ -130,6 +132,7 @@ pub(crate) fn evaluate(parameters: EvaluationParameters) -> Result<EvaluationOut
     let retained = retained_inputs(&authorized_input, &pinned_host, &pinned_facts)?;
     let out = scratch.path().join("manifest.json");
     run_eval_command(&EvalCommand {
+        store_view: parameters.store_view,
         host_nix: pinned_host,
         runtime_modules: Vec::new(),
         runtime_module_root: None,

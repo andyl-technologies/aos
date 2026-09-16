@@ -19,9 +19,8 @@ use aos_ability_validate::{
 use aos_contract::Sha256Digest;
 
 use super::runtime::{ContractOrigin, LocalRuntimePackage};
+use super::store_view::StoreViewLocator;
 
-const HOST_STATIC_CONTRACT_LINK: &str = "/etc/aos/static-ability-contract.json";
-const IMMUTABLE_STORE_ROOT: &str = "/nix.lower/store";
 const INITRD_STORE_ROOT: &str = "/nix/store";
 const STATIC_CONTRACT_FILE: &str = "contract.json";
 const MAX_STATIC_CONTRACT_BYTES: u64 = 4 * 1024 * 1024;
@@ -41,8 +40,8 @@ pub(crate) struct ResolvedContract {
 ///
 /// Returns an error when the embedded contract link, artifact, package
 /// companions, platform, or package identities are absent or invalid.
-pub(super) fn load() -> Result<BTreeMap<String, LocalRuntimePackage>> {
-    let (contract, checked) = checked_host_selection()?;
+pub(super) fn load(store_view: &StoreViewLocator) -> Result<BTreeMap<String, LocalRuntimePackage>> {
+    let (contract, checked) = checked_host_selection(store_view)?;
     let platform = runtime_platform(&checked)?;
 
     let mut packages = BTreeMap::new();
@@ -57,7 +56,7 @@ pub(super) fn load() -> Result<BTreeMap<String, LocalRuntimePackage>> {
                 && document.package.payload == *selected.payload(),
             "checked static package selection differs from its package document"
         );
-        require_immutable_artifact(&document.package.payload.store_path)?;
+        require_immutable_artifact(store_view, &document.package.payload.store_path)?;
 
         let package = LocalRuntimePackage {
             version: selected.version().to_string(),
@@ -85,9 +84,10 @@ pub(super) fn load() -> Result<BTreeMap<String, LocalRuntimePackage>> {
 ///
 /// Returns an error when the embedded static contract or one of its exact
 /// package companions cannot be authenticated.
-pub(crate) fn measurement_catalog()
--> Result<Vec<crate::package_attestation::PackageMeasurementCatalogEntry>> {
-    let (_, checked) = checked_host_selection()?;
+pub(crate) fn measurement_catalog(
+    store_view: &StoreViewLocator,
+) -> Result<Vec<crate::package_attestation::PackageMeasurementCatalogEntry>> {
+    let (_, checked) = checked_host_selection(store_view)?;
 
     checked
         .packages()
@@ -123,6 +123,7 @@ pub(super) fn resolve(
     store_path: &str,
     nar_hash: &str,
     origin: &ContractOrigin,
+    store_view: &StoreViewLocator,
 ) -> Result<ResolvedContract> {
     match origin {
         ContractOrigin::Registry { metadata } => {
@@ -154,13 +155,14 @@ pub(super) fn resolve(
                 current == *contract,
                 "embedded static contract artifact identity changed"
             );
-            let lower_contract =
-                immutable_store_path(&contract.store_path)?.join(STATIC_CONTRACT_FILE);
+            let lower_contract = store_view
+                .read_path(Path::new(&contract.store_path))?
+                .join(STATIC_CONTRACT_FILE);
             let bytes = read_contract(&lower_contract)?;
             let checked = validate_static_ability_artifacts_at_store_root(
                 &bytes,
                 &host_expectation(),
-                Path::new(IMMUTABLE_STORE_ROOT),
+                &store_view.read_root,
             )?;
             ensure!(
                 runtime_platform(&checked)? == platform,
@@ -286,54 +288,46 @@ fn runtime_platform(checked: &CheckedStaticAbilityContract) -> Result<String> {
     ))
 }
 
-pub(crate) fn checked_host_selection() -> Result<(
+pub(crate) fn checked_host_selection(
+    store_view: &StoreViewLocator,
+) -> Result<(
     aos_ability_model::ArtifactReference,
     CheckedStaticAbilityContract,
 )> {
-    let contract_path = std::fs::canonicalize(HOST_STATIC_CONTRACT_LINK)
-        .context("resolving the host static ability contract")?;
-    let contract_root = contract_root(&contract_path)?;
+    store_view.validate()?;
+    let contract_root = contract_root(store_view)?;
     let contract = crate::registry_ops::resolve_store_artifact_reference(
         contract_root
             .to_str()
             .context("host static ability contract path is not UTF-8")?,
     )?;
+    let contract_path = store_view.static_contract_read_path()?;
     let bytes = read_contract(&contract_path)?;
     let checked = validate_static_ability_artifacts_at_store_root(
         &bytes,
         &host_expectation(),
-        Path::new(IMMUTABLE_STORE_ROOT),
+        &store_view.read_root,
     )?;
 
     Ok((contract, checked))
 }
 
-fn contract_root(path: &Path) -> Result<&Path> {
-    ensure!(
-        path.file_name().and_then(|name| name.to_str()) == Some(STATIC_CONTRACT_FILE),
-        "host static contract link does not select {STATIC_CONTRACT_FILE}"
-    );
-    let root = path
+fn contract_root(store_view: &StoreViewLocator) -> Result<&Path> {
+    let root = store_view
+        .static_contract
         .parent()
         .context("host static contract has no artifact root")?;
-    immutable_store_path(
-        root.to_str()
-            .context("host static contract artifact path is not UTF-8")?,
-    )?;
+    store_view.read_path(root)?;
     Ok(root)
 }
 
-fn require_immutable_artifact(path: &str) -> Result<PathBuf> {
-    let lower = immutable_store_path(path)?;
+fn require_immutable_artifact(store_view: &StoreViewLocator, path: &str) -> Result<PathBuf> {
+    let lower = store_view.read_path(Path::new(path))?;
     ensure!(
         lower.exists(),
         "image package artifact {path} is absent from the immutable store"
     );
     Ok(lower)
-}
-
-fn immutable_store_path(path: &str) -> Result<PathBuf> {
-    super::runtime::immutable_lower_store_path(path)
 }
 
 fn read_contract(path: &Path) -> Result<Vec<u8>> {

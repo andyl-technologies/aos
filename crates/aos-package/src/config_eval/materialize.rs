@@ -171,8 +171,9 @@ impl ConfigManifest {
             runtime.validate()?;
         }
         if let Some(activation) = &self.inputs.ability_activation {
-            activation.validate(&self.package_outputs)?;
+            activation.validate(&self.package_outputs, &self.inputs.store_view)?;
         }
+        self.inputs.store_view.validate()?;
         if self.module_abi != self.inputs.base_lib.module_abi {
             bail!("manifest module_abi does not match inputs.base_lib.module_abi");
         }
@@ -435,7 +436,7 @@ impl ConfigManifest {
             ) {
                 bail!("packageOutputs.{package}.store_path is not owned by that package");
             }
-            validate_runtime_pin(package, pin)?;
+            validate_runtime_pin(package, pin, &self.inputs.store_view)?;
         }
         for (package, deps) in &self.graph.edges {
             if !package_set.contains(package.as_str()) {
@@ -471,7 +472,11 @@ impl ConfigManifest {
     }
 }
 
-fn validate_runtime_pin(package: &str, pin: &RuntimePackagePin) -> Result<()> {
+fn validate_runtime_pin(
+    package: &str,
+    pin: &RuntimePackagePin,
+    store_view: &super::store_view::StoreViewLocator,
+) -> Result<()> {
     let canonical_runtime_nar =
         crate::registry::store::NarBytes::from_hash(&pin.nar_hash, pin.nar_size)
             .with_context(|| format!("validating packageOutputs.{package}.nar_hash"))?;
@@ -486,6 +491,7 @@ fn validate_runtime_pin(package: &str, pin: &RuntimePackagePin) -> Result<()> {
             &pin.store_path,
             &pin.nar_hash,
             ability,
+            store_view,
         )
         .map(|_| ())
         .with_context(|| format!("validating packageOutputs.{package}.contract"))?;
@@ -649,6 +655,8 @@ pub struct ManifestUser {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestInputs {
+    /// Selected immutable view used to authenticate image package artifacts.
+    pub store_view: super::store_view::StoreViewLocator,
     /// ABI-pinned base library.
     pub base_lib: BaseLibInput,
     /// Evaluator executable.
@@ -2111,6 +2119,12 @@ mod tests {
         object.insert(
             "inputs".into(),
             serde_json::json!({
+                "store_view": {
+                    "schema":"aos.package-store.read-view-locator/v1",
+                    "identity_root":"/nix/store",
+                    "read_root":"/immutable/store",
+                    "static_contract":"/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-static-contract/contract.json"
+                },
                 "base_lib": {"store_path":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-base", "abi_hash":hash, "module_abi":1},
                 "evaluator": {"store_path":"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-evaluator", "store_hash":store_hash},
                 "package_modules": {"modules": []},

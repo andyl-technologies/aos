@@ -24,6 +24,7 @@ use aos_provider_protocol::{
 use serde::{Deserialize, Serialize};
 
 use super::static_packages::checked_host_selection;
+use super::store_view::StoreViewLocator;
 use crate::config::ApmConfig;
 use crate::registry::RegistrySet;
 use crate::types::ProfileScope;
@@ -36,6 +37,7 @@ const PROVIDER_CONTEXT_SCHEMA: &str = "aos.registry.synchronized-snapshot-contex
 #[serde(deny_unknown_fields)]
 struct SnapshotRequest {
     scope: String,
+    store_view: StoreViewLocator,
     controller: ResourceReference,
     handoff: ResourceReference,
     synchronization: ResourceReference,
@@ -269,8 +271,8 @@ fn observe_snapshot(request: &SnapshotRequest) -> Result<SynchronizedSnapshot> {
         .collect::<Result<Vec<_>>>()?;
     let releases = canonical_releases(releases)?;
 
-    let (static_contract, _) =
-        checked_host_selection().context("authenticating the immutable image package contract")?;
+    let (static_contract, _) = checked_host_selection(&request.store_view)
+        .context("authenticating the immutable image package contract")?;
     let commitment = SnapshotCommitment {
         schema: SNAPSHOT_SCHEMA,
         scope: &request.scope,
@@ -351,6 +353,7 @@ fn validate_request(request: &SnapshotRequest, resources: &[ResourceContext]) ->
         request.scope == "system",
         "unsupported registry snapshot scope"
     );
+    request.store_view.validate()?;
     let references = std::iter::once(&request.controller)
         .chain(std::iter::once(&request.handoff))
         .chain(std::iter::once(&request.synchronization))

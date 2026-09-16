@@ -416,6 +416,7 @@ fn verified_package_identities(manifest: &ConfigManifest) -> Result<Vec<Verified
                     &package.store_path,
                     &package.nar_hash,
                     contract,
+                    &manifest.inputs.store_view,
                 )?;
 
                 Ok(VerifiedPackageIdentity {
@@ -840,7 +841,13 @@ pub fn verify_generation_packages(
             let Some(contract) = package.contract.as_ref() else {
                 continue;
             };
-            let verified = verify_runtime_package_contract(config, name, package, contract)
+            let verified = verify_runtime_package_contract(
+                config,
+                name,
+                package,
+                contract,
+                &manifest.inputs.store_view,
+            )
             .with_context(|| {
                 format!(
                     "reverifying generation ability package {}@{}",
@@ -868,13 +875,14 @@ pub fn verify_generation_packages(
 pub fn verify_runtime_packages(
     config: &ApmConfig,
     runtime: &RuntimeResolution,
+    store_view: &super::store_view::StoreViewLocator,
 ) -> Result<VerifiedPackageContractSet> {
     let mut packages = Vec::new();
     for (name, package) in &runtime.packages {
         let Some(ability) = &package.contract else {
             continue;
         };
-        let verified = verify_runtime_package_contract(config, name, package, ability)
+        let verified = verify_runtime_package_contract(config, name, package, ability, store_view)
             .with_context(|| {
                 format!(
                     "verifying resolved ability package {}@{}",
@@ -891,6 +899,7 @@ fn verify_runtime_package_contract(
     name: &str,
     package: &RuntimePackagePin,
     origin: &ContractOrigin,
+    store_view: &super::store_view::StoreViewLocator,
 ) -> Result<crate::package_contract::VerifiedPackageContract> {
     let coordinate = PackageContractCoordinate {
         name,
@@ -930,6 +939,7 @@ fn verify_runtime_package_contract(
                 &package.store_path,
                 &package.nar_hash,
                 origin,
+                store_view,
             )?;
             crate::package_contract::verify_embedded_static_package(coordinate, resolved)
         }

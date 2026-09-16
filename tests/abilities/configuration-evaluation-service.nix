@@ -53,6 +53,12 @@
     _type = "aos-request-output-reference";
     inherit request output;
   };
+  storeView = lib.abilities.interfaces.packageStoreReadView.interfaces.readView;
+  storeViewLocator = lib.abilities.canonicalJsonOf {
+    type = storeView.locatorType;
+    value = resultOf "aos:package-store-read-view" "locator";
+    maxBytes = 4096;
+  };
   lifecycle = requests."aos:configuration-evaluation-lifecycle".parameters;
   registryLifecycle = requests."aos:registry-synchronization-lifecycle".parameters;
   dependencies = requests."aos:configuration-evaluation-dependencies".parameters;
@@ -66,6 +72,7 @@ in
   assert !missingMeasurementKey.success;
   assert lifecycle.service == "configuration-evaluation";
   assert registryLifecycle.service == "registry-synchronization";
+  assert requests."aos:package-store-read-view".parameters == {scope = "boot-image";};
   assert registryLifecycle.start
   == [
     {
@@ -91,6 +98,8 @@ in
         entry_point = "bin/aos-package-runtime";
         arguments = [
           "__eval-service"
+          "--store-view"
+          storeViewLocator
           "--base-lib"
           "/aos-toplevel/base-lib"
           "--module-abi"
@@ -107,7 +116,10 @@ in
     }
   ];
   assert dependencies.prerequisites
-  == [(resultOf "aos:nix-store-database" "readiness-resource")];
+  == [
+    (resultOf "aos:nix-store-database" "readiness-resource")
+    (resultOf "aos:package-store-read-view" "read-view-resource")
+  ];
   assert dependencies.after
   == [
     (resultOf "aos:local-filesystems" "readiness-resource")

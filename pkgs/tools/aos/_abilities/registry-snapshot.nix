@@ -17,9 +17,11 @@
     unique = true;
     canonicalOrder = true;
   };
+  storeView = lib.abilities.interfaces.packageStoreReadView.interfaces.readView;
   requestType = types.record {
     fields = {
       scope = types.enum ["system"];
+      store_view = types.deferredResult storeView.locatorType;
       controller = types.deferredResult types.resourceReference;
       handoff = types.deferredResult types.resourceReference;
       synchronization = types.deferredResult types.resourceReference;
