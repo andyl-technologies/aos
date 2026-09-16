@@ -9,11 +9,7 @@
     key = "initrd-security-services";
     inherit stage;
   };
-  packageModule = package: {
-    name = package.pname;
-    inherit (package) version;
-    module = package.module + "/module.nix";
-  };
+  packageModule = lib.abilities.authenticatedPackageModuleRecordFor;
   evaluate = stage: modules: packageModules:
     lib.evalModules {
       inherit lib packageModules;

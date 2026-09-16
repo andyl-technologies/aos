@@ -28,11 +28,7 @@
     entry_point = "bin/${name}";
     arguments = [];
   };
-  packageModule = package: {
-    inherit (package) version;
-    name = package.pname;
-    module = package.module + "/module.nix";
-  };
+  packageModule = lib.abilities.authenticatedPackageModuleRecordFor;
 
   fixedPoint = lib.evalModules {
     inherit lib;
