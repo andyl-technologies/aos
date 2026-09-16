@@ -2,6 +2,7 @@
 {
   configurationInterface,
   reloadInterface,
+  transitionFragment,
 }: context: let
   deadline = {
     attempt_timeout_millis = 300000;
@@ -143,15 +144,7 @@
   edges = builtins.map edgeFor (builtins.filter (change:
     builtins.elem change.kind ["update" "reconcile-divergent"])
   actionable);
-in {
-  schema = "aos.ability.transition-fragment/v1";
-  inherit operations edges;
-  decisions = [];
-  merges = [];
-  exports = [];
-  imports = [];
-  links = [];
-  handoffs = [];
-  provider_readiness = [];
-  obligations = [];
-}
+in
+  transitionFragment {
+    inherit operations edges;
+  }

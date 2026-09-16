@@ -146,6 +146,7 @@
       inherit effectsInterface;
       resourceInterface = specification.selected.identity;
       inherit (specification) resourceKind;
+      inherit (lib.abilities) transitionFragment;
     };
   in {
     inherit provide compose transition;

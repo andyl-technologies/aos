@@ -15,7 +15,8 @@
     moduleTypes = moduleOptionTypes;
   };
   effects = import ./effects;
-  resourceControllerTransition = import ./resource-controller-transition.nix;
+  resourceControllerTransition = args:
+    import ./resource-controller-transition.nix ({inherit transitionFragment;} // args);
   diagnostics = import ./diagnostic.nix;
   packageOutputSelectors = import ./package-output-selectors.nix {inherit diagnostics;};
   packageOutputSelectorsFor = limits:
@@ -111,6 +112,42 @@
 
   resourceRevision = material:
     descriptorFor "aos.ability.resource-revision/v1" (normalizeSemanticValue material);
+
+  singletonSchemaDiscriminator = context: valueType: let
+    values = valueType._abilitySchema.fields.schema.values or [];
+  in
+    if builtins.length values == 1
+    then builtins.head values
+    else fail "${context} must declare one exact schema discriminator";
+
+  transitionFragment = fields: let
+    checked =
+      requireAttrs "transition fragment" [
+        "operations"
+        "decisions"
+        "merges"
+        "edges"
+        "exports"
+        "imports"
+        "links"
+        "handoffs"
+        "provider_readiness"
+        "obligations"
+      ]
+      fields;
+  in {
+    schema = "aos.ability.transition-fragment/v1";
+    operations = checked.operations or [];
+    decisions = checked.decisions or [];
+    merges = checked.merges or [];
+    edges = checked.edges or [];
+    exports = checked.exports or [];
+    imports = checked.imports or [];
+    links = checked.links or [];
+    handoffs = checked.handoffs or [];
+    provider_readiness = checked.provider_readiness or [];
+    obligations = checked.obligations or [];
+  };
 
   identityKeyFor = domain: material:
     builtins.substring 7 64 (
@@ -1597,6 +1634,8 @@ in rec {
     packageProjectionFor
     resourceRevision
     identityKeyFor
+    singletonSchemaDiscriminator
+    transitionFragment
     ;
   types = abilityTypes;
   interfaces = rec {

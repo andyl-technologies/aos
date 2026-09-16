@@ -98,6 +98,7 @@
     transition = import ./_systemd-identity-transition.nix {
       inherit effectsInterface;
       inherit (specification) resourceKind;
+      inherit (lib.abilities) transitionFragment;
     };
   in {
     inherit provide compose transition;

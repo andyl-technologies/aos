@@ -4,6 +4,7 @@
 ##! applies the common authority, resource-grant, controller, and graph-shape
 ##! checks needed by single-resource terminal controllers.
 {
+  transitionFragment,
   context,
   terminalInterface,
   actions,
@@ -140,16 +141,7 @@
     };
   };
   operationLessThan = left: right: left.key.key < right.key.key;
-in {
-  schema = "aos.ability.transition-fragment/v1";
-  operations = builtins.sort operationLessThan (builtins.map operationFor activeChanges);
-  decisions = [];
-  merges = [];
-  edges = [];
-  exports = [];
-  imports = [];
-  links = [];
-  handoffs = [];
-  provider_readiness = [];
-  obligations = [];
-}
+in
+  transitionFragment {
+    operations = builtins.sort operationLessThan (builtins.map operationFor activeChanges);
+  }

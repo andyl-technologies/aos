@@ -3,6 +3,7 @@
   effectsInterface,
   resourceInterface,
   resourceKind,
+  transitionFragment,
 }: context: let
   deadline = {
     attempt_timeout_millis = 300000;
@@ -119,16 +120,7 @@
       compensate = null;
     };
   };
-in {
-  schema = "aos.ability.transition-fragment/v1";
-  operations = builtins.map operationFor actionable;
-  decisions = [];
-  merges = [];
-  edges = [];
-  exports = [];
-  imports = [];
-  links = [];
-  handoffs = [];
-  provider_readiness = [];
-  obligations = [];
-}
+in
+  transitionFragment {
+    operations = builtins.map operationFor actionable;
+  }

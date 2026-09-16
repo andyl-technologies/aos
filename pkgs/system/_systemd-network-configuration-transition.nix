@@ -2,6 +2,7 @@
 {
   effectsInterface,
   resourceInterface,
+  transitionFragment,
 }: context: let
   actionable = builtins.filter (change:
     change.resource.provider == context.provider
@@ -104,16 +105,7 @@
       compensate = null;
     };
   };
-in {
-  schema = "aos.ability.transition-fragment/v1";
-  operations = builtins.map operationFor actionable;
-  decisions = [];
-  merges = [];
-  edges = [];
-  exports = [];
-  imports = [];
-  links = [];
-  handoffs = [];
-  provider_readiness = [];
-  obligations = [];
-}
+in
+  transitionFragment {
+    operations = builtins.map operationFor actionable;
+  }

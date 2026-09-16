@@ -14,6 +14,7 @@
   );
   packagedUnitTransition = import ./_systemd-packaged-unit-transition.nix {
     effectsInterface = packagedUnitEffectsInterface;
+    inherit (lib.abilities) transitionFragment;
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceInterfaces = serviceManagement.interfaces;
@@ -22,6 +23,7 @@
   );
   serviceTransition = import ./_systemd-service-transition.nix {
     effectsInterface = serviceEffectsInterface;
+    inherit (lib.abilities) transitionFragment;
   };
   managerWatchdogAlias = "systemd-manager-watchdog";
   managerWatchdogImplementation = "${packageName}:${managerWatchdogAlias}";
@@ -30,6 +32,7 @@
   );
   managerWatchdogTransition = import ./_systemd-manager-watchdog-transition.nix {
     effectsInterface = managerWatchdogEffectsInterface;
+    inherit (lib.abilities) transitionFragment;
   };
   networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
   networkConfigurationAlias = networkConfiguration.alias;
@@ -39,6 +42,7 @@
   networkConfigurationTransition = import ./_systemd-network-configuration-transition.nix {
     effectsInterface = networkConfigurationEffectsInterface;
     resourceInterface = networkConfiguration.identity;
+    inherit (lib.abilities) transitionFragment;
   };
   serviceResourceFields = serviceManagement.types.serviceDeclaration._abilitySchema.fields;
   serviceImplementationNames = builtins.filter (featureName: let
@@ -440,11 +444,9 @@
     systemdReference =
       {_type = "aos-artifact-reference";}
       // systemdLocator.artifactReference;
-    realizationSchemas = networkConfigurationController.desiredType._abilitySchema.fields.schema.values or [];
-    realizationSchema =
-      if builtins.length realizationSchemas != 1
-      then throw "systemd network configuration must declare one exact realization schema"
-      else builtins.head realizationSchemas;
+    realizationSchema = lib.abilities.singletonSchemaDiscriminator
+      "systemd network configuration realization"
+      networkConfigurationController.desiredType;
   in
     emptyResult
     // {
@@ -608,12 +610,10 @@
     then throw "systemd dependencies resolve multiple resources to the same unit"
     else units;
 
-  observationSchemaFor = selected: let
-    values = selected.observationType._abilitySchema.fields.schema.values or [];
-  in
-    if builtins.length values != 1
-    then throw "systemd service observation must declare one exact schema"
-    else builtins.head values;
+  observationSchemaFor = selected:
+    lib.abilities.singletonSchemaDiscriminator
+    "systemd service observation"
+    selected.observationType;
   serviceFacets =
     builtins.sort
     (left: right: builtins.toJSON left < builtins.toJSON right)
@@ -1011,19 +1011,7 @@
           then "lifecycle-resource"
           else "readiness-resource"
         );
-        transition = _: {
-          schema = "aos.ability.transition-fragment/v1";
-          operations = [];
-          decisions = [];
-          merges = [];
-          edges = [];
-          exports = [];
-          imports = [];
-          links = [];
-          handoffs = [];
-          provider_readiness = [];
-          obligations = [];
-        };
+        transition = _: lib.abilities.transitionFragment {};
       };
     })
     readinessControllers);
