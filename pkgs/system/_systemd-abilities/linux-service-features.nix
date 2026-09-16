@@ -23,7 +23,12 @@
     name = "Linux capability name";
     description = "An uppercase Linux capability token beginning with CAP_.";
     type = boundedString 128;
-    predicate = value: builtins.match "CAP_[A-Z0-9_]+" value != null;
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "CAP_[A-Z0-9_]+";
+      }
+    ];
   };
   serviceFields = {
     service = localKey;
@@ -108,7 +113,13 @@
         };
       };
       unrestricted = types.record {
-        fields.kind = types.enum ["unrestricted"];
+        fields = {
+          kind = types.enum ["unrestricted"];
+          capabilities = {
+            type = capabilityNames;
+            default = [];
+          };
+        };
       };
     };
   };
@@ -186,21 +197,28 @@
     name = "valid Linux service isolation";
     description = "Linux service isolation with unique sets, bounded ambient capabilities, and disjoint syscall policy";
     type = linuxIsolationBase;
-    predicate = value: let
-      unique = values: builtins.length values == builtins.length (lib.unique values);
-    in
-      unique value.namespace_isolation
-      && unique value.network_address_families
-      && (
-        value.capability_bounds.kind
-        == "unrestricted"
-        || builtins.all
-        (capability: builtins.elem capability value.capability_bounds.capabilities)
-        value.ambient_capabilities
-      )
-      && builtins.all
-      (syscall: !(builtins.elem syscall value.syscall_deny))
-      value.syscall_allow;
+    constraints = [
+      {
+        kind = "unique-at";
+        path = ["namespace_isolation"];
+      }
+      {
+        kind = "unique-at";
+        path = ["network_address_families"];
+      }
+      {
+        kind = "subset-unless";
+        subset = ["ambient_capabilities"];
+        superset = ["capability_bounds" "capabilities"];
+        unless_path = ["capability_bounds" "kind"];
+        unless_equals = "unrestricted";
+      }
+      {
+        kind = "disjoint-at";
+        left = ["syscall_allow"];
+        right = ["syscall_deny"];
+      }
+    ];
   };
   linuxIsolationObservation = observation "linux-isolation" linuxIsolation;
 

@@ -17,13 +17,16 @@
     name = "CloudCore listener address";
     description = "an IP address or DNS name accepted by CloudCore";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[A-Za-z0-9][A-Za-z0-9.:-]*" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9][A-Za-z0-9.:-]*";}];
   };
   nonWhitespace = abilityTypes.refined {
     name = "CloudCore non-whitespace string";
     description = "a bounded CloudCore value without whitespace";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[^\n\r ]+" value != null;
+    constraints = [
+      {kind = "minimum-size"; minimum = 1;}
+      {kind = "string-excludes"; classes = ["ascii-space" "line-break"];}
+    ];
   };
   port = abilityTypes.integer {
     minimum = 1;

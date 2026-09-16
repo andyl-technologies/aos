@@ -15,6 +15,7 @@ pub(super) fn validate_nested_authority(
     resources: &BTreeSet<ResourceId>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let schema = unwrap_refined(schema);
     let schema = unwrap_optional(schema, expression);
     let schema = unwrap_disjoint(schema, expression);
     match expression {
@@ -184,6 +185,13 @@ fn unwrap_optional<'a>(
     schema
 }
 
+fn unwrap_refined(mut schema: &ValueSchema) -> &ValueSchema {
+    while let ValueSchema::Refined { value, .. } = schema {
+        schema = value;
+    }
+    schema
+}
+
 fn unwrap_disjoint<'a>(schema: &'a ValueSchema, expression: &ValueExpression) -> &'a ValueSchema {
     let ValueSchema::DisjointUnion { variants } = schema else {
         return schema;
@@ -211,6 +219,18 @@ fn validate_literal_authority(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match (schema, value) {
+        (ValueSchema::Refined { value: nested, .. }, value) => validate_literal_authority(
+            context,
+            nested,
+            value,
+            operation,
+            operation_index,
+            binding,
+            grant,
+            artifacts,
+            resources,
+            diagnostics,
+        ),
         (ValueSchema::Optional { .. }, Value::Null) => {}
         (ValueSchema::Optional { value: nested }, value) => validate_literal_authority(
             context,

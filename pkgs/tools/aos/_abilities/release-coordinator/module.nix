@@ -33,7 +33,7 @@
       maxLength = 4096;
       syntax = null;
     };
-    predicate = value: builtins.match ".+" value != null;
+    constraints = [{kind = "minimum-size"; minimum = 1;}];
   };
 
   producer = key: interface: parameters:

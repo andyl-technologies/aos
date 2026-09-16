@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use crate::document::{DocumentError, PackageDocument, VersionedDocument};
 use crate::identity::{LocalKey, RelativePath};
 use crate::limits::LimitProfile;
-use crate::schema::{JsonValueKind, StringConstraint, StringSyntax};
+use crate::schema::{
+    JsonValueKind, StringConstraint, ValueConstraint, ValueSchema, string_matches,
+};
 use crate::value::{AbilityValue, ArtifactReference};
 
 /// Records one package-owned module option from the authenticated evaluator.
@@ -193,6 +195,13 @@ pub enum OptionType {
         /// Non-null value type.
         value: Box<OptionType>,
     },
+    /// Portable option value with closed data constraints.
+    Refined {
+        /// Base option type checked before the refinements.
+        value: Box<OptionType>,
+        /// Predicates shared with the canonical ability schema.
+        constraints: Vec<ValueConstraint>,
+    },
     /// Bounded union.
     OneOf {
         /// Alternative types.
@@ -308,6 +317,21 @@ impl OptionType {
                 Self::Set { element }
                 | Self::Nullable { value: element }
                 | Self::Optional { value: element } => stack.push((element, child_depth)),
+                Self::Refined { value, constraints } => {
+                    items = items.saturating_add(constraints.len() as u64);
+                    if constraints.is_empty()
+                        || items > limits.max_collection_items
+                        || constraints.iter().any(|constraint| {
+                            !constraint.is_within_limits(
+                                limits.max_string_bytes,
+                                limits.max_collection_items,
+                            )
+                        })
+                    {
+                        return false;
+                    }
+                    stack.push((value, child_depth));
+                }
                 Self::AttrsOf { value, placeholder } => {
                     if !valid_string(placeholder) {
                         return false;
@@ -576,6 +600,15 @@ impl OptionType {
             Self::Nullable { value: nested } | Self::Optional { value: nested } => {
                 value.is_null() || nested.admits_json(value)
             }
+            Self::Refined {
+                value: nested,
+                constraints,
+            } => {
+                nested.admits_json(value)
+                    && constraints
+                        .iter()
+                        .all(|constraint| constraint.admits(value))
+            }
             Self::OneOf { alternatives } => alternatives
                 .iter()
                 .any(|alternative| alternative.admits_json(value)),
@@ -623,6 +656,7 @@ impl OptionType {
             | Self::OneOf { .. }
             | Self::DisjointUnion { .. }
             | Self::Opaque { .. } => None,
+            Self::Refined { value, .. } => value.top_level_json_kind(),
         }
     }
 
@@ -637,7 +671,8 @@ impl OptionType {
                 Self::List { element, .. }
                 | Self::Set { element }
                 | Self::Nullable { value: element }
-                | Self::Optional { value: element } => stack.push(element),
+                | Self::Optional { value: element }
+                | Self::Refined { value: element, .. } => stack.push(element),
                 Self::AttrsOf { value, .. } | Self::Map { value, .. } => stack.push(value),
                 Self::Submodule {
                     fields,
@@ -673,34 +708,165 @@ impl OptionType {
     }
 }
 
+fn refinements_are_compatible(option_type: &OptionType) -> bool {
+    match option_type {
+        OptionType::Refined { value, constraints } => {
+            option_type_as_value_schema(value).is_some_and(|schema| {
+                constraints
+                    .iter()
+                    .all(|constraint| constraint.is_compatible_with(&schema))
+            }) && refinements_are_compatible(value)
+        }
+        OptionType::List { element, .. }
+        | OptionType::Set { element }
+        | OptionType::Nullable { value: element }
+        | OptionType::Optional { value: element } => refinements_are_compatible(element),
+        OptionType::AttrsOf { value, .. } | OptionType::Map { value, .. } => {
+            refinements_are_compatible(value)
+        }
+        OptionType::Submodule { fields, .. } | OptionType::DocumentRecord { fields, .. } => {
+            fields.values().all(refinements_are_compatible)
+        }
+        OptionType::Record { fields, .. }
+        | OptionType::TaggedUnion {
+            variants: fields, ..
+        } => fields.values().all(refinements_are_compatible),
+        OptionType::OneOf { alternatives }
+        | OptionType::DisjointUnion {
+            variants: alternatives,
+        } => alternatives.iter().all(refinements_are_compatible),
+        OptionType::Bool
+        | OptionType::Integer { .. }
+        | OptionType::Unsigned { .. }
+        | OptionType::String { .. }
+        | OptionType::Port
+        | OptionType::Path
+        | OptionType::Duration
+        | OptionType::Cidr
+        | OptionType::OpaqueReference
+        | OptionType::Enum { .. }
+        | OptionType::Opaque { .. }
+        | OptionType::ArtifactReference
+        | OptionType::ResourceReference
+        | OptionType::ProviderAssignment
+        | OptionType::OperationResultReference => true,
+    }
+}
+
+fn option_type_as_value_schema(option_type: &OptionType) -> Option<ValueSchema> {
+    const MAX_EXACT_INTEGER: i64 = 9_007_199_254_740_991;
+    const MAX_STRING_LENGTH: u64 = 1_048_576;
+    const MAX_COLLECTION_ITEMS: u64 = 2_000_000;
+
+    Some(match option_type {
+        OptionType::Bool => ValueSchema::Boolean,
+        OptionType::Integer { min, max } => ValueSchema::Integer {
+            minimum: min.unwrap_or(-MAX_EXACT_INTEGER),
+            maximum: max.unwrap_or(MAX_EXACT_INTEGER),
+        },
+        OptionType::Unsigned { min, max } => ValueSchema::Integer {
+            minimum: i64::try_from(min.unwrap_or(0)).ok()?,
+            maximum: i64::try_from(max.unwrap_or(MAX_EXACT_INTEGER as u64)).ok()?,
+        },
+        OptionType::String { max_length, .. } => ValueSchema::String {
+            max_length: max_length.unwrap_or(MAX_STRING_LENGTH),
+            syntax: None,
+        },
+        OptionType::Path
+        | OptionType::Duration
+        | OptionType::Cidr
+        | OptionType::OpaqueReference => ValueSchema::String {
+            max_length: MAX_STRING_LENGTH,
+            syntax: None,
+        },
+        OptionType::Port => ValueSchema::Integer {
+            minimum: 0,
+            maximum: 65_535,
+        },
+        OptionType::Enum { values } => ValueSchema::StringEnum {
+            values: values.iter().map(|entry| entry.value.clone()).collect(),
+        },
+        OptionType::List {
+            element,
+            max_items,
+            unique,
+            canonical_order,
+        } => ValueSchema::List {
+            element: Box::new(option_type_as_value_schema(element)?),
+            max_items: max_items.unwrap_or(MAX_COLLECTION_ITEMS),
+            unique: *unique,
+            canonical_order: *canonical_order,
+        },
+        OptionType::Set { element } => ValueSchema::List {
+            element: Box::new(option_type_as_value_schema(element)?),
+            max_items: MAX_COLLECTION_ITEMS,
+            unique: true,
+            canonical_order: false,
+        },
+        OptionType::Map {
+            key,
+            value,
+            max_entries,
+        } => ValueSchema::Map {
+            key: key.clone(),
+            value: Box::new(option_type_as_value_schema(value)?),
+            max_entries: *max_entries,
+        },
+        OptionType::Record {
+            fields,
+            optional_fields,
+        } => ValueSchema::Record {
+            fields: fields
+                .iter()
+                .map(|(name, field)| Some((name.clone(), option_type_as_value_schema(field)?)))
+                .collect::<Option<_>>()?,
+            optional_fields: optional_fields.clone(),
+        },
+        OptionType::DocumentRecord {
+            key_max_length,
+            fields,
+            optional_fields,
+        } => ValueSchema::DocumentRecord {
+            key_max_length: *key_max_length,
+            fields: fields
+                .iter()
+                .map(|(name, field)| Some((name.clone(), option_type_as_value_schema(field)?)))
+                .collect::<Option<_>>()?,
+            optional_fields: optional_fields.clone(),
+        },
+        OptionType::TaggedUnion { tag, variants } => ValueSchema::TaggedUnion {
+            tag: tag.clone(),
+            variants: variants
+                .iter()
+                .map(|(name, variant)| Some((name.clone(), option_type_as_value_schema(variant)?)))
+                .collect::<Option<_>>()?,
+        },
+        OptionType::DisjointUnion { variants } => ValueSchema::DisjointUnion {
+            variants: variants
+                .iter()
+                .map(option_type_as_value_schema)
+                .collect::<Option<_>>()?,
+        },
+        OptionType::Optional { value } | OptionType::Nullable { value } => ValueSchema::Optional {
+            value: Box::new(option_type_as_value_schema(value)?),
+        },
+        OptionType::Refined { value, constraints } => ValueSchema::Refined {
+            value: Box::new(option_type_as_value_schema(value)?),
+            constraints: constraints.clone(),
+        },
+        OptionType::ArtifactReference => ValueSchema::ArtifactReference,
+        OptionType::ResourceReference => ValueSchema::ResourceReference,
+        OptionType::ProviderAssignment => ValueSchema::ProviderAssignment,
+        OptionType::OperationResultReference => ValueSchema::OperationResultReference,
+        OptionType::AttrsOf { .. }
+        | OptionType::Submodule { .. }
+        | OptionType::OneOf { .. }
+        | OptionType::Opaque { .. } => return None,
+    })
+}
+
 fn key_accepts(constraint: &StringConstraint, value: &str) -> bool {
-    if value.len() as u64 > constraint.max_length {
-        return false;
-    }
-    match constraint.syntax {
-        None => !value.chars().any(char::is_control),
-        Some(StringSyntax::LocalKeyV1) => LocalKey::new(value).is_ok(),
-        Some(StringSyntax::QualifiedNameV1) => {
-            let segments = value.split('.').collect::<Vec<_>>();
-            segments.len() >= 2
-                && segments.iter().all(|segment| {
-                    !segment.is_empty()
-                        && segment.chars().all(|character| {
-                            character.is_ascii_alphanumeric()
-                                || character == '_'
-                                || character == '-'
-                        })
-                })
-        }
-        Some(StringSyntax::ExecutionPathV1) => {
-            value.starts_with('/')
-                && (value == "/"
-                    || value
-                        .split('/')
-                        .skip(1)
-                        .all(|segment| !segment.is_empty() && segment != "." && segment != ".."))
-        }
-    }
+    string_matches(constraint.max_length, constraint.syntax, value)
 }
 
 /// Locates one option declaration below the authenticated package module root.
@@ -758,7 +924,8 @@ pub fn validate_package_option_declarations(
             && !declaration.type_signature.chars().any(char::is_control)
             && bounded_prose(&declaration.description)
             && declaration.deprecated.as_deref().is_none_or(bounded_prose);
-        let structured_type_is_valid = declaration.structured_type.is_within_limits(limits);
+        let structured_type_is_valid = declaration.structured_type.is_within_limits(limits)
+            && refinements_are_compatible(&declaration.structured_type);
         let replacement_is_valid = declaration.replacement.as_ref().is_none_or(|path| {
             !path.is_empty()
                 && path.iter().all(|segment| {

@@ -21,7 +21,7 @@
       maxLength = 4096;
       syntax = null;
     };
-    predicate = value: builtins.stringLength value > 0;
+    constraints = [{kind = "minimum-size"; minimum = 1;}];
   };
   nullableNonEmptyStr = abilityTypes.optional nonEmptyStr;
   labelNameRegex = "([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?";
@@ -35,7 +35,7 @@
       maxLength = 253;
       syntax = null;
     };
-    predicate = value: builtins.match labelValueRegex value != null;
+    constraints = [{kind = "string-pattern"; pattern = labelValueRegex;}];
   };
   labelsType = abilityTypes.map {
     keyMaxLength = 253;

@@ -188,6 +188,7 @@ pub(crate) fn authorize_materialized_references(
     let mut stack = vec![(schema, value.as_json())];
     while let Some((schema, value)) = stack.pop() {
         match (schema, value) {
+            (ValueSchema::Refined { value: nested, .. }, value) => stack.push((nested, value)),
             (ValueSchema::Optional { .. }, Value::Null) => {}
             (ValueSchema::Optional { value: nested }, value) => stack.push((nested, value)),
             (ValueSchema::ArtifactReference, value) => {

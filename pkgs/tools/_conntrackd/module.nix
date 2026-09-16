@@ -23,13 +23,13 @@
     name = "conntrackd IPv4 address";
     description = "an IPv4 address accepted by conntrackd";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[0-9]{1,3}(\\.[0-9]{1,3}){3}" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[0-9]{1,3}(\\.[0-9]{1,3}){3}";}];
   };
   interfaceName = abilityTypes.refined {
     name = "conntrackd interface name";
     description = "a non-empty network interface name accepted by conntrackd";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[A-Za-z0-9][A-Za-z0-9_.:-]*" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9][A-Za-z0-9_.:-]*";}];
   };
   onOff = value:
     if value

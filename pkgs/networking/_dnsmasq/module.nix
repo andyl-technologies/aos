@@ -21,7 +21,7 @@
       maxLength = 255;
       syntax = null;
     };
-    predicate = value: builtins.match "[A-Za-z0-9:.%_-]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9:.%_-]+";}];
   };
   server = abilityTypes.refined {
     name = "dnsmasq upstream server";
@@ -30,7 +30,10 @@
       maxLength = 4096;
       syntax = null;
     };
-    predicate = value: builtins.match "[^\n\r]+" value != null;
+    constraints = [
+      {kind = "minimum-size"; minimum = 1;}
+      {kind = "string-excludes"; classes = ["line-break"];}
+    ];
   };
   dhcpRange = abilityTypes.refined {
     name = "dnsmasq DHCP range";
@@ -39,7 +42,10 @@
       maxLength = 4096;
       syntax = null;
     };
-    predicate = value: builtins.match "[^\n\r]+" value != null;
+    constraints = [
+      {kind = "minimum-size"; minimum = 1;}
+      {kind = "string-excludes"; classes = ["line-break"];}
+    ];
   };
   addresses = abilityTypes.list {
     element = address;

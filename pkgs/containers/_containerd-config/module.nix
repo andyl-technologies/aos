@@ -15,7 +15,7 @@
     name = "containerd plugin name";
     description = "a non-empty containerd plugin identifier";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9][A-Za-z0-9._-]*";}];
   };
   pluginNames = abilityTypes.list {
     element = pluginName;
@@ -25,25 +25,25 @@
     name = "containerd persistent root";
     description = "an absolute path beneath /var/lib/containerd";
     type = serviceTypes.storagePath;
-    predicate = value: builtins.match "/var/lib/containerd(/[A-Za-z0-9._/-]+)?" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "/var/lib/containerd(/[A-Za-z0-9._/-]+)?";}];
   };
   runtimeRoot = abilityTypes.refined {
     name = "containerd runtime root";
     description = "an absolute path beneath /run/containerd";
     type = serviceTypes.storagePath;
-    predicate = value: builtins.match "/run/containerd(/[A-Za-z0-9._/-]+)?" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "/run/containerd(/[A-Za-z0-9._/-]+)?";}];
   };
   metricsAddress = abilityTypes.refined {
     name = "containerd metrics address";
     description = "a non-empty host and port accepted by containerd";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[^[:space:]]+:[0-9]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[^[:space:]]+:[0-9]+";}];
   };
   sandboxImage = abilityTypes.refined {
     name = "containerd sandbox image";
     description = "a non-empty image reference without whitespace";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[^[:space:]]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[^[:space:]]+";}];
   };
   optionalMetrics = {
     type = abilityTypes.optional (abilityTypes.record {

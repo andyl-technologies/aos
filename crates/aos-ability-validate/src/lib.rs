@@ -46,7 +46,7 @@ pub use package_projection::{
     PackageOutputSelector, decode_package_projection, resolve_artifact_selectors,
     resolve_package_projection,
 };
-pub use schema::{SchemaPath, validate_value};
+pub use schema::{SchemaPath, validate_schema, validate_value};
 pub use static_contract::{
     CheckedStaticAbilityContract, CheckedStaticAbilityPackage, CheckedStaticPackageManifest,
     StaticAbilityArtifactClass, StaticAbilityContractExpectation,

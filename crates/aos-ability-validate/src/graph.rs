@@ -862,7 +862,8 @@ fn instance_configuration_schema_is_literal(schema: &aos_ability_model::ValueSch
             | ValueSchema::StringEnum { .. } => {}
             ValueSchema::List { element, .. }
             | ValueSchema::Map { value: element, .. }
-            | ValueSchema::Optional { value: element } => pending.push(element),
+            | ValueSchema::Optional { value: element }
+            | ValueSchema::Refined { value: element, .. } => pending.push(element),
             ValueSchema::Record { fields, .. } => pending.extend(fields.values()),
             ValueSchema::DocumentRecord { fields, .. } => pending.extend(fields.values()),
             ValueSchema::TaggedUnion { variants, .. } => pending.extend(variants.values()),

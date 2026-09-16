@@ -227,8 +227,10 @@
       maxLength = 255;
       syntax = null;
     };
-    predicate = name:
-      builtins.match "[A-Za-z0-9_.@:-]+\\.(service|socket|target|timer|path|mount|automount|swap|device)" name != null;
+    constraints = [{
+      kind = "string-pattern";
+      pattern = "[A-Za-z0-9_.@:-]+\\.(service|socket|target|timer|path|mount|automount|swap|device)";
+    }];
   };
   systemdUnitIdentity = types.record {
     fields = {
@@ -333,7 +335,7 @@
       maxLength = 255;
       syntax = null;
     };
-    predicate = name: builtins.match "[A-Za-z][A-Za-z0-9-]*" name != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z][A-Za-z0-9-]*";}];
   };
   systemdDirective = types.record {
     fields = {

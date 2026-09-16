@@ -17,7 +17,7 @@
       maxLength = 256;
       syntax = null;
     };
-    predicate = value: builtins.match "[A-Za-z0-9_.-]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9_.-]+";}];
   };
 
   state = serviceManagement.forProducer {

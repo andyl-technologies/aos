@@ -19,25 +19,25 @@
     name = "etcd endpoint";
     description = "an HTTP or HTTPS endpoint without whitespace or commas";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "https?://[^[:space:],]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "https?://[^[:space:],]+";}];
   };
   nonEmpty = abilityTypes.refined {
     name = "non-empty etcd value";
     description = "a non-empty etcd configuration value";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match ".+" value != null;
+    constraints = [{kind = "minimum-size"; minimum = 1;}];
   };
   memberName = abilityTypes.refined {
     name = "etcd member name";
     description = "an etcd member name beginning with an alphanumeric character";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9][A-Za-z0-9_.-]*";}];
   };
   clusterToken = abilityTypes.refined {
     name = "etcd cluster token";
     description = "an etcd cluster token containing alphanumerics, dots, underscores, or dashes";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[A-Za-z0-9_.-]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9_.-]+";}];
   };
   clusterStateType = abilityTypes.enum ["new" "existing"];
   compactionModeType = abilityTypes.enum ["periodic" "revision"];
@@ -50,7 +50,7 @@
       element = endpoint;
       maxItems = 256;
     };
-    predicate = values: values != [];
+    constraints = [{kind = "minimum-size"; minimum = 1;}];
   };
   member = abilityTypes.record {
     fields.peerUrls = {
@@ -66,8 +66,7 @@
       maxEntries = 256;
       value = member;
     };
-    predicate = values:
-      builtins.all memberName.check (builtins.attrNames values);
+    constraints = [{kind = "map-keys-pattern"; pattern = "[A-Za-z0-9][A-Za-z0-9_.-]*";}];
   };
   transport = abilityTypes.record {
     fields = {

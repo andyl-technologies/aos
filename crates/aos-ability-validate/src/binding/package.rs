@@ -463,6 +463,9 @@ fn value_requires_authority(
             (aos_ability_model::ValueSchema::Optional { value: nested }, nested_value) => {
                 stack.push((nested, nested_value))
             }
+            (aos_ability_model::ValueSchema::Refined { value: nested, .. }, nested_value) => {
+                stack.push((nested, nested_value))
+            }
             (
                 aos_ability_model::ValueSchema::List { element, .. },
                 serde_json::Value::Array(items),
@@ -528,6 +531,9 @@ fn is_empty_authority_shape(
 ) -> bool {
     match (schema, value) {
         (aos_ability_model::ValueSchema::Optional { .. }, serde_json::Value::Null) => true,
+        (aos_ability_model::ValueSchema::Refined { value: nested, .. }, value) => {
+            is_empty_authority_shape(nested, value)
+        }
         (aos_ability_model::ValueSchema::List { element, .. }, serde_json::Value::Array(items)) => {
             items.is_empty() && schema_may_carry_authority(element)
         }
@@ -550,7 +556,8 @@ fn schema_may_carry_authority(schema: &aos_ability_model::ValueSchema) -> bool {
             | aos_ability_model::ValueSchema::OperationResultReference => return true,
             aos_ability_model::ValueSchema::List { element, .. }
             | aos_ability_model::ValueSchema::Map { value: element, .. }
-            | aos_ability_model::ValueSchema::Optional { value: element } => stack.push(element),
+            | aos_ability_model::ValueSchema::Optional { value: element }
+            | aos_ability_model::ValueSchema::Refined { value: element, .. } => stack.push(element),
             aos_ability_model::ValueSchema::Record { fields, .. } => stack.extend(fields.values()),
             aos_ability_model::ValueSchema::DocumentRecord { fields, .. } => {
                 stack.extend(fields.values())

@@ -25,7 +25,7 @@
       maxLength = 32;
       syntax = null;
     };
-    predicate = value: builtins.match "[0-9]+[KMGTP]?" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[0-9]+[KMGTP]?";}];
   };
   optionalSize = abilityTypes.optional size;
   compression = abilityTypes.refined {
@@ -35,7 +35,7 @@
       maxLength = 64;
       syntax = null;
     };
-    predicate = value: builtins.match "[a-z0-9-]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[a-z0-9-]+";}];
   };
   propertyValue = abilityTypes.string {
     maxLength = 4096;

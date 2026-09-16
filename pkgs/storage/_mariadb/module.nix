@@ -23,19 +23,19 @@
     name = "MariaDB listen address";
     description = "a MariaDB address containing only host and address punctuation";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[A-Za-z0-9_.:-]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9_.:-]+";}];
   };
   collation = abilityTypes.refined {
     name = "MariaDB collation";
     description = "a MariaDB collation name";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[A-Za-z0-9_]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9_]+";}];
   };
   sqlMode = abilityTypes.refined {
     name = "MariaDB SQL mode list";
     description = "a comma-separated list of uppercase MariaDB SQL modes";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[A-Z0-9_,]*" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Z0-9_,]*";}];
   };
   characterSet = abilityTypes.enum ["utf8mb4" "utf8mb3" "latin1"];
   credentialReference = serviceTypes.credentialReference;

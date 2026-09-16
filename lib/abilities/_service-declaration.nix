@@ -475,10 +475,18 @@
       kind = "index";
       value = index;
     };
-    unwrapOptional = schema:
-      if schema.kind == "optional"
-      then schema.value
+    unwrapRefined = schema:
+      if schema.kind == "refined"
+      then unwrapRefined schema.value
       else schema;
+    unwrapOptional = schema: let
+      concrete = unwrapRefined schema;
+    in
+      if concrete.kind == "optional"
+      then unwrapRefined concrete.value
+      else concrete;
+    isOptional = schema:
+      (unwrapRefined schema).kind == "optional";
     scalarKind = schema: let
       concrete = unwrapOptional schema;
     in
@@ -494,7 +502,7 @@
     nodesAt = path: schema: current: let
       concrete = unwrapOptional schema;
     in
-      if current == null && schema.kind == "optional"
+      if current == null && isOptional schema
       then
         if format == "toml"
         then []
