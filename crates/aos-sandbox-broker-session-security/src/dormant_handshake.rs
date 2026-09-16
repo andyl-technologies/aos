@@ -413,6 +413,7 @@ pub enum DormantBrokerDescriptorOutcomeUnknownV1 {
         request: DormantReceivedBrokerRequestV1,
         body: Vec<u8>,
         descriptors: Vec<OwnedFd>,
+        replay_ticket: Option<aos_sandbox_host::DormantHostScopeReplayTicketV1>,
     },
 }
 
@@ -1377,91 +1378,127 @@ impl DormantAuthenticatedBrokerSessionV1 {
         };
         let (body, descriptors, replay_ticket) =
             observation.into_response_descriptors_and_replay_ticket();
-        let Some(mut replay_ticket) = replay_ticket else {
-            return Err(DormantBrokerDescriptorExecutionFailureV1::OutcomeUnknown {
-                error: DormantBrokerExecutionErrorV1::Currentness(
-                    BrokerSessionSecurityError::Currentness,
-                ),
-                custody: DormantBrokerDescriptorOutcomeUnknownV1::Observed {
-                    request,
-                    body,
-                    descriptors,
-                },
-            });
-        };
-        let roles = if request.0.method() == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
-        {
-            aos_sandbox_protocol::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES.as_slice()
-        } else {
-            aos_sandbox_protocol::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES.as_slice()
-        };
-        if roles.len() != descriptors.len() {
-            return Err(DormantBrokerDescriptorExecutionFailureV1::OutcomeUnknown {
-                error: DormantBrokerExecutionErrorV1::Currentness(
-                    BrokerSessionSecurityError::Currentness,
-                ),
-                custody: DormantBrokerDescriptorOutcomeUnknownV1::Observed {
-                    request,
-                    body,
-                    descriptors,
-                },
-            });
-        }
-        if let Err(error) = self.0.reopen_broker_outcome(&request.0) {
-            return Err(DormantBrokerDescriptorExecutionFailureV1::OutcomeUnknown {
-                error: DormantBrokerExecutionErrorV1::Currentness(error),
-                custody: DormantBrokerDescriptorOutcomeUnknownV1::Observed {
-                    request,
-                    body,
-                    descriptors,
-                },
-            });
-        }
-        let retained_body = body.clone();
-        let message = BrokerResponseEnvelope {
-            request_id: request.0.request_id().to_vec(),
-            method: request.0.method().into(),
+        let custody = DormantBrokerDescriptorOutcomeUnknownV1::Observed {
+            request,
             body,
-            descriptors: roles
-                .iter()
-                .enumerate()
-                .map(|(index, role)| BrokerDescriptorEntry {
-                    index: u32::try_from(index).unwrap_or(u32::MAX),
-                    role: (*role).into(),
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
+            descriptors,
+            replay_ticket,
         };
-        if message
-            .descriptors
-            .iter()
-            .any(|entry| entry.index == u32::MAX)
-        {
-            return Err(DormantBrokerDescriptorExecutionFailureV1::OutcomeUnknown {
-                error: DormantBrokerExecutionErrorV1::Currentness(
-                    BrokerSessionSecurityError::Currentness,
-                ),
-                custody: DormantBrokerDescriptorOutcomeUnknownV1::Observed {
-                    request,
-                    body: message.body,
-                    descriptors,
+        self.retry_observed_host_scope_and_commit(custody, adapter)
+            .map_err(
+                |custody| DormantBrokerDescriptorExecutionFailureV1::OutcomeUnknown {
+                    error: DormantBrokerExecutionErrorV1::Currentness(
+                        BrokerSessionSecurityError::Currentness,
+                    ),
+                    custody,
                 },
+            )
+    }
+
+    /// Retries protected commit for one exact observed Host scope response.
+    ///
+    /// This path never re-executes the Host effect. It retains the exact body,
+    /// descriptor order, and replay ticket together until the terminal CAS and
+    /// Host receipt finalization take ownership of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged custody when it is unobserved, lacks its replay
+    /// ticket, has an inexact descriptor table, or protected currentness and
+    /// response preparation cannot be re-established.
+    pub fn retry_observed_host_scope_and_commit(
+        &mut self,
+        custody: DormantBrokerDescriptorOutcomeUnknownV1,
+        mut adapter: crate::DormantHostBrokerEffectAdapterV1<'_>,
+    ) -> Result<DormantBrokerDescriptorCommitResultV1, DormantBrokerDescriptorOutcomeUnknownV1>
+    {
+        let DormantBrokerDescriptorOutcomeUnknownV1::Observed {
+            request,
+            body,
+            descriptors,
+            replay_ticket,
+        } = custody
+        else {
+            return Err(custody);
+        };
+        let Some(replay_ticket) = replay_ticket else {
+            return Err(DormantBrokerDescriptorOutcomeUnknownV1::Observed {
+                request,
+                body,
+                descriptors,
+                replay_ticket: None,
             });
-        }
-        let pending = match self.0.prepare_broker_outcome(&request.0, message) {
-            Ok(pending) => pending,
-            Err(error) => {
-                return Err(DormantBrokerDescriptorExecutionFailureV1::OutcomeUnknown {
-                    error: DormantBrokerExecutionErrorV1::Currentness(error),
-                    custody: DormantBrokerDescriptorOutcomeUnknownV1::Observed {
-                        request,
-                        body: retained_body,
-                        descriptors,
-                    },
+        };
+        let roles = match request.0.method() {
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE => {
+                aos_sandbox_protocol::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES.as_slice()
+            }
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
+                aos_sandbox_protocol::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES.as_slice()
+            }
+            _ => {
+                return Err(DormantBrokerDescriptorOutcomeUnknownV1::Observed {
+                    request,
+                    body,
+                    descriptors,
+                    replay_ticket: Some(replay_ticket),
                 });
             }
         };
+        if roles.len() != descriptors.len()
+            || self.0.reopen_broker_outcome(&request.0).is_err()
+            || !matches!(
+                (adapter.fixed_terminal_verifier_commitment(), self.0.broker_outcome_verifier()),
+                (Ok(adapter_commitment), Ok(verifier))
+                    if adapter_commitment == verifier.commitment()
+            )
+        {
+            return Err(DormantBrokerDescriptorOutcomeUnknownV1::Observed {
+                request,
+                body,
+                descriptors,
+                replay_ticket: Some(replay_ticket),
+            });
+        }
+
+        let response_descriptors = roles
+            .iter()
+            .enumerate()
+            .map(|(index, role)| {
+                u32::try_from(index).map(|index| BrokerDescriptorEntry {
+                    index,
+                    role: (*role).into(),
+                    ..Default::default()
+                })
+            })
+            .collect::<Result<Vec<_>, _>>();
+        let Ok(response_descriptors) = response_descriptors else {
+            return Err(DormantBrokerDescriptorOutcomeUnknownV1::Observed {
+                request,
+                body,
+                descriptors,
+                replay_ticket: Some(replay_ticket),
+            });
+        };
+        let message = BrokerResponseEnvelope {
+            request_id: request.0.request_id().to_vec(),
+            method: request.0.method().into(),
+            body: body.clone(),
+            descriptors: response_descriptors,
+            ..Default::default()
+        };
+        let pending = match self.0.prepare_broker_outcome(&request.0, message) {
+            Ok(pending) => pending,
+            Err(_) => {
+                return Err(DormantBrokerDescriptorOutcomeUnknownV1::Observed {
+                    request,
+                    body,
+                    descriptors,
+                    replay_ticket: Some(replay_ticket),
+                });
+            }
+        };
+
         Ok(match self.0.commit_broker_outcome(pending) {
             ProtectedBrokerOutcomeCommitResultV1::Committed(committed) => self
                 .finalize_host_scope_terminal(committed, descriptors, replay_ticket, &mut adapter),
