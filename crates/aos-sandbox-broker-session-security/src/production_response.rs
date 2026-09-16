@@ -11,9 +11,10 @@ use crate::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitResultV1,
     DormantBrokerDescriptorSendProgressV1, DormantBrokerDescriptorTerminalReplayRecoveryProgressV1,
     DormantBrokerDescriptorTerminalReplaySendProgressV1, DormantBrokerDescriptorTerminalReplayV1,
-    DormantBrokerResponseSendProgressV1, DormantBrokerSessionHandshakeErrorV1,
-    DormantBrokerTerminalReplaySendProgressV1, DormantBrokerTerminalReplayV1,
-    DormantHostBrokerEffectAdapterV1, ProtectedBrokerOutcomeCommitResultV1,
+    DormantBrokerExecutionFailureV1, DormantBrokerFailureV1, DormantBrokerResponseSendProgressV1,
+    DormantBrokerSessionHandshakeErrorV1, DormantBrokerTerminalReplaySendProgressV1,
+    DormantBrokerTerminalReplayV1, DormantHostBrokerEffectAdapterV1,
+    ProtectedBrokerOutcomeCommitResultV1,
 };
 
 /// Reports a fail-closed production response completion failure.
@@ -32,12 +33,54 @@ pub enum ProductionBrokerResponseErrorV1 {
     /// A protected Host descriptor replay could not be reopened exactly.
     #[error("Host descriptor terminal replay could not be reopened")]
     DescriptorReplay,
+    /// An effect began without a sealed observation that was safe to recommit.
+    #[error("broker effect outcome requires reconnect and exact replay")]
+    OutcomeRecovery,
+    /// A pre-effect rejection could not be signed and committed exactly.
+    #[error("broker rejection could not be committed: {0}")]
+    Terminalization(#[from] crate::BrokerSessionSecurityError),
     /// Protected currentness or transport failed while sending a response.
     #[error("broker response transport failed: {0}")]
     Transport(#[from] DormantBrokerSessionHandshakeErrorV1),
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Completes one ordinary domain dispatch without weakening effect ambiguity.
+    ///
+    /// A pre-effect rejection is the only failure eligible for a newly signed
+    /// terminal error. Once domain dispatch begins, this method retries only a
+    /// sealed observation already retained by the session owner. An unobserved
+    /// or still-indeterminate effect consumes the session so reconnect and
+    /// exact request replay must resolve it through protected state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after consuming the session when terminal error commit,
+    /// observed-success recovery, protected response commit, or transport does
+    /// not complete exactly before the boot-time deadline.
+    pub fn finish_ordinary_dispatch<Domain>(
+        mut self,
+        dispatched: Result<
+            ProtectedBrokerOutcomeCommitResultV1,
+            DormantBrokerExecutionFailureV1<Domain>,
+        >,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        let committed = match dispatched {
+            Ok(committed) => committed,
+            Err(DormantBrokerExecutionFailureV1::BeforeEffect { request, .. }) => self
+                .commit_authenticated_error_response(
+                    request,
+                    DormantBrokerFailureV1::InvalidRequest,
+                )?,
+            Err(DormantBrokerExecutionFailureV1::OutcomeUnknown { custody, .. }) => self
+                .retry_observed_success_and_commit(custody)
+                .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?,
+        };
+
+        self.finish_authenticated_response(committed, deadline_boottime_nanoseconds)
+    }
+
     /// Completes protected readback and atomically sends an ordinary response.
     ///
     /// Backpressure is retried only with the identical committed packet and is
