@@ -186,6 +186,72 @@
   pathInStoreRejectsRelative = !lib.types.pathInStore.check "not-a-path";
   pathInStoreRejectsNumber = !lib.types.pathInStore.check 42;
 
+  # --- types.addCheck -------------------------------------------------
+  #
+  # The additional predicate applies to the final merged value. Cover
+  # scalar, submodule, and list merges because each has distinct merge
+  # behavior in the module engine.
+  addCheckDeclaration = {lib, ...}: {
+    options.checked = {
+      scalar = lib.mkOption {
+        type = lib.types.addCheck lib.types.int (value: value > 0);
+      };
+      record = lib.mkOption {
+        type = lib.types.addCheck (lib.types.submodule {
+          options = {
+            lower = lib.mkOption {type = lib.types.int;};
+            upper = lib.mkOption {type = lib.types.int;};
+          };
+        }) (value: value.lower < value.upper);
+      };
+      values = lib.mkOption {
+        type =
+          lib.types.addCheck (lib.types.listOf lib.types.int) (values:
+            values == [1 2]);
+      };
+    };
+  };
+  addCheckEvaluation = modules:
+    lib.evalModules {
+      modules = [addCheckDeclaration] ++ modules;
+      inherit lib;
+    };
+  validAddCheckEvaluation = addCheckEvaluation [
+    {checked.scalar = 1;}
+    {checked.record.lower = 1;}
+    {checked.record.upper = 2;}
+    {checked.values = [1];}
+    {checked.values = [2];}
+  ];
+  addCheckScalarMerged = validAddCheckEvaluation.config.checked.scalar == 1;
+  addCheckSubmoduleMerged =
+    validAddCheckEvaluation.config.checked.record.lower == 1
+    && validAddCheckEvaluation.config.checked.record.upper == 2;
+  addCheckListMerged = validAddCheckEvaluation.config.checked.values == [1 2];
+  addCheckScalarRejected =
+    !(builtins.tryEval (addCheckEvaluation [{checked.scalar = 0;}]).config.checked.scalar).success;
+  addCheckSubmoduleRejected =
+    !(
+      builtins.tryEval
+      (addCheckEvaluation [
+        {checked.record.lower = 2;}
+        {checked.record.upper = 1;}
+      ])
+      .config
+      .checked
+      .record
+    )
+    .success;
+  addCheckListRejected =
+    !(
+      builtins.tryEval
+      (addCheckEvaluation [{checked.values = [1];}])
+      .config
+      .checked
+      .values
+    )
+    .success;
+
   # --- Contributable option surface -----------------------------------
   #
   # An owner marks the curated extension points `contributable = true` and
@@ -1226,6 +1292,16 @@
         message = "pathInStore validation";
       }
       {
+        ok =
+          addCheckScalarMerged
+          && addCheckSubmoduleMerged
+          && addCheckListMerged
+          && addCheckScalarRejected
+          && addCheckSubmoduleRejected
+          && addCheckListRejected;
+        message = "addCheck validates merged scalar, submodule, and list values";
+      }
+      {
         ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean" && f3bDocumentationIsStructured;
         message = "contributable typed documentation surface";
       }
@@ -1328,6 +1404,7 @@ in
           echo "  types.pathInStore — accepts store paths: OK"
           echo "  types.pathInStore — rejects host paths: OK"
           echo "  types.pathInStore — rejects non-paths: OK"
+          echo "  types.addCheck — validates merged scalar/submodule/list values: OK"
           echo "  contributable surface exposed, marker inert: OK"
           echo "  operator tier-75 beats package, mkForce beats operator: OK"
           echo "  no operatorModules means no priority lift: OK"
