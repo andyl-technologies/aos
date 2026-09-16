@@ -1023,7 +1023,7 @@
         or (
           if selectsOwnDefault
           then outputs.self
-          else throw "evalModules: package '${package}' requested an artifact outside its authenticated dependency view"
+          else throw "evalModules: package '${package}' requested artifact ${builtins.toJSON checked} outside its authenticated dependency view"
         );
 
       validatedPackageModules = builtins.map (record: let

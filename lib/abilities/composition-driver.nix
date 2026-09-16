@@ -567,6 +567,10 @@
     builtins.attrNames actualOutputsByKey
     == builtins.attrNames expectedOutputs
     && builtins.all (entries: builtins.length entries == 1) (builtins.attrValues actualOutputsByKey);
+  outputSetMismatch = builtins.toJSON {
+    expected = builtins.map (entry: "${entry.requestName}.${entry.outputName}") expectedOutputEntries;
+    actual = builtins.map (entry: "${entry.requestName}.${entry.outputName}") actualOutputEntries;
+  };
   compositionOutputs =
     builtins.foldl' (outputs: entry:
       outputs
@@ -629,7 +633,7 @@ in {
     else if !noUnboundComposition
     then fail "fixed-point provider child requests need a selected binding projection"
     else if !outputSetValid
-    then fail "selected providers must produce every declared output exactly once"
+    then fail "selected providers must produce every declared output exactly once: ${outputSetMismatch}"
     else compositionOutputs;
 
   config.aos.abilities.desiredResources =
@@ -646,6 +650,6 @@ in {
     else if !noUnboundComposition
     then fail "fixed-point provider child requests need a selected binding projection"
     else if !outputSetValid
-    then fail "selected providers must produce every declared output exactly once"
+    then fail "selected providers must produce every declared output exactly once: ${outputSetMismatch}"
     else desiredResources;
 }
