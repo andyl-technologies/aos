@@ -332,6 +332,62 @@ pub(super) fn scoped_desired_state(
     }
 }
 
+pub(super) fn scoped_source_desired_state(
+    binding: &aos_ability_validate::CheckedBindingPlan,
+    provider: &InstanceId,
+) -> ScopedDesiredState {
+    let desired = binding.desired_state();
+    ScopedDesiredState {
+        instances: desired
+            .instances
+            .iter()
+            .filter(|instance| instance.instance == *provider)
+            .cloned()
+            .collect(),
+        contributions: desired
+            .contributions
+            .iter()
+            .filter(|contribution| contribution.aggregate.provider == *provider)
+            .cloned()
+            .collect(),
+        child_requests: desired
+            .child_requests
+            .iter()
+            .filter(|request| request.id.consumer == *provider)
+            .cloned()
+            .collect(),
+        resources: desired
+            .resources
+            .iter()
+            .filter(|revision| revision.resource.provider == *provider)
+            .cloned()
+            .collect(),
+        outputs: desired
+            .outputs
+            .iter()
+            .filter(|output| output.aggregate.provider == *provider)
+            .cloned()
+            .collect(),
+        controllers: desired
+            .controllers
+            .iter()
+            .filter(|assignment| {
+                assignment.resource.provider == *provider
+                    || assignment.controller.provider == *provider
+            })
+            .cloned()
+            .collect(),
+        bindings: binding
+            .bindings()
+            .iter()
+            .filter(|selected| {
+                selected.provider == *provider || selected.request.consumer == *provider
+            })
+            .cloned()
+            .collect(),
+    }
+}
+
 pub(super) fn scoped_observations(
     desired: &VerifiedPlanningSnapshot,
     provider: &InstanceId,
@@ -364,6 +420,59 @@ pub(super) fn scoped_observations(
             .cloned()
             .collect(),
     }
+}
+
+pub(super) fn scoped_source_observations(
+    binding: &aos_ability_validate::CheckedBindingPlan,
+    provider: &InstanceId,
+) -> ScopedObservations {
+    let environment = binding.environment();
+    ScopedObservations {
+        environment: environment.environment.clone(),
+        platform: environment.platform.clone(),
+        policy_revision: environment.policy_revision,
+        freshness: environment.freshness.clone(),
+        providers: environment
+            .providers
+            .iter()
+            .filter(|inventory| inventory.provider == *provider)
+            .cloned()
+            .collect(),
+        resources: environment
+            .resources
+            .iter()
+            .filter(|revision| revision.resource.provider == *provider)
+            .cloned()
+            .collect(),
+        controllers: environment
+            .controllers
+            .iter()
+            .filter(|assignment| {
+                assignment.resource.provider == *provider
+                    || assignment.controller.provider == *provider
+            })
+            .cloned()
+            .collect(),
+    }
+}
+
+pub(super) fn source_controller_union(
+    binding: &aos_ability_validate::CheckedBindingPlan,
+) -> Vec<ControllerAssignment> {
+    let mut controllers: BTreeMap<_, _> = binding
+        .environment()
+        .controllers
+        .iter()
+        .map(|assignment| (assignment.resource.clone(), assignment.clone()))
+        .collect();
+    controllers.extend(
+        binding
+            .desired_state()
+            .controllers
+            .iter()
+            .map(|assignment| (assignment.resource.clone(), assignment.clone())),
+    );
+    controllers.into_values().collect()
 }
 
 pub(super) fn encode_ability_value(

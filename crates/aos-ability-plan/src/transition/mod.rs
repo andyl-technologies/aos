@@ -29,11 +29,13 @@ use context::{
     LinkedCurrentAuthorityDocument, LinkedCurrentResourceObservation, LinkedCurrentResourceState,
     bounded_evaluation_message, controller_union, encode_ability_value, resource_changes,
     scoped_changes_and_controllers, scoped_desired_state, scoped_observations,
+    scoped_source_desired_state, scoped_source_observations, source_controller_union,
     validate_resource_lifetime_continuity,
 };
 use graph::{
     AuthoredTransitionFragment, index_packages, merge_fragments, operation_scope,
-    package_for_group, pure_transition, transition_groups, validate_fragment,
+    package_for_group, pure_transition, source_transition_groups, transition_groups,
+    validate_fragment,
 };
 
 pub use context::{
@@ -64,6 +66,44 @@ pub struct TransitionInputs<'a> {
     pub authority: Option<&'a CheckedTransitionAuthority>,
     /// Supplies a fresh, protected live classification when repairing drift.
     pub reconciliation: Option<&'a TransitionReconciliation>,
+}
+
+/// Selects one explicitly enabled pure provider in a source-composed stage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceEnabledProvider {
+    /// Identifies the enabled deployment instance.
+    pub instance: InstanceId,
+    /// Pins its exact implementation descriptor and artifact.
+    pub implementation: aos_ability_model::ProviderImplementationReference,
+    /// Pins its authenticated package document.
+    pub package: Sha256Digest,
+}
+
+/// Carries a checked effect graph and its source transition transcript.
+#[derive(Debug)]
+pub struct SourceTransitionPlan {
+    checked_effect: CheckedEffectPlan,
+    evaluations: Vec<TransitionEvaluation>,
+}
+
+impl SourceTransitionPlan {
+    /// Returns the checked effect graph constructed from source authority.
+    #[must_use]
+    pub const fn checked_effect(&self) -> &CheckedEffectPlan {
+        &self.checked_effect
+    }
+
+    /// Returns exact pure transition-constructor exchanges.
+    #[must_use]
+    pub fn evaluations(&self) -> &[TransitionEvaluation] {
+        &self.evaluations
+    }
+
+    /// Consumes the result into its checked graph and transcript.
+    #[must_use]
+    pub fn into_parts(self) -> (CheckedEffectPlan, Vec<TransitionEvaluation>) {
+        (self.checked_effect, self.evaluations)
+    }
 }
 
 /// Bounds pure transition evaluation and the merged effect graph.
@@ -228,6 +268,166 @@ impl<'a> TransitionPlanner<'a> {
             snapshot_digest,
             snapshot,
             checked_effect,
+        })
+    }
+
+    /// Constructs a fresh transition directly from checked source composition.
+    ///
+    /// This entry never resolves providers and accepts no resolution policy.
+    /// `authority` must be the canonical source-stage authority that will bind
+    /// the resulting bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing retained implementation, malformed pure
+    /// fragment, evaluator failure, exhausted bound, or effect-plan diagnostic.
+    pub fn plan_source(
+        &self,
+        authority: Sha256Digest,
+        binding: &aos_ability_validate::CheckedBindingPlan,
+        enabled: &[SourceEnabledProvider],
+        evaluator: &mut impl CompositionEvaluator,
+    ) -> Result<SourceTransitionPlan, TransitionError> {
+        validate_resource_lifetime_continuity(
+            &binding.environment().resources,
+            &binding.desired_state().resources,
+        )?;
+        let packages = index_packages(binding.packages())?;
+        let groups = source_transition_groups(binding, enabled)?;
+        let changes = resource_changes(
+            &binding.environment().resources,
+            &binding.desired_state().resources,
+            None,
+            &BTreeSet::new(),
+        );
+        let controllers = source_controller_union(binding);
+        let mut budget = TransitionBudget::default();
+        let mut fragments = Vec::new();
+        let mut evaluations = Vec::new();
+        let mut evaluated_packages = BTreeMap::new();
+
+        for group in groups.into_values() {
+            budget.begin(self.limits)?;
+            let package = package_for_group(&group, &packages)?;
+            let Some((implementation, module, transition_entry)) =
+                pure_transition(&group, package)?
+            else {
+                continue;
+            };
+            let operation_scope = operation_scope(&group.provider, group.reference.descriptor)?;
+            let outgoing = binding
+                .bindings()
+                .iter()
+                .filter(|selected| selected.request.consumer == group.provider)
+                .collect::<Vec<_>>();
+            let authorized_bindings = outgoing
+                .iter()
+                .map(|selected| AuthorizedTransitionBinding {
+                    binding: (*selected).clone(),
+                    authority: TransitionBindingAuthority::Desired,
+                })
+                .collect::<Vec<_>>();
+            let (visible_changes, visible_controllers) = scoped_changes_and_controllers(
+                &group.provider,
+                &changes,
+                &controllers,
+                &authorized_bindings,
+                binding.bindings(),
+            );
+            let context = TransitionContext {
+                schema: TRANSITION_CONTEXT_SCHEMA.to_string(),
+                desired_planning: authority,
+                current_planning: None,
+                provider: group.provider.clone(),
+                interface: implementation.interface.clone(),
+                implementation: group.reference.clone(),
+                package: group.package,
+                operation_scope: operation_scope.clone(),
+                authorized_bindings,
+                teardown_provider_authority: None,
+                before: None,
+                after: scoped_source_desired_state(binding, &group.provider),
+                observations: scoped_source_observations(binding, &group.provider),
+                changes: visible_changes,
+                controllers: visible_controllers,
+            };
+            budget.preflight_context(&context, self.limits)?;
+            let input = encode_ability_value(&context)?;
+            budget.retain_bytes(input.encoded_size(), self.limits)?;
+            let output =
+                match evaluator.evaluate(&group.reference, module, &transition_entry, &input) {
+                    Ok(output) => output,
+                    Err(source) => {
+                        let message = bounded_evaluation_message(&source);
+                        return Err(TransitionError::Evaluation {
+                            provider: group.provider.clone(),
+                            message: message.clone(),
+                            evaluation: Box::new(TransitionEvaluation {
+                                provider: group.provider.clone(),
+                                implementation: group.reference.clone(),
+                                entry: transition_entry,
+                                input,
+                                result: TransitionEvaluationResult::Failed { message },
+                            }),
+                        });
+                    }
+                };
+            let evaluation = TransitionEvaluation {
+                provider: group.provider.clone(),
+                implementation: group.reference.clone(),
+                entry: transition_entry,
+                input,
+                result: TransitionEvaluationResult::Returned {
+                    value: output.clone(),
+                },
+            };
+            budget.preflight_fragment_value(&output, self.limits)?;
+            budget.retain_bytes(output.encoded_size(), self.limits)?;
+            let fragment: TransitionFragment =
+                serde_json::from_value(output.into_json()).map_err(|error| {
+                    TransitionError::InvalidFragment {
+                        provider: group.provider.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
+            validate_fragment(
+                &group.provider,
+                &operation_scope,
+                group.reference.descriptor,
+                &outgoing,
+                &fragment,
+                self.limits,
+            )?;
+            evaluated_packages
+                .entry(group.package)
+                .or_insert_with(|| group.provider.clone());
+            evaluations.push(evaluation);
+            fragments.push(AuthoredTransitionFragment {
+                provider: group.provider,
+                implementation: group.reference,
+                operation_scope,
+                fragment,
+            });
+        }
+
+        let document = merge_fragments(
+            self.context,
+            binding,
+            &[],
+            &BTreeSet::new(),
+            controllers,
+            fragments,
+            &packages,
+            &evaluated_packages,
+            self.limits,
+        )?;
+        let checked_effect = self
+            .context
+            .validate_effect_plan(document, binding.clone())
+            .map_err(TransitionError::Validation)?;
+        Ok(SourceTransitionPlan {
+            checked_effect,
+            evaluations,
         })
     }
 

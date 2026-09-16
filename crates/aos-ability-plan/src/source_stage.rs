@@ -460,7 +460,10 @@ fn source_stage_limits() -> JsonLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::verified_planning_transition_plan;
+    use crate::test_support::{
+        EmptyTransitionEvaluator, verified_planning_transition_fixture,
+        verified_planning_transition_plan,
+    };
 
     fn bundle() -> SourceStageBundle {
         let (planning, transition) = verified_planning_transition_plan();
@@ -540,5 +543,32 @@ mod tests {
         let bytes = aos_contract::canonical::to_vec(&value).expect("tampered bytes");
 
         assert!(SourceStageBundle::decode(&bytes).is_err());
+    }
+
+    #[test]
+    fn direct_source_transition_uses_checked_bindings_without_policy_resolution() {
+        let (context, planning, _) = verified_planning_transition_fixture();
+        let authority = Sha256Digest::separated("aos.test.source-authority/v1", b"source");
+
+        let transition = crate::TransitionPlanner::new(&context)
+            .plan_source(
+                authority,
+                planning.checked_binding(),
+                &[],
+                &mut EmptyTransitionEvaluator,
+            )
+            .expect("direct source transition");
+
+        assert_eq!(
+            transition.checked_effect().binding_plan().id(),
+            planning.checked_binding().id()
+        );
+        assert!(transition.evaluations().iter().all(|evaluation| {
+            evaluation
+                .input
+                .as_json()
+                .get("desired_planning")
+                .is_some_and(|value| value == &serde_json::json!(authority))
+        }));
     }
 }
