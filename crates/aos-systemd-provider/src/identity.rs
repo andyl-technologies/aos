@@ -25,10 +25,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tempfile::NamedTempFile;
 
+use crate::executable::{Executable, ExecutableReference};
 use crate::{decode_value, empty_outputs, target_context, value};
 
 const ETC_ROOT: &str = "/etc";
-const SYSUSERS: &str = "/run/current-system/sw/bin/systemd-sysusers";
 const CONTEXT_SCHEMA: &str = "aos.systemd.identity-context/v1";
 const IDENTITY_LOCK: &str = "/run/lock/aos-systemd-identity.lock";
 
@@ -81,6 +81,15 @@ struct IdentityRealization {
     #[serde(rename = "schema")]
     _schema: String,
     backend: String,
+    systemd_sysusers: ExecutableReference,
+    login_shell: ExecutableReference,
+    nologin_shell: ExecutableReference,
+}
+
+struct IdentityTools {
+    systemd_sysusers: Executable,
+    login_shell: Executable,
+    nologin_shell: Executable,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -132,7 +141,7 @@ pub(crate) async fn admit(
         .observation_discriminator_at(&["observation", "schema"])
         .context("selected identity method has no exact observation discriminator")?;
     require_method(&request.method, &request.semantics)?;
-    require_realization(&request.resource_spec.realization)?;
+    let tools = require_realization(&request.resource_spec.realization)?;
 
     let desired = desired_from_value(role, &request.resource_spec.value)?;
     let resolved = resolve_membership(&desired, &request.resources)?;
@@ -147,6 +156,7 @@ pub(crate) async fn admit(
         &request.resource_spec.resource,
         request.resource_spec.revision,
         &paths,
+        &tools,
         false,
     )?;
     let observation = observation(
@@ -208,7 +218,7 @@ pub(crate) async fn invoke(role: IdentityRole, invocation: Invocation) -> Result
     }
 
     let bound = validate_resource_context(target_context(&invocation)?)?;
-    require_realization(&bound.resource_spec.realization)?;
+    let tools = require_realization(&bound.resource_spec.realization)?;
     let desired = desired_from_value(role, &bound.resource_spec.value)?;
     require_inputs(&desired, &invocation.request.inputs)?;
     let resolved = resolve_membership(&desired, &invocation.request.resources)?;
@@ -235,6 +245,7 @@ pub(crate) async fn invoke(role: IdentityRole, invocation: Invocation) -> Result
                 &bound.resource_spec.resource,
                 bound.resource_spec.revision,
                 &paths,
+                &tools,
             )?,
             "remove" => remove(&desired, &paths)?,
             "observe" => {}
@@ -250,6 +261,7 @@ pub(crate) async fn invoke(role: IdentityRole, invocation: Invocation) -> Result
         &bound.resource_spec.resource,
         bound.resource_spec.revision,
         &paths,
+        &tools,
         removing,
     )?;
     let evidence = observation(
@@ -292,12 +304,16 @@ fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Resu
     Ok(())
 }
 
-fn require_realization(value: &AbilityValue) -> Result<()> {
+fn require_realization(value: &AbilityValue) -> Result<IdentityTools> {
     let realization: IdentityRealization = decode_value(value)?;
     if realization.backend != "systemd-sysusers" {
         bail!("identity resource uses an unsupported realization");
     }
-    Ok(())
+    Ok(IdentityTools {
+        systemd_sysusers: realization.systemd_sysusers.resolve()?,
+        login_shell: realization.login_shell.resolve()?,
+        nologin_shell: realization.nologin_shell.resolve()?,
+    })
 }
 
 fn desired_from_value(role: IdentityRole, value: &AbilityValue) -> Result<Desired> {
@@ -412,13 +428,19 @@ fn apply(
     resource: &ResourceId,
     revision: RevisionId,
     paths: &IdentityPaths,
+    tools: &IdentityTools,
 ) -> Result<()> {
     let _lock = identity_lock()?;
     let previous_receipts = receipts(paths)?;
-    let fragment = fragment(desired, resolved)?;
+    let fragment = fragment(
+        desired,
+        resolved,
+        &tools.login_shell.path(),
+        &tools.nologin_shell.path(),
+    )?;
     if !fragment.is_empty() {
         publish(&paths.fragment, fragment.as_bytes())?;
-        let status = Command::new(SYSUSERS)
+        let status = Command::new(tools.systemd_sysusers.path())
             .arg(&paths.fragment)
             .status()
             .context("executing systemd-sysusers")?;
@@ -492,7 +514,12 @@ fn remove(desired: &Desired, paths: &IdentityPaths) -> Result<()> {
     Ok(())
 }
 
-fn fragment(desired: &Desired, resolved: &ResolvedMembership) -> Result<String> {
+fn fragment(
+    desired: &Desired,
+    resolved: &ResolvedMembership,
+    login_shell: &Path,
+    nologin_shell: &Path,
+) -> Result<String> {
     match desired {
         Desired::Group(group) if group.allocation != Allocation::Existing => Ok(format!(
             "g {} {}\n",
@@ -509,9 +536,9 @@ fn fragment(desired: &Desired, resolved: &ResolvedMembership) -> Result<String> 
             let description = principal.description.as_deref().unwrap_or("-");
             let home = principal.home_directory.as_deref().unwrap_or("-");
             let shell = if principal.login_access.as_deref() == Some("enabled") {
-                "/run/current-system/sw/bin/sh"
+                login_shell
             } else {
-                "/run/current-system/sw/bin/nologin"
+                nologin_shell
             };
             let mut lines = vec![format!(
                 "u {} {}:{} \"{}\" {} {}",
@@ -520,7 +547,7 @@ fn fragment(desired: &Desired, resolved: &ResolvedMembership) -> Result<String> 
                 group,
                 sysusers_quoted(description),
                 sysusers_word(home),
-                shell,
+                shell.display(),
             )];
             for supplementary in principal.supplementary_groups.as_deref().unwrap_or(&[]) {
                 lines.push(format!("m {} {}", principal.name, supplementary));
@@ -565,6 +592,7 @@ fn observe(
     resource: &ResourceId,
     revision: RevisionId,
     paths: &IdentityPaths,
+    tools: &IdentityTools,
     removing: bool,
 ) -> Result<bool> {
     if removing {
@@ -577,7 +605,12 @@ fn observe(
         schema: "aos.systemd.identity-receipt/v1".to_string(),
         resource: resource.clone(),
         revision,
-        fragment: fragment(desired, resolved)?,
+        fragment: fragment(
+            desired,
+            resolved,
+            &tools.login_shell.path(),
+            &tools.nologin_shell.path(),
+        )?,
         identity_name: desired.identity_name().map(str::to_owned),
         numeric_id: receipt.numeric_id,
         group: resolved.group.clone(),
@@ -1024,6 +1057,7 @@ fn remove_if_present(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use tempfile::tempdir;
 
@@ -1040,7 +1074,13 @@ mod tests {
             requested_id: Some(987),
         });
         assert_eq!(
-            fragment(&group, &ResolvedMembership::default()).expect("group fragment renders"),
+            fragment(
+                &group,
+                &ResolvedMembership::default(),
+                Path::new("/nix/store/bash/bin/bash"),
+                Path::new("/nix/store/systemd/bin/nologin"),
+            )
+            .expect("group fragment renders"),
             "g operators 987\n"
         );
 
@@ -1054,9 +1094,15 @@ mod tests {
             primary_group: Some("operators".to_string()),
             supplementary_groups: Some(vec!["logs".to_string()]),
         });
-        let rendered = fragment(&principal, &ResolvedMembership::default())
-            .expect("principal fragment renders");
+        let rendered = fragment(
+            &principal,
+            &ResolvedMembership::default(),
+            Path::new("/nix/store/bash/bin/bash"),
+            Path::new("/nix/store/systemd/bin/nologin"),
+        )
+        .expect("principal fragment renders");
         assert!(rendered.contains("u daemon -:operators \"Example daemon\" /var/lib/daemon"));
+        assert!(rendered.contains("/nix/store/systemd/bin/nologin"));
         assert!(rendered.contains("m daemon logs"));
     }
 

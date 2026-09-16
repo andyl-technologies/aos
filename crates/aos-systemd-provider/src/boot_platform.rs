@@ -1,6 +1,7 @@
 //! Systemd and ESP implementations of provider-neutral image rollout platform effects.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
@@ -20,14 +21,11 @@ use aos_provider_protocol::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::executable::validate_store_executable;
 use crate::{decode_value, target_context, value};
 
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
 const BOOT_ROOT: &str = "/boot";
-const MOUNT: Option<&str> = option_env!("AOS_UTIL_LINUX_MOUNT");
-const BOOTCTL: Option<&str> = option_env!("AOS_SYSTEMD_BOOTCTL");
-const BLESS_BOOT: Option<&str> = option_env!("AOS_SYSTEMD_BLESS_BOOT");
-const SYSTEMCTL: Option<&str> = option_env!("AOS_SYSTEMD_SYSTEMCTL");
 const RETENTION_ROOT: &str = "EFI/.aos-rollout-retention";
 
 const CONTEXT_SCHEMA: &str = "aos.systemd.image-rollout-platform-context/v1";
@@ -106,6 +104,59 @@ struct SystemdBootGenerationEvidence {
 struct ProviderContext {
     schema: String,
     role: String,
+    tools: BootPlatformTools,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub(crate) struct BootPlatformTools {
+    bootctl: PathBuf,
+    bless_boot: PathBuf,
+    mount: PathBuf,
+    systemctl: PathBuf,
+}
+
+impl BootPlatformTools {
+    pub(crate) fn from_launcher_arguments(arguments: &mut Vec<OsString>) -> Result<Option<Self>> {
+        if arguments
+            .get(1)
+            .is_none_or(|argument| argument != "--bootctl")
+        {
+            return Ok(None);
+        }
+        ensure!(
+            arguments.len() >= 9,
+            "systemd launcher omitted its exact boot tool paths"
+        );
+        for (index, expected) in ["--bootctl", "--bless-boot", "--mount", "--systemctl"]
+            .into_iter()
+            .enumerate()
+        {
+            ensure!(
+                arguments
+                    .get(1 + index * 2)
+                    .is_some_and(|value| value == expected),
+                "systemd launcher tool arguments are not canonical"
+            );
+        }
+        let tools = Self {
+            bootctl: PathBuf::from(&arguments[2]),
+            bless_boot: PathBuf::from(&arguments[4]),
+            mount: PathBuf::from(&arguments[6]),
+            systemctl: PathBuf::from(&arguments[8]),
+        };
+        tools.validate()?;
+        arguments.drain(1..9);
+        Ok(Some(tools))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_store_executable(&self.bootctl, "bootctl")?;
+        validate_store_executable(&self.bless_boot, "systemd-bless-boot")?;
+        validate_store_executable(&self.mount, "mount")?;
+        validate_store_executable(&self.systemctl, "systemctl")?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -148,7 +199,11 @@ struct RetentionManifest {
     predecessor_sha256: Sha256Digest,
 }
 
-pub(crate) fn admit(role: BootPlatformRole, request: AdmissionRequest) -> Result<AdmissionResult> {
+pub(crate) fn admit(
+    role: BootPlatformRole,
+    request: AdmissionRequest,
+    tools: Option<&BootPlatformTools>,
+) -> Result<AdmissionResult> {
     ensure!(
         request.schema == ADMISSION_REQUEST_SCHEMA,
         "unsupported admission request schema"
@@ -163,6 +218,9 @@ pub(crate) fn admit(role: BootPlatformRole, request: AdmissionRequest) -> Result
 
     let rollout: RolloutRequest = decode_value(&request.resource_spec.value)?;
     validate_rollout(&rollout)?;
+    let tools = tools
+        .context("selected systemd launcher omitted the boot tool context")?
+        .clone();
     let observation = observe_role(role, observation_schema, &rollout, None)?;
     let supported_purposes = SupportedPurposes::from_ordered(vec![
         InvocationPurpose::Effect,
@@ -179,6 +237,7 @@ pub(crate) fn admit(role: BootPlatformRole, request: AdmissionRequest) -> Result
         native_context: value(&ProviderContext {
             schema: CONTEXT_SCHEMA.to_string(),
             role: role_name(role).to_string(),
+            tools,
         })?,
         supported_purposes,
     })
@@ -219,6 +278,7 @@ pub(crate) fn invoke(role: BootPlatformRole, invocation: Invocation) -> Result<I
         provider.schema == CONTEXT_SCHEMA && provider.role == role_name(role),
         "boot platform context differs from the selected role"
     );
+    provider.tools.validate()?;
 
     let method = invocation.method.method.as_str();
     let selected_entry = validate_inputs(role, method, &rollout, &invocation.request.inputs)?;
@@ -229,6 +289,7 @@ pub(crate) fn invoke(role: BootPlatformRole, invocation: Invocation) -> Result<I
             method,
             &rollout,
             selected_entry.as_deref(),
+            &provider.tools,
         )?,
         InvocationPurpose::Reconcile => observe_role(
             role,
@@ -303,10 +364,11 @@ fn apply(
     method: &str,
     rollout: &RolloutRequest,
     entry: Option<&str>,
+    tools: &BootPlatformTools,
 ) -> Result<AbilityValue> {
     match (role, method) {
         (BootPlatformRole::ArtifactStorage, "retain") => {
-            with_writable_boot(|| retain_payloads(rollout))?;
+            with_writable_boot(tools, || retain_payloads(rollout))?;
             storage_observation(observation_schema, rollout)
         }
         (BootPlatformRole::ArtifactStorage, "release") => {
@@ -314,7 +376,7 @@ fn apply(
                 now_millis()? >= rollout.retention_expires_at_millis,
                 "boot payload retention lease has not expired"
             );
-            with_writable_boot(|| release_payloads(rollout))?;
+            with_writable_boot(tools, || release_payloads(rollout))?;
             storage_observation(observation_schema, rollout)
         }
         (BootPlatformRole::ArtifactStorage, "observe") => {
@@ -329,9 +391,9 @@ fn apply(
                 entry == resolve_candidate_entry(rollout)?,
                 "resolved boot entry changed before selection"
             );
-            with_writable_boot(|| {
+            with_writable_boot(tools, || {
                 run(
-                    package_executable(BOOTCTL, "bootctl")?,
+                    &tools.bootctl,
                     &["set-default", entry],
                     "selecting the next boot entry",
                 )
@@ -349,14 +411,14 @@ fn apply(
         }
         (BootPlatformRole::Success, "mark") => {
             let stable = running_entry(rollout)?;
-            with_writable_boot(|| {
+            with_writable_boot(tools, || {
                 run(
-                    package_executable(BLESS_BOOT, "systemd-bless-boot")?,
+                    &tools.bless_boot,
                     &["--path", BOOT_ROOT, "good"],
                     "marking the running boot successful",
                 )?;
                 run(
-                    package_executable(BOOTCTL, "bootctl")?,
+                    &tools.bootctl,
                     &["set-default", &stable],
                     "publishing the stable boot default",
                 )
@@ -366,7 +428,7 @@ fn apply(
         (BootPlatformRole::Success, "observe") => success_observation(observation_schema, rollout),
         (BootPlatformRole::HostRestart, "request") => {
             run(
-                package_executable(SYSTEMCTL, "systemctl")?,
+                &tools.systemctl,
                 &["--no-block", "reboot"],
                 "requesting a host restart",
             )?;
@@ -830,15 +892,18 @@ fn selected_entry() -> Result<Option<String>> {
     Ok(defaults.first().map(|entry| (*entry).to_string()))
 }
 
-fn with_writable_boot<T>(effect: impl FnOnce() -> Result<T>) -> Result<T> {
+fn with_writable_boot<T>(
+    tools: &BootPlatformTools,
+    effect: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     run(
-        package_executable(MOUNT, "mount")?,
+        &tools.mount,
         &["-o", "remount,rw", BOOT_ROOT],
         "remounting boot storage writable",
     )?;
     let result = effect();
     let read_only = run(
-        package_executable(MOUNT, "mount")?,
+        &tools.mount,
         &["-o", "remount,ro", BOOT_ROOT],
         "remounting boot storage read-only",
     );
@@ -852,11 +917,7 @@ fn with_writable_boot<T>(effect: impl FnOnce() -> Result<T>) -> Result<T> {
     }
 }
 
-fn package_executable<'a>(path: Option<&'a str>, name: &str) -> Result<&'a str> {
-    path.with_context(|| format!("selected systemd provider omits its {name} executable"))
-}
-
-fn run(executable: &str, arguments: &[&str], action: &str) -> Result<()> {
+fn run(executable: &Path, arguments: &[&str], action: &str) -> Result<()> {
     let status = Command::new(executable)
         .args(arguments)
         .status()

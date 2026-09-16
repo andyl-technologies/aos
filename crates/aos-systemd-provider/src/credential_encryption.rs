@@ -13,17 +13,15 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use aos_ability_model::LocalKey;
 
+use crate::executable::validate_store_executable;
+
 const DEFAULT_PCR_PUBLIC_KEY: &str = "/etc/aos/pcr-sign.pem";
 const MAX_CREDENTIAL_BYTES: u64 = 1024 * 1024;
-const SYSTEMD_CREDS: Option<&str> = option_env!("AOS_SYSTEMD_CREDS");
-
 pub(crate) fn run(arguments: &[OsString]) -> Result<()> {
     let request = EncryptionRequest::parse(arguments)?;
     request.validate()?;
 
-    let systemd_creds = SYSTEMD_CREDS
-        .ok_or_else(|| anyhow::anyhow!("systemd credential encryption backend is unavailable"))?;
-    let output = Command::new(systemd_creds)
+    let output = Command::new(&request.systemd_creds)
         .args(request.systemd_creds_arguments())
         .output()
         .context("running the systemd credential encryption backend")?;
@@ -49,6 +47,7 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<()> {
 }
 
 struct EncryptionRequest {
+    systemd_creds: PathBuf,
     name: LocalKey,
     input: PathBuf,
     public_key: PathBuf,
@@ -59,6 +58,7 @@ impl EncryptionRequest {
         let mut name = None;
         let mut input = None;
         let mut public_key = None;
+        let mut systemd_creds = None;
         let mut index = 0;
 
         while index < arguments.len() {
@@ -67,6 +67,9 @@ impl EncryptionRequest {
                 anyhow::anyhow!("credential encryption option {:?} lacks a value", option)
             })?;
             match option.to_str() {
+                Some("--systemd-creds") if systemd_creds.is_none() => {
+                    systemd_creds = Some(PathBuf::from(value));
+                }
                 Some("--name") if name.is_none() => {
                     let value = value
                         .to_str()
@@ -77,7 +80,7 @@ impl EncryptionRequest {
                 Some("--pcr-public-key") if public_key.is_none() => {
                     public_key = Some(PathBuf::from(value));
                 }
-                Some(known @ ("--name" | "--input" | "--pcr-public-key")) => {
+                Some(known @ ("--systemd-creds" | "--name" | "--input" | "--pcr-public-key")) => {
                     bail!("credential encryption option {known} is repeated")
                 }
                 _ => bail!("unsupported credential encryption option {:?}", option),
@@ -86,6 +89,8 @@ impl EncryptionRequest {
         }
 
         Ok(Self {
+            systemd_creds: systemd_creds
+                .context("credential encryption requires --systemd-creds")?,
             name: name.context("credential encryption requires --name")?,
             input: input.context("credential encryption requires --input")?,
             public_key: public_key.unwrap_or_else(default_pcr_public_key),
@@ -93,6 +98,7 @@ impl EncryptionRequest {
     }
 
     fn validate(&self) -> Result<()> {
+        validate_store_executable(&self.systemd_creds, "systemd credential encryption backend")?;
         validate_regular_file(&self.input, "plaintext credential input")?;
         validate_regular_file(&self.public_key, "PCR public key")
     }

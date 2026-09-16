@@ -8,6 +8,7 @@
 mod boot_platform;
 mod credential;
 mod credential_encryption;
+mod executable;
 mod identity;
 mod manager_watchdog;
 mod materialize;
@@ -141,7 +142,8 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    let arguments = std::env::args_os().collect::<Vec<_>>();
+    let mut arguments = std::env::args_os().collect::<Vec<_>>();
+    let boot_tools = boot_platform::BootPlatformTools::from_launcher_arguments(&mut arguments)?;
     if arguments.len() >= 2 && arguments[1] == "measurement-index" {
         let arguments = arguments[2..]
             .iter()
@@ -179,7 +181,7 @@ async fn run() -> Result<()> {
             let role =
                 HandlerRole::from_handler(request.assignment.implementation.handler.as_ref())?;
             let timeout = deadline(request.control.attempt_remaining_millis);
-            let result = tokio::time::timeout(timeout, admit(role, request))
+            let result = tokio::time::timeout(timeout, admit(role, request, boot_tools.as_ref()))
                 .await
                 .context("admission deadline expired")??;
             write_output(&result)
@@ -205,9 +207,13 @@ async fn run() -> Result<()> {
     }
 }
 
-async fn admit(role: HandlerRole, request: AdmissionRequest) -> Result<AdmissionResult> {
+async fn admit(
+    role: HandlerRole,
+    request: AdmissionRequest,
+    boot_tools: Option<&boot_platform::BootPlatformTools>,
+) -> Result<AdmissionResult> {
     match role {
-        HandlerRole::BootPlatform(role) => boot_platform::admit(role, request),
+        HandlerRole::BootPlatform(role) => boot_platform::admit(role, request, boot_tools),
         HandlerRole::Credential(role) => credential::admit(role, request),
         HandlerRole::DevicePresence => native_resource::admit_device_role(request).await,
         HandlerRole::Identity(role) => identity::admit(role, request).await,

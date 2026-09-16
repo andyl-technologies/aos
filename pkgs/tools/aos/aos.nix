@@ -13,7 +13,6 @@
   perl,
   openssl,
   aos-landlock,
-  aos-systemd-provider,
   cmake,
   coreutils,
   libssh2,
@@ -89,7 +88,7 @@
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
   apmRuntimeTools =
     apmPortableRuntimeTools
-    ++ lib.optionals (!isDarwinCross) [aos-systemd-provider systemd util-linux];
+    ++ lib.optionals (!isDarwinCross) [systemd util-linux];
   referenceRemovalArguments = dependencies:
     builtins.concatStringsSep " \\\n            " (map (dependency: "-t ${dependency}") dependencies);
   runtimeBinPath = tools:
@@ -197,9 +196,36 @@
 in
   mkCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       role = "public-package";
     };
     pname = "aos";
@@ -533,7 +559,7 @@ in
                   ;;
                 apm|aos-package-runtime)
                   cat << 'APM_ENVIRONMENT'
-      ${lib.optionalString (!isDarwinCross) ''export AOS_CREDENTIAL_ENCRYPT_PROVIDER="${aos-systemd-provider}/bin/aos-systemd-provider"''}
+      ${lib.optionalString (!isDarwinCross) ''export AOS_CREDENTIAL_ENCRYPT_PROVIDER="${systemd}/libexec/aos-systemd-provider"''}
       export AOS_NIX_STORE="${nix}/bin/nix-store"
       export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       export AOS_MCOPY="${mtools}/bin/mcopy"
