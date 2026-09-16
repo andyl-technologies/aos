@@ -40,29 +40,42 @@ const COMPATIBILITY_LIMITATIONS: [&str; 4] = [
     "runtime-availability-not-observed",
 ];
 /// Provides editor projections over references already authenticated by the loader.
-pub(super) struct AbilityCatalog<'a> {
-    references: Vec<CheckedCatalogReference<'a>>,
+pub(super) struct AbilityCatalog {
+    references: Vec<CheckedCatalogReference>,
 }
 
-struct CheckedCatalogReference<'a> {
-    reference: &'a PackageAbilityReference,
+struct CheckedCatalogReference {
+    reference: PackageAbilityReference,
     view: ReferenceInspectionView,
 }
 
-impl<'a> AbilityCatalog<'a> {
-    pub(super) fn new(documents: &'a [LoadedDocumentation]) -> Self {
+impl AbilityCatalog {
+    pub(super) fn new(documents: &[LoadedDocumentation]) -> Result<Self> {
         let references = documents
             .iter()
             .filter_map(|document| document.projection.ability_reference.as_ref())
-            .filter_map(|reference| {
-                let input = ReferenceInspectionInput::new(reference.clone()).ok()?;
-                let digest = aos_contract::Sha256Digest::of_bytes(&input.canonical_bytes().ok()?);
-                let checked = input.check(Some(digest)).ok()?;
-                let view = ReferenceInspectionView::from_checked(&checked).ok()?;
-                Some(CheckedCatalogReference { reference, view })
+            .map(|reference| {
+                let identity = format!("{} {}", reference.package.as_str(), reference.version);
+                let input = ReferenceInspectionInput::new(reference.clone())
+                    .with_context(|| format!("checking {identity} ability reference input"))?;
+                let canonical = input
+                    .canonical_bytes()
+                    .with_context(|| format!("encoding {identity} ability reference input"))?;
+                let digest = aos_contract::Sha256Digest::of_bytes(&canonical);
+                let checked = input
+                    .check(Some(digest))
+                    .with_context(|| format!("checking {identity} ability reference"))?;
+                let view = ReferenceInspectionView::from_checked(&checked)
+                    .with_context(|| format!("building {identity} ability inspection view"))?;
+
+                Ok(CheckedCatalogReference {
+                    reference: reference.clone(),
+                    view,
+                })
             })
-            .collect();
-        Self { references }
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Self { references })
     }
 
     fn abilities(
@@ -82,14 +95,14 @@ impl<'a> AbilityCatalog<'a> {
                         )
                     })
                 })
-                .map(move |export| (entry.reference, export))
+                .map(move |export| (&entry.reference, export))
         })
     }
 
     fn inspection(&self, reference: &PackageAbilityReference) -> Option<&ReferenceInspectionView> {
         self.references
             .iter()
-            .find(|entry| std::ptr::eq(entry.reference, reference))
+            .find(|entry| std::ptr::eq(&entry.reference, reference))
             .map(|entry| &entry.view)
     }
 
@@ -387,7 +400,7 @@ impl<'a> AbilityCatalog<'a> {
         Value::Array(
             self.references
                 .iter()
-                .map(|entry| entry.reference)
+                .map(|entry| &entry.reference)
                 .filter(|reference| package.is_none_or(|name| reference.package.as_str() == name))
                 .take(MAX_RESULTS)
                 .filter_map(|reference| serde_json::to_value(reference).ok())

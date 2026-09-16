@@ -12270,12 +12270,7 @@ impl RpcService {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
         let kind = (!req.kind.is_empty()).then_some(req.kind.as_str());
-        if kind.is_some_and(|kind| {
-            !matches!(
-                kind,
-                "package" | "option" | "service" | "credential" | "capability"
-            )
-        }) {
+        if kind.is_some_and(|kind| !matches!(kind, "package" | "option" | "capability")) {
             return Err(RpcError::invalid("unsupported documentation result kind"));
         }
         let results = if req.query.trim().is_empty() {

@@ -24,6 +24,7 @@ const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 struct Server {
     documents: Vec<LoadedDocumentation>,
+    ability_catalog: AbilityCatalog,
     open_files: BTreeMap<String, String>,
     shutdown: bool,
 }
@@ -36,11 +37,7 @@ struct Server {
 /// or stdout failures. Invalid individual request parameters receive a
 /// JSON-RPC error response without terminating the server.
 pub(crate) fn run(loaded: Vec<LoadedDocumentation>) -> Result<()> {
-    let mut server = Server {
-        documents: loaded,
-        open_files: BTreeMap::new(),
-        shutdown: false,
-    };
+    let mut server = Server::new(loaded)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut input = stdin.lock();
@@ -54,6 +51,18 @@ pub(crate) fn run(loaded: Vec<LoadedDocumentation>) -> Result<()> {
 }
 
 impl Server {
+    fn new(documents: Vec<LoadedDocumentation>) -> Result<Self> {
+        let ability_catalog = AbilityCatalog::new(&documents)
+            .context("building checked package ability editor catalog")?;
+
+        Ok(Self {
+            documents,
+            ability_catalog,
+            open_files: BTreeMap::new(),
+            shutdown: false,
+        })
+    }
+
     fn handle(&mut self, message: Value, output: &mut impl Write) -> Result<bool> {
         let method = message
             .get("method")
@@ -138,7 +147,8 @@ impl Server {
                     .get("label")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                let result = AbilityCatalog::new(&self.documents)
+                let result = self
+                    .ability_catalog
                     .resolve_completion(&params)
                     .or_else(|| {
                         self.options()
@@ -203,30 +213,32 @@ impl Server {
                 respond(
                     output,
                     id,
-                    AbilityCatalog::new(&self.documents).hints(&params),
+                    self.ability_catalog.hints(&params),
                 )?;
             }
             "aos/packageDocumentation/abilityReferences" => {
                 respond(
                     output,
                     id,
-                    AbilityCatalog::new(&self.documents).references(&params),
+                    self.ability_catalog.references(&params),
                 )?;
             }
             "aos/packageDocumentation/abilityGraph" => {
-                match AbilityCatalog::new(&self.documents).graph(&params) {
+                match self.ability_catalog.graph(&params) {
                     Ok(graph) => respond(output, id, graph)?,
                     Err(error) => respond_error(output, id, -32602, &error.to_string())?,
                 }
             }
             "aos/packageDocumentation/resolveAbility" => {
-                let result = AbilityCatalog::new(&self.documents)
+                let result = self
+                    .ability_catalog
                     .resolve(&params)
                     .unwrap_or(Value::Null);
                 respond(output, id, result)?;
             }
             "aos/packageDocumentation/abilityDocument" => {
-                let result = AbilityCatalog::new(&self.documents)
+                let result = self
+                    .ability_catalog
                     .virtual_document(&params)
                     .unwrap_or(Value::Null);
                 respond(output, id, result)?;
@@ -257,7 +269,6 @@ impl Server {
     }
 
     fn completions(&self, text: &str, line: usize, character: usize) -> Value {
-        let catalog = AbilityCatalog::new(&self.documents);
         let prefix = word_at_position(text, line, character, true).unwrap_or_default();
         let mut seen = BTreeSet::new();
         let mut items = self
@@ -284,7 +295,10 @@ impl Server {
                 })
             })
             .collect::<Vec<_>>();
-        items.extend(catalog.completions(&prefix, 256_usize.saturating_sub(items.len())));
+        items.extend(
+            self.ability_catalog
+                .completions(&prefix, 256_usize.saturating_sub(items.len())),
+        );
         json!({ "isIncomplete": false, "items": items })
     }
 
@@ -300,7 +314,7 @@ impl Server {
                     }
                 })
             })
-            .or_else(|| AbilityCatalog::new(&self.documents).hover(&word))
+            .or_else(|| self.ability_catalog.hover(&word))
     }
 
     fn definition(&self, text: &str, line: usize, character: usize) -> Option<Value> {
@@ -317,7 +331,7 @@ impl Server {
                     }
                 })
             })
-            .or_else(|| AbilityCatalog::new(&self.documents).definition(&word))
+            .or_else(|| self.ability_catalog.definition(&word))
     }
 
     fn document_links(&self, text: &str) -> Value {
@@ -339,7 +353,7 @@ impl Server {
         }
         links.truncate(256);
         links.extend(
-            AbilityCatalog::new(&self.documents)
+            self.ability_catalog
                 .document_links(text, 256_usize.saturating_sub(links.len())),
         );
         Value::Array(links)
@@ -376,7 +390,7 @@ impl Server {
             })
             .collect::<Vec<_>>();
         actions.extend(
-            AbilityCatalog::new(&self.documents)
+            self.ability_catalog
                 .code_actions(&diagnostics, text_document_uri(params).as_deref()),
         );
         Value::Array(actions)
@@ -428,7 +442,7 @@ impl Server {
                 "data": { "candidate": candidate }
             }));
         }
-        diagnostics.extend(AbilityCatalog::new(&self.documents).diagnostics(text));
+        diagnostics.extend(self.ability_catalog.diagnostics(text));
         diagnostics
     }
 
@@ -451,7 +465,7 @@ impl Server {
             })
             .collect::<Vec<_>>();
         symbols.extend(
-            AbilityCatalog::new(&self.documents)
+            self.ability_catalog
                 .workspace_symbols(query, 256_usize.saturating_sub(symbols.len())),
         );
         Value::Array(symbols)
@@ -831,11 +845,7 @@ mod tests {
             .unwrap()
             .package_digest
             .to_string();
-        let server = Server {
-            documents: vec![loaded],
-            open_files: BTreeMap::new(),
-            shutdown: false,
-        };
+        let server = Server::new(vec![loaded]).unwrap();
         let completions = server.completions("fixture.ser", 0, "fixture.ser".len());
         let completion_items = completions["items"].as_array().unwrap();
         assert_eq!(completion_items.len(), 1);
@@ -889,11 +899,7 @@ mod tests {
 
     #[test]
     fn authenticated_ability_reference_completes_hovers_and_reports_limits() {
-        let server = Server {
-            documents: vec![loaded_document()],
-            open_files: BTreeMap::new(),
-            shutdown: false,
-        };
+        let server = Server::new(vec![loaded_document()]).unwrap();
 
         let completion = server.completions("test.life", 0, 9);
         assert_eq!(completion["items"][0]["label"], "test.lifecycle");
@@ -906,7 +912,8 @@ mod tests {
                         .is_some_and(|text| text.contains("Static reference only"))
                 })
         );
-        let hints = AbilityCatalog::new(&server.documents)
+        let hints = server
+            .ability_catalog
             .hints(&json!({ "package": "fixture", "prefix": "lifecycle" }));
         assert_eq!(hints[0]["selector"]["export"], "lifecycle-provider");
         assert_eq!(hints[0]["methods"].as_array().map(Vec::len), Some(3));
@@ -925,6 +932,24 @@ mod tests {
     }
 
     #[test]
+    fn ability_catalog_rejects_an_invalid_authenticated_reference() {
+        let mut loaded = loaded_document();
+        loaded
+            .projection
+            .ability_reference
+            .as_mut()
+            .unwrap()
+            .version
+            .clear();
+
+        let error = match AbilityCatalog::new(&[loaded]) {
+            Ok(_) => panic!("invalid ability reference unexpectedly entered the catalog"),
+            Err(error) => error,
+        };
+        assert!(format!("{error:#}").contains("fixture"));
+    }
+
+    #[test]
     fn ability_candidates_preserve_ambiguity_escape_versions_and_bound_hints() {
         let first = loaded_document();
         let mut second = loaded_document();
@@ -932,11 +957,7 @@ mod tests {
         let second_reference = second.projection.ability_reference.as_mut().unwrap();
         second_reference.package = LocalKey::new("fixture-second").unwrap();
         second_reference.version = "2`\n[link](https://example.invalid)".to_string();
-        let server = Server {
-            documents: vec![first.clone(), second],
-            open_files: BTreeMap::new(),
-            shutdown: false,
-        };
+        let server = Server::new(vec![first.clone(), second]).unwrap();
 
         let completions = server.completions("test.life", 0, 9);
         let items = completions["items"].as_array().unwrap();
@@ -951,13 +972,9 @@ mod tests {
         assert!(markdown.contains("Multiple authenticated ability contracts match"));
         assert!(markdown.contains("`` 2` [link](https://example.invalid) ``"));
 
-        let bounded = Server {
-            documents: vec![first; 300],
-            open_files: BTreeMap::new(),
-            shutdown: false,
-        }
-        .documents;
-        let bounded = AbilityCatalog::new(&bounded).hints(&json!({ "prefix": "lifecycle" }));
+        let bounded = AbilityCatalog::new(&vec![first; 300])
+            .unwrap()
+            .hints(&json!({ "prefix": "lifecycle" }));
         assert_eq!(bounded.as_array().map(Vec::len), Some(256));
     }
 
@@ -966,7 +983,7 @@ mod tests {
         let loaded = loaded_document();
         let expected_reference = loaded.projection.ability_reference.clone().unwrap();
         let documents = vec![loaded];
-        let catalog = AbilityCatalog::new(&documents);
+        let catalog = AbilityCatalog::new(&documents).unwrap();
 
         let item = catalog.completions("test.life", 1).remove(0);
         let selector = item.pointer("/data/aosAbility").unwrap().clone();
@@ -1008,11 +1025,7 @@ mod tests {
             .exports[0]
             .interface
             .clone();
-        let server = Server {
-            documents: vec![loaded],
-            open_files: BTreeMap::new(),
-            shutdown: false,
-        };
+        let server = Server::new(vec![loaded]).unwrap();
 
         let unknown = server.diagnostics(
             r#"lib.abilities.request { interface = "aos.missing"; abi = 1; descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; request = config.value; }"#,
@@ -1077,7 +1090,7 @@ mod tests {
     #[test]
     fn contextual_ability_completion_uses_the_authenticated_request_schema() {
         let documents = vec![loaded_document()];
-        let catalog = AbilityCatalog::new(&documents);
+        let catalog = AbilityCatalog::new(&documents).unwrap();
         let key = documents[0]
             .projection
             .ability_reference
@@ -1116,7 +1129,7 @@ mod tests {
         loaded.projection.document.package.version = input.reference().version.clone();
         loaded.projection.ability_reference = Some(input.reference().clone());
         let documents = vec![loaded];
-        let catalog = AbilityCatalog::new(&documents);
+        let catalog = AbilityCatalog::new(&documents)?;
 
         let slice = catalog.graph_slice(
             input.reference().package.as_str(),
@@ -1166,10 +1179,10 @@ mod tests {
         );
         let before_documents = vec![before.clone()];
         let after_documents = vec![after.clone()];
-        let before_graph = AbilityCatalog::new(&before_documents)
+        let before_graph = AbilityCatalog::new(&before_documents)?
             .graph_slice("fixture", "1", &query)?
             .canonical_bytes()?;
-        let after_graph = AbilityCatalog::new(&after_documents)
+        let after_graph = AbilityCatalog::new(&after_documents)?
             .graph_slice("fixture", "1", &query)?
             .canonical_bytes()?;
         assert_eq!(before_graph, after_graph);
@@ -1177,8 +1190,8 @@ mod tests {
         assert!(!graph_text.contains("reload_required"));
         assert!(!graph_text.contains("restart_required"));
         assert_eq!(
-            AbilityCatalog::new(&[before]).references(&json!({})),
-            AbilityCatalog::new(&[after]).references(&json!({}))
+            AbilityCatalog::new(&[before])?.references(&json!({})),
+            AbilityCatalog::new(&[after])?.references(&json!({}))
         );
         Ok(())
     }
