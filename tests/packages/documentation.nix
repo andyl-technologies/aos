@@ -13,8 +13,6 @@
   legacyPassthruFields = [
     "abilities"
     "abilityModule"
-    "abilityModuleSource"
-    "configModule"
   ];
   abilityPackages = lib.filterAttrs (_: value: let
     evaluated = builtins.tryEval value;
