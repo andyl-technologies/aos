@@ -195,17 +195,11 @@
   semanticJson = value:
     builtins.unsafeDiscardStringContext (builtins.toJSON value);
 
-  strictRecordType = file: fields: let
-    submoduleType = moduleTypes.submodule {
+  strictRecordType = file: fields:
+    moduleTypes.submodule {
       _file = file;
-      _module.strict = true;
+      config._module.strict = true;
       options = builtins.mapAttrs (_: type: mkOption {inherit type;}) fields;
-    };
-  in
-    submoduleType
-    // {
-      merge = location: definitions:
-        builtins.removeAttrs (submoduleType.merge location definitions) ["_module"];
     };
 
   decorateRecord = context: file: schema: normalizedFields: optionalFields: let
@@ -224,7 +218,7 @@
       fieldNames;
     submoduleType = moduleTypes.submodule {
       _file = file;
-      _module.strict = true;
+      config._module.strict = true;
       options = builtins.mapAttrs (_: field: field.option) normalizedFields;
     };
     base =
@@ -232,7 +226,7 @@
       // {
         check = recordCheck;
         merge = location: definitions: let
-          merged = builtins.removeAttrs (submoduleType.merge location definitions) ["_module"];
+          merged = submoduleType.merge location definitions;
           omittedNullFields = builtins.filter (
             name: builtins.elem name optionalFields && merged.${name} == null
           ) (builtins.attrNames merged);

@@ -20,17 +20,11 @@
   coreInterfaceModule,
   normalizePackageOutputSelectors,
 }: let
-  strictSubmodule = options: let
-    submoduleType = moduleTypes.submodule {
+  strictSubmodule = options:
+    moduleTypes.submodule {
       _file = "<lib.abilities.module>";
-      _module.strict = true;
+      config._module.strict = true;
       inherit options;
-    };
-  in
-    submoduleType
-    // {
-      merge = location: definitions:
-        builtins.removeAttrs (submoduleType.merge location definitions) ["_module"];
     };
 
   checkedSubmodule = name: baseType: check:

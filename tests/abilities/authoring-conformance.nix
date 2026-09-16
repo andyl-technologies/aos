@@ -1410,6 +1410,7 @@ in
     defaulted = true;
     explicitNull = null;
   };
+  assert !(optionalRecordEvaluation.config.test ? _module);
   assert !invalidOptionalRecord.success;
   assert selfOutput
   == {
@@ -1637,6 +1638,7 @@ in
   };
   assert taggedUnionEvaluation.config.test.settings.flag;
   assert !invalidTaggedUnion.success;
+  assert !(taggedUnionEvaluation.config.test.settings ? _module);
   assert !invalidDecodedRecord.success;
   assert !invalidResourceReference.success;
   assert validExecutableRequest.config.aos.abilities.requests."authoring:executable".parameters.executable.entry_point == "bin/server";
