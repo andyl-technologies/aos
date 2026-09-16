@@ -84,7 +84,8 @@
     lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."aos-nix-store-provider:nix-store-database-effects"
   );
   effectsHandler = abilities.implementations."aos-nix-store-provider:nix-store-database-effects".handlerDescriptor;
-  artifactHandler = abilities.implementations."aos-nix-store-provider:content-addressed-object".handlerDescriptor;
+  artifactController = abilities.implementations."aos-nix-store-provider:content-addressed-object";
+  artifactHandler = abilities.implementations."aos-nix-store-provider:content-addressed-object-operations".handlerDescriptor;
   transitionMethods = kind: let
     active = builtins.elem kind ["create" "update" "reconcile-stopped" "reconcile-divergent"];
     binding = {
@@ -129,14 +130,19 @@
     builtins.map (operation: operation.method) fragment.operations;
 in
   assert abilities.interfaces ? "aos-nix-store-provider:nix-store-database";
+  assert abilities.interfaces ? "content-addressed-object";
+  assert abilities.interfaces ? "content-addressed-object-operations";
   assert builtins.attrNames abilities.implementations
   == [
     "aos-nix-store-provider:content-addressed-object"
+    "aos-nix-store-provider:content-addressed-object-operations"
     "aos-nix-store-provider:nix-store-database"
     "aos-nix-store-provider:nix-store-database-effects"
   ];
   assert abilities.compositionRequests.${childRequestKey}.parameters == desired.value;
   assert effectsHandler.entryPoint == "libexec/aos-nix-store-database-effects";
+  assert artifactController.handlerDescriptor == null;
+  assert artifactController.providerModule.path == "share/aos/providers/content-addressed-object.nix";
   assert artifactHandler.entryPoint == "libexec/aos-content-addressed-object";
   assert desired.kind == "aos.nix.store-database";
   assert desired.lifetime == "persistent";
