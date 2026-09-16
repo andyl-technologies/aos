@@ -3,6 +3,7 @@
   artifactLocatorFor ? selector: throw "systemd provider has no authenticated locator for ${builtins.toJSON selector}",
   config,
   lib,
+  options,
   packageName,
   pkgs,
   ...
@@ -1039,6 +1040,12 @@
     != null
     && config.aos.abilities.bindings.${resource.controller}.implementation == networkConfigurationImplementation)
   (builtins.attrValues config.aos.abilities.resolvedResources);
+  qualificationChecks = import ./_systemd-qualification-checks.nix {inherit lib;};
+  qualifiedServiceResources =
+    builtins.filter (
+      resource: qualificationChecks.unitIdentitiesFor resource != []
+    )
+    selectedServiceResources;
   staticArtifactFor = resource: let
     realization = builtins.toJSON resource.realization;
     rendered =
@@ -1160,4 +1167,53 @@ in {
   config.systemd.providerUnitArtifacts = staticArtifacts;
   config.systemd.providerManagerConfigurationArtifacts = managerWatchdogArtifacts;
   config.systemd.providerNetworkConfigurationArtifacts = networkConfigurationArtifacts;
+  config.aos.contributions.runtimeChecks =
+    lib.mkIf (
+      lib.hasAttrByPath ["aos" "contributions" "runtimeChecks"] options
+    ) {
+      systemd-infrastructure = {
+        description = "Selected systemd manager infrastructure checks";
+        checks = [
+          {
+            name = "boot-target";
+            description = "The selected systemd manager reaches its normal boot target";
+            script = ''
+              vm.succeed("systemctl is-active multi-user.target")
+            '';
+          }
+          {
+            name = "runtime-directory";
+            description = "The selected systemd manager publishes its runtime directory";
+            script = ''
+              vm.succeed("test -d /run/systemd/system")
+            '';
+          }
+          {
+            name = "timers";
+            description = "The selected systemd manager can enumerate timers";
+            script = ''
+              vm.succeed("systemctl list-timers --no-pager")
+            '';
+          }
+          {
+            name = "services";
+            description = "The selected systemd manager can enumerate services";
+            script = ''
+              vm.succeed("systemctl list-units --type=service --no-pager")
+            '';
+          }
+          {
+            name = "journal";
+            description = "The selected systemd journal is readable";
+            script = ''
+              vm.succeed("journalctl --no-pager -n 5")
+            '';
+          }
+        ];
+      };
+      systemd-service-resources = {
+        description = "Resolved logical service observations through the selected systemd provider";
+        checks = builtins.map qualificationChecks.serviceCheck qualifiedServiceResources;
+      };
+    };
 }
