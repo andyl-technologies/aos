@@ -500,7 +500,7 @@
   ];
   nativeEffectBoundaryCells = import ./tests/fleet/_ability-effect-boundary-cells.nix {
     inherit lib;
-    matrix = nativeAdapterMatrix;
+    matrix = nativeAdapterMatrix.spec;
   };
   nativeEffectReferenceCohort = import ./tests/fleet/ability-native-effect-boundaries-reference.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
@@ -519,7 +519,7 @@
 
   nativeProviderStateCells = import ./tests/fleet/_ability-provider-state-cells.nix {
     inherit lib;
-    matrix = nativeAdapterMatrix;
+    matrix = nativeAdapterMatrix.spec;
   };
   nativeProviderStateReferenceCohort = import ./tests/fleet/ability-native-provider-state-reference.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
@@ -531,7 +531,7 @@
   };
   nativeCancellationCells = import ./tests/fleet/_ability-cancellation-cells.nix {
     inherit lib;
-    matrix = nativeAdapterMatrix;
+    matrix = nativeAdapterMatrix.spec;
   };
   nativeCancellationSystemdCells = nativeCancellationCells.groups.systemd;
   nativeCancellationSystemdCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
@@ -554,7 +554,7 @@
 
   nativeProviderNegativeCells = import ./tests/fleet/_ability-provider-negative-cells.nix {
     inherit lib;
-    matrix = nativeAdapterMatrix;
+    matrix = nativeAdapterMatrix.spec;
   };
   nativeProviderNegativeReference = import ./tests/fleet/ability-native-provider-negative-reference.nix {
     inherit lib mkSystem pkgs nativeAdapterMatrix;
@@ -585,7 +585,7 @@
   nativeAdapterRoleCells = map (cell: cell.id) (
     builtins.filter (cell:
       builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterRoleScenarios)
-    nativeAdapterMatrix.cells
+    nativeAdapterMatrix.spec.cells
   );
   nativeAdapterReplacementScenarios = [
     "replace-executor-incarnation"
@@ -594,7 +594,7 @@
   nativeAdapterReplacementCells = map (cell: cell.id) (
     builtins.filter (cell:
       builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterReplacementScenarios)
-    nativeAdapterMatrix.cells
+    nativeAdapterMatrix.spec.cells
   );
   nativeAdapterFailureControlScenarios = [
     "expire-attempt-deadline"
@@ -606,12 +606,12 @@
       builtins.elem
       (builtins.elemAt (lib.splitString "/" cell.id) 4)
       nativeAdapterFailureControlScenarios)
-    nativeAdapterMatrix.cells
+    nativeAdapterMatrix.spec.cells
   );
   nativeAdapterInterruptionCells = map (cell: cell.id) (
     builtins.filter (cell:
       builtins.elemAt (lib.splitString "/" cell.id) 4 == "interrupt-before-acquisition")
-    nativeAdapterMatrix.cells
+    nativeAdapterMatrix.spec.cells
   );
 
   nativeAdapterQualifiedCells = let
@@ -635,7 +635,7 @@
         name = cell.id;
         value = cell;
       })
-      nativeAdapterMatrix.cells);
+      nativeAdapterMatrix.spec.cells);
     postconditions =
       builtins.foldl' (
         count: cellId: count + builtins.length cellsById.${cellId}.postconditions
@@ -647,10 +647,12 @@
         count: cell: count + builtins.length cell.postconditions
       )
       0
-      nativeAdapterMatrix.applicable_cells;
+      (builtins.filter
+        (cell: builtins.elem cell.id nativeAdapterMatrix.spec.applicability.applicable_cell_ids)
+        nativeAdapterMatrix.spec.cells);
   in
-    assert builtins.length selected == nativeAdapterMatrix.required_production_vm_cells;
-    assert builtins.length (lib.unique selected) == nativeAdapterMatrix.required_production_vm_cells;
+    assert builtins.sort builtins.lessThan selected == nativeAdapterMatrix.spec.applicability.applicable_cell_ids;
+    assert builtins.length selected == builtins.length (lib.unique selected);
     assert postconditions == expectedPostconditions; selected;
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
@@ -665,6 +667,7 @@
       scenarioId = "ability-native-adapter-matrix";
       checks = qualificationRequirementChecks "ability-native-adapter-matrix";
       matrixSpec = nativeAdapterMatrix.spec;
+      matrixSpecJson = nativeAdapterMatrix.canonical_json;
       matrixQualifiedCells = nativeAdapterQualifiedCells;
       # Image cancellation cells run the same predecessor-to-candidate path as
       # the production rollout requirement and fail closed without this origin.

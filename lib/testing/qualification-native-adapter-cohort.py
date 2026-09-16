@@ -44,89 +44,47 @@ MATRIX_APPLICABILITY_SCHEMA = (
 )
 
 
-def _inapplicable_reason(
-    cell: dict[str, Any], contract: dict[str, Any]
-) -> str | None:
-    """Returns the exact provider-contract reason that excludes one cell."""
-
-    applicability = cell.get("applicability")
-    if not isinstance(applicability, dict):
-        raise RuntimeError("matrix cell has no typed applicability declaration")
-    required_lifetimes = applicability.get("required_resource_lifetimes")
-    requires_state_format = applicability.get("requires_state_format")
-    if not isinstance(required_lifetimes, list) or not isinstance(requires_state_format, bool):
-        raise RuntimeError("matrix cell applicability is malformed")
-    if any(lifetime not in contract["resource_lifetimes"] for lifetime in required_lifetimes):
-        return "required-resource-lifetime-unavailable"
-    if requires_state_format and contract["state_format"] is None:
-        return "missing-authenticated-state-format"
-    return None
-
-
 def _applicable_specification_cells(spec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Validates and applies the matrix's fail-closed applicability partition."""
+    """Returns the authoritative applicability partition after reference checks."""
 
     cells = spec.get("cells")
-    if not isinstance(cells, list):
-        raise RuntimeError("matrix specification cells are malformed")
-
-    adapters = spec.get("surface", {}).get("adapters")
-    if not isinstance(adapters, list):
-        raise RuntimeError("matrix provider contracts are missing")
-    contracts = {}
-    for adapter in adapters:
-        contract = adapter.get("provider_contract")
-        if (
-            not isinstance(contract, dict)
-            or not isinstance(contract.get("lifecycle"), dict)
-            or not isinstance(contract.get("resource_lifetimes"), list)
-            or len(contract["resource_lifetimes"])
-            != len(set(contract["resource_lifetimes"]))
-            or not all(
-                isinstance(value, str) and value
-                for value in contract["resource_lifetimes"]
-            )
-            or (
-                contract.get("state_format") is not None
-                and (
-                    not isinstance(contract.get("state_format"), str)
-                    or len(contract["state_format"]) != 71
-                    or not contract["state_format"].startswith("sha256:")
-                    or any(
-                        character not in "0123456789abcdef"
-                        for character in contract["state_format"][7:]
-                    )
-                )
-            )
-            or adapter.get("adapter") in contracts
-        ):
-            raise RuntimeError("matrix provider contract metadata is malformed")
-        contracts[adapter.get("adapter")] = contract
-
-    expected = []
-    for cell in cells:
-        contract = contracts.get(cell.get("adapter"))
-        if contract is None:
-            raise RuntimeError("matrix cell has no authenticated provider contract")
-        reason = _inapplicable_reason(cell, contract)
-        if reason is not None:
-            expected.append({"cell_id": cell["id"], "reason": reason})
     applicability = spec.get("applicability")
-    if (
-        not isinstance(applicability, dict)
-        or set(applicability)
-        != {"schema", "required_production_vm_cells", "inapplicable_cells"}
-        or applicability.get("schema") != MATRIX_APPLICABILITY_SCHEMA
-        or applicability.get("inapplicable_cells") != expected
-        or applicability.get("required_production_vm_cells")
-        != len(cells) - len(expected)
-    ):
-        raise RuntimeError(
-            "matrix applicability differs from exact provider contract semantics"
-        )
+    if not isinstance(cells, list) or not isinstance(applicability, dict):
+        raise RuntimeError("matrix applicability is missing")
+    if set(applicability) != {"schema", "applicable_cell_ids", "inapplicable_cells"}:
+        raise RuntimeError("matrix applicability has unknown fields")
+    if applicability.get("schema") != MATRIX_APPLICABILITY_SCHEMA:
+        raise RuntimeError("matrix applicability has an unsupported schema")
 
-    excluded = {entry["cell_id"] for entry in expected}
-    return [cell for cell in cells if cell["id"] not in excluded]
+    cell_by_id = {cell.get("id"): cell for cell in cells if isinstance(cell, dict)}
+    applicable_ids = applicability.get("applicable_cell_ids")
+    inapplicable = applicability.get("inapplicable_cells")
+    if (
+        len(cell_by_id) != len(cells)
+        or not isinstance(applicable_ids, list)
+        or applicable_ids != sorted(set(applicable_ids))
+        or not isinstance(inapplicable, list)
+    ):
+        raise RuntimeError("matrix cell identities or applicability order are malformed")
+    inapplicable_ids = [entry.get("cell_id") for entry in inapplicable if isinstance(entry, dict)]
+    if (
+        len(inapplicable_ids) != len(inapplicable)
+        or inapplicable_ids != sorted(set(inapplicable_ids))
+        or set(applicable_ids).intersection(inapplicable_ids)
+        or set(applicable_ids).union(inapplicable_ids) != set(cell_by_id)
+        or any(
+            set(entry) != {"cell_id", "reason"}
+            or entry.get("reason")
+            not in {
+                "required-resource-lifetime-unavailable",
+                "missing-authenticated-state-format",
+            }
+            for entry in inapplicable
+        )
+    ):
+        raise RuntimeError("matrix applicability is not an exact cell partition")
+
+    return [cell_by_id[cell_id] for cell_id in applicable_ids]
 
 
 def _qualification_routes(

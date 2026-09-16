@@ -3,12 +3,13 @@
   name,
   identity,
   matrixSpec,
+  matrixSpecJson,
   matrixCheck,
 }: let
   specRoot = pkgs.writeTextFile {
     name = "${name}-spec";
     destination = "/matrix-spec.json";
-    text = builtins.toJSON matrixSpec;
+    text = matrixSpecJson;
   };
   runner = pkgs.writeTextFile {
     name = "${name}-runner";
@@ -46,7 +47,7 @@ in
   assert identity != "";
   assert matrixSpec.schema == "aos.qualification.native-adapter-matrix-spec/v1";
   assert matrixSpec.cells != [];
-  assert matrixCheck == "native-adapter-matrix-v1-sha256-${builtins.hashString "sha256" (builtins.toJSON matrixSpec)}";
+  assert matrixCheck == "native-adapter-matrix";
     executable
     // {
       passthru =

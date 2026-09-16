@@ -1,8 +1,7 @@
-"""Exercises provider-contract-derived native matrix applicability."""
+"""Exercises the authoritative native matrix applicability partition."""
 
 from __future__ import annotations
 
-import copy
 import importlib.util
 import os
 import pathlib
@@ -24,40 +23,17 @@ def load(path: pathlib.Path):
 
 
 def rejected(module, specification):
-    """Requires a stale applicability partition to fail closed."""
+    """Requires a malformed applicability partition to fail closed."""
 
     try:
         module.applicable_cells(specification)
     except RuntimeError:
         return
-    raise AssertionError("stale provider-contract applicability was accepted")
-
-
-def classify(module, specification):
-    """Builds the partition expected from the fixture provider contract."""
-
-    contract = specification["surface"]["adapters"][0]["provider_contract"]
-    cell = specification["cells"][0]
-    reason = None
-    applicability = cell["applicability"]
-    if any(
-        lifetime not in contract["resource_lifetimes"]
-        for lifetime in applicability["required_resource_lifetimes"]
-    ):
-        reason = "required-resource-lifetime-unavailable"
-    elif applicability["requires_state_format"] and contract["state_format"] is None:
-        reason = "missing-authenticated-state-format"
-    excluded = [] if reason is None else [{"cell_id": cell["id"], "reason": reason}]
-    specification["applicability"] = {
-        "schema": module.APPLICABILITY_SCHEMA,
-        "required_production_vm_cells": 1 - len(excluded),
-        "inapplicable_cells": excluded,
-    }
-    return specification
+    raise AssertionError("malformed matrix applicability was accepted")
 
 
 def main() -> None:
-    """Proves lifetime and state-format changes alter the exact partition."""
+    """Proves the exact partition is consumed without semantic re-expansion."""
 
     module = load(pathlib.Path(sys.argv[1]))
     cell = {
@@ -68,43 +44,30 @@ def main() -> None:
             "requires_state_format": True,
         },
     }
-    specification = classify(
-        module,
-        {
-            "surface": {
-                "adapters": [
-                    {
-                        "adapter": "fixture",
-                        "provider_contract": {
-                            "lifecycle": {},
-                            "resource_lifetimes": ["instance"],
-                            "state_format": None,
-                        },
-                    }
-                ]
-            },
-            "cells": [cell],
+    specification = {
+        "cells": [cell],
+        "applicability": {
+            "schema": module.APPLICABILITY_SCHEMA,
+            "applicable_cell_ids": [],
+            "inapplicable_cells": [
+                {
+                    "cell_id": cell["id"],
+                    "reason": "missing-authenticated-state-format",
+                }
+            ],
         },
-    )
+    }
     assert module.applicable_cells(specification) == []
 
-    persistent = copy.deepcopy(specification)
-    persistent["surface"]["adapters"][0]["provider_contract"][
-        "resource_lifetimes"
-    ] = ["persistent"]
-    rejected(module, persistent)
-    classify(module, persistent)
-    assert persistent["applicability"]["inapplicable_cells"] == [
-        {"cell_id": cell["id"], "reason": "missing-authenticated-state-format"}
-    ]
+    specification["applicability"] = {
+        "schema": module.APPLICABILITY_SCHEMA,
+        "applicable_cell_ids": [cell["id"]],
+        "inapplicable_cells": [],
+    }
+    assert module.applicable_cells(specification) == [cell]
 
-    stateful = copy.deepcopy(persistent)
-    stateful["surface"]["adapters"][0]["provider_contract"]["state_format"] = (
-        "sha256:" + "11" * 32
-    )
-    rejected(module, stateful)
-    classify(module, stateful)
-    assert module.applicable_cells(stateful) == [cell]
+    specification["applicability"]["applicable_cell_ids"] = []
+    rejected(module, specification)
 
 
 if __name__ == "__main__":

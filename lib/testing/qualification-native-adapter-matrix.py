@@ -58,82 +58,46 @@ def read_json(path: pathlib.Path) -> Any:
 
 
 def applicable_cells(spec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Validates the exact exclusion partition and returns its complement."""
+    """Returns the authoritative applicable partition after reference checks."""
 
     cells = spec.get("cells")
     applicability = spec.get("applicability")
     if not isinstance(cells, list) or not isinstance(applicability, dict):
         raise RuntimeError("matrix applicability is missing")
+    if set(applicability) != {"schema", "applicable_cell_ids", "inapplicable_cells"}:
+        raise RuntimeError("matrix applicability has unknown fields")
+    if applicability.get("schema") != APPLICABILITY_SCHEMA:
+        raise RuntimeError("matrix applicability has an unsupported schema")
 
-    adapters = spec.get("surface", {}).get("adapters")
-    if not isinstance(adapters, list):
-        raise RuntimeError("matrix provider contracts are missing")
-    contracts = {}
-    for adapter in adapters:
-        contract = adapter.get("provider_contract")
-        if (
-            not isinstance(contract, dict)
-            or not isinstance(contract.get("lifecycle"), dict)
-            or not isinstance(contract.get("resource_lifetimes"), list)
-            or len(contract["resource_lifetimes"])
-            != len(set(contract["resource_lifetimes"]))
-            or not all(
-                isinstance(value, str) and value
-                for value in contract["resource_lifetimes"]
-            )
-            or (
-                contract.get("state_format") is not None
-                and (
-                    not isinstance(contract.get("state_format"), str)
-                    or len(contract["state_format"]) != 71
-                    or not contract["state_format"].startswith("sha256:")
-                    or any(
-                        character not in "0123456789abcdef"
-                        for character in contract["state_format"][7:]
-                    )
-                )
-            )
-            or adapter.get("adapter") in contracts
-        ):
-            raise RuntimeError("matrix provider contract metadata is malformed")
-        contracts[adapter.get("adapter")] = contract
-
-    expected = []
-    for cell in cells:
-        contract = contracts.get(cell["adapter"])
-        if contract is None:
-            raise RuntimeError("matrix cell has no authenticated provider contract")
-        scenario = cell.get("applicability")
-        if (
-            not isinstance(scenario, dict)
-            or not isinstance(scenario.get("required_resource_lifetimes"), list)
-            or not isinstance(scenario.get("requires_state_format"), bool)
-        ):
-            raise RuntimeError("matrix cell has no typed applicability declaration")
-        if any(
-            lifetime not in contract["resource_lifetimes"]
-            for lifetime in scenario["required_resource_lifetimes"]
-        ):
-            reason = "required-resource-lifetime-unavailable"
-        elif scenario["requires_state_format"] and contract["state_format"] is None:
-            reason = "missing-authenticated-state-format"
-        else:
-            continue
-        expected.append({"cell_id": cell["id"], "reason": reason})
-
+    cell_by_id = {cell.get("id"): cell for cell in cells if isinstance(cell, dict)}
+    applicable_ids = applicability.get("applicable_cell_ids")
+    inapplicable = applicability.get("inapplicable_cells")
     if (
-        set(applicability)
-        != {"schema", "required_production_vm_cells", "inapplicable_cells"}
-        or applicability.get("schema") != APPLICABILITY_SCHEMA
-        or applicability.get("inapplicable_cells") != expected
-        or applicability.get("required_production_vm_cells")
-        != len(cells) - len(expected)
+        len(cell_by_id) != len(cells)
+        or not isinstance(applicable_ids, list)
+        or applicable_ids != sorted(set(applicable_ids))
+        or not isinstance(inapplicable, list)
     ):
-        raise RuntimeError("matrix applicability differs from provider contracts")
+        raise RuntimeError("matrix cell identities or applicability order are malformed")
+    inapplicable_ids = [entry.get("cell_id") for entry in inapplicable if isinstance(entry, dict)]
+    if (
+        len(inapplicable_ids) != len(inapplicable)
+        or inapplicable_ids != sorted(set(inapplicable_ids))
+        or set(applicable_ids).intersection(inapplicable_ids)
+        or set(applicable_ids).union(inapplicable_ids) != set(cell_by_id)
+        or any(
+            set(entry) != {"cell_id", "reason"}
+            or entry.get("reason")
+            not in {
+                "required-resource-lifetime-unavailable",
+                "missing-authenticated-state-format",
+            }
+            for entry in inapplicable
+        )
+    ):
+        raise RuntimeError("matrix applicability is not an exact cell partition")
 
-    excluded = {entry["cell_id"] for entry in expected}
-    return [cell for cell in cells if cell["id"] not in excluded]
-
+    return [cell_by_id[cell_id] for cell_id in applicable_ids]
 
 def main() -> None:
     """Writes an exact, uniformly unqualified matrix report."""
@@ -143,12 +107,12 @@ def main() -> None:
     scenario_registry = read_json(SCENARIO_REGISTRY)
     case = request["qualification_case"]
     spec_digest = sha256(spec)
-    check = "native-adapter-matrix-v1-sha256-" + spec_digest.removeprefix("sha256:")
     if (
         request["policy_id"] != "ability-native-adapter-matrix"
         or case["requirement_id"] != "ability-native-adapter-matrix"
         or case["checks"] != [EXPECTED_CHECK]
-        or check != EXPECTED_CHECK
+        or EXPECTED_CHECK != "native-adapter-matrix"
+        or case.get("matrix_spec") != spec
         or not case.get("predecessor")
         or not case.get("subjects")
     ):
@@ -205,7 +169,6 @@ def main() -> None:
         "environment": environment,
         "native_adapter_matrix": {
             "schema_version": "aos.release.native-adapter-matrix-observation/v1",
-            "spec": spec,
             "spec_digest": spec_digest,
             "environment": environment,
             "cells": cells,
