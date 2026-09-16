@@ -124,89 +124,74 @@
     touch $out
   '';
 
-  # This is a read-only description of the package-owned handoff services.
-  bootSubstrateContract = {
-    completionTarget = "initrd-fs.target";
-    requiredUnits =
-      lib.optionals config.aos.boot.initrd.abilityHandoff.enable [
-        "aos-ability-initrd-controller.service"
-        "aos-ability-initrd-handoff-barrier.service"
-      ]
-      ++ [
-        "aos-config-seed.service"
-        "aos-machine-id.service"
-        "aos-seed-profiles.service"
-        "etc-overlay-setup.service"
-        "mount-var.service"
-        "nix-overlay-setup.service"
-        "run-etc-setup.service"
-      ];
-    preservedMounts = [
-      {
-        initrdPath = "/run";
-        hostPath = "/run";
-      }
-      {
-        initrdPath = "/sysroot/etc";
-        hostPath = "/etc";
-      }
-      {
-        initrdPath = "/sysroot/nix";
-        hostPath = "/nix";
-      }
-      {
-        initrdPath = "/sysroot/var";
-        hostPath = "/var";
-      }
-    ];
-    durableStateRoots = [
-      {
-        initrdPath = "/sysroot/var/lib/profiles/image";
-        hostPath = "/var/lib/profiles/image";
-      }
-      {
-        initrdPath = "/sysroot/var/lib/profiles/system";
-        hostPath = "/var/lib/profiles/system";
-      }
-    ];
-  };
+  initrdAbilityGraph = config.system.build.initrdAbilityGraph;
+  handoffInterface = lib.abilities.interfaces.bootPreparation.interfaces.handoff;
+  handoffResources =
+    if initrdAbilityGraph == null
+    then []
+    else
+      builtins.filter
+      (resource: resource.kind == handoffInterface.name)
+      (builtins.attrValues initrdAbilityGraph.resolvedResources);
+  bootPreparationHandoff =
+    if !config.aos.boot.initrd.abilityHandoff.enable
+    then null
+    else if initrdAbilityGraph == null
+    then throw "boot preparation handoff requires the final initrd ability fixed point"
+    else if builtins.length handoffResources != 1
+    then throw "boot preparation handoff must resolve exactly one selected resource"
+    else let
+      resource = builtins.head handoffResources;
+      binding = initrdAbilityGraph.bindings.${resource.controller};
+    in {
+      schema = "aos.boot.preparation-handoff-selection/v1";
+      binding = {
+        name = resource.controller;
+        inherit
+          (binding)
+          request
+          implementation
+          providerInstance
+          slot
+          ;
+      };
+      inherit resource;
+    };
 in {
-  options.system.build.bootSubstrateContract = lib.mkOption {
-    type = lib.types.submodule {
+  options.aos.boot.preparationHandoff = lib.mkOption {
+    type = lib.types.nullOr (lib.types.submodule {
       config._module.strict = true;
       options = {
-        completionTarget = lib.mkOption {type = lib.types.str;};
-        requiredUnits = lib.mkOption {type = lib.types.listOf lib.types.str;};
-        preservedMounts = lib.mkOption {
-          type = lib.types.listOf (lib.types.submodule {
-            config._module.strict = true;
-            options = {
-              initrdPath = lib.mkOption {type = lib.types.str;};
-              hostPath = lib.mkOption {type = lib.types.str;};
-            };
-          });
+        schema = lib.mkOption {
+          type = lib.types.enum ["aos.boot.preparation-handoff-selection/v1"];
         };
-        durableStateRoots = lib.mkOption {
-          type = lib.types.listOf (lib.types.submodule {
+        binding = lib.mkOption {
+          type = lib.types.submodule {
             config._module.strict = true;
             options = {
-              initrdPath = lib.mkOption {type = lib.types.str;};
-              hostPath = lib.mkOption {type = lib.types.str;};
+              name = lib.mkOption {type = lib.types.str;};
+              request = lib.mkOption {type = lib.types.str;};
+              implementation = lib.mkOption {type = lib.types.str;};
+              providerInstance = lib.mkOption {type = lib.types.str;};
+              slot = lib.mkOption {type = lib.types.str;};
             };
-          });
+          };
+        };
+        resource = lib.mkOption {
+          type = lib.types.attrs;
         };
       };
-    };
+    });
     readOnly = true;
     internal = true;
     description = ''
-      Exact mount and durable-state handoff already implemented by the neutral
-      initrd units. The initrd assembly contract consumes this read-only value.
+      Exact selected initrd handoff binding and resource derived from the final
+      ability fixed point. The selected manager consumes its own realization.
     '';
   };
 
   config = {
-    system.build.bootSubstrateContract = bootSubstrateContract;
+    aos.boot.preparationHandoff = bootPreparationHandoff;
     system.build.checks.native-executor-path = nativeExecutorPathCheck;
     system.build.checks.rooted-executable-path = rootedExecutablePathCheck;
 
