@@ -73,6 +73,78 @@
       };
     };
   };
+  normalizedRelativePath = value: let
+    components =
+      if builtins.isString value
+      then builtins.filter builtins.isString (builtins.split "/" value)
+      else [];
+  in
+    builtins.isString value
+    && value != ""
+    && builtins.stringLength value <= 4096
+    && builtins.substring 0 1 value != "/"
+    && builtins.all (component: component != "" && component != "." && component != "..") components;
+  canonicalDestination = value: let
+    components =
+      if builtins.isString value
+      then builtins.filter builtins.isString (builtins.split "/" value)
+      else [];
+  in
+    builtins.isString value
+    && value != "/"
+    && builtins.stringLength value <= 4096
+    && builtins.substring 0 1 value == "/"
+    && builtins.all (component: component != "" && component != "." && component != "..") (builtins.tail components);
+  treeType = lib.types.submodule {
+    _module.strict = true;
+    options = {
+      collision = lib.mkOption {
+        type = lib.types.enum ["reject" "replace"];
+        description = "Policy when the destination tree already contains entries.";
+      };
+      destination = lib.mkOption {
+        type = lib.types.addCheck lib.types.singleLineStr canonicalDestination;
+        description = "Canonical absolute path populated in the root filesystem.";
+      };
+      source = lib.mkOption {
+        type = lib.types.addCheck lib.types.singleLineStr normalizedRelativePath;
+        description = "Normalized child path within the selected manager configuration output.";
+      };
+    };
+  };
+  destinationsOverlap = left: right:
+    left
+    == right
+    || lib.hasPrefix "${left}/" right
+    || lib.hasPrefix "${right}/" left;
+  destinationsAreDisjoint = destinations:
+    if destinations == []
+    then true
+    else let
+      first = builtins.head destinations;
+      rest = builtins.tail destinations;
+    in
+      builtins.all (destination: !destinationsOverlap first destination) rest
+      && destinationsAreDisjoint rest;
+  rootfsType =
+    lib.types.addCheck (lib.types.submodule {
+      _module.strict = true;
+      options = {
+        closureRoots = lib.mkOption {
+          type = lib.types.listOf lib.types.pathInStore;
+          description = "Manager-owned closure roots retained in the root filesystem.";
+        };
+        initExecutable = lib.mkOption {
+          type = lib.types.pathInStore;
+          description = "Selected manager executable published as the root filesystem init.";
+        };
+        trees = lib.mkOption {
+          type = lib.types.listOf treeType;
+          description = "Manager-owned trees copied from its single configuration output.";
+        };
+      };
+    }) (value:
+      destinationsAreDisjoint (builtins.map (tree: tree.destination) value.trees));
   configurationType =
     lib.types.addCheck (lib.types.submodule {
       options = {
@@ -95,6 +167,10 @@
         ownership = lib.mkOption {
           type = ownershipType;
           description = "Authenticated ownership of the selected configuration artifacts.";
+        };
+        rootfs = lib.mkOption {
+          type = rootfsType;
+          description = "Typed root filesystem plan owned by the selected manager.";
         };
       };
     }) (value:
