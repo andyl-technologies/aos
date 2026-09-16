@@ -101,7 +101,7 @@ in
     ];
     propagatedDeps = [];
 
-    abilities = ./_conntrackd/module.nix;
+    abilities = ./_conntrackd;
 
     phases = [
       {

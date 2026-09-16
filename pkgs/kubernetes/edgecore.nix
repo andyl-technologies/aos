@@ -73,7 +73,7 @@ mkDerivation {
   buildDeps = [ buildPackages.go ];
   runtimeDeps = [ ];
 
-  abilities = ./_edgecore-config/module.nix;
+  abilities = ./_edgecore-config;
 
   phases = [
     {

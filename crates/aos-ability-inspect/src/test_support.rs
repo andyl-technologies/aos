@@ -79,6 +79,7 @@ pub fn package_reference() -> PackageAbilityReference {
         artifact: artifact.clone(),
         requirements: vec![implementation_requirement],
         desired_schema: None,
+        composition_schema: None,
         provider_module: Some(ModuleLocator {
             artifact: artifact.clone(),
             path: RelativePath::new("module.nix").expect("module path"),

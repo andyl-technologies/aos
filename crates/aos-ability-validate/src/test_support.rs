@@ -290,6 +290,7 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         artifact: artifact.clone(),
         requirements: Vec::new(),
         desired_schema: None,
+        composition_schema: None,
         provider_module: None,
         handler: Some(handler.clone()),
         owns_resource_kinds: Vec::new(),
@@ -338,6 +339,7 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         desired_schema: Some(aos_ability_model::ValueSchema::Optional {
             value: Box::new(aos_ability_model::ValueSchema::Boolean),
         }),
+        composition_schema: None,
         state_format: Some(ProviderStateFormat {
             descriptor: Sha256Digest::of_bytes("stateful owner test format"),
             artifact: artifact.clone(),
@@ -1172,6 +1174,7 @@ pub fn test_manager_provider(artifact: ArtifactReference) -> ProviderImplementat
         artifact,
         requirements: Vec::new(),
         desired_schema: None,
+        composition_schema: None,
         provider_module: None,
         handler: Some(handler),
         owns_resource_kinds: vec![interface.name],

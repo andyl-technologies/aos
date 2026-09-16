@@ -130,7 +130,7 @@ in
     runtimeDeps = [payload runc];
     propagatedDeps = [];
 
-    abilities = ./_containerd-config/module.nix;
+    abilities = ./_containerd-config;
 
     passthru.evidenceSources = [
       ./containerd.nix

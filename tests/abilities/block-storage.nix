@@ -51,7 +51,6 @@
     inherit lib;
     modules = [
       lib.abilities.module
-      ./_systemd-platform-module.nix
       {
         aos.abilities = {
           environment = {
@@ -372,11 +371,7 @@
         inherit (pkgs.aos-storage-provisioning-provider) version;
         module = pkgs.aos-storage-provisioning-provider.module + "/module.nix";
       }
-      {
-        name = "systemd";
-        inherit (pkgs.systemd) version;
-        module = pkgs.systemd.module + "/module.nix";
-      }
+      (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
     ];
     selectedProviderModules = [
       selectedCryptsetupProvider

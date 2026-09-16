@@ -1,10 +1,12 @@
-##! Pure transition construction for the systemd manager watchdog controller.
+##! Pure transition construction for the systemd network-configuration controller.
 {
   effectsInterface,
+  resourceInterface,
   transitionFragment,
 }: context: let
   actionable = builtins.filter (change:
-    change.resource.provider == context.provider
+    change.resource.provider
+    == context.provider
     && builtins.elem change.kind [
       "create"
       "update"
@@ -14,13 +16,9 @@
     ])
   context.changes;
   methodFor = kind:
-    if kind == "create"
-    then "create"
-    else if kind == "update"
-    then "update"
-    else if kind == "remove"
+    if kind == "remove"
     then "remove"
-    else "reconcile";
+    else "apply";
   authorityFor = change:
     if change.kind == "remove"
     then "teardown"
@@ -30,20 +28,26 @@
       if change.kind == "remove"
       then context.before
       else context.after;
-    matches = builtins.filter (resource: resource.resource == change.resource) snapshot.resources;
+    matches = builtins.filter (resource:
+      resource.resource
+      == change.resource
+      && resource.kind == resourceInterface.name)
+    snapshot.resources;
   in
     if builtins.length matches == 1
     then builtins.head matches
-    else throw "systemd manager-watchdog transition requires one exact resource state";
+    else throw "systemd network-configuration transition requires one exact resource state";
   bindingFor = change: method: let
     authorityRole = authorityFor change;
     matches = builtins.filter (entry:
-      entry.authority.role == authorityRole
+      entry.authority.role
+      == authorityRole
       && entry.binding.interface == effectsInterface
       && builtins.elem method entry.binding.caller_grant.methods
       && builtins.elem "observe" entry.binding.caller_grant.methods
       && builtins.length (builtins.filter (permission:
-        permission.resource == change.resource
+        permission.resource
+        == change.resource
         && permission.access == "exclusive-write"
         && builtins.elem method permission.operations)
       entry.binding.caller_grant.resources)
@@ -52,13 +56,13 @@
   in
     if builtins.length matches == 1
     then (builtins.head matches).binding
-    else throw "systemd manager-watchdog transition requires one authorized effects binding";
+    else throw "systemd network-configuration transition requires one authorized effects binding";
   controllerFor = resource: let
     matches = builtins.filter (entry: entry.resource == resource) context.controllers;
   in
     if builtins.length matches == 1
     then (builtins.head matches).controller
-    else throw "systemd manager-watchdog transition requires one exact controller";
+    else throw "systemd network-configuration transition requires one exact controller";
   operationFor = change: let
     method = methodFor change.kind;
     binding = bindingFor change method;
@@ -76,7 +80,7 @@
     phase = "converging";
     input_phase = "planning";
     target = {
-      interface = binding.interface;
+      interface = resourceInterface;
       resource = change.resource;
       operations = [method];
       inherit (desired) lifetime;
@@ -84,12 +88,16 @@
     inputs = {
       source = "literal";
       value = {
-        kind = "manager-watchdog";
-        desired = desired.value;
+        bootstrap = null;
       };
     };
     preconditions = [];
-    accesses = [{resource = change.resource; mode = "exclusive-write";}];
+    accesses = [
+      {
+        resource = change.resource;
+        mode = "exclusive-write";
+      }
+    ];
     controller = controllerFor change.resource;
     deadline = {
       attempt_timeout_millis = 300000;
@@ -101,8 +109,14 @@
         max_attempts = 2;
         backoff_millis = 1000;
       };
-      reconcile = {interface = binding.interface; method = "observe";};
-      cancel = {interface = binding.interface; method = "observe";};
+      reconcile = {
+        interface = binding.interface;
+        method = "observe";
+      };
+      cancel = {
+        interface = binding.interface;
+        method = "observe";
+      };
       compensate = null;
     };
   };

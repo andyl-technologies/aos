@@ -108,7 +108,7 @@ in
       else [gnumake go];
     runtimeDeps = [];
 
-    abilities = ./_etcd-config/module.nix;
+    abilities = ./_etcd-config;
 
     phases = [
       {

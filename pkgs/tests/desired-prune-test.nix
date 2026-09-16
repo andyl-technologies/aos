@@ -86,7 +86,7 @@ in
       }
     ];
 
-    abilities = ./_desired-prune-test/module.nix;
+    abilities = ./_desired-prune-test;
 
     meta = {
       description = "AOS desired package prune sequencing test payload";

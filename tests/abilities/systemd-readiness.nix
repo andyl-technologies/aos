@@ -88,7 +88,6 @@
       inherit lib;
       modules = [
         lib.abilities.module
-        ./_systemd-platform-module.nix
         {
           config.aos.abilities = {
             environment = {
@@ -102,11 +101,7 @@
         }
       ];
       packageModules = [
-        {
-          name = "systemd";
-          inherit (pkgs.systemd) version;
-          module = pkgs.systemd.module + "/module.nix";
-        }
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
         {
           name = "consumer";
           module = consumerModule;

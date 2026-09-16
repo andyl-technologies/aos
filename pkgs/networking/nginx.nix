@@ -205,7 +205,7 @@ in
       }
     ];
 
-    abilities = ./_nginx/module.nix;
+    abilities = ./_nginx;
 
     meta = {
       description = "nginx — high-performance HTTP and reverse proxy server";

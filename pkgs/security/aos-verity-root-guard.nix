@@ -15,7 +15,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "aos-verity-root-guard";
-  abilities = ./_aos-verity-root-guard/module.nix;
+  abilities = ./_aos-verity-root-guard;
   qualification.packageProbe = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];

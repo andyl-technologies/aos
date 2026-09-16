@@ -23,6 +23,9 @@
     else if selectedBindings != []
     then throw "the Linux kernel implementation requires exactly one system:kernel binding"
     else null;
+  providerReady =
+    selected
+    && selectedBinding.implementation.value.provide != null;
   selectedKernelOutput =
     config.aos.abilities.compositionOutputs."system:kernel"."selected-kernel".value or null;
   kernelArtifact = packageArtifactFor kernelArtifactSelector;
@@ -50,8 +53,7 @@
   kernel =
     if
       selectedKernelOutput != null
-      && selectedKernelOutput._type == "aos-artifact-reference"
-      && selectedKernelOutput.store_path == builtins.toString kernelArtifact
+      && selectedKernelOutput == kernelArtifactSelector
     then authoredKernel
     else throw "selected kernel projection differs from its checked planning output";
 in {
@@ -64,12 +66,12 @@ in {
         methods = [];
         guarantees = [];
         providerModule = {
-          artifact = kernelArtifactSelector;
-          path = "share/aos/providers/linux.nix";
+          artifact = lib.abilities.packageOutput {output = "module";};
+          path = "provider.nix";
         };
       };
     };
 
-    aos.kernel.selected = lib.mkIf selected kernel;
+    aos.kernel.selected = lib.mkIf providerReady kernel;
   };
 }

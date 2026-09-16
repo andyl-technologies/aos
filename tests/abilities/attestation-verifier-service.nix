@@ -18,11 +18,7 @@
         }
       ];
       packageModules = [
-        {
-          name = "systemd";
-          version = pkgs.systemd.version;
-          module = pkgs.systemd.module + "/module.nix";
-        }
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
         {
           name = "aos";
           version = pkgs.aos.version;
@@ -114,4 +110,6 @@ in
   assert requests."aos:aos-attestation-verifier-isolation".parameters.network == "none";
   assert requests."aos:aos-attestation-verifier-linux_isolation".parameters.namespace_creation == "denied";
   assert portableOptionTree enabled.options.aos.services.attestationVerifier;
-  assert !(enabled.config ? systemd); true
+  assert enabled.config.systemd.providerUnitPlans == [];
+  assert enabled.config.systemd.providerManagerConfigurationPlans == [];
+  assert enabled.config.systemd.providerNetworkConfigurationPlans == []; true

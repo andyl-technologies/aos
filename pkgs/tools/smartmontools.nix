@@ -91,7 +91,7 @@ in
       else [];
     propagatedDeps = [];
 
-    abilities = ./_smartmontools/module.nix;
+    abilities = ./_smartmontools;
 
     # Guard: keep the autotools build toolchain out of smartctl/smartd's
     # `--version` strings (which previously pinned xz-5.6.4 and the entire

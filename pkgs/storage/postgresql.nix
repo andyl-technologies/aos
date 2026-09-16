@@ -329,7 +329,7 @@ in
         ++ [bash coreutils control];
     propagatedDeps = [];
 
-    abilities = ./_postgresql/module.nix;
+    abilities = ./_postgresql;
 
     phases = [
       {

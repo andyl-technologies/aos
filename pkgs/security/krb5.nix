@@ -309,7 +309,7 @@ in
     runtimeDeps = [openssl bash coreutils control];
     propagatedDeps = [];
 
-    abilities = ./_krb5-kdc/module.nix;
+    abilities = ./_krb5-kdc;
 
     phases = [
       {

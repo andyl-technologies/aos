@@ -92,7 +92,7 @@ in
     doCheck = false;
     runtimeDeps = [];
 
-    abilities = ./_garage-config/module.nix;
+    abilities = ./_garage-config;
 
     checks = {
       testing,

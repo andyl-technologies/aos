@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "cryptsetup";
-    abilities = ./_cryptsetup/module.nix;
+    abilities = ./_cryptsetup;
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];

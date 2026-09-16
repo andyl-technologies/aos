@@ -521,22 +521,6 @@ in
           sed -i "1c #!${python3}/bin/python3" \
             "$out/lib/kernel/install.d/60-ukify.install"
 
-          mkdir -p "$out/share/aos/providers"
-          cp ${./_systemd-provider.nix} "$out/share/aos/providers/systemd.nix"
-          cp ${./_systemd-qualification-checks.nix} "$out/share/aos/providers/_systemd-qualification-checks.nix"
-          cp ${./_systemd-package-store-read-view-provider.nix} "$out/share/aos/providers/systemd-package-store-read-view.nix"
-          cp ${./_systemd-manager-watchdog-transition.nix} "$out/share/aos/providers/_systemd-manager-watchdog-transition.nix"
-          cp ${./_systemd-network-configuration-transition.nix} "$out/share/aos/providers/_systemd-network-configuration-transition.nix"
-          cp ${./_systemd-native-resource-provider.nix} "$out/share/aos/providers/_systemd-native-resource-provider.nix"
-          cp ${./_systemd-native-resource-transition.nix} "$out/share/aos/providers/_systemd-native-resource-transition.nix"
-          cp ${./_systemd-packaged-unit-transition.nix} "$out/share/aos/providers/_systemd-packaged-unit-transition.nix"
-          cp ${./_systemd-service-provider-lib.nix} "$out/share/aos/providers/_systemd-service-provider-lib.nix"
-          cp ${./_systemd-service-document.nix} "$out/share/aos/providers/_systemd-service-document.nix"
-          cp ${./_systemd-service-transition.nix} "$out/share/aos/providers/_systemd-service-transition.nix"
-          cp ${./_systemd-identity-provider.nix} "$out/share/aos/providers/_systemd-identity-provider.nix"
-          cp ${./_systemd-identity-transition.nix} "$out/share/aos/providers/_systemd-identity-transition.nix"
-          cp ${./_systemd-unit-document.nix} "$out/share/aos/providers/_systemd-unit-document.nix"
-
           mkdir -p "$out/libexec"
           sed 's|@bash@|${bash}|g' \
             ${./aos-systemd-verity-root-setup.sh.in} \

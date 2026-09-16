@@ -32,11 +32,7 @@
           version = pkgs.aos.version;
           module = pkgs.aos.module + "/module.nix";
         }
-        {
-          name = "systemd";
-          version = pkgs.systemd.version;
-          module = pkgs.systemd.module + "/module.nix";
-        }
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
       ];
     };
   disabled = evaluate {enabled = false;};
@@ -90,17 +86,15 @@ in
   ];
   assert requests."aos:package-profile-convergence-dependencies".parameters.prerequisites
   == [
-    (resultOf "aos:configuration-evaluation-lifecycle" "service-resource")
     (resultOf "aos:package-profile-specification" "retained-resource")
+    (resultOf "aos:configuration-evaluation-lifecycle" "service-resource")
   ];
   assert quoteLifecycle.start
   == [
     {
       executable = {
-        artifact = lib.abilities.packageOutput {
-          package = "aos-systemd-provider";
-        };
-        entry_point = "bin/aos-systemd-attestation-provider";
+        artifact = lib.abilities.packageOutput {package = "systemd";};
+        entry_point = "libexec/aos-systemd-attestation-provider";
         arguments = [];
       };
       ignore_failure = false;
@@ -108,4 +102,6 @@ in
   ];
   assert requests."systemd:aos-attest-dependencies".parameters.prerequisites
   == [(resultOf "aos:package-profile-convergence-lifecycle" "service-resource")];
-  assert !(enabled.config ? systemd); true
+  assert enabled.config.systemd.providerUnitPlans == [];
+  assert enabled.config.systemd.providerManagerConfigurationPlans == [];
+  assert enabled.config.systemd.providerNetworkConfigurationPlans == []; true

@@ -89,7 +89,7 @@ in
       }
     ];
 
-    abilities = ./_desired-config-test/module.nix;
+    abilities = ./_desired-config-test;
 
     meta = {
       description = "AOS desired package config sequencing test payload";

@@ -110,7 +110,7 @@ in
     propagatedDeps = [];
     disallowedReferences = [cargoDeps rust];
 
-    abilities = ./_zram-generator/module.nix;
+    abilities = ./_zram-generator;
 
     phases = [
       {

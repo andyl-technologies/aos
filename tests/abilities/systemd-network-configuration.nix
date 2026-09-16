@@ -3,21 +3,12 @@
   lib,
   pkgs,
 }: let
-  artifactReference = {
-    content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd";
-    nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-  };
+  packageModule = lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd;
   systemdSelector = lib.abilities.packageOutput {};
   selectedSystemdProvider = import ./_selected-package-provider.nix {
     inherit lib;
     package = pkgs.systemd;
     implementation = "network-configuration";
-    dependencies.${builtins.toJSON {
-      package = systemdSelector.package;
-      output = systemdSelector.output;
-    }} = artifactReference.store_path;
   };
   consumerFor = resolverEnabled: {lib, ...}: {
     config.aos.abilities = lib.mkMerge [
@@ -68,7 +59,6 @@
       inherit lib;
       modules = [
         lib.abilities.module
-        ./_systemd-platform-module.nix
         {
           config.aos.abilities = {
             environment = {
@@ -82,11 +72,7 @@
         }
       ];
       packageModules = [
-        {
-          name = "systemd";
-          inherit (pkgs.systemd) version;
-          module = pkgs.systemd.module + "/module.nix";
-        }
+        packageModule
         {
           name = "consumer";
           module = consumerModule;

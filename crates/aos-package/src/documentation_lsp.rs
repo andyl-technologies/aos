@@ -801,6 +801,7 @@ mod tests {
             },
             requirements: Vec::new(),
             desired_schema: None,
+            composition_schema: None,
             provider_module: None,
             handler: None,
             owns_resource_kinds: Vec::new(),

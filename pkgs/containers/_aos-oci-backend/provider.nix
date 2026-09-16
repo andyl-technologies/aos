@@ -1,14 +1,7 @@
 ##! Publishes the exact selected OCI backend package identity.
-{
-  artifactLocatorFor,
-  lib,
-  ...
-}: let
+{lib, ...}: let
   alias = "artifact-backend";
   artifact = lib.abilities.packageOutput {};
-  artifactReference =
-    {_type = "aos-artifact-reference";}
-    // (artifactLocatorFor artifact).artifactReference;
   provide = context: {
     requests = {};
     resourceFragments = {};
@@ -16,7 +9,7 @@
       builtins.mapAttrs
       (_: request:
         if request.parameters
-        then {artifact-reference = artifactReference;}
+        then {artifact-reference = artifact;}
         else throw "the OCI artifact backend accepts only an enabled selection request")
       context.requests;
   };

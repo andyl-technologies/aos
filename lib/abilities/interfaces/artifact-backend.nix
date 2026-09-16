@@ -11,7 +11,7 @@
     description = "Selects one authenticated package-owned artifact construction backend.";
     requestType = types.boolean;
     outputs.artifact-reference = {
-      schema = types.artifactReference;
+      schema = types.artifactSelector;
       phase = "planning";
       lifetime = "persistent";
       visibility = "protected";

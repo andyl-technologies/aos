@@ -68,7 +68,7 @@ mkGoPackage {
   goOutput = "kubelet";
   ldflags = "-s -w -X k8s.io/component-base/version.gitVersion=v${kubeSource.version}";
   doCheck = false;
-  abilities = ./_kubelet-config/module.nix;
+  abilities = ./_kubelet-config;
 
   checks = {
     testing,

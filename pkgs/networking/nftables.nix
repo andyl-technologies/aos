@@ -76,7 +76,7 @@ in
 
     inherit version;
 
-    abilities = ./_nftables/module.nix;
+    abilities = ./_nftables;
 
     src = fetchurl {
       urls = [

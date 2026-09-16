@@ -104,7 +104,7 @@ mkDerivation {
     }
   ];
 
-  abilities = ./_test-http-server/module.nix;
+  abilities = ./_test-http-server;
 
   meta = {
     description = "AOS test HTTP server package";

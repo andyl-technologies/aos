@@ -79,7 +79,7 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [coreutils grep nix];
 
-    abilities = ./_aos-nix-store-provider-module.nix;
+    abilities = ./_aos-nix-store-provider;
 
     preBuild = staticBuildSetup;
 

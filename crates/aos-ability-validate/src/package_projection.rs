@@ -248,6 +248,9 @@ pub struct ProviderImplementationProjection {
     /// Portable realization schema for the selected provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desired_schema: Option<ValueSchema>,
+    /// Portable schema for the complete resource accepted by pure composition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_schema: Option<ValueSchema>,
     /// Symbolic locator for selected pure provider semantics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_module: Option<ModuleLocatorProjection>,
@@ -519,6 +522,9 @@ fn validate_projection_schemas(projection: &PackageAbilityProjection) -> Result<
         if let Some(schema) = &provider.desired_schema {
             validate("provider desired state", schema)?;
         }
+        if let Some(schema) = &provider.composition_schema {
+            validate("provider composition resource", schema)?;
+        }
     }
     for handler in projection.implementation.handlers.values() {
         validate("handler arguments", &handler.arguments)?;
@@ -719,6 +725,7 @@ pub fn resolve_package_projection(
                 requirements: provider.requirements,
                 owns_resource_kinds: provider.owns_resource_kinds,
                 desired_schema: provider.desired_schema,
+                composition_schema: provider.composition_schema,
                 provider_module,
                 handler: provider.handler,
                 state_format,

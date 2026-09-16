@@ -421,29 +421,45 @@
         children);
     })
     childrenByOrigin;
-  childDeclarationsValid = builtins.all (child: let
+  acceptedDeclarationsFor = child: let
     implementation = semanticImplementations.${child.implementation};
     requirement = implementation.requirements.${child.requirement} or null;
-    acceptedDeclarations =
-      if requirement == null
-      then []
-      else
-        builtins.filter (interface: let
-          identity = lib.abilities.interfaceIdentity (
-            lib.abilities.interfaceDocumentFromDeclaration interface
-          );
-        in
-          builtins.any
-          (selector: lib.abilities.interfaceSelectorMatches selector identity)
-          requirement.accepted_interfaces)
-        (builtins.attrValues semanticInterfaces);
+  in
+    if requirement == null
+    then []
+    else
+      builtins.filter (interface: let
+        identity = lib.abilities.interfaceIdentity (
+          lib.abilities.interfaceDocumentFromDeclaration interface
+        );
+      in
+        builtins.any
+        (selector: lib.abilities.interfaceSelectorMatches selector identity)
+        requirement.accepted_interfaces)
+      (builtins.attrValues semanticInterfaces);
+  childDeclarationAccepted = child: let
+    implementation = semanticImplementations.${child.implementation};
+    requirement = implementation.requirements.${child.requirement} or null;
+    acceptedDeclarations = acceptedDeclarationsFor child;
   in
     lib.abilities.types.localKey.check child.localRequestKey
     && lib.abilities.types.localKey.check child.requirement
     && builtins.all lib.abilities.types.localKey.check child.authored.scope
     && requirement != null
-    && builtins.any (interface: interface.requestType.check child.authored.parameters) acceptedDeclarations)
-  childEntries;
+    && builtins.any
+    (interface:
+      lib.abilities.types.accepts
+      "provider child request '${child.localRequestKey}'"
+      interface.requestType
+      child.authored.parameters)
+    acceptedDeclarations;
+  invalidChildDeclarations = builtins.filter (child: !childDeclarationAccepted child) childEntries;
+  childDeclarationsValid = invalidChildDeclarations == [];
+  childDeclarationMismatch = builtins.toJSON (builtins.map (child: {
+      inherit (child) implementation localRequestKey requirement;
+      parameterNames = builtins.attrNames child.authored.parameters;
+    })
+    invalidChildDeclarations);
   childBindingsValid =
     builtins.all (
       child: builtins.length (bindingNamesForRequest child.request) <= 1
@@ -465,7 +481,10 @@
       internalRequirement.requirement.accepted_interfaces
       && builtins.all (method: builtins.elem method entry.implementation.methods) internalRequirement.requirement.methods
       && builtins.all (guarantee: builtins.elem guarantee entry.implementation.guarantees) internalRequirement.requirement.guarantees
-      && entry.interface.requestType.check entry.request.parameters)
+      && lib.abilities.types.accepts
+      "selected provider child request '${entry.binding.request}'"
+      entry.interface.requestType
+      entry.request.parameters)
   selections;
 
   desiredResources = builtins.listToAttrs (builtins.concatLists (builtins.map (composition:
@@ -625,7 +644,7 @@ in {
     else if !childRequestKeysUnique
     then fail "every derived child request key must have exactly one producer"
     else if !childDeclarationsValid
-    then fail "a provider child request does not match its nested implementation requirement"
+    then fail "provider child requests do not match their nested implementation requirements: ${childDeclarationMismatch}"
     else if !childBindingsValid
     then fail "a provider child request has several selected bindings"
     else if !internalBindingsValid
@@ -642,7 +661,7 @@ in {
     else if !childRequestKeysUnique
     then fail "every derived child request key must have exactly one producer"
     else if !childDeclarationsValid
-    then fail "a provider child request does not match its nested implementation requirement"
+    then fail "provider child requests do not match their nested implementation requirements: ${childDeclarationMismatch}"
     else if !childBindingsValid
     then fail "a provider child request has several selected bindings"
     else if !internalBindingsValid

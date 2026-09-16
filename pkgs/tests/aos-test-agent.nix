@@ -91,7 +91,7 @@ in
       }
     ];
 
-    abilities = ./_aos-test-agent/module.nix;
+    abilities = ./_aos-test-agent;
 
     meta = {
       description = "AOS package for the VM test guest agent";

@@ -33,8 +33,8 @@ in {
     inherit (interface) methods;
     guarantees = [];
     providerModule = {
-      inherit artifact;
-      path = "share/aos/providers/systemd.nix";
+      artifact = lib.abilities.packageOutput {output = "module";};
+      path = "provider/systemd.nix";
     };
     desiredType = realizationType;
     requiredFeatures = [];

@@ -605,14 +605,15 @@
   in
     if terminal == null
     then []
-    else [
-      (semantic.directive "TTYPath" (quotedExecutionPath terminal.device))
-      (semantic.directive "TTYReset" (yesNo terminal.reset))
-      (semantic.directive "TTYVHangup" (yesNo terminal.hangup))
-      (semantic.directive "TTYVTDisallocate" (yesNo terminal.deallocate))
-      (semantic.directive "SendSIGHUP" (yesNo terminal.send_hangup_on_stop))
-    ]
-    ++ optional "UtmpIdentifier" (terminal.session_identifier or null);
+    else
+      [
+        (semantic.directive "TTYPath" (quotedExecutionPath terminal.device))
+        (semantic.directive "TTYReset" (yesNo terminal.reset))
+        (semantic.directive "TTYVHangup" (yesNo terminal.hangup))
+        (semantic.directive "TTYVTDisallocate" (yesNo terminal.deallocate))
+        (semantic.directive "SendSIGHUP" (yesNo terminal.send_hangup_on_stop))
+      ]
+      ++ optional "UtmpIdentifier" (terminal.session_identifier or null);
 
   serviceDirectives = value: let
     lifecycle = value.lifecycle;

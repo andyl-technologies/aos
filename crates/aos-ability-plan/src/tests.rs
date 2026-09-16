@@ -1263,6 +1263,7 @@ fn planner_fixture_with_contract(
         artifact: artifact.clone(),
         requirements: Vec::new(),
         desired_schema: None,
+        composition_schema: None,
         provider_module: Some(module_locator(artifact.clone())),
         handler: None,
         owns_resource_kinds: Vec::new(),

@@ -225,6 +225,7 @@ fn stateful_package() -> PackageDocument {
         artifact: artifact.clone(),
         requirements: Vec::new(),
         desired_schema: None,
+        composition_schema: None,
         provider_module: Some(ModuleLocator {
             artifact: artifact.clone(),
             path: RelativePath::new("default.nix").unwrap(),

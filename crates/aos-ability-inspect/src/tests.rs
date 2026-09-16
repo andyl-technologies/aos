@@ -110,6 +110,7 @@ fn install_package_with_feature(
         artifact: artifact.clone(),
         requirements: Vec::new(),
         desired_schema: None,
+        composition_schema: None,
         provider_module: None,
         handler: Some(handler.clone()),
         owns_resource_kinds: Vec::new(),
@@ -142,6 +143,7 @@ fn install_package_with_feature(
             artifact: artifact.clone(),
             requirements: Vec::new(),
             desired_schema: None,
+            composition_schema: None,
             provider_module: Some(ModuleLocator {
                 artifact: artifact.clone(),
                 path: RelativePath::new("default.nix")?,

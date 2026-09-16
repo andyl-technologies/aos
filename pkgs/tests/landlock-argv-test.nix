@@ -45,7 +45,7 @@ in
       }
     ];
 
-    abilities = ./_landlock-argv-test/module.nix;
+    abilities = ./_landlock-argv-test;
 
     meta = {
       description = "AOS Landlock exec argv preservation test payload";

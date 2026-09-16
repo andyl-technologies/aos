@@ -123,7 +123,7 @@ in
     runtimeDeps = [libcap bash];
     propagatedDeps = [];
 
-    abilities = ./_audit/module.nix;
+    abilities = ./_audit;
 
     phases = [
       {

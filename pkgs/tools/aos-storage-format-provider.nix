@@ -76,7 +76,7 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [];
 
-    abilities = ./_aos-storage-format-provider-module.nix;
+    abilities = ./_aos-storage-format-provider;
 
     preBuild = staticBuildSetup;
 

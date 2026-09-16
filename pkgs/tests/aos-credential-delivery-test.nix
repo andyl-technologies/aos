@@ -108,7 +108,7 @@ in
       }
     ];
 
-    abilities = ./_aos-credential-delivery-test/module.nix;
+    abilities = ./_aos-credential-delivery-test;
 
     meta = {
       description = "Fleet fixture for typed credential delivery";

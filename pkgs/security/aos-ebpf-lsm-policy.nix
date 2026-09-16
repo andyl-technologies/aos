@@ -88,7 +88,7 @@ in
     cargoFlags = "-p aos-ebpf-lsm-provider --bin aos-ebpf-lsm-provider";
     cargoTestFlags = "-p aos-ebpf-lsm-provider";
     doCheck = true;
-    abilities = ./_aos-ebpf-lsm-policy/module.nix;
+    abilities = ./_aos-ebpf-lsm-policy;
 
     buildDeps = [
       linux-headers

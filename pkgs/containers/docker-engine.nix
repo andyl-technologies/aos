@@ -142,7 +142,7 @@ in
     propagatedDeps = [];
     disallowedReferences = [buildPackages.go];
 
-    abilities = ./_docker-engine/module.nix;
+    abilities = ./_docker-engine;
 
     phases = [
       {

@@ -769,6 +769,7 @@ fn multi_export_owner_fixture(
         artifact: artifact.clone(),
         requirements: Vec::new(),
         desired_schema: None,
+        composition_schema: None,
         provider_module: None,
         handler: Some(handler_key.clone()),
         owns_resource_kinds: Vec::new(),
@@ -803,6 +804,7 @@ fn multi_export_owner_fixture(
         artifact: artifact.clone(),
         requirements: Vec::new(),
         desired_schema: None,
+        composition_schema: None,
         provider_module: Some(ModuleLocator {
             artifact: artifact.clone(),
             path: RelativePath::new("default.nix").expect("valid module path"),

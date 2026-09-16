@@ -89,7 +89,7 @@ in
     ];
     propagatedDeps = [];
 
-    abilities = ./_dnsmasq/module.nix;
+    abilities = ./_dnsmasq;
 
     phases = [
       {

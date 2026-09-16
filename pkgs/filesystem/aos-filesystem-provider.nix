@@ -28,7 +28,7 @@ in
     cargoTestFlags = "-p aos-filesystem-provider";
     doCheck = true;
 
-    abilities = ./_aos-filesystem-provider/module.nix;
+    abilities = ./_aos-filesystem-provider;
 
     postInstall = ''
       mkdir -p "$out/libexec" "$out/share/aos/providers"

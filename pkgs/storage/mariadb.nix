@@ -357,7 +357,7 @@ in
         ]
         ++ [bash coreutils sed control];
     propagatedDeps = [];
-    abilities = ./_mariadb/module.nix;
+    abilities = ./_mariadb;
 
     phases = [
       {
