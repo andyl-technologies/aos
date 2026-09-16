@@ -51,9 +51,10 @@
   scheduleUnitFor = resource: let
     normalized = providerLib.normalizedResourceId resource.resource;
     name = resource.value.name;
-    digest = builtins.hashString "sha256" (builtins.toJSON normalized);
+    identity =
+      lib.abilities.identityKeyFor "aos.systemd.timer-unit-key/v1" normalized;
   in {
-    unit_name = "aos-${name}-${digest}.timer";
+    unit_name = "aos-${name}-${identity}.timer";
   };
   triggerFor = resource: let
     matches = builtins.filter (candidate:
