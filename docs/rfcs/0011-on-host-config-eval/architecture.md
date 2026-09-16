@@ -56,7 +56,7 @@ APM resolves the desired package set (see
    name-injection idiom already used by `systemd.services.<name>`
    (`lib/modules/systemd/types.nix:71-91`, `lib/default.nix:77-88`).
 3. **The operator's leaf `host.nix`**, delivered as **literal Nix in the cloud
-   user-data** and fetched by the `aos metadata` agent (see
+   user-data** and fetched by the selected metadata provider (see
    [`provisioning.md`](provisioning.md) and
    [`trust-and-secrets.md`](trust-and-secrets.md)).
 
@@ -259,7 +259,7 @@ the config modules. Resolved by the **gen-0 seed**: baseline DHCP-on-all-`en*`
 baked in the image reaches the registry; config-driven networking (static IPs,
 VLANs, bonds from `host.nix`) takes effect only after the first eval
 materializes a generation and `activate.sh.in` swaps `/etc`. The path is:
-**DHCP seed → metadata agent delivers host.nix → fetch config closures → eval →
+**DHCP seed → selected metadata provider delivers host.nix → fetch config closures → eval →
 materialize → activate (real net applied at swap).**
 
 ### gen-0 seed
@@ -289,7 +289,7 @@ never leave a half-applied configuration.
 
 ### Steady-state reconfiguration
 
-The metadata agent reacquires and authorizes `host.nix` on every boot, and
+The selected metadata providers reacquire and authorize `host.nix` on every boot, and
 stage 2 performs the full evaluation on every boot. The committed GPT marker
 freezes storage mutation only. A changed runtime declaration is therefore
 reconciled without rebuilding the golden image or resetting storage. When

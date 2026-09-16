@@ -65,7 +65,7 @@ are *specified here* so the tests are written before the code:
 - **systemd-repart substrate** (`fleet`): explicit `systemctl status
   systemd-repart-*` + idempotency (carve+grow on fresh VM, **dry-run-only on
   reboot**) + the destructive-op state-probe guards run once.
-- **`aos metadata` agent** (`checks` + `fleet`): per-platform fetch over recorded
+- **Metadata providers** (`checks` + `fleet`): per-platform fetch over recorded
   fixtures (offline channels first), exact host.nix/hash retention, platform-mode
   authorization, signed-mode initrd verification against public anchors,
   first-boot typed storage-plan validation/rendering, facts → `host.facts.*`,

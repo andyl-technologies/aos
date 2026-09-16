@@ -100,9 +100,9 @@ evaluated input set to the activation and quote evidence.
 ## Provisioning and host.nix authenticity
 
 `host.nix` is operator-supplied and per-host — an input to the trusted
-computation but not in the image. The `aos metadata` agent fetches its exact
-literal Nix bytes (or resolves a URL+hash transport pointer used only for
-provider size limits). Authentication is selected by image policy:
+computation but not in the image. The selected metadata provider fetches its
+exact literal Nix bytes (or resolves a URL+hash transport pointer used only
+for provider size limits). Authentication is selected by image policy:
 
 - **`platform` (default)** treats successful delivery through the detected
   cloud metadata service or deployment-owned config drive as authorization.

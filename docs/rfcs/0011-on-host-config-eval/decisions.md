@@ -110,8 +110,9 @@ ISO9660 device; deterministic probe tests exercise every label, priority, and
 payload layout without repeating an equivalent privileged mount for every
 label/filesystem pair.
 
-**Rationale.** The metadata agent reads two narrow schemas: scalar fields from
-NoCloud `meta-data`, and the v1/v2 network fields that become typed host facts.
+**Rationale.** The selected metadata provider reads two narrow schemas: scalar
+fields from NoCloud `meta-data`, and the v1/v2 network fields that become typed
+host facts.
 A general YAML language is unnecessary attack surface in early boot and would
 expand the bootstrap closure with unsafe code. Label selection is independent
 of filesystem mounting after `blkid` resolves the device: all labels flow

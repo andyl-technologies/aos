@@ -1135,11 +1135,11 @@ Returning the drop-in RFC markdown contract.
 
 ---
 
-# `aos metadata` agent — implementation contract
+# Package-owned metadata providers — implementation contract
 
 > Historical scope only. This is not an implementation contract.
 
-The agent acquires bytes, applies the selected host trust policy, and preserves
+The selected providers acquire bytes, apply the selected host trust policy, and preserve
 exact accepted `host.nix` bytes. The common complete evaluator consumes frozen
 `initrdEvaluationInputs`, including authenticated selected package/provider
 modules and ordinary ability composition. The storage provider projects
