@@ -62,6 +62,39 @@ pub fn render_absent_package_ability_reference_html() -> String {
     ability_render::html_absent()
 }
 
+/// Renders structured prose as plain text.
+///
+/// This is the canonical terminal and search-summary projection. Links keep
+/// their labels, and absolute HTTPS links also include their destination.
+#[must_use]
+pub fn render_prose_plain(blocks: &[ProseBlock]) -> String {
+    let mut output = String::new();
+    render_blocks_plain(blocks, &mut output, 0);
+    output.trim().to_string()
+}
+
+/// Renders structured prose as safe HTML with model-owned relative links.
+#[must_use]
+pub fn render_prose_html(blocks: &[ProseBlock]) -> String {
+    render_prose_html_with_links(blocks, |target| Some(link_href(target)))
+}
+
+/// Renders structured prose as safe HTML with caller-resolved typed links.
+///
+/// The resolver may relocate package and option links for a hosting context or
+/// return `None` to render only the label. Resolved links are admitted only
+/// when they remain a safe root-relative, same-directory, fragment, or
+/// exact HTTPS target; all prose and link text is escaped by this renderer.
+#[must_use]
+pub fn render_prose_html_with_links(
+    blocks: &[ProseBlock],
+    mut resolve_link: impl FnMut(&LinkTarget) -> Option<String>,
+) -> String {
+    let mut output = String::new();
+    render_blocks_html(blocks, &mut output, &mut resolve_link);
+    output
+}
+
 /// Returns the stable HTML anchor for a documentation search kind and key.
 ///
 /// Both strings use lossless UTF-8 hex encoding, so punctuation and kind
@@ -385,7 +418,7 @@ impl OptionDocument {
     /// Renders the projected option description as bounded plain text.
     #[must_use]
     pub fn plain_description(&self) -> String {
-        prose_plain_text(&self.description)
+        render_prose_plain(&self.description)
     }
 }
 
@@ -729,7 +762,7 @@ impl PackageDocumentationProjection {
         let mut rows = self.document.search_documents();
         rows.reserve(self.options.len());
         for option in &self.options {
-            let summary = prose_plain_text(&option.description);
+            let summary = render_prose_plain(&option.description);
             rows.push(search_row(
                 "option",
                 &option.display_path,
@@ -863,7 +896,7 @@ impl PackageDocumentationProjection {
                     "\n{} ({})\n{}\n",
                     option.display_path,
                     option.type_signature,
-                    prose_plain_text(&option.description)
+                    render_prose_plain(&option.description)
                 ));
             }
         }
@@ -917,7 +950,7 @@ impl PackageDocumentationProjection {
                     output.push_str("</code></dt><dd><p><strong>");
                     escape_html_into(&option.type_signature, &mut output);
                     output.push_str("</strong></p>");
-                    render_blocks_html(&option.description, &mut output);
+                    output.push_str(&render_prose_html(&option.description));
                     output.push_str("</dd>");
                 }
                 output.push_str("</dl></section>");
@@ -941,7 +974,7 @@ impl PackageDocumentationProjection {
                 output.push_str(".TP\n.B \"");
                 escape_roff_into(&option.display_path, &mut output);
                 output.push_str("\"\n");
-                escape_roff_into(&prose_plain_text(&option.description), &mut output);
+                escape_roff_into(&render_prose_plain(&option.description), &mut output);
                 output.push_str("\nType: ");
                 escape_roff_into(&option.type_signature, &mut output);
                 output.push('\n');
@@ -1038,7 +1071,8 @@ fn validate_option(option: &OptionDocument) -> Result<()> {
     validate_nonempty("option type signature", &option.type_signature)?;
     validate_option_type(&option.option_type)?;
     validate_blocks(&option.description, 0)?;
-    if option.visibility == Visibility::Public && prose_plain_text(&option.description).is_empty() {
+    if option.visibility == Visibility::Public && render_prose_plain(&option.description).is_empty()
+    {
         return Err(invalid(format!(
             "public option '{}' has no description",
             option.display_path
@@ -1296,12 +1330,6 @@ pub fn tokenize(input: &str) -> Vec<String> {
     terms.into_iter().take(2048).collect()
 }
 
-fn prose_plain_text(blocks: &[ProseBlock]) -> String {
-    let mut output = String::new();
-    render_blocks_plain(blocks, &mut output, 0);
-    output.trim().to_string()
-}
-
 fn render_blocks_plain(blocks: &[ProseBlock], output: &mut String, depth: usize) {
     for block in blocks {
         match block {
@@ -1364,37 +1392,49 @@ fn render_spans_plain(spans: &[InlineSpan], output: &mut String) {
     }
 }
 
-fn render_blocks_html(blocks: &[ProseBlock], output: &mut String) {
+fn render_blocks_html(
+    blocks: &[ProseBlock],
+    output: &mut String,
+    resolve_link: &mut dyn FnMut(&LinkTarget) -> Option<String>,
+) {
     for block in blocks {
         match block {
             ProseBlock::Paragraph { spans } => {
-                output.push_str("<p>");
+                let mut writer = ParagraphWriter::new();
                 for span in spans {
                     match span {
-                        InlineSpan::Text { text } => escape_html_into(text, output),
+                        InlineSpan::Text { text } => writer.text(text),
                         InlineSpan::Code { text } => {
-                            output.push_str("<code>");
-                            escape_html_into(text, output);
-                            output.push_str("</code>");
+                            let mut escaped = String::new();
+                            escape_html_into(text, &mut escaped);
+                            writer.inline(&format!("<code>{escaped}</code>"));
                         }
                         InlineSpan::Link { label, target } => {
-                            let href = link_href(target);
-                            output.push_str("<a href=\"");
-                            escape_html_into(&href, output);
-                            output.push_str("\">");
-                            escape_html_into(label, output);
-                            output.push_str("</a>");
+                            let mut escaped_label = String::new();
+                            escape_html_into(label, &mut escaped_label);
+                            if let Some(href) =
+                                resolve_link(target).filter(|href| safe_resolved_link(target, href))
+                            {
+                                let mut escaped_href = String::new();
+                                escape_html_into(&href, &mut escaped_href);
+                                writer.inline(&format!(
+                                    "<a href=\"{escaped_href}\">{escaped_label}</a>"
+                                ));
+                            } else {
+                                writer.inline(&escaped_label);
+                            }
                         }
                     }
                 }
-                output.push_str("</p>");
+                writer.flush();
+                output.push_str(&writer.html);
             }
             ProseBlock::List { ordered, items } => {
                 let tag = if *ordered { "ol" } else { "ul" };
                 output.push_str(&format!("<{tag}>"));
                 for item in items {
                     output.push_str("<li>");
-                    render_blocks_html(item, output);
+                    render_blocks_html(item, output, resolve_link);
                     output.push_str("</li>");
                 }
                 output.push_str(&format!("</{tag}>"));
@@ -1407,14 +1447,21 @@ fn render_blocks_html(blocks: &[ProseBlock], output: &mut String) {
                 output.push_str("</code></pre>");
             }
             ProseBlock::Note { severity, blocks } => {
-                output.push_str("<aside data-severity=\"");
-                output.push_str(match severity {
+                let severity_name = match severity {
                     NoteSeverity::Info => "info",
                     NoteSeverity::Warning => "warning",
                     NoteSeverity::Security => "security",
+                };
+                output.push_str("<aside class=\"doc-note\" data-severity=\"");
+                output.push_str(severity_name);
+                output.push_str("\"><strong>");
+                output.push_str(match severity {
+                    NoteSeverity::Info => "Info",
+                    NoteSeverity::Warning => "Warning",
+                    NoteSeverity::Security => "Security",
                 });
-                output.push_str("\">");
-                render_blocks_html(blocks, output);
+                output.push_str("</strong>");
+                render_blocks_html(blocks, output, resolve_link);
                 output.push_str("</aside>");
             }
             ProseBlock::Definitions { entries } => {
@@ -1423,11 +1470,161 @@ fn render_blocks_html(blocks: &[ProseBlock], output: &mut String) {
                     output.push_str("<dt>");
                     escape_html_into(&entry.term, output);
                     output.push_str("</dt><dd>");
-                    render_blocks_html(&entry.body, output);
+                    render_blocks_html(&entry.body, output, resolve_link);
                     output.push_str("</dd>");
                 }
                 output.push_str("</dl>");
             }
+        }
+    }
+}
+
+/// Collects one paragraph while preserving typed inline spans and expanding
+/// source-description conventions carried by text spans.
+struct ParagraphWriter {
+    html: String,
+    current: String,
+}
+
+impl ParagraphWriter {
+    fn new() -> Self {
+        Self {
+            html: String::new(),
+            current: String::new(),
+        }
+    }
+
+    fn inline(&mut self, fragment: &str) {
+        if !self.current.is_empty() && !self.current.ends_with(' ') && !fragment.starts_with(' ') {
+            self.current.push(' ');
+        }
+        self.current.push_str(fragment);
+    }
+
+    fn flush(&mut self) {
+        let text = self.current.trim();
+        if !text.is_empty() {
+            let _ = write!(self.html, "<p>{text}</p>");
+        }
+        self.current.clear();
+    }
+
+    fn text(&mut self, text: &str) {
+        let lines = text.lines().collect::<Vec<_>>();
+        let mut index = 0;
+        while index < lines.len() {
+            let line = lines[index];
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                self.flush();
+                index += 1;
+            } else if let Some(fence) = trimmed.strip_prefix("```") {
+                self.flush();
+                let language = fence.trim();
+                let mut body = Vec::new();
+                index += 1;
+                while index < lines.len() && lines[index].trim() != "```" {
+                    body.push(lines[index]);
+                    index += 1;
+                }
+                index += 1;
+
+                let mut escaped_language = String::new();
+                escape_html_into(language, &mut escaped_language);
+                let mut escaped_body = String::new();
+                escape_html_into(&body.join("\n"), &mut escaped_body);
+                let _ = write!(
+                    self.html,
+                    "<pre><code data-language=\"{escaped_language}\">{escaped_body}</code></pre>"
+                );
+            } else if let Some((ordered, first)) = prose_list_item(trimmed) {
+                self.flush();
+                let tag = if ordered { "ol" } else { "ul" };
+                let _ = write!(self.html, "<{tag}>");
+                let mut item = first.to_string();
+                index += 1;
+                loop {
+                    let next = lines.get(index).map(|line| line.trim());
+                    match next {
+                        Some(next) if !next.is_empty() && prose_list_item(next).is_none() => {
+                            item.push(' ');
+                            item.push_str(next);
+                            index += 1;
+                        }
+                        _ => {
+                            let _ = write!(
+                                self.html,
+                                "<li>{}</li>",
+                                render_inline_source_text(item.trim())
+                            );
+                            match next.and_then(prose_list_item) {
+                                Some((_, first)) => {
+                                    item = first.to_string();
+                                    index += 1;
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+                let _ = write!(self.html, "</{tag}>");
+            } else {
+                self.inline(&render_inline_source_text(trimmed));
+                index += 1;
+            }
+        }
+        if text.ends_with(' ') {
+            self.current.push(' ');
+        }
+    }
+}
+
+fn render_inline_source_text(text: &str) -> String {
+    let mut html = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('`') {
+        let (before, after) = rest.split_at(open);
+        escape_html_into(before, &mut html);
+        match after[1..].find('`') {
+            Some(close) => {
+                html.push_str("<code>");
+                escape_html_into(&after[1..1 + close], &mut html);
+                html.push_str("</code>");
+                rest = &after[close + 2..];
+            }
+            None => {
+                escape_html_into(after, &mut html);
+                rest = "";
+            }
+        }
+    }
+    escape_html_into(rest, &mut html);
+    html
+}
+
+fn prose_list_item(line: &str) -> Option<(bool, &str)> {
+    if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+        return Some((false, rest));
+    }
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    if digits > 0 {
+        if let Some(rest) = line[digits..].strip_prefix(". ") {
+            return Some((true, rest));
+        }
+    }
+    None
+}
+
+fn safe_resolved_link(target: &LinkTarget, href: &str) -> bool {
+    if href.is_empty() || href.chars().any(|character| character.is_control()) {
+        return false;
+    }
+    match target {
+        LinkTarget::Https { url } => href == url && validate_https(href).is_ok(),
+        LinkTarget::Package { .. } | LinkTarget::Option { .. } | LinkTarget::Source { .. } => {
+            href.starts_with('#')
+                || href.starts_with("./")
+                || (href.starts_with('/') && !href.starts_with("//"))
         }
     }
 }
@@ -1721,6 +1918,55 @@ mod tests {
         assert!(html.contains("&lt;script&gt;"));
         let roff = projection.render_roff();
         assert!(roff.contains("\\&.danger \\e macro"));
+    }
+
+    #[test]
+    fn source_description_conventions_have_one_html_projection() {
+        let blocks = vec![paragraph(
+            "Operator keys are baked\ninto `host.nix`.\n\nUse one of:\n- `rotate` for overlap\n- `replace` to drop\n  the old key\n\n```sh\napm switch\n```\n1. first\n2. second\n",
+        )];
+
+        assert_eq!(
+            render_prose_html(&blocks),
+            "<p>Operator keys are baked into <code>host.nix</code>.</p>\
+             <p>Use one of:</p><ul><li><code>rotate</code> for overlap</li><li><code>replace</code> to drop the old key</li></ul>\
+             <pre><code data-language=\"sh\">apm switch</code></pre>\
+             <ol><li>first</li><li>second</li></ol>"
+        );
+    }
+
+    #[test]
+    fn link_context_relocates_only_safe_typed_destinations() {
+        let blocks = vec![ProseBlock::Paragraph {
+            spans: vec![
+                InlineSpan::Link {
+                    label: "package".to_string(),
+                    target: LinkTarget::Package {
+                        package: "nginx".to_string(),
+                    },
+                },
+                InlineSpan::Link {
+                    label: "external".to_string(),
+                    target: LinkTarget::Https {
+                        url: "https://example.com/".to_string(),
+                    },
+                },
+            ],
+        }];
+        let html = render_prose_html_with_links(&blocks, |target| match target {
+            LinkTarget::Package { .. } => Some("/main/packages/nginx".to_string()),
+            LinkTarget::Https { .. } => Some("javascript:alert(1)".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(
+            html,
+            "<p><a href=\"/main/packages/nginx\">package</a> external</p>"
+        );
+        assert_eq!(
+            render_prose_plain(&blocks),
+            "packageexternal (https://example.com/)"
+        );
     }
 
     #[test]
