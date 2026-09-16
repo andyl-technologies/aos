@@ -42,6 +42,8 @@ pub enum ContractOrigin {
 pub struct LocalRuntimePackage {
     /// Package version recorded by the image seed.
     pub version: String,
+    /// Exact target platform retained by the checked static contract.
+    pub platform: String,
     /// Exact runtime output in the immutable image closure.
     pub store_path: String,
     /// Authenticated NAR identity of the runtime output.
@@ -328,7 +330,7 @@ pub fn resolve_runtime_with_local(
             name,
             RuntimePackagePin {
                 version: package.version.clone(),
-                platform: "image".to_string(),
+                platform: package.platform.clone(),
                 registry: "image".to_string(),
                 origin: RuntimePackageOrigin::Image,
                 store_path: package.store_path.clone(),
@@ -533,6 +535,7 @@ mod tests {
             "image-web".to_string(),
             LocalRuntimePackage {
                 version: "1.2.3".to_string(),
+                platform: "x86_64-linux".to_string(),
                 store_path: store_path.to_string(),
                 nar_hash: format!("sha256:{FIX_NAR}"),
                 contract: None,

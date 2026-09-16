@@ -14,6 +14,7 @@ fn expectation() -> StaticAbilityContractExpectation {
             os: "linux".to_string(),
             architecture: "amd64".to_string(),
             variant: None,
+            target: None,
         }),
     }
 }
@@ -316,6 +317,22 @@ fn accepts_a_canonical_empty_container_contract() {
         .expect("canonical static contract must validate");
     assert_eq!(checked.platform_count(), 1);
     assert_eq!(checked.packages().len(), 0);
+}
+
+#[test]
+fn retains_an_authenticated_target_platform() {
+    let mut contract: Value = serde_json::from_slice(EMPTY_CONTAINER).unwrap();
+    contract["platforms"][0]["target"] = json!({
+        "system": "freebsd",
+        "architecture": "riscv64",
+    });
+    let bytes = aos_contract::canonical::to_vec(&contract).unwrap();
+
+    let checked = validate_static_ability_contract(&bytes, &aggregate_expectation()).unwrap();
+    let target = checked.platforms()[0].target.as_ref().unwrap();
+
+    assert_eq!(target.system.as_str(), "freebsd");
+    assert_eq!(target.architecture.as_str(), "riscv64");
 }
 
 #[test]

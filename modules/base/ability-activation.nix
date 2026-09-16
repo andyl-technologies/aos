@@ -28,6 +28,10 @@
     artifactClass = "bootable";
     executionStage = "host";
     platform = bootPlatform;
+    targetPlatform = {
+      system = pkgs.stdenv.hostPlatform.constraints.os;
+      architecture = pkgs.stdenv.hostPlatform.constraints.cpu;
+    };
     packageRoots = config.environment.systemPackages;
     packageRegistry = pkgs;
     runtimeRoots = config.environment.systemPackages;

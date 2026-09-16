@@ -130,6 +130,10 @@
     artifactClass = "bootable";
     executionStage = "initrd";
     platform = bootPlatform;
+    targetPlatform = {
+      system = pkgs.stdenv.hostPlatform.constraints.os;
+      architecture = pkgs.stdenv.hostPlatform.constraints.cpu;
+    };
     packageRoots = uniqueInitrdPackages;
     packageRegistry = pkgs;
     runtimeRoots = uniqueInitrdPackages;
