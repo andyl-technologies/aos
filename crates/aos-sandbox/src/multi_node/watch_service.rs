@@ -5,9 +5,9 @@
 
 use std::collections::VecDeque;
 
-use aos_proto::ProstMessage as _;
 use aos_proto::aos::sandbox::coordinator::v1 as wire;
 use aos_sandbox_core::ObjectDigest;
+use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -167,13 +167,15 @@ impl DormantOrderedWatchServiceV1 {
         let after = super::protocol::semantic_codec_v1::protobuf_cursor_model(
             request
                 .cursor
+                .into_option()
                 .ok_or(InvalidMultiNodeProtocol::NonCanonicalFrame)?,
         )?;
         let maximum_events = u16::try_from(request.maximum_events)
             .map_err(|_| InvalidMultiNodeProtocol::InvalidFrameLimits)?;
         let canonical_request = wire::OrderedWatchRequest {
-            cursor: Some(super::protocol::semantic_codec_v1::protobuf_cursor(after)),
+            cursor: Some(super::protocol::semantic_codec_v1::protobuf_cursor(after)).into(),
             maximum_events: u32::from(maximum_events),
+            ..Default::default()
         };
         if canonical_request != signed_request {
             return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
@@ -184,22 +186,26 @@ impl DormantOrderedWatchServiceV1 {
                 next_cursor: Some(events.last().map_or_else(
                     || super::protocol::semantic_codec_v1::protobuf_cursor(after),
                     |event| super::protocol::semantic_codec_v1::protobuf_cursor(event.cursor()),
-                )),
+                ))
+                .into(),
                 events: events
                     .iter()
                     .map(super::protocol::semantic_codec_v1::protobuf_ordered_event)
                     .collect(),
-                resync_binding: None,
+                resync_binding: Default::default(),
+                ..Default::default()
             },
             DormantWatchReadOutcomeV1::ResyncRequired(binding) => wire::OrderedWatchBatch {
                 events: Vec::new(),
-                next_cursor: None,
+                next_cursor: Default::default(),
                 resync_binding: Some(super::protocol::semantic_codec_v1::protobuf_binding(
                     binding,
-                )),
+                ))
+                .into(),
+                ..Default::default()
             },
         };
-        if let Some(binding) = batch.resync_binding.clone()
+        if let Some(binding) = batch.resync_binding.clone().into_option()
             && {
                 let binding = super::protocol::semantic_codec_v1::protobuf_binding_model(binding)?;
                 binding != self.cursor.binding() || !resync_binding_follows_cursor(binding, after)
@@ -302,8 +308,8 @@ impl DormantOrderedWatchClientV1 {
     ) -> Result<DormantWatchClientOutcomeV1, InvalidMultiNodeProtocol> {
         validate_generated_batch(&batch)?;
         let signed_batch = batch.clone();
-        if let Some(binding) = batch.resync_binding {
-            if !batch.events.is_empty() || batch.next_cursor.is_some() {
+        if let Some(binding) = batch.resync_binding.into_option() {
+            if !batch.events.is_empty() || batch.next_cursor.is_set() {
                 return Err(InvalidMultiNodeProtocol::WatchBatchNotCanonical);
             }
             let binding = super::protocol::semantic_codec_v1::protobuf_binding_model(binding)?;
@@ -318,10 +324,12 @@ impl DormantOrderedWatchClientV1 {
             }
             let canonical_batch = wire::OrderedWatchBatch {
                 events: Vec::new(),
-                next_cursor: None,
+                next_cursor: Default::default(),
                 resync_binding: Some(super::protocol::semantic_codec_v1::protobuf_binding(
                     binding,
-                )),
+                ))
+                .into(),
+                ..Default::default()
             };
             if canonical_batch != signed_batch {
                 return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
@@ -346,6 +354,7 @@ impl DormantOrderedWatchClientV1 {
         let next = super::protocol::semantic_codec_v1::protobuf_cursor_model(
             batch
                 .next_cursor
+                .into_option()
                 .ok_or(InvalidMultiNodeProtocol::WatchBatchNotCanonical)?,
         )?;
         if next != expected_next {
@@ -356,8 +365,9 @@ impl DormantOrderedWatchClientV1 {
                 .iter()
                 .map(super::protocol::semantic_codec_v1::protobuf_ordered_event)
                 .collect(),
-            next_cursor: Some(super::protocol::semantic_codec_v1::protobuf_cursor(next)),
-            resync_binding: None,
+            next_cursor: Some(super::protocol::semantic_codec_v1::protobuf_cursor(next)).into(),
+            resync_binding: Default::default(),
+            ..Default::default()
         };
         if canonical_batch != signed_batch {
             return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
@@ -387,11 +397,11 @@ fn resync_binding_follows_cursor(binding: NodeWatchBindingV1, cursor: NodeWatchC
 fn validate_generated_batch(
     batch: &wire::OrderedWatchBatch,
 ) -> Result<(), InvalidMultiNodeProtocol> {
-    if batch.encoded_len() == 0
-        || batch.encoded_len() > super::MAX_NODE_RESPONSE_BYTES as usize
-        || (batch.resync_binding.is_some()
-            && (!batch.events.is_empty() || batch.next_cursor.is_some()))
-        || (batch.resync_binding.is_none() && batch.next_cursor.is_none())
+    if batch.compute_size() == 0
+        || batch.compute_size() > super::MAX_NODE_RESPONSE_BYTES
+        || (batch.resync_binding.is_set()
+            && (!batch.events.is_empty() || batch.next_cursor.is_set()))
+        || (batch.resync_binding.is_unset() && batch.next_cursor.is_unset())
     {
         return Err(InvalidMultiNodeProtocol::InvalidFrameLimits);
     }

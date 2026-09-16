@@ -20,8 +20,8 @@ use crate::{
 
 use super::{
     CurrentLifecycleEffectV1, CurrentLifecycleOperationV1, CurrentLifecycleRetentionLedgerV1,
-    LifecycleAuthenticatedBrokerEffectV1, LifecycleEffectDomainV1, LifecyclePhase6ErrorV1,
-    LifecycleProtectedRetentionAcknowledgementV1, LifecycleResourceV1,
+    LifecycleAuthenticatedBrokerEffectV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
+    LifecyclePhase6ErrorV1, LifecycleProtectedRetentionAcknowledgementV1, LifecycleResourceV1,
     LifecycleRetentionAcknowledgementV1, LifecycleSnapshotManifestDigestV1,
     LifecycleValidatedSnapshotV1,
 };
@@ -1369,7 +1369,7 @@ const fn external_provider_journal_limits() -> JournalLimits {
 
 impl LifecycleSnapshotDependencyClassV1 {
     const fn is_self_contained(self) -> bool {
-        matches!(Self::ImmutableRetained | Self::OwnedHeldStorage, self)
+        matches!(self, Self::ImmutableRetained | Self::OwnedHeldStorage)
     }
 }
 

@@ -165,7 +165,7 @@ impl TryFrom<Execution> for CheckedExecutionResourceV1 {
             let signal = result.signal.as_known();
             let terminal_shape_is_valid = match termination_kind {
                 ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_EXIT_CODE => {
-                    result.signal == 0
+                    result.signal.to_i32() == 0
                 }
                 ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_SIGNAL => {
                     result.exit_code == 0
@@ -174,7 +174,7 @@ impl TryFrom<Execution> for CheckedExecutionResourceV1 {
                         })
                 }
                 ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_LOST => {
-                    result.exit_code == 0 && result.signal == 0
+                    result.exit_code == 0 && result.signal.to_i32() == 0
                 }
                 ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_UNSPECIFIED => false,
             };

@@ -775,7 +775,7 @@ fn receive_control_size(
     4_096_usize
         .checked_add(refs)?
         .checked_add(transitions)?
-        .checked_add(pre_database.graph().roots().len().checked_mul(32)?)
+        .checked_add(pre_database.graph().roots().len().checked_mul(32)?)?
         .checked_add(post_database.graph().roots().len().checked_mul(32)?)
         .and_then(|value| {
             value.checked_add(

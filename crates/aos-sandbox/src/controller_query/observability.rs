@@ -248,14 +248,14 @@ impl DormantResidualResourceV1 {
     /// # Errors
     ///
     /// Returns [`DormantObservabilityErrorV1::Unspecified`] for zero identities.
-    pub const fn new(
+    pub fn new(
         kind: DormantResidualKindV1,
         state: DormantResidualStateV1,
         local_identity_digest: ObjectDigest,
         owner_resource_id: Option<[u8; 16]>,
     ) -> Result<Self, DormantObservabilityErrorV1> {
         if local_identity_digest.as_bytes() == &[0; 32]
-            || matches!(owner_resource_id, Some([0; 16]))
+            || owner_resource_id.is_some_and(|identity| identity == [0; 16])
         {
             Err(DormantObservabilityErrorV1::Unspecified)
         } else {
@@ -1420,7 +1420,7 @@ fn decode_observability_effect_content(
     let mut audit = Vec::with_capacity(audit_count);
     for _ in 0..audit_count {
         let binding = decode_query_binding(&mut reader)?;
-        let wire = aos_proto::aos::sandbox::v1::Event::decode(reader.length_prefixed()?)
+        let wire = aos_proto::aos::sandbox::v1::Event::decode_from_slice(reader.length_prefixed()?)
             .map_err(|_| DormantObservabilityErrorV1::NotCanonical)?;
         audit.push(
             CheckedAuditWatchEventV1::from_response(binding, wire)

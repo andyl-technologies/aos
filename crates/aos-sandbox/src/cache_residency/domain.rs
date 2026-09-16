@@ -800,12 +800,6 @@ impl AuthorizedLookupKey {
         hasher.update(descriptor.encoded_size().to_be_bytes());
         Ok(Self(ObjectDigest::from_bytes(hasher.finalize().into())))
     }
-
-    /// Returns the opaque lookup commitment.
-    #[must_use]
-    pub const fn digest(self) -> ObjectDigest {
-        self.0
-    }
 }
 
 pub(crate) fn validate_object_descriptor(

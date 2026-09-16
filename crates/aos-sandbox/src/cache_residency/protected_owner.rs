@@ -713,7 +713,7 @@ impl CacheResidencyProtectedOwnerV1 {
                 .as_mut()
                 .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
             let projection =
-                CacheResidencyProtectedJournalV1::claim(journal, validator)?.replay()?;
+                CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
             refresh()?;
             Ok(projection)
         })
@@ -735,7 +735,7 @@ impl CacheResidencyProtectedOwnerV1 {
                 .as_mut()
                 .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
             let projection =
-                CacheResidencyProtectedJournalV1::claim(journal, validator)?.replay()?;
+                CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
             let mut latest = BTreeMap::new();
             for envelope in projection.records().iter().filter(|envelope| {
                 matches!(
@@ -745,7 +745,7 @@ impl CacheResidencyProtectedOwnerV1 {
                         | CacheResidencyProtectedRecordKindV1::Catalog
                 )
             }) {
-                let payload = decode_cache_payload_for_lifecycle(envelope, validator)?
+                let payload = decode_cache_payload_for_lifecycle(envelope, &validator)?
                     .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
                 let key = (envelope.key().kind(), payload.record.subject);
                 match latest.get(&key) {

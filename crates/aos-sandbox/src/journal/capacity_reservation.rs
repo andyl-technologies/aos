@@ -304,12 +304,12 @@ impl Journal {
     /// malformed state or failed provenance validation.
     pub(crate) fn lookup_global_capacity_reservation_v1(
         &self,
-        reservation_id: [u8; 32],
+        expected_reservation_id: [u8; 32],
     ) -> Result<Option<GlobalCapacityReservationV1>, JournalError> {
         self.ensure_healthy()?;
         let Some(value) = self.state.get(&(
             RecordNamespace::GlobalCapacityReservation,
-            reservation_key(reservation_id),
+            reservation_key(expected_reservation_id),
         )) else {
             return Ok(None);
         };
@@ -317,8 +317,8 @@ impl Journal {
         // The record's deterministic ID commits the original admission ID and
         // full request. Initial append enforces their atomic transaction; after
         // compaction this materialized self-binding is the durable provenance.
-        if decoded_id != reservation_id
-            || reservation_id(&request, admission_transaction_id) != reservation_id
+        if decoded_id != expected_reservation_id
+            || reservation_id(&request, admission_transaction_id) != expected_reservation_id
         {
             return Err(JournalError::MalformedRecord(
                 "capacity reservation provenance is invalid",
@@ -327,7 +327,7 @@ impl Journal {
         Ok(Some(GlobalCapacityReservationV1 {
             request,
             admission_transaction_id,
-            reservation_id,
+            reservation_id: expected_reservation_id,
             record_digest: digest_bytes(value),
         }))
     }
@@ -368,7 +368,7 @@ impl Journal {
         ))
     }
 
-    fn settle_global_capacity_reservation_v1(
+    pub(super) fn settle_global_capacity_reservation_v1(
         &mut self,
         reservation: GlobalCapacityReservationV1,
         transaction: &JournalTransaction,
@@ -436,9 +436,9 @@ pub(super) fn decode_capacity_record(
     key: &[u8],
     value: &[u8],
 ) -> Result<DecodedCapacityReservationV1, JournalError> {
-    let (request, admission, reservation_id) = decode_reservation(value)?;
-    if key != reservation_key(reservation_id).as_slice()
-        || reservation_id(&request, admission) != reservation_id
+    let (request, admission, decoded_reservation_id) = decode_reservation(value)?;
+    if key != reservation_key(decoded_reservation_id).as_slice()
+        || reservation_id(&request, admission) != decoded_reservation_id
         || request.owner_namespace != request.purpose.owner_namespace()
     {
         return Err(JournalError::MalformedRecord(
@@ -446,7 +446,7 @@ pub(super) fn decode_capacity_record(
         ));
     }
     Ok(DecodedCapacityReservationV1 {
-        reservation_id,
+        reservation_id: decoded_reservation_id,
         maximum_records: usize::try_from(request.terminal_records.max(request.poison_records))
             .map_err(|_| JournalError::LimitExceeded("reserved record count"))?,
         maximum_bytes: request.terminal_bytes.max(request.poison_bytes),

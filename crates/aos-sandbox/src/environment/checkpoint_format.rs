@@ -247,12 +247,19 @@ fn encode_checkpoint(
         u32::try_from(floors.len()).map_err(|_| EnvironmentModelError::InvalidModel)?;
     let record_count =
         u32::try_from(records.len()).map_err(|_| EnvironmentModelError::InvalidModel)?;
+    let fixed_length = HEADER_BYTES
+        .checked_add(
+            floors
+                .len()
+                .checked_mul(24)
+                .ok_or(EnvironmentModelError::InvalidModel)?,
+        )
+        .ok_or(EnvironmentModelError::InvalidModel)?;
     let length = records
         .iter()
-        .try_fold(
-            HEADER_BYTES.checked_add(floors.len().checked_mul(24)?)?,
-            |total, record| total.checked_add(4)?.checked_add(record.len()),
-        )
+        .try_fold(fixed_length, |total, record| {
+            total.checked_add(4)?.checked_add(record.len())
+        })
         .and_then(|value| value.checked_add(DIGEST_BYTES))
         .filter(|value| *value <= ceiling)
         .ok_or(EnvironmentModelError::InvalidModel)?;

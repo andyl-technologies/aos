@@ -46,9 +46,9 @@ impl GitDurableHistoryV1 {
     ) -> Result<(), GitModelError> {
         let target = fork.target().repository().repository();
         let source_export = self.export_generations.values().find(|record| {
-            record.export.repository() == fork.source_repository()
-                && record.export.repository_revision() == fork.source_revision()
-                && record.export.generation_digest() == fork.source_export()
+            record.export().repository() == fork.source_repository()
+                && record.export().repository_revision() == fork.source_revision()
+                && record.export().generation_digest() == fork.source_export()
         });
         let source_matches = source_export.is_some_and(|record| {
             self.repository_revisions
@@ -57,12 +57,12 @@ impl GitDurableHistoryV1 {
                     repository.repository().project() == fork.target().repository().project()
                         && repository.repository().revision() == fork.source_revision()
                 })
-                && fork.target().ref_map() == record.export.ref_map()
-                && fork.target().database() == record.export.database()
+                && fork.target().ref_map() == record.export().ref_map()
+                && fork.target().database() == record.export().database()
                 && self.packs.values().any(|pack| {
                     pack.generation_digest() == fork.pack()
-                        && pack.export_digest() == record.export.generation_digest()
-                        && pack.database() == record.export.database()
+                        && pack.export_digest() == record.export().generation_digest()
+                        && pack.database() == record.export().database()
                 })
         });
         if let Some(existing) = self.cheap_forks.get(&target) {

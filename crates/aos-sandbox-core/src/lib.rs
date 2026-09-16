@@ -85,6 +85,7 @@ pub use model::execution::{
     MAX_EXECUTION_RESOURCE_SETTINGS, MAX_EXECUTION_STRING_BYTES,
     MAX_EXECUTION_SUPPLEMENTARY_GROUPS, PayloadBootId, UnrepresentableLegacyExecutionObservation,
 };
+pub use model::{KeyUsage, SignaturePurpose};
 pub use ownership_lease::{
     BrokerAdmissionIntersection, CLOCK_PAIR_TOLERANCE_NANOSECONDS,
     DurableHistoricalWallClockInstant, HistoricalOwnershipLeaseExpectation, InvalidOwnershipLease,
@@ -113,6 +114,7 @@ pub use resources::{
     AccountingError, AncestryAdmissionError, ReservationClass, ResourceAccount, ResourceBudget,
     ResourceCeilings, ResourceDimension, ResourceLimit, ResourceVector,
 };
+pub use runtime_backend::ExecutionAdmissionDraftV1;
 pub use selector::{
     FeatureRef, InvalidPathName, MediaType, ObjectDescriptor, ObjectDigest, Operation,
     OperationSet, PathName, RelativePath, ResourceKind, Selector,

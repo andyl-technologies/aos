@@ -5,7 +5,7 @@
 //! change. Those actions require the postcommit capabilities minted here.
 
 use aos_sandbox_core::{
-    CacheDomainId, ObjectDigest, ProjectId,
+    CacheDomainId, ObjectDescriptor, ObjectDigest, ProjectId,
     model::{CacheDomain, CacheDomainKind},
 };
 use sha2::{Digest as _, Sha256};
@@ -748,12 +748,10 @@ const fn cache_identity_length_matches(
     kind: CacheResidencyProtectedRecordKindV1,
     length: usize,
 ) -> bool {
-    if kind == CacheResidencyProtectedRecordKindV1::EffectObservation {
-        length == 16
-    } else if kind == CacheResidencyProtectedRecordKindV1::Checkpoint {
-        length == 81
-    } else {
-        length == 121
+    match kind {
+        CacheResidencyProtectedRecordKindV1::EffectObservation => length == 16,
+        CacheResidencyProtectedRecordKindV1::Checkpoint => length == 81,
+        _ => length == 121,
     }
 }
 
@@ -1287,7 +1285,12 @@ impl CacheResidencyColdObservationV1 {
     {
         authority.replay()?;
         let inner = self.inner.consume(&authority.inner)?;
-        let kind = transaction_kind_from_records(inner.records())?;
+        let records = inner
+            .records()
+            .iter()
+            .map(|record| record.envelope().clone())
+            .collect::<Vec<_>>();
+        let kind = classify_replayed_cache_transaction(&records)?;
         Ok(ValidatedCacheResidencyPostcommitV1 { kind, inner })
     }
 }

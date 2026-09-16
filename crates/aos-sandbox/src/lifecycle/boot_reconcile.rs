@@ -14,6 +14,7 @@ use buffa::Message as _;
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::marker::PhantomData;
 #[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
 
@@ -175,23 +176,20 @@ impl LifecycleBootInventoryBootstrapChallengeV1 {
         if initial.method() != endpoint.method() || current.method() != endpoint.method() {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
-        Ok(ObjectDigest::from_bytes(
-            Sha256::new()
-                .chain_update(b"aos.sandbox.lifecycle.boot-bootstrap-attestation.v1\0")
-                .chain_update([endpoint as u8])
-                .chain_update(self.nonce)
-                .chain_update(self.operation.as_bytes())
-                .chain_update(self.operation_record.digest().as_bytes())
-                .chain_update(self.projection_root.as_bytes())
-                .chain_update(self.host_boot)
-                .chain_update(Sha256::digest(initial.canonical_packet()))
-                .chain_update(Sha256::digest(current.canonical_packet()))
-                .chain_update(initial_commitment.as_bytes())
-                .chain_update(current_commitment.as_bytes())
-                .finalize()
-                .into(),
-        )
-        .into_bytes())
+        Ok(Sha256::new()
+            .chain_update(b"aos.sandbox.lifecycle.boot-bootstrap-attestation.v1\0")
+            .chain_update([endpoint as u8])
+            .chain_update(self.nonce)
+            .chain_update(self.operation.as_bytes())
+            .chain_update(self.operation_record.digest().as_bytes())
+            .chain_update(self.projection_root.as_bytes())
+            .chain_update(self.host_boot)
+            .chain_update(Sha256::digest(initial.canonical_packet()))
+            .chain_update(Sha256::digest(current.canonical_packet()))
+            .chain_update(initial_commitment.as_bytes())
+            .chain_update(current_commitment.as_bytes())
+            .finalize()
+            .into())
     }
 
     /// Derives a signed message for one exact adjacent Storage state change.
@@ -206,6 +204,8 @@ impl LifecycleBootInventoryBootstrapChallengeV1 {
         previous: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<[u8; 32], LifecyclePhase6ErrorV1> {
+        let previous_packet_digest = Sha256::digest(previous.canonical_packet());
+        let current_packet_digest = Sha256::digest(current.canonical_packet());
         let previous =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(previous)?;
         let current =
@@ -230,22 +230,19 @@ impl LifecycleBootInventoryBootstrapChallengeV1 {
         {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
-        Ok(ObjectDigest::from_bytes(
-            Sha256::new()
-                .chain_update(b"aos.sandbox.lifecycle.boot-storage-transition-attestation.v1\0")
-                .chain_update(self.nonce)
-                .chain_update(self.operation.as_bytes())
-                .chain_update(self.operation_record.digest().as_bytes())
-                .chain_update(self.projection_root.as_bytes())
-                .chain_update(self.host_boot)
-                .chain_update(Sha256::digest(previous.canonical_packet()))
-                .chain_update(Sha256::digest(current.canonical_packet()))
-                .chain_update(previous.commitment.as_bytes())
-                .chain_update(current.commitment.as_bytes())
-                .finalize()
-                .into(),
-        )
-        .into_bytes())
+        Ok(Sha256::new()
+            .chain_update(b"aos.sandbox.lifecycle.boot-storage-transition-attestation.v1\0")
+            .chain_update(self.nonce)
+            .chain_update(self.operation.as_bytes())
+            .chain_update(self.operation_record.digest().as_bytes())
+            .chain_update(self.projection_root.as_bytes())
+            .chain_update(self.host_boot)
+            .chain_update(previous_packet_digest)
+            .chain_update(current_packet_digest)
+            .chain_update(previous.commitment.as_bytes())
+            .chain_update(current.commitment.as_bytes())
+            .finalize()
+            .into())
     }
 
     /// Derives a challenge-bound message for one Storage Apply and readback.
@@ -265,20 +262,17 @@ impl LifecycleBootInventoryBootstrapChallengeV1 {
         {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
-        Ok(ObjectDigest::from_bytes(
-            Sha256::new()
-                .chain_update(b"aos.sandbox.lifecycle.boot-storage-effect-attestation.v1\0")
-                .chain_update(self.nonce)
-                .chain_update(self.operation.as_bytes())
-                .chain_update(self.operation_record.digest().as_bytes())
-                .chain_update(self.projection_root.as_bytes())
-                .chain_update(self.host_boot)
-                .chain_update(Sha256::digest(apply.canonical_packet()))
-                .chain_update(Sha256::digest(inventory.canonical_packet()))
-                .finalize()
-                .into(),
-        )
-        .into_bytes())
+        Ok(Sha256::new()
+            .chain_update(b"aos.sandbox.lifecycle.boot-storage-effect-attestation.v1\0")
+            .chain_update(self.nonce)
+            .chain_update(self.operation.as_bytes())
+            .chain_update(self.operation_record.digest().as_bytes())
+            .chain_update(self.projection_root.as_bytes())
+            .chain_update(self.host_boot)
+            .chain_update(Sha256::digest(apply.canonical_packet()))
+            .chain_update(Sha256::digest(inventory.canonical_packet()))
+            .finalize()
+            .into())
     }
 
     /// Derives the fixed-endpoint signature message for a Mount or Network effect.
@@ -316,22 +310,19 @@ impl LifecycleBootInventoryBootstrapChallengeV1 {
         }
         let authenticated = effect.authenticated_broker_effect(outcome.request())?;
         authenticated.require_broker_readback_handoff(outcome, inventory)?;
-        Ok(ObjectDigest::from_bytes(
-            Sha256::new()
-                .chain_update(b"aos.sandbox.lifecycle.boot-domain-effect-attestation.v1\0")
-                .chain_update([endpoint as u8])
-                .chain_update(self.nonce)
-                .chain_update(self.operation.as_bytes())
-                .chain_update(self.operation_record.digest().as_bytes())
-                .chain_update(self.projection_root.as_bytes())
-                .chain_update(self.host_boot)
-                .chain_update(effect.canonical_body())
-                .chain_update(Sha256::digest(outcome.canonical_packet()))
-                .chain_update(Sha256::digest(inventory.canonical_packet()))
-                .finalize()
-                .into(),
-        )
-        .into_bytes())
+        Ok(Sha256::new()
+            .chain_update(b"aos.sandbox.lifecycle.boot-domain-effect-attestation.v1\0")
+            .chain_update([endpoint as u8])
+            .chain_update(self.nonce)
+            .chain_update(self.operation.as_bytes())
+            .chain_update(self.operation_record.digest().as_bytes())
+            .chain_update(self.projection_root.as_bytes())
+            .chain_update(self.host_boot)
+            .chain_update(effect.canonical_body())
+            .chain_update(Sha256::digest(outcome.canonical_packet()))
+            .chain_update(Sha256::digest(inventory.canonical_packet()))
+            .finalize()
+            .into())
     }
 
     pub(super) const fn operation(&self) -> OperationId {
@@ -617,7 +608,7 @@ impl LifecycleAuthenticatedBrokerDomainInventorySuccessorV1 {
             signature,
         )?;
         let expected = match endpoint {
-            LifecycleBootBootstrapEndpointV1::Mount => boot.inventory().domains().mount(),
+            LifecycleBootBootstrapEndpointV1::Mount => boot.inventory().domains().mounts(),
             LifecycleBootBootstrapEndpointV1::Network => boot.inventory().domains().network(),
             _ => return Err(LifecyclePhase6ErrorV1::InvalidInput),
         };

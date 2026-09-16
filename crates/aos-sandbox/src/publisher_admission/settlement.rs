@@ -334,21 +334,16 @@ impl<'journal> PublisherProtectedJournalOwnerV1<'journal> {
     ) -> Result<CompletionReceiptV1, PublisherProtectedJournalOwnerErrorV1> {
         let capacity = self.take_capacity(operation)?;
         let mut store = self.authority.protected_store_capacity_settlement(capacity);
-        let authority = match ledger.authorize_completion(
-            committed,
-            permit,
-            effect,
-            intended_entry,
-            catalog,
-            &mut store,
-        ) {
-            Ok(authority) => authority,
-            Err(error) => {
-                let capacity = store.reclaim_unsettled_capacity();
-                self.retain_capacity(capacity)?;
-                return Err(error.into());
-            }
-        };
+        let prepared_authority =
+            match ledger.authorize_completion(committed, permit, effect, intended_entry, catalog) {
+                Ok(authority) => authority,
+                Err(error) => {
+                    let capacity = store.reclaim_unsettled_capacity();
+                    self.retain_capacity(capacity)?;
+                    return Err(error.into());
+                }
+            };
+        let authority = prepared_authority.bind_store(&mut store);
         let settlement = CompletionSettlementV1::from_durable_adapter(
             authority,
             catalog_observation,
@@ -376,20 +371,16 @@ impl<'journal> PublisherProtectedJournalOwnerV1<'journal> {
     ) -> Result<RecoveryResultV1, PublisherProtectedJournalOwnerErrorV1> {
         let capacity = self.take_capacity(operation)?;
         let mut store = self.authority.protected_store_capacity_settlement(capacity);
-        let permit = match ledger.authorize_catalog_repair(
-            committed,
-            operation,
-            intended_entry,
-            catalog,
-            &mut store,
-        ) {
-            Ok(permit) => permit,
-            Err(error) => {
-                let capacity = store.reclaim_unsettled_capacity();
-                self.retain_capacity(capacity)?;
-                return Err(error.into());
-            }
-        };
+        let prepared_permit =
+            match ledger.authorize_catalog_repair(committed, operation, intended_entry, catalog) {
+                Ok(permit) => permit,
+                Err(error) => {
+                    let capacity = store.reclaim_unsettled_capacity();
+                    self.retain_capacity(capacity)?;
+                    return Err(error.into());
+                }
+            };
+        let permit = prepared_permit.bind_store(&mut store);
         let completion = RecoveryObservationV1::repaired_catalog_from_durable_adapter(
             permit,
             catalog_observation,

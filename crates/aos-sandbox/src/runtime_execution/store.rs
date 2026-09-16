@@ -399,7 +399,8 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         }
         self.authority
             .validate_snapshot_for_effect(&permit.snapshot)?;
-        let operation = permit.effect.issue().idempotency().operation().as_bytes();
+        let operation_id = permit.effect.issue().idempotency().operation();
+        let operation = operation_id.as_bytes();
         let stored = self
             .authority
             .get(&effect_key(operation))?
@@ -662,7 +663,8 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         completion: Option<&EffectCompletionV1>,
         expected_record: ObjectDigest,
     ) -> Result<EffectStoreTransitionV1<ExecutionJournalRecoveryTokenV1>, EffectCommitError> {
-        let operation = issue.idempotency().operation().as_bytes();
+        let operation_id = issue.idempotency().operation();
+        let operation = operation_id.as_bytes();
         let key = effect_key(operation);
         let current = self
             .authority

@@ -639,7 +639,7 @@ impl AdmissionProgressV1 {
 }
 
 /// Returns the atomically released reservation and authority-bound abort record.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AbortedAdmissionV1 {
     /// Released reservation generation.
     pub reservation: CacheReservationV1,

@@ -52,8 +52,9 @@ use super::semantic::{
     LifecycleSemanticCommitFactV1, LifecycleSnapshotManifestDigestV1, LifecycleTransactionIdV1,
 };
 use super::semantic_format::{
-    LifecycleSemanticFactLayoutV1, decode_semantic_fact_with_layout,
-    encode_semantic_fact_with_layout, preflight_semantic_fact_with_layout,
+    LifecycleSemanticFactLayoutV1, decode_expected_resource, decode_semantic_fact_with_layout,
+    encode_expected_resource, encode_semantic_fact_with_layout,
+    preflight_semantic_fact_with_layout,
 };
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, ExecutionId, IncarnationId, NamespaceGeneration,
@@ -225,14 +226,16 @@ pub fn decode_operation_record_v1(
     {
         return Err(LifecycleModelError::CorruptEncoding);
     }
+    let expectation_bytes = expectation_count
+        .checked_mul(EXPECTATION_BYTES)
+        .ok_or(LifecycleModelError::CorruptEncoding)?;
+    let step_bytes = step_count
+        .checked_mul(STEP_BYTES)
+        .ok_or(LifecycleModelError::CorruptEncoding)?;
     let expected_length = FIXED_BODY_BYTES
         .checked_add(semantic_fact_length)
-        .checked_add(
-            expectation_count
-                .checked_mul(EXPECTATION_BYTES)
-                .ok_or(LifecycleModelError::CorruptEncoding)?,
-        )
-        .and_then(|value| value.checked_add(step_count.checked_mul(STEP_BYTES)?))
+        .and_then(|length| length.checked_add(expectation_bytes))
+        .and_then(|length| length.checked_add(step_bytes))
         .ok_or(LifecycleModelError::CorruptEncoding)?;
     if body.len() != expected_length {
         return Err(LifecycleModelError::CorruptEncoding);

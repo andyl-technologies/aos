@@ -4,9 +4,9 @@
 //! exchanges, but owns no socket, listener, retry loop, service registration,
 //! or readiness advertisement. Callers must provide and move response bytes.
 
-use aos_proto::ProstMessage as _;
 use aos_proto::aos::sandbox::coordinator::v1 as wire;
 use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, ProtocolVersion};
+use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::*;
@@ -286,12 +286,13 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
         match self.encoding {
             DormantCoordinatorNodeEncodingV1::Protobuf => {
                 let semantic_bytes = self.codec.encode_request(body)?;
-                let semantic = wire::SemanticEnvelope::decode(semantic_bytes.as_slice())
+                let semantic = wire::SemanticEnvelope::decode_from_slice(semantic_bytes.as_slice())
                     .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
                 let generated = wire::CoordinatorNodeRequest {
                     request_uid: request.as_bytes().to_vec(),
-                    session: Some(session_binding(&self.session, self.encoding)),
-                    semantic: Some(semantic),
+                    session: Some(session_binding(&self.session, self.encoding)).into(),
+                    semantic: Some(semantic).into(),
+                    ..Default::default()
                 };
                 let bytes = generated.encode_to_vec();
                 if bytes.is_empty() || bytes.len() > self.session.maximum_request_bytes() as usize {
@@ -417,19 +418,20 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
         match self.encoding {
             DormantCoordinatorNodeEncodingV1::Protobuf => {
                 let semantic_bytes = self.codec.encode_response(body)?;
-                let semantic = wire::SemanticEnvelope::decode(semantic_bytes.as_slice())
+                let semantic = wire::SemanticEnvelope::decode_from_slice(semantic_bytes.as_slice())
                     .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
                 let generated = wire::CoordinatorNodeResponse {
                     request_uid: request.request().as_bytes().to_vec(),
-                    session: Some(session_binding(&self.session, self.encoding)),
-                    semantic: Some(semantic),
+                    session: Some(session_binding(&self.session, self.encoding)).into(),
+                    semantic: Some(semantic).into(),
+                    ..Default::default()
                 };
                 let bytes = generated.encode_to_vec();
                 if bytes.is_empty() || bytes.len() > self.session.maximum_response_bytes() as usize
                 {
                     return Err(InvalidMultiNodeProtocol::InvalidFrameLimits);
                 }
-                let consumed = wire::CoordinatorNodeResponse::decode(bytes.as_slice())
+                let consumed = wire::CoordinatorNodeResponse::decode_from_slice(bytes.as_slice())
                     .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
                 if consumed.encode_to_vec() != bytes || consumed != generated {
                     return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
@@ -510,21 +512,22 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
                 {
                     return Err(InvalidMultiNodeProtocol::InvalidFrameLimits);
                 }
-                let response = wire::CoordinatorNodeResponse::decode(response_bytes)
+                let response = wire::CoordinatorNodeResponse::decode_from_slice(response_bytes)
                     .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
                 if response.encode_to_vec().as_slice() != response_bytes
                     || response.request_uid.as_slice() != request.envelope.request().as_bytes()
-                    || response.session.as_ref()
+                    || response.session.as_option()
                         != Some(&session_binding(&self.session, self.encoding))
                 {
                     return Err(InvalidMultiNodeProtocol::SessionMismatch);
                 }
                 let semantic = response
                     .semantic
+                    .into_option()
                     .ok_or(InvalidMultiNodeProtocol::NonCanonicalFrame)?;
                 let semantic_bytes = semantic.encode_to_vec();
                 let kind = crate::multi_node::protocol::protobuf_codec_v1::response_frame_kind(
-                    semantic.kind,
+                    semantic.kind.to_i32(),
                 )?;
                 let carrier_bytes = u32::try_from(response_bytes.len())
                     .map_err(|_| InvalidMultiNodeProtocol::InvalidFrameLimits)?;
@@ -573,10 +576,10 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
         {
             return Err(InvalidMultiNodeProtocol::InvalidFrameLimits);
         }
-        let request = wire::CoordinatorNodeRequest::decode(request_bytes)
+        let request = wire::CoordinatorNodeRequest::decode_from_slice(request_bytes)
             .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
         if request.encode_to_vec().as_slice() != request_bytes
-            || request.session.as_ref() != Some(&session_binding(&self.session, self.encoding))
+            || request.session.as_option() != Some(&session_binding(&self.session, self.encoding))
         {
             return Err(InvalidMultiNodeProtocol::SessionMismatch);
         }
@@ -588,11 +591,12 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
         let operation = OperationId::from_bytes(request_uid);
         let semantic = request
             .semantic
-            .as_ref()
+            .as_option()
             .ok_or(InvalidMultiNodeProtocol::NonCanonicalFrame)?;
         let semantic_bytes = semantic.encode_to_vec();
-        let kind =
-            crate::multi_node::protocol::protobuf_codec_v1::request_frame_kind(semantic.kind)?;
+        let kind = crate::multi_node::protocol::protobuf_codec_v1::request_frame_kind(
+            semantic.kind.to_i32(),
+        )?;
         let body = crate::multi_node::protocol::protobuf_codec_v1::decode_request(
             &self.session,
             kind,
@@ -679,7 +683,9 @@ fn session_binding(
         protocol: Some(wire::ProtocolVersion {
             major: u32::from(session.version().major()),
             minor: u32::from(session.version().minor()),
-        }),
+            ..Default::default()
+        })
+        .into(),
         maximum_request_bytes: session.maximum_request_bytes(),
         maximum_response_bytes: session.maximum_response_bytes(),
         replay_fence_sha256: session.replay_fence().as_bytes().to_vec(),
@@ -690,7 +696,8 @@ fn session_binding(
         predecessor_lineage_sha256: lineage
             .predecessor_digest()
             .map_or_else(Vec::new, |digest| digest.as_bytes().to_vec()),
-        semantic_encoding: encoding as i32,
+        semantic_encoding: (encoding as i32).into(),
+        ..Default::default()
     }
 }
 
@@ -723,7 +730,9 @@ fn handshake_bytes(
         protocol: Some(wire::ProtocolVersion {
             major: u32::from(version.major()),
             minor: u32::from(version.minor()),
-        }),
+            ..Default::default()
+        })
+        .into(),
         maximum_request_bytes,
         maximum_response_bytes,
         replay_fence_sha256: replay_fence.as_bytes().to_vec(),
@@ -734,7 +743,8 @@ fn handshake_bytes(
         predecessor_lineage_sha256: lineage
             .predecessor_digest()
             .map_or_else(Vec::new, |digest| digest.as_bytes().to_vec()),
-        semantic_encoding: encoding as i32,
+        semantic_encoding: (encoding as i32).into(),
+        ..Default::default()
     }
     .encode_to_vec()
 }

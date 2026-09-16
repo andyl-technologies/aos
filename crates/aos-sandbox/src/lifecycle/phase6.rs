@@ -29,8 +29,9 @@ use sha2::{Digest as _, Sha256};
 use super::{
     LifecycleAttemptStateV1, LifecycleBootInventoryV1, LifecycleEffectDirectionV1,
     LifecycleMethodV1, LifecycleOperationV1, LifecyclePhaseV1, LifecycleProtectedCoordinationV1,
-    LifecycleProtectedRetentionLedgerV1, LifecycleRecordDigestV1, LifecycleStepBodyDigestV1,
-    LifecycleStepStateV1, LifecycleSuspendObservationV1, LifecycleTerminalResultV1,
+    LifecycleProtectedRetentionLedgerV1, LifecycleRecordDigestV1, LifecycleResourceV1,
+    LifecycleStepBodyDigestV1, LifecycleStepStateV1, LifecycleSuspendObservationV1,
+    LifecycleTerminalResultV1,
 };
 
 /// Reports a malformed or stale method-specific lifecycle transition.

@@ -7,6 +7,7 @@
 //! effect is admitted.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_core::state::{AssignmentPhase, DesiredSandboxState};
 use aos_sandbox_core::{
@@ -1409,7 +1410,7 @@ pub(super) fn decode_snapshot_manifest_seed(
     if expected_digest.as_slice() != digest {
         return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
     }
-    let wire: SnapshotManifestWire =
+    let wire: ManifestSemanticWire =
         serde_json::from_slice(body).map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
     let manifest =
         manifest_model(wire).map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;

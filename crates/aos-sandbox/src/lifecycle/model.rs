@@ -17,9 +17,10 @@ pub use super::digest::{
     LifecycleStepPlanDigestV1, LifecycleStepRequestDigestV1, LifecycleStepResultDigestV1,
 };
 use super::intent::{
-    DesiredStateCasV1, LifecycleFailureV1, LifecycleIntentV1, LifecycleMethodV1,
-    LifecycleResourceV1, LifecycleRetryV1, LifecycleStepClassV1, LifecycleStepDomainV1,
-    LifecycleStepStateV1, LifecycleTimeV1, ResourceExpectationV1, ResourceExpectedStateV1,
+    DesiredStateCasV1, DesiredStateFenceV1, LifecycleFailureV1, LifecycleIntentV1,
+    LifecycleMethodV1, LifecycleResourceV1, LifecycleResumeSourceV1, LifecycleRetryV1,
+    LifecycleStepClassV1, LifecycleStepDomainV1, LifecycleStepStateV1, LifecycleTimeV1,
+    LiveRuntimeFenceV1, ResourceExpectationV1, ResourceExpectedStateV1,
 };
 use super::projection::LifecycleModelError;
 use super::semantic::LifecycleMethodSemanticCommitV1;

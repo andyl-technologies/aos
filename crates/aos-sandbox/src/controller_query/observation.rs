@@ -117,7 +117,7 @@ impl OwnershipLeaseStatusV1 {
     /// # Errors
     ///
     /// Returns [`InvalidObservationMetadata::Unspecified`] for generation zero.
-    pub const fn new(
+    pub fn new(
         placement: CheckedPlacementV1,
         lease_generation: u64,
         expires_at: PublicTimestampV1,
@@ -179,7 +179,7 @@ impl GuardianStatusV1 {
     /// # Errors
     ///
     /// Returns [`InvalidObservationMetadata::Unspecified`] for generation zero.
-    pub const fn new(
+    pub fn new(
         placement: CheckedPlacementV1,
         guardian_generation: u64,
         lease_generation: u64,
@@ -502,7 +502,7 @@ impl OwnershipTransactionStatusV1 {
     ///
     /// Returns [`InvalidObservationMetadata::InvalidStatus`] unless `Absent`
     /// uses zero/no identity and every active state uses nonzero values.
-    pub const fn new(
+    pub fn new(
         state: OwnershipTransactionStateV1,
         generation: u64,
         transaction_id: Option<[u8; 16]>,
@@ -606,7 +606,7 @@ macro_rules! status_domain_identity {
             /// # Errors
             ///
             /// Returns [`InvalidObservationMetadata::Unspecified`] for zero.
-            pub const fn new(value: [u8; 16]) -> Result<Self, InvalidObservationMetadata> {
+            pub fn new(value: [u8; 16]) -> Result<Self, InvalidObservationMetadata> {
                 if value == [0; 16] {
                     Err(InvalidObservationMetadata::Unspecified)
                 } else {

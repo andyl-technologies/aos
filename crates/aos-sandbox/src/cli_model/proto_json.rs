@@ -132,7 +132,7 @@ impl TryFrom<ExecutionControlResult> for CheckedExecutionControlResultV1 {
             .map_err(|_| InvalidProtoJson::InvalidResource)?;
         if value.execution_id.len() != 16
             || value.execution_id.iter().all(|byte| *byte == 0)
-            || !(1..=3).contains(&value.action)
+            || !(1..=3).contains(&value.action.to_i32())
             || value.compute_size() as usize > MAXIMUM_PROTO_JSON_BYTES
         {
             Err(InvalidProtoJson::InvalidResource)
@@ -150,7 +150,7 @@ impl EstablishedProtoJson for CheckedExecutionControlResultV1 {
     }
 
     fn render_established(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(self.0.operation.as_option())
+        serde_json::to_string(&self.0.operation.as_option())
     }
 }
 
@@ -174,7 +174,7 @@ impl TryFrom<OperatorRecoveryResult> for CheckedOperatorRecoveryResultV1 {
             || value.resource_id.iter().all(|byte| *byte == 0)
             || value.resource_version.len() != 32
             || value.resource_version.iter().all(|byte| *byte == 0)
-            || !(1..=4).contains(&value.action)
+            || !(1..=4).contains(&value.action.to_i32())
             || value.conditions.len() != 1
             || value.compute_size() as usize > MAXIMUM_PROTO_JSON_BYTES
         {
@@ -183,7 +183,7 @@ impl TryFrom<OperatorRecoveryResult> for CheckedOperatorRecoveryResultV1 {
         crate::controller_query::resource::checked_conditions(&value.conditions)
             .map_err(|_| InvalidProtoJson::InvalidResource)?;
         let condition = &value.conditions[0];
-        if condition.freshness != 1
+        if condition.freshness.to_i32() != 1
             || condition.desired_generation == 0
             || condition.observation_sequence == 0
             || !condition.unsatisfied_features.is_empty()
@@ -376,7 +376,7 @@ impl CheckedSandboxTreeV1 {
         if let Some(continuation) = &continuation {
             value
                 .page
-                .as_mut()
+                .as_option_mut()
                 .ok_or(InvalidProtoJson::InvalidResource)?
                 .next_page_token = continuation.encode_cli_token();
         }
@@ -787,9 +787,10 @@ impl TryFrom<PolicyPlan> for CheckedPolicyPlanV1 {
             return Err(InvalidProtoJson::InvalidResource);
         }
         for reason in &value.reasons {
-            let code =
-                crate::controller_query::PublicPolicyReasonCodeV1::from_proto(reason.reason_code)
-                    .map_err(|_| InvalidProtoJson::InvalidResource)?;
+            let code = crate::controller_query::PublicPolicyReasonCodeV1::from_proto(
+                reason.reason_code.to_i32(),
+            )
+            .map_err(|_| InvalidProtoJson::InvalidResource)?;
             if reason.code != code.stable_code()
                 || reason.safe_message.is_empty()
                 || reason.safe_message.len() > crate::controller_query::MAXIMUM_SAFE_MESSAGE_BYTES
@@ -806,8 +807,8 @@ impl TryFrom<PolicyPlan> for CheckedPolicyPlanV1 {
                 .map_err(|_| InvalidProtoJson::InvalidResource)?;
         }
         if !value.reasons.windows(2).all(|pair| {
-            (pair[0].reason_code, pair[0].code.as_str())
-                < (pair[1].reason_code, pair[1].code.as_str())
+            (pair[0].reason_code.to_i32(), pair[0].code.as_str())
+                < (pair[1].reason_code.to_i32(), pair[1].code.as_str())
         }) {
             return Err(InvalidProtoJson::InvalidResource);
         }

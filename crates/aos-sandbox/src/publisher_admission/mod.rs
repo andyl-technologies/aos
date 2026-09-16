@@ -115,12 +115,13 @@ pub use format::{
 };
 #[cfg(target_os = "linux")]
 pub use linux_bridge::PreparedLinuxPublisherArtifactV1;
+pub(super) use model::digest_parts;
 pub use model::{
     AdmissionDecisionStateV1, AdmissionDecisionV1, AdmissionLimits, ArtifactCommitmentV1,
     ArtifactPreparationIntentV1, AuthorityCheckpointV1, CatalogEvictionReceiptV1,
-    CompletionPermitStateV1, CompletionPermitV1, CompletionReceiptV1, LedgerMutation,
-    ProtectedRecordKindV1, PublicationAuthorityEpoch, PublicationPermitId, RecoveryDispositionV1,
-    RecoveryObservationKindCodeV1, RecoveryObservationReceiptV1,
+    ChallengeConsumptionV1, CompletionPermitStateV1, CompletionPermitV1, CompletionReceiptV1,
+    LedgerMutation, ProtectedRecordKindV1, PublicationAuthorityEpoch, PublicationPermitId,
+    RecoveryDispositionV1, RecoveryObservationKindCodeV1, RecoveryObservationReceiptV1,
 };
 pub use payload_decode::DecodedPublisherPayloadV1;
 pub use protocol::{

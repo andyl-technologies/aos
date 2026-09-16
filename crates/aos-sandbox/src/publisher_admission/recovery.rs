@@ -311,6 +311,41 @@ pub struct CatalogRepairPermitV1<'catalog> {
     settled: bool,
 }
 
+pub(crate) struct PreparedCatalogRepairPermitV1<'catalog> {
+    operation: OperationId,
+    artifact_digest: ObjectDigest,
+    executor_instance: aos_sandbox_core::PublisherInstanceId,
+    executor_fence_digest: ObjectDigest,
+    absent_receipt_digest: ObjectDigest,
+    prior_catalog_generation: u64,
+    intended_entry: super::CommittedReadEntryV1,
+    ledger: &'catalog mut AdmissionLedger,
+    catalog: super::read_authority::ExclusiveCatalogInsertionCustody<'catalog>,
+    poison: ProtectedMutationBranchV1,
+}
+
+impl<'catalog> PreparedCatalogRepairPermitV1<'catalog> {
+    pub(crate) fn bind_store(
+        self,
+        store: &'catalog mut dyn CapacityProtectedStoreSettlementV1,
+    ) -> CatalogRepairPermitV1<'catalog> {
+        CatalogRepairPermitV1 {
+            operation: self.operation,
+            artifact_digest: self.artifact_digest,
+            executor_instance: self.executor_instance,
+            executor_fence_digest: self.executor_fence_digest,
+            absent_receipt_digest: self.absent_receipt_digest,
+            prior_catalog_generation: self.prior_catalog_generation,
+            intended_entry: self.intended_entry,
+            ledger: self.ledger,
+            catalog: Some(self.catalog),
+            poison: Some(self.poison),
+            store: Some(store),
+            settled: false,
+        }
+    }
+}
+
 impl CatalogRepairPermitV1<'_> {
     fn settle_store(
         &mut self,
@@ -555,8 +590,7 @@ impl AdmissionLedger {
         operation: OperationId,
         intended_entry: super::CommittedReadEntryV1,
         catalog: &'catalog mut super::ReadCatalogProjectionV1,
-        store: &'catalog mut dyn CapacityProtectedStoreSettlementV1,
-    ) -> Result<CatalogRepairPermitV1<'catalog>, AdmissionError> {
+    ) -> Result<PreparedCatalogRepairPermitV1<'catalog>, AdmissionError> {
         self.require_committed(committed)?;
         let artifact = self
             .artifact(operation)
@@ -607,7 +641,7 @@ impl AdmissionLedger {
         let catalog = catalog
             .begin_exclusive_insertion(prior_generation, intended_entry.clone())
             .map_err(|_| AdmissionError::CompletionMismatch)?;
-        Ok(CatalogRepairPermitV1 {
+        Ok(PreparedCatalogRepairPermitV1 {
             operation,
             artifact_digest,
             executor_instance,
@@ -616,10 +650,8 @@ impl AdmissionLedger {
             prior_catalog_generation: prior_generation,
             intended_entry,
             ledger: self,
-            catalog: Some(catalog),
-            poison: Some(poison),
-            store: Some(store),
-            settled: false,
+            catalog,
+            poison,
         })
     }
 

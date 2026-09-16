@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use aos_proto::aos::sandbox::v1::ObjectDescriptor;
+use aos_proto::aos::sandbox::v1::{self as wire, ObjectDescriptor};
 use sha2::{Digest as _, Sha256};
 
 use super::execution::{
@@ -182,7 +182,7 @@ macro_rules! define_digest {
             /// # Errors
             ///
             /// Returns [`InvalidCliGrammar::InvalidOpaqueValue`] for the zero sentinel.
-            pub const fn new(value: [u8; 32]) -> Result<Self, InvalidCliGrammar> {
+            pub fn new(value: [u8; 32]) -> Result<Self, InvalidCliGrammar> {
                 if value == [0; 32] {
                     Err(InvalidCliGrammar::InvalidOpaqueValue)
                 } else {
@@ -762,7 +762,7 @@ impl ResolvedPublicMutationV1 {
                         allocate_terminal,
                         sandbox_shell,
                         execution_timeout: duration_proto(value.execution_timeout).into(),
-                        io_mode,
+                        io_mode: io_mode.into(),
                         terminal_rows,
                         terminal_columns,
                         detached_capture_bytes,
@@ -783,7 +783,7 @@ impl ResolvedPublicMutationV1 {
                 } => {
                     ResolvedPublicMutationProtoV1::ExecutionControl(wire::ExecutionControlRequest {
                         execution_id: execution.as_bytes().to_vec(),
-                        action: 1,
+                        action: 1.into(),
                         mutation: execution_mutation_context_proto(mutation).into(),
                         ..Default::default()
                     })
@@ -795,7 +795,7 @@ impl ResolvedPublicMutationV1 {
                 } => {
                     ResolvedPublicMutationProtoV1::ExecutionControl(wire::ExecutionControlRequest {
                         execution_id: execution.as_bytes().to_vec(),
-                        action: 2,
+                        action: 2.into(),
                         terminal_rows: u32::from(size.rows()),
                         terminal_columns: u32::from(size.columns()),
                         mutation: execution_mutation_context_proto(mutation).into(),
@@ -809,8 +809,8 @@ impl ResolvedPublicMutationV1 {
                 } => {
                     ResolvedPublicMutationProtoV1::ExecutionControl(wire::ExecutionControlRequest {
                         execution_id: execution.as_bytes().to_vec(),
-                        action: 3,
-                        signal: execution_signal_proto(*signal),
+                        action: 3.into(),
+                        signal: execution_signal_proto(*signal).into(),
                         mutation: execution_mutation_context_proto(mutation).into(),
                         ..Default::default()
                     })
@@ -863,13 +863,14 @@ impl ResolvedPublicMutationV1 {
                 view_id: view_id.as_bytes().to_vec(),
                 view_revision: view_revision.as_proto().clone().into(),
                 destination_slot_id: destination_slot_id.as_bytes().to_vec(),
-                mutation_mode: match mode {
+                mutation_mode: (match mode {
                     ViewMutationModeV1::ReadOnly => 1,
                     ViewMutationModeV1::ReadWrite => 2,
                     ViewMutationModeV1::PrivateCow => 3,
                     ViewMutationModeV1::AppendOnly => 4,
                     ViewMutationModeV1::Service => 5,
-                },
+                })
+                .into(),
                 mutation: mutation_context_proto(mutation).into(),
                 noexec: *noexec,
                 ..Default::default()
@@ -907,10 +908,11 @@ impl ResolvedPublicMutationV1 {
                 mutation,
             } => ResolvedPublicMutationProtoV1::CreateSnapshot(wire::CreateSnapshotRequest {
                 sandbox_id: sandbox_id.as_bytes().to_vec(),
-                requested_availability: match availability {
+                requested_availability: (match availability {
                     RequestedSnapshotAvailabilityV1::SelfContained => 1,
                     RequestedSnapshotAvailabilityV1::ExternalDependencies => 2,
-                },
+                })
+                .into(),
                 mutation: mutation_context_proto(mutation).into(),
                 ..Default::default()
             }),
@@ -1071,13 +1073,14 @@ impl ResolvedPublicMutationV1 {
             view_id: view_id.as_bytes().to_vec(),
             view_revision: view_revision.as_proto().clone().into(),
             destination_slot_id: destination_slot_id.as_bytes().to_vec(),
-            mutation_mode: match mode {
+            mutation_mode: (match mode {
                 ViewMutationModeV1::ReadOnly => 1,
                 ViewMutationModeV1::ReadWrite => 2,
                 ViewMutationModeV1::PrivateCow => 3,
                 ViewMutationModeV1::AppendOnly => 4,
                 ViewMutationModeV1::Service => 5,
-            },
+            })
+            .into(),
             mutation: mutation_context_proto(mutation).into(),
             noexec: *noexec,
             ..Default::default()

@@ -1191,6 +1191,40 @@ impl<'journal, 'evidence> GitProtectedJournalOwnerV1<'journal, 'evidence> {
             expected.intention(),
             recovery.predecessor_digest(),
         );
+        let terminal_replay = retain_recovery!(
+            self.journal
+                .recover_current_postcommit(terminal_transaction)
+                .map_err(|_| GitSmartTransportErrorV1::ProtectedEvidenceUnavailable)
+        );
+        let rejected_predecessor = match terminal_replay {
+            Some(ReplayedGitPostcommitV1::Terminal(capability)) => {
+                let postcommit = retain_recovery!(
+                    capability
+                        .consume(&self.journal)
+                        .map_err(|_| GitSmartTransportErrorV1::ProtectedEvidenceUnavailable)
+                );
+                let record = retain_recovery!(decode_sanitized_fork_authority(
+                    &postcommit,
+                    self.verifier.validator()
+                ));
+                let envelope = match postcommit.records().first() {
+                    Some(member) if postcommit.records().len() == 1 => member.envelope(),
+                    _ => return GitSanitizedForkRecoveryV1::Diverged(recovery),
+                };
+                (record == recovery.predecessor()
+                    && record.phase()
+                        == super::physical_effect::GitSanitizedForkJournalPhaseV1::Rejected)
+                    .then_some(envelope.digest() == recovery.predecessor_digest())
+            }
+            Some(ReplayedGitPostcommitV1::Prepared(_)) | None => None,
+        };
+        match rejected_predecessor {
+            Some(true) => {
+                return self.terminalize_recovered_sanitized_fork(recovery, readback_owner);
+            }
+            Some(false) => return GitSanitizedForkRecoveryV1::Diverged(recovery),
+            None => {}
+        }
         let replayed = retain_recovery!(
             self.journal
                 .recover_current_postcommit(terminal_transaction)
@@ -1243,11 +1277,7 @@ impl<'journal, 'evidence> GitProtectedJournalOwnerV1<'journal, 'evidence> {
                     && record.phase()
                         == super::physical_effect::GitSanitizedForkJournalPhaseV1::Rejected
                 {
-                    if envelope.digest() != recovery.predecessor_digest() {
-                        return GitSanitizedForkRecoveryV1::Diverged(recovery);
-                    }
-                    drop(postcommit);
-                    return self.terminalize_recovered_sanitized_fork(recovery, readback_owner);
+                    return GitSanitizedForkRecoveryV1::Diverged(recovery);
                 }
                 if record.project() != expected.project()
                     || record.repository() != expected.repository()

@@ -466,7 +466,7 @@ pub struct LedgerMutation {
     pub value: Vec<u8>,
 }
 
-pub(super) fn digest_parts(domain: &[u8], parts: &[&[u8]]) -> ObjectDigest {
+pub(crate) fn digest_parts(domain: &[u8], parts: &[&[u8]]) -> ObjectDigest {
     let mut digest = Sha256::new();
     digest.update(domain);
     for part in parts {

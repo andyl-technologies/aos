@@ -240,6 +240,10 @@ pub struct CommittedReadEntryV1 {
 }
 
 impl CommittedReadEntryV1 {
+    pub(super) const fn entry_digest(&self) -> ObjectDigest {
+        self.entry_digest
+    }
+
     /// Constructs an entry from a committed publication observation.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn committed(

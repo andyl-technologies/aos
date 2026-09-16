@@ -17,6 +17,7 @@ use aos_sandbox_core::{
     OperationId, ResourceId, Revision, SandboxId, SnapshotId,
 };
 
+use super::LifecycleTimeV1;
 use super::coordination::{
     LifecycleCoordinationPhaseV1, LifecycleDatasetTransactionDigestV1, LifecycleQuiesceDigestV1,
     LifecycleRetentionLedgerReceiptV1, LifecycleSuspendObservationDigestV1,
@@ -32,7 +33,7 @@ use super::intent::{DesiredStateCasV1, LifecycleResourceV1, ResourceExpectedStat
 use super::intent::{DesiredStateFenceV1, LiveRuntimeFenceV1};
 use super::model::{
     DesiredStateCasDigestV1, LifecycleResourceStateDigestV1, LifecycleSemanticCommitV1,
-    LifecycleTimeV1, MAXIMUM_LIFECYCLE_EXPECTATIONS,
+    MAXIMUM_LIFECYCLE_EXPECTATIONS,
 };
 use super::semantic::{
     LifecycleAssignmentCommitFactV1, LifecycleCascadePlanDigestV1, LifecycleCascadeTombstonePlanV1,
@@ -61,11 +62,11 @@ pub(super) enum LifecycleSemanticFactLayoutV1 {
 
 impl LifecycleSemanticFactLayoutV1 {
     const fn has_host_boot(self) -> bool {
-        !matches!(Self::LegacyWithoutHostBoot, self)
+        !matches!(self, Self::LegacyWithoutHostBoot)
     }
 
     const fn has_coordination_bindings(self) -> bool {
-        matches!(Self::Current, self)
+        matches!(self, Self::Current)
     }
 }
 
@@ -95,7 +96,14 @@ pub(super) fn encode_semantic_fact_with_layout(
             assignments,
             reservations,
             ..
-        } => (1, reads, resources, assignments, reservations, &[][..]),
+        } => (
+            1,
+            reads,
+            resources,
+            assignments.as_slice(),
+            reservations.as_slice(),
+            &[][..],
+        ),
         LifecycleSemanticCommitFactV1::Snapshot {
             reads,
             resources,
@@ -107,8 +115,8 @@ pub(super) fn encode_semantic_fact_with_layout(
             2,
             reads,
             resources,
-            assignments,
-            reservations,
+            assignments.as_slice(),
+            reservations.as_slice(),
             retention.as_slice(),
         ),
         LifecycleSemanticCommitFactV1::DeleteSnapshot {
@@ -120,7 +128,14 @@ pub(super) fn encode_semantic_fact_with_layout(
             assignments,
             reservations,
             ..
-        } => (3, reads, resources, assignments, reservations, &[][..]),
+        } => (
+            3,
+            reads,
+            resources,
+            assignments.as_slice(),
+            reservations.as_slice(),
+            &[][..],
+        ),
     };
     let variant_bytes = match value.facts() {
         LifecycleSemanticCommitFactV1::DesiredState { .. } => 0,
@@ -146,7 +161,7 @@ pub(super) fn encode_semantic_fact_with_layout(
     };
     let length = 24_usize
         .checked_add(evidence_bytes)
-        .checked_add(variant_bytes)
+        .and_then(|total| total.checked_add(variant_bytes))
         .and_then(|total| total.checked_add(reads.len().checked_mul(68)?))
         .and_then(|total| total.checked_add(writes.len().checked_mul(148)?))
         .and_then(|total| total.checked_add(assignments.len().checked_mul(40)?))
@@ -948,7 +963,7 @@ fn decode_resource(bytes: &mut &[u8]) -> Result<LifecycleResourceV1, LifecycleMo
     LifecycleResourceV1::from_code(take::<1>(bytes)?[0], take(bytes)?)
 }
 
-fn encode_expected_resource(
+pub(super) fn encode_expected_resource(
     bytes: &mut Vec<u8>,
     resource: LifecycleResourceV1,
     expected: ResourceExpectedStateV1,
@@ -970,7 +985,7 @@ fn encode_expected_resource(
     }
 }
 
-fn decode_expected_resource(
+pub(super) fn decode_expected_resource(
     bytes: &mut &[u8],
 ) -> Result<(LifecycleResourceV1, ResourceExpectedStateV1), LifecycleModelError> {
     let kind = take::<1>(bytes)?[0];

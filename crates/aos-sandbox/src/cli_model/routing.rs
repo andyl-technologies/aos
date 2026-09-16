@@ -653,13 +653,19 @@ impl DormantSandboxRequestV1 {
             K::ExecutionControl(r) => {
                 nonempty(&r.execution_id)
                     && mutation_with_incarnation(r.mutation.as_option())
-                    && match r.action {
-                        1 => r.terminal_rows == 0 && r.terminal_columns == 0 && r.signal == 0,
-                        2 => r.terminal_rows > 0 && r.terminal_columns > 0 && r.signal == 0,
+                    && match r.action.to_i32() {
+                        1 => {
+                            r.terminal_rows == 0
+                                && r.terminal_columns == 0
+                                && r.signal.to_i32() == 0
+                        }
+                        2 => {
+                            r.terminal_rows > 0 && r.terminal_columns > 0 && r.signal.to_i32() == 0
+                        }
                         3 => {
                             r.terminal_rows == 0
                                 && r.terminal_columns == 0
-                                && (1..=7).contains(&r.signal)
+                                && (1..=7).contains(&r.signal.to_i32())
                         }
                         _ => false,
                     }
@@ -672,7 +678,7 @@ impl DormantSandboxRequestV1 {
             }
             K::Snapshot(r) => {
                 nonempty(&r.sandbox_id)
-                    && (1..=2).contains(&r.requested_availability)
+                    && (1..=2).contains(&r.requested_availability.to_i32())
                     && mutation_with_incarnation(r.mutation.as_option())
             }
             K::DeleteSnapshot(r) => {
@@ -739,7 +745,7 @@ impl DormantSandboxRequestV1 {
                     && nonempty(&r.view_id)
                     && descriptor_present(r.view_revision.as_option())
                     && nonempty(&r.destination_slot_id)
-                    && (1..=5).contains(&r.mutation_mode)
+                    && (1..=5).contains(&r.mutation_mode.to_i32())
                     && mutation_with_incarnation(r.mutation.as_option())
                     && (!r.noexec
                         || r.mutation.as_option().is_some_and(|mutation| {
@@ -843,52 +849,52 @@ impl DormantSandboxRequestKindV1 {
     fn to_command_proto(&self) -> Option<wire::SandboxCommandRequest> {
         use wire::sandbox_command_request::Request as R;
         let request = match self {
-            Self::PlanCreate(v) => R::PlanCreate(v.clone()),
-            Self::Create(v) => R::Create(v.clone()),
-            Self::GetSandbox(v) => R::GetSandbox(v.clone()),
-            Self::GetExecution(v) => R::GetExecution(v.clone()),
-            Self::GetView(v) => R::GetView(v.clone()),
-            Self::GetAttachment(v) => R::GetAttachment(v.clone()),
-            Self::GetSnapshot(v) => R::GetSnapshot(v.clone()),
-            Self::GetOperation(v) => R::GetOperation(v.clone()),
-            Self::ListSandboxes(v) => R::ListSandboxes(v.clone()),
-            Self::ListExecutions(v) => R::ListExecutions(v.clone()),
-            Self::ListSnapshots(v) => R::ListSnapshots(v.clone()),
-            Self::Tree(v) => R::ListDescendants(v.clone()),
-            Self::Children(v) => R::ListChildren(v.clone()),
-            Self::Ancestors(v) => R::ListAncestors(v.clone()),
-            Self::PlanPolicy(v) => R::PlanPolicy(v.clone()),
-            Self::UpdatePolicy(v) => R::UpdatePolicy(v.clone()),
-            Self::Start(v) => R::Start(v.clone()),
-            Self::Stop(v) => R::Stop(v.clone()),
-            Self::Suspend(v) => R::Suspend(v.clone()),
-            Self::Resume(v) => R::Resume(v.clone()),
-            Self::Exec(v) => R::CreateExecution(v.clone()),
-            Self::ExecutionControl(v) => R::ExecutionControl(v.clone()),
-            Self::CancelExec(v) => R::CancelExecution(v.clone()),
-            Self::CancelOperation(v) => R::CancelOperation(v.clone()),
-            Self::Snapshot(v) => R::CreateSnapshot(v.clone()),
-            Self::DeleteSnapshot(v) => R::DeleteSnapshot(v.clone()),
-            Self::Restore(v) => R::RestoreSnapshot(v.clone()),
-            Self::Fork(v) => R::ForkSnapshot(v.clone()),
-            Self::Delete(v) => R::DeleteSandbox(v.clone()),
-            Self::Events(v) => R::Watch(v.clone()),
-            Self::ViewCreate(v) => R::CreateView(v.clone()),
-            Self::ViewAttach(v) => R::AttachView(v.clone()),
-            Self::ViewReplace(v) => R::ReplaceAttachment(v.clone()),
-            Self::ViewDetach(v) => R::DetachView(v.clone()),
-            Self::ViewRelease(v) => R::ReleaseView(v.clone()),
-            Self::ViewList(v) => R::ListViews(v.clone()),
-            Self::CacheStatus(v) => R::CacheStatus(v.clone()),
-            Self::CachePin(v) => R::CachePin(v.clone()),
-            Self::CacheUnpin(v) => R::CacheUnpin(v.clone()),
-            Self::CapabilitiesPublicApi(v) => R::PublicFeatures(v.clone()),
-            Self::CapabilitiesNode(v) => R::NodeCapabilities(v.clone()),
-            Self::CapabilityAttenuate(v) => R::AttenuateCapability(v.clone()),
-            Self::CapabilityInspect(v) => R::InspectCapability(v.clone()),
-            Self::CapabilityRenew(v) => R::RenewCapability(v.clone()),
-            Self::CapabilityRevoke(v) => R::RevokeCapability(v.clone()),
-            Self::OperatorRecover(v) => R::OperatorRecovery(v.clone()),
+            Self::PlanCreate(v) => R::PlanCreate(v.clone().into()),
+            Self::Create(v) => R::Create(v.clone().into()),
+            Self::GetSandbox(v) => R::GetSandbox(v.clone().into()),
+            Self::GetExecution(v) => R::GetExecution(v.clone().into()),
+            Self::GetView(v) => R::GetView(v.clone().into()),
+            Self::GetAttachment(v) => R::GetAttachment(v.clone().into()),
+            Self::GetSnapshot(v) => R::GetSnapshot(v.clone().into()),
+            Self::GetOperation(v) => R::GetOperation(v.clone().into()),
+            Self::ListSandboxes(v) => R::ListSandboxes(v.clone().into()),
+            Self::ListExecutions(v) => R::ListExecutions(v.clone().into()),
+            Self::ListSnapshots(v) => R::ListSnapshots(v.clone().into()),
+            Self::Tree(v) => R::ListDescendants(v.clone().into()),
+            Self::Children(v) => R::ListChildren(v.clone().into()),
+            Self::Ancestors(v) => R::ListAncestors(v.clone().into()),
+            Self::PlanPolicy(v) => R::PlanPolicy(v.clone().into()),
+            Self::UpdatePolicy(v) => R::UpdatePolicy(v.clone().into()),
+            Self::Start(v) => R::Start(v.clone().into()),
+            Self::Stop(v) => R::Stop(v.clone().into()),
+            Self::Suspend(v) => R::Suspend(v.clone().into()),
+            Self::Resume(v) => R::Resume(v.clone().into()),
+            Self::Exec(v) => R::CreateExecution(v.clone().into()),
+            Self::ExecutionControl(v) => R::ExecutionControl(v.clone().into()),
+            Self::CancelExec(v) => R::CancelExecution(v.clone().into()),
+            Self::CancelOperation(v) => R::CancelOperation(v.clone().into()),
+            Self::Snapshot(v) => R::CreateSnapshot(v.clone().into()),
+            Self::DeleteSnapshot(v) => R::DeleteSnapshot(v.clone().into()),
+            Self::Restore(v) => R::RestoreSnapshot(v.clone().into()),
+            Self::Fork(v) => R::ForkSnapshot(v.clone().into()),
+            Self::Delete(v) => R::DeleteSandbox(v.clone().into()),
+            Self::Events(v) => R::Watch(v.clone().into()),
+            Self::ViewCreate(v) => R::CreateView(v.clone().into()),
+            Self::ViewAttach(v) => R::AttachView(v.clone().into()),
+            Self::ViewReplace(v) => R::ReplaceAttachment(v.clone().into()),
+            Self::ViewDetach(v) => R::DetachView(v.clone().into()),
+            Self::ViewRelease(v) => R::ReleaseView(v.clone().into()),
+            Self::ViewList(v) => R::ListViews(v.clone().into()),
+            Self::CacheStatus(v) => R::CacheStatus(v.clone().into()),
+            Self::CachePin(v) => R::CachePin(v.clone().into()),
+            Self::CacheUnpin(v) => R::CacheUnpin(v.clone().into()),
+            Self::CapabilitiesPublicApi(v) => R::PublicFeatures(v.clone().into()),
+            Self::CapabilitiesNode(v) => R::NodeCapabilities(v.clone().into()),
+            Self::CapabilityAttenuate(v) => R::AttenuateCapability(v.clone().into()),
+            Self::CapabilityInspect(v) => R::InspectCapability(v.clone().into()),
+            Self::CapabilityRenew(v) => R::RenewCapability(v.clone().into()),
+            Self::CapabilityRevoke(v) => R::RevokeCapability(v.clone().into()),
+            Self::OperatorRecover(v) => R::OperatorRecovery(v.clone().into()),
             Self::Completions(_) => return None,
         };
         Some(wire::SandboxCommandRequest {
@@ -1227,7 +1233,7 @@ fn valid_command(command: &wire::Command) -> bool {
         && !command.sandbox_shell.is_empty()
         && command.sandbox_shell.len() <= MAXIMUM_EXEC_ARGUMENT_BYTES
         && !command.sandbox_shell.contains(&0);
-    let io_shape_is_valid = match command.io_mode {
+    let io_shape_is_valid = match command.io_mode.to_i32() {
         1 => {
             !command.allocate_terminal
                 && command.terminal_rows == 0
@@ -1277,7 +1283,7 @@ fn execution_required_features_present(
     } else {
         Some(crate::controller_query::EXECUTION_SANDBOX_SHELL_FEATURE_V1)
     };
-    let io_feature = match command.io_mode {
+    let io_feature = match command.io_mode.to_i32() {
         1 => crate::controller_query::EXECUTION_STREAM_FEATURE_V1,
         2 => crate::controller_query::EXECUTION_PTY_FEATURE_V1,
         3 => crate::controller_query::EXECUTION_DETACHED_CAPTURE_FEATURE_V1,

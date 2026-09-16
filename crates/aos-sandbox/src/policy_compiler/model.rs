@@ -780,7 +780,7 @@ impl PolicyCompilerInputV1 {
             &node.0.layer,
             &site.0.layer,
             project.layer(),
-            request.0.layer,
+            &request.0.layer,
         ]
         .into_iter()
         .chain(frozen.iter().map(AncestorPolicyInputV1::layer));

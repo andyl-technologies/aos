@@ -148,7 +148,7 @@ impl ObservedDescriptorV1 {
     }
 
     /// Checks one body-bound carrier observation against a typed commitment.
-    pub(crate) const fn matches(
+    pub(crate) fn matches(
         &self,
         commitment: DescriptorCommitmentV1,
         body_digest: ObjectDigest,

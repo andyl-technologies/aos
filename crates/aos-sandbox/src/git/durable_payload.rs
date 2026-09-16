@@ -528,7 +528,9 @@ fn preflight_payload(kind: GitDurableRecordKindV1, encoded: &[u8]) -> Result<(),
             take_slice(&mut bytes, length)?;
             take_slice(&mut bytes, 8 + 40 + 8 + 40 * 4)?;
         }
-        GitDurableRecordKindV1::Publication => take_slice(&mut bytes, 72)?,
+        GitDurableRecordKindV1::Publication => {
+            take_slice(&mut bytes, 72)?;
+        }
         GitDurableRecordKindV1::Export => {
             take_slice(&mut bytes, 48)?;
             preflight_export(&mut bytes)?;
@@ -537,7 +539,9 @@ fn preflight_payload(kind: GitDurableRecordKindV1, encoded: &[u8]) -> Result<(),
             // The pack codec owns a complete no-allocation body preflight.
             bytes = &[];
         }
-        GitDurableRecordKindV1::PackLease => take_slice(&mut bytes, 336)?,
+        GitDurableRecordKindV1::PackLease => {
+            take_slice(&mut bytes, 336)?;
+        }
         GitDurableRecordKindV1::CheapFork => {
             preflight_repository(&mut bytes)?;
             take_slice(&mut bytes, 88 + 336 + 8 + 56)?;

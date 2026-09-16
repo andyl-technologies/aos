@@ -1243,7 +1243,7 @@ impl CompactedHierarchyHistoryV1 {
         let sequence = self
             .suffix
             .last()
-            .map(HierarchyHistoryRecordV1::sequence)
+            .map(|record| record.sequence())
             .unwrap_or(self.checkpoint.through_sequence)
             .checked_add(1)
             .ok_or(HierarchyHistoryError::Capacity)?;

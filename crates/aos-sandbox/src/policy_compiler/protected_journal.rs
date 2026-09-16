@@ -1058,7 +1058,7 @@ impl<'journal> PolicyCompilerProtectedJournalV1<'journal> {
                 if current != observation {
                     return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
                 }
-                self.inner.commit(prepared.inner)
+                self.inner.commit(prepared.inner).map_err(Into::into)
             })
             .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)??;
         Ok(match outcome {
@@ -1098,7 +1098,7 @@ impl<'journal> PolicyCompilerProtectedJournalV1<'journal> {
                 if current != observation {
                     return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
                 }
-                self.inner.recover(pending.inner)
+                self.inner.recover(pending.inner).map_err(Into::into)
             })
             .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)??;
         Ok(match recovery {

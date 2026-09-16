@@ -553,7 +553,7 @@ impl CachePinLedgerV1 {
         validate_release(pin, drain)?;
         let pin = self.pins.remove(&id).ok_or(PinError::Absent)?;
         let released = ReleasedCachePinV1 { pin, drain };
-        self.released.insert(id, released);
+        self.released.insert(id, released.clone());
         Ok(released)
     }
 

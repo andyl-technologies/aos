@@ -137,7 +137,9 @@ impl OperatorDiagnosticV1 {
         use OperatorDiagnosticKindV1 as K;
         use OperatorDiagnosticValueV1 as V;
 
-        if matches!(&value, V::Numeric(0) | V::Opaque128([0; 16])) {
+        if matches!(&value, V::Numeric(0))
+            || matches!(&value, V::Opaque128(identity) if *identity == [0; 16])
+        {
             return Err(InvalidOperatorDiagnostics::Unspecified);
         }
         let valid = match (&kind, &value) {

@@ -4,9 +4,9 @@
 //! contract. The retired `AOSNODE1` plus JSON representation is implemented by
 //! a separate, explicitly negotiated legacy codec branch.
 
-use aos_proto::ProstMessage as _;
 use aos_proto::aos::sandbox::coordinator::v1 as wire;
 use aos_sandbox_core::{ProtocolId, ProtocolVersion, supported_protocol_version};
+use buffa::Message as _;
 
 use super::{
     AuthenticatedEvidenceContextV1, AuthenticatedNodeSessionV1, CanonicalNodeFrameKindV1,
@@ -41,19 +41,23 @@ fn version(value: ProtocolVersion) -> wire::ProtocolVersion {
     wire::ProtocolVersion {
         major: u32::from(value.major()),
         minor: u32::from(value.minor()),
+        ..Default::default()
     }
 }
 
 fn encode(kind: i32, body: wire::semantic_envelope::Body) -> Vec<u8> {
     let schema = ProtocolVersion::new(SCHEMA_MAJOR, SCHEMA_MINOR);
     wire::SemanticEnvelope {
-        schema: Some(version(schema)),
+        schema: Some(version(schema)).into(),
         compatibility: Some(wire::CompatibilityWindow {
-            minimum_reader: Some(version(schema)),
-            writer: Some(version(schema)),
-        }),
-        kind,
+            minimum_reader: Some(version(schema)).into(),
+            writer: Some(version(schema)).into(),
+            ..Default::default()
+        })
+        .into(),
+        kind: kind.into(),
         body: Some(body),
+        ..Default::default()
     }
     .encode_to_vec()
 }
@@ -66,13 +70,15 @@ fn decode(
     if bytes.is_empty() || bytes.len() > maximum_bytes as usize {
         return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
     }
-    let envelope = wire::SemanticEnvelope::decode(bytes)
+    let envelope = wire::SemanticEnvelope::decode_from_slice(bytes)
         .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
     if envelope.encode_to_vec().as_slice() != bytes {
         return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
     }
     validate_version(&envelope)?;
-    if envelope.kind != expected_kind || !body_matches_kind(envelope.body.as_ref(), expected_kind) {
+    if envelope.kind.to_i32() != expected_kind
+        || !body_matches_kind(envelope.body.as_ref(), expected_kind)
+    {
         return Err(InvalidMultiNodeProtocol::MethodMismatch);
     }
     envelope
@@ -83,19 +89,19 @@ fn decode(
 fn validate_version(envelope: &wire::SemanticEnvelope) -> Result<(), InvalidMultiNodeProtocol> {
     let schema = envelope
         .schema
-        .as_ref()
+        .as_option()
         .ok_or(InvalidMultiNodeProtocol::IncompatibleVersion)?;
     let compatibility = envelope
         .compatibility
-        .as_ref()
+        .as_option()
         .ok_or(InvalidMultiNodeProtocol::IncompatibleVersion)?;
     let minimum = compatibility
         .minimum_reader
-        .as_ref()
+        .as_option()
         .ok_or(InvalidMultiNodeProtocol::IncompatibleVersion)?;
     let writer = compatibility
         .writer
-        .as_ref()
+        .as_option()
         .ok_or(InvalidMultiNodeProtocol::IncompatibleVersion)?;
     let supported = supported_protocol_version(ProtocolId::CoordinatorNode);
     if schema.major != u32::from(SCHEMA_MAJOR)
@@ -158,8 +164,8 @@ pub(super) fn encode_watch_event_body(
     };
     Ok(encode(
         kind,
-        wire::semantic_envelope::Body::WatchEvent(semantic_codec_v1::protobuf_watch_event_body(
-            body,
+        wire::semantic_envelope::Body::WatchEvent(Box::new(
+            semantic_codec_v1::protobuf_watch_event_body(body),
         )),
     ))
 }
@@ -168,11 +174,11 @@ pub(super) fn decode_watch_event_body(
     bytes: &[u8],
     context: AuthenticatedEvidenceContextV1,
 ) -> Result<NodeWatchEventBodyV1, InvalidMultiNodeProtocol> {
-    let envelope = wire::SemanticEnvelope::decode(bytes)
+    let envelope = wire::SemanticEnvelope::decode_from_slice(bytes)
         .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
-    let expected_kind = match envelope.kind {
+    let expected_kind = match envelope.kind.to_i32() {
         KIND_WATCH_CAPABILITY_EVENT | KIND_WATCH_ASSIGNMENT_EVENT | KIND_WATCH_DRAIN_EVENT => {
-            envelope.kind
+            envelope.kind.to_i32()
         }
         _ => return Err(InvalidMultiNodeProtocol::MethodMismatch),
     };
@@ -180,7 +186,7 @@ pub(super) fn decode_watch_event_body(
     let wire::semantic_envelope::Body::WatchEvent(body) = body else {
         return Err(InvalidMultiNodeProtocol::MethodMismatch);
     };
-    let decoded = semantic_codec_v1::protobuf_watch_event_body_model(body, context)?;
+    let decoded = semantic_codec_v1::protobuf_watch_event_body_model(*body, context)?;
     let actual_kind = match decoded {
         NodeWatchEventBodyV1::Capability(_) => KIND_WATCH_CAPABILITY_EVENT,
         NodeWatchEventBodyV1::Assignment(_) => KIND_WATCH_ASSIGNMENT_EVENT,

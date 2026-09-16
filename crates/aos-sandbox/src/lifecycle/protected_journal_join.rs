@@ -392,7 +392,7 @@ impl CrossDomainPostcommitRecordV1 {
 
     /// Reports whether decoded terminal state may publish protected current state.
     #[must_use]
-    pub const fn is_publication(&self) -> bool {
+    pub fn is_publication(&self) -> bool {
         matches!(self.role, ProtectedRecordRoleV1::Publication)
             && self.phase == ProtectedReducerPhaseV1::Terminal
             && self.transaction_phase == ProtectedReducerPhaseV1::Terminal
@@ -400,7 +400,7 @@ impl CrossDomainPostcommitRecordV1 {
 
     /// Reports whether decoded state still admits exactly one external effect.
     #[must_use]
-    pub const fn is_effect(&self) -> bool {
+    pub fn is_effect(&self) -> bool {
         matches!(self.role, ProtectedRecordRoleV1::Effect)
             && self.phase == ProtectedReducerPhaseV1::Prepared
             && self.transaction_phase == ProtectedReducerPhaseV1::Prepared

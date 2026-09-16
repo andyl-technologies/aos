@@ -1457,9 +1457,9 @@ fn validate_attempt_input(
                 || request.prospective_mount_template_digest().as_bytes()
                     != &plan.plan.template_digest
                 || request.source_binding().digest().as_bytes() != &plan.plan.source_binding_digest
-                || request.requested_lease_seconds() != plan.plan.bounds.lease_seconds
-                || request.requested_maximum_submounts() != plan.plan.bounds.maximum_submounts
-                || request.kernel_coupled() != plan.plan.bounds.kernel_coupled
+                || request.requested_lease_seconds() != plan.plan.bounds.lease_seconds()
+                || request.requested_maximum_submounts() != plan.plan.bounds.maximum_submounts()
+                || request.kernel_coupled() != plan.plan.bounds.kernel_coupled()
                 || !fence_matches_plan(request.fence(), &plan.plan)
                 || mount_completion.is_some()
             {

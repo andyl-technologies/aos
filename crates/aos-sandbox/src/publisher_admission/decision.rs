@@ -38,10 +38,10 @@ use super::accounting::{AccountingError, CapacityPolicyV1, PublicationAccounting
 use super::format::encode_protected_record_v1;
 use super::model::{
     AdmissionDecisionStateV1, AdmissionDecisionV1, AdmissionLimits, ArtifactCommitmentV1,
-    ArtifactPreparationIntentV1, ChallengeConsumptionV1, CompletionPermitStateV1,
-    CompletionPermitV1, CompletionReceiptV1, LedgerMutation, ProtectedRecordKindV1,
-    PublicationAuthorityEpoch, PublicationPermitId, RecoveryObservationReceiptV1, digest_parts,
-    validate_nonzero,
+    ArtifactPreparationIntentV1, AuthorityCheckpointV1, ChallengeConsumptionV1,
+    CompletionPermitStateV1, CompletionPermitV1, CompletionReceiptV1, LedgerMutation,
+    ProtectedRecordKindV1, PublicationAuthorityEpoch, PublicationPermitId,
+    RecoveryObservationReceiptV1, digest_parts, validate_nonzero,
 };
 use super::payload::{
     accounting_payload, artifact_payload, challenge_key_bytes, challenge_payload,
@@ -667,6 +667,39 @@ pub struct CompletionAuthorityV1<'owners, 'authority, 'request> {
     settled: bool,
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) struct PreparedCompletionAuthorityV1<'owners, 'authority, 'request> {
+    permit: RetainedCompletionPermit<'authority, 'request>,
+    effect: CompletionEffectCustodyV1,
+    intended_entry: super::CommittedReadEntryV1,
+    ledger: &'owners mut AdmissionLedger,
+    catalog: super::read_authority::ExclusiveCatalogInsertionCustody<'owners>,
+    primary: ProtectedMutationBranchV1,
+    poison: ProtectedMutationBranchV1,
+    receipt: CompletionReceiptV1,
+}
+
+#[cfg(target_os = "linux")]
+impl<'owners, 'authority, 'request> PreparedCompletionAuthorityV1<'owners, 'authority, 'request> {
+    pub(crate) fn bind_store(
+        self,
+        store: &'owners mut dyn CapacityProtectedStoreSettlementV1,
+    ) -> CompletionAuthorityV1<'owners, 'authority, 'request> {
+        CompletionAuthorityV1 {
+            permit: self.permit,
+            _effect: self.effect,
+            intended_entry: self.intended_entry,
+            ledger: self.ledger,
+            catalog: Some(self.catalog),
+            primary: self.primary,
+            poison: self.poison,
+            receipt: Some(self.receipt),
+            store,
+            settled: false,
+        }
+    }
+}
+
 /// Retains an observed completion until one protected branch is acknowledged.
 #[must_use = "observed completion must settle to acknowledged success or poison"]
 #[cfg(target_os = "linux")]
@@ -983,7 +1016,7 @@ impl CommittedCatalogObservation {
     }
 
     pub(super) const fn catalog_entry_digest(&self) -> ObjectDigest {
-        self.catalog_entry.entry_digest
+        self.catalog_entry.entry_digest()
     }
 
     pub(super) const fn prior_generation(&self) -> u64 {
@@ -1002,7 +1035,7 @@ impl CommittedCatalogObservation {
 impl CompletionResult {
     /// Captures one terminal observation from the trusted catalog adapter.
     #[cfg(target_os = "linux")]
-    const fn observed(
+    fn observed(
         permit: &RetainedCompletionPermit<'_, '_>,
         observation: CommittedCatalogObservation,
     ) -> Self {
@@ -1063,7 +1096,7 @@ impl CompletionResult {
     }
 
     pub(super) const fn catalog_entry_digest(&self) -> ObjectDigest {
-        self.catalog_entry.entry_digest
+        self.catalog_entry.entry_digest()
     }
 }
 
@@ -1231,10 +1264,18 @@ pub struct RetainedCompletionPermit<'authority, 'request> {
 ///
 /// The future ingress adapter may mint this only immediately after
 /// [`RuntimeJoinedPublisherRequest::recheck`] succeeds on its protected clock.
-#[derive(Debug)]
 #[cfg(target_os = "linux")]
 pub struct LivePublisherExecution<'execution, 'request> {
     joined: &'execution RuntimeJoinedPublisherRequest<'request>,
+}
+
+#[cfg(target_os = "linux")]
+impl std::fmt::Debug for LivePublisherExecution<'_, '_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LivePublisherExecution")
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2800,8 +2841,7 @@ impl AdmissionLedger {
         effect: CompletionEffectCustodyV1,
         intended_entry: super::CommittedReadEntryV1,
         catalog: &'owners mut super::ReadCatalogProjectionV1,
-        store: &'owners mut dyn CapacityProtectedStoreSettlementV1,
-    ) -> Result<CompletionAuthorityV1<'owners, 'authority, 'request>, AdmissionError> {
+    ) -> Result<PreparedCompletionAuthorityV1<'owners, 'authority, 'request>, AdmissionError> {
         self.ensure_healthy()?;
         self.require_committed(committed)?;
         let retained = self
@@ -2881,17 +2921,15 @@ impl AdmissionLedger {
         let catalog = catalog
             .begin_exclusive_insertion(prior_catalog_generation, intended_entry.clone())
             .map_err(|_| AdmissionError::CompletionMismatch)?;
-        Ok(CompletionAuthorityV1 {
+        Ok(PreparedCompletionAuthorityV1 {
             permit,
-            _effect: effect,
+            effect,
             intended_entry,
             ledger: self,
-            catalog: Some(catalog),
+            catalog,
             primary,
             poison,
-            receipt: Some(receipt),
-            store,
-            settled: false,
+            receipt,
         })
     }
 

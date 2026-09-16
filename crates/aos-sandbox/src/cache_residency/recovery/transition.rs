@@ -378,7 +378,7 @@ pub(super) fn valid_pin_atomic_transition(
 pub(super) fn one_added_active_pin(
     previous: &[CachePinV1],
     next: &[CachePinV1],
-) -> Option<super::pin::CachePinId> {
+) -> Option<super::super::pin::CachePinId> {
     if previous.len().checked_add(1) != Some(next.len()) {
         return None;
     }
@@ -404,7 +404,7 @@ pub(super) fn one_added_active_pin(
 pub(super) fn one_removed_active_pin(
     previous: &[CachePinV1],
     next: &[CachePinV1],
-) -> Option<super::pin::CachePinId> {
+) -> Option<super::super::pin::CachePinId> {
     if next.len().checked_add(1) != Some(previous.len()) {
         return None;
     }
@@ -428,7 +428,7 @@ pub(super) fn one_removed_active_pin(
 pub(super) fn one_added_released_pin(
     previous: &[ReleasedCachePinV1],
     next: &[ReleasedCachePinV1],
-) -> Option<super::pin::CachePinId> {
+) -> Option<super::super::pin::CachePinId> {
     if previous.len().checked_add(1) != Some(next.len()) {
         return None;
     }

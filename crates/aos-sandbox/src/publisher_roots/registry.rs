@@ -82,8 +82,8 @@ impl CurrentPublicationRoot<'_> {
 
     /// Returns the global root-registry checkpoint, not a per-root generation.
     #[must_use]
-    pub const fn checkpoint(&self) -> PublicationRootRegistryCheckpointV1 {
-        self.checkpoint
+    pub fn checkpoint(&self) -> PublicationRootRegistryCheckpointV1 {
+        self.checkpoint.clone()
     }
 
     /// Rechecks that this borrow still describes the registry's active head.

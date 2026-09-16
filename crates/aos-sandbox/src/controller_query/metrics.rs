@@ -728,7 +728,7 @@ impl MetricLabelValueV1 {
         }
     }
 
-    const fn has_valid_identity(self) -> bool {
+    fn has_valid_identity(self) -> bool {
         match self {
             Self::Project(value) | Self::Node(value) => value != [0; 16],
             _ => true,

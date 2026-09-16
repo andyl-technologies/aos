@@ -33,6 +33,10 @@ use sha2::{Digest, Sha256};
 
 pub(crate) mod mount_manager_startup;
 pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
+pub(crate) use mount_manager_startup::{
+    MountManagerStartupCapturePreflightV1, MountManagerStartupCaptureReceiptV1,
+    MountManagerStartupCaptureRecoveryV1,
+};
 mod capacity_reservation;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
 pub use capacity_reservation::{
@@ -43,7 +47,7 @@ pub use capacity_reservation::{
 mod mount_source_consumption;
 pub use mount_source_consumption::{
     MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
-    MountSourceConsumptionPreflight,
+    MountSourceConsumptionJournalAuthorityV1, MountSourceConsumptionPreflight,
 };
 
 const MAGIC: &[u8; 8] = b"AOSJRN01";
@@ -756,7 +760,7 @@ impl<'journal> MountSourceMigrationJournalAuthorityV2<'journal> {
     /// Returns an error for stale preflight, I/O failure, or ambiguity.
     #[doc(hidden)]
     pub fn commit(&mut self, transaction: &JournalTransaction) -> Result<(), JournalError> {
-        self.authority.commit(transaction)
+        self.authority.commit(transaction).map(|_| ())
     }
 }
 

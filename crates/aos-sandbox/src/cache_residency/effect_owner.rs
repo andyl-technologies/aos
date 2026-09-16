@@ -1131,7 +1131,8 @@ impl DormantCacheOwnerV1 {
             partition: partition.digest(),
             descriptor: descriptor.clone(),
         };
-        if let Some(entry) = self.memory.get_mut(&key) {
+        if self.memory.contains_key(&key) {
+            let entry = self.memory.get_mut(&key).ok_or(CacheOwnerErrorV1::Stale)?;
             entry.last_used = now;
             return Ok(CacheLookupV1::Memory(&entry.bytes));
         }
@@ -2239,7 +2240,7 @@ fn read_bounded_at(
     }
     let mut file = File::from(descriptor);
     let mut bytes = Vec::new();
-    file.by_ref()
+    std::io::Read::by_ref(&mut file)
         .take((maximum + 1) as u64)
         .read_to_end(&mut bytes)?;
     if bytes.len() > maximum {

@@ -4,6 +4,7 @@
 //! of this module. The JSON projection remains only for an explicit legacy
 //! decode branch and is never emitted as a current protobuf field.
 
+use buffa::MessageField;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use aos_proto::aos::sandbox::coordinator::v1 as protobuf;
@@ -1741,14 +1742,31 @@ fn parse<T: std::str::FromStr>(value: &str) -> Result<T, InvalidMultiNodeProtoco
     value.parse().map_err(|_| invalid())
 }
 
-fn required<T>(value: Option<T>) -> Result<T, InvalidMultiNodeProtocol> {
-    value.ok_or_else(invalid)
+trait RequiredValue<T> {
+    fn into_option(self) -> Option<T>;
+}
+
+impl<T> RequiredValue<T> for Option<T> {
+    fn into_option(self) -> Option<T> {
+        self
+    }
+}
+
+impl<T: Default> RequiredValue<T> for MessageField<T> {
+    fn into_option(self) -> Option<T> {
+        MessageField::into_option(self)
+    }
+}
+
+fn required<T>(value: impl RequiredValue<T>) -> Result<T, InvalidMultiNodeProtocol> {
+    value.into_option().ok_or_else(invalid)
 }
 
 fn pb_version(value: VersionWire) -> protobuf::Version {
     protobuf::Version {
         major: u32::from(value.major),
         minor: u32::from(value.minor),
+        ..Default::default()
     }
 }
 
@@ -1764,6 +1782,7 @@ fn pb_feature(value: &FeatureRef) -> protobuf::Feature {
         namespace: value.namespace().to_owned(),
         major: value.major(),
         minor: value.minor(),
+        ..Default::default()
     }
 }
 
@@ -1776,6 +1795,7 @@ fn pb_descriptor(value: &ObjectDescriptor) -> protobuf::Descriptor {
         media_type: value.media_type().as_str().to_owned(),
         digest: value.digest().to_string(),
         encoded_size: value.encoded_size(),
+        ..Default::default()
     }
 }
 
@@ -1799,6 +1819,7 @@ fn pb_lineage(value: LineageWire) -> protobuf::Lineage {
         generation: value.generation,
         predecessor_boot: value.predecessor_boot.map_or_else(Vec::new, |v| v.to_vec()),
         predecessor_digest: value.predecessor_digest.map(|v| v.to_string()),
+        ..Default::default()
     }
 }
 
@@ -1836,7 +1857,7 @@ fn pb_fact(value: FactWire) -> protobuf::CapabilityFact {
             minor,
             patch,
         } => {
-            fact.kind = 1;
+            fact.kind = 1.into();
             fact.major = Some(major);
             fact.minor = Some(minor);
             fact.patch = Some(patch);
@@ -1846,80 +1867,80 @@ fn pb_fact(value: FactWire) -> protobuf::CapabilityFact {
             minor,
             passthrough,
         } => {
-            fact.kind = 2;
+            fact.kind = 2.into();
             fact.major = Some(major);
             fact.minor = Some(minor);
             fact.passthrough = Some(passthrough);
         }
-        FactWire::MountObservation => fact.kind = 3,
-        FactWire::Kvm => fact.kind = 4,
-        FactWire::Seccomp => fact.kind = 5,
+        FactWire::MountObservation => fact.kind = 3.into(),
+        FactWire::Kvm => fact.kind = 4.into(),
+        FactWire::Seccomp => fact.kind = 5.into(),
         FactWire::UserNamespaces { digest } => {
-            fact.kind = 6;
+            fact.kind = 6.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::NewMountApi { digest } => {
-            fact.kind = 7;
+            fact.kind = 7.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::IdmappedMounts { digest } => {
-            fact.kind = 8;
+            fact.kind = 8.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::ZfsPool { digest } => {
-            fact.kind = 9;
+            fact.kind = 9.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::Overlay { digest } => {
-            fact.kind = 10;
+            fact.kind = 10.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::CgroupV2 { digest } => {
-            fact.kind = 11;
+            fact.kind = 11.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::SnapshotTransfer { digest } => {
-            fact.kind = 12;
+            fact.kind = 12.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::PosixAcl { digest } => {
-            fact.kind = 13;
+            fact.kind = 13.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::AbsoluteSymlink { digest } => {
-            fact.kind = 14;
+            fact.kind = 14.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::ParentEscapeSymlink { digest } => {
-            fact.kind = 15;
+            fact.kind = 15.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::BrokerLedger { digest } => {
-            fact.kind = 16;
+            fact.kind = 16.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::SignedPlanLease { digest } => {
-            fact.kind = 17;
+            fact.kind = 17.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::NodeBoundedSharedResidency { digest } => {
-            fact.kind = 18;
+            fact.kind = 18.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::HardIsolatedResidency { digest } => {
-            fact.kind = 19;
+            fact.kind = 19.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::GuestQuiesce { digest } => {
-            fact.kind = 20;
+            fact.kind = 20.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::StorageQuiesce { digest } => {
-            fact.kind = 21;
+            fact.kind = 21.into();
             fact.digest = Some(digest.to_string());
         }
         FactWire::BrokerSession { digest } => {
-            fact.kind = 22;
+            fact.kind = 22.into();
             fact.digest = Some(digest.to_string());
         }
     }
@@ -1927,7 +1948,7 @@ fn pb_fact(value: FactWire) -> protobuf::CapabilityFact {
 }
 
 fn wire_fact(value: protobuf::CapabilityFact) -> Result<FactWire, InvalidMultiNodeProtocol> {
-    let allowed_shape = match value.kind {
+    let allowed_shape = match value.kind.to_i32() {
         1 => {
             value.digest.is_none()
                 && value.major.is_some()
@@ -1962,7 +1983,7 @@ fn wire_fact(value: protobuf::CapabilityFact) -> Result<FactWire, InvalidMultiNo
         return Err(invalid());
     }
     let digest = || value.digest.as_deref().ok_or_else(invalid).and_then(parse);
-    Ok(match value.kind {
+    Ok(match value.kind.to_i32() {
         1 => FactWire::NspawnVersion {
             major: required(value.major)?,
             minor: required(value.minor)?,
@@ -2026,7 +2047,7 @@ fn wire_protocol(value: i32) -> Result<ProtocolWire, InvalidMultiNodeProtocol> {
 fn pb_capability(value: CapabilityWire) -> protobuf::CapabilitySnapshot {
     protobuf::CapabilitySnapshot {
         node: value.node.to_string(),
-        lineage: Some(pb_lineage(value.lineage)),
+        lineage: Some(pb_lineage(value.lineage)).into(),
         sequence: value.sequence.get(),
         features: value.features.iter().map(pb_feature).collect(),
         facts: value.facts.into_iter().map(pb_fact).collect(),
@@ -2034,8 +2055,9 @@ fn pb_capability(value: CapabilityWire) -> protobuf::CapabilitySnapshot {
             .protocols
             .into_iter()
             .map(|offer| protobuf::ProtocolOffer {
-                protocol: protocol_number(offer.protocol),
-                maximum_version: Some(pb_version(offer.maximum_version)),
+                protocol: protocol_number(offer.protocol).into(),
+                maximum_version: Some(pb_version(offer.maximum_version)).into(),
+                ..Default::default()
             })
             .collect(),
         allocatable: pb_resources(value.allocatable),
@@ -2044,13 +2066,17 @@ fn pb_capability(value: CapabilityWire) -> protobuf::CapabilitySnapshot {
             AdmissionWire::Accepting => 1,
             AdmissionWire::Cordoned => 2,
             AdmissionWire::Draining => 3,
-        },
+        }
+        .into(),
         probe_evidence: Some(protobuf::ProbeEvidence {
             probe_set_digest: value.probe_evidence.probe_set_digest.to_string(),
             conformance_profile_digest: value.probe_evidence.conformance_profile_digest.to_string(),
-            conformance_version: Some(pb_version(value.probe_evidence.conformance_version)),
+            conformance_version: Some(pb_version(value.probe_evidence.conformance_version)).into(),
             conformance_generation: value.probe_evidence.conformance_generation,
-        }),
+            ..Default::default()
+        })
+        .into(),
+        ..Default::default()
     }
 }
 
@@ -2083,14 +2109,14 @@ fn wire_capability(
             .into_iter()
             .map(|offer| {
                 Ok(OfferWire {
-                    protocol: wire_protocol(offer.protocol)?,
+                    protocol: wire_protocol(offer.protocol.to_i32())?,
                     maximum_version: wire_version(required(offer.maximum_version)?)?,
                 })
             })
             .collect::<Result<_, InvalidMultiNodeProtocol>>()?,
         allocatable: wire_resources(value.allocatable)?,
         reserved: wire_resources(value.reserved)?,
-        admission: match value.admission {
+        admission: match value.admission.to_i32() {
             1 => AdmissionWire::Accepting,
             2 => AdmissionWire::Cordoned,
             3 => AdmissionWire::Draining,
@@ -2108,7 +2134,7 @@ fn wire_capability(
 fn pb_binding(value: BindingWire) -> protobuf::CapabilityBinding {
     protobuf::CapabilityBinding {
         node: value.node.to_string(),
-        lineage: Some(pb_lineage(value.lineage)),
+        lineage: Some(pb_lineage(value.lineage)).into(),
         sequence: value.sequence.get(),
         evidence_binding_digest: value.evidence_binding_digest.to_string(),
         canonical_frame_digest: value.canonical_frame_digest.to_string(),
@@ -2120,6 +2146,7 @@ fn pb_binding(value: BindingWire) -> protobuf::CapabilityBinding {
         disclosure_domain_digest: value.disclosure_domain_digest.to_string(),
         carrier_binding_digest: value.carrier_binding_digest.to_string(),
         replay_fence: value.replay_fence.to_string(),
+        ..Default::default()
     }
 }
 fn wire_binding(
@@ -2179,8 +2206,11 @@ fn pb_assignment_observation(value: AssignmentObservationWire) -> protobuf::Assi
             AssignmentPhase::Fenced => 6,
             AssignmentPhase::Released => 7,
             AssignmentPhase::Failed => 8,
-        },
-        realized_lifecycle: value.realized_lifecycle.map(pb_lifecycle),
+        }
+        .into(),
+        realized_lifecycle: value
+            .realized_lifecycle
+            .map(|lifecycle| pb_lifecycle(lifecycle).into()),
         reason: match value.reason {
             ReasonWire::None => 1,
             ReasonWire::AwaitingContent => 2,
@@ -2193,8 +2223,10 @@ fn pb_assignment_observation(value: AssignmentObservationWire) -> protobuf::Assi
             ReasonWire::ResidualState => 9,
             ReasonWire::MissingDependency => 10,
             ReasonWire::NodeOperationFailed => 11,
-        },
+        }
+        .into(),
         observed_at_unix_seconds: value.observed_at_unix_seconds,
+        ..Default::default()
     }
 }
 fn wire_assignment_observation(
@@ -2207,7 +2239,7 @@ fn wire_assignment_observation(
         desired_generation: DesiredGeneration::new(value.desired_generation),
         assignment_digest: parse(&value.assignment_digest)?,
         sequence: ObservationSequence::new(value.sequence),
-        phase: match value.phase {
+        phase: match value.phase.to_i32() {
             1 => AssignmentPhase::Proposed,
             2 => AssignmentPhase::Accepted,
             3 => AssignmentPhase::Arming,
@@ -2218,8 +2250,11 @@ fn wire_assignment_observation(
             8 => AssignmentPhase::Failed,
             _ => return Err(invalid()),
         },
-        realized_lifecycle: value.realized_lifecycle.map(wire_lifecycle).transpose()?,
-        reason: match value.reason {
+        realized_lifecycle: value
+            .realized_lifecycle
+            .map(|lifecycle| wire_lifecycle(lifecycle.to_i32()))
+            .transpose()?,
+        reason: match value.reason.to_i32() {
             1 => ReasonWire::None,
             2 => ReasonWire::AwaitingContent,
             3 => ReasonWire::AwaitingCapacity,
@@ -2247,8 +2282,9 @@ fn pb_watch_binding(value: WatchBindingWire) -> protobuf::WatchBinding {
         authorization_digest: value.authorization_digest.to_string(),
         audience_digest: value.audience_digest.to_string(),
         disclosure_domain_digest: value.disclosure_domain_digest.to_string(),
-        schema_minimum: Some(pb_version(value.schema_minimum)),
-        schema_maximum: Some(pb_version(value.schema_maximum)),
+        schema_minimum: Some(pb_version(value.schema_minimum)).into(),
+        schema_maximum: Some(pb_version(value.schema_maximum)).into(),
+        ..Default::default()
     }
 }
 fn wire_watch_binding(
@@ -2270,10 +2306,11 @@ fn wire_watch_binding(
 fn pb_cursor(value: CursorWire) -> protobuf::WatchCursor {
     protobuf::WatchCursor {
         node: value.node.to_string(),
-        lineage: Some(pb_lineage(value.lineage)),
-        binding: Some(pb_watch_binding(value.binding)),
+        lineage: Some(pb_lineage(value.lineage)).into(),
+        binding: Some(pb_watch_binding(value.binding)).into(),
         event_sequence: value.event_sequence,
         last_event_uid: value.last_event_uid.to_string(),
+        ..Default::default()
     }
 }
 fn wire_cursor(value: protobuf::WatchCursor) -> Result<CursorWire, InvalidMultiNodeProtocol> {
@@ -2302,6 +2339,7 @@ fn pb_identity(value: IdentityWire) -> protobuf::SnapshotIdentity {
         audience_digest: value.audience_digest.to_string(),
         disclosure_domain_digest: value.disclosure_domain_digest.to_string(),
         manifest_digest: value.manifest_digest.to_string(),
+        ..Default::default()
     }
 }
 fn wire_identity(
@@ -2330,6 +2368,7 @@ fn pb_chunk(value: ChunkWire) -> protobuf::SnapshotChunk {
         offset: value.offset,
         length: value.length,
         digest: value.digest.to_string(),
+        ..Default::default()
     }
 }
 fn wire_chunk(value: protobuf::SnapshotChunk) -> Result<ChunkWire, InvalidMultiNodeProtocol> {
@@ -2342,12 +2381,13 @@ fn wire_chunk(value: protobuf::SnapshotChunk) -> Result<ChunkWire, InvalidMultiN
 }
 fn pb_manifest(value: ManifestWire) -> protobuf::SnapshotManifest {
     protobuf::SnapshotManifest {
-        identity: Some(pb_identity(value.identity)),
-        version: Some(pb_version(value.version)),
-        root: Some(pb_descriptor(&value.root)),
+        identity: Some(pb_identity(value.identity)).into(),
+        version: Some(pb_version(value.version)).into(),
+        root: Some(pb_descriptor(&value.root)).into(),
         chunks: value.chunks.into_iter().map(pb_chunk).collect(),
         dependencies: value.dependencies.iter().map(pb_descriptor).collect(),
         required_features: value.required_features.iter().map(pb_feature).collect(),
+        ..Default::default()
     }
 }
 fn wire_manifest(
@@ -2407,7 +2447,8 @@ fn pb_drain_directive(value: DrainDirectiveWire) -> protobuf::DrainDirective {
             DrainModeWire::CordonOnly => 1,
             DrainModeWire::Evacuate => 2,
             DrainModeWire::Decommission => 3,
-        },
+        }
+        .into(),
         accepted_at_unix_seconds: value.accepted_at_unix_seconds,
         deadline_unix_seconds: value.deadline_unix_seconds,
         assignments: value
@@ -2419,9 +2460,11 @@ fn pb_drain_directive(value: DrainDirectiveWire) -> protobuf::DrainDirective {
                 epoch: row.epoch.get(),
                 desired_generation: row.desired_generation.get(),
                 assignment_digest: row.assignment_digest.to_string(),
-                strategy: strategy_number(row.strategy),
+                strategy: strategy_number(row.strategy).into(),
+                ..Default::default()
             })
             .collect(),
+        ..Default::default()
     }
 }
 fn wire_drain_directive(
@@ -2434,7 +2477,7 @@ fn wire_drain_directive(
         operation: parse(&value.operation)?,
         node: parse(&value.node)?,
         generation: value.generation,
-        mode: match value.mode {
+        mode: match value.mode.to_i32() {
             1 => DrainModeWire::CordonOnly,
             2 => DrainModeWire::Evacuate,
             3 => DrainModeWire::Decommission,
@@ -2452,52 +2495,65 @@ fn wire_drain_directive(
                     epoch: AssignmentEpoch::new(row.epoch),
                     desired_generation: DesiredGeneration::new(row.desired_generation),
                     assignment_digest: parse(&row.assignment_digest)?,
-                    strategy: wire_strategy(row.strategy)?,
+                    strategy: wire_strategy(row.strategy.to_i32())?,
                 })
             })
             .collect::<Result<_, InvalidMultiNodeProtocol>>()?,
     })
 }
-fn progress_parts(value: ProgressWire) -> (i32, Option<i32>) {
+fn progress_parts(
+    value: ProgressWire,
+) -> (
+    buffa::EnumValue<protobuf::DrainProgress>,
+    Option<buffa::EnumValue<protobuf::DrainBlockReason>>,
+) {
     match value {
-        ProgressWire::Pending => (1, None),
-        ProgressWire::Preparing => (2, None),
-        ProgressWire::Stopping => (3, None),
-        ProgressWire::Contained => (4, None),
-        ProgressWire::Released => (5, None),
+        ProgressWire::Pending => (1.into(), None),
+        ProgressWire::Preparing => (2.into(), None),
+        ProgressWire::Stopping => (3.into(), None),
+        ProgressWire::Contained => (4.into(), None),
+        ProgressWire::Released => (5.into(), None),
         ProgressWire::Blocked(reason) => (
-            6,
-            Some(match reason {
-                BlockWire::SnapshotUnavailable => 1,
-                BlockWire::MissingDependency => 2,
-                BlockWire::OwnershipAuthorityUnavailable => 3,
-                BlockWire::ContainmentUnconfirmed => 4,
-                BlockWire::ResidualState => 5,
-                BlockWire::DestinationUnavailable => 6,
-            }),
+            6.into(),
+            Some(
+                (match reason {
+                    BlockWire::SnapshotUnavailable => 1,
+                    BlockWire::MissingDependency => 2,
+                    BlockWire::OwnershipAuthorityUnavailable => 3,
+                    BlockWire::ContainmentUnconfirmed => 4,
+                    BlockWire::ResidualState => 5,
+                    BlockWire::DestinationUnavailable => 6,
+                })
+                .into(),
+            ),
         ),
     }
 }
 fn wire_progress(
     value: protobuf::DrainProgressValue,
 ) -> Result<ProgressWire, InvalidMultiNodeProtocol> {
-    Ok(match (value.state, value.reason) {
-        (1, None) => ProgressWire::Pending,
-        (2, None) => ProgressWire::Preparing,
-        (3, None) => ProgressWire::Stopping,
-        (4, None) => ProgressWire::Contained,
-        (5, None) => ProgressWire::Released,
-        (6, Some(reason)) => ProgressWire::Blocked(match reason {
-            1 => BlockWire::SnapshotUnavailable,
-            2 => BlockWire::MissingDependency,
-            3 => BlockWire::OwnershipAuthorityUnavailable,
-            4 => BlockWire::ContainmentUnconfirmed,
-            5 => BlockWire::ResidualState,
-            6 => BlockWire::DestinationUnavailable,
+    Ok(
+        match (
+            value.state.to_i32(),
+            value.reason.map(|reason| reason.to_i32()),
+        ) {
+            (1, None) => ProgressWire::Pending,
+            (2, None) => ProgressWire::Preparing,
+            (3, None) => ProgressWire::Stopping,
+            (4, None) => ProgressWire::Contained,
+            (5, None) => ProgressWire::Released,
+            (6, Some(reason)) => ProgressWire::Blocked(match reason {
+                1 => BlockWire::SnapshotUnavailable,
+                2 => BlockWire::MissingDependency,
+                3 => BlockWire::OwnershipAuthorityUnavailable,
+                4 => BlockWire::ContainmentUnconfirmed,
+                5 => BlockWire::ResidualState,
+                6 => BlockWire::DestinationUnavailable,
+                _ => return Err(invalid()),
+            }),
             _ => return Err(invalid()),
-        }),
-        _ => return Err(invalid()),
-    })
+        },
+    )
 }
 fn pb_drain_observation(value: DrainObservationWire) -> protobuf::DrainObservation {
     protobuf::DrainObservation {
@@ -2512,7 +2568,8 @@ fn pb_drain_observation(value: DrainObservationWire) -> protobuf::DrainObservati
             DrainPhaseWire::ReadyForReassignment => 5,
             DrainPhaseWire::Complete => 6,
             DrainPhaseWire::Blocked => 7,
-        },
+        }
+        .into(),
         assignments: value
             .assignments
             .into_iter()
@@ -2524,11 +2581,18 @@ fn pb_drain_observation(value: DrainObservationWire) -> protobuf::DrainObservati
                     epoch: row.epoch.get(),
                     desired_generation: row.desired_generation.get(),
                     assignment_digest: row.assignment_digest.to_string(),
-                    progress: Some(protobuf::DrainProgressValue { state, reason }),
+                    progress: Some(protobuf::DrainProgressValue {
+                        state,
+                        reason,
+                        ..Default::default()
+                    })
+                    .into(),
+                    ..Default::default()
                 }
             })
             .collect(),
         observed_at_unix_seconds: value.observed_at_unix_seconds,
+        ..Default::default()
     }
 }
 fn wire_drain_observation(
@@ -2541,7 +2605,7 @@ fn wire_drain_observation(
         operation: parse(&value.operation)?,
         generation: value.generation,
         sequence: ObservationSequence::new(value.sequence),
-        phase: match value.phase {
+        phase: match value.phase.to_i32() {
             1 => DrainPhaseWire::Requested,
             2 => DrainPhaseWire::Cordoned,
             3 => DrainPhaseWire::Draining,
@@ -2585,10 +2649,10 @@ fn pb_assignment(value: &CanonicalAssignmentManifestV1) -> protobuf::AssignmentM
         epoch: manifest.epoch().get(),
         desired_generation: manifest.desired_generation().get(),
         namespace_generation: manifest.namespace_generation().get(),
-        sandbox_spec: Some(pb_descriptor(manifest.sandbox_spec())),
-        policy: Some(pb_descriptor(manifest.policy())),
-        environment: Some(pb_descriptor(manifest.environment())),
-        root_view: Some(pb_descriptor(manifest.root_view())),
+        sandbox_spec: Some(pb_descriptor(manifest.sandbox_spec())).into(),
+        policy: Some(pb_descriptor(manifest.policy())).into(),
+        environment: Some(pb_descriptor(manifest.environment())).into(),
+        root_view: Some(pb_descriptor(manifest.root_view())).into(),
         source_commitments: manifest
             .source_commitments()
             .iter()
@@ -2601,6 +2665,7 @@ fn pb_assignment(value: &CanonicalAssignmentManifestV1) -> protobuf::AssignmentM
             .iter()
             .map(pb_feature)
             .collect(),
+        ..Default::default()
     }
 }
 
@@ -2659,69 +2724,84 @@ pub(super) fn protobuf_request(
     use protobuf::semantic_envelope::Body;
 
     Ok(match body {
-        NodeRequestBodyV1::GetCapabilities => {
-            Body::GetCapabilitiesRequest(protobuf::GetCapabilitiesRequest {})
-        }
+        NodeRequestBodyV1::GetCapabilities => Body::GetCapabilitiesRequest(Box::default()),
         NodeRequestBodyV1::ReconcileAssignment(intent) => {
-            Body::ReconcileAssignmentRequest(protobuf::ReconcileAssignmentRequest {
+            Body::ReconcileAssignmentRequest(Box::new(protobuf::ReconcileAssignmentRequest {
                 intent: Some(protobuf::AssignmentIntent {
-                    assignment: Some(pb_assignment(intent.assignment())),
-                    desired_lifecycle: pb_lifecycle(intent.desired_lifecycle()),
+                    assignment: Some(pb_assignment(intent.assignment())).into(),
+                    desired_lifecycle: pb_lifecycle(intent.desired_lifecycle()).into(),
                     selected_capability: Some(pb_binding(
                         intent.selected_capability_binding().into(),
-                    )),
+                    ))
+                    .into(),
                     assignment_digest: intent.assignment_digest().to_string(),
-                }),
-            })
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            }))
         }
         NodeRequestBodyV1::RelistAssignments { binding } => {
-            Body::RelistAssignmentsRequest(protobuf::RelistAssignmentsRequest {
-                binding: Some(pb_watch_binding((*binding).into())),
-            })
+            Body::RelistAssignmentsRequest(Box::new(protobuf::RelistAssignmentsRequest {
+                binding: Some(pb_watch_binding((*binding).into())).into(),
+                ..Default::default()
+            }))
         }
         NodeRequestBodyV1::ReconcileDrain(directive) => {
-            Body::ReconcileDrainRequest(protobuf::ReconcileDrainRequest {
-                directive: Some(pb_drain_directive(drain_directive_wire(directive))),
-            })
+            Body::ReconcileDrainRequest(Box::new(protobuf::ReconcileDrainRequest {
+                directive: Some(pb_drain_directive(drain_directive_wire(directive))).into(),
+                ..Default::default()
+            }))
         }
         NodeRequestBodyV1::BeginSnapshotTransfer { manifest, resume } => {
-            Body::BeginSnapshotTransferRequest(protobuf::BeginSnapshotTransferRequest {
-                manifest: Some(pb_manifest(manifest_wire(manifest))),
-                resume: resume.map(|resume| {
-                    let resume = resume_wire(resume);
-                    protobuf::SnapshotResume {
-                        identity: Some(pb_identity(resume.identity)),
-                        next_chunk: resume.next_chunk,
-                        verified_prefix_digest: resume.verified_prefix_digest.to_string(),
-                    }
-                }),
-            })
+            Body::BeginSnapshotTransferRequest(Box::new(protobuf::BeginSnapshotTransferRequest {
+                manifest: Some(pb_manifest(manifest_wire(manifest))).into(),
+                resume: resume
+                    .map(|resume| {
+                        let resume = resume_wire(resume);
+                        protobuf::SnapshotResume {
+                            identity: Some(pb_identity(resume.identity)).into(),
+                            next_chunk: resume.next_chunk,
+                            verified_prefix_digest: resume.verified_prefix_digest.to_string(),
+                            ..Default::default()
+                        }
+                    })
+                    .into(),
+                ..Default::default()
+            }))
         }
         NodeRequestBodyV1::FetchSnapshotChunk { request } => {
-            Body::SnapshotChunkRequest(protobuf::SnapshotChunkRequest {
+            Body::SnapshotChunkRequest(Box::new(protobuf::SnapshotChunkRequest {
                 request: Some(protobuf::SnapshotChunkRange {
-                    identity: Some(pb_identity(request.identity().into())),
-                    chunk: Some(pb_chunk(request.chunk().into())),
-                }),
-            })
+                    identity: Some(pb_identity(request.identity().into())).into(),
+                    chunk: Some(pb_chunk(request.chunk().into())).into(),
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            }))
         }
         NodeRequestBodyV1::FetchSnapshotDependency { request } => {
-            Body::SnapshotDependencyRequest(protobuf::SnapshotDependencyRequest {
+            Body::SnapshotDependencyRequest(Box::new(protobuf::SnapshotDependencyRequest {
                 request: Some(protobuf::SnapshotDependencyRange {
-                    identity: Some(pb_identity(request.identity().into())),
-                    dependency: Some(pb_descriptor(request.dependency())),
+                    identity: Some(pb_identity(request.identity().into())).into(),
+                    dependency: Some(pb_descriptor(request.dependency())).into(),
                     offset: request.offset(),
                     length: request.length(),
-                }),
-            })
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            }))
         }
         NodeRequestBodyV1::Watch {
             after,
             maximum_events,
-        } => Body::WatchRequest(protobuf::WatchRequest {
-            after: Some(pb_cursor((*after).into())),
+        } => Body::WatchRequest(Box::new(protobuf::WatchRequest {
+            after: Some(pb_cursor((*after).into())).into(),
             maximum_events: u32::from(*maximum_events),
-        }),
+            ..Default::default()
+        })),
     })
 }
 
@@ -2746,7 +2826,7 @@ pub(super) fn protobuf_request_model(
             }
             let intent = AssignmentIntentV1::from_canonical_binding(
                 assignment,
-                wire_lifecycle(value.desired_lifecycle)?,
+                wire_lifecycle(value.desired_lifecycle.to_i32())?,
                 wire_binding(required(value.selected_capability)?)?.model()?,
             )
             .map_err(|_| invalid())?;
@@ -2770,6 +2850,7 @@ pub(super) fn protobuf_request_model(
             let manifest = manifest_model(wire_manifest(required(value.manifest)?)?)?;
             let resume = value
                 .resume
+                .into_option()
                 .map(|resume| {
                     let identity = wire_identity(required(resume.identity)?)?.model()?;
                     let model =
@@ -2830,22 +2911,23 @@ fn pb_event_body(body: &NodeWatchEventBodyV1) -> protobuf::watch_event::Body {
     use protobuf::watch_event::Body;
     match body {
         NodeWatchEventBodyV1::Capability(value) => {
-            Body::Capability(pb_capability(capability_wire(value)))
+            Body::Capability(Box::new(pb_capability(capability_wire(value))))
         }
-        NodeWatchEventBodyV1::Assignment(value) => Body::Assignment(pb_assignment_observation(
-            assignment_observation_wire(value),
+        NodeWatchEventBodyV1::Assignment(value) => Body::Assignment(Box::new(
+            pb_assignment_observation(assignment_observation_wire(value)),
         )),
-        NodeWatchEventBodyV1::Drain(value) => {
-            Body::Drain(pb_drain_observation(drain_observation_wire(value)))
-        }
+        NodeWatchEventBodyV1::Drain(value) => Body::Drain(Box::new(pb_drain_observation(
+            drain_observation_wire(value),
+        ))),
     }
 }
 
 fn protobuf_event(event: &NodeWatchEventV1) -> protobuf::WatchEvent {
     protobuf::WatchEvent {
-        cursor: Some(pb_cursor(event.cursor().into())),
+        cursor: Some(pb_cursor(event.cursor().into())).into(),
         predecessor_event_uid: event.predecessor_event_uid().to_string(),
         body: Some(pb_event_body(event.body())),
+        ..Default::default()
     }
 }
 
@@ -2857,13 +2939,13 @@ fn protobuf_event_model(
     use protobuf::watch_event::Body;
     let body = match required(value.body)? {
         Body::Capability(value) => {
-            NodeWatchEventBodyV1::Capability(Box::new(capability_model(wire_capability(value)?)?))
+            NodeWatchEventBodyV1::Capability(Box::new(capability_model(wire_capability(*value)?)?))
         }
         Body::Assignment(value) => NodeWatchEventBodyV1::Assignment(Box::new(
-            assignment_observation_model(wire_assignment_observation(value)?, context)?,
+            assignment_observation_model(wire_assignment_observation(*value)?, context)?,
         )),
         Body::Drain(value) => NodeWatchEventBodyV1::Drain(Box::new(drain_observation_model(
-            wire_drain_observation(value)?,
+            wire_drain_observation(*value)?,
             context,
         )?)),
     };
@@ -2881,34 +2963,42 @@ pub(super) fn protobuf_response(
     use protobuf::semantic_envelope::Body;
     Ok(match body {
         NodeResponseBodyV1::Capabilities(value) => {
-            Body::GetCapabilitiesResponse(protobuf::GetCapabilitiesResponse {
-                snapshot: Some(pb_capability(capability_wire(value))),
-            })
+            Body::GetCapabilitiesResponse(Box::new(protobuf::GetCapabilitiesResponse {
+                snapshot: Some(pb_capability(capability_wire(value))).into(),
+                ..Default::default()
+            }))
         }
         NodeResponseBodyV1::Assignment(value) => {
-            Body::ReconcileAssignmentResponse(protobuf::ReconcileAssignmentResponse {
+            Body::ReconcileAssignmentResponse(Box::new(protobuf::ReconcileAssignmentResponse {
                 observation: Some(pb_assignment_observation(assignment_observation_wire(
                     value,
-                ))),
-            })
+                )))
+                .into(),
+                ..Default::default()
+            }))
         }
         NodeResponseBodyV1::AssignmentInventory(value) => {
-            Body::RelistAssignmentsResponse(protobuf::RelistAssignmentsResponse {
-                inventory: Some(protobuf_inventory(value)),
-            })
+            Body::RelistAssignmentsResponse(Box::new(protobuf::RelistAssignmentsResponse {
+                inventory: Some(protobuf_inventory(value)).into(),
+                ..Default::default()
+            }))
         }
         NodeResponseBodyV1::Drain(value) => {
-            Body::ReconcileDrainResponse(protobuf::ReconcileDrainResponse {
-                observation: Some(pb_drain_observation(drain_observation_wire(value))),
-            })
+            Body::ReconcileDrainResponse(Box::new(protobuf::ReconcileDrainResponse {
+                observation: Some(pb_drain_observation(drain_observation_wire(value))).into(),
+                ..Default::default()
+            }))
         }
         NodeResponseBodyV1::SnapshotTransferReady {
             identity,
             next_chunk,
-        } => Body::BeginSnapshotTransferResponse(protobuf::BeginSnapshotTransferResponse {
-            identity: Some(pb_identity((*identity).into())),
-            next_chunk: *next_chunk,
-        }),
+        } => {
+            Body::BeginSnapshotTransferResponse(Box::new(protobuf::BeginSnapshotTransferResponse {
+                identity: Some(pb_identity((*identity).into())).into(),
+                next_chunk: *next_chunk,
+                ..Default::default()
+            }))
+        }
         NodeResponseBodyV1::SnapshotChunk {
             identity,
             index,
@@ -2918,11 +3008,12 @@ pub(super) fn protobuf_response(
             {
                 return Err(invalid());
             }
-            Body::SnapshotChunkResponse(protobuf::SnapshotChunkResponse {
-                identity: Some(pb_identity((*identity).into())),
+            Body::SnapshotChunkResponse(Box::new(protobuf::SnapshotChunkResponse {
+                identity: Some(pb_identity((*identity).into())).into(),
                 index: *index,
                 data: bytes.clone(),
-            })
+                ..Default::default()
+            }))
         }
         NodeResponseBodyV1::SnapshotDependency {
             identity,
@@ -2934,35 +3025,40 @@ pub(super) fn protobuf_response(
             {
                 return Err(invalid());
             }
-            Body::SnapshotDependencyResponse(protobuf::SnapshotDependencyResponse {
-                identity: Some(pb_identity((*identity).into())),
-                dependency: Some(pb_descriptor(dependency)),
+            Body::SnapshotDependencyResponse(Box::new(protobuf::SnapshotDependencyResponse {
+                identity: Some(pb_identity((*identity).into())).into(),
+                dependency: Some(pb_descriptor(dependency)).into(),
                 offset: *offset,
                 data: bytes.clone(),
-            })
+                ..Default::default()
+            }))
         }
         NodeResponseBodyV1::WatchBatch { events, cursor_gap } => {
             if events.len() > crate::multi_node::MAX_WATCH_EVENTS {
                 return Err(invalid());
             }
-            Body::WatchResponse(protobuf::WatchResponse {
+            Body::WatchResponse(Box::new(protobuf::WatchResponse {
                 events: events.iter().map(protobuf_event).collect(),
-                cursor_gap: cursor_gap.map(|value| pb_watch_binding(value.into())),
-            })
+                cursor_gap: cursor_gap
+                    .map(|value| pb_watch_binding(value.into()))
+                    .into(),
+                ..Default::default()
+            }))
         }
     })
 }
 
 fn protobuf_inventory(value: &ResyncInventoryV1) -> protobuf::AssignmentInventory {
     protobuf::AssignmentInventory {
-        cursor: Some(pb_cursor(value.cursor().into())),
-        capabilities: Some(pb_capability(capability_wire(value.capabilities()))),
+        cursor: Some(pb_cursor(value.cursor().into())).into(),
+        capabilities: Some(pb_capability(capability_wire(value.capabilities()))).into(),
         observation_sequence: value.observation_sequence().get(),
         assignments: value
             .assignments()
             .iter()
             .map(|row| pb_assignment_observation(assignment_observation_wire(row)))
             .collect(),
+        ..Default::default()
     }
 }
 
@@ -3066,6 +3162,7 @@ pub(super) fn protobuf_response_model(
                     .collect::<Result<_, _>>()?,
                 cursor_gap: value
                     .cursor_gap
+                    .into_option()
                     .map(wire_watch_binding)
                     .transpose()?
                     .map(WatchBindingWire::model)
@@ -3078,9 +3175,10 @@ pub(super) fn protobuf_response_model(
 
 pub(super) fn protobuf_watch_event_body(body: &NodeWatchEventBodyV1) -> protobuf::WatchEvent {
     protobuf::WatchEvent {
-        cursor: None,
+        cursor: MessageField::none(),
         predecessor_event_uid: String::new(),
         body: Some(pb_event_body(body)),
+        ..Default::default()
     }
 }
 
@@ -3089,18 +3187,18 @@ pub(super) fn protobuf_watch_event_body_model(
     context: AuthenticatedEvidenceContextV1,
 ) -> Result<NodeWatchEventBodyV1, InvalidMultiNodeProtocol> {
     use protobuf::watch_event::Body;
-    if value.cursor.is_some() || !value.predecessor_event_uid.is_empty() {
+    if value.cursor.is_set() || !value.predecessor_event_uid.is_empty() {
         return Err(invalid());
     }
     Ok(match required(value.body)? {
         Body::Capability(value) => {
-            NodeWatchEventBodyV1::Capability(Box::new(capability_model(wire_capability(value)?)?))
+            NodeWatchEventBodyV1::Capability(Box::new(capability_model(wire_capability(*value)?)?))
         }
         Body::Assignment(value) => NodeWatchEventBodyV1::Assignment(Box::new(
-            assignment_observation_model(wire_assignment_observation(value)?, context)?,
+            assignment_observation_model(wire_assignment_observation(*value)?, context)?,
         )),
         Body::Drain(value) => NodeWatchEventBodyV1::Drain(Box::new(drain_observation_model(
-            wire_drain_observation(value)?,
+            wire_drain_observation(*value)?,
             context,
         )?)),
     })

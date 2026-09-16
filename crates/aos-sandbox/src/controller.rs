@@ -2273,7 +2273,7 @@ fn validate_recovery_terminal(
     result: &aos_proto::aos::sandbox::v1::OperatorRecoveryResult,
 ) -> Result<(), InvalidObservationClientAdapter> {
     if result.resource_id.as_slice() != request.resource_id()
-        || result.action != request.action()
+        || result.action.to_i32() != request.action()
         || result.resource_version.is_empty()
         || result.resource_version.len() > crate::cli_model::MAXIMUM_CLI_OPAQUE_BYTES
         || result.resource_version == request.expected_resource_version()

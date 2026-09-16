@@ -751,7 +751,7 @@ mod protected_integration {
     use super::*;
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn issue_context_from_protected_bootstrap(
+    pub(in crate::multi_node) fn issue_context_from_protected_bootstrap(
         node: NodeId,
         lineage: NodeBootLineageV1,
         authenticated_channel_binding: [u8; 32],
@@ -813,7 +813,7 @@ mod protected_integration {
         .map_err(|_| InvalidMultiNodeProtocol::SessionMismatch)
     }
 
-    pub(super) fn issue_session_from_protected_channel(
+    pub(in crate::multi_node) fn issue_session_from_protected_channel(
         protected_expected: &ProtectedJournalRecordV1,
         frame: &CanonicalNodeFrameV1<'_>,
         authenticated_channel_binding: [u8; 32],
@@ -858,7 +858,7 @@ mod protected_integration {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn verify_assignment_contract_from_protected_channel(
+    pub(in crate::multi_node) fn verify_assignment_contract_from_protected_channel(
         session: &AuthenticatedNodeSessionV1,
         protected_expected: &ProtectedJournalRecordV1,
         intent: &AssignmentIntentV1,
@@ -932,7 +932,7 @@ mod protected_integration {
         )
     }
 
-    pub(super) fn issue_response_from_protected_channel(
+    pub(in crate::multi_node) fn issue_response_from_protected_channel(
         session: AuthenticatedNodeSessionV1,
         protected_expected: &ProtectedJournalRecordV1,
         frame: &CanonicalNodeFrameV1<'_>,

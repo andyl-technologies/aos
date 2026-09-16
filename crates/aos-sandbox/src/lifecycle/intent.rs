@@ -1,8 +1,8 @@
 //! Method-specific lifecycle intent, fences, expectations, and typed observations.
 
 use aos_sandbox_core::{
-    AssignmentEpoch, DesiredGeneration, ExecutionId, IncarnationId, NamespaceGeneration, ProjectId,
-    ResourceId, Revision, SandboxId, SnapshotId, ViewId,
+    AssignmentEpoch, DesiredGeneration, ExecutionId, IncarnationId, NamespaceGeneration,
+    ObjectDigest, ProjectId, ResourceId, Revision, SandboxId, SnapshotId, ViewId,
 };
 
 use super::attempt::MAXIMUM_LIFECYCLE_ATTEMPTS;

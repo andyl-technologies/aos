@@ -328,44 +328,28 @@ impl ProtectedJournalAuthority<'_> {
             .iter()
             .find(|capture| capture.capture_sequence == witness.capture_sequence)
             .ok_or(JournalError::AuthorityPreflightMismatch)?;
-        if (
-            capture.capture_id,
-            capture.record_digest,
-            capture.policy_generation,
-            capture.policy_digest,
-            capture.descriptor_count,
-            capture.activation_count,
-            capture.expected_descriptor_count,
-            capture.source_subject_count,
-            capture.cleanup_subject_count,
-            capture.terminal_subject_count,
-            capture.descriptor_table_digest,
-            capture.activation_table_digest,
-            capture.expected_table_digest,
-            capture.source_subjects_digest,
+        let manager_execution_commitment =
             aos_sandbox_protocol::mount_manager_startup::startup_execution_identity_commitment_v1(
                 &capture.execution,
             )
-            .map_err(|_| JournalError::MalformedRecord("invalid manager execution"))?,
-            &capture.execution,
-        ) != (
-            witness.capture_id,
-            witness.capture_record_digest,
-            witness.policy_generation,
-            witness.policy_digest,
-            witness.descriptor_count,
-            witness.activation_count,
-            witness.expected_descriptor_count,
-            witness.source_subject_count,
-            witness.cleanup_subject_count,
-            witness.terminal_subject_count,
-            witness.descriptor_table_digest,
-            witness.activation_table_digest,
-            witness.expected_table_digest,
-            witness.source_subjects_digest,
-            witness.manager_execution_commitment,
-            &witness.manager_execution,
-        ) {
+            .map_err(|_| JournalError::MalformedRecord("invalid manager execution"))?;
+        if capture.capture_id != witness.capture_id
+            || capture.record_digest != witness.capture_record_digest
+            || capture.policy_generation != witness.policy_generation
+            || capture.policy_digest != witness.policy_digest
+            || capture.descriptor_count != witness.descriptor_count
+            || capture.activation_count != witness.activation_count
+            || capture.expected_descriptor_count != witness.expected_descriptor_count
+            || capture.source_subject_count != witness.source_subject_count
+            || capture.cleanup_subject_count != witness.cleanup_subject_count
+            || capture.terminal_subject_count != witness.terminal_subject_count
+            || capture.descriptor_table_digest != witness.descriptor_table_digest
+            || capture.activation_table_digest != witness.activation_table_digest
+            || capture.expected_table_digest != witness.expected_table_digest
+            || capture.source_subjects_digest != witness.source_subjects_digest
+            || manager_execution_commitment != witness.manager_execution_commitment
+            || capture.execution != witness.manager_execution
+        {
             return Err(JournalError::AuthorityPreflightMismatch);
         }
         Ok(())

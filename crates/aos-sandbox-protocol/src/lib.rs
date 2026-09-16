@@ -75,6 +75,7 @@ pub use mount_result::{
     ValidatedMountResult, decode_mount_result_for_apply, detached_mount_handle_v1,
 };
 pub use mount_source_acquisition::{
+    LiveValidatedAcquireMountSourceRequest, LiveValidatedReleaseMountSourceAcquisitionRequest,
     MAXIMUM_MOUNT_SOURCE_ACQUISITION_RECORDS, ValidatedAcquireMountSourceRequest,
     ValidatedMountSourceAcquisitionInventory, ValidatedMountSourceAcquisitionRecord,
     ValidatedReleaseMountSourceAcquisitionRequest, decode_acquire_mount_source_request,

@@ -707,6 +707,9 @@ pub(crate) fn observe_cold_linux_recovery<'root>(
     } else {
         None
     };
+    let durable_catalog_digest = durable_catalog
+        .map(|observation| observation.record_digest())
+        .unwrap_or_else(|| ObjectDigest::from_bytes([0; 32]));
     let observation_digest = digest_parts(
         COLD_PHYSICAL_DOMAIN,
         &[
@@ -719,9 +722,7 @@ pub(crate) fn observe_cold_linux_recovery<'root>(
             &[u8::from(private_invalid)],
             &[u8::from(final_invalid)],
             &catalog.generation().to_be_bytes(),
-            durable_catalog.map_or(&[0_u8; 32], |observation| {
-                observation.record_digest().as_bytes()
-            }),
+            durable_catalog_digest.as_bytes(),
             &private_tuple,
             &final_tuple,
             &partial_private_tuple,
@@ -893,13 +894,12 @@ pub(crate) fn publish_and_settle_linux_artifact<'authority, 'request>(
         .ok_or(AdmissionError::GenerationExhausted)?;
 
     let mut store = owner.completion_store(prepared.operation)?;
-    let authority = match ledger.authorize_completion(
+    let prepared_authority = match ledger.authorize_completion(
         committed,
         permit,
         effect,
         intended_entry.clone(),
         catalog,
-        &mut store,
     ) {
         Ok(authority) => authority,
         Err(error) => {
@@ -908,6 +908,7 @@ pub(crate) fn publish_and_settle_linux_artifact<'authority, 'request>(
             return Err(error.into());
         }
     };
+    let authority = prepared_authority.bind_store(&mut store);
 
     let expected_final_name = prepared.final_name.clone();
     let expected_bytes = prepared.sealed.bytes();

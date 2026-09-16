@@ -79,8 +79,9 @@ pub use registry::{
     ATTACHMENT_NOEXEC_FEATURE_V1, BASE_V1_FEATURE_REGISTRY_ENTRIES,
     EXECUTION_DETACHED_CAPTURE_FEATURE_V1, EXECUTION_PTY_FEATURE_V1,
     EXECUTION_SANDBOX_SHELL_FEATURE_V1, EXECUTION_STREAM_FEATURE_V1, EXECUTION_TIMEOUT_FEATURE_V1,
-    FORCE_DELETE_FEATURE_V1, PublicPolicyReasonCodeV1, canonical_feature_fixture_v1,
-    contains_semantic_features_v1, public_feature_registry_v1, semantic_feature_v1,
+    FORCE_DELETE_FEATURE_V1, PublicPolicyReasonCodeV1, SNAPSHOT_PROJECT_VERSION_FENCE_FEATURE_V1,
+    canonical_feature_fixture_v1, contains_semantic_features_v1, public_feature_registry_v1,
+    semantic_feature_v1,
 };
 pub(crate) use registry::{
     base_feature_registry_entry_v1, feature_conformance_digest_v1,

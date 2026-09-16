@@ -13,8 +13,8 @@ use aos_sandbox_core::{ObjectDigest, PrincipalId, ResourceId};
 use sha2::{Digest as _, Sha256};
 
 use crate::environment::{
-    FixedLiveAuthorityClockV1, LiveAuthorityClockSampleV1,
-    authority_clock::validate_bracketed_samples_v1, fixed_live_authority_clock_v1,
+    FixedLiveAuthorityClockV1, LiveAuthorityClockSampleV1, fixed_live_authority_clock_v1,
+    validate_bracketed_samples_v1,
 };
 use crate::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
 

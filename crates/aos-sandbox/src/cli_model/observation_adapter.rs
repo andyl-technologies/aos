@@ -61,7 +61,7 @@ pub enum InvalidObservationClientAdapter {
 }
 
 /// Retains an exact dormant operator-recovery action and concurrency fence.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OperatorRecoveryRequestV1 {
     resource_id: [u8; 16],
     expected_resource_version: Vec<u8>,
@@ -69,6 +69,8 @@ pub struct OperatorRecoveryRequestV1 {
     idempotency_key: Vec<u8>,
     evidence: aos_proto::aos::sandbox::v1::ObjectDescriptor,
 }
+
+impl Eq for OperatorRecoveryRequestV1 {}
 
 impl TryFrom<OperatorRecoveryRequest> for OperatorRecoveryRequestV1 {
     type Error = InvalidObservationClientAdapter;
@@ -89,7 +91,7 @@ impl TryFrom<OperatorRecoveryRequest> for OperatorRecoveryRequestV1 {
         if resource_id == [0; 16]
             || value.expected_resource_version.is_empty()
             || value.expected_resource_version.len() > super::grammar::MAXIMUM_CLI_OPAQUE_BYTES
-            || !(1..=4).contains(&value.action)
+            || !(1..=4).contains(&value.action.to_i32())
             || value.idempotency_key.is_empty()
             || value.idempotency_key.len() > super::grammar::MAXIMUM_IDEMPOTENCY_KEY_BYTES
         {
@@ -98,7 +100,7 @@ impl TryFrom<OperatorRecoveryRequest> for OperatorRecoveryRequestV1 {
         Ok(Self {
             resource_id,
             expected_resource_version: value.expected_resource_version,
-            action: value.action,
+            action: value.action.to_i32(),
             idempotency_key: value.idempotency_key,
             evidence,
         })
@@ -112,7 +114,7 @@ impl OperatorRecoveryRequestV1 {
         OperatorRecoveryRequest {
             resource_id: self.resource_id.to_vec(),
             expected_resource_version: self.expected_resource_version.clone(),
-            action: self.action,
+            action: self.action.into(),
             idempotency_key: self.idempotency_key.clone(),
             evidence: self.evidence.clone().into(),
             ..Default::default()
@@ -178,7 +180,7 @@ impl AuthorizedOperatorRecoveryV1 {
         }
     }
 
-    pub(crate) const fn into_parts(self) -> (OperatorRecoveryRequestV1, RequestProvenanceV1) {
+    pub(crate) fn into_parts(self) -> (OperatorRecoveryRequestV1, RequestProvenanceV1) {
         (self.request, self.provenance)
     }
 }
@@ -195,7 +197,7 @@ impl OperationObservationRequestV1 {
     /// # Errors
     ///
     /// Returns [`InvalidObservationClientAdapter::InvalidIdentity`] for zero.
-    pub const fn new(operation_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
+    pub fn new(operation_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
         if operation_id == [0; 16] {
             Err(InvalidObservationClientAdapter::InvalidIdentity)
         } else {
@@ -267,7 +269,7 @@ impl ExecutionObservationRequestV1 {
     /// # Errors
     ///
     /// Returns [`InvalidObservationClientAdapter::InvalidIdentity`] for zero.
-    pub const fn new(execution_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
+    pub fn new(execution_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
         if execution_id == [0; 16] {
             Err(InvalidObservationClientAdapter::InvalidIdentity)
         } else {
@@ -321,7 +323,7 @@ impl FilesystemViewObservationRequestV1 {
     /// # Errors
     ///
     /// Returns [`InvalidObservationClientAdapter::InvalidIdentity`] for zero.
-    pub const fn new(view_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
+    pub fn new(view_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
         if view_id == [0; 16] {
             Err(InvalidObservationClientAdapter::InvalidIdentity)
         } else {
@@ -375,7 +377,7 @@ impl AttachmentObservationRequestV1 {
     /// # Errors
     ///
     /// Returns [`InvalidObservationClientAdapter::InvalidIdentity`] for zero.
-    pub const fn new(attachment_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
+    pub fn new(attachment_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
         if attachment_id == [0; 16] {
             Err(InvalidObservationClientAdapter::InvalidIdentity)
         } else {
@@ -429,7 +431,7 @@ impl SnapshotObservationRequestV1 {
     /// # Errors
     ///
     /// Returns [`InvalidObservationClientAdapter::InvalidIdentity`] for zero.
-    pub const fn new(snapshot_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
+    pub fn new(snapshot_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
         if snapshot_id == [0; 16] {
             Err(InvalidObservationClientAdapter::InvalidIdentity)
         } else {
@@ -483,7 +485,7 @@ impl SandboxObservationRequestV1 {
     /// # Errors
     ///
     /// Returns [`InvalidObservationClientAdapter::InvalidIdentity`] for zero.
-    pub const fn new(sandbox_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
+    pub fn new(sandbox_id: [u8; 16]) -> Result<Self, InvalidObservationClientAdapter> {
         if sandbox_id == [0; 16] {
             Err(InvalidObservationClientAdapter::InvalidIdentity)
         } else {

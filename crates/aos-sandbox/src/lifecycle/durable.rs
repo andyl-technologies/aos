@@ -26,8 +26,8 @@ use super::auxiliary_payload::{
 use super::{
     LifecycleCancelIdempotencyIndexV1, LifecycleCancelOutcomeV1, LifecycleCancelRequestV1,
     LifecycleCancellationRecordV1, LifecycleHistoryV1, LifecycleModelError, LifecycleOperationV1,
-    LifecycleProtectedRetentionLedgerV1, LifecycleRecordDigestV1, LifecycleSemanticCommitFactV1,
-    MAXIMUM_LIFECYCLE_EXPECTATIONS, encode_operation_record_v1,
+    LifecycleProtectedRetentionLedgerV1, LifecycleRecordDigestV1, LifecycleReplayVerificationV1,
+    LifecycleSemanticCommitFactV1, MAXIMUM_LIFECYCLE_EXPECTATIONS, encode_operation_record_v1,
 };
 
 const LEGACY_MAGIC: &[u8; 8] = b"AOSLIFA3";

@@ -190,7 +190,7 @@ pub fn decode_admission_plan(
 ) -> Result<ImmutableAdmissionPlanV1, RecoveryError> {
     let mut reader = CanonicalReader::new(b"AOSPLN01", bytes, maximum_bytes)?;
     let operation = OperationId::from_bytes(reader.identity()?);
-    let reservation = super::accounting::CacheReservationId::from_bytes(reader.identity()?)
+    let reservation = super::super::accounting::CacheReservationId::from_bytes(reader.identity()?)
         .map_err(|_| RecoveryError::MalformedPayload)?;
     let project = ProjectId::from_bytes(reader.identity()?);
     reader.expect_digest(partition.digest())?;
@@ -201,7 +201,7 @@ pub fn decode_admission_plan(
     let source_seal = reader.digest()?;
     let authority_generation = reader.u64()?;
     let valid_until = reader.u64()?;
-    let source = super::admission::SourceAuthorizationV1::recover_historical(
+    let source = super::super::admission::SourceAuthorizationV1::recover_historical(
         release_digest,
         source_revision,
         source_descriptor,
@@ -281,7 +281,7 @@ pub fn decode_reservation(
 ) -> Result<CacheReservationV1, RecoveryError> {
     let mut reader = CanonicalReader::new(b"AOSRSV01", bytes, maximum_bytes)?;
     let reservation = CacheReservationV1 {
-        id: super::accounting::CacheReservationId::from_bytes(reader.identity()?)
+        id: super::super::accounting::CacheReservationId::from_bytes(reader.identity()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
         operation: OperationId::from_bytes(reader.identity()?),
         project: ProjectId::from_bytes(reader.identity()?),
@@ -352,14 +352,14 @@ pub fn decode_catalog(
         partition,
         descriptor: read_descriptor(&mut reader)?,
         seal: read_seal(&mut reader)?,
-        backing: super::catalog::BackingObjectIdentityV1::from_bytes(reader.array()?)
+        backing: super::super::catalog::BackingObjectIdentityV1::from_bytes(reader.array()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
         allocated_bytes: reader.u64()?,
         root_custody: reader.digest()?,
         root_generation: reader.u64()?,
         canonical_name: reader.digest()?,
         publication: OperationId::from_bytes(reader.identity()?),
-        reservation: super::accounting::CacheReservationId::from_bytes(reader.identity()?)
+        reservation: super::super::accounting::CacheReservationId::from_bytes(reader.identity()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
         presence: catalog_presence(reader.u8()?)?,
         generation: reader.u64()?,
@@ -578,7 +578,7 @@ pub fn decode_eviction_plan(
     let authority_digest = reader.digest()?;
     let target_reservation = reader
         .optional_identity()?
-        .map(super::accounting::CacheReservationId::from_bytes)
+        .map(super::super::accounting::CacheReservationId::from_bytes)
         .transpose()
         .map_err(|_| RecoveryError::MalformedPayload)?;
     let target_reclaim_bytes = reader.u64()?;
@@ -819,8 +819,10 @@ pub fn decode_global_recovery_state(
     let mut watermarks = Vec::with_capacity(watermark_count);
     for _ in 0..watermark_count {
         watermarks.push(WatermarkRequirementV1 {
-            reservation: super::accounting::CacheReservationId::from_bytes(reader.identity()?)
-                .map_err(|_| RecoveryError::MalformedPayload)?,
+            reservation: super::super::accounting::CacheReservationId::from_bytes(
+                reader.identity()?,
+            )
+            .map_err(|_| RecoveryError::MalformedPayload)?,
             plan_digest: reader.digest()?,
             required_bytes: reader.u64()?,
             credited_bytes: reader.u64()?,
@@ -1175,7 +1177,7 @@ pub(super) fn validate_handoff_state(
     if handoff.operation.as_bytes() == &[0; 16]
         || handoff.authority.as_bytes() == &[0; 32]
         || handoff.catalog.as_bytes() == &[0; 32]
-        || super::domain::validate_object_descriptor(&handoff.descriptor).is_err()
+        || super::super::domain::validate_object_descriptor(&handoff.descriptor).is_err()
         || handoff.preparation_evidence.as_bytes() == &[0; 32]
         || handoff.valid_until == 0
         || handoff.receipt_evidence.is_some() && handoff.cancellation.is_some()

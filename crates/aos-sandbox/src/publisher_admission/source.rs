@@ -262,20 +262,22 @@ impl SourceReleaseRegistry {
     ) -> Result<&SourceReleaseV1, SourceReleaseError> {
         let release = release.validate()?;
         let key = *release.release_digest.as_bytes();
-        if let Some(existing) = self.releases.get(&key) {
-            return if existing == &release {
-                Ok(existing)
-            } else {
-                Err(SourceReleaseError::IdentityConflict)
-            };
+        let has_capacity = self.releases.len() < self.maximum_releases;
+        match self.releases.entry(key) {
+            std::collections::btree_map::Entry::Occupied(existing) => {
+                if existing.get() == &release {
+                    Ok(existing.into_mut())
+                } else {
+                    Err(SourceReleaseError::IdentityConflict)
+                }
+            }
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                if !has_capacity {
+                    return Err(SourceReleaseError::Capacity);
+                }
+                Ok(slot.insert(release))
+            }
         }
-        if self.releases.len() >= self.maximum_releases {
-            return Err(SourceReleaseError::Capacity);
-        }
-        self.releases.insert(key, release);
-        self.releases
-            .get(&key)
-            .ok_or(SourceReleaseError::CorruptState)
     }
 
     /// Resolves and authorizes one exact current source release.

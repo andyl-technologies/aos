@@ -586,6 +586,8 @@ impl ProtectedStoreBackendV1 for ProtectedJournalStoreBackendV1 {
             if !current_matches || records.next().is_some() {
                 return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
             }
+            drop(current);
+            drop(records);
             let preflight = authority
                 .preflight_transactions(std::slice::from_ref(&transaction))
                 .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)?;
@@ -1597,7 +1599,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
     }
 
     fn current_record_for_operation(
-        &self,
+        &mut self,
         domain: MultiNodeJournalDomainV1,
         operation: OperationId,
     ) -> Result<ProtectedMultiNodeCurrentRecordV1, InvalidMultiNodeJournal> {
@@ -2268,7 +2270,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
         self.commit_snapshot_projection(
             state,
             manifest.identity().operation(),
-            staged_prefix_commitment(&manifest, resume, &empty_prefix),
+            staged_prefix_commitment(manifest.identity(), resume, &empty_prefix),
             verified_at_unix_seconds,
         )
         .map_err(Into::into)
@@ -3138,7 +3140,8 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
             state.manifest().identity().manifest_digest(),
             state.resume().next_chunk(),
         )?;
-        let effect_digest = staged_prefix_commitment(state.manifest(), resume, &staged_prefix);
+        let effect_digest =
+            staged_prefix_commitment(state.manifest().identity(), resume, &staged_prefix);
         if response_frame_digest.as_bytes() == &[0; 32] {
             return Err(InvalidMultiNodeProtocol::Unspecified.into());
         }

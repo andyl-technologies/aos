@@ -92,6 +92,7 @@ pub use deletion::{
     LifecycleDeletionActionV1, LifecycleDeletionObservationV1, LifecycleDeletionPlanV1,
     LifecycleDeletionReceiptV1,
 };
+pub(crate) use durable::decode_lifecycle_auxiliary_record_from_protected_envelope_v1;
 pub use durable::{
     LifecycleAtomicJoinDigestV1, LifecycleAuxiliaryCheckpointV1, LifecycleAuxiliaryHistoryV1,
     LifecycleAuxiliaryKindV1, LifecycleAuxiliaryRecordV1, LifecycleCancellationAdmissionV1,
@@ -154,7 +155,11 @@ pub use phase6::{
 pub use projection::{
     LifecycleModelError, LifecycleOperationClaimV1, LifecycleTerminalProjectionV1,
 };
-pub use protected_journal::AppliedLifecycleJournalTransactionV1;
+pub(crate) use protected_journal::lifecycle_protected_key_v1;
+pub use protected_journal::{
+    AppliedLifecycleJournalTransactionV1, LifecycleProtectedJournalErrorV1,
+    LifecycleProtectedJournalKeyV1,
+};
 pub use protected_owner::{
     LifecycleCurrentAuxiliaryPublicationV1, LifecycleProgressCommitOutcomeV1,
     LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,

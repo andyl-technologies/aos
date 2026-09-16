@@ -250,7 +250,7 @@ impl ProtectedArtifactStoreV1 {
         let (kind, subject, ordinal) = recovery.identity()?;
         let bytes = recovery.bytes();
         let carrier = recovery.protobuf();
-        if carrier.is_some_and(|value| value.status == 4) || self.journal.is_none() {
+        if carrier.is_some_and(|value| value.status.to_i32() == 4) || self.journal.is_none() {
             self.reopen()?;
         }
         let key = artifact_key(kind, subject, ordinal);
@@ -263,7 +263,7 @@ impl ProtectedArtifactStoreV1 {
             self.replay_fence,
             self.context_digest,
         )?;
-        let recovery_status = carrier.map_or(4, |value| value.status);
+        let recovery_status = carrier.map_or(4, |value| value.status.to_i32());
         match (recovery_status, self.values.get(&key)) {
             (_, Some(current)) if current == &expected => {
                 if let Some(carrier) = carrier {
@@ -301,7 +301,7 @@ impl ProtectedArtifactStoreV1 {
             (1 | 4, None) => {}
             _ => return Err(InvalidMultiNodeJournal::NonCanonicalPayload),
         }
-        match carrier.and_then(|recovery| recovery.expected.clone()) {
+        match carrier.and_then(|recovery| recovery.expected.as_option().cloned()) {
             Some(effect) => self.store_snapshot_effect(effect, bytes),
             None => self.store_exact(kind, subject, ordinal, bytes),
         }
@@ -440,8 +440,8 @@ fn generated_recovery_observation(
     status: i32,
     observed_bytes_sha256: Vec<u8>,
 ) -> Result<wire::SnapshotTransferRecovery, InvalidMultiNodeJournal> {
-    if recovery.expected.is_none()
-        || !matches!(recovery.status, 1 | 4)
+    if recovery.expected.is_unset()
+        || !matches!(recovery.status.to_i32(), 1 | 4)
         || !recovery.observed_bytes_sha256.is_empty()
         || !matches!(status, 2 | 3)
         || observed_bytes_sha256.len() != 32
@@ -450,8 +450,9 @@ fn generated_recovery_observation(
     }
     let observed = wire::SnapshotTransferRecovery {
         expected: recovery.expected.clone(),
-        status,
+        status: status.into(),
         observed_bytes_sha256,
+        ..Default::default()
     };
     Ok(observed)
 }
@@ -463,7 +464,7 @@ fn consume_generated_recovery_observation(
     observed_bytes: &[u8],
 ) -> Result<(), InvalidMultiNodeJournal> {
     if observed.expected != expected.expected
-        || observed.status != status
+        || observed.status.to_i32() != status
         || observed.observed_bytes_sha256 != Sha256::digest(observed_bytes).as_slice()
     {
         return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
@@ -477,9 +478,10 @@ fn snapshot_recovery(
     status: i32,
 ) -> Result<ProtectedArtifactRecoveryV1, InvalidMultiNodeJournal> {
     let recovery = wire::SnapshotTransferRecovery {
-        expected: Some(effect),
-        status,
+        expected: Some(effect).into(),
+        status: status.into(),
         observed_bytes_sha256: Vec::new(),
+        ..Default::default()
     };
     validate_generated_recovery(&recovery, bytes)?;
     Ok(ProtectedArtifactRecoveryV1::Snapshot {
@@ -494,10 +496,10 @@ fn validate_generated_recovery(
 ) -> Result<(ProtectedArtifactKindV1, ObjectDigest, u64), InvalidMultiNodeJournal> {
     let effect = recovery
         .expected
-        .as_ref()
+        .as_option()
         .ok_or(InvalidMultiNodeJournal::NonCanonicalPayload)?;
     let identity = generated_snapshot_identity(effect, bytes)?;
-    if !matches!(recovery.status, 1 | 4) || !recovery.observed_bytes_sha256.is_empty() {
+    if !matches!(recovery.status.to_i32(), 1 | 4) || !recovery.observed_bytes_sha256.is_empty() {
         return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
     }
     Ok(identity)
@@ -550,7 +552,10 @@ pub(super) fn snapshot_chunk_effect(
 ) -> Result<wire::SnapshotTransferEffect, InvalidMultiNodeJournal> {
     snapshot_effect(
         subject,
-        wire::snapshot_transfer_effect::Artifact::Chunk(wire::SnapshotChunkEffect { index }),
+        wire::snapshot_transfer_effect::Artifact::Chunk(Box::new(wire::SnapshotChunkEffect {
+            index,
+            ..Default::default()
+        })),
         bytes,
     )
 }
@@ -562,9 +567,12 @@ pub(super) fn snapshot_dependency_effect(
 ) -> Result<wire::SnapshotTransferEffect, InvalidMultiNodeJournal> {
     snapshot_effect(
         subject,
-        wire::snapshot_transfer_effect::Artifact::Dependency(wire::SnapshotDependencyEffect {
-            offset,
-        }),
+        wire::snapshot_transfer_effect::Artifact::Dependency(Box::new(
+            wire::SnapshotDependencyEffect {
+                offset,
+                ..Default::default()
+            },
+        )),
         bytes,
     )
 }
@@ -593,6 +601,7 @@ fn snapshot_effect(
         bytes_sha256: Sha256::digest(bytes).to_vec(),
         byte_count,
         idempotency_uid: Sha256::digest(idempotency_uid).to_vec(),
+        ..Default::default()
     })
 }
 

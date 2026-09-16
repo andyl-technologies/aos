@@ -822,7 +822,7 @@ impl<S: ProtectedDomainSchemaV1> DomainPostcommitRecordV1<S> {
 
     /// Reports whether decoded terminal state may publish protected current state.
     #[must_use]
-    pub const fn is_publication(&self) -> bool {
+    pub fn is_publication(&self) -> bool {
         matches!(self.role, ProtectedRecordRoleV1::Publication)
             && self.phase == ProtectedReducerPhaseV1::Terminal
             && self.transaction_phase == ProtectedReducerPhaseV1::Terminal
@@ -830,7 +830,7 @@ impl<S: ProtectedDomainSchemaV1> DomainPostcommitRecordV1<S> {
 
     /// Reports whether decoded state still admits exactly one external effect.
     #[must_use]
-    pub const fn is_effect(&self) -> bool {
+    pub fn is_effect(&self) -> bool {
         matches!(self.role, ProtectedRecordRoleV1::Effect)
             && self.phase == ProtectedReducerPhaseV1::Prepared
             && self.transaction_phase == ProtectedReducerPhaseV1::Prepared
@@ -1561,7 +1561,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         let reservation_ids = self
             .journal
             .records(RecordNamespace::GlobalCapacityReservation)
-            .filter_map(|(key, _)| key.get(key.len().checked_sub(32)?)?.try_into().ok())
+            .filter_map(|(key, _)| key.get(key.len().checked_sub(32)?..)?.try_into().ok())
             .collect::<Vec<[u8; 32]>>();
         let mut matching = None;
         let authority = self
@@ -2913,9 +2913,9 @@ pub(crate) struct DecodedReducerPayloadV1<'payload> {
     phase: ProtectedReducerPhaseV1,
 }
 
-impl DecodedReducerPayloadV1<'_> {
+impl<'payload> DecodedReducerPayloadV1<'payload> {
     /// Returns the byte-exact canonical reducer body.
-    pub(crate) const fn body(&self) -> &[u8] {
+    pub(crate) const fn body(&self) -> &'payload [u8] {
         self.body
     }
 

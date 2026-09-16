@@ -22,6 +22,7 @@
 //! acquisition revision/digest and the unspecified phase while retaining the
 //! exact acquisition ID and source/resource snapshot digests.
 
+use buffa::Enumeration as _;
 use sha2::{Digest as _, Sha256};
 
 use aos_proto::aos::sandbox::local::v1::{MountLifecycle, MountSourceAcquisitionPhase};

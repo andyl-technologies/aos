@@ -66,11 +66,11 @@ mod transition;
 
 use accounting_projection::*;
 use canonical::*;
-pub use checkpoint::{decode_typed_checkpoint, encode_typed_checkpoint};
 use checkpoint::{
-    encode_atomic_payload_components, typed_checkpoint_digest, validate_checkpoint_successor,
-    validate_typed_checkpoint,
+    decode_atomic_payload_components, encode_atomic_payload_components, typed_checkpoint_digest,
+    validate_checkpoint_successor, validate_typed_checkpoint,
 };
+pub use checkpoint::{decode_typed_checkpoint, encode_typed_checkpoint};
 use classification::{classify_work, push_recovery_work};
 pub use codec::*;
 use global::{handoff_is_terminal, lookup_is_terminal, validate_global_transition};

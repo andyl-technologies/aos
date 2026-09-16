@@ -193,7 +193,7 @@ impl SandboxTreeV1 {
             let parent = self
                 .records
                 .get(&sandbox)
-                .and_then(SandboxTreeRecordV1::parent)
+                .and_then(|record| record.parent())
                 .ok_or(SandboxTreeError::MissingParent)?;
             if members.contains(&parent) {
                 members.insert(sandbox);
@@ -542,10 +542,7 @@ fn validate_graph(
         return Err(SandboxTreeError::TooManyProjectLiveSandboxes);
     }
     let mut live_incarnations = BTreeSet::new();
-    for incarnation in records
-        .values()
-        .filter_map(SandboxTreeRecordV1::incarnation)
-    {
+    for incarnation in records.values().filter_map(|record| record.incarnation()) {
         if !live_incarnations.insert(incarnation) {
             return Err(SandboxTreeError::DuplicateIncarnation);
         }

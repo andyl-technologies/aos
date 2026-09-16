@@ -49,7 +49,7 @@ impl CliOutputPlanV1 {
     ///
     /// Returns [`InvalidOutputPlan::IncompatibleMode`] when text or an entire
     /// list document is paired with a structured framing mode it cannot use.
-    pub const fn new(
+    pub fn new(
         mode: CliOutputModeV1,
         schema: StructuredOutputSchemaV1,
     ) -> Result<Self, InvalidOutputPlan> {
@@ -536,10 +536,7 @@ impl CliOutputPageBudgetV1 {
     /// # Errors
     ///
     /// Returns [`InvalidOutputPlan::InvalidRecord`] for zero or excessive bounds.
-    pub const fn new(
-        maximum_records: u16,
-        maximum_bytes: usize,
-    ) -> Result<Self, InvalidOutputPlan> {
+    pub fn new(maximum_records: u16, maximum_bytes: usize) -> Result<Self, InvalidOutputPlan> {
         if maximum_records == 0
             || maximum_records > MAXIMUM_CLI_OUTPUT_PAGE_RECORDS
             || maximum_bytes == 0
@@ -583,7 +580,7 @@ impl CliOutputPageReducerV1 {
     ///
     /// Returns [`InvalidOutputPlan::InvalidRecord`] unless JSON is bounded to
     /// exactly one document. JSON Lines retains its independent page bound.
-    pub const fn new(
+    pub fn new(
         plan: CliOutputPlanV1,
         budget: CliOutputPageBudgetV1,
     ) -> Result<Self, InvalidOutputPlan> {

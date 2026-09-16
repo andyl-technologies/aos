@@ -69,7 +69,8 @@ pub use model::{
     EnvironmentDescriptorRoleV1, EnvironmentFacadeV1, EnvironmentGenerationCheckpointV1,
     EnvironmentGenerationHistoryV1, EnvironmentGenerationManifestV1, EnvironmentHistoryError,
     EnvironmentInputCommitmentV1, EnvironmentManifestDigestV1, EnvironmentModelError,
-    EnvironmentPredecessorV1, EnvironmentTargetSystemV1, MAXIMUM_ENVIRONMENT_INPUTS,
+    EnvironmentPredecessorV1, EnvironmentTargetSystemV1, MAXIMUM_ENVIRONMENT_HISTORY_BYTES,
+    MAXIMUM_ENVIRONMENT_HISTORY_RECORDS, MAXIMUM_ENVIRONMENT_INPUTS,
     MAXIMUM_INLINE_ENVIRONMENT_BYTES, MAXIMUM_SELECTED_OUTPUT_BYTES, MAXIMUM_TARGET_SYSTEM_BYTES,
     SelectedEnvironmentOutputV1,
 };

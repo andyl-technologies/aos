@@ -109,6 +109,7 @@ impl ProtectedCommittedLeaseV1 {
             canonical_signature: self.response.signature().to_vec(),
             canonical_receipt: self.response.receipt().to_vec(),
             canonical_receipt_signature: self.response.receipt_signature().to_vec(),
+            ..Default::default()
         })
     }
 

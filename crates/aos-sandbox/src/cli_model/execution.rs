@@ -33,7 +33,7 @@ impl CliIdentityV1 {
     /// # Errors
     ///
     /// Returns [`InvalidCliGrammar::InvalidOpaqueValue`] for the zero sentinel.
-    pub const fn new(value: [u8; 16]) -> Result<Self, InvalidCliGrammar> {
+    pub fn new(value: [u8; 16]) -> Result<Self, InvalidCliGrammar> {
         if value == [0; 16] {
             Err(InvalidCliGrammar::InvalidOpaqueValue)
         } else {
@@ -544,8 +544,8 @@ impl ExecutionTerminalOutcomeV1 {
             exit_code,
             termination_reason: safe_reason,
             exited_at: exited_at.into(),
-            termination_kind,
-            signal,
+            termination_kind: termination_kind.into(),
+            signal: signal.into(),
             ..Default::default()
         })
     }
@@ -570,7 +570,11 @@ impl ExecutionTerminalOutcomeV1 {
         {
             return Err(InvalidCliGrammar::InvalidArguments);
         }
-        match (value.termination_kind, value.signal, value.exit_code) {
+        match (
+            value.termination_kind.to_i32(),
+            value.signal.to_i32(),
+            value.exit_code,
+        ) {
             (1, 0, code) => Ok(Self::ExitCode(code)),
             (2, signal, 0) => execution_signal_from_proto(signal)
                 .map(Self::Signal)
