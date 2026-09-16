@@ -14,7 +14,7 @@
 ##!   aos-metadata-network  DHCP gate, cloud-only
 ##!   aos-metadata-fetch    platform → stash
 ##!   aos-metadata-authorize trust → exact host.nix
-##!   aos-provisioning-eval restricted Nix → validated transient repart.d
+##!   aos-provisioning-eval restricted Nix → validated typed storage plan
 ##!
 {
   config,
@@ -29,17 +29,18 @@
   keyFileContent = keys: "${lib.concatStringsSep "\n" keys}\n";
   configTrustAnchors = pkgs.runCommand "aos-provisioning-trust-anchors" {} ''
     mkdir -p $out
-    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (op: keys:
-        "printf '%s' ${lib.escapeShellArg (keyFileContent keys)} > $out/${op}.pub")
-      configKeys)}
+    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (op: keys: "printf '%s' ${lib.escapeShellArg (keyFileContent keys)} > $out/${op}.pub")
+        configKeys)}
   '';
-  trustedConfigKeys = lib.mapAttrsToList (operator: keys: let
-    content = keyFileContent keys;
-  in {
-    kind = "immutable-file";
-    path = "${configTrustAnchors}/${operator}.pub";
-    content_sha256 = "sha256:${builtins.hashString "sha256" content}";
-  }) configKeys;
+  trustedConfigKeys =
+    lib.mapAttrsToList (operator: keys: let
+      content = keyFileContent keys;
+    in {
+      kind = "immutable-file";
+      path = "${configTrustAnchors}/${operator}.pub";
+      content_sha256 = "sha256:${builtins.hashString "sha256" content}";
+    })
+    configKeys;
 in {
   options.aos.provisioning.metadataAgent = {
     stashDir = lib.mkOption {
@@ -257,10 +258,7 @@ in {
         requiredBy = ["initrd-root-fs.target"];
         requires = ["aos-metadata-authorize.service"];
         after = ["aos-metadata-authorize.service"];
-        before = [
-          "aos-repart.service"
-          "initrd-root-fs.target"
-        ];
+        before = ["initrd-root-fs.target"];
         unitConfig.DefaultDependencies = "no";
         environment = {
           NIX_CONFIG = "experimental-features = nix-command";
@@ -298,7 +296,6 @@ in {
           fi
           if [ -n "$committed_arg" ]; then
             echo "aos-provisioning: current storage intent is invalid or differs from committed provenance; factory reset is required to apply it" >&2
-            printf '%s\n' divergent > ${cfg.stashDir}/storage-coherence
             exit 0
           fi
           echo "aos-provisioning: restricted provisioning evaluation failed; refusing first-boot disk mutation" >&2

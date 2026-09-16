@@ -477,8 +477,6 @@
     then throw "the stock system must emit aos-metadata-network-seed.service"
     else if !(builtins.hasAttr "aos-provisioning-eval" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-provisioning-eval.service"
-    else if builtins.hasAttr "aos-storage-provisioning-provider:aos-repart-lifecycle" initrdAbilityRequests
-    then throw "the stock system must not retain a second repart service execution path"
     else if !(builtins.hasAttr "aos-provisioning-persist" system.config.systemd.services)
     then throw "the stock system must persist provisioning audit evidence"
     else if !(builtins.hasAttr "aos-host-config-restore" system.config.systemd.services)

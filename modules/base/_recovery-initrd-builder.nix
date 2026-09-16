@@ -304,7 +304,7 @@ in
           # Load-bearing archive audit: fail if a future change reintroduces a
           # normal initrd unit, generator, or executable under another path.
           forbidden=$(find root -type f -o -type l | grep -E \
-            '/(aos-var-crypt|aos-repart|aos-metadata|initrd-switch-root|mount-var|systemd-networkd|systemd-repart|systemd-cryptsetup|systemd-fstab-generator|systemd-gpt-auto-generator|debug-shell|agetty|sulogin)(\.service|\.socket|\.target|$)' \
+            '/(aos-var-crypt|aos-metadata|initrd-switch-root|mount-var|systemd-networkd|systemd-repart|systemd-cryptsetup|systemd-fstab-generator|systemd-gpt-auto-generator|debug-shell|agetty|sulogin)(\.service|\.socket|\.target|$)' \
             || true)
           if [ -n "$forbidden" ]; then
             echo "recovery-initrd: forbidden recovery closure members:" >&2

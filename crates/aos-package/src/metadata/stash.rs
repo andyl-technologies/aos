@@ -3,8 +3,7 @@
 //! The stash is a child of the initrd `/run` so it survives
 //! `mount --move /run /sysroot/run` during switch_root; stage-2 stages it into
 //! the evaluator root `/run/aos-eval/`. Fetch writes raw user-data; only the
-//! initrd authorization phase may produce evaluator-visible `host.nix` or
-//! transient repart definitions.
+//! initrd authorization phase may produce evaluator-visible `host.nix`.
 //!
 //! ```text
 //! /run/aos-metadata/
@@ -12,8 +11,6 @@
 //! ├── user-data               # exact fetched bytes
 //! ├── user-data.sig           # detached whole-input SSHSIG (optional)
 //! ├── host.nix                # policy-accepted operator config
-//! ├── storage-plan.json       # canonical validated plan (optional)
-//! ├── repart.d/               # transient rendered definitions (optional)
 //! ├── facts.json              # normalized Facts (serde_json)
 //! ├── network/10-aos-seed.network   # DHCP-less static seed (optional)
 //! ├── .metadata-result.json   # acquisition record
@@ -199,27 +196,18 @@ impl Stash {
     /// Remove every output owned by the authorization phase.
     ///
     /// This runs before each authorization attempt so a failed re-run cannot
-    /// expose stale accepted configuration or repart definitions.
+    /// expose stale accepted configuration.
     ///
     /// # Errors
     ///
     /// Returns an error when an existing output cannot be removed.
     pub fn clear_authorized_outputs(&self) -> Result<()> {
-        for file in [
-            "host.nix",
-            super::repart::STORAGE_PLAN_FILE,
-            super::provisioning::PROVISIONING_RESULT_FILE,
-        ] {
+        for file in ["host.nix", super::provisioning::PROVISIONING_RESULT_FILE] {
             let path = self.dir.join(file);
             if path.exists() {
                 std::fs::remove_file(&path)
                     .with_context(|| format!("removing {}", path.display()))?;
             }
-        }
-        let repart = self.dir.join(super::repart::REPART_DIR);
-        if repart.exists() {
-            std::fs::remove_dir_all(&repart)
-                .with_context(|| format!("removing {}", repart.display()))?;
         }
         Ok(())
     }

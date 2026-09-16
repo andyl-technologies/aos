@@ -97,7 +97,7 @@ in
   assert measuredVarDependencies.after
   == [
     (output "aos-var-policy-migrate:boot-identity" "readiness-resource")
-    (output "aos-var-policy-migrate:partition-layout" "readiness-resource")
+    (output "aos-var-policy-migrate:initrd-stage" "readiness-resource")
     (output "aos-var-policy-migrate:device-events" "readiness-resource")
     (output "aos-var-policy-migrate:verity-root" "readiness-resource")
   ];
@@ -117,8 +117,8 @@ in
   ];
   assert (request "aos-var-policy-migrate" "boot-identity").milestone
   == "boot-identity-validated";
-  assert (request "aos-var-policy-migrate" "partition-layout").milestone
-  == "partition-layout-ready";
+  assert (request "aos-var-policy-migrate" "initrd-stage").milestone
+  == "initrd-stage-executed";
   assert (request "aos-var-policy-migrate" "device-events").milestone == "device-settle";
   assert (request "aos-var-policy-migrate" "initrd-filesystems").milestone
   == "initrd-filesystems";
@@ -144,7 +144,7 @@ in
   assert guardDependencies.after
   == [
     (output "aos-verity-root-guard:boot-identity" "readiness-resource")
-    (output "aos-verity-root-guard:partition-layout" "readiness-resource")
+    (output "aos-verity-root-guard:initrd-stage" "readiness-resource")
     (output "aos-verity-root-guard:device-events" "readiness-resource")
   ];
   assert guardFailure

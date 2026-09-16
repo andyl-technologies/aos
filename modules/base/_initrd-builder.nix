@@ -889,16 +889,16 @@
                 #       invoked by the initrd units.
                 # systemd-creds and systemd-cryptenroll are deliberately KEPT
                 # (RFC-0006 phase 3): first-boot sealing of /var runs in the
-                # initrd (aos-var-crypt, after aos-repart) and uses
+                # initrd after the checked storage transaction and uses
                 # systemd-cryptenroll --tpm2-*; the systemd-cryptsetup
                 # TPM2-token unlock on later boots also runs here.
                 # systemd-measure stays stripped: it is a build-time tool
                 # (predicting PCR-11 for the registry catalog), not needed
                 # inside the initrd. (No apostrophes in this comment — it
                 # lives inside a single-quoted sh -c block.)
-                # systemd-repart is kept because the
-                # convention-substrate carves /var/swap/root-b in the initrd
-                # before mount-var via repart.d drop-ins. systemd-firstboot
+                # systemd-repart is kept because the selected checked storage
+                # provider uses it to commit the admitted partition plan before
+                # mount-var. systemd-firstboot
                 # stays stripped (hostname is manifest-rendered, not firstboot).
                 for tool in systemd-homed systemd-homework systemd-portabled \
                             systemd-nspawn systemd-importd systemd-pull \

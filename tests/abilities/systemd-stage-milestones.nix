@@ -39,7 +39,7 @@
       boot-identity-validated = "aos-boot-identity-guard.service";
       boot-storage-unlocked = "aos-zfs-unlock.service";
       boot-integrity-failure = "aos-boot-identity-failure.target";
-      partition-layout-ready = "aos-repart.service";
+      initrd-stage-executed = "aos-ability-initrd-controller.service";
       root-a-device = "dev-disk-by\\x2dpartlabel-root\\x2da.device";
       storage-provisioning-state-ready = "aos-provisioning-state.service";
       storage-provisioning-plan-ready = "aos-provisioning-eval.service";

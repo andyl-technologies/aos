@@ -62,11 +62,11 @@ in
   assert (request "aos-boot-preparations" "network-wait-online-unit").source.unit_file
   == "lib/systemd/system/systemd-networkd-wait-online.service";
   assert builtins.elem
-  (output "aos-boot-preparations" "partition-layout" "readiness-resource")
+  (output "aos-boot-preparations" "initrd-stage" "readiness-resource")
   mountVar.requires;
   assert mountVar.required_by
   == [(output "aos-boot-preparations" "initrd-filesystems" "readiness-resource")];
   assert provisioningEffects.handlerDescriptor.entryPoint
   == "bin/aos-storage-provisioning-provider";
-  assert !(builtins.hasAttr "aos-storage-provisioning-provider:aos-repart-lifecycle" requests);
-  assert !(builtins.pathExists ../../pkgs/system/_aos-storage-provisioning-provider/aos-repart.sh); true
+  assert (request "aos-boot-preparations" "initrd-stage").milestone
+  == "initrd-stage-executed"; true

@@ -40,3 +40,7 @@ path = "src/bin/zfs_maintenance.rs"
 [[bin]]
 name = "aos-storage-provisioning-provider"
 path = "src/bin/storage_provisioning.rs"
+
+[[bin]]
+name = "aos-boot-transaction-storage-provider"
+path = "src/bin/boot_transaction_storage.rs"

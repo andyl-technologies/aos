@@ -11,35 +11,46 @@
   evaluate = stage: modules: packages:
     lib.evalModules {
       inherit lib;
-      modules = [
-        lib.abilities.module
-        {
-          aos.abilities.environment = {
-            authority = "test";
-            key = "boot-storage-services";
-            inherit stage;
-          };
-        }
-      ] ++ modules;
+      modules =
+        [
+          lib.abilities.module
+          {
+            aos.abilities.environment = {
+              authority = "test";
+              key = "boot-storage-services";
+              inherit stage;
+            };
+          }
+        ]
+        ++ modules;
       packageModules = builtins.map packageModule packages;
     };
   host = evaluate "host" [] [pkgs.aos-boot-storage];
-  initrd = evaluate "initrd" [
-    {
-      aos.boot.storageServices = {
-        espDevices = ["/dev/disk/by-partlabel/ESP-A" "/dev/disk/by-partlabel/ESP-B"];
-        zfs = {
-          enable = true;
-          poolName = "tank";
-          encryptionRoot = "tank/system";
-          sealedKeyPath = "aos/tank-key.cred";
-          expectedDevices = ["/dev/zvol/tank/root-a" "/dev/zvol/tank/root-a-hash"];
+  initrd =
+    evaluate "initrd" [
+      {
+        aos.boot.storageServices = {
+          espDevices = ["/dev/disk/by-partlabel/ESP-A" "/dev/disk/by-partlabel/ESP-B"];
+          zfs = {
+            enable = true;
+            poolName = "tank";
+            encryptionRoot = "tank/system";
+            sealedKeyPath = "aos/tank-key.cred";
+            expectedDevices = ["/dev/zvol/tank/root-a" "/dev/zvol/tank/root-a-hash"];
+          };
         };
-      };
-    }
-  ] [pkgs.aos-boot-storage pkgs.aos-boot-preparations];
+      }
+    ] [
+      pkgs.aos-boot-storage
+      pkgs.aos-boot-transaction-storage-provider
+      pkgs.aos-boot-preparations
+      pkgs.systemd
+    ];
   hostRequests = host.config.aos.abilities.requests;
   initrdRequests = initrd.config.aos.abilities.requests;
+  initrdImplementations = initrd.config.aos.abilities.implementations;
+  transactionStorageInterface =
+    initrd.config.aos.abilities.interfaces.boot-transaction-storage-view;
   request = requests: package: key: requests."${package}:${key}".parameters;
   resultOf = requestName: output: {
     _type = "aos-request-output-reference";
@@ -59,10 +70,21 @@
   unlockDependencies = request initrdRequests "aos-boot-storage" "aos-zfs-unlock-dependencies";
   unlockEnvironment = request initrdRequests "aos-boot-storage" "aos-zfs-unlock-environment";
   unlockLogging = request initrdRequests "aos-boot-storage" "aos-zfs-unlock-logging";
+  transactionStorageRequest =
+    request initrdRequests "aos-boot-storage" "boot-transaction-storage-view";
+  transactionStorageLifecycle =
+    request initrdRequests "aos-boot-storage" "aos-boot-transaction-storage-lifecycle";
+  transactionStorageDependencies =
+    request initrdRequests "aos-boot-storage" "aos-boot-transaction-storage-dependencies";
+  transactionStorageImplementation =
+    initrdImplementations."aos-boot-transaction-storage-provider:boot-transaction-storage-view";
+  transactionStorageEffects =
+    initrdImplementations."aos-boot-transaction-storage-provider:boot-transaction-storage-view-effects";
   recoveryDependencies = request initrdRequests "aos-boot-preparations" "aos-credential-recovery-dependencies";
   seedDependencies = request initrdRequests "aos-boot-preparations" "aos-config-seed-dependencies";
 in
-  assert mountLifecycle.start == [
+  assert mountLifecycle.start
+  == [
     {
       executable = {
         artifact = lib.abilities.packageOutput {package = "aos-boot-storage";};
@@ -72,7 +94,8 @@ in
       ignore_failure = false;
     }
   ];
-  assert mountDependencies.before == [
+  assert mountDependencies.before
+  == [
     (storageMilestone "local-filesystems")
     bootCommit
   ];
@@ -82,7 +105,8 @@ in
   assert syncDependencies.requires == [bootCommit];
   assert syncDependencies.wanted_by == [(storageMilestone "multi-user")];
   assert syncDependencies.implicit_dependencies;
-  assert unlockLifecycle.start == [
+  assert unlockLifecycle.start
+  == [
     {
       executable = {
         artifact = lib.abilities.packageOutput {package = "aos-boot-storage";};
@@ -101,18 +125,21 @@ in
       ignore_failure = false;
     }
   ];
-  assert unlockDependencies.after == [
+  assert unlockDependencies.after
+  == [
     (storageMilestone "device-settle")
     (storageMilestone "kernel-modules")
   ];
-  assert unlockDependencies.before == [
+  assert unlockDependencies.before
+  == [
     (storageMilestone "sysroot")
     bootStorageEarlySystem
   ];
   assert unlockDependencies.requires == unlockDependencies.after;
   assert unlockDependencies.required_by == [bootStorageEarlySystem];
   assert !unlockDependencies.implicit_dependencies;
-  assert unlockEnvironment.search_path == builtins.map lib.abilities.packageOutput [
+  assert unlockEnvironment.search_path
+  == builtins.map lib.abilities.packageOutput [
     {package = "coreutils";}
     {package = "systemd";}
     {package = "util-linux";}
@@ -120,13 +147,48 @@ in
   ];
   assert unlockLogging.standard_output == "structured-and-console";
   assert unlockLogging.standard_error == "structured-and-console";
-  assert recoveryDependencies.after == [
+  assert transactionStorageRequest
+  == {
+    name = "initrd-stage-journal";
+    purpose = "initrd-stage-journal";
+  };
+  assert (builtins.head transactionStorageLifecycle.start).executable
+  == {
+    artifact = lib.abilities.packageOutput {package = "aos-boot-storage";};
+    entry_point = "bin/aos-mount-transaction-storage";
+    arguments = [
+      "/run/aos-boot-transaction-storage"
+      "/dev/disk/by-partlabel/ESP-A"
+      "/dev/disk/by-partlabel/ESP-B"
+    ];
+  };
+  assert transactionStorageDependencies.after
+  == [
+    (storageMilestone "device-settle")
+    (storageMilestone "sysroot")
+    (storageMilestone "boot-identity")
+  ];
+  assert transactionStorageDependencies.requires == transactionStorageDependencies.after;
+  assert transactionStorageDependencies.before == [(storageMilestone "initrd-stage")];
+  assert transactionStorageDependencies.required_by == [(storageMilestone "initrd-stage")];
+  assert transactionStorageInterface.outputs.storage-path.phase == "planning";
+  assert transactionStorageInterface.outputs.storage-resource.schema
+  == lib.abilities.types.resourceReference;
+  assert transactionStorageImplementation.providerModule.path
+  == "share/aos/providers/boot-transaction-storage.nix";
+  assert transactionStorageEffects.handlerDescriptor.artifact
+  == lib.abilities.packageOutput {package = "aos-boot-transaction-storage-provider";};
+  assert transactionStorageEffects.handlerDescriptor.entryPoint
+  == "bin/aos-boot-transaction-storage-provider";
+  assert recoveryDependencies.after
+  == [
     (preparationsMilestone "sysroot")
     (preparationsMilestone "var")
     (preparationsMilestone "nix-overlay")
   ];
   assert recoveryDependencies.requires == recoveryDependencies.after;
-  assert recoveryDependencies.before == [
+  assert recoveryDependencies.before
+  == [
     (resultOf "aos-boot-preparations:aos-config-seed-lifecycle" "service-resource")
     (preparationsMilestone "etc-overlay")
     preparationsEarlySystem
@@ -134,13 +196,15 @@ in
   ];
   assert recoveryDependencies.required_by == [preparationsEarlySystem];
   assert !recoveryDependencies.implicit_dependencies;
-  assert seedDependencies.after == [
+  assert seedDependencies.after
+  == [
     (preparationsMilestone "var")
     (resultOf "aos-boot-preparations:aos-credential-recovery-lifecycle" "service-resource")
     (preparationsMilestone "run-etc")
   ];
   assert seedDependencies.requires == seedDependencies.after;
-  assert seedDependencies.before == [
+  assert seedDependencies.before
+  == [
     (preparationsMilestone "etc-overlay")
     preparationsEarlySystem
     (preparationsMilestone "switch-root")

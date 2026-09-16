@@ -1655,6 +1655,10 @@ in rec {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
     };
+    bootTransactionStorage = import ./boot-transaction-storage.nix {
+      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
+      types = abilityTypes;
+    };
     kernelTunables = import ./kernel-tunables.nix {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
@@ -1693,6 +1697,7 @@ in rec {
         // interfaces.networkPolicy.declarations
         // interfaces.bootPreparation.declarations
         // interfaces.imageRolloutPlatform.declarations
+        // interfaces.bootTransactionStorage.declarations
         // interfaces.kernelTunables.declarations
         // interfaces.networkConfiguration.declarations
         // interfaces.blockStorage.declarations
