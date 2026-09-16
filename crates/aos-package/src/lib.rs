@@ -62,7 +62,31 @@ pub mod images;
 pub mod install;
 pub mod metadata;
 pub(crate) mod package_attestation;
+pub use package_attestation::PackageQuoteArtifacts;
 pub mod package_contract;
+
+/// Reports whether the configured local attestation terminal can address a TPM.
+///
+/// # Errors
+///
+/// Returns an error when an explicitly configured TPM transport is invalid.
+pub fn local_attestation_tpm_available() -> Result<bool> {
+    package_attestation::tpm_available()
+}
+
+/// Produces a local TPM quote for the package-attestation PCR selection.
+///
+/// # Errors
+///
+/// Returns an error when the nonce is malformed, the configured terminal
+/// tools cannot execute, or the private output directory cannot be written.
+pub fn produce_local_package_attestation_quote(
+    nonce: &str,
+    output_directory: &Path,
+) -> Result<PackageQuoteArtifacts> {
+    package_attestation::produce_package_quote(nonce, output_directory)
+}
+
 /// Target-platform naming shared by package consumer and producer commands.
 ///
 /// AOS registry manifests use Nix system names such as `x86_64-linux` and
@@ -4950,80 +4974,6 @@ fn run_produce_package_attestation_quote(
         ));
     }
     Ok(())
-}
-
-/// Produces the host package-attestation quote for the package-owned service.
-///
-/// # Errors
-///
-/// Returns an error when TPM discovery, quote production, or durable result
-/// publication fails.
-pub fn run_package_attestation_service() -> Result<()> {
-    let nonce_path = Path::new("/run/aos-attest/nonce");
-    let event_log_path = Path::new("/run/log/aos-packages.cel");
-    let output_dir = Path::new("/var/lib/aos-attest/quote");
-    let result_path = Path::new("/var/lib/aos-attest/quote.json");
-    let temporary_result = Path::new("/var/lib/aos-attest/quote.json.tmp");
-
-    let result = (|| -> Result<()> {
-        if !package_attestation::tpm_available()? {
-            return Ok(());
-        }
-
-        let nonce = fs::read_to_string(nonce_path)
-            .with_context(|| format!("reading verifier nonce {}", nonce_path.display()))?;
-        let event_log = fs::metadata(event_log_path).with_context(|| {
-            format!("inspecting package event log {}", event_log_path.display())
-        })?;
-        if event_log.len() == 0 {
-            bail!("package attestation event log is empty");
-        }
-
-        remove_directory_if_present(output_dir)?;
-        remove_file_if_present(result_path)?;
-        remove_file_if_present(temporary_result)?;
-
-        let quote = package_attestation::produce_package_quote(nonce.trim(), output_dir)?;
-        let mut encoded = serde_json::to_vec(&quote)
-            .context("serializing the package-attestation service result")?;
-        encoded.push(b'\n');
-        fs::write(temporary_result, encoded)
-            .with_context(|| format!("writing {}", temporary_result.display()))?;
-        fs::rename(temporary_result, result_path).with_context(|| {
-            format!(
-                "publishing package-attestation result {}",
-                result_path.display()
-            )
-        })?;
-        Ok(())
-    })();
-
-    let cleanup =
-        remove_file_if_present(nonce_path).and_then(|()| remove_file_if_present(temporary_result));
-    match (result, cleanup) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
-        (Err(error), Err(cleanup_error)) => Err(error.context(format!(
-            "also failed to clean package-attestation service state: {cleanup_error:#}"
-        ))),
-    }
-}
-
-fn remove_file_if_present(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
-    }
-}
-
-fn remove_directory_if_present(path: &Path) -> Result<()> {
-    match fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
-    }
 }
 
 fn run_enroll_package_attestation_quote(
