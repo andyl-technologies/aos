@@ -56,6 +56,11 @@
       ];
       packageModules = [
         {
+          name = "systemd";
+          version = pkgs.systemd.version;
+          module = pkgs.systemd.module + "/module.nix";
+        }
+        {
           name = "k3s-combined";
           version = pkgs.k3s-combined.version;
           module = pkgs.k3s-combined.module + "/module.nix";

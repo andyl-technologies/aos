@@ -23,7 +23,11 @@
         configuration
       ];
       packageModules = builtins.map packageModule (
-        [pkgs.aos-kernel-tunable-provider] ++ consumerPackages
+        [
+          pkgs.aos-kernel-tunable-provider
+          pkgs.systemd
+        ]
+        ++ consumerPackages
       );
     };
   evaluate = package: configuration:
@@ -31,6 +35,8 @@
   evaluateIntegration = package: configuration:
     evaluatePackages [pkgs.k3s-combined package] configuration;
   requests = evaluated: evaluated.config.aos.abilities.requests;
+  packageRequests = evaluated: package:
+    lib.filterAttrs (name: _: lib.hasPrefix "${package}:" name) (requests evaluated);
   cloudcore = evaluate pkgs.cloudcore {
     cloudcore = {
       enable = true;
@@ -251,9 +257,9 @@ in
   assert lib.hasInfix "server: cloud.example.test:10000" (literalConfiguration edgecore "edgecore");
   assert !containsManagerCredentialPath (sourceFor cloudcore "cloudcore");
   assert !containsManagerCredentialPath (sourceFor edgecore "edgecore");
-  assert requests disabledCloudcore == {};
-  assert requests disabledEdgecore == {};
-  assert requests disabledKubelet == {};
+  assert packageRequests disabledCloudcore "cloudcore" == {};
+  assert packageRequests disabledEdgecore "edgecore" == {};
+  assert packageRequests disabledKubelet "kubelet" == {};
   assert disabledCloudcore.config.aos.abilities.requirementTemplates == cloudcore.config.aos.abilities.requirementTemplates;
   assert disabledEdgecore.config.aos.abilities.requirementTemplates == edgecore.config.aos.abilities.requirementTemplates;
   assert disabledKubelet.config.aos.abilities.requirementTemplates == kubelet.config.aos.abilities.requirementTemplates;
@@ -263,10 +269,10 @@ in
   assert portableOptionTree k3sWorker.options.k3s;
   assert portableOptionTree cilium.options.cilium;
   assert portableOptionTree longhorn.options.longhorn;
-  assert requests disabledK3sWorker == {};
+  assert packageRequests disabledK3sWorker "k3s-worker" == {};
   assert disabledK3sWorker.config.aos.abilities.requirementTemplates == k3sWorker.config.aos.abilities.requirementTemplates;
-  assert requests disabledCilium == {};
-  assert requests disabledLonghorn == {};
+  assert packageRequests disabledCilium "cilium" == {};
+  assert packageRequests disabledLonghorn "longhorn-manager" == {};
   assert disabledCilium.config.aos.abilities.requirementTemplates == cilium.config.aos.abilities.requirementTemplates;
   assert disabledLonghorn.config.aos.abilities.requirementTemplates == longhorn.config.aos.abilities.requirementTemplates;
   assert k3sWorker.config.k3s.role == "worker";
