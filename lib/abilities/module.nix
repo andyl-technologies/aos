@@ -12,6 +12,7 @@
   schemas,
   evalModules,
   guaranteeIdentity,
+  identityKeyFor,
   interfaceDocumentFromDeclaration,
   interfaceIdentity,
   normalizeSemanticValue,
@@ -277,7 +278,7 @@
   uniqueValues = values:
     builtins.length values
     == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map (value: {
-        name = builtins.toJSON value;
+        name = identityKeyFor "aos.ability.canonical-value-key/v1" value;
         value = true;
       })
       values)));
@@ -650,7 +651,7 @@
     builtins.attrValues (builtins.listToAttrs (builtins.map (declaration: let
         identity = interfaceIdentityForDeclaration "interface declaration" declaration;
       in {
-        name = builtins.toJSON identity;
+        name = identityKeyFor "aos.ability.interface-catalog-key/v1" identity;
         value = declaration;
       })
       declarations));
@@ -970,10 +971,9 @@
       );
 
   environmentType = abilityTypes.environmentId;
-  derivedInstanceKey = declaration: "instance-${builtins.hashString "sha256" (builtins.toJSON {
-    schema = "aos.ability.instance-key/v1";
+  derivedInstanceKey = declaration: "instance-${identityKeyFor "aos.ability.instance-key/v1" {
     inherit declaration;
-  })}";
+  }}";
   projectedInstanceIdentities =
     if config == null || config.aos.abilities.environment == null
     then {}
@@ -1210,7 +1210,7 @@
   };
 
   resourceIdentityKey = resource:
-    builtins.hashString "sha256" (builtins.toJSON resource);
+    identityKeyFor "aos.ability.resource-id-key/v1" resource;
 
   bindingForPublishedRequest = requestName: let
     matching =
@@ -1584,6 +1584,8 @@ in {
       description = "Checked desired and published resources with exact identities and semantic revisions.";
     };
   };
+
+  config._module.args.abilityIdentityKeyFor = identityKeyFor;
 
   config.aos.abilities = {
     guarantees = coreGuarantees;

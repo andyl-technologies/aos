@@ -125,8 +125,10 @@
       request = initial.config.aos.abilities.requests.${requestName};
       implementation = "systemd:${lib.removePrefix "aos:" request.requirement}";
       slot = builtins.head request.scope;
+      bindingKey =
+        lib.abilities.identityKeyFor "aos.test.authored-binding-key/v1" requestName;
     in {
-      name = "test:authored-${builtins.hashString "sha256" requestName}";
+      name = "test:authored-${bindingKey}";
       value = {
         request = requestName;
         inherit implementation slot;
@@ -158,8 +160,11 @@
     (builtins.attrNames implementations);
   in
     assert builtins.length candidates == 1; builtins.head candidates;
-  childBindings = lib.mapAttrs' (requestName: pending: {
-      name = "test:child-${builtins.hashString "sha256" requestName}";
+  childBindings = lib.mapAttrs' (requestName: pending: let
+    bindingKey =
+      lib.abilities.identityKeyFor "aos.test.child-binding-key/v1" requestName;
+  in {
+      name = "test:child-${bindingKey}";
       value = {
         request = requestName;
         implementation = childImplementationFor pending;
