@@ -1,7 +1,7 @@
 //! Qualified image rollout identity and state transitions.
 //!
 //! This module authenticates the running and candidate image identities before
-//! A/B selection, gates native executor replacement on a drained reboot, and
+//! boot selection, gates native executor replacement on a drained reboot, and
 //! constructs the durable `aos.image-rollout/v1` record.
 
 use std::path::{Path, PathBuf};
@@ -23,10 +23,10 @@ mod plan;
 mod process;
 mod provider;
 
-pub(crate) use ability::NativeAbRolloutBackend;
+pub(crate) use ability::NativeImageRolloutBackend;
 pub use boot_commit::run_from_process as run_boot_commit_from_process;
 pub(crate) use model::{
-    AbRolloutRequest, AbRolloutTerminalRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity,
+    ImageRolloutRequest, ImageRolloutTerminalRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity,
 };
 pub use observer::run_from_process as run_observer_from_process;
 pub(crate) use plan::authenticate_single_image_rollout_fragment;
@@ -296,21 +296,17 @@ pub(super) fn validate_active_rollout_selection(
 mod tests {
     use tempfile::TempDir;
 
-    use crate::types::ImageSlot;
-
     use super::*;
-    use crate::sysroot::{IMAGE_STATE_FILE, IMAGE_TRANSITION_INTENT, prepare_image_selection};
+    use crate::sysroot::{IMAGE_STATE_FILE, record_pending_image_selection};
 
     fn rollout_test_image(number: u32, state_version: &str, executor: &str) -> ImageGeneration {
         ImageGeneration {
             number,
-            slot: if number % 2 == 0 {
-                ImageSlot::B
-            } else {
-                ImageSlot::A
+            boot_artifact_contract: format!("/nix/store/{number:032}-boot-artifact-contract"),
+            boot_provider_state: crate::types::BootProviderState {
+                schema: "aos.test.boot-generation-state/v1".into(),
+                evidence: serde_json::json!({"installed-entry": format!("installed-entry-{number}")}),
             },
-            uki_path: format!("EFI/Linux/aos-{number}+3.efi"),
-            uki_source_path: None,
             toplevel: format!("/nix/store/{}-top-{number}", "0".repeat(32)),
             package_name: "aos".into(),
             version: number.to_string(),
@@ -321,10 +317,6 @@ mod tests {
             evaluator_ref: format!("/nix/store/{}-base-{number}", "1".repeat(32)),
             module_abi: 1,
             base_lib_abi_hash: format!("sha256:{}", "0".repeat(64)),
-            root_verity_roothash: None,
-            expected_pcr11: None,
-            initrd_pcr11: None,
-            recovery: None,
             created_at: "2026-09-10T00:00:00Z".into(),
         }
     }
@@ -355,11 +347,13 @@ mod tests {
         let mut running = rollout_test_image(1, "1", &running_executor);
         running.toplevel = running_toplevel.to_string_lossy().into_owned();
         let state = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".into(),
             running: running.number,
-            default: running.number,
             pending: None,
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: crate::types::BootProviderState {
+                schema: "aos.test.boot-state/v1".into(),
+                evidence: serde_json::json!({}),
+            },
             active_rollout: None,
             last_rollout: None,
             generations: vec![running.clone()],
@@ -372,7 +366,8 @@ mod tests {
         .unwrap();
 
         let mut different_boot_identity = running;
-        different_boot_identity.slot = ImageSlot::B;
+        different_boot_identity.boot_artifact_contract =
+            "/nix/store/ffffffffffffffffffffffffffffffff-other-contract".into();
         let error = preflight_image_selection_beneath(
             &image_profile,
             &system_profile,
@@ -528,11 +523,13 @@ mod tests {
             status: ImageRolloutStatus::Staged,
         };
         let mut state = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".into(),
             running: 1,
-            default: 1,
             pending: Some(2),
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: crate::types::BootProviderState {
+                schema: "aos.test.boot-state/v1".into(),
+                evidence: serde_json::json!({}),
+            },
             active_rollout: Some(rollout.clone()),
             last_rollout: None,
             generations,
@@ -564,20 +561,11 @@ mod tests {
             .contains("ambiguous")
         );
         assert_eq!(state.pending, Some(2));
-        let error = prepare_image_selection(tmp.path(), &mut state, 3, "aos-3+3.efi", None)
-            .expect_err("an active rollout must reject an unqualified superseding selection");
+        let error = record_pending_image_selection(tmp.path(), &mut state, 3, rollout.clone())
+            .expect_err("an active rollout must reject a superseding selection");
         assert!(error.to_string().contains("cannot be superseded"));
-        let error = prepare_image_selection(tmp.path(), &mut state, 2, "aos-2+3.efi", None)
-            .expect_err("an advisory retry must not bypass the qualified drain gate");
-        assert!(error.to_string().contains("exact drained rollout identity"));
-        prepare_image_selection(
-            tmp.path(),
-            &mut state,
-            2,
-            "aos-2+3.efi",
-            Some(rollout.clone()),
-        )
-        .expect("the exact qualified candidate is idempotently resumable");
+        record_pending_image_selection(tmp.path(), &mut state, 2, rollout.clone())
+            .expect("the exact qualified candidate is idempotently resumable");
         assert_eq!(state.active_rollout, Some(rollout));
         assert!(
             qualified_rollout_record(&state, 1, "7")
@@ -585,6 +573,5 @@ mod tests {
                 .to_string()
                 .contains("already the running image")
         );
-        assert!(tmp.path().join(IMAGE_TRANSITION_INTENT).is_file());
     }
 }

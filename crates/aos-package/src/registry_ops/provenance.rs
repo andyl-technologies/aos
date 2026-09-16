@@ -8,8 +8,6 @@
 //!   one signed statement binding per line, chained by entry hash
 //! ```
 
-#[cfg(test)]
-use crate::provenance::sign_statement_dsse_jsonl;
 use crate::provenance::{
     ProvenanceSignature, ProvenanceSigner, TrustedProvenanceKey,
     builder_id as provenance_builder_id, digest_map as provenance_digest_map, sha256_hex_payload,
@@ -23,10 +21,10 @@ use crate::registry_ops::provenance::staged::git_tree_file_bytes;
 use crate::registry_ops::provenance::statement::{
     ensure_safe_package_provenance_statement_path, package_provenance_transparency_entry_hash,
 };
+use crate::registry_ops::sha256_hex;
 use crate::registry_ops::signing::ResolvedSigningKey;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::trust::{derive_trust_key, load_committed_roster, validate_roster_key_id};
-use crate::registry_ops::uki::sha256_hex;
 use crate::security::parse_signing_key;
 use crate::types::{
     AttestationMeta, DocumentationArtifactMeta, package_name_bucket,

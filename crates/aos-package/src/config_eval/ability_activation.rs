@@ -40,9 +40,7 @@ use serde::{Deserialize, Serialize};
 use super::ability::RestrictedAbilityEvaluator;
 use super::ability_policy::{CurrentAbilityAuthorityDocument, CurrentPlatformPolicyDocument};
 use super::ability_policy_authority::OperatorPolicyAuthorityStore;
-use super::materialize::{
-    AbilityActivationInput, ConfigManifest, PinnedAbilitySidecar,
-};
+use super::materialize::{AbilityActivationInput, ConfigManifest, PinnedAbilitySidecar};
 use super::runtime::{ContractOrigin, RuntimePackagePin, RuntimeResolution};
 use crate::config::ApmConfig;
 use crate::package_contract::{

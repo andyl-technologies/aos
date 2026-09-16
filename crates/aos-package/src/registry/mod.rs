@@ -33,7 +33,6 @@ pub mod parse;
 pub(crate) mod porcelain;
 pub mod release;
 pub(crate) mod repo;
-pub mod sb_certs;
 pub mod state;
 pub mod static_upload;
 pub mod store;

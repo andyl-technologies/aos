@@ -1,9 +1,16 @@
 //! Acceptance tests for the persisted two-axis generation model.
 
 use aos_package::types::{
-    ConfigGeneration, ConfigGenerationState, ImageGeneration, ImageGenerationState, ImageSlot,
-    PackageModule, PackageModuleOrigin,
+    BootProviderState, ConfigGeneration, ConfigGenerationState, ImageGeneration,
+    ImageGenerationState, PackageModule, PackageModuleOrigin,
 };
+
+fn boot_provider_state() -> BootProviderState {
+    BootProviderState {
+        schema: "aos.test.boot-generation-state/v1".into(),
+        evidence: serde_json::json!({"provider-identity": "test-generation"}),
+    }
+}
 
 fn config_generation(parent: u32, abi: u32) -> ConfigGeneration {
     ConfigGeneration {
@@ -33,9 +40,9 @@ fn config_generation(parent: u32, abi: u32) -> ConfigGeneration {
 fn generation_axes_round_trip_independently() {
     let image = ImageGeneration {
         number: 3,
-        slot: ImageSlot::A,
-        uki_path: "EFI/Linux/aos-3+3.efi".into(),
-        uki_source_path: None,
+        boot_artifact_contract:
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-boot-artifact-contract".into(),
+        boot_provider_state: boot_provider_state(),
         toplevel: "/nix/store/top-aos".into(),
         package_name: "aos".into(),
         version: "3".into(),
@@ -46,18 +53,13 @@ fn generation_axes_round_trip_independently() {
         evaluator_ref: "/nix/store/base-lib".into(),
         module_abi: 9,
         base_lib_abi_hash: "sha256:base".into(),
-        root_verity_roothash: None,
-        initrd_pcr11: None,
-        expected_pcr11: None,
-        recovery: None,
         created_at: "2026-01-01T00:00:00Z".into(),
     };
     let images = ImageGenerationState {
+        schema: "aos.image-generation-state/v1".into(),
         running: 3,
-        default: 3,
         pending: None,
-        recovery_known_good: None,
-        recovery_pending: None,
+        boot_provider_state: boot_provider_state(),
         active_rollout: None,
         last_rollout: None,
         generations: vec![image],

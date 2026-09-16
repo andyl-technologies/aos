@@ -851,9 +851,9 @@ mod tests {
 
         let hover = server.hover("fixture.services.site.root", 0, 25).unwrap();
         assert!(
-            hover["contents"]["value"]
-                .as_str()
-                .is_some_and(|markdown| markdown.contains("Sets the fixture service document root."))
+            hover["contents"]["value"].as_str().is_some_and(
+                |markdown| markdown.contains("Sets the fixture service document root.")
+            )
         );
 
         let hints = server.option_hints(&json!({ "package": "fixture" }));

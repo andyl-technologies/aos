@@ -482,15 +482,11 @@ pub(crate) fn persist_generation_attestation(
         .map(|transaction| transaction.activation_id.clone())
         .unwrap_or_else(new_activation_id);
 
-    let quote_required = require_quote || image_requires_generation_quote(running_image);
+    let quote_required = require_quote;
     let has_tpm = detect_tpm && crate::package_attestation::tpm_available()?;
     let quote_dir = generation_dir.join("gen-attestation-quote");
     let stage = generation_dir.join(".gen-attestation-quote.pending");
-    if let Some(quote_status) = generation_quote_status(
-        quote_required,
-        has_tpm,
-        running_image.root_verity_roothash.is_some(),
-    )? {
+    if let Some(quote_status) = generation_quote_status(quote_required, has_tpm, false)? {
         if retained_transaction.is_some() {
             bail!(
                 "cannot recover the retained TPM-backed generation attestation transaction without quote-capable running-image state"
@@ -520,10 +516,7 @@ pub(crate) fn persist_generation_attestation(
     // catalog record yet, so they bind the record to the ready value and rely
     // on remote policy to supply the independent image expectation.
     let live_pcr11 = crate::package_attestation::current_pcr11()?;
-    inputs.base_lib.pcr11_expected = Some(ready_pcr11_value(
-        running_image.expected_pcr11.as_deref(),
-        &live_pcr11,
-    )?);
+    inputs.base_lib.pcr11_expected = Some(ready_pcr11_value(None, &live_pcr11)?);
     let mut record = build_unquoted_gen_attestation(
         generation_id.to_string(),
         manifest_hash.to_string(),
@@ -576,19 +569,6 @@ pub(crate) fn persist_generation_attestation(
     write_record_atomic(&record_path, &record)?;
     remove_file_durable_if_exists(&transaction_path)?;
     Ok(record)
-}
-
-/// Returns whether authenticated running-image metadata requires quoted
-/// generation evidence.
-///
-/// An expected PCR 11 exists only for images published with measured boot. A
-/// seed image can instead carry the initrd's observed PCR value, but that is a
-/// measured-image policy signal only when authenticated dm-verity metadata
-/// binds the immutable root. This distinction lets an otherwise unmeasured
-/// machine expose a TPM without making ordinary host activation unbootable.
-pub(crate) fn image_requires_generation_quote(image: &ImageGeneration) -> bool {
-    image.expected_pcr11.is_some()
-        || (image.initrd_pcr11.is_some() && image.root_verity_roothash.is_some())
 }
 
 fn read_attestation_transaction(path: &Path) -> Result<Option<GenAttestationTransaction>> {
@@ -654,7 +634,7 @@ fn remove_file_durable_if_exists(path: &Path) -> Result<()> {
 
 fn inputs_from_manifest(
     manifest: &ConfigManifest,
-    image: &ImageGeneration,
+    _image: &ImageGeneration,
 ) -> Result<AttestationInputs> {
     let config = &manifest.inputs.package_modules;
     let has_registry_modules = config
@@ -682,10 +662,10 @@ fn inputs_from_manifest(
     Ok(AttestationInputs {
         base_lib: BaseLibAttInput {
             store_path: manifest.inputs.base_lib.store_path.clone(),
-            pcr11_expected: image.expected_pcr11.clone(),
+            pcr11_expected: None,
             abi_hash: manifest.inputs.base_lib.abi_hash.clone(),
             module_abi: manifest.inputs.base_lib.module_abi,
-            root_verity_roothash: image.root_verity_roothash.clone(),
+            root_verity_roothash: None,
             root_verity_uuid: None,
         },
         evaluator: EvaluatorAttInput {
@@ -1560,39 +1540,6 @@ mod tests {
         assert_eq!(first.generation_id, second.generation_id);
         assert_ne!(first.activation_id, second.activation_id);
         assert_ne!(record_hash(&first).unwrap(), record_hash(&second).unwrap());
-    }
-
-    #[test]
-    fn authenticated_measured_image_metadata_requires_generation_quotes() {
-        let mut image = ImageGeneration {
-            number: 1,
-            slot: crate::types::ImageSlot::A,
-            uki_path: "EFI/Linux/aos.efi".to_string(),
-            uki_source_path: None,
-            toplevel: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos".to_string(),
-            package_name: "aos".to_string(),
-            version: "1".to_string(),
-            state_version: "1".into(),
-            native_executor_ref: "/nix/store/cccccccccccccccccccccccccccccccc-executor".into(),
-            registry: "aos-core".to_string(),
-            kernel_path: None,
-            evaluator_ref: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-base-lib".to_string(),
-            module_abi: 1,
-            base_lib_abi_hash: format!("sha256:{}", "11".repeat(32)),
-            root_verity_roothash: Some("22".repeat(32)),
-            expected_pcr11: None,
-            initrd_pcr11: None,
-            recovery: None,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-        };
-        assert!(!image_requires_generation_quote(&image));
-        image.initrd_pcr11 = Some(format!("sha256:{}", "44".repeat(32)));
-        assert!(image_requires_generation_quote(&image));
-        image.root_verity_roothash = None;
-        assert!(!image_requires_generation_quote(&image));
-        image.initrd_pcr11 = None;
-        image.expected_pcr11 = Some(format!("sha256:{}", "33".repeat(32)));
-        assert!(image_requires_generation_quote(&image));
     }
 
     #[test]

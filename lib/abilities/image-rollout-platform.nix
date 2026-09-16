@@ -17,22 +17,17 @@
         syntax = null;
       };
       toplevel = storePath;
-      uki = storePath;
+      boot-artifact-contract = storePath;
     };
   };
   rolloutRequest = types.record {
     fields = {
       candidate = imageIdentity;
-      concurrency = types.integer {
-        minimum = 1;
-        maximum = 1;
-      };
       predecessor = imageIdentity;
       retention-expires-at-millis = types.integer {
         minimum = 1;
         maximum = 9007199254740991;
       };
-      strategy = types.enum ["single-host-ab-v1"];
     };
   };
   lifecycle = {persistentDeleteMethod = null;};
@@ -106,7 +101,7 @@
         "retired"
         "selected"
       ];
-      schema = types.enum ["aos.ability.ab-image-rollout-observation/v1"];
+      schema = types.enum ["aos.ability.image-rollout-observation/v1"];
     };
   };
   rolloutOutput = schema: {
@@ -119,7 +114,7 @@
   rolloutMethods = builtins.listToAttrs (builtins.map (name: {
       inherit name;
       value = {
-        description = "Executes the ${name} step of a checked single-host A/B rollout.";
+        description = "Executes the ${name} step of a checked predecessor-to-candidate rollout.";
         semantics = {
           requiredTargetAccess =
             if builtins.elem name ["observe-boot" "observe-health"]
@@ -159,7 +154,7 @@
   rollout = interface {
     alias = "image-rollout";
     name = rolloutName;
-    description = "Coordinates one authenticated single-host A/B image transition.";
+    description = "Coordinates one authenticated predecessor-to-candidate image transition.";
     requestType = rolloutRequest;
     observationType = rolloutObservation;
     methods = rolloutMethods;

@@ -1,4 +1,4 @@
-//! Package-owned command handler for checked single-host A/B image rollouts.
+//! Package-owned command handler for checked single-host image rollouts.
 //!
 //! The generic dispatcher authenticates the executable and protocol envelope.
 //! This module owns the rollout-specific request, state, and host effects.
@@ -21,9 +21,9 @@ use aos_provider_protocol::{
 
 use super::ability::{AbilityRolloutOutcome, AbilityRolloutPhase, AbilityRolloutState};
 use super::process::run_bounded_command;
-use super::{AbRolloutRequest, AbRolloutTerminalRequest, NativeAbRolloutBackend};
+use super::{ImageRolloutRequest, ImageRolloutTerminalRequest, NativeImageRolloutBackend};
 
-const OBSERVATION_SCHEMA: &str = "aos.ability.ab-image-rollout-observation/v1";
+const OBSERVATION_SCHEMA: &str = "aos.ability.image-rollout-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.image-rollout.provider-context/v1";
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
 const ROLLOUT_HEALTH: &str = "/run/current-system/sw/bin/aos-rollout-health";
@@ -74,7 +74,7 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     validate_resource_contexts(&request.resources)?;
     validate_method(&request.method)?;
 
-    let desired: AbRolloutRequest = decode_value(&request.resource_spec.value)?;
+    let desired: ImageRolloutRequest = decode_value(&request.resource_spec.value)?;
     let backend = backend();
     let observed = backend.observe_operation(&desired, request.method.method.as_str());
     let (revision, observation) = match observed {
@@ -135,7 +135,7 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
         .find(|resource| resource.reference.resource == invocation.request.target.resource)
         .context("rollout target context is absent")?;
     let bound = validate_resource_context(target)?;
-    let terminal: AbRolloutTerminalRequest = decode_value(&invocation.request.inputs)?;
+    let terminal: ImageRolloutTerminalRequest = decode_value(&invocation.request.inputs)?;
     ensure!(
         ability_value(serde_json::to_value(&terminal.rollout)?)? == bound.resource_spec.value,
         "rollout inputs differ from the admitted resource value"
@@ -184,7 +184,7 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
 
 fn execute(
     invocation: &Invocation,
-    request: &AbRolloutRequest,
+    request: &ImageRolloutRequest,
     entry: Option<&str>,
     platform: Option<&serde_json::Value>,
     method: &str,
@@ -227,7 +227,7 @@ fn execute(
 
 fn reconcile(
     invocation: &Invocation,
-    request: &AbRolloutRequest,
+    request: &ImageRolloutRequest,
     method: &str,
     control: &dyn RuntimeControl,
 ) -> Result<InvocationResult> {
@@ -250,7 +250,7 @@ fn reconcile(
 
 fn cancel(
     invocation: &Invocation,
-    request: &AbRolloutRequest,
+    request: &ImageRolloutRequest,
     method: &str,
     _control: &dyn RuntimeControl,
 ) -> Result<InvocationResult> {
@@ -374,7 +374,7 @@ fn observation(state: &AbilityRolloutState) -> Result<AbilityValue> {
     }))
 }
 
-fn absent_observation(request: &AbRolloutRequest) -> Result<AbilityValue> {
+fn absent_observation(request: &ImageRolloutRequest) -> Result<AbilityValue> {
     ability_value(serde_json::json!({
         "active-image": "predecessor",
         "candidate-prepared": false,
@@ -397,8 +397,8 @@ fn observed_health(state: &AbilityRolloutState) -> Option<bool> {
 }
 
 fn observe_health(
-    backend: &NativeAbRolloutBackend,
-    request: &AbRolloutRequest,
+    backend: &NativeImageRolloutBackend,
+    request: &ImageRolloutRequest,
     control: &dyn RuntimeControl,
 ) -> Result<AbilityRolloutState> {
     if let Some(state) = backend.health_assessment_if_recorded(request)? {
@@ -435,8 +435,8 @@ fn ability_value(value: serde_json::Value) -> Result<AbilityValue> {
     AbilityValue::new(value).map_err(anyhow::Error::msg)
 }
 
-fn backend() -> NativeAbRolloutBackend {
-    NativeAbRolloutBackend::new(IMAGE_PROFILE)
+fn backend() -> NativeImageRolloutBackend {
+    NativeImageRolloutBackend::new(IMAGE_PROFILE)
 }
 
 fn purpose_name(purpose: InvocationPurpose) -> &'static str {
@@ -517,16 +517,17 @@ mod tests {
     fn image(seed: char) -> RolloutImageIdentity {
         RolloutImageIdentity {
             toplevel: format!("/nix/store/{}-system", seed.to_string().repeat(32)),
-            uki: format!("EFI/Linux/aos-{seed}+3.efi"),
+            boot_artifact_contract: format!(
+                "/nix/store/{}-boot-artifact-contract",
+                seed.to_string().repeat(32)
+            ),
             executor: format!("/nix/store/{}-executor", seed.to_string().repeat(32)),
             state_format: "7".into(),
         }
     }
 
-    fn request() -> AbRolloutRequest {
-        AbRolloutRequest {
-            strategy: "single-host-ab-v1".into(),
-            concurrency: 1,
+    fn request() -> ImageRolloutRequest {
+        ImageRolloutRequest {
             predecessor: image('a'),
             candidate: image('b'),
             retention_expires_at_millis: 2_000,
@@ -535,7 +536,7 @@ mod tests {
 
     fn state(phase: AbilityRolloutPhase) -> AbilityRolloutState {
         AbilityRolloutState {
-            schema: "aos.ability.native-ab-image-rollout-state/v1".into(),
+            schema: "aos.ability.native-image-rollout-state/v1".into(),
             request: request(),
             predecessor_generation: 1,
             candidate_generation: 2,

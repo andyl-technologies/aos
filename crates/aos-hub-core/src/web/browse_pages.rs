@@ -37,14 +37,14 @@ use crate::db::{
 use crate::db::{PlatformDetail, VersionDetail};
 use crate::stack::StackNode;
 use crate::web::console_render::{
-    ago, live_table, page_with_session, table_raw_headers, urlencode, Pager, SessionIndicator,
-    StateLine,
+    Pager, SessionIndicator, StateLine, ago, live_table, page_with_session, table_raw_headers,
+    urlencode,
 };
 use crate::web::release_browse::ReleaseContext;
 use crate::web::render::{
     escape, hash_value, hash_value_link, human_size, key_fingerprint, table, trust_key_value,
 };
-use aos_registry_surface::manifest::{ImageCompression, ImageTarget, ImageVerificationState};
+use aos_registry_surface::manifest::{ImageCompression, ImageTarget};
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
 /// in frontier-first order, so the encoding survives without color.
@@ -542,7 +542,12 @@ pub fn registry_home(
 /// Carries the selected ordering through independent filter and snapshot forms.
 fn package_sort_inputs(body: &mut String, sort: Option<(SortColumn, SortDir)>) {
     if let Some((column, direction)) = sort {
-        let _ = write!(body, "<input type=\"hidden\" name=\"sort\" value=\"{}\"><input type=\"hidden\" name=\"dir\" value=\"{}\">", column.token(), direction.token());
+        let _ = write!(
+            body,
+            "<input type=\"hidden\" name=\"sort\" value=\"{}\"><input type=\"hidden\" name=\"dir\" value=\"{}\">",
+            column.token(),
+            direction.token()
+        );
     }
 }
 
@@ -555,7 +560,12 @@ pub fn package_snapshot_unavailable(
     session: &SessionIndicator,
 ) -> String {
     let mut body = registry_nav(&registry.slug, "packages");
-    let _ = write!(body, "<h1>Package snapshot unavailable</h1><p>No complete, verified package snapshot is available for <code>{}</code>. The release may not exist or its index may still be incomplete.</p><p><a href=\"/{}/-/releases\">Browse published releases</a></p>", escape(selection), escape(&registry.slug));
+    let _ = write!(
+        body,
+        "<h1>Package snapshot unavailable</h1><p>No complete, verified package snapshot is available for <code>{}</code>. The release may not exist or its index may still be incomplete.</p><p><a href=\"/{}/-/releases\">Browse published releases</a></p>",
+        escape(selection),
+        escape(&registry.slug)
+    );
     page_with_session(
         "Package snapshot unavailable",
         &registry_crumbs(&registry.slug, &[]),
@@ -1953,7 +1963,7 @@ pub fn channel_page(
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
-    use crate::web::release_pages::{rollout_distribution, rollout_shares, ROLLOUT_PALETTE};
+    use crate::web::release_pages::{ROLLOUT_PALETTE, rollout_distribution, rollout_shares};
     let slug = &registry.slug;
     let release_link = |release: &str| {
         format!(
@@ -2017,7 +2027,8 @@ pub fn channel_page(
         let _ = write!(
             body,
             "<p>No release is assigned to this channel yet. <a href=\"/{}/-/releases\">Browse signed releases</a> or <a href=\"/{}/-/images\">available images</a>.</p>",
-            escape(slug), escape(slug),
+            escape(slug),
+            escape(slug),
         );
     }
 
@@ -2151,7 +2162,8 @@ pub fn channels_index(
         let _ = write!(
             body,
             "<p>No channels are published yet. <a href=\"/{}/-/releases\">Browse signed releases</a> for an immutable version, or <a href=\"/{}/-/images\">view available images</a>.</p>",
-            escape(slug), escape(slug),
+            escape(slug),
+            escape(slug),
         );
     } else {
         body.push_str(&table(
@@ -2186,28 +2198,6 @@ fn image_target_token(target: ImageTarget) -> &'static str {
         ImageTarget::Openstack => "openstack",
         ImageTarget::Vmware => "vmware",
         ImageTarget::HyperV => "hyper-v",
-    }
-}
-
-fn image_verification_label(
-    state: ImageVerificationState,
-) -> (&'static str, &'static str, &'static str) {
-    match state {
-        ImageVerificationState::Unsigned => (
-            "UKI unsigned",
-            "warn",
-            "The unified kernel image has no Authenticode signature.",
-        ),
-        ImageVerificationState::SignedUnverified => (
-            "UKI signed, policy unverified",
-            "warn",
-            "The unified kernel image is signed, but no committed active-certificate policy verified its signer.",
-        ),
-        ImageVerificationState::PolicyVerified => (
-            "UKI policy verified",
-            "ok",
-            "The unified kernel image signer was verified against committed Secure Boot certificate policy.",
-        ),
     }
 }
 
@@ -2288,7 +2278,9 @@ fn shell_argument(value: &str) -> String {
 fn copy_command(label: &str, command: &str) -> String {
     format!(
         "<div class=\"copy-row\"><code class=\"merge-cmd\">{}</code><button type=\"button\" class=\"hash-copy copy-btn\" data-copy-value=\"{}\" aria-label=\"Copy {} command\">copy</button></div>",
-        escape(command), escape(command), escape(label),
+        escape(command),
+        escape(command),
+        escape(label),
     )
 }
 
@@ -2314,8 +2306,12 @@ fn image_download_commands(
     }
     let mut body = copy_command("image download", &hub_command);
     if let Some(command) = apm_command {
-        let _ = write!(body, "<details><summary>Download with APM</summary><p>Pins this release. Run on a host matching <code>{}</code>.</p>{}</details>",
-            escape(&image.platform), copy_command("APM image download", &command));
+        let _ = write!(
+            body,
+            "<details><summary>Download with APM</summary><p>Pins this release. Run on a host matching <code>{}</code>.</p>{}</details>",
+            escape(&image.platform),
+            copy_command("APM image download", &command)
+        );
     }
     body
 }
@@ -2423,8 +2419,6 @@ pub fn images_page(
         {
             continue;
         }
-        let (boot_verification, boot_class, boot_explanation) =
-            image_verification_label(image.delivery.uki.verification);
         let channel_cell = if channel_names.is_empty() {
             "—".to_string()
         } else {
@@ -2475,24 +2469,18 @@ pub fn images_page(
             )
         };
         let verification = format!(
-            "<span class=\"ok\">release verified</span> · \
-             <span class=\"{boot_class}\" title=\"{boot_explanation}\">{boot_verification}</span>"
+            "<span class=\"ok\">release verified</span> · provider contract <code>{}</code>",
+            escape(&image.delivery.artifact_contract.schema),
         );
         let encoding = format!(
             "{} · {}",
             escape(&image.delivery.media_type),
             image_compression_label(image.delivery.compression),
         );
-        let uki = format!(
-            "{} · <code>{}</code> · {}",
-            escape(&image.delivery.uki.filename),
-            escape(&image.delivery.uki.esp_path),
-            human_size(image.delivery.uki.byte_size),
-        );
         let image_info = format!(
             "{} · {}",
-            escape(&image.delivery.image_info.filename),
-            hash_value(&image.delivery.image_info.sha256),
+            escape(&image.delivery.artifact_contract.document.filename),
+            hash_value(&image.delivery.artifact_contract.document.sha256),
         );
         rows.push((image.release.clone(), format!(
             "<tbody class=\"image-artifact\">\
@@ -2503,9 +2491,9 @@ pub fn images_page(
              <tr><th scope=\"row\">targets</th><td>{targets}</td><th scope=\"row\">verification</th><td>{verification}</td></tr>\
              <tr><th scope=\"row\">file</th><td>{filename}</td><th scope=\"row\">encoding</th><td>{encoding}</td></tr>\
              <tr><th scope=\"row\">file SHA-256</th><td>{checksum}</td><th scope=\"row\">logical disk</th><td>{logical_checksum}</td></tr>\
-             <tr><th scope=\"row\">rootfs SHA-256</th><td>{rootfs_checksum}</td><th scope=\"row\">UKI SHA-256</th><td>{uki_checksum}</td></tr>\
+             <tr><th scope=\"row\">artifact contract</th><td>{contract_schema}</td><th scope=\"row\">contract document SHA-256</th><td>{contract_checksum}</td></tr>\
              <tr><th scope=\"row\">store path</th><td>{store_path}</td><th scope=\"row\">NAR</th><td>{nar_identity}</td></tr>\
-             <tr><th scope=\"row\">UKI</th><td>{uki}</td><th scope=\"row\">image info</th><td>{image_info}</td></tr>\
+             <tr><th scope=\"row\">contract document</th><td>{image_info}</td><th scope=\"row\">logical image</th><td>{logical_image}</td></tr>\
              </tbody></table></details></td></tr></tbody>\n",
             release = format!(
                 "<a href=\"/{}/-/releases/{}\">{}</a>",
@@ -2521,8 +2509,9 @@ pub fn images_page(
             targets = escape(&targets),
             checksum = hash_value(&image.delivery.sha256),
             logical_checksum = hash_value(&image.delivery.logical_disk_sha256),
-            rootfs_checksum = hash_value(&image.delivery.rootfs_sha256),
-            uki_checksum = hash_value(&image.delivery.uki.sha256),
+            contract_schema = escape(&image.delivery.artifact_contract.schema),
+            contract_checksum = hash_value(&image.delivery.artifact_contract.document.sha256),
+            logical_image = escape(&image.delivery.logical_image_id),
             filename = escape(&image.delivery.filename),
         )));
     }
@@ -2586,7 +2575,13 @@ pub fn images_page(
         escape(browse.query.unwrap_or("")),
         escape(slug),
         urlencode(context.query_value().unwrap_or("")),
-        catalog_select("channel", "Channel", "All channels", &channel_options, channel),
+        catalog_select(
+            "channel",
+            "Channel",
+            "All channels",
+            &channel_options,
+            channel
+        ),
         catalog_select(
             "architecture",
             "Architecture",
@@ -2614,8 +2609,12 @@ pub fn images_page(
         let mut previous_release = None;
         for (release, row) in pager.slice(&rows) {
             if context.is_all() && previous_release != Some(release) {
-                let _ = write!(body, "<tbody class=\"release-group\"><tr><th colspan=\"6\"><a href=\"{}\">Release {}</a></th></tr></tbody>",
-                    escape(&crate::web::release_browse::release_href(slug, release)), escape(release));
+                let _ = write!(
+                    body,
+                    "<tbody class=\"release-group\"><tr><th colspan=\"6\"><a href=\"{}\">Release {}</a></th></tr></tbody>",
+                    escape(&crate::web::release_browse::release_href(slug, release)),
+                    escape(release)
+                );
                 previous_release = Some(release);
             }
             body.push_str(row);
@@ -2948,8 +2947,9 @@ mod tests {
 
     fn indexed_image(format: &str, release: &str) -> IndexedSystemImage {
         use aos_registry_surface::manifest::{
-            immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
-            ImageDelivery, ImageInfoReference, ImageUkiIdentity,
+            ImageArtifactContractDocumentReference, ImageArtifactContractReference,
+            ImageCompression, ImageDelivery, immutable_image_contract_object_key,
+            immutable_image_object_key,
         };
 
         let (sha256, extension, media_type, targets) = match format {
@@ -2984,7 +2984,6 @@ mod tests {
                 architecture: "x86_64".into(),
                 logical_image_id: "d".repeat(64),
                 logical_disk_sha256: "a".repeat(64),
-                rootfs_sha256: "e".repeat(64),
                 filename: filename.clone(),
                 object_key: immutable_image_object_key(&sha256, &filename),
                 media_type: media_type.into(),
@@ -2996,31 +2995,24 @@ mod tests {
                 byte_size: 4096,
                 sha256: sha256.clone(),
                 compatible_targets: targets,
-                uki: ImageUkiIdentity {
-                    filename: "aos.efi".into(),
-                    esp_path: "EFI/Linux/aos.efi".into(),
-                    byte_size: 1024,
-                    sha256: "f".repeat(64),
-                    verification: ImageVerificationState::PolicyVerified,
-                    signer_cert_sha256: Some("1".repeat(64)),
-                    sbat: vec![aos_registry_surface::manifest::SbatEntry {
-                        component: "aos".into(),
-                        generation: 1,
-                    }],
-                    measured: false,
-                    expected_pcr11: None,
+                artifact_contract: ImageArtifactContractReference {
+                    schema: "aos.test.boot-artifacts/v1".into(),
+                    document: ImageArtifactContractDocumentReference {
+                        filename: "image-info.json".into(),
+                        object_key: immutable_image_contract_object_key(
+                            &sha256,
+                            &info_sha256,
+                            "image-info.json",
+                        ),
+                        store_path: String::new(),
+                        nar_hash: String::new(),
+                        nar_size: 0,
+                        media_type: "application/vnd.aos.image-info+json".into(),
+                        byte_size: 512,
+                        sha256: info_sha256,
+                    },
+                    artifacts: None,
                 },
-                image_info: ImageInfoReference {
-                    filename: "image-info.json".into(),
-                    object_key: immutable_image_info_object_key(&sha256, &info_sha256),
-                    store_path: String::new(),
-                    nar_hash: String::new(),
-                    nar_size: 0,
-                    media_type: "application/vnd.aos.image-info+json".into(),
-                    byte_size: 512,
-                    sha256: info_sha256,
-                },
-                update_payload: None,
             },
         }
     }
@@ -3091,10 +3083,9 @@ mod tests {
         assert!(default.contains("class=\"image-summary\""));
         assert!(default.contains("class=\"image-facts\""));
         assert!(default.contains("<th scope=\"row\">file SHA-256</th>"));
-        assert!(default.contains("<th scope=\"row\">UKI SHA-256</th>"));
+        assert!(default.contains("<th scope=\"row\">artifact contract</th>"));
         assert!(default.contains("class=\"hash-control\""));
-        assert!(default.contains("UKI policy verified"));
-        assert!(!default.contains("boot verified"));
+        assert!(default.contains("aos.test.boot-artifacts/v1"));
         assert!(default.contains(&format!("data-copy-value=\"{}\"", "a".repeat(64))));
         assert!(default.contains("aos-2026.08.img.zst"));
         assert!(default.contains("aos-2026.09.qcow2"));
@@ -3123,13 +3114,10 @@ mod tests {
         assert!(!filtered.contains("aos-2026.09.qcow2"));
         assert!(filtered.contains("value=\"bare-metal\" selected"));
 
-        let mut unsigned = indexed_image("raw", "2026.10");
-        unsigned.delivery.uki.verification = ImageVerificationState::Unsigned;
-        unsigned.delivery.uki.signer_cert_sha256 = None;
-        let unsigned_html = images_page(
+        let provider_contract = images_page(
             &registry(),
             None,
-            &[unsigned],
+            &[indexed_image("raw", "2026.10")],
             &[],
             Some("https://download.example/demo"),
             "https://hub.example",
@@ -3138,9 +3126,7 @@ mod tests {
             Instant::now(),
             &anon(),
         );
-        assert!(unsigned_html.contains("UKI unsigned"));
-        assert!(unsigned_html.contains("has no Authenticode signature"));
-        assert!(!unsigned_html.contains("boot unsigned"));
+        assert!(provider_contract.contains("aos.test.boot-artifacts/v1"));
     }
 
     #[test]
@@ -3984,7 +3970,9 @@ mod tests {
         assert!(html.contains("page 2 of 3"));
         // Pagination preserves the filter + sort across the prev/next links
         // (HTML-escaped in the href, with `page` appended last).
-        assert!(html.contains("filter=license+%3D%3D+MIT&amp;sort=closure&amp;dir=desc&amp;page=1"));
+        assert!(
+            html.contains("filter=license+%3D%3D+MIT&amp;sort=closure&amp;dir=desc&amp;page=1")
+        );
         assert!(html.contains("&amp;page=3"));
 
         // A single page in default order renders no pager and a clean count.

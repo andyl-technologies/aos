@@ -1038,9 +1038,12 @@ mod tests {
             switch_lock: root.path().join("switch.lock"),
             running_image: Some(ImageGeneration {
                 number: 1,
-                slot: crate::types::ImageSlot::A,
-                uki_path: "EFI/Linux/aos-test+3.efi".to_string(),
-                uki_source_path: None,
+                boot_artifact_contract: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-boot-contract"
+                    .to_string(),
+                boot_provider_state: crate::types::BootProviderState {
+                    schema: "aos.test.boot-generation-state/v1".to_string(),
+                    evidence: serde_json::json!({}),
+                },
                 toplevel: toplevel.to_string_lossy().into_owned(),
                 package_name: "aos-system".to_string(),
                 version: "1".to_string(),
@@ -1051,10 +1054,6 @@ mod tests {
                 evaluator_ref: "/nix/store/dddddddddddddddddddddddddddddddd-base-lib".to_string(),
                 module_abi: 7,
                 base_lib_abi_hash: format!("sha256:{}", "0".repeat(64)),
-                root_verity_roothash: None,
-                expected_pcr11: None,
-                initrd_pcr11: None,
-                recovery: None,
                 created_at: "1970-01-01T00:00:00Z".to_string(),
             }),
             image_profile: root.path().join("image-profile"),

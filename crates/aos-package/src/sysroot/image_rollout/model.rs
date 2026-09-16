@@ -11,8 +11,8 @@ pub(crate) const MAX_RETENTION_MILLIS: u64 = 30 * 24 * 60 * 60 * 1_000;
 pub(crate) struct RolloutImageIdentity {
     /// Pins the immutable system toplevel.
     pub(crate) toplevel: String,
-    /// Pins the signed UKI source identity.
-    pub(crate) uki: String,
+    /// Locates the immutable provider-owned boot-artifact contract.
+    pub(crate) boot_artifact_contract: String,
     /// Pins the exact native ability executor carried by the image.
     pub(crate) executor: String,
     /// Pins the compatible nonempty persistent state format.
@@ -22,11 +22,7 @@ pub(crate) struct RolloutImageIdentity {
 /// Supplies one exact desired single-host rollout.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub(crate) struct AbRolloutRequest {
-    /// Names the strategy implemented by this provider.
-    pub(crate) strategy: String,
-    /// Limits preparation to one candidate beside one retained predecessor.
-    pub(crate) concurrency: u32,
+pub(crate) struct ImageRolloutRequest {
     /// Identifies the currently admitted image.
     pub(crate) predecessor: RolloutImageIdentity,
     /// Identifies the candidate to prepare and select.
@@ -38,9 +34,9 @@ pub(crate) struct AbRolloutRequest {
 /// Carries one rollout-state operation plus checked lower-provider evidence.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct AbRolloutTerminalRequest {
+pub(crate) struct ImageRolloutTerminalRequest {
     /// Retains the exact provider-neutral rollout request.
-    pub(crate) rollout: AbRolloutRequest,
+    pub(crate) rollout: ImageRolloutRequest,
     /// Supplies a boot entry resolved by the selected boot-selection provider.
     #[serde(default)]
     pub(crate) entry: Option<String>,

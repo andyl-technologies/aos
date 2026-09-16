@@ -4,17 +4,16 @@ use super::{
     build_package_toml, build_package_toml_with_documentation, record_named_output,
     record_package_contract,
 };
-use crate::registry_ops::attestation::package_nar_root_digest;
-use crate::registry_ops::provenance::{bind_documentation_provenance, publish_provenance_ref};
+use crate::registry_ops::provenance::bind_documentation_provenance;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::test_support::{
     inspect_test_image, rewrite_test_image_parent, write_direct_image_output,
 };
 use crate::types::{
     AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1,
-    FEATURE_ATTESTATION_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
-    PACKAGE_META_FORMAT, PackageContractArtifactMeta, PackageContractClosureMemberMeta,
-    PackageContractDocumentMeta, PackageContractMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
+    FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, PACKAGE_META_FORMAT,
+    PackageContractArtifactMeta, PackageContractClosureMemberMeta, PackageContractDocumentMeta,
+    PackageContractMeta,
 };
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
@@ -61,7 +60,7 @@ fn sysroot_publication_emits_structural_native_rollout_gate() {
         platform.requires_features.as_slice(),
         platform.references.requires_features(),
     ] {
-        assert_eq!(features, [FEATURE_NATIVE_IMAGE_ROLLOUT_V1]);
+        assert_eq!(features, [FEATURE_IMAGE_ARTIFACT_CONTRACT_V1]);
     }
     assert_eq!(platform.min_format, Some(PACKAGE_META_FORMAT));
     assert_eq!(platform.references.min_format(), Some(PACKAGE_META_FORMAT));
@@ -568,7 +567,7 @@ fn build_package_toml_with_sysroot() {
 }
 
 #[test]
-fn build_package_toml_keeps_disk_image_verity_sidecars_out_of_catalog() {
+fn build_package_toml_keeps_provider_contract_fields_out_of_catalog() {
     let image_fixture = TempDir::new().unwrap();
     let info = StorePathInfo {
         path: "/nix/store/abc123-server-2026.04".into(),
@@ -583,10 +582,7 @@ fn build_package_toml_keeps_disk_image_verity_sidecars_out_of_catalog() {
         serde_json::json!(["bare-metal"]),
     );
     let image_root = Path::new(&img_info.path);
-    fs::write(image_root.join("root.img"), b"root").unwrap();
-    fs::write(image_root.join("root.verity"), b"verity").unwrap();
-    fs::write(image_root.join("root.roothash"), "a".repeat(64)).unwrap();
-    fs::write(image_root.join("root.roothash.p7s"), b"signature").unwrap();
+    fs::write(image_root.join("provider-artifact"), b"opaque").unwrap();
     rewrite_test_image_parent(&img_info, "2026.04", "x86_64-linux");
     let image = inspect_test_image("raw", img_info, "2026.04", "x86_64-linux").unwrap();
 
@@ -610,70 +606,13 @@ fn build_package_toml_keeps_disk_image_verity_sidecars_out_of_catalog() {
     let parsed = crate::registry::parse::parse_package_file(&content).unwrap();
     let image = &parsed.versions[0].platforms["x86_64-linux"].images[0];
     assert_eq!(image.format, "raw");
-    assert!(image.root_image.is_none());
-    assert!(image.root_verity.is_none());
-    assert!(image.root_hash.is_none());
-    assert!(image.root_hash_sig.is_none());
-}
-
-#[test]
-fn build_package_toml_catalogs_verity_for_raw_recovery_image() {
-    let image_fixture = TempDir::new().unwrap();
-    let info = StorePathInfo {
-        path: "/nix/store/abc123-server-2026.04".into(),
-        nar_hash: "sha256:aabb".into(),
-        nar_size: 12345678,
-        references: vec!["ref1".into()],
-        closure_size: 52428800,
-    };
-    let img_info = write_direct_image_output(
-        image_fixture.path(),
-        "raw",
-        serde_json::json!(["bare-metal"]),
+    assert_eq!(
+        image.delivery.artifact_contract.schema,
+        "aos.test-boot-artifacts/v1"
     );
-    let image_root = Path::new(&img_info.path);
-    fs::write(image_root.join("root.img"), b"root").unwrap();
-    fs::write(image_root.join("root.verity"), b"verity").unwrap();
-    fs::write(image_root.join("root.roothash"), "a".repeat(64)).unwrap();
-    fs::write(image_root.join("root.roothash.p7s"), b"signature").unwrap();
-    rewrite_test_image_parent(&img_info, "2026.04", "x86_64-linux");
-    let mut image = inspect_test_image("raw", img_info, "2026.04", "x86_64-linux").unwrap();
-    image.sb.recovery_ukis.push(RecoveryUkiEntry {
-        copy: UkiSlot::A,
-        path: "recovery-a.efi".into(),
-        entry_path: "recovery-a.conf".into(),
-        byte_size: 1,
-        sha256: "b".repeat(64),
-        release: "2026.04".into(),
-        recovery_abi: 1,
-        sb_signer_cert_sha256: "c".repeat(64),
-        sbat: vec![SbatEntry {
-            component: "aos".into(),
-            generation: 1,
-        }],
-    });
-
-    let content = build_package_toml(
-        "",
-        "server",
-        "2026.04",
-        "x86_64-linux",
-        &info,
-        Some("AOS server"),
-        None,
-        Some("MIT"),
-        Some("aos-team"),
-        true,
-        None,
-        &[image],
-        None,
-    )
-    .unwrap();
-
-    assert!(content.contains("root_image = \"root.img\""));
-    assert!(content.contains("root_verity = \"root.verity\""));
-    assert!(content.contains(&format!("root_hash = \"sha256:{}\"", "a".repeat(64))));
-    assert!(content.contains("root_hash_sig = \"root.roothash.p7s\""));
+    for provider_field in ["providerContract", "opaqueEvidence", "provider-owned"] {
+        assert!(!content.contains(provider_field));
+    }
 }
 
 #[test]

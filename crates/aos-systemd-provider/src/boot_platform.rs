@@ -44,7 +44,7 @@ pub(crate) enum BootPlatformRole {
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct ImageIdentity {
     toplevel: String,
-    uki: String,
+    boot_artifact_contract: String,
     executor: String,
     state_format: String,
 }
@@ -52,8 +52,6 @@ struct ImageIdentity {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RolloutRequest {
-    strategy: String,
-    concurrency: u32,
     predecessor: ImageIdentity,
     candidate: ImageIdentity,
     retention_expires_at_millis: u64,
@@ -88,9 +86,20 @@ struct ImageState {
 #[derive(Debug, Deserialize)]
 struct ImageGeneration {
     number: u32,
-    uki_path: String,
-    #[serde(default)]
-    uki_source_path: Option<String>,
+    boot_artifact_contract: String,
+    boot_provider_state: ProviderStateEnvelope,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderStateEnvelope {
+    schema: String,
+    evidence: SystemdBootGenerationEvidence,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct SystemdBootGenerationEvidence {
+    installed_entry: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -448,10 +457,6 @@ fn success_observation(observation_schema: &str, rollout: &RolloutRequest) -> Re
 
 fn validate_rollout(request: &RolloutRequest) -> Result<()> {
     ensure!(
-        request.strategy == "single-host-ab-v1" && request.concurrency == 1,
-        "unsupported rollout strategy or concurrency"
-    );
-    ensure!(
         !request.candidate.state_format.is_empty()
             && request.candidate.state_format == request.predecessor.state_format,
         "rollout images have incompatible state formats"
@@ -504,10 +509,7 @@ fn generation_for<'a>(
     let matches = state
         .generations
         .iter()
-        .filter(|generation| {
-            generation.uki_source_path.as_deref() == Some(identity.uki.as_str())
-                || generation.uki_path == identity.uki
-        })
+        .filter(|generation| generation.boot_artifact_contract == identity.boot_artifact_contract)
         .collect::<Vec<_>>();
     let [generation] = matches.as_slice() else {
         bail!("rollout image has no unique physical boot entry");
@@ -518,7 +520,11 @@ fn generation_for<'a>(
 fn installed_entry(identity: &ImageIdentity) -> Result<String> {
     let state = image_state()?;
     let generation = generation_for(&state, identity)?;
-    let recorded = safe_entry_path(&generation.uki_path)?;
+    ensure!(
+        generation.boot_provider_state.schema == "aos.systemd.boot-generation-state/v1",
+        "unsupported selected boot generation state"
+    );
+    let recorded = safe_entry_path(&generation.boot_provider_state.evidence.installed_entry)?;
     let exact = Path::new(BOOT_ROOT).join(&recorded);
     if exact.is_file() {
         return recorded
@@ -637,10 +643,10 @@ fn retain_payloads(rollout: &RolloutRequest) -> Result<()> {
     let candidate_digest = copy_payload(&candidate_entry, &directory.join("candidate.efi"))?;
     let manifest = RetentionManifest {
         schema: "aos.boot.artifact-storage-manifest/v1".to_string(),
-        candidate: rollout.candidate.uki.clone(),
+        candidate: rollout.candidate.boot_artifact_contract.clone(),
         candidate_entry,
         candidate_sha256: candidate_digest,
-        predecessor: rollout.predecessor.uki.clone(),
+        predecessor: rollout.predecessor.boot_artifact_contract.clone(),
         predecessor_entry,
         predecessor_sha256: predecessor_digest,
     };
@@ -743,11 +749,11 @@ fn validate_retention(
         "unsupported boot payload retention manifest"
     );
     ensure!(
-        retained.candidate == rollout.candidate.uki,
+        retained.candidate == rollout.candidate.boot_artifact_contract,
         "retained candidate differs from the checked rollout"
     );
     ensure!(
-        retained.predecessor == rollout.predecessor.uki,
+        retained.predecessor == rollout.predecessor.boot_artifact_contract,
         "retained predecessor differs from the checked rollout"
     );
     for (name, expected) in [

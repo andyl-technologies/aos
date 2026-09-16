@@ -1861,8 +1861,8 @@ mod tests {
 
         let payload = to_canonical_json(&signature_input_fixture()).expect("signature input");
         let envelope = ContainerDsseEnvelope {
-            payload_type:
-                "application/vnd.aos.container.signature-input.unsupported+json".to_string(),
+            payload_type: "application/vnd.aos.container.signature-input.unsupported+json"
+                .to_string(),
             payload: base64::engine::general_purpose::STANDARD.encode(payload),
             signatures: vec![ContainerDsseSignature {
                 keyid: base64::engine::general_purpose::STANDARD.encode(b"ssh-key"),
@@ -1876,20 +1876,20 @@ mod tests {
             .as_object_mut()
             .expect("release evidence")
             .remove("abilities");
-        assert!(ContainerRelease::from_json(
-            &serde_json::to_vec(&release).expect("release bytes")
-        )
-        .is_err());
+        assert!(
+            ContainerRelease::from_json(&serde_json::to_vec(&release).expect("release bytes"))
+                .is_err()
+        );
 
         let mut input = serde_json::to_value(signature_input_fixture()).expect("input JSON");
         input["evidence"]
             .as_object_mut()
             .expect("input evidence")
             .remove("abilities");
-        assert!(ContainerSignatureInput::from_json(
-            &serde_json::to_vec(&input).expect("input bytes")
-        )
-        .is_err());
+        assert!(
+            ContainerSignatureInput::from_json(&serde_json::to_vec(&input).expect("input bytes"))
+                .is_err()
+        );
     }
 
     #[test]

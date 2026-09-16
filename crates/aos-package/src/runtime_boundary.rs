@@ -14,7 +14,7 @@ use crate::{
     ApmRegistryCommand, AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand,
     CredentialCommand, DocumentationCacheCommand, DocumentationCommand, KeysCommand,
     OptionsCommand, OriginCommand, PackageCommand, RegistryCommand, RuntimeConfigCommand,
-    SbCertsCommand, StoreCommand, TrustCommand,
+    StoreCommand, TrustCommand,
 };
 
 const RUNTIME_ENV: &str = "AOS_RUNTIME";
@@ -154,7 +154,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         PackageCommand::Options { command } => options_require_host_runtime(command),
         PackageCommand::Schema { system, .. } => *system,
         PackageCommand::Attest { command } => match command {
-            AttestCommand::Quote { .. } | AttestCommand::ReadUkiIdentitySection { .. } => true,
+            AttestCommand::Quote { .. } => true,
             AttestCommand::Verify { system, .. } | AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Enroll { .. } => false,
         },
@@ -210,9 +210,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         PackageCommand::Rollback { list, .. } => *list,
         PackageCommand::Attest { command } => matches!(
             command,
-            AttestCommand::Verify { .. }
-                | AttestCommand::Catalog { .. }
-                | AttestCommand::ReadUkiIdentitySection { .. }
+            AttestCommand::Verify { .. } | AttestCommand::Catalog { .. }
         ),
         PackageCommand::Credential(CredentialCommand::Encrypt { output, .. }) => output.is_none(),
         PackageCommand::Registry { command, .. } => apm_registry_is_read_only(command),
@@ -318,9 +316,6 @@ fn registry_is_read_only(command: &RegistryCommand) -> bool {
         | RegistryCommand::Keys {
             command: KeysCommand::List { .. },
         }
-        | RegistryCommand::SbCerts {
-            command: SbCertsCommand::List { .. },
-        }
         | RegistryCommand::Branch {
             command: BranchCommand::List { .. },
         }
@@ -375,7 +370,6 @@ fn registry_is_read_only(command: &RegistryCommand) -> bool {
         | RegistryCommand::Disable { .. }
         | RegistryCommand::Trust { .. }
         | RegistryCommand::Keys { .. }
-        | RegistryCommand::SbCerts { .. }
         | RegistryCommand::Publish { .. }
         | RegistryCommand::Unpublish { .. }
         | RegistryCommand::Commit { .. }

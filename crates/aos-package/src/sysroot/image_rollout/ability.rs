@@ -1,4 +1,4 @@
-//! Native provider backend for checked single-host A/B rollout operations.
+//! Native provider backend for checked single-host image rollout operations.
 //!
 //! The ordinary ability runtime owns intent, completion, cancellation, and
 //! recovery. This backend owns only the physical sysroot effects. It always
@@ -18,23 +18,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{ImageGeneration, ImageGenerationState, ImageRolloutStatus};
 
-use super::{AbRolloutRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity};
+use super::{ImageRolloutRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity};
 use super::{qualified_rollout_record, validate_active_rollout_selection};
 use crate::sysroot::{
-    load_image_generation_state_pub, prepare_image_selection, remove_file_durable, sync_directory,
-    write_atomic_durable,
+    load_image_generation_state_pub, record_pending_image_selection, remove_file_durable,
+    sync_directory, write_atomic_durable,
 };
 
-const EXECUTION_SCHEMA: &str = "aos.ability.native-ab-image-rollout-state/v1";
+const EXECUTION_SCHEMA: &str = "aos.ability.native-image-rollout-state/v1";
 const EXECUTION_DIRECTORY: &str = "ability-rollouts";
 
-/// Describes durable progress through the native A/B provider backend.
+/// Describes durable progress through the native image provider backend.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum AbilityRolloutPhase {
-    /// Both exact images have durable store and ESP retention roots.
+    /// Both exact images have durable store and provider retention roots.
     Retained,
-    /// The candidate is authenticated in the inactive slot.
+    /// The candidate's provider-owned boot artifacts are authenticated.
     Prepared,
     /// Current workloads have completed the configured drain.
     Drained,
@@ -71,7 +71,7 @@ pub(crate) struct AbilityRolloutState {
     /// Identifies the durable provider-state schema.
     pub(crate) schema: String,
     /// Retains the exact checked rollout request.
-    pub(crate) request: AbRolloutRequest,
+    pub(crate) request: ImageRolloutRequest,
     /// Identifies the retained predecessor generation.
     pub(crate) predecessor_generation: u32,
     /// Identifies the prepared candidate generation.
@@ -82,7 +82,7 @@ pub(crate) struct AbilityRolloutState {
     pub(crate) outcome: Option<AbilityRolloutOutcome>,
 }
 
-/// Reports the physical A/B outcome used during reconciliation.
+/// Reports the physical image outcome used during reconciliation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PhysicalRolloutObservation {
     /// Selection is durable but no member of the pair has booted from it yet.
@@ -97,13 +97,13 @@ pub(crate) enum PhysicalRolloutObservation {
     Fallback,
 }
 
-/// Applies checked rollout effects to the existing A/B image backend.
+/// Applies checked rollout effects to the existing image backend.
 #[derive(Clone, Debug)]
-pub(crate) struct NativeAbRolloutBackend {
+pub(crate) struct NativeImageRolloutBackend {
     image_profile: PathBuf,
 }
 
-impl NativeAbRolloutBackend {
+impl NativeImageRolloutBackend {
     /// Constructs a backend over one image profile.
     pub(crate) fn new(image_profile: impl Into<PathBuf>) -> Self {
         Self {
@@ -119,18 +119,13 @@ impl NativeAbRolloutBackend {
     /// provider state, or retention deadline differs from current authority.
     pub(crate) fn preflight_operation(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
         method: &str,
         now_millis: u64,
     ) -> Result<()> {
         let images = self.authenticate_pair(request)?;
         let predecessor = unique_image(&images, &request.predecessor, "predecessor")?;
         let candidate = unique_image(&images, &request.candidate, "candidate")?;
-        ensure!(
-            predecessor.slot != candidate.slot,
-            "rollout images do not occupy opposite A/B slots"
-        );
-
         let state_path = self.execution_directory(request)?.join("state.json");
         let has_state = state_path.is_file();
         if method == "retain" && !has_state {
@@ -174,13 +169,13 @@ impl NativeAbRolloutBackend {
     ///
     /// Returns an error when image identity is stale or retention roots and
     /// provider state cannot be written durably.
-    pub(crate) fn retain(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
+    pub(crate) fn retain(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
         let images = self.authenticate_pair(request)?;
         let predecessor = unique_image(&images, &request.predecessor, "predecessor")?;
         let candidate = unique_image(&images, &request.candidate, "candidate")?;
         ensure!(
-            predecessor.number == images.running && predecessor.slot != candidate.slot,
-            "rollout pair is stale or does not occupy opposite A/B slots"
+            predecessor.number == images.running,
+            "rollout predecessor is stale"
         );
 
         let directory = self.execution_directory(request)?;
@@ -224,7 +219,7 @@ impl NativeAbRolloutBackend {
     ///
     /// Returns an error when retention has not completed, another image is
     /// pending, identity changed, or the prepared phase cannot be persisted.
-    pub(crate) fn prepare(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
+    pub(crate) fn prepare(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
         let mut state = self.require_state(request)?;
         ensure!(
             matches!(
@@ -249,7 +244,7 @@ impl NativeAbRolloutBackend {
     ///
     /// Returns an error when preparation has not completed, identity changed,
     /// or the drained phase cannot be persisted.
-    pub(crate) fn drain(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
+    pub(crate) fn drain(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
         let mut state = self.require_state(request)?;
         if state.phase == AbilityRolloutPhase::Drained {
             return Ok(state);
@@ -272,8 +267,8 @@ impl NativeAbRolloutBackend {
     /// rollout state changed, boot selection fails, or state cannot persist.
     pub(crate) fn select(
         &self,
-        request: &AbRolloutRequest,
-        entry_id: &str,
+        request: &ImageRolloutRequest,
+        _entry_id: &str,
     ) -> Result<AbilityRolloutState> {
         let mut execution = self.require_state(request)?;
         if execution.phase == AbilityRolloutPhase::Selected {
@@ -290,12 +285,11 @@ impl NativeAbRolloutBackend {
             execution.candidate_generation,
             &request.candidate.state_format,
         )?;
-        prepare_image_selection(
+        record_pending_image_selection(
             &self.image_profile,
             &mut images,
             execution.candidate_generation,
-            entry_id,
-            Some(rollout),
+            rollout,
         )?;
         execution.phase = AbilityRolloutPhase::Selected;
         self.write_state(&execution)?;
@@ -308,7 +302,10 @@ impl NativeAbRolloutBackend {
     ///
     /// Returns an error when provider state, image identity, or the physical
     /// active or terminal rollout record differs from the checked request.
-    pub(crate) fn observe(&self, request: &AbRolloutRequest) -> Result<PhysicalRolloutObservation> {
+    pub(crate) fn observe(
+        &self,
+        request: &ImageRolloutRequest,
+    ) -> Result<PhysicalRolloutObservation> {
         let execution = self.require_state(request)?;
         let images = self.authenticate_pair(request)?;
         let matching = |rollout: &crate::types::ImageRollout| {
@@ -382,7 +379,7 @@ impl NativeAbRolloutBackend {
     /// represented by an active rollout awaiting boot commit.
     pub(crate) fn observe_terminal_outcome(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
     ) -> Result<PhysicalRolloutObservation> {
         let observation = self.observe(request)?;
         ensure!(
@@ -403,7 +400,7 @@ impl NativeAbRolloutBackend {
     /// the corresponding retained, provider-owned terminal branch.
     pub(crate) fn verify_boot_commit(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
         running: u32,
     ) -> Result<()> {
         let state = self.require_state(request)?;
@@ -443,7 +440,7 @@ impl NativeAbRolloutBackend {
     /// method's postcondition under the exact checked image identity.
     pub(crate) fn observe_operation(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
         method: &str,
     ) -> Result<AbilityRolloutState> {
         let state = self.require_state(request)?;
@@ -517,7 +514,7 @@ impl NativeAbRolloutBackend {
     ///
     /// Returns an error when physical observation fails or the reconciled
     /// provider state cannot be written durably.
-    pub(crate) fn reconcile(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
+    pub(crate) fn reconcile(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
         let state = self.require_state(request)?;
         let state = self.project_physical_observation(request, state)?;
         self.write_state(&state)?;
@@ -537,7 +534,7 @@ impl NativeAbRolloutBackend {
     /// already recorded assessment.
     pub(crate) fn record_health(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
         healthy: bool,
     ) -> Result<AbilityRolloutState> {
         let mut state = self.require_state(request)?;
@@ -580,7 +577,7 @@ impl NativeAbRolloutBackend {
     /// longer agrees with the checked rollout branch.
     pub(crate) fn health_assessment(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
     ) -> Result<AbilityRolloutState> {
         let state = self.require_state(request)?;
         let physical = self.observe(request)?;
@@ -621,7 +618,7 @@ impl NativeAbRolloutBackend {
     /// disagrees with the physical rollout.
     pub(crate) fn health_assessment_if_recorded(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
     ) -> Result<Option<AbilityRolloutState>> {
         let state = self.require_state(request)?;
         if state.outcome.is_none() {
@@ -636,7 +633,7 @@ impl NativeAbRolloutBackend {
     ///
     /// Returns an error until authenticated health or fallback is terminal, or
     /// when reconciliation fails.
-    pub(crate) fn hold(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
+    pub(crate) fn hold(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
         let mut state = self.health_assessment(request)?;
         match state.outcome {
             Some(AbilityRolloutOutcome::CandidateHealthy) => {
@@ -663,7 +660,7 @@ impl NativeAbRolloutBackend {
     ///
     /// Returns an error until authenticated fallback is terminal, or when
     /// reconciliation fails.
-    pub(crate) fn withdraw(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
+    pub(crate) fn withdraw(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
         let mut state = self.health_assessment(request)?;
         match self.observe(request)? {
             PhysicalRolloutObservation::CandidateBooted => {
@@ -696,7 +693,7 @@ impl NativeAbRolloutBackend {
         Ok(state)
     }
 
-    fn observe_withdrawal(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
+    fn observe_withdrawal(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
         let state = self.health_assessment(request)?;
         ensure!(
             state.phase == AbilityRolloutPhase::FallbackRetained
@@ -706,7 +703,7 @@ impl NativeAbRolloutBackend {
         Ok(state)
     }
 
-    fn observe_hold(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
+    fn observe_hold(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
         let state = self.health_assessment(request)?;
         ensure!(
             matches!(
@@ -726,7 +723,7 @@ impl NativeAbRolloutBackend {
 
     fn mark_candidate_health_failed(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
         state: &AbilityRolloutState,
     ) -> Result<()> {
         let mut images = self.authenticate_pair(request)?;
@@ -758,10 +755,10 @@ impl NativeAbRolloutBackend {
     /// # Errors
     ///
     /// Returns an error before expiry, for nonterminal or stale state, or when
-    /// inactive roots and the physical UKI lease cannot be removed durably.
+    /// inactive roots and the provider artifact lease cannot be removed durably.
     pub(crate) fn retire(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
         now_millis: u64,
     ) -> Result<AbilityRolloutState> {
         ensure!(
@@ -833,7 +830,7 @@ impl NativeAbRolloutBackend {
 
     fn project_physical_observation(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
         mut state: AbilityRolloutState,
     ) -> Result<AbilityRolloutState> {
         let (phase, outcome) = match self.observe(request)? {
@@ -872,7 +869,7 @@ impl NativeAbRolloutBackend {
         ensure!(
             state.predecessor_generation == predecessor.number
                 && state.candidate_generation == candidate.number
-                && predecessor.slot != candidate.slot,
+                && predecessor.number != candidate.number,
             "durable rollout generations differ from authenticated images"
         );
         ensure!(
@@ -882,7 +879,7 @@ impl NativeAbRolloutBackend {
         Ok(())
     }
 
-    fn authenticate_retention(&self, request: &AbRolloutRequest) -> Result<()> {
+    fn authenticate_retention(&self, request: &ImageRolloutRequest) -> Result<()> {
         let directory = self.execution_directory(request)?;
         for (name, target) in [
             (
@@ -903,7 +900,7 @@ impl NativeAbRolloutBackend {
 
     fn authenticate_terminal_outcome(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
         state: &AbilityRolloutState,
     ) -> Result<()> {
         let expected = match self.observe_terminal_outcome(request)? {
@@ -920,7 +917,7 @@ impl NativeAbRolloutBackend {
 
     fn authenticate_retirement(
         &self,
-        request: &AbRolloutRequest,
+        request: &ImageRolloutRequest,
         images: &ImageGenerationState,
     ) -> Result<()> {
         let running = images
@@ -954,11 +951,7 @@ impl NativeAbRolloutBackend {
         require_exact_root(&directory.join("executor"), &image.native_executor_ref)
     }
 
-    fn authenticate_pair(&self, request: &AbRolloutRequest) -> Result<ImageGenerationState> {
-        ensure!(
-            request.strategy == "single-host-ab-v1" && request.concurrency == 1,
-            "unsupported rollout strategy or concurrency"
-        );
+    fn authenticate_pair(&self, request: &ImageRolloutRequest) -> Result<ImageGenerationState> {
         ensure!(
             !request.candidate.state_format.is_empty()
                 && request.candidate.state_format == request.predecessor.state_format,
@@ -970,7 +963,7 @@ impl NativeAbRolloutBackend {
         Ok(images)
     }
 
-    pub(crate) fn execution_directory(&self, request: &AbRolloutRequest) -> Result<PathBuf> {
+    pub(crate) fn execution_directory(&self, request: &ImageRolloutRequest) -> Result<PathBuf> {
         let digest = Sha256Digest::of_canonical(EXECUTION_SCHEMA, request)?;
         Ok(self
             .image_profile
@@ -978,7 +971,7 @@ impl NativeAbRolloutBackend {
             .join(digest.to_string().replace(':', "-")))
     }
 
-    fn require_state(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
+    fn require_state(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
         let path = self.execution_directory(request)?.join("state.json");
         let state: AbilityRolloutState = serde_json::from_slice(
             &read_regular_bounded(&path, 1024 * 1024)
@@ -1131,11 +1124,6 @@ fn unique_image<'a>(
 
 fn image_matches(generation: &ImageGeneration, identity: &RolloutImageIdentity) -> bool {
     generation.toplevel == identity.toplevel
-        && generation
-            .uki_source_path
-            .as_deref()
-            .unwrap_or(&generation.uki_path)
-            == identity.uki
         && generation.native_executor_ref == identity.executor
         && generation.state_version == identity.state_format
 }
@@ -1215,14 +1203,19 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::types::{ImageRollout, ImageSlot};
+    use crate::types::ImageRollout;
 
-    fn image(number: u32, slot: ImageSlot, seed: u8) -> ImageGeneration {
+    fn image(number: u32, seed: u8) -> ImageGeneration {
         ImageGeneration {
             number,
-            slot,
-            uki_path: format!("EFI/Linux/aos-{number}+3.efi"),
-            uki_source_path: None,
+            boot_artifact_contract: format!(
+                "/nix/store/{}-boot-contract",
+                char::from(b'f' + seed).to_string().repeat(32)
+            ),
+            boot_provider_state: crate::types::BootProviderState {
+                schema: "aos.test.boot-generation-state/v1".into(),
+                evidence: serde_json::json!({"installed-entry": format!("installed-entry-{number}")}),
+            },
             toplevel: format!(
                 "/nix/store/{}-top",
                 char::from(b'a' + seed).to_string().repeat(32)
@@ -1242,31 +1235,29 @@ mod tests {
             ),
             module_abi: 1,
             base_lib_abi_hash: "sha256:test".into(),
-            root_verity_roothash: None,
-            expected_pcr11: None,
-            initrd_pcr11: None,
-            recovery: None,
             created_at: "2026-09-10T00:00:00Z".into(),
         }
     }
 
     struct Fixture {
         _tmp: TempDir,
-        backend: NativeAbRolloutBackend,
-        request: AbRolloutRequest,
+        backend: NativeImageRolloutBackend,
+        request: ImageRolloutRequest,
     }
 
     impl Fixture {
         fn new() -> Self {
             let tmp = TempDir::new().unwrap();
-            let predecessor = image(1, ImageSlot::A, 0);
-            let candidate = image(2, ImageSlot::B, 1);
+            let predecessor = image(1, 0);
+            let candidate = image(2, 1);
             let state = ImageGenerationState {
+                schema: "aos.image-generation-state/v1".into(),
                 running: 1,
-                default: 1,
                 pending: None,
-                recovery_known_good: None,
-                recovery_pending: None,
+                boot_provider_state: crate::types::BootProviderState {
+                    schema: "aos.test.boot-state/v1".into(),
+                    evidence: serde_json::json!({}),
+                },
                 active_rollout: None,
                 last_rollout: None,
                 generations: vec![predecessor.clone(), candidate.clone()],
@@ -1286,13 +1277,11 @@ mod tests {
             }
             let identity = |generation: &ImageGeneration| RolloutImageIdentity {
                 toplevel: generation.toplevel.clone(),
-                uki: generation.uki_path.clone(),
+                boot_artifact_contract: generation.boot_artifact_contract.clone(),
                 executor: generation.native_executor_ref.clone(),
                 state_format: generation.state_version.clone(),
             };
-            let request = AbRolloutRequest {
-                strategy: "single-host-ab-v1".into(),
-                concurrency: 1,
+            let request = ImageRolloutRequest {
                 predecessor: identity(&predecessor),
                 candidate: identity(&candidate),
                 retention_expires_at_millis: 2_000,
@@ -1300,7 +1289,7 @@ mod tests {
             let image_profile = tmp.path().to_path_buf();
             Self {
                 _tmp: tmp,
-                backend: NativeAbRolloutBackend::new(image_profile),
+                backend: NativeImageRolloutBackend::new(image_profile),
                 request,
             }
         }
@@ -1330,7 +1319,7 @@ mod tests {
         fixture.backend.drain(&fixture.request).unwrap();
         fixture
             .backend
-            .select(&fixture.request, "aos-2+3.efi")
+            .select(&fixture.request, "installed-entry-2")
             .unwrap();
 
         let mut images = fixture.images();
@@ -1419,7 +1408,7 @@ mod tests {
         fixture.backend.drain(&fixture.request).unwrap();
         fixture
             .backend
-            .select(&fixture.request, "aos-2+3.efi")
+            .select(&fixture.request, "installed-entry-2")
             .unwrap();
 
         let images = fixture.images();
@@ -1454,7 +1443,7 @@ mod tests {
         fixture.backend.drain(&fixture.request).unwrap();
         fixture
             .backend
-            .select(&fixture.request, "aos-2+3.efi")
+            .select(&fixture.request, "installed-entry-2")
             .unwrap();
         let mut images = fixture.images();
         images.running = 2;
@@ -1526,7 +1515,7 @@ mod tests {
         fixture.backend.drain(&fixture.request).unwrap();
         fixture
             .backend
-            .select(&fixture.request, "aos-2+3.efi")
+            .select(&fixture.request, "installed-entry-2")
             .unwrap();
 
         let mut images = fixture.images();
@@ -1612,7 +1601,7 @@ mod tests {
         fixture.backend.drain(&fixture.request).unwrap();
         fixture
             .backend
-            .select(&fixture.request, "aos-2+3.efi")
+            .select(&fixture.request, "installed-entry-2")
             .unwrap();
 
         let mut images = fixture.images();
@@ -1742,7 +1731,7 @@ mod tests {
             .join("predecessor-toplevel");
         fs::remove_file(&root).unwrap();
         symlink(&tampered.request.candidate.toplevel, &root).unwrap();
-        let restarted = NativeAbRolloutBackend::new(tampered.backend.image_profile.clone());
+        let restarted = NativeImageRolloutBackend::new(tampered.backend.image_profile.clone());
         assert!(restarted.withdraw(&tampered.request).is_err());
         assert!(
             restarted
@@ -1818,7 +1807,7 @@ mod tests {
             Path::new(&fixture.request.candidate.toplevel)
         );
 
-        let restarted = NativeAbRolloutBackend::new(fixture.backend.image_profile.clone());
+        let restarted = NativeImageRolloutBackend::new(fixture.backend.image_profile.clone());
         let recovered = restarted
             .observe_operation(&fixture.request, "retire")
             .unwrap();
@@ -1859,7 +1848,7 @@ mod tests {
         );
 
         fixture.backend.retire(&fixture.request, 2_000).unwrap();
-        let restarted = NativeAbRolloutBackend::new(fixture.backend.image_profile.clone());
+        let restarted = NativeImageRolloutBackend::new(fixture.backend.image_profile.clone());
         let recovered = restarted
             .observe_operation(&fixture.request, "retire")
             .unwrap();

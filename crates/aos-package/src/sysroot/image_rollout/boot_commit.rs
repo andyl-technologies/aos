@@ -1,4 +1,4 @@
-//! Package-owned boot finalization for qualified A/B image rollouts.
+//! Package-owned boot finalization for qualified image rollouts.
 //!
 //! The boot service invokes this module after configuration activation. It
 //! authenticates the configuration and rollout evidence before publishing
@@ -12,7 +12,7 @@ use aos_ability_model::{LocalKey, TransactionId};
 use aos_ability_runtime::execution::TerminalResult;
 use aos_ability_runtime::journal::JournalLimits;
 
-use super::{NativeAbRolloutBackend, authenticate_single_image_rollout_fragment};
+use super::{NativeImageRolloutBackend, authenticate_single_image_rollout_fragment};
 use crate::attestation::{EVAL_MODE_PURE, GEN_ATTESTATION_SCHEMA, GenAttestation};
 use crate::config_eval::RetainedAbilityDiagnosticSource;
 use crate::config_eval::activation::{load_config_manifest, read_stored_activation_record};
@@ -78,6 +78,9 @@ fn parse_command(arguments: &[String]) -> Result<BootCommand> {
 fn commit(paths: &BootCommitPaths, require_attestation_quote: bool) -> Result<()> {
     let state_path = paths.image_profile.join(IMAGE_STATE_FILE);
     let mut images = read_json::<ImageGenerationState>(&state_path)?;
+    images
+        .validate()
+        .context("validating image generation state before boot commit")?;
     let rollout = validate_boot_rollout(&images)?;
     let qualified = rollout.is_some();
 
@@ -134,13 +137,10 @@ fn commit(paths: &BootCommitPaths, require_attestation_quote: bool) -> Result<()
         "generation attestation is incomplete"
     );
     if require_attestation_quote {
-        let running = images
-            .running_generation()
-            .context("image state has no running generation")?;
         crate::verify_local_boot_commit(
             &attestation_path,
             &generation_root.join("gen-attestation-quote"),
-            running.expected_pcr11.as_deref(),
+            None,
         )?;
     }
 
@@ -245,21 +245,13 @@ fn verify_rollout_transaction(
         source.terminal_result(JournalLimits::default())? == Some(TerminalResult::Succeeded),
         "native rollout transaction did not settle successfully"
     );
-    NativeAbRolloutBackend::new(&paths.image_profile)
+    NativeImageRolloutBackend::new(&paths.image_profile)
         .verify_boot_commit(&request, running)
         .context("verifying provider-owned rollout health evidence")
 }
 
 fn finalize_state(images: &mut ImageGenerationState, qualified: bool) -> Result<()> {
-    images.default = images.running;
     images.pending = None;
-    images.recovery_pending = None;
-    if let Some(recovery) = images
-        .running_generation()
-        .and_then(|generation| generation.recovery.as_ref())
-    {
-        images.recovery_known_good = Some(recovery.copy);
-    }
     if qualified {
         let mut rollout = images
             .active_rollout
@@ -285,13 +277,12 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ImageGeneration, ImageRollout, ImageSlot};
+    use crate::types::{ImageGeneration, ImageRollout};
 
     #[test]
     fn finalization_publishes_distinct_rollout_outcomes() {
         let mut candidate = state(2, ImageRolloutStatus::CandidateBooted);
         finalize_state(&mut candidate, true).unwrap();
-        assert_eq!(candidate.default, 2);
         assert_eq!(candidate.pending, None);
         assert_eq!(
             candidate
@@ -317,13 +308,15 @@ mod tests {
     }
 
     fn state(running: u32, status: ImageRolloutStatus) -> ImageGenerationState {
-        let generation = |number, slot| ImageGeneration {
+        let generation = |number| ImageGeneration {
             number,
             version: format!("test-{number}"),
-            slot,
+            boot_artifact_contract: format!("/nix/store/{number:032}-boot-contract"),
+            boot_provider_state: crate::types::BootProviderState {
+                schema: "aos.test.boot-generation-state/v1".into(),
+                evidence: serde_json::json!({"installed-entry": format!("installed-entry-{number}")}),
+            },
             toplevel: format!("/nix/store/{number:032}-system"),
-            uki_path: format!("EFI/Linux/aos-generation-{number:010}+3.efi"),
-            uki_source_path: None,
             package_name: "aos".to_string(),
             registry: "test".to_string(),
             kernel_path: None,
@@ -332,18 +325,16 @@ mod tests {
             evaluator_ref: format!("/nix/store/{number:032}-evaluator"),
             module_abi: 1,
             base_lib_abi_hash: format!("sha256:{}", "0".repeat(64)),
-            root_verity_roothash: None,
-            expected_pcr11: None,
-            initrd_pcr11: None,
-            recovery: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
         };
         ImageGenerationState {
+            schema: "aos.image-generation-state/v1".into(),
             running,
-            default: 1,
             pending: Some(2),
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: crate::types::BootProviderState {
+                schema: "aos.test.boot-state/v1".into(),
+                evidence: serde_json::json!({}),
+            },
             active_rollout: Some(ImageRollout {
                 schema: "aos.image-rollout/v1".to_string(),
                 candidate: 2,
@@ -352,7 +343,7 @@ mod tests {
                 status,
             }),
             last_rollout: None,
-            generations: vec![generation(1, ImageSlot::A), generation(2, ImageSlot::B)],
+            generations: vec![generation(1), generation(2)],
         }
     }
 }

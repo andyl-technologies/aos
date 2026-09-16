@@ -143,17 +143,15 @@
       executor = "/nix/store/00000000000000000000000000000000-candidate-executor";
       state-format = "aos.test/v1";
       toplevel = "/nix/store/00000000000000000000000000000000-candidate";
-      uki = "/nix/store/00000000000000000000000000000000-candidate-uki";
+      boot-artifact-contract = "/nix/store/00000000000000000000000000000000-candidate-boot-contract";
     };
     predecessor = {
       executor = "/nix/store/11111111111111111111111111111111-predecessor-executor";
       state-format = "aos.test/v1";
       toplevel = "/nix/store/11111111111111111111111111111111-predecessor";
-      uki = "/nix/store/11111111111111111111111111111111-predecessor-uki";
+      boot-artifact-contract = "/nix/store/11111111111111111111111111111111-predecessor-boot-contract";
     };
-    concurrency = 1;
     retention-expires-at-millis = 1000000;
-    strategy = "single-host-ab-v1";
   };
   rolloutProvision = rolloutImplementation.provide {
     requests.${rolloutRequestName} = {

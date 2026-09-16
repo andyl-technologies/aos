@@ -160,7 +160,6 @@ struct ImageIdentity {
     toplevel: String,
     module_abi: u32,
     base_lib_abi_hash: String,
-    root_verity_roothash: Option<String>,
 }
 
 impl ImageIdentity {
@@ -169,7 +168,6 @@ impl ImageIdentity {
             toplevel: generation.toplevel.clone(),
             module_abi: generation.module_abi,
             base_lib_abi_hash: generation.base_lib_abi_hash.clone(),
-            root_verity_roothash: generation.root_verity_roothash.clone(),
         }
     }
 }
@@ -192,15 +190,10 @@ fn authenticate_immutable_image_beneath(root: &Path) -> Result<ImageIdentity> {
         .parse::<u32>()
         .context("immutable image has an invalid module ABI")?;
     let base_lib_abi_hash = read_identity_field(&physical_toplevel, "base-lib-abi-hash")?;
-    let cmdline = fs::read_to_string("/proc/cmdline").context("reading normal boot identity")?;
-    let boot_identity =
-        aos_boot_identity::parse_normal(&cmdline).context("authenticating normal boot identity")?;
-
     Ok(ImageIdentity {
         toplevel: logical_toplevel_text.to_string(),
         module_abi,
         base_lib_abi_hash,
-        root_verity_roothash: Some(boot_identity.root_hash),
     })
 }
 

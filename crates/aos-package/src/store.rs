@@ -390,9 +390,9 @@ pub fn create_config_gc_roots(
 /// retained by the active configuration generations.
 ///
 /// Pins **only** the base-lib + evaluator closure of one image-generation —
-/// not the kernel/initrd/whole UKI — keyed by the image's `module_abi`. This is
+/// not the boot artifact — keyed by the image's `module_abi`. This is
 /// the per-image-gen retention root that keeps ≥1 prior base lib alive on
-/// `/var` independent of the ESP ×2 UKI slot count, so cross-pruned-image
+/// `/var` independent of the provider artifact count, so cross-pruned-image
 /// rollback re-eval is always satisfiable without re-download.
 ///
 /// `image_gen_dir` is the `image-gen-N/` directory; `evaluator_ref` is the
@@ -454,19 +454,9 @@ fn retained_baselib_image_generations(
 ) -> std::collections::BTreeSet<u32> {
     let mut keep = std::collections::BTreeSet::new();
     keep.insert(images.running);
-    keep.insert(images.default);
     keep.extend(images.pending);
-
-    for slot in [crate::types::ImageSlot::A, crate::types::ImageSlot::B] {
-        if let Some(number) = images
-            .generations
-            .iter()
-            .filter(|image| image.slot == slot)
-            .map(|image| image.number)
-            .max()
-        {
-            keep.insert(number);
-        }
+    if let Some(rollout) = images.active_rollout.as_ref() {
+        keep.extend([rollout.prior, rollout.candidate]);
     }
 
     // Retained configuration inputs name the exact image/base library they
@@ -514,7 +504,7 @@ fn retained_baselib_image_generations(
 
 /// Reconciles production image-scoped roots with the retention floor.
 ///
-/// Roots are retained for the exact A/B-resident generations, exact retained
+/// Roots are retained for the exact provider-retained generations, exact retained
 /// configuration parents, and one prior-distinct-ABI recovery generation.
 /// Each retained generation pins its evaluator, toplevel, and exact native
 /// executor; every obsolete image-scoped root is removed. The operation never
@@ -1243,16 +1233,18 @@ mod tests {
         );
     }
 
-    fn image_generation(
-        number: u32,
-        slot: crate::types::ImageSlot,
-        module_abi: u32,
-    ) -> crate::types::ImageGeneration {
+    fn test_boot_provider_state() -> crate::types::BootProviderState {
+        crate::types::BootProviderState {
+            schema: "aos.test.boot-generation-state/v1".to_string(),
+            evidence: serde_json::json!({}),
+        }
+    }
+
+    fn image_generation(number: u32, module_abi: u32) -> crate::types::ImageGeneration {
         crate::types::ImageGeneration {
             number,
-            slot,
-            uki_path: format!("EFI/Linux/aos-{number}.efi"),
-            uki_source_path: None,
+            boot_artifact_contract: format!("/nix/store/{number:032}-boot-contract"),
+            boot_provider_state: test_boot_provider_state(),
             toplevel: format!("/nix/store/top-{number}"),
             package_name: "aos-system".to_string(),
             version: number.to_string(),
@@ -1263,30 +1255,25 @@ mod tests {
             evaluator_ref: format!("/nix/store/base-lib-{number}"),
             module_abi,
             base_lib_abi_hash: format!("sha256:{number:064x}"),
-            root_verity_roothash: None,
-            expected_pcr11: None,
-            initrd_pcr11: None,
-            recovery: None,
             created_at: "2026-08-04T00:00:00Z".to_string(),
         }
     }
 
     #[test]
     fn baselib_retention_drops_historical_images_sharing_a_retained_abi() {
-        use crate::types::{ConfigGenerationState, ImageGenerationState, ImageSlot};
+        use crate::types::{ConfigGenerationState, ImageGenerationState};
 
         let images = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".to_string(),
             running: 3,
-            default: 3,
             pending: None,
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: test_boot_provider_state(),
             active_rollout: None,
             last_rollout: None,
             generations: vec![
-                image_generation(1, ImageSlot::A, 7),
-                image_generation(2, ImageSlot::B, 7),
-                image_generation(3, ImageSlot::A, 7),
+                image_generation(1, 7),
+                image_generation(2, 7),
+                image_generation(3, 7),
             ],
         };
         let configs = ConfigGenerationState {
@@ -1305,14 +1292,14 @@ mod tests {
 
     #[test]
     fn baselib_reconciliation_removes_only_the_obsolete_same_abi_root() {
-        use crate::types::{ConfigGenerationState, ImageGenerationState, ImageSlot};
+        use crate::types::{ConfigGenerationState, ImageGenerationState};
 
         let temp = TempDir::new().unwrap();
         let image_profile = temp.path().join("image");
         let mut generations = vec![
-            image_generation(1, ImageSlot::A, 7),
-            image_generation(2, ImageSlot::B, 7),
-            image_generation(3, ImageSlot::A, 7),
+            image_generation(1, 7),
+            image_generation(2, 7),
+            image_generation(3, 7),
         ];
         for image in &mut generations {
             let evaluator = temp.path().join(format!("base-lib-{}", image.number));
@@ -1331,11 +1318,10 @@ mod tests {
             .unwrap();
         }
         let images = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".to_string(),
             running: 3,
-            default: 3,
             pending: None,
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: test_boot_provider_state(),
             active_rollout: None,
             last_rollout: None,
             generations,
@@ -1384,21 +1370,20 @@ mod tests {
 
     #[test]
     fn baselib_retention_floor_keeps_one_exact_prior_abi_image() {
-        use crate::types::{ConfigGenerationState, ImageGenerationState, ImageSlot};
+        use crate::types::{ConfigGenerationState, ImageGenerationState};
 
         let images = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".to_string(),
             running: 4,
-            default: 4,
             pending: None,
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: test_boot_provider_state(),
             active_rollout: None,
             last_rollout: None,
             generations: vec![
-                image_generation(1, ImageSlot::A, 1),
-                image_generation(2, ImageSlot::A, 2),
-                image_generation(3, ImageSlot::A, 2),
-                image_generation(4, ImageSlot::A, 3),
+                image_generation(1, 1),
+                image_generation(2, 2),
+                image_generation(3, 2),
+                image_generation(4, 3),
             ],
         };
         let configs = ConfigGenerationState {
@@ -1413,23 +1398,20 @@ mod tests {
 
     #[test]
     fn baselib_retention_keeps_newest_prior_abi_even_when_an_older_abi_is_a_config_parent() {
-        use crate::types::{
-            ConfigGeneration, ConfigGenerationState, ImageGenerationState, ImageSlot,
-        };
+        use crate::types::{ConfigGeneration, ConfigGenerationState, ImageGenerationState};
 
         let images = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".to_string(),
             running: 4,
-            default: 4,
             pending: None,
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: test_boot_provider_state(),
             active_rollout: None,
             last_rollout: None,
             generations: vec![
-                image_generation(1, ImageSlot::A, 1),
-                image_generation(2, ImageSlot::A, 2),
-                image_generation(3, ImageSlot::B, 2),
-                image_generation(4, ImageSlot::A, 3),
+                image_generation(1, 1),
+                image_generation(2, 2),
+                image_generation(3, 2),
+                image_generation(4, 3),
             ],
         };
         let configs = ConfigGenerationState {

@@ -63,7 +63,6 @@ mod provenance;
 mod publish;
 mod query;
 mod release;
-mod sb_certs;
 mod signing;
 mod store_commands;
 mod store_paths;
@@ -71,7 +70,6 @@ mod tags;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod trust;
-mod uki;
 mod workflow;
 
 pub use cache_validation::validate;
@@ -95,9 +93,13 @@ pub use release::{
     ContainerReleaseAttachment, ReleaseReport, ReleaseStorePublish, ReleaseTreeOptions,
     load_container_release_attachment, release, release_registry_tree,
 };
-pub use sb_certs::run_sb_certs;
 pub use store_commands::run_store;
 pub use tags::{sign, tag};
 pub use trust::{run_keys, run_trust};
-pub(crate) use uki::{extract_expected_pcr11, pe_section, verify_detached_db_signature};
+
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    hex::encode(Sha256::digest(bytes))
+}
 pub use workflow::{commit_changes, diff, log, merge, pull, push, run_branch, run_change, status};

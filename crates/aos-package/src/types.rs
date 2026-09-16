@@ -23,7 +23,7 @@
 //! These types are the crate's stable data contracts: changing a field name
 //! or default changes what is written to (or accepted from) disk.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -38,14 +38,8 @@ pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
 /// Registry feature flag for canonical RFC-0016 package documentation.
 pub const FEATURE_PACKAGE_DOCUMENTATION_V1: &str = "package-documentation-v1";
 
-/// Registry feature flag for slot-specific A/B UKI measurement metadata.
-pub const FEATURE_UKI_SLOTS_V1: &str = "uki-slots-v1";
-
-/// Registry feature flag for signed, slot-paired recovery UKI metadata.
-pub const FEATURE_RECOVERY_UKIS_V1: &str = "recovery-ukis-v1";
-
-/// Registry feature flag for native-executor-qualified image rollouts.
-pub const FEATURE_NATIVE_IMAGE_ROLLOUT_V1: &str = "native-image-rollout-v1";
+/// Registry feature flag for opaque provider-owned image artifact contracts.
+pub const FEATURE_IMAGE_ARTIFACT_CONTRACT_V1: &str = "image-artifact-contract-v1";
 
 /// Registry feature flag for an authenticated RFC-0022 ability manifest.
 pub const FEATURE_ABILITIES_V1: &str = "abilities-v1";
@@ -59,9 +53,7 @@ pub const PACKAGE_CONTRACT_OUTPUT: &str = "contract";
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_ATTESTATION_V1,
     FEATURE_PACKAGE_DOCUMENTATION_V1,
-    FEATURE_UKI_SLOTS_V1,
-    FEATURE_RECOVERY_UKIS_V1,
-    FEATURE_NATIVE_IMAGE_ROLLOUT_V1,
+    FEATURE_IMAGE_ARTIFACT_CONTRACT_V1,
     FEATURE_ABILITIES_V1,
     FEATURE_ABILITY_EFFECTS_V1,
 ];
@@ -591,18 +583,11 @@ pub fn validate_supported_package_meta_with(
         crate::package_contract::validate_package_contract_meta(ability)
             .with_context(|| format!("invalid package contract metadata for '{}'", meta.name))?;
     }
-    if meta.images.iter().any(|image| !image.ukis.is_empty()) {
-        require_feature(meta, FEATURE_UKI_SLOTS_V1)?;
-    }
-    if meta
-        .images
-        .iter()
-        .any(|image| !image.recovery_ukis.is_empty())
-    {
-        require_feature(meta, FEATURE_RECOVERY_UKIS_V1)?;
+    if !meta.images.is_empty() {
+        require_feature(meta, FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)?;
     }
     for image in &meta.images {
-        validate_image_entry(image)
+        validate_image_entry(image, &meta.version, &meta.platform)
             .with_context(|| format!("invalid sysroot image metadata for '{}'", meta.name))?;
     }
     if package_requires_provenance(meta) && meta.attestation.provenance.is_none() {
@@ -854,7 +839,7 @@ pub(crate) fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
     bail!("credential ciphertext contains unsupported characters")
 }
 
-fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
+fn validate_image_entry(image: &SysrootImageEntry, release: &str, platform: &str) -> Result<()> {
     if image.format.is_empty()
         || !image
             .format
@@ -867,299 +852,7 @@ fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
     if !(image.nar_hash.starts_with("sha256:") || image.nar_hash.starts_with("sha256-")) {
         bail!("image '{}' has invalid NAR hash", image.store_path);
     }
-    validate_image_verity_entry(image)?;
-    validate_image_uki_entries(image)?;
-    validate_recovery_uki_entries(image)?;
-    validate_recovery_bundle(image)?;
-    Ok(())
-}
-
-fn validate_recovery_bundle(image: &SysrootImageEntry) -> Result<()> {
-    let Some(bundle) = &image.recovery_bundle else {
-        if !image.recovery_ukis.is_empty() {
-            bail!(
-                "image '{}' recovery UKIs require a bundle manifest",
-                image.store_path
-            );
-        }
-        return Ok(());
-    };
-    if image.recovery_ukis.len() != 2
-        || bundle.schema != "aos.recovery-bundle/v1"
-        || bundle.release != image.delivery.release
-        || bundle.architecture != image.delivery.architecture
-        || bundle.platform != image.delivery.platform
-        || bundle.module_abi == 0
-        || bundle.recovery_abi == 0
-        || image
-            .recovery_ukis
-            .iter()
-            .any(|entry| entry.recovery_abi != bundle.recovery_abi)
-    {
-        bail!(
-            "image '{}' has an inconsistent recovery bundle identity",
-            image.store_path
-        );
-    }
-    let expected = [
-        (RecoveryBundleComponentId::RootImage, "root.img"),
-        (RecoveryBundleComponentId::RootVerity, "root.verity"),
-        (RecoveryBundleComponentId::RootHash, "root.roothash"),
-        (RecoveryBundleComponentId::NormalUkiA, "uki-a.efi"),
-        (RecoveryBundleComponentId::NormalUkiB, "uki-b.efi"),
-        (RecoveryBundleComponentId::RecoveryUkiA, "recovery-a.efi"),
-        (RecoveryBundleComponentId::RecoveryUkiB, "recovery-b.efi"),
-        (RecoveryBundleComponentId::RecoveryEntryA, "recovery-a.conf"),
-        (RecoveryBundleComponentId::RecoveryEntryB, "recovery-b.conf"),
-        (RecoveryBundleComponentId::ImageMetadata, "image-info.json"),
-    ];
-    if bundle.components.len() != expected.len() {
-        bail!(
-            "image '{}' recovery bundle has an incomplete component set",
-            image.store_path
-        );
-    }
-    let mut ids = std::collections::BTreeSet::new();
-    for component in &bundle.components {
-        if !ids.insert(component.id)
-            || component.byte_size == 0
-            || !is_lower_sha256(&component.sha256)
-        {
-            bail!(
-                "image '{}' has malformed recovery bundle components",
-                image.store_path
-            );
-        }
-        let expected_path = expected
-            .iter()
-            .find_map(|(id, path)| (*id == component.id).then_some(*path))
-            .context("recovery bundle contains an unknown component identifier")?;
-        if component.path != expected_path {
-            bail!(
-                "image '{}' recovery bundle uses a noncanonical component path",
-                image.store_path
-            );
-        }
-    }
-    Ok(())
-}
-
-fn validate_recovery_uki_entries(image: &SysrootImageEntry) -> Result<()> {
-    if image.recovery_ukis.is_empty() {
-        return Ok(());
-    }
-    if image.ukis.len() != 2 || image.root_verity.is_none() || image.root_hash.is_none() {
-        bail!(
-            "image '{}' recovery UKIs require a complete A/B verity image",
-            image.store_path
-        );
-    }
-    let mut copies = std::collections::BTreeSet::new();
-    let mut abi = None;
-    let mut release = None;
-    for recovery in &image.recovery_ukis {
-        if !copies.insert(recovery.copy) {
-            bail!(
-                "image '{}' repeats recovery copy {:?}",
-                image.store_path,
-                recovery.copy
-            );
-        }
-        let (uki_path, entry_path) = match recovery.copy {
-            UkiSlot::A => ("recovery-a.efi", "recovery-a.conf"),
-            UkiSlot::B => ("recovery-b.efi", "recovery-b.conf"),
-        };
-        if recovery.path != uki_path || recovery.entry_path != entry_path {
-            bail!(
-                "image '{}' has noncanonical recovery paths",
-                image.store_path
-            );
-        }
-        if recovery.byte_size == 0
-            || recovery.recovery_abi == 0
-            || recovery.release.is_empty()
-            || recovery.sbat.is_empty()
-            || !is_lower_sha256(&recovery.sha256)
-            || !is_lower_sha256(&recovery.sb_signer_cert_sha256)
-        {
-            bail!(
-                "image '{}' has malformed recovery metadata",
-                image.store_path
-            );
-        }
-        if abi
-            .replace(recovery.recovery_abi)
-            .is_some_and(|old| old != recovery.recovery_abi)
-            || release
-                .replace(recovery.release.as_str())
-                .is_some_and(|old| old != recovery.release)
-        {
-            bail!(
-                "image '{}' mixes recovery release identities",
-                image.store_path
-            );
-        }
-    }
-    if copies.len() != 2 || !copies.contains(&UkiSlot::A) || !copies.contains(&UkiSlot::B) {
-        bail!(
-            "image '{}' recovery metadata must contain exactly copies a and b",
-            image.store_path
-        );
-    }
-    Ok(())
-}
-
-fn is_lower_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn validate_image_uki_entries(image: &SysrootImageEntry) -> Result<()> {
-    if image.ukis.is_empty() {
-        return Ok(());
-    }
-    if image.delivery.is_store_backed() && image.delivery.update_payload.is_none() {
-        bail!(
-            "image '{}' slot-specific UKIs require an authenticated update payload",
-            image.store_path
-        );
-    }
-    let mut slots = std::collections::BTreeSet::new();
-    let mut measurements = std::collections::BTreeSet::new();
-    let mut signed_count = 0usize;
-    for uki in &image.ukis {
-        if !slots.insert(uki.slot) {
-            bail!(
-                "image '{}' repeats UKI slot {:?}",
-                image.store_path,
-                uki.slot
-            );
-        }
-        validate_relative_artifact_path("slot UKI", &uki.path, ".efi")?;
-        if uki.sb_signer_cert_sha256.is_some() != uki.expected_pcr11.is_some() {
-            bail!(
-                "image '{}' slot {:?} must record signer and PCR-11 together",
-                image.store_path,
-                uki.slot
-            );
-        }
-        if let Some(cert) = &uki.sb_signer_cert_sha256 {
-            signed_count += 1;
-            if cert.len() != 64
-                || !cert
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                bail!(
-                    "image '{}' slot {:?} has invalid signer certificate digest",
-                    image.store_path,
-                    uki.slot
-                );
-            }
-            if uki.sbat.is_empty() {
-                bail!(
-                    "image '{}' slot {:?} has a signer but no SBAT facts",
-                    image.store_path,
-                    uki.slot
-                );
-            }
-        }
-        if let Some(pcr11) = &uki.expected_pcr11 {
-            if pcr11.len() != 64
-                || !pcr11
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                bail!(
-                    "image '{}' slot {:?} has invalid expected PCR-11",
-                    image.store_path,
-                    uki.slot
-                );
-            }
-            measurements.insert(pcr11.as_str());
-        }
-    }
-    if slots.len() != 2 || !slots.contains(&UkiSlot::A) || !slots.contains(&UkiSlot::B) {
-        bail!(
-            "image '{}' slot-specific UKI metadata must contain exactly slots a and b",
-            image.store_path
-        );
-    }
-    if signed_count != 0 && signed_count != 2 {
-        bail!(
-            "image '{}' mixes signed and unsigned slot UKIs",
-            image.store_path
-        );
-    }
-    if measurements.len() == 1 {
-        bail!(
-            "image '{}' records the same PCR-11 for both slots despite distinct measured command lines",
-            image.store_path
-        );
-    }
-    Ok(())
-}
-
-fn validate_image_verity_entry(image: &SysrootImageEntry) -> Result<()> {
-    let verity_field_count = [
-        image.root_image.as_ref(),
-        image.root_verity.as_ref(),
-        image.root_hash.as_ref(),
-        image.root_hash_sig.as_ref(),
-    ]
-    .iter()
-    .filter(|field| field.is_some())
-    .count();
-    let verity_format = matches!(image.format.as_str(), "ext4-verity" | "erofs-verity");
-    // A production A/B disk is distributed as one raw GPT container while
-    // its authenticated update payload carries the root image and verity
-    // sidecars. Recovery metadata distinguishes that contract from an
-    // ordinary raw disk that must not claim standalone verity artifacts.
-    let raw_recovery_image = image.format == "raw" && !image.recovery_ukis.is_empty();
-    let supports_verity = verity_format || raw_recovery_image;
-
-    if verity_field_count == 0 && !supports_verity {
-        return Ok(());
-    }
-
-    if !supports_verity {
-        bail!(
-            "image '{}' declares dm-verity fields but format '{}' is not a verity root format",
-            image.store_path,
-            image.format
-        );
-    }
-    if verity_field_count != 4 {
-        bail!(
-            "image '{}' must declare root_image, root_verity, root_hash, and root_hash_sig together",
-            image.store_path
-        );
-    }
-
-    let root_image = image
-        .root_image
-        .as_ref()
-        .context("verity root_image missing after field-count validation")?;
-    let root_verity = image
-        .root_verity
-        .as_ref()
-        .context("verity root_verity missing after field-count validation")?;
-    let root_hash = image
-        .root_hash
-        .as_ref()
-        .context("verity root_hash missing after field-count validation")?;
-    let root_hash_sig = image
-        .root_hash_sig
-        .as_ref()
-        .context("verity root_hash_sig missing after field-count validation")?;
-
-    validate_relative_artifact_member_path("verity root_image", root_image)?;
-    validate_relative_artifact_path("verity root_verity", root_verity, ".verity")?;
-    validate_sha256_digest("verity root_hash", root_hash)?;
-    validate_relative_artifact_path("verity root_hash_sig", root_hash_sig, ".p7s")?;
-
+    image.delivery.validate(&image.format, release, platform)?;
     Ok(())
 }
 
@@ -1930,26 +1623,6 @@ impl ProfileScope {
             ],
         }
     }
-
-    /// Directories searched for provisioned Secure Boot db certificates, in
-    /// precedence order.
-    ///
-    /// Mirrors [`ProfileScope::trusted_keys_dirs`]: a deployment bakes
-    /// `trusted-sb-certs.d/<registry>.pem` alongside `trusted-keys.d`, giving
-    /// `apm` the db cert to re-verify cataloged UKIs against at download time
-    /// (RFC-0006 phase 4 trust-bootstrap symmetry).
-    pub fn trusted_sb_certs_dirs(&self) -> Vec<PathBuf> {
-        match self {
-            ProfileScope::User => vec![
-                xdg_config_home().join("apm/trusted-sb-certs.d"),
-                apm_system_config_dir().join("trusted-sb-certs.d"),
-            ],
-            ProfileScope::System => vec![
-                apm_system_config_dir().join("trusted-sb-certs.d"),
-                apm_state_dir().join("trusted-sb-certs.d"),
-            ],
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2045,91 +1718,12 @@ pub use aos_registry_surface::manifest::{
 // Sysroot image entry — a pre-compiled image attached to a sysroot package
 // ---------------------------------------------------------------------------
 
-// `SbatEntry` (the UKI `.sbat` component/generation record) moved to the
-// wasm-clean `aos-registry-surface` crate alongside the manifest `ImageEntry`
-// that carries it (RFC-0004 Phase 5 / RFC-0006), so the parse path and the
-// runtime `SysrootImageEntry` share one type. Re-exported here so
-// `aos_package::types::SbatEntry` is unchanged.
-// `SysrootImageEntry` (the pre-compiled image format entry within a sysroot
-// package version) also moved to the wasm-clean `aos-registry-surface` crate
-// (RFC-0004 Phase 5) so the parse path and runtime image entry share one type.
-// Re-exported here so
-// `aos_package::types::SysrootImageEntry` is unchanged.
+// `SysrootImageEntry` and its provider-neutral artifact locator live in the
+// wasm-clean registry surface so native and indexed consumers share one schema.
 pub use aos_registry_surface::manifest::{
-    ImageCompression, ImageDelivery, ImageInfoReference, ImageStoreReference, ImageTarget,
-    ImageUkiIdentity, ImageVerificationState, RecoveryBundleComponent, RecoveryBundleComponentId,
-    RecoveryBundleManifest, RecoveryUkiEntry, SbatEntry, SysrootImageEntry, SysrootUkiEntry,
-    UkiSlot,
+    ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
+    ImageDelivery, ImageStoreReference, ImageTarget, SysrootImageEntry,
 };
-
-#[cfg(test)]
-pub(crate) fn test_image_delivery(format: &str) -> ImageDelivery {
-    let image_sha256 = "0".repeat(64);
-    let info_sha256 = "1".repeat(64);
-    let (extension, media_type, compatible_targets) = match format {
-        "qcow2" => (
-            "qcow2",
-            "application/vnd.aos.disk-image.qcow2",
-            vec![ImageTarget::QemuKvm, ImageTarget::Openstack],
-        ),
-        "vmdk" => ("vmdk", "application/x-vmdk", vec![ImageTarget::Vmware]),
-        "vhd" => (
-            "vhd",
-            "application/vnd.aos.disk-image.vhd",
-            vec![ImageTarget::HyperV],
-        ),
-        _ => (
-            "img.zst",
-            "application/vnd.aos.disk-image.raw+zstd",
-            vec![ImageTarget::BareMetal],
-        ),
-    };
-    let filename = format!("aos-test.{extension}");
-    ImageDelivery {
-        schema_version: 1,
-        release: "1.0.0".into(),
-        platform: "x86_64-linux".into(),
-        architecture: "x86_64".into(),
-        logical_image_id: image_sha256.clone(),
-        logical_disk_sha256: image_sha256.clone(),
-        rootfs_sha256: "2".repeat(64),
-        object_key: format!("images/sha256/{image_sha256}/{filename}"),
-        filename,
-        media_type: media_type.into(),
-        compression: if format == "raw" {
-            ImageCompression::Zstd
-        } else {
-            ImageCompression::None
-        },
-        byte_size: 1,
-        sha256: image_sha256.clone(),
-        compatible_targets,
-        uki: ImageUkiIdentity {
-            filename: "aos-test.efi".into(),
-            esp_path: "EFI/Linux/aos-test.efi".into(),
-            byte_size: 1,
-            sha256: "3".repeat(64),
-            verification: ImageVerificationState::Unsigned,
-            signer_cert_sha256: None,
-            sbat: Vec::new(),
-            measured: false,
-            expected_pcr11: None,
-        },
-        image_info: ImageInfoReference {
-            filename: "image-info.json".into(),
-            object_key: format!(
-                "images/sha256/{image_sha256}/metadata/{info_sha256}/image-info.json"
-            ),
-            store_path: String::new(),
-            nar_hash: String::new(),
-            nar_size: 0,
-            media_type: "application/vnd.aos.image-info+json".into(),
-            byte_size: 1,
-            sha256: info_sha256,
-        },
-        update_payload: None,
-    }
-}
 
 /// The action required to re-activate a config-generation under a (possibly
 /// changed) running image's `module_abi`.
@@ -2208,74 +1802,26 @@ pub struct CrossAbiReEvalInputs {
 // The generation model has two independent persisted axes: image substrate
 // and derived configuration.
 
-/// A/B slot discriminant for an image generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImageSlot {
-    /// The `A` partition slot.
-    A,
-    /// The `B` partition slot.
-    B,
-}
-
-/// Persisted evidence for one signed, uncounted recovery copy on the ESP.
+/// Opaque retained state emitted and interpreted by the selected boot provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecoveryGeneration {
-    /// A/B slot whose update transaction owns this recovery copy.
-    pub copy: ImageSlot,
-    /// Fixed ESP-relative recovery UKI path.
-    pub uki_path: String,
-    /// Fixed ESP-relative Type-1 loader-entry path.
-    pub entry_path: String,
-    /// Relative source-artifact path authenticated by the release catalog.
-    pub source_path: String,
-    /// Lowercase hexadecimal SHA-256 of the installed recovery UKI.
-    pub sha256: String,
-    /// Exact installed recovery UKI size in bytes.
-    pub byte_size: u64,
-    /// Signed release identity carried by the recovery UKI.
-    pub release: String,
-    /// Recovery interface and artifact compatibility ABI.
-    pub recovery_abi: u32,
+pub struct BootProviderState {
+    /// Provider-owned schema identifier for the opaque evidence value.
+    pub schema: String,
+    /// Provider-owned retained state or checked observation evidence.
+    pub evidence: serde_json::Value,
 }
 
-/// Durable evidence that an inactive recovery-copy publication is unfinished.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecoveryPublication {
-    /// Inactive slot being replaced by the image transaction.
-    pub target: ImageSlot,
-    /// Fully authenticated recovery artifact intended for that slot.
-    pub artifact: RecoveryGeneration,
-}
-
-/// One measured, signed image-generation: kernel + initrd + base lib +
-/// evaluator + render-core, delivered as an A/B UKI and tracked in the TPM
-/// PCR-11 policy recorded for an image generation.
-///
-/// It is **not** the authority of record — the ESP UKI set + the running
-/// image's `/etc/os-release` are. The `/var` record is a userspace *index*
-/// over what is installed in the ESP slots, used by APM to reason about A/B
-/// state and retention. Persisted in `/var/lib/profiles/image/state.json`.
+/// One authenticated image-generation independent of its boot implementation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageGeneration {
     /// Image-generation number (names the `image-gen-N/` directory).
     pub number: u32,
-    /// A/B slot this UKI occupies.
-    pub slot: ImageSlot,
-    /// ESP-relative installed path of this generation's UKI, e.g.
-    /// `EFI/Linux/aos-generation-0000000002+3.efi` (the `+N` is the sd-boot
-    /// boot-counting tries-suffix; see build-spec §5.2).
-    pub uki_path: String,
-    /// Canonical UKI path authenticated by the immutable toplevel metadata.
-    ///
-    /// Runtime staging assigns [`Self::uki_path`] from the local monotonic
-    /// image generation so boot ordering does not depend on a human package
-    /// version. This field retains the signed source identity and is omitted
-    /// when the installed and canonical paths are identical.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uki_source_path: Option<String>,
+    /// Immutable locator for the selected provider's boot-artifact contract.
+    pub boot_artifact_contract: String,
+    /// Opaque generation state retained by the selected boot provider.
+    pub boot_provider_state: BootProviderState,
     /// Store path of the sysroot toplevel this image was built from.
     pub toplevel: String,
     /// Sysroot package name used for provenance.
@@ -2288,7 +1834,7 @@ pub struct ImageGeneration {
     pub native_executor_ref: String,
     /// Source registry the sysroot package was installed from.
     pub registry: String,
-    /// Resolved kernel store path (kernel-change detection across A/B).
+    /// Resolved kernel store path (kernel-change detection across generations).
     #[serde(default)]
     pub kernel_path: Option<String>,
     /// Store path of the base-lib + evaluator closure carried *inside* this
@@ -2299,33 +1845,12 @@ pub struct ImageGeneration {
     /// Mirrors `AOS_MODULE_ABI` in this image's `/etc/os-release`.
     pub module_abi: u32,
     /// Canonical hash of the base-lib module ABI and option schema.
-    ///
-    /// This mirrors `AOS_BASELIB_ABI_HASH` in `/etc/os-release` and is measured
-    /// into PCR-11 through the `.osrel` section. Byte integrity remains bound by
-    /// [`Self::root_verity_roothash`].
     pub base_lib_abi_hash: String,
-    /// dm-verity Merkle root over the erofs root that carries the base lib
-    /// (F1), baked into the UKI `.cmdline` as `roothash=<hex>`. `None` for
-    /// unsigned/VM (ext4) images.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_verity_roothash: Option<String>,
-    /// ukify-predicted PCR-11 for this UKI (RFC-0006 phase 4). `None` when
-    /// `systemd-measure` was unavailable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_pcr11: Option<String>,
-    /// PCR-11 observed in initrd for immutable-image identity reconciliation.
-    /// This is deliberately separate from the published stable `ready` value
-    /// in [`Self::expected_pcr11`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initrd_pcr11: Option<String>,
-    /// Signed recovery copy atomically published with this normal generation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<RecoveryGeneration>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
 }
 
-/// Describes the durable phase or terminal result of a qualified A/B rollout.
+/// Describes the durable phase or terminal result of a qualified image rollout.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageRolloutStatus {
@@ -2339,7 +1864,7 @@ pub enum ImageRolloutStatus {
     HealthFailed,
 }
 
-/// Records one state-compatible, drained A/B image rollout.
+/// Records one state-compatible, drained image rollout.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageRollout {
@@ -2370,24 +1895,18 @@ impl ImageGeneration {
 /// Persistent state for the image-generation axis
 /// stored at `/var/lib/profiles/image/state.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageGenerationState {
+    /// Provider-neutral state schema written by this release.
+    pub schema: String,
     /// The image-gen the live kernel booted (cross-checked against
     /// `/etc/os-release`, never trusted from the network).
     pub running: u32,
-    /// The slot `bootctl set-default` currently points at — the *durable*
-    /// next-boot selection (build-spec §5.2). Distinct from `running` during a
-    /// staged-but-not-yet-rebooted upgrade or a pending rollback.
-    pub default: u32,
-    /// A staged image-gen whose UKI is in the ESP but has not been booted yet;
-    /// cleared on its first successful boot.
+    /// A staged image-generation that has not yet been observed running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<u32>,
-    /// Slot whose paired recovery copy was last accepted by normal boot commit.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery_known_good: Option<ImageSlot>,
-    /// Recoverable evidence for an incomplete inactive recovery publication.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery_pending: Option<RecoveryPublication>,
+    /// Opaque selected-provider state for selection, recovery, and boot evidence.
+    pub boot_provider_state: BootProviderState,
     /// Qualified rollout currently crossing the reboot boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_rollout: Option<ImageRollout>,
@@ -2404,6 +1923,80 @@ impl ImageGenerationState {
     pub fn running_generation(&self) -> Option<&ImageGeneration> {
         self.generations.iter().find(|g| g.number == self.running)
     }
+
+    /// Validates the provider-neutral identity envelope and generation graph.
+    ///
+    /// Provider-owned evidence remains opaque here. The selected provider
+    /// validates that evidence against its declared schema before acting on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported state schema, malformed contract or
+    /// provider-schema identities, non-object provider evidence, duplicate
+    /// generations, or state references to absent generations.
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.schema != "aos.image-generation-state/v1" {
+            bail!("unsupported image generation state schema {}", self.schema);
+        }
+        validate_boot_provider_state(&self.boot_provider_state)?;
+
+        let mut generation_numbers = BTreeSet::new();
+        for generation in &self.generations {
+            if !generation_numbers.insert(generation.number) {
+                bail!("duplicate image generation {}", generation.number);
+            }
+            crate::config_eval::materialize::validate_canonical_store_path(
+                &generation.boot_artifact_contract,
+            )
+            .with_context(|| {
+                format!(
+                    "validating image generation {} boot-artifact contract",
+                    generation.number
+                )
+            })?;
+            validate_boot_provider_state(&generation.boot_provider_state)?;
+        }
+
+        if self.generations.is_empty() {
+            if self.running != 0 || self.pending.is_some() {
+                bail!(
+                    "empty image state must use running generation zero and no pending generation"
+                );
+            }
+            return Ok(());
+        }
+        if !generation_numbers.contains(&self.running) {
+            bail!("running image generation {} is absent", self.running);
+        }
+        if let Some(pending) = self.pending
+            && !generation_numbers.contains(&pending)
+        {
+            bail!("pending image generation {pending} is absent");
+        }
+        for rollout in self.active_rollout.iter().chain(&self.last_rollout) {
+            if !generation_numbers.contains(&rollout.candidate)
+                || !generation_numbers.contains(&rollout.prior)
+            {
+                bail!("image rollout references an absent generation");
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_boot_provider_state(state: &BootProviderState) -> Result<()> {
+    let schema = state.schema.as_bytes();
+    if schema.is_empty()
+        || schema.len() > 200
+        || !schema.iter().all(|byte| byte.is_ascii_graphic())
+        || !state.schema.contains('/')
+    {
+        bail!("boot-provider state schema is not a bounded portable identifier");
+    }
+    if !state.evidence.is_object() {
+        bail!("boot-provider evidence must be a JSON object");
+    }
+    Ok(())
 }
 
 /// One config-generation: the materialized `/etc` overlay produced by
@@ -3339,103 +2932,6 @@ last_update = "2026-02-13T10:30:00Z"
             "{err:#}",
         );
     }
-    fn verity_image_entry() -> SysrootImageEntry {
-        SysrootImageEntry {
-            format: "ext4-verity".into(),
-            store_path: "/var/lib/store/verityimage-verity-app-root".into(),
-            nar_hash: "sha256:root".into(),
-            nar_size: 2048,
-            delivery: test_image_delivery("raw"),
-            sb_signer_cert_sha256: None,
-            sbat: Vec::new(),
-            expected_pcr11: None,
-            ukis: Vec::new(),
-            recovery_ukis: Vec::new(),
-            recovery_bundle: None,
-            root_image: Some("root.img".into()),
-            root_verity: Some("root.verity".into()),
-            root_hash: Some(
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            ),
-            root_hash_sig: Some("root.roothash.p7s".into()),
-        }
-    }
-
-    fn slot_uki(slot: UkiSlot, path: &str, pcr_byte: char) -> SysrootUkiEntry {
-        SysrootUkiEntry {
-            slot,
-            path: path.into(),
-            sb_signer_cert_sha256: Some("a".repeat(64)),
-            sbat: vec![SbatEntry {
-                component: "aos".into(),
-                generation: 1,
-            }],
-            expected_pcr11: Some(pcr_byte.to_string().repeat(64)),
-        }
-    }
-
-    #[test]
-    fn ab_uki_metadata_requires_both_distinct_slot_measurements() {
-        let mut image = verity_image_entry();
-        image.ukis = vec![
-            slot_uki(UkiSlot::A, "uki-a.efi", '1'),
-            slot_uki(UkiSlot::B, "uki-b.efi", '2'),
-        ];
-        validate_image_uki_entries(&image).unwrap();
-
-        image.ukis[1].expected_pcr11 = image.ukis[0].expected_pcr11.clone();
-        let error = validate_image_uki_entries(&image).unwrap_err();
-        assert!(error.to_string().contains("same PCR-11"));
-
-        image.ukis.pop();
-        let error = validate_image_uki_entries(&image).unwrap_err();
-        assert!(error.to_string().contains("exactly slots a and b"));
-    }
-
-    #[test]
-    fn store_backed_ab_metadata_requires_update_payload_identity() {
-        let mut image = verity_image_entry();
-        image.delivery.schema_version = 2;
-        image.ukis = vec![
-            slot_uki(UkiSlot::A, "uki-a.efi", '1'),
-            slot_uki(UkiSlot::B, "uki-b.efi", '2'),
-        ];
-
-        let error = validate_image_uki_entries(&image).unwrap_err();
-        assert!(error.to_string().contains("authenticated update payload"));
-
-        image.delivery.update_payload = Some(ImageStoreReference {
-            store_path: "/nix/store/11111111111111111111111111111111-update-payload".into(),
-            nar_hash: format!("sha256:{}", "1".repeat(52)),
-            nar_size: 4096,
-        });
-        validate_image_uki_entries(&image).unwrap();
-    }
-    #[test]
-    fn raw_recovery_image_accepts_complete_verity_metadata() {
-        let mut image = verity_image_entry();
-        image.format = "raw".into();
-        image.recovery_ukis.push(RecoveryUkiEntry {
-            copy: UkiSlot::A,
-            path: "recovery-a.efi".into(),
-            entry_path: "recovery-a.conf".into(),
-            byte_size: 1,
-            sha256: "b".repeat(64),
-            release: "test".into(),
-            recovery_abi: 1,
-            sb_signer_cert_sha256: "c".repeat(64),
-            sbat: vec![SbatEntry {
-                component: "aos".into(),
-                generation: 1,
-            }],
-        });
-
-        validate_image_verity_entry(&image).unwrap();
-
-        image.recovery_ukis.clear();
-        let error = validate_image_verity_entry(&image).unwrap_err();
-        assert!(error.to_string().contains("is not a verity root format"));
-    }
     // -----------------------------------------------------------------------
     // TrackingMode tests
     // -----------------------------------------------------------------------
@@ -3765,16 +3261,17 @@ pin = "v2026.02"
         assert_eq!(parsed.host_nix_ref, "/nix/store/hn-host.nix");
     }
 
-    /// The image-gen axis state round-trips, including the A/B slot, the durable
-    /// `default`/`pending` boot selection, and the verity/ABI fields.
+    /// The image-generation axis round-trips provider-neutral identity and opaque provider state.
     #[test]
     fn image_generation_state_round_trip() {
         let state = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".into(),
             running: 1,
-            default: 1,
             pending: Some(2),
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: BootProviderState {
+                schema: "aos.test.boot-state/v1".into(),
+                evidence: serde_json::json!({"selected": 2}),
+            },
             active_rollout: Some(ImageRollout {
                 schema: "aos.image-rollout/v1".into(),
                 candidate: 2,
@@ -3786,9 +3283,12 @@ pin = "v2026.02"
             generations: vec![
                 ImageGeneration {
                     number: 1,
-                    slot: ImageSlot::A,
-                    uki_path: "EFI/Linux/aos-2026.06.1+3.efi".into(),
-                    uki_source_path: None,
+                    boot_artifact_contract:
+                        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-boot-contract-1".into(),
+                    boot_provider_state: BootProviderState {
+                        schema: "aos.test.boot-generation-state/v1".into(),
+                        evidence: serde_json::json!({"installed-entry": "entry-1"}),
+                    },
                     toplevel: "/nix/store/top1-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.1".into(),
@@ -3799,17 +3299,16 @@ pin = "v2026.02"
                     evaluator_ref: "/nix/store/bl1-aos-base-lib".into(),
                     module_abi: 1,
                     base_lib_abi_hash: "sha256:aa".into(),
-                    root_verity_roothash: Some("deadbeef".into()),
-                    expected_pcr11: None,
-                    initrd_pcr11: None,
-                    recovery: None,
                     created_at: "2026-06-01T00:00:00Z".into(),
                 },
                 ImageGeneration {
                     number: 2,
-                    slot: ImageSlot::B,
-                    uki_path: "EFI/Linux/aos-2026.06.2+3.efi".into(),
-                    uki_source_path: Some("EFI/Linux/aos-canonical+3.efi".into()),
+                    boot_artifact_contract:
+                        "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-boot-contract-2".into(),
+                    boot_provider_state: BootProviderState {
+                        schema: "aos.test.boot-generation-state/v1".into(),
+                        evidence: serde_json::json!({"installed-entry": "entry-2"}),
+                    },
                     toplevel: "/nix/store/top2-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.2".into(),
@@ -3820,10 +3319,6 @@ pin = "v2026.02"
                     evaluator_ref: "/nix/store/bl2-aos-base-lib".into(),
                     module_abi: 2,
                     base_lib_abi_hash: "sha256:bb".into(),
-                    root_verity_roothash: None,
-                    expected_pcr11: None,
-                    initrd_pcr11: None,
-                    recovery: None,
                     created_at: "2026-06-02T00:00:00Z".into(),
                 },
             ],
@@ -3841,8 +3336,8 @@ pin = "v2026.02"
         assert!(running.admits_pin(1));
         assert!(!running.admits_pin(2));
         assert_eq!(
-            parsed.generations[1].uki_source_path.as_deref(),
-            Some("EFI/Linux/aos-canonical+3.efi")
+            parsed.generations[1].boot_provider_state.evidence["installed-entry"],
+            "entry-2"
         );
 
         for required in ["state_version", "native_executor_ref"] {
@@ -3928,7 +3423,7 @@ pin = "v2026.02"
         let mut meta = sample_package_meta();
         meta.name = "aos".to_string();
         meta.sysroot = true;
-        meta.requires_features = vec![FEATURE_NATIVE_IMAGE_ROLLOUT_V1.to_string()];
+        meta.requires_features = vec![FEATURE_IMAGE_ARTIFACT_CONTRACT_V1.to_string()];
 
         validate_supported_package_meta(&meta)
             .expect("the current package reader understands native image rollouts");
@@ -3936,12 +3431,16 @@ pin = "v2026.02"
         let pre_change_features = SUPPORTED_PACKAGE_FEATURES
             .iter()
             .copied()
-            .filter(|feature| *feature != FEATURE_NATIVE_IMAGE_ROLLOUT_V1)
+            .filter(|feature| *feature != FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)
             .collect::<Vec<_>>();
         let error =
             validate_supported_package_meta_with(&meta, PACKAGE_META_FORMAT, &pre_change_features)
                 .expect_err("a pre-change package reader must reject the rollout gate");
-        assert!(error.to_string().contains(FEATURE_NATIVE_IMAGE_ROLLOUT_V1));
+        assert!(
+            error
+                .to_string()
+                .contains(FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)
+        );
     }
     fn sample_package_meta() -> PackageMeta {
         PackageMeta {
