@@ -26,8 +26,10 @@
   fcLib = import ./firecracker.nix {inherit pkgs lib;};
   kernel = pkgs.linux;
 
-  # Shared rootfs helper (lib/build/rootfs.nix) — produces root.img.
-  mkRootfs = import ../build/rootfs.nix;
+  # These VMs exercise the selected systemd image platform directly, including
+  # its root layout and ext4 test-image policy.
+  mkRootfs = import ../../pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix;
+  closureInfoFor = import ../build/closure-info.nix {inherit pkgs lib;};
 
   # ---------------------------------------------------------------------------
   # Build a rootfs ext4 image for VM testing
@@ -84,7 +86,7 @@
     # rootfs, over and above `system`'s own closure. Upgrade tests pass
     # a second system toplevel here so `apm upgrade --system` finds its
     # store paths already present locally (no network fetch) — see
-    # lib/build/rootfs.nix's `extraClosures` and tests/fleet/
+    # the selected test root builder's `extraClosures` and tests/fleet/
     # apm-system-upgrade.nix.
     extraClosures ? [],
     # Size of the /var partition (partition 6 on baked disks) in MiB. Raise for tests
@@ -339,7 +341,8 @@
     '';
 
     rootfs = mkRootfs {
-      inherit pkgs lib system;
+      inherit pkgs lib system closureInfoFor;
+      kernel = system.config.aos.kernel.selected;
       managerConfiguration = system.config.system.build.managerConfiguration;
       managerRootfsPlan = system.config.aos.manager.selected.configuration.rootfs;
       pname = "vm-disk-${name}-rootfs";

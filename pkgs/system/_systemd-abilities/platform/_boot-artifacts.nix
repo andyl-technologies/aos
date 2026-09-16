@@ -8,6 +8,7 @@
   lib,
   system,
   name,
+  kernel,
   rootfs,
   activeImageDbCerts,
   normalArtifactPath,
@@ -81,7 +82,7 @@
     pkgs.aos-uki {
       name = "${name}-slot-${slotName}";
       inherit version cmdline;
-      kernel = config.system.build.kernel;
+      kernel = kernel.package;
       initrd = config.system.build.initrd;
       osRelease = "${ukiOsRelease}/os-release";
       secureBootKey =
@@ -162,7 +163,7 @@
   mkRecoveryInitrd = copy:
     import ./_recovery-initrd-builder.nix {
       inherit pkgs lib;
-      kernel = config.system.build.kernel;
+      kernel = kernel.package;
       loadModules = config.aos.boot.initrd.loadModules;
       dbCert = dbCertificate;
       authorizedDbCerts = "${activeImageDbCerts}/active-db-certs.pem";
@@ -202,7 +203,7 @@
       name = "${name}-recovery-${copy}";
       inherit version;
       cmdline = recoveryCmdline;
-      kernel = config.system.build.kernel;
+      kernel = kernel.package;
       initrd =
         if copy == "a"
         then recoveryInitrdA
