@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
 
 use anyhow::{Context, Result, bail};
-use aos_doc_model::{OptionDocument, PathSegment, document_json_schema};
+use aos_doc_model::{OptionDocument, PathSegment};
 use serde_json::{Value, json};
 
 use crate::documentation::LoadedDocumentation;
@@ -201,11 +201,10 @@ impl Server {
                     .unwrap_or_default();
                 respond(output, id, self.workspace_symbols(query))?;
             }
-            "aos/packageDocumentation/schema" => {
-                let schema: Value = serde_json::from_slice(&document_json_schema()?)
-                    .context("decoding checked documentation JSON Schema")?;
-                respond(output, id, schema)?;
-            }
+            "aos/packageDocumentation/schema" => match self.tooling_response(&params) {
+                Ok(schema) => respond(output, id, schema)?,
+                Err(error) => respond_error(output, id, -32602, &error.to_string())?,
+            },
             "aos/packageDocumentation/options" => {
                 respond(output, id, self.option_hints(&params))?;
             }
@@ -261,11 +260,32 @@ impl Server {
     fn options(&self) -> impl Iterator<Item = (&LoadedDocumentation, &OptionDocument)> {
         self.documents.iter().flat_map(|loaded| {
             loaded
-                .projection
-                .options
-                .iter()
+                .tooling
+                .as_ref()
+                .into_iter()
+                .flat_map(|tooling| tooling.options.iter())
                 .map(move |option| (loaded, option))
         })
+    }
+
+    fn tooling_response(&self, params: &Value) -> Result<Value> {
+        let package = params.get("package").and_then(Value::as_str);
+        let version = params.get("version").and_then(Value::as_str);
+        let platform = params.get("platform").and_then(Value::as_str);
+        let matches = self
+            .documents
+            .iter()
+            .filter_map(|loaded| loaded.tooling.as_ref())
+            .filter(|tooling| {
+                package.is_none_or(|value| tooling.documentation.package.name == value)
+                    && version.is_none_or(|value| tooling.documentation.package.version == value)
+                    && platform.is_none_or(|value| tooling.documentation.package.platform == value)
+            })
+            .collect::<Vec<_>>();
+        let [tooling] = matches.as_slice() else {
+            bail!("tooling schema request must select exactly one authenticated package")
+        };
+        serde_json::to_value(tooling).context("serializing checked package tooling response")
     }
 
     fn completions(&self, text: &str, line: usize, character: usize) -> Value {
@@ -518,10 +538,9 @@ fn option_markdown(loaded: &LoadedDocumentation, option: &OptionDocument) -> Str
 
 fn package_digest(loaded: &LoadedDocumentation) -> String {
     loaded
-        .projection
-        .ability_reference
+        .tooling
         .as_ref()
-        .map(|reference| reference.package_digest.to_string())
+        .map(|tooling| tooling.identity.ability_package_digest.to_string())
         .unwrap_or_default()
 }
 
@@ -934,19 +953,33 @@ mod tests {
     #[test]
     fn ability_catalog_rejects_an_invalid_authenticated_reference() {
         let mut loaded = loaded_document();
-        loaded
-            .projection
-            .ability_reference
-            .as_mut()
-            .unwrap()
-            .version
-            .clear();
+        loaded.tooling.as_mut().unwrap().ability_reference.version.clear();
 
         let error = match AbilityCatalog::new(&[loaded]) {
             Ok(_) => panic!("invalid ability reference unexpectedly entered the catalog"),
             Err(error) => error,
         };
         assert!(format!("{error:#}").contains("fixture"));
+    }
+
+    #[test]
+    fn schema_request_returns_the_shared_checked_tooling_response() {
+        let loaded = loaded_document();
+        let expected = serde_json::to_value(loaded.tooling.as_ref().unwrap()).unwrap();
+        let server = Server::new(vec![loaded]).unwrap();
+
+        let response = server
+            .tooling_response(&json!({
+                "package": "fixture",
+                "version": "1",
+                "platform": "x86_64-linux"
+            }))
+            .unwrap();
+
+        assert_eq!(response, expected);
+        assert_eq!(response["schema"], "aos.package-tooling-response/v1");
+        assert_eq!(response["options"].as_array().map(Vec::len), Some(1));
+        assert_eq!(response["methods"].as_array().map(Vec::len), Some(3));
     }
 
     #[test]
@@ -957,6 +990,8 @@ mod tests {
         let second_reference = second.projection.ability_reference.as_mut().unwrap();
         second_reference.package = LocalKey::new("fixture-second").unwrap();
         second_reference.version = "2`\n[link](https://example.invalid)".to_string();
+        let second_tooling = second.tooling.as_mut().unwrap();
+        second_tooling.ability_reference = second_reference.clone();
         let server = Server::new(vec![first.clone(), second]).unwrap();
 
         let completions = server.completions("test.life", 0, 9);
@@ -1128,6 +1163,7 @@ mod tests {
         loaded.projection.document.package.name = input.reference().package.as_str().to_string();
         loaded.projection.document.package.version = input.reference().version.clone();
         loaded.projection.ability_reference = Some(input.reference().clone());
+        loaded.tooling.as_mut().unwrap().ability_reference = input.reference().clone();
         let documents = vec![loaded];
         let catalog = AbilityCatalog::new(&documents)?;
 

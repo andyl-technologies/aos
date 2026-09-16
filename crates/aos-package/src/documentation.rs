@@ -17,8 +17,8 @@ use aos_ability_validate::{
 };
 use aos_core::output::{OutputMode, Printer};
 use aos_doc_model::{
-    DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES, OptionDocument,
-    PackageAbilityReference, PackageDocumentation, PackageDocumentationProjection, SearchDocument,
+    DocumentationComparison, MAX_DOCUMENT_BYTES, OptionDocument, PackageAbilityReference,
+    PackageDocumentation, PackageDocumentationProjection, PackageToolingResponse, SearchDocument,
     document_json_schema, tokenize,
 };
 use aos_proto_types::{
@@ -40,6 +40,8 @@ use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput
 pub(crate) struct LoadedDocumentation {
     /// The one checked view shared by rendering, search, Hub, and editor paths.
     pub(crate) projection: PackageDocumentationProjection,
+    /// The checked serialized tooling response when an ability reference exists.
+    pub(crate) tooling: Option<PackageToolingResponse>,
 }
 
 /// One Hub document tied to the exact indexed registry commit that served it.
@@ -53,8 +55,13 @@ impl LoadedDocumentation {
         document: PackageDocumentation,
         ability_reference: Option<PackageAbilityReference>,
     ) -> Result<Self> {
+        let tooling = ability_reference
+            .as_ref()
+            .map(|reference| PackageToolingResponse::new(document.clone(), reference.clone()))
+            .transpose()?;
         Ok(Self {
             projection: PackageDocumentationProjection::new(document, ability_reference)?,
+            tooling,
         })
     }
 
@@ -151,11 +158,12 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
             write_rendered(&loaded, format, output.as_deref())
         }
         DocumentationCommand::Schema { hub, token } => {
-            let bytes = if let Some(hub) = hub {
-                remote_schema(hub, token.as_deref()).await?
-            } else {
-                document_json_schema()?
-            };
+            if hub.is_some() || token.is_some() {
+                bail!(
+                    "the canonical documentation artifact schema is local; use `apm schema <package> --hub ... --registry ...` for a checked package tooling response"
+                );
+            }
+            let bytes = document_json_schema()?;
             write_bytes(&bytes, None)
         }
         DocumentationCommand::Man {
@@ -342,7 +350,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
     }
 }
 
-/// Exports the global closed schema or one exact package model.
+/// Exports the canonical documentation schema or one exact package tooling response.
 ///
 /// # Errors
 ///
@@ -359,9 +367,9 @@ pub async fn run_schema(
 ) -> Result<()> {
     match package {
         Some(package) => {
-            let document = match hub {
+            let response = match hub {
                 Some(hub) => {
-                    remote_document(
+                    remote_schema(
                         hub,
                         registry.context("remote schema lookup requires --registry")?,
                         token,
@@ -371,17 +379,19 @@ pub async fn run_schema(
                     )
                     .await?
                 }
-                None => {
-                    local_document(scope(system), package, version, platform)?
-                        .projection
-                        .document
-                }
+                None => local_document(scope(system), package, version, platform)?
+                    .tooling
+                    .context(
+                        "selected package does not publish an authenticated ability reference",
+                    )?,
             };
-            write_bytes(&document.canonical_json()?, None)
+            write_bytes(&response.canonical_json()?, None)
         }
         None => {
             let bytes = match hub {
-                Some(hub) => remote_schema(hub, token).await?,
+                Some(_) => {
+                    bail!("remote schema lookup requires a package selection")
+                }
                 None => document_json_schema()?,
             };
             write_bytes(&bytes, None)
@@ -750,21 +760,6 @@ fn verify_remote_ability_reference(
     Ok(reference)
 }
 
-async fn remote_document(
-    hub: &str,
-    registry: &str,
-    token: Option<&str>,
-    package: &str,
-    version: Option<&str>,
-    platform: Option<&str>,
-) -> Result<PackageDocumentation> {
-    Ok(
-        remote_document_selection(hub, registry, token, package, version, platform)
-            .await?
-            .document,
-    )
-}
-
 async fn remote_document_selection(
     hub: &str,
     registry: &str,
@@ -806,29 +801,54 @@ async fn remote_document_selection(
     })
 }
 
-async fn remote_schema(hub: &str, token: Option<&str>) -> Result<Vec<u8>> {
+async fn remote_schema(
+    hub: &str,
+    registry: &str,
+    token: Option<&str>,
+    package: &str,
+    version: Option<&str>,
+    platform: Option<&str>,
+) -> Result<PackageToolingResponse> {
     let response = hub_client(hub, token)?
         .call_topology(
             hub_rpc::GetPackageDocumentationSchema,
-            &GetPackageDocumentationSchemaRequest {},
+            &GetPackageDocumentationSchemaRequest {
+                registry: registry.to_string(),
+                package: package.to_string(),
+                version: version.unwrap_or_default().to_string(),
+                platform: platform.unwrap_or_default().to_string(),
+                release: String::new(),
+            },
         )
         .await?;
-    if response.schema != DOCUMENT_SCHEMA {
-        bail!(
-            "Hub returned unsupported documentation schema '{}'",
-            response.schema
-        );
-    }
-    let value: serde_json::Value = serde_json::from_slice(&response.json_schema)
-        .context("Hub returned invalid documentation JSON Schema")?;
-    if value
-        .pointer("/properties/schema/const")
-        .and_then(serde_json::Value::as_str)
-        != Some(DOCUMENT_SCHEMA)
+    let documentation_identity = response
+        .documentation_identity
+        .context("Hub tooling response omitted its documentation identity")?;
+    let ability_identity = response
+        .ability_reference_identity
+        .context("Hub tooling response omitted its ability reference identity")?;
+    let tooling = PackageToolingResponse::from_canonical_json(&response.canonical_json)
+        .context("validating Hub package tooling response")?;
+    crate::types::validate_commit_hash(&documentation_identity.registry_commit)
+        .context("Hub tooling response has an invalid documentation registry commit")?;
+    crate::types::validate_commit_hash(&ability_identity.registry_commit)
+        .context("Hub tooling response has an invalid ability registry commit")?;
+    if documentation_identity.registry_commit != ability_identity.registry_commit
+        || documentation_identity.package != tooling.documentation.package.name
+        || documentation_identity.version != tooling.documentation.package.version
+        || documentation_identity.platform != tooling.documentation.package.platform
+        || documentation_identity.document_sha256 != tooling.identity.documentation_sha256
+        || documentation_identity.semantic_schema_sha256 != tooling.identity.semantic_schema_sha256
+        || ability_identity.package != tooling.ability_reference.package.as_str()
+        || ability_identity.version != tooling.ability_reference.version
+        || ability_identity.platform != tooling.documentation.package.platform
+        || ability_identity.manifest_sha256 != tooling.identity.ability_manifest_sha256.to_string()
+        || ability_identity.package_digest != tooling.identity.ability_package_digest.to_string()
+        || response.etag != tooling.response_sha256()?
     {
-        bail!("Hub documentation JSON Schema has the wrong identity");
+        bail!("Hub package tooling response identity mismatch");
     }
-    Ok(response.json_schema)
+    Ok(tooling)
 }
 
 fn hub_client(hub: &str, token: Option<&str>) -> Result<HubClient> {
@@ -1156,7 +1176,7 @@ mod tests {
 
     fn fixture() -> PackageDocumentation {
         let mut document = PackageDocumentation {
-            schema: DOCUMENT_SCHEMA.to_string(),
+            schema: aos_doc_model::DOCUMENT_SCHEMA.to_string(),
             package: DocumentedPackage {
                 name: "nginx".to_string(),
                 version: "1.0".to_string(),

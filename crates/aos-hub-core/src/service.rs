@@ -12479,21 +12479,99 @@ impl RpcService {
         })
     }
 
-    /// `DocumentationService.GetPackageDocumentationSchema` — closed v1 JSON Schema.
+    /// Returns the checked package-specific schema projection used by tooling.
     ///
     /// # Errors
     ///
-    /// Returns an internal error if the authoritative documentation model
-    /// cannot generate its JSON Schema.
+    /// Returns ordinary registry authorization and selection failures, or an
+    /// internal error if either authenticated source object fails verification.
     pub async fn get_package_documentation_schema(
         &self,
-        _auth: Option<&str>,
-        _req: pb::GetPackageDocumentationSchemaRequest,
+        auth: Option<&str>,
+        req: pb::GetPackageDocumentationSchemaRequest,
     ) -> Result<pb::GetPackageDocumentationSchemaResponse, RpcError> {
+        let registry = self.registry_or_not_found(&req.registry).await?;
+        self.require_read(auth, &registry).await?;
+
+        let (documentation_locator, ability_locator, ability_reference) = if req.release.is_empty()
+        {
+            let documentation_locator = self
+                .db
+                .resolve_package_documentation_locator(
+                    registry.id,
+                    &req.package,
+                    &req.version,
+                    &req.platform,
+                )
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("package documentation"))?;
+            let (ability_locator, ability_reference) = self
+                .load_exact_package_ability_reference(
+                    registry.id,
+                    &documentation_locator.indexed_commit,
+                    &documentation_locator.package_name,
+                    &documentation_locator.package_version,
+                    &documentation_locator.platform,
+                )
+                .await?;
+            (documentation_locator, ability_locator, ability_reference)
+        } else {
+            let release_commit = self
+                .db
+                .list_releases(registry.id)
+                .await
+                .map_err(RpcError::internal)?
+                .into_iter()
+                .find(|release| release.semver == req.release || release.commit_oid == req.release)
+                .map(|release| release.commit_oid)
+                .ok_or_else(|| RpcError::not_found("release"))?;
+            let (ability_locator, ability_reference) = self
+                .load_exact_package_ability_reference(
+                    registry.id,
+                    &release_commit,
+                    &req.package,
+                    &req.version,
+                    &req.platform,
+                )
+                .await?;
+            let documentation_locator = self
+                .db
+                .package_documentation_locator_at_release(
+                    registry.id,
+                    &req.release,
+                    &ability_locator.package_name,
+                    &ability_locator.package_version,
+                    &ability_locator.platform,
+                )
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("package documentation"))?;
+            (documentation_locator, ability_locator, ability_reference)
+        };
+        if documentation_locator.indexed_commit != ability_locator.indexed_commit
+            || documentation_locator.package_name != ability_locator.package_name
+            || documentation_locator.package_version != ability_locator.package_version
+            || documentation_locator.platform != ability_locator.platform
+            || ability_reference.manifest_sha256.to_string() != ability_locator.manifest_sha256
+            || ability_reference.package_digest.to_string() != ability_locator.package_digest
+        {
+            return Err(RpcError::internal(anyhow::anyhow!(
+                "package tooling source identities differ"
+            )));
+        }
+        let documentation = self
+            .load_package_documentation_locator(registry.id, &documentation_locator)
+            .await
+            .map_err(RpcError::internal)?;
+        let tooling = aos_doc_model::PackageToolingResponse::new(documentation, ability_reference)
+            .map_err(RpcError::internal)?;
+        let canonical_json = tooling.canonical_json().map_err(RpcError::internal)?;
         Ok(pb::GetPackageDocumentationSchemaResponse {
-            schema: aos_doc_model::DOCUMENT_SCHEMA.to_string(),
-            media_type: aos_doc_model::DOCUMENT_FORMAT.to_string(),
-            json_schema: aos_doc_model::document_json_schema().map_err(RpcError::internal)?,
+            documentation_identity: Some(package_documentation_identity(&documentation_locator)),
+            ability_reference_identity: Some(package_ability_reference_identity(&ability_locator)),
+            etag: tooling.response_sha256().map_err(RpcError::internal)?,
+            canonical_json,
         })
     }
 
