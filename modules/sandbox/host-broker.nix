@@ -110,7 +110,7 @@ in {
       ++ brokerSessionConfiguration.assertions;
 
     systemd.sockets.aos-sandbox-hostd = {
-      description = "AOS sandbox host broker socket";
+      description = "AOS controller-facing sandbox Host broker socket";
       wantedBy = ["sockets.target"];
       socketConfig = {
         ListenSequentialPacket = "/run/aos/sandbox-host/control.sock";
@@ -119,9 +119,25 @@ in {
         PassCredentials = true;
         PassPIDFD = true;
         SocketUser = "aos-sandboxd";
-        # RootMount has no DAC-override capability. Give its root group the
-        # narrow socket access path; hostd still verifies its exact service
-        # cgroup and exposes only the RootMount scope-query method to that peer.
+        SocketGroup = "aos-sandboxd";
+        SocketMode = "0600";
+        DirectoryMode = "0710";
+        RemoveOnStop = true;
+      };
+    };
+
+    systemd.sockets.aos-sandbox-host-root-mount = {
+      description = "AOS RootMount-facing sandbox Host broker socket";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-host/root-mount.sock";
+        FileDescriptorName = "aos-sandbox-host-root-mount";
+        Service = "aos-sandbox-hostd.service";
+        PassCredentials = true;
+        PassPIDFD = true;
+        # RootMount has no DAC-override capability. The authenticated session
+        # still pins its exact RootMount audience and protected credentials.
+        SocketUser = "root";
         SocketGroup = "root";
         SocketMode = "0660";
         DirectoryMode = "0710";
@@ -131,8 +147,17 @@ in {
 
     systemd.services.aos-sandbox-hostd = {
       description = "AOS fixed-function sandbox host broker";
-      requires = ["aos-sandbox-hostd.socket" "dbus.socket"];
-      after = ["aos-sandbox-hostd.socket" "dbus.socket" "local-fs.target"];
+      requires = [
+        "aos-sandbox-hostd.socket"
+        "aos-sandbox-host-root-mount.socket"
+        "dbus.socket"
+      ];
+      after = [
+        "aos-sandbox-hostd.socket"
+        "aos-sandbox-host-root-mount.socket"
+        "dbus.socket"
+        "local-fs.target"
+      ];
       unitConfig = {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
