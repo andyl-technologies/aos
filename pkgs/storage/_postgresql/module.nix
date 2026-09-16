@@ -94,13 +94,7 @@
     unique = true;
     canonicalOrder = true;
   };
-  secretRef = abilityTypes.record {
-    fields = {
-      resource = abilityTypes.deferredResult abilityTypes.resourceReference;
-      encrypted = abilityTypes.boolean;
-    };
-    optional = ["resource" "encrypted"];
-  };
+  credentialReference = serviceTypes.credentialReference;
   endpointType = abilityTypes.record {
     fields = {
       host = address;
@@ -125,10 +119,6 @@
     canonicalOrder = false;
   };
 
-  normalizeSecret = reference: {
-    resource = reference.resource or null;
-    encrypted = reference.encrypted or false;
-  };
   normalizeEndpoint = endpoint:
     if endpoint == null
     then null
@@ -143,11 +133,11 @@
     address = rule.address or null;
     method = rule.method or "scram-sha-256";
   };
-  bootstrapPassword = normalizeSecret cfg.bootstrap.password;
-  replicationPassfile = normalizeSecret cfg.replication.passfile;
-  tlsCertificate = normalizeSecret cfg.tls.certificate;
-  tlsPrivateKey = normalizeSecret cfg.tls.privateKey;
-  tlsCa = normalizeSecret cfg.tls.ca;
+  bootstrapPassword = cfg.bootstrap.password;
+  replicationPassfile = cfg.replication.passfile;
+  tlsCertificate = cfg.tls.certificate;
+  tlsPrivateKey = cfg.tls.privateKey;
+  tlsCa = cfg.tls.ca;
   primary = normalizeEndpoint cfg.replication.primary;
   hba = builtins.map normalizeHbaRule cfg.authentication.rules;
 
@@ -194,40 +184,36 @@
     ["self" "bash" "coreutils"];
 
   configuredCredentials =
-    lib.optional (cfg.topology != "standby" && bootstrapPassword.resource != null) {
+    lib.optional (cfg.topology != "standby" && serviceManagement.credentialReferenceConfigured bootstrapPassword) {
       name = "bootstrap-superuser-password";
-      inherit (bootstrapPassword) resource encrypted;
+      reference = bootstrapPassword;
     }
-    ++ lib.optional (cfg.topology == "standby" && replicationPassfile.resource != null) {
+    ++ lib.optional (cfg.topology == "standby" && serviceManagement.credentialReferenceConfigured replicationPassfile) {
       name = "replication-passfile";
-      inherit (replicationPassfile) resource encrypted;
+      reference = replicationPassfile;
     }
     ++ lib.optionals cfg.tls.enable (
       [
         {
           name = "tls-certificate";
-          inherit (tlsCertificate) resource encrypted;
+          reference = tlsCertificate;
         }
         {
           name = "tls-private-key";
-          inherit (tlsPrivateKey) resource encrypted;
+          reference = tlsPrivateKey;
         }
       ]
-      ++ lib.optional (tlsCa.resource != null) {
+      ++ lib.optional (serviceManagement.credentialReferenceConfigured tlsCa) {
         name = "tls-ca";
-        inherit (tlsCa) resource encrypted;
+        reference = tlsCa;
       }
     );
-  credentialRequests = serviceManagement.forProducers {
+  credentialRequests = serviceManagement.forCredentialReferences {
     consumerInstance = "postgresql";
-    interface = serviceManagement.interfaces.credentialDelivery;
-    producers =
+    references =
       builtins.map (credential: {
         key = "credential-${credential.name}";
-        parameters = {
-          inherit (credential) name encrypted;
-          source = credential.resource;
-        };
+        inherit (credential) name reference;
       })
       configuredCredentials;
   };
@@ -313,7 +299,7 @@
         (executionPath (credentialPath "tls-private-key"))
         (literal "'\n")
       ]
-      ++ lib.optionals (tlsCa.resource != null) [
+      ++ lib.optionals (serviceManagement.credentialReferenceConfigured tlsCa) [
         (literal "ssl_ca_file = '")
         (executionPath (credentialPath "tls-ca"))
         (literal "'\n")
@@ -482,7 +468,7 @@
       credentials.views = [
         {
           name = initializationCredential;
-          encrypted = (builtins.head (builtins.filter (credential: credential.name == initializationCredential) configuredCredentials)).encrypted;
+          encrypted = (builtins.head (builtins.filter (credential: credential.name == initializationCredential) configuredCredentials)).reference.encrypted;
           reference = initializationCredentialPath;
           optional = false;
         }
@@ -508,7 +494,7 @@
     lib.optional (cfg.topology == "standby") "replication-passfile"
     ++ lib.optionals cfg.tls.enable (
       ["tls-certificate" "tls-private-key"]
-      ++ lib.optional (tlsCa.resource != null) "tls-ca"
+      ++ lib.optional (serviceManagement.credentialReferenceConfigured tlsCa) "tls-ca"
     );
   credentialByName = name:
     builtins.head (builtins.filter (credential: credential.name == name) configuredCredentials);
@@ -568,7 +554,7 @@
               credential = credentialByName name;
             in {
               inherit name;
-              inherit (credential) encrypted;
+              inherit (credential.reference) encrypted;
               reference = credentialPath name;
               optional = false;
             })
@@ -657,7 +643,7 @@ in {
         description = "Database superuser created when an empty cluster is initialized.";
       };
       password = lib.mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Typed source for the initial superuser password.";
       };
@@ -744,7 +730,7 @@ in {
         description = "Optional physical replication slot consumed by the standby.";
       };
       passfile = lib.mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Typed source for the libpq passfile used by a standby.";
       };
@@ -756,17 +742,17 @@ in {
         description = "Enable TLS for TCP connections.";
       };
       certificate = lib.mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Typed source for the PEM server certificate.";
       };
       privateKey = lib.mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Typed source for the PEM server private key.";
       };
       ca = lib.mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Optional typed source for the client-certificate CA bundle.";
       };
@@ -794,8 +780,11 @@ in {
           message = "postgresql.listen.addresses must be non-empty and contain no duplicates";
         }
         {
-          assertion = !cfg.enable || cfg.topology == "standby" || bootstrapPassword.resource != null;
-          message = "postgresql.bootstrap.password.resource is required for an enabled primary or standalone cluster";
+          assertion =
+            !cfg.enable
+            || cfg.topology == "standby"
+            || serviceManagement.credentialReferenceConfigured bootstrapPassword;
+          message = "postgresql.bootstrap.password requires a credential reference for an enabled primary or standalone cluster";
         }
         {
           assertion = !cfg.enable || builtins.all (rule: (rule.type == "local") == (rule.address == null)) hba;
@@ -810,19 +799,40 @@ in {
           message = "PostgreSQL standby topology requires replication.primary";
         }
         {
-          assertion = !cfg.enable || cfg.topology != "standby" || replicationPassfile.resource != null;
-          message = "PostgreSQL standby topology requires replication.passfile.resource";
+          assertion =
+            !cfg.enable
+            || cfg.topology != "standby"
+            || serviceManagement.credentialReferenceConfigured replicationPassfile;
+          message = "PostgreSQL standby topology requires a replication.passfile credential reference";
         }
         {
           assertion = !cfg.enable || cfg.topology == "standalone" || (cfg.replication.walLevel != "minimal" && cfg.replication.maxWalSenders > 0);
           message = "PostgreSQL primary and standby topology require replica/logical WAL and at least one WAL sender";
         }
         {
-          assertion = !cfg.enable || !cfg.tls.enable || (tlsCertificate.resource != null && tlsPrivateKey.resource != null);
+          assertion =
+            !cfg.enable
+            || !cfg.tls.enable
+            || (
+              serviceManagement.credentialReferenceConfigured tlsCertificate
+              && serviceManagement.credentialReferenceConfigured tlsPrivateKey
+            );
           message = "TLS-enabled PostgreSQL requires certificate and private-key resource references";
         }
         {
-          assertion = !cfg.enable || builtins.all (rule: rule.method != "cert" || (rule.type == "hostssl" && cfg.tls.enable && tlsCa.resource != null)) hba;
+          assertion =
+            !cfg.enable
+            || builtins.all
+            (rule:
+              rule.method
+              != "cert"
+              || (
+                rule.type
+                == "hostssl"
+                && cfg.tls.enable
+                && serviceManagement.credentialReferenceConfigured tlsCa
+              ))
+            hba;
           message = "PostgreSQL cert authentication requires a hostssl rule, TLS, and a CA resource reference";
         }
         {

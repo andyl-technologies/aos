@@ -1,6 +1,7 @@
 ##! Expands one manager-neutral service declaration into feature requests.
 {
   serviceInterfaces,
+  serviceTypes,
   interfaceDocumentFromDeclaration,
   interfaceIdentity,
 }: let
@@ -50,6 +51,20 @@
         value = guarantee;
       })
       values));
+
+  normalizeCredentialReference = reference:
+    if !serviceTypes.credentialReference.check reference
+    then throw "credential reference does not match the canonical credential reference type"
+    else {
+      resource = reference.resource or null;
+      name = reference.name or null;
+      scope = reference.scope or "system";
+      encrypted = reference.encrypted or false;
+    };
+  credentialReferenceConfigured = reference: let
+    normalized = normalizeCredentialReference reference;
+  in
+    normalized.resource != null || normalized.name != null;
 
   checkedMethods = interface: methods: let
     uniqueMethods = builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
@@ -261,7 +276,8 @@
       == null
       || (
         (
-          instantiation == null
+          instantiation
+          == null
           || builtins.elem instantiation.kind ["singleton" "template"]
         )
         && !(builtins.elem managerIdentity.name managerIdentity.aliases)
@@ -863,6 +879,62 @@
         else {}
       )
     );
+
+  forCredentialReferences = {
+    consumerInstance,
+    references,
+  }: let
+    checkedReferences = builtins.map (entry:
+      entry
+      // {
+        reference = normalizeCredentialReference entry.reference;
+      })
+    references;
+    configuredReferences =
+      builtins.filter
+      (entry: credentialReferenceConfigured entry.reference)
+      checkedReferences;
+    namedReferences =
+      builtins.filter
+      (entry: entry.reference.name != null)
+      configuredReferences;
+    namedCredentials = forProducers {
+      inherit consumerInstance;
+      interface = serviceInterfaces.namedCredential;
+      producers =
+        builtins.map (entry: {
+          key = "${entry.key}-source";
+          parameters = {
+            inherit (entry.reference) name scope;
+          };
+        })
+        namedReferences;
+    };
+    credentialDeliveries = forProducers {
+      inherit consumerInstance;
+      interface = serviceInterfaces.credentialDelivery;
+      producers =
+        builtins.map (entry: {
+          inherit (entry) key;
+          parameters = {
+            name = entry.name or entry.key;
+            source =
+              if entry.reference.resource != null
+              then entry.reference.resource
+              else {
+                _type = "aos-request-output-reference";
+                request = "${entry.key}-source";
+                output = "credential-resource";
+              };
+            inherit (entry.reference) encrypted;
+          };
+        })
+        configuredReferences;
+    };
+  in {
+    requirementTemplates = namedCredentials.requirementTemplates // credentialDeliveries.requirementTemplates;
+    requests = namedCredentials.requests // credentialDeliveries.requests;
+  };
 in {
-  inherit featureInterfaces forConfiguration forProducer forProducers forService instanceOf splitContribution structuredSource validate valueFromStructuredSource;
+  inherit credentialReferenceConfigured featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitContribution structuredSource validate valueFromStructuredSource;
 }

@@ -21,6 +21,7 @@
   inherit (interfaceCatalog) interfaces;
   constructors = import ./_service-declaration.nix {
     inherit interfaceDocumentFromDeclaration interfaceIdentity;
+    inherit serviceTypes;
     serviceInterfaces = interfaces;
   };
   moduleDeclaration = interface:
@@ -49,5 +50,5 @@ in {
     })
     (builtins.attrValues interfaces));
   guarantees = interfaceCatalog.guaranteeDeclarations;
-  inherit (constructors) featureInterfaces forConfiguration forProducer forProducers forService instanceOf splitContribution structuredSource validate valueFromStructuredSource;
+  inherit (constructors) credentialReferenceConfigured featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitContribution structuredSource validate valueFromStructuredSource;
 }

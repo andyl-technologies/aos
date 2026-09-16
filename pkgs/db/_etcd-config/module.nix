@@ -42,20 +42,7 @@
   clusterStateType = abilityTypes.enum ["new" "existing"];
   compactionModeType = abilityTypes.enum ["periodic" "revision"];
   metricsType = abilityTypes.enum ["basic" "extensive"];
-  secretRef = abilityTypes.record {
-    fields = {
-      resource = {
-        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
-        default = null;
-        description = "Typed resource reference producing the credential without exposing secret bytes.";
-      };
-      encrypted = {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Whether the referenced credential requires encrypted delivery.";
-      };
-    };
-  };
+  credentialReference = serviceTypes.credentialReference;
   endpointList = abilityTypes.refined {
     name = "non-empty etcd endpoint list";
     description = "one or more etcd endpoints";
@@ -90,17 +77,17 @@
         description = "Require TLS on this transport.";
       };
       certificate = {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Opaque reference to the PEM certificate.";
       };
       privateKey = {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Opaque reference to the PEM private key.";
       };
       trustedCa = {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Opaque reference to the trusted PEM CA bundle.";
       };
@@ -159,29 +146,29 @@
     (lib.optionals clientTls [
       {
         name = "client-certificate";
-        inherit (cfg.client.tls.certificate) resource encrypted;
+        reference = cfg.client.tls.certificate;
       }
       {
         name = "client-private-key";
-        inherit (cfg.client.tls.privateKey) resource encrypted;
+        reference = cfg.client.tls.privateKey;
       }
       {
         name = "client-trusted-ca";
-        inherit (cfg.client.tls.trustedCa) resource encrypted;
+        reference = cfg.client.tls.trustedCa;
       }
     ])
     ++ (lib.optionals peerTls [
       {
         name = "peer-certificate";
-        inherit (cfg.peer.tls.certificate) resource encrypted;
+        reference = cfg.peer.tls.certificate;
       }
       {
         name = "peer-private-key";
-        inherit (cfg.peer.tls.privateKey) resource encrypted;
+        reference = cfg.peer.tls.privateKey;
       }
       {
         name = "peer-trusted-ca";
-        inherit (cfg.peer.tls.trustedCa) resource encrypted;
+        reference = cfg.peer.tls.trustedCa;
       }
     ]);
   runtimeString = abilityTypes.runtimeString;
@@ -251,16 +238,12 @@
       scope = "configured-connectivity";
       address_families = ["ipv4" "ipv6"];
     };
-    credentialRequests = serviceManagement.forProducers {
+    credentialRequests = serviceManagement.forCredentialReferences {
       consumerInstance = "etcd";
-      interface = serviceManagement.interfaces.credentialDelivery;
-      producers =
+      references =
         builtins.map (credential: {
           key = "credential-${credential.name}";
-          parameters = {
-            inherit (credential) name encrypted;
-            source = credential.resource;
-          };
+          inherit (credential) name reference;
         })
         usedCredentials;
     };
@@ -317,7 +300,8 @@
           else {
             views =
               builtins.map (credential: {
-                inherit (credential) name encrypted;
+                inherit (credential) name;
+                inherit (credential.reference) encrypted;
                 reference = resultOf "credential-${credential.name}" "credential-path";
                 optional = false;
               })
@@ -549,11 +533,23 @@ in {
           message = "etcd peer endpoints must all use HTTP when peer TLS is disabled";
         }
         {
-          assertion = !cfg.client.tls.enable || builtins.all (value: value != null) [(cfg.client.tls.certificate.resource or null) (cfg.client.tls.privateKey.resource or null) (cfg.client.tls.trustedCa.resource or null)];
+          assertion =
+            !cfg.client.tls.enable
+            || builtins.all serviceManagement.credentialReferenceConfigured [
+              cfg.client.tls.certificate
+              cfg.client.tls.privateKey
+              cfg.client.tls.trustedCa
+            ];
           message = "etcd client TLS requires certificate, private-key, and trusted-CA references";
         }
         {
-          assertion = !cfg.peer.tls.enable || builtins.all (value: value != null) [(cfg.peer.tls.certificate.resource or null) (cfg.peer.tls.privateKey.resource or null) (cfg.peer.tls.trustedCa.resource or null)];
+          assertion =
+            !cfg.peer.tls.enable
+            || builtins.all serviceManagement.credentialReferenceConfigured [
+              cfg.peer.tls.certificate
+              cfg.peer.tls.privateKey
+              cfg.peer.tls.trustedCa
+            ];
           message = "etcd peer TLS requires certificate, private-key, and trusted-CA references";
         }
         {

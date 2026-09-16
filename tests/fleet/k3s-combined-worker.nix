@@ -114,7 +114,7 @@ in {
       aos.apm.desiredPackages = [ "k3s-combined" ];
       k3s = {
         enable = true;
-        token.ref = "system-credential:k3s-token";
+        token.name = "k3s-token";
         node = {
           name = "combined";
           ip = "192.168.50.10";
@@ -145,7 +145,7 @@ in {
       k3s = {
         enable = true;
         serverUrl = "https://192.168.50.10:6443";
-        token.ref = "system-credential:k3s-token";
+        token.name = "k3s-token";
         node = {
           name = "worker";
           ip = "192.168.50.11";

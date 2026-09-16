@@ -15,20 +15,7 @@
     "tls-private-key"
     "validation-ca"
   ];
-  credentialReference = abilityTypes.record {
-    fields = {
-      resource = {
-        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
-        default = null;
-        description = "Typed source resource for this delivered credential.";
-      };
-      encrypted = {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Whether the credential requires encrypted delivery.";
-      };
-    };
-  };
+  credentialReference = serviceTypes.credentialReference;
   credentialReferences = abilityTypes.map {
     keyMaxLength = 64;
     maxEntries = builtins.length credentialNames;
@@ -196,7 +183,9 @@
     ++ builtins.filter (value: value != null) (builtins.map (chain: chain.tcpProxyCluster) allChains);
   configuredCredentials =
     builtins.filter
-    (name: cfg.credentials ? ${name} && (cfg.credentials.${name}.resource or null) != null)
+    (name:
+      cfg.credentials ? ${name}
+      && serviceManagement.credentialReferenceConfigured cfg.credentials.${name})
     usedCredentials;
   isDeferredResult = value:
     builtins.isAttrs value
@@ -335,17 +324,13 @@
     scope = "configured-connectivity";
     address_families = ["ipv4" "ipv6"];
   };
-  credentialRequests = serviceManagement.forProducers {
+  credentialRequests = serviceManagement.forCredentialReferences {
     consumerInstance = "envoy";
-    interface = serviceManagement.interfaces.credentialDelivery;
-    producers =
+    references =
       builtins.map (name: {
         key = "credential-${name}";
-        parameters = {
-          inherit name;
-          inherit (cfg.credentials.${name}) encrypted;
-          source = cfg.credentials.${name}.resource;
-        };
+        inherit name;
+        reference = cfg.credentials.${name};
       })
       configuredCredentials;
   };
@@ -603,7 +588,9 @@ in {
           assertion =
             !cfg.enable
             || builtins.all
-            (name: cfg.credentials ? ${name} && (cfg.credentials.${name}.resource or null) != null)
+            (name:
+              cfg.credentials ? ${name}
+              && serviceManagement.credentialReferenceConfigured cfg.credentials.${name})
             usedCredentials;
           message = "each Envoy TLS credential handle must have a typed envoy.credentials resource";
         }

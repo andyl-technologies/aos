@@ -36,20 +36,7 @@
     type = abilityTypes.runtimeString;
     predicate = value: builtins.match "[A-Za-z][^[:cntrl:]]*" value != null;
   };
-  credentialReference = abilityTypes.record {
-    fields = {
-      resource = {
-        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
-        default = null;
-        description = "Typed source resource for this delivered credential.";
-      };
-      encrypted = {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Whether the credential requires encrypted delivery.";
-      };
-    };
-  };
+  credentialReference = serviceTypes.credentialReference;
   literal = text: {
     kind = "literal";
     inherit text;
@@ -95,22 +82,21 @@
     [
       {
         name = "root-password";
-        inherit (cfg.rootPassword) resource encrypted;
+        reference = cfg.rootPassword;
       }
     ]
     ++ lib.optionals withTls [
       {
         name = "tls-certificate";
-        inherit (cfg.tls.certificate) resource encrypted;
+        reference = cfg.tls.certificate;
       }
       {
         name = "tls-private-key";
-        inherit (cfg.tls.privateKey) resource encrypted;
+        reference = cfg.tls.privateKey;
       }
       {
         name = "tls-ca";
-        resource = cfg.tls.trustedCa.resource;
-        encrypted = cfg.tls.trustedCa.encrypted;
+        reference = cfg.tls.trustedCa;
       }
     ];
   configurationFragmentsFor = withTls:
@@ -181,16 +167,12 @@
       scope = "configured-connectivity";
       address_families = ["ipv4" "ipv6"];
     };
-    credentialRequests = serviceManagement.forProducers {
+    credentialRequests = serviceManagement.forCredentialReferences {
       consumerInstance = "openldap";
-      interface = serviceManagement.interfaces.credentialDelivery;
-      producers =
+      references =
         builtins.map (credential: {
           key = "credential-${credential.name}";
-          parameters = {
-            inherit (credential) name encrypted;
-            source = credential.resource;
-          };
+          inherit (credential) name reference;
         })
         credentials;
     };
@@ -256,7 +238,8 @@
           if withTls
           then {
             views = builtins.map (credential: {
-              inherit (credential) name encrypted;
+              inherit (credential) name;
+              inherit (credential.reference) encrypted;
               reference = resultOf "credential-${credential.name}" "credential-path";
               optional = false;
             }) (builtins.filter (credential: credential.name != "root-password") credentials);
@@ -414,18 +397,20 @@ in {
       {
         assertions = [
           {
-            assertion = !cfg.enable || cfg.rootPassword.resource != null;
-            message = "openldap.enable requires openldap.rootPassword.resource";
+            assertion =
+              !cfg.enable
+              || serviceManagement.credentialReferenceConfigured cfg.rootPassword;
+            message = "openldap.enable requires an openldap.rootPassword credential reference";
           }
           {
             assertion =
               !cfg.tls.enable
-              || builtins.all (resource: resource != null) [
-                cfg.tls.certificate.resource
-                cfg.tls.privateKey.resource
-                cfg.tls.trustedCa.resource
+              || builtins.all serviceManagement.credentialReferenceConfigured [
+                cfg.tls.certificate
+                cfg.tls.privateKey
+                cfg.tls.trustedCa
               ];
-            message = "OpenLDAP TLS requires certificate, private-key, and trusted-CA resources";
+            message = "OpenLDAP TLS requires certificate, private-key, and trusted-CA credential references";
           }
           {
             assertion =
