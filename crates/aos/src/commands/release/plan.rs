@@ -33,8 +33,10 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
         bail!("contributor-authorization evidence digest does not match the request");
     }
 
-    let inventory_value = nix.eval_json("releasePackageInventory")?;
-    let inventory: PackageInventoryV1 = serde_json::from_value(inventory_value)
+    let release_platforms = Platform::ALL.map(Platform::as_str);
+    let inventory_bytes =
+        nix.eval_release_json_bytes("releasePackageInventory", None, &release_platforms)?;
+    let inventory: PackageInventoryV1 = serde_json::from_slice(&inventory_bytes)
         .context("decoding Nix release package inventory")?;
     inventory.validate()?;
     let qualification: aos_release::qualification::QualificationContract =
@@ -54,8 +56,11 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
     }
     let mut derivations = Vec::with_capacity(Platform::ALL.len());
     for platform in Platform::ALL {
-        let value =
-            nix.eval_json_for_target("releasePackageDerivations", Some(platform.as_str()))?;
+        let value = nix.eval_release_json(
+            "releasePackageDerivations",
+            Some(platform.as_str()),
+            &release_platforms,
+        )?;
         let evaluated: DerivationInventoryV1 = serde_json::from_value(value)
             .with_context(|| format!("decoding {platform} derivation inventory"))?;
         if evaluated.platform != platform {

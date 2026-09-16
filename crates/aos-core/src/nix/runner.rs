@@ -290,6 +290,68 @@ impl NixRunner {
         attr: &str,
         target: Option<&str>,
     ) -> Result<serde_json::Value> {
+        self.eval_json_with_platform_args(attr, target, None)
+    }
+
+    /// Evaluates a release attribute with its complete caller-selected target set.
+    ///
+    /// The selected targets are passed as the top-level `releasePlatforms` list.
+    /// This keeps release policy outside the generic package evaluator and binds
+    /// package eligibility and target derivations to the same explicit set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty, duplicate, or unsafe platform name, when
+    /// Nix evaluation fails, or when the result is not valid JSON.
+    pub fn eval_release_json(
+        &self,
+        attr: &str,
+        target: Option<&str>,
+        release_platforms: &[&str],
+    ) -> Result<serde_json::Value> {
+        let bytes = self.eval_release_json_bytes(attr, target, release_platforms)?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse JSON from nix-instantiate for attr '{attr}'"))
+    }
+
+    /// Evaluates a release attribute and returns the exact JSON bytes emitted by Nix.
+    ///
+    /// The selected targets are passed as the top-level `releasePlatforms` list.
+    /// Callers that own a typed wire contract can decode these bytes directly,
+    /// avoiding a second generic JSON projection at the Nix/Rust boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty, duplicate, or unsafe platform name, or
+    /// when Nix evaluation fails.
+    pub fn eval_release_json_bytes(
+        &self,
+        attr: &str,
+        target: Option<&str>,
+        release_platforms: &[&str],
+    ) -> Result<Vec<u8>> {
+        let expression = release_platforms_expression(release_platforms)?;
+        self.eval_json_bytes_with_platform_args(attr, target, Some(&expression))
+    }
+
+    fn eval_json_with_platform_args(
+        &self,
+        attr: &str,
+        target: Option<&str>,
+        release_platforms_expression: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let bytes =
+            self.eval_json_bytes_with_platform_args(attr, target, release_platforms_expression)?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse JSON from nix-instantiate for attr '{attr}'"))
+    }
+
+    fn eval_json_bytes_with_platform_args(
+        &self,
+        attr: &str,
+        target: Option<&str>,
+        release_platforms_expression: Option<&str>,
+    ) -> Result<Vec<u8>> {
         if target.is_some_and(|target| !target_platform_name_is_safe(target)) {
             anyhow::bail!("invalid target platform");
         }
@@ -307,14 +369,16 @@ impl NixRunner {
 
         let mut args = args;
         add_cross_system_arg(&mut args, target);
+        if let Some(expression) = release_platforms_expression {
+            args.extend([
+                "--arg".to_string(),
+                "releasePlatforms".to_string(),
+                expression.to_string(),
+            ]);
+        }
 
         let output = self.run_nix("nix-instantiate", &args)?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let value: serde_json::Value = serde_json::from_str(stdout.trim()).with_context(|| {
-            format!("failed to parse JSON from nix-instantiate for attr '{attr}'")
-        })?;
-
-        Ok(value)
+        Ok(output.stdout)
     }
 
     /// Evaluates an arbitrary Nix expression to JSON via
@@ -326,6 +390,18 @@ impl NixRunner {
     /// error if `nix-instantiate` cannot be spawned or its output is
     /// not valid JSON.
     pub fn eval_expr_json(&self, expr: &str) -> Result<serde_json::Value> {
+        let bytes = self.eval_expr_json_bytes(expr)?;
+        serde_json::from_slice(&bytes)
+            .context("failed to parse JSON from nix-instantiate expression")
+    }
+
+    /// Evaluates an arbitrary Nix expression and returns its exact JSON bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if evaluation fails, or another error if
+    /// `nix-instantiate` cannot be spawned.
+    pub fn eval_expr_json_bytes(&self, expr: &str) -> Result<Vec<u8>> {
         let args: Vec<String> = vec![
             "--eval".to_string(),
             "--strict".to_string(),
@@ -335,11 +411,7 @@ impl NixRunner {
         ];
 
         let output = self.run_nix("nix-instantiate", &args)?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let value: serde_json::Value = serde_json::from_str(stdout.trim())
-            .context("failed to parse JSON from nix-instantiate expression")?;
-
-        Ok(value)
+        Ok(output.stdout)
     }
 
     /// Evaluates an attribute of `default.nix` to a string, stripping the
@@ -743,6 +815,27 @@ fn target_platform_name_is_safe(target: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
+fn release_platforms_expression(platforms: &[&str]) -> Result<String> {
+    if platforms.is_empty() {
+        anyhow::bail!("release platform selection must not be empty");
+    }
+    for (index, platform) in platforms.iter().enumerate() {
+        if !target_platform_name_is_safe(platform) {
+            anyhow::bail!("invalid release platform");
+        }
+        if platforms[..index].contains(platform) {
+            anyhow::bail!("release platform selection contains a duplicate");
+        }
+    }
+    let quoted = platforms
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("encoding release platform selection")?;
+
+    Ok(format!("[{}]", quoted.join(" ")))
+}
+
 /// Returns the Nix function used to select platform-supported target roots.
 fn target_packages_expression() -> &'static str {
     "{ defaultNix, target }: let aos = import (builtins.toPath defaultNix) { crossSystem = target; }; in builtins.attrValues (aos.pkgs.targetPackagesFor target)"
@@ -750,7 +843,7 @@ fn target_packages_expression() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_cross_system_arg, target_packages_expression};
+    use super::{add_cross_system_arg, release_platforms_expression, target_packages_expression};
 
     #[test]
     fn cross_system_argument_uses_canonical_nix_spelling() {
@@ -771,6 +864,25 @@ mod tests {
         add_cross_system_arg(&mut arguments, None);
 
         assert_eq!(arguments, ["default.nix"]);
+    }
+
+    #[test]
+    fn release_platform_argument_is_an_explicit_nix_list() {
+        let expression = release_platforms_expression(&[
+            "x86_64-linux",
+            "aarch64-linux",
+            "x86_64-darwin",
+            "aarch64-darwin",
+        ])
+        .expect("release platform list should be valid");
+
+        assert_eq!(
+            expression,
+            "[\"x86_64-linux\" \"aarch64-linux\" \"x86_64-darwin\" \"aarch64-darwin\"]"
+        );
+        assert!(release_platforms_expression(&[]).is_err());
+        assert!(release_platforms_expression(&["x86_64-linux", "x86_64-linux"]).is_err());
+        assert!(release_platforms_expression(&["x86_64-linux; abort"]).is_err());
     }
 
     #[test]
