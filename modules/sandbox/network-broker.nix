@@ -7,10 +7,24 @@
 }: let
   cfg = config.aos.sandbox.networkBroker;
   controller = config.aos.sandbox.controller;
+  brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
+  brokerSessionEndpoints = [
+    {
+      name = "network-broker";
+      description = "Network broker";
+      role = "broker";
+      journalRoot = "/var/lib/aos/sandbox-network/broker-session";
+      options = {
+        manifest = "brokerSessionManifest";
+        hello = "brokerSessionHelloKey";
+        record = "brokerSessionOutcomeKey";
+      };
+    }
+  ];
+  brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
   protectedRoots = config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
   protectedRootsUnit = "aos-sandbox-network-roots.service";
-  runtimeRootsExecutable =
-    "${pkgs.aos-selinux-runtime-roots}/bin/aos-selinux-runtime-roots";
+  runtimeRootsExecutable = "${pkgs.aos-selinux-runtime-roots}/bin/aos-selinux-runtime-roots";
   runtimeRootsCommand = "/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots ${runtimeRootsExecutable} --root / --prepare-sandbox-network-roots";
 in {
   options.aos.sandbox.networkBroker = {
@@ -33,15 +47,19 @@ in {
       default = 1024;
       description = "The simultaneous Network namespace custody ceiling; 1024 keeps systemd's LISTEN_FDNAMES environment string below Linux's per-string exec limit.";
     };
+
+    credentials = brokerSession.mkOptions brokerSessionEndpoints;
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = config.aos.services.dbus.enable;
-        message = "aos.sandbox.networkBroker requires aos.services.dbus for bounded systemd FD-store readback";
-      }
-    ];
+    assertions =
+      [
+        {
+          assertion = config.aos.services.dbus.enable;
+          message = "aos.sandbox.networkBroker requires aos.services.dbus for bounded systemd FD-store readback";
+        }
+      ]
+      ++ brokerSessionConfiguration.assertions;
 
     systemd.sockets.aos-netd =
       {
@@ -115,8 +133,11 @@ in {
           NotifyAccess = "main";
           # The broker's no-new-privileges sandbox must not suppress the
           # dedicated SELinux provisioner transition used by this fresh gate.
-          ExecStartPre = lib.optional protectedRoots "+${runtimeRootsCommand}";
+          ExecStartPre =
+            lib.optional protectedRoots "+${runtimeRootsCommand}"
+            ++ brokerSessionConfiguration.installCommands;
           ExecStart = "${cfg.package}/bin/aos-netd ${toString controller.uid} ${toString controller.gid}";
+          LoadCredential = brokerSessionConfiguration.loadCredentials;
           Restart = "on-failure";
           RestartSec = "2s";
           FileDescriptorStoreMax = cfg.maximumRetainedNamespaces;
@@ -156,11 +177,17 @@ in {
           TasksMax = 32;
         }
         // lib.optionalAttrs (!protectedRoots) {
-          StateDirectory = "aos/sandbox-network/broker-state";
+          StateDirectory = [
+            "aos/sandbox-network/broker-state"
+            "aos/sandbox-network/broker-session"
+          ];
           StateDirectoryMode = "0700";
         }
         // lib.optionalAttrs protectedRoots {
-          ReadWritePaths = ["/var/lib/aos/sandbox-network/broker-state"];
+          ReadWritePaths = [
+            "/var/lib/aos/sandbox-network/broker-state"
+            "/var/lib/aos/sandbox-network/broker-session"
+          ];
         };
     };
   };

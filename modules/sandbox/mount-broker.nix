@@ -8,6 +8,32 @@
   cfg = config.aos.sandbox.mountBroker;
   controller = config.aos.sandbox.controller;
   hostBroker = config.aos.sandbox.hostBroker;
+  brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
+  brokerSessionEndpoints = [
+    {
+      name = "mount-broker";
+      description = "Mount broker";
+      role = "broker";
+      journalRoot = "/var/lib/aos/sandbox-mount/broker-session";
+      options = {
+        manifest = "brokerSessionManifest";
+        hello = "brokerSessionHelloKey";
+        record = "brokerSessionOutcomeKey";
+      };
+    }
+    {
+      name = "mount-host-client";
+      description = "RootMount-to-Host client";
+      role = "client";
+      journalRoot = "/var/lib/aos/sandbox-mount/broker-session/host";
+      options = {
+        manifest = "brokerSessionHostManifest";
+        hello = "brokerSessionHostHelloKey";
+        record = "brokerSessionHostRecordKey";
+      };
+    }
+  ];
+  brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
   credentialFields = {
     brokerPlanPolicy = "broker-plan-policy.cbor";
     brokerPlanPublicKey = "broker-plan-public-key";
@@ -45,13 +71,15 @@ in {
       description = "The hard admission ceiling for mount descriptors retained by PID 1 across broker restarts.";
     };
 
-    credentials = lib.mapAttrs (name: credentialFile:
-      lib.mkOption {
-        type = lib.types.nullOr lib.serviceTypes.credentialName;
-        default = null;
-        description = "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
-      })
-    credentialFields;
+    credentials =
+      lib.mapAttrs (name: credentialFile:
+        lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
+        })
+      credentialFields
+      // brokerSession.mkOptions brokerSessionEndpoints;
   };
 
   config = lib.mkIf cfg.enable {
@@ -70,7 +98,8 @@ in {
             || cfg.credentials.journalMacKey != hostBroker.credentials.journalMacKey;
           message = "host and mount brokers must use distinct journalMacKey credential sources";
         }
-      ];
+      ]
+      ++ brokerSessionConfiguration.assertions;
 
     systemd.sockets.aos-sandbox-mountd = {
       description = "AOS sandbox mount broker socket";
@@ -100,8 +129,9 @@ in {
       serviceConfig = {
         Type = "simple";
         NotifyAccess = "main";
+        ExecStartPre = brokerSessionConfiguration.installCommands;
         ExecStart = "${cfg.package}/bin/aos-sandbox-mountd ${toString controller.uid} ${toString controller.gid} ${cfg.package}/bin/aos-sandbox-mount-helper";
-        LoadCredential = loadCredentials;
+        LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         FileDescriptorStoreMax = cfg.maximumRetainedMounts;

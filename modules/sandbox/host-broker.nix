@@ -7,6 +7,21 @@
 }: let
   cfg = config.aos.sandbox.hostBroker;
   controller = config.aos.sandbox.controller;
+  brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
+  brokerSessionEndpoints = [
+    {
+      name = "host-broker";
+      description = "Host broker";
+      role = "broker";
+      journalRoot = "/var/lib/aos/sandbox-host/broker-session";
+      options = {
+        manifest = "brokerSessionManifest";
+        hello = "brokerSessionHelloKey";
+        record = "brokerSessionOutcomeKey";
+      };
+    }
+  ];
+  brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
   authorityCredentialFields = {
     brokerPlanPolicy = "broker-plan-policy.cbor";
     brokerPlanPublicKey = "broker-plan-public-key";
@@ -60,16 +75,18 @@ in {
       description = "Compatibility default for aos.sandbox.controller.gid.";
     };
 
-    credentials = lib.mapAttrs (name: credentialFile:
-      lib.mkOption {
-        type = lib.types.nullOr lib.serviceTypes.credentialName;
-        default = null;
-        description =
-          if name == "backendReadiness"
-          then "Optional protected boot-local readiness claims published externally as ${credentialFile}; ingestion alone never enables Apply."
-          else "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
-      })
-    credentialFields;
+    credentials =
+      lib.mapAttrs (name: credentialFile:
+        lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description =
+            if name == "backendReadiness"
+            then "Optional protected boot-local readiness claims published externally as ${credentialFile}; ingestion alone never enables Apply."
+            else "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
+        })
+      credentialFields
+      // brokerSession.mkOptions brokerSessionEndpoints;
   };
 
   config = lib.mkIf cfg.enable {
@@ -78,7 +95,8 @@ in {
         assertion = cfg.credentials.${name} != null;
         message = "aos.sandbox.hostBroker.credentials.${name} is required for ${credentialFile}";
       })
-      authorityCredentialFields;
+      authorityCredentialFields
+      ++ brokerSessionConfiguration.assertions;
 
     systemd.sockets.aos-sandbox-hostd = {
       description = "AOS sandbox host broker socket";
@@ -110,9 +128,11 @@ in {
       };
       serviceConfig = {
         Type = "simple";
-        ExecStartPre = "${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/unit-reference-policy-v1";
+        ExecStartPre =
+          ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/unit-reference-policy-v1"]
+          ++ brokerSessionConfiguration.installCommands;
         ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian";
-        LoadCredential = loadCredentials;
+        LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         StateDirectory = "aos/sandbox-host";

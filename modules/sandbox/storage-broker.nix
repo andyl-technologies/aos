@@ -8,6 +8,21 @@
   cfg = config.aos.sandbox.storageBroker;
   controller = config.aos.sandbox.controller;
   worker = config.aos.sandbox.storageWorker;
+  brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
+  brokerSessionEndpoints = [
+    {
+      name = "storage-broker";
+      description = "Storage broker";
+      role = "broker";
+      journalRoot = "/var/lib/aos/sandbox-storage/broker-session";
+      options = {
+        manifest = "brokerSessionManifest";
+        hello = "brokerSessionHelloKey";
+        record = "brokerSessionOutcomeKey";
+      };
+    }
+  ];
+  brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
   minimumIdentityRange = 65536;
 in {
   options.aos.sandbox.storageBroker = {
@@ -46,6 +61,8 @@ in {
       description = "Optional existing root-owned directory containing storage-resolver-policy.catalog.";
     };
 
+    credentials = brokerSession.mkOptions brokerSessionEndpoints;
+
     identityPoolStart = lib.mkOption {
       type = lib.types.addCheck lib.types.int (value: value >= minimumIdentityRange);
       default = 65536;
@@ -60,32 +77,34 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = worker.enable;
-        message = "aos.sandbox.storageBroker requires aos.sandbox.storageWorker";
-      }
-      {
-        assertion = toString cfg.zfsPackage == toString worker.zfsPackage;
-        message = "aos.sandbox.storageBroker and storageWorker must use the same OpenZFS package";
-      }
-      {
-        assertion = lib.hasPrefix "/" cfg.authorityDirectory;
-        message = "aos.sandbox.storageBroker.authorityDirectory must be absolute";
-      }
-      {
-        assertion = lib.hasPrefix "/" cfg.bootstrapDirectory;
-        message = "aos.sandbox.storageBroker.bootstrapDirectory must be absolute";
-      }
-      {
-        assertion = cfg.resolverPolicyDirectory == null || lib.hasPrefix "/" cfg.resolverPolicyDirectory;
-        message = "aos.sandbox.storageBroker.resolverPolicyDirectory must be null or absolute";
-      }
-      {
-        assertion = cfg.identityPoolStart + cfg.identityPoolSize <= 4294967295;
-        message = "aos.sandbox.storageBroker identity pool must fit within u32";
-      }
-    ];
+    assertions =
+      [
+        {
+          assertion = worker.enable;
+          message = "aos.sandbox.storageBroker requires aos.sandbox.storageWorker";
+        }
+        {
+          assertion = toString cfg.zfsPackage == toString worker.zfsPackage;
+          message = "aos.sandbox.storageBroker and storageWorker must use the same OpenZFS package";
+        }
+        {
+          assertion = lib.hasPrefix "/" cfg.authorityDirectory;
+          message = "aos.sandbox.storageBroker.authorityDirectory must be absolute";
+        }
+        {
+          assertion = lib.hasPrefix "/" cfg.bootstrapDirectory;
+          message = "aos.sandbox.storageBroker.bootstrapDirectory must be absolute";
+        }
+        {
+          assertion = cfg.resolverPolicyDirectory == null || lib.hasPrefix "/" cfg.resolverPolicyDirectory;
+          message = "aos.sandbox.storageBroker.resolverPolicyDirectory must be null or absolute";
+        }
+        {
+          assertion = cfg.identityPoolStart + cfg.identityPoolSize <= 4294967295;
+          message = "aos.sandbox.storageBroker identity pool must fit within u32";
+        }
+      ]
+      ++ brokerSessionConfiguration.assertions;
 
     # The controller receives traverse-only access to the socket directory. It
     # cannot unlink or replace the root-owned endpoint path.
@@ -128,16 +147,19 @@ in {
         "local-fs.target"
       ];
       unitConfig = {
-        RequiresMountsFor = [
-          "/sys/fs/cgroup"
-          cfg.authorityDirectory
-          cfg.bootstrapDirectory
-        ] ++ lib.optional (cfg.resolverPolicyDirectory != null) cfg.resolverPolicyDirectory;
+        RequiresMountsFor =
+          [
+            "/sys/fs/cgroup"
+            cfg.authorityDirectory
+            cfg.bootstrapDirectory
+          ]
+          ++ lib.optional (cfg.resolverPolicyDirectory != null) cfg.resolverPolicyDirectory;
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
       };
       serviceConfig = {
         Type = "simple";
+        ExecStartPre = brokerSessionConfiguration.installCommands;
         ExecStart = ''
           ${cfg.package}/bin/aos-storaged \
             ${toString controller.uid} \
@@ -153,6 +175,7 @@ in {
             else cfg.resolverPolicyDirectory
           )}
         '';
+        LoadCredential = brokerSessionConfiguration.loadCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         StateDirectory = "aos/sandbox-storage";

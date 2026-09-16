@@ -8,7 +8,42 @@
   cfg = config.aos.sandbox.controllerService;
   controller = config.aos.sandbox.controller;
   brokers = config.aos.sandbox;
-  nodeCredentials = lib.optional (cfg.credentials.nodeId != null)
+  brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
+  brokerSessionEndpoints = map (endpoint:
+    endpoint
+    // {
+      role = "client";
+      description = "controller-to-${endpoint.name}";
+      options = {
+        manifest = "brokerSession${endpoint.optionName}Manifest";
+        hello = "brokerSession${endpoint.optionName}HelloKey";
+        record = "brokerSession${endpoint.optionName}RecordKey";
+      };
+    }) [
+    {
+      name = "host";
+      optionName = "Host";
+      journalRoot = "/var/lib/aos/sandboxd/broker-session/host";
+    }
+    {
+      name = "storage";
+      optionName = "Storage";
+      journalRoot = "/var/lib/aos/sandboxd/broker-session/storage";
+    }
+    {
+      name = "mount";
+      optionName = "Mount";
+      journalRoot = "/var/lib/aos/sandboxd/broker-session/mount";
+    }
+    {
+      name = "network";
+      optionName = "Network";
+      journalRoot = "/var/lib/aos/sandboxd/broker-session/network";
+    }
+  ];
+  brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
+  nodeCredentials =
+    lib.optional (cfg.credentials.nodeId != null)
     "node-id:/run/credentials/@system/${cfg.credentials.nodeId}";
 in {
   options.aos.sandbox.controllerService = {
@@ -21,36 +56,42 @@ in {
       description = "The independently packaged unprivileged controller executable.";
     };
 
-    credentials.nodeId = lib.mkOption {
-      type = lib.types.nullOr lib.serviceTypes.credentialName;
-      default = null;
-      description = "External system credential containing the raw nonzero 16-byte node identity.";
-    };
+    credentials =
+      {
+        nodeId = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "External system credential containing the raw nonzero 16-byte node identity.";
+        };
+      }
+      // brokerSession.mkOptions brokerSessionEndpoints;
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = cfg.credentials.nodeId != null;
-        message = "aos.sandbox.controllerService.credentials.nodeId is required";
-      }
-      {
-        assertion = brokers.hostBroker.enable;
-        message = "aos.sandbox.controllerService requires aos.sandbox.hostBroker";
-      }
-      {
-        assertion = brokers.storageBroker.enable;
-        message = "aos.sandbox.controllerService requires aos.sandbox.storageBroker";
-      }
-      {
-        assertion = brokers.mountBroker.enable;
-        message = "aos.sandbox.controllerService requires aos.sandbox.mountBroker";
-      }
-      {
-        assertion = brokers.networkBroker.enable;
-        message = "aos.sandbox.controllerService requires aos.sandbox.networkBroker";
-      }
-    ];
+    assertions =
+      [
+        {
+          assertion = cfg.credentials.nodeId != null;
+          message = "aos.sandbox.controllerService.credentials.nodeId is required";
+        }
+        {
+          assertion = brokers.hostBroker.enable;
+          message = "aos.sandbox.controllerService requires aos.sandbox.hostBroker";
+        }
+        {
+          assertion = brokers.storageBroker.enable;
+          message = "aos.sandbox.controllerService requires aos.sandbox.storageBroker";
+        }
+        {
+          assertion = brokers.mountBroker.enable;
+          message = "aos.sandbox.controllerService requires aos.sandbox.mountBroker";
+        }
+        {
+          assertion = brokers.networkBroker.enable;
+          message = "aos.sandbox.controllerService requires aos.sandbox.networkBroker";
+        }
+      ]
+      ++ brokerSessionConfiguration.assertions;
 
     systemd.services.aos-sandboxd = {
       description = "AOS unprivileged sandbox node controller";
@@ -77,7 +118,8 @@ in {
         Type = "notify";
         NotifyAccess = "main";
         ExecStart = "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}";
-        LoadCredential = nodeCredentials;
+        ExecStartPre = brokerSessionConfiguration.installCommands;
+        LoadCredential = nodeCredentials ++ brokerSessionConfiguration.loadCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";
