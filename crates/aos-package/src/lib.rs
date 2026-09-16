@@ -807,7 +807,7 @@ pub enum DocumentationCommand {
         /// Terms to search for; omit to browse documented packages
         #[arg(default_value = "")]
         query: String,
-        /// Restrict results to package, option, service, credential, or capability
+        /// Restrict results to package, option, or capability
         #[arg(long)]
         kind: Option<String>,
         /// Maximum number of results

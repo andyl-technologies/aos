@@ -1516,7 +1516,7 @@ pub fn documentation_index_page(
     let _ = write!(
         body,
         "<form method=\"get\" class=\"docs-search\" role=\"search\">\
-         <label><span>Search documentation</span><input autofocus type=\"search\" name=\"q\" value=\"{}\" placeholder=\"TLS, listen port, restart, credential…\"></label>\
+         <label><span>Search documentation</span><input autofocus type=\"search\" name=\"q\" value=\"{}\" placeholder=\"TLS, option path, or capability…\"></label>\
          <label><span>Kind</span><select name=\"kind\">",
         escape(query.unwrap_or("")),
     );
@@ -1524,8 +1524,6 @@ pub fn documentation_index_page(
         ("", "Everything"),
         ("package", "Packages"),
         ("option", "Options"),
-        ("service", "Services"),
-        ("credential", "Credentials"),
         ("capability", "Capabilities"),
     ] {
         let selected = (kind == Some(value)).then_some(" selected").unwrap_or("");
@@ -3724,6 +3722,8 @@ mod tests {
         assert!(!search_html.contains("<script>option</script>"));
         assert!(search_html.contains("&lt;script&gt;option&lt;/script&gt;"));
         assert!(search_html.contains("Enable &amp; start"));
+        assert!(!search_html.contains("value=\"service\""));
+        assert!(!search_html.contains("value=\"credential\""));
         assert!(search_html.contains(&format!(
             "href=\"/demo/-/docs/nginx/1.30.4/x86_64-linux#{}\"",
             aos_doc_model::documentation_anchor("option", "nginx.enable"),

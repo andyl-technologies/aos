@@ -58,7 +58,7 @@ pub struct DocumentationTreeEntry {
     pub package_version: String,
     /// Exact package platform.
     pub platform: String,
-    /// Kind: option, package, service, credential, or capability.
+    /// Kind: option, package, or capability.
     pub kind: String,
     /// Stable key inside the document.
     pub document_key: String,

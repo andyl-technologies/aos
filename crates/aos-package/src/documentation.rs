@@ -839,15 +839,8 @@ fn hub_client(hub: &str, token: Option<&str>) -> Result<HubClient> {
 }
 
 fn validate_kind(kind: Option<&str>) -> Result<()> {
-    if kind.is_some_and(|kind| {
-        !matches!(
-            kind,
-            "package" | "option" | "service" | "credential" | "capability"
-        )
-    }) {
-        bail!(
-            "unsupported documentation kind; expected package, option, service, credential, or capability"
-        );
+    if kind.is_some_and(|kind| !matches!(kind, "package" | "option" | "capability")) {
+        bail!("unsupported documentation kind; expected package, option, or capability");
     }
     Ok(())
 }
@@ -1326,6 +1319,16 @@ mod tests {
             .expect("empty kind-filtered search browses that projection");
         assert_eq!(options.len(), 1);
         assert_eq!(options[0].key, "nginx.enable");
+    }
+
+    #[test]
+    fn documentation_search_rejects_unproduced_result_kinds() {
+        for kind in ["service", "credential"] {
+            assert!(validate_kind(Some(kind)).is_err());
+        }
+        for kind in ["package", "option", "capability"] {
+            assert!(validate_kind(Some(kind)).is_ok());
+        }
     }
 
     #[test]
