@@ -1,10 +1,9 @@
-//! The config-drive mount helper — the one capability with no aos primitive.
+//! Package-owned config-drive probing and read-only mounting.
 //!
 //! Offline channels (the AOS `aos-metadata` ISO, NoCloud `cidata`, OpenStack
 //! `config-2`) arrive as a labeled ISO9660/vfat block device. `detect` probes
-//! the known labels, mounts the first hit read-only, and records its
-//! mountpoint as `METADATA_DIR`; the matching [`PlatformFetcher`] then reads
-//! files from that directory with no network.
+//! the known labels, mounts the first hit read-only, and returns the private
+//! mountpoint to the matching [`PlatformFetcher`] within one provider call.
 //!
 //! [`PlatformFetcher`]: crate::fetcher::PlatformFetcher
 //!
@@ -18,7 +17,7 @@
 //!
 //! # Label → platform
 //!
-//! | Label          | `PLATFORM_ID`  |
+//! | Label          | Platform       |
 //! |----------------|----------------|
 //! | `aos-metadata` | `aos-metadata` |
 //! | `cidata`       | `nocloud`      |
@@ -36,7 +35,7 @@ use anyhow::{Context, Result, bail};
 /// labels so an operator override short-circuits everything else.
 pub const CONFIG_DRIVE_LABELS: &[&str] = &["aos-metadata", "cidata", "config-2"];
 
-/// Map a filesystem label to the `PLATFORM_ID` its fetcher registers under.
+/// Maps a filesystem label to its provider platform identifier.
 ///
 /// Returns `None` for an unknown label.
 pub fn platform_for_label(label: &str) -> Option<&'static str> {
@@ -53,7 +52,7 @@ pub fn platform_for_label(label: &str) -> Option<&'static str> {
 pub struct ConfigDrive {
     /// The filesystem label that matched.
     pub label: String,
-    /// The directory the fetcher reads files from (`METADATA_DIR`).
+    /// The invocation-private directory from which the fetcher reads files.
     pub dir: PathBuf,
 }
 
