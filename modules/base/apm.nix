@@ -20,8 +20,6 @@
   packageNameRegex = "[A-Za-z0-9][A-Za-z0-9+._=-]*";
   packageNameType = lib.types.strMatching packageNameRegex;
   desiredConfigType = lib.types.attrsOf (lib.types.attrsOf (lib.types.attrsOf toml.type));
-  rolloutDrain = config.aos.config.artifacts.aos-rollout-drain;
-  rolloutHealth = config.aos.config.artifacts.aos-rollout-health;
   desiredToml = toml.toTOML ({
       packages = cfg.packages;
     }
@@ -154,52 +152,11 @@ in {
     };
     aos.packageRuntime.packageAttestationQuote.packageProfileEnabled = cfg.enable;
 
-    # These image-fixed helpers must be built in stage 1. The on-host stage-2
-    # evaluator receives only their frozen paths and has no script builder.
-    aos.config._artifactSources = {
-      aos-rollout-drain =
-        if config.aos.config.frozenArtifacts ? "aos-rollout-drain"
-        then null
-        else
-          pkgs.writeShellScriptBin "aos-rollout-drain" ''
-            set -eu
-
-            hook=/run/current-system/drain
-            if [ ! -x "$hook" ]; then
-              echo "aos-rollout-drain: the current system has no configured drain hook" >&2
-              exit 1
-            fi
-            exec "$hook"
-          '';
-      aos-rollout-health =
-        if config.aos.config.frozenArtifacts ? "aos-rollout-health"
-        then null
-        else
-          pkgs.writeShellScriptBin "aos-rollout-health" ''
-            set -eu
-
-            hook=/run/current-system/health
-            if [ ! -x "$hook" ]; then
-              echo "aos-rollout-health: the current system has no configured health hook" >&2
-              exit 2
-            fi
-            if "$hook"; then
-              exit 0
-            else
-              status=$?
-            fi
-            if [ "$status" -eq 1 ]; then
-              exit 1
-            fi
-            echo "aos-rollout-health: health hook failed without a conclusive result" >&2
-            exit 2
-          '';
-    };
-
     # The consumer CLI is the only AOS command surface on the system PATH.
     # Repository construction (`aos`) and registry authoring (`apr`) remain
-    # host tools; private activation helpers are referenced by absolute path.
-    environment.systemPackages = [pkgs.aos.apm rolloutDrain rolloutHealth];
+    # host tools. Rollout hooks are addressed by checked immutable-image
+    # realizations rather than ambient profile commands.
+    environment.systemPackages = [pkgs.aos.apm];
 
     # install-at-boot's baked /etc (desired.toml + registry config) plus the
     # tmpfiles config. `apm registry add` writes

@@ -180,10 +180,8 @@ validate_nix_store_root "$toplevel" \
   || fail_image_identity "immutable toplevel has an invalid system command tree"
 [ -d /sysroot/usr/bin ] && [ -d /sysroot/usr/sbin ] \
   || fail_image_identity "immutable rootfs has no system command directories"
-for command in mount aos-rollout-drain aos-rollout-health; do
-  validate_rooted_executable /sysroot "/usr/bin/$command" \
-    || fail_image_identity "immutable rootfs omits rollout command $command"
-done
+validate_rooted_executable /sysroot /usr/bin/mount \
+  || fail_image_identity "immutable rootfs omits the boot-storage mount command"
 
 # The initrd's /run mount moves into the real root during switch-root,
 # shadowing the rootfs tree. Publish the authenticated immutable image

@@ -167,8 +167,9 @@
     outputs = {};
     conditionalRequirements = [];
     realizations =
-      builtins.mapAttrs (_: _: {
+      builtins.mapAttrs (_: resource: {
         schema = "aos.image-rollout.realization/v1";
+        health-command = "${resource.value.candidate.toplevel}/health";
       })
       resources;
   };
