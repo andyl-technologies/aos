@@ -315,6 +315,22 @@ in {
       '';
     };
 
+    qualification.extraDisks = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options.sizeMiB = lib.mkOption {
+          type = lib.types.addCheck lib.types.int (value: value > 0);
+          description = "Size of a blank disk attached after the image under qualification.";
+        };
+      });
+      default = [];
+      internal = true;
+      description = ''
+        Blank disks required for an image to reach multi-user operation during
+        image-matrix qualification. Devices appear as /dev/vdb onward in
+        declaration order, after the qualified image at /dev/vda.
+      '';
+    };
+
     budgets = {
       maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";

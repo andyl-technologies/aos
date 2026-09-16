@@ -309,6 +309,7 @@ class VirtualMachine:
         ssh_key: pathlib.Path,
         counts: Counts,
         recovery_media: pathlib.Path | None = None,
+        extra_disks: list[dict[str, int]] | None = None,
     ) -> None:
         self.name = name
         self.root = ROOT / name
@@ -330,6 +331,7 @@ class VirtualMachine:
         self.host_config = host_config
         self.ssh_key = ssh_key
         self.recovery_media = recovery_media
+        self.extra_disks = []
         self.port = available_port()
         self.counts = counts
         self.qemu: subprocess.Popen[bytes] | None = None
@@ -342,6 +344,11 @@ class VirtualMachine:
         with self.disk.open("r+b") as output:
             output.truncate(32768 * 1024 * 1024)
         run([SGDISK, "-e", str(self.disk)])
+        for index, disk in enumerate(extra_disks or [], start=1):
+            path = self.root / f"extra-{index}.raw"
+            with path.open("wb") as output:
+                output.truncate(disk["sizeMiB"] * 1024 * 1024)
+            self.extra_disks.append(path)
         if PLATFORM == "x86_64-linux":
             shutil.copyfile(FIRMWARE_VARS, self.vars)
         else:
@@ -416,6 +423,8 @@ class VirtualMachine:
             "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
             "-device", tpm_device,
         ]
+        for disk in self.extra_disks:
+            arguments += ["-drive", f"file={disk},format=raw,if=virtio"]
         if self.recovery_media is not None:
             arguments += [
                 "-drive", f"id=recovery,file={self.recovery_media},format=raw,if=none",

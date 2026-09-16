@@ -325,7 +325,14 @@ def boot_system(
         "}\n"
     )
     counts = module.Counts()
-    machine = module.VirtualMachine("image-guest", logical, host_config, key, counts)
+    machine = module.VirtualMachine(
+        "image-guest",
+        logical,
+        host_config,
+        key,
+        counts,
+        extra_disks=system["extraDisks"],
+    )
     try:
         machine.start()
         guest(machine, f"test -x {shlex.quote(system['guestTools']['apm'])}")

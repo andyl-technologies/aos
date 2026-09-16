@@ -41,6 +41,7 @@ in {
   # ZFS runtime payload. Keep that test-only allocation out of the production
   # server image contract while leaving enough room for the populated image.
   aos.image.rootPartitionMiB = 2688;
+  aos.image.qualification.extraDisks = [{sizeMiB = poolDiskSizeMiB;}];
   aos.image.budgets = {
     maxRootMiB = 2624;
     maxConvertedDownloadMiB =

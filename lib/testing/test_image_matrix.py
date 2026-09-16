@@ -43,6 +43,7 @@ def fixture_manifest(names=("server",), *, measured=False, lockdown=False):
         "firmwareVars": "",
         "systems": [{
             "name": name,
+            "extraDisks": [],
             "images": {image_format: f"/nix/store/{name}-{image_format}" for image_format in matrix.FORMATS},
             "expected": {
                 "toplevel": f"/nix/store/{name}-system",
@@ -210,6 +211,18 @@ class ReportTests(unittest.TestCase):
         manifest["sourceIdentity"] = "/home/user/checkout"
         with self.assertRaisesRegex(matrix.MatrixError, "immutable"):
             matrix.validate_manifest(manifest)
+
+    def test_invalid_extra_disk_is_rejected(self):
+        for disks in (None, [{}], [{"sizeMiB": 0}], [{"sizeMiB": True}]):
+            manifest = fixture_manifest()
+            if disks is None:
+                manifest["systems"][0].pop("extraDisks")
+            else:
+                manifest["systems"][0]["extraDisks"] = disks
+            with self.subTest(disks=disks), self.assertRaisesRegex(
+                matrix.MatrixError, "extra disk"
+            ):
+                matrix.validate_manifest(manifest)
 
 
 class SecurityTests(unittest.TestCase):
