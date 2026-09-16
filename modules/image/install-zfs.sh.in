@@ -1,7 +1,7 @@
 #!@bash@
 set -euo pipefail
 
-PATH=@coreutils@/bin:@dosfstools@/sbin:@gptfdisk@/sbin:@mtools@/bin:@systemd@/bin:@systemd@/sbin:@util_linux@/bin:@util_linux@/sbin:@zfs@/bin:@zfs@/sbin
+PATH=@coreutils@/bin:@dosfstools@/sbin:@gptfdisk@/sbin:@mtools@/bin:@util_linux@/bin:@util_linux@/sbin:@zfs@/bin:@zfs@/sbin
 export PATH
 
 usage() {
@@ -161,12 +161,16 @@ for disk in "${disks[@]}"; do
     --new=2:0:0 --typecode=2:BF01 --change-name=2:"aos-zfs-$index" \
     "$disk"
 done
-udevadm settle
-
 vdevs=()
 index=0
 for disk in "${disks[@]}"; do
   index=$((index + 1))
+  attempts=0
+  while { [ ! -b "${disk}-part1" ] || [ ! -b "${disk}-part2" ]; } \
+    && [ "$attempts" -lt 60 ]; do
+    attempts=$((attempts + 1))
+    sleep 0.5
+  done
   [ -b "${disk}-part1" ] && [ -b "${disk}-part2" ] || {
     echo "partition nodes did not appear for $disk" >&2
     exit 1
@@ -200,10 +204,8 @@ done
 zpool sync @pool@
 
 sealed=$(mktemp /run/aos-zfs-credential.XXXXXX)
-systemd-creds encrypt --name=aos-zfs-key --with-key=tpm2 \
-  --tpm2-public-key="$bundle/payload/pcr-public.pem" \
-  --tpm2-public-key-pcrs=@signed_pcrs@ \
-  --tpm2-pcrs=@pinned_pcrs@ "$key" "$sealed"
+@credential_seal@ aos-zfs-key "$bundle/payload/pcr-public.pem" \
+  @signed_pcrs@ @pinned_pcrs@ "$key" "$sealed"
 
 index=0
 for disk in "${disks[@]}"; do

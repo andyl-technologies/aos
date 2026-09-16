@@ -20,7 +20,7 @@ in
       primary = {
         input = "The installed boot-storage helper package.";
         operation = "Verify every package-owned helper is executable.";
-        expected = "All three boot-storage entry points are regular executable files.";
+        expected = "Every boot-storage entry point is a regular executable file.";
         files = {};
         steps = [
           {
@@ -32,6 +32,8 @@ in
 
                 paths = [
                     "@out@/bin/aos-mount-esp",
+                    "@out@/bin/aos-mount-transaction-storage",
+                    "@out@/bin/aos-stage-zfs-credential",
                     "@out@/bin/aos-sync-esps",
                     "@out@/bin/aos-zfs-unlock",
                 ]
@@ -121,14 +123,21 @@ in
           substituteInPlace "$out/bin/aos-zfs-unlock" \
             --replace-fail '@bash@' '${bash}/bin/bash'
 
+          cp ${./_aos-boot-storage/stage-zfs-credential.sh.in} \
+            "$out/bin/aos-stage-zfs-credential"
+          substituteInPlace "$out/bin/aos-stage-zfs-credential" \
+            --replace-fail '@bash@' '${bash}/bin/bash'
+
           ${bash}/bin/bash -n "$out/bin/aos-mount-esp"
           ${bash}/bin/bash -n "$out/bin/aos-mount-transaction-storage"
           ${bash}/bin/bash -n "$out/bin/aos-sync-esps"
+          ${bash}/bin/bash -n "$out/bin/aos-stage-zfs-credential"
           ${bash}/bin/bash -n "$out/bin/aos-zfs-unlock"
           chmod 0755 \
             "$out/bin/aos-mount-esp" \
             "$out/bin/aos-mount-transaction-storage" \
             "$out/bin/aos-sync-esps" \
+            "$out/bin/aos-stage-zfs-credential" \
             "$out/bin/aos-zfs-unlock"
         '';
       }
