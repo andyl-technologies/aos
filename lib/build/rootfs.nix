@@ -90,8 +90,7 @@
   kernel = system.config.system.build.kernel;
 
   # Deterministic dm-verity salt + superblock UUID, derived from the image
-  # identity (mirrors lib/build/package-root-image.nix's pinned-salt/uuid
-  # recipe) so the hash tree — and therefore the root hash baked into the
+  # identity so the hash tree — and therefore the root hash baked into the
   # measured UKI cmdline — is reproducible across builds. The erofs root is
   # already byte-reproducible (mkfs.erofs --all-root -T0 -U <fixed>), so the
   # Merkle tree over its bytes is a deterministic function of pinned salt/uuid.
@@ -476,9 +475,9 @@ in
         ]
         # Build a deterministic dm-verity hash tree over the finalized
         # root.img. Gated, so the phase list (and the derivation) is unchanged
-        # when verity = false. Mirrors lib/build/package-root-image.nix's
-        # `veritysetup format --salt <pinned> --uuid <pinned>` + roothash
-        # extraction + optional `openssl cms -sign` recipe. erofs needs no
+        # when verity = false. Uses `veritysetup format` with pinned salt and
+        # UUID, followed by roothash extraction and the optional
+        # `openssl cms -sign` recipe. erofs needs no
         # shrink/normalize step — it is content-sized and already -T0 -U fixed,
         # so the tree is over stable bytes.
         ++ lib.optional verity {
