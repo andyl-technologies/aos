@@ -87,7 +87,6 @@
             search_path = builtins.map lib.abilities.packageOutput [
               {}
               {package = "coreutils";}
-              {package = "systemd";}
               {package = "util-linux";}
             ];
           };
@@ -146,45 +145,6 @@
       };
     logging = true;
   };
-  systemdPackagedUnitAlias = "systemd-packaged-unit";
-  failureTarget = {
-    requirementTemplates.${systemdPackagedUnitAlias} =
-      lib.abilities.interfaceSelector {
-        name = "aos.systemd.packaged-unit";
-        abi = 1;
-      }
-      // {
-        description = "Retains the fail-closed boot identity isolation target.";
-        methods = ["observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-    requests."boot-identity-failure-target" = {
-      requirement = systemdPackagedUnitAlias;
-      consumer = consumerInstance;
-      scope = ["boot-identity-failure-target"];
-      parameters = {
-        source = {
-          artifact = packageArtifact;
-          unit_file = "lib/systemd/system/aos-boot-identity-failure.target";
-        };
-        activation = "reference";
-        prerequisites = [];
-        dependencies = {
-          after = [];
-          before = [];
-          requires = [];
-          wants = [];
-        };
-        drop_in = {
-          accepted_exit_statuses = [];
-          reload_triggers = [];
-          search_path = [];
-        };
-      };
-    };
-  };
   fragments = [
     deviceSettle
     initrdFilesystems
@@ -192,7 +152,6 @@
     identitySuccess
     identityGuard
     failureReport
-    failureTarget
   ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {

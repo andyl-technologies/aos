@@ -100,9 +100,6 @@ in
             sed 's|@bash@|${bash}|g' "$source" > "$destination"
             chmod 0555 "$destination"
           done
-          mkdir -p $out/lib/systemd/system
-          cp ${./_aos-boot-identity/aos-boot-identity-failure.target} \
-            $out/lib/systemd/system/
         '';
       }
     ];
