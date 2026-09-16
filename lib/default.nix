@@ -160,6 +160,13 @@
       };
     };
   qualification = import ./qualification.nix {inherit abilities;};
+  mkArtifactConsumptionAudit = args:
+    import ./build/artifact-consumption-audit.nix (
+      args
+      // {
+        lib = finalLib;
+      }
+    );
 
   platformMod = import ./platform.nix;
   derivations = import ./derivations.nix {inherit system bash;};
@@ -182,6 +189,7 @@
       inherit types system;
       inherit abilities;
       inherit qualification;
+      inherit mkArtifactConsumptionAudit;
       effects = abilities.effects;
       literalExpression = text: {
         _type = "literalExpression";

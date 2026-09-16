@@ -688,8 +688,8 @@ in
           then "ld-linux-x86-64.so.2"
           else "ld-linux-aarch64.so.1";
       in
-        import ../../lib/build/artifact-consumption-audit.nix {
-          inherit pkgs lib;
+        lib.mkArtifactConsumptionAudit {
+          inherit pkgs;
           name = "postgresql-openssl-linkage";
           consumer = self;
           consumerPath = "/bin/postgres";

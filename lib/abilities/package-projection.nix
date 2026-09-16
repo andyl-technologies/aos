@@ -106,12 +106,12 @@
     artifact = selector implementation.providerModule.artifact;
     inherit (implementation.providerModule) path;
   };
-  projectedHandler = context: handler:
-    (builtins.removeAttrs handler ["arguments" "result"])
-    // {
-      arguments = abilities.types.schemaOf "${context} arguments" handler.arguments;
-      result = abilities.types.schemaOf "${context} result" handler.result;
-    };
+  projectedHandler = context: handler: {
+    artifact = selector handler.artifact;
+    entry_point = handler.entryPoint;
+    arguments = abilities.types.schemaOf "${context} arguments" handler.arguments;
+    result = abilities.types.schemaOf "${context} result" handler.result;
+  };
   ownedResourceKinds = implementation: let
     declaration = interfaceFor implementation;
   in
@@ -225,6 +225,23 @@
     descriptor = identity.descriptor;
     value = document;
   }) (builtins.attrNames ownedInterfaceDocuments);
+  implementedInterfaceAliases = map (name: let
+    document = interfaceFor semanticImplementations.${name};
+    identity = abilities.interfaceIdentity document;
+  in {
+    name = localName name;
+    descriptor = identity.descriptor;
+    value = document;
+  }) implementationNames;
+  allInterfaceAliases = interfaceAliases ++ implementedInterfaceAliases;
+  projectedInterfaces = builtins.listToAttrs (map (entry: {
+      inherit (entry) name;
+      value = abilities.interfaceIdentity entry.value;
+    })
+    allInterfaceAliases);
+  interfaceAliasesAgree = builtins.all (
+    entry: projectedInterfaces.${entry.name} == abilities.interfaceIdentity entry.value
+  ) allInterfaceAliases;
   implementedInterfaceEntries = map (name: let
     document = interfaceFor semanticImplementations.${name};
     identity = abilities.interfaceIdentity document;
@@ -262,11 +279,10 @@
       inherit version;
     };
     artifacts = artifactSelectors;
-    interfaces = builtins.listToAttrs (map (entry: {
-        name = localName entry.name;
-        value = abilities.interfaceIdentity entry.value;
-      })
-      interfaceAliases);
+    interfaces =
+      if interfaceAliasesAgree
+      then projectedInterfaces
+      else throw "Package interface and implementation aliases resolve to conflicting declarations.";
     inherit guarantees;
     package_module =
       if packageModuleLocator == null

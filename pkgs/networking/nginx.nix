@@ -335,8 +335,8 @@ in
         pkgs.stdenv.hostPlatform.isLinux
         && builtins.elem pkgs.stdenv.hostPlatform.constraints.cpu ["aarch64" "x86_64"]
       ) {
-        openssl-consumption = import ../../lib/build/artifact-consumption-audit.nix {
-          inherit pkgs lib;
+        openssl-consumption = lib.mkArtifactConsumptionAudit {
+          inherit pkgs;
           name = "nginx-openssl-linkage";
           consumer = self;
           consumerPath = "/bin/nginx";
