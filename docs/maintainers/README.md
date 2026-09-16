@@ -69,9 +69,9 @@ HSM status from main's intended signing custody, provider integration, rotation,
 and recovery policy.
 
 [Plan and verify canonical releases](canonical-releases.md) documents the
-fail-closed four-platform release plan, source and authorization preconditions,
-and offline bundle verification. It also identifies which RFC-0017 publication
-phases are not yet authorized for production use.
+fail-closed release-selected target matrix, source and authorization
+preconditions, and offline bundle verification. It also identifies which
+RFC-0017 publication phases are not yet authorized for production use.
 
 [Maintain the AOS trust model](trust-model.md) defines the chain from source and
 release authorization through verified boot, image-baked anchors, signed

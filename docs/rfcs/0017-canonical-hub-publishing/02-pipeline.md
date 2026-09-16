@@ -35,8 +35,9 @@ At minimum the bundle inventories:
   and incident/waiver references; and
 - the release-tool and Hub deployment ids used for every transition.
 
-It also carries the closed four-target package eligibility matrix and both
-Linux architecture image matrices defined by
+It also carries the package eligibility matrix derived by applying the release
+policy's selected four targets to package-owned `platformSupport` declarations,
+plus both Linux architecture image matrices defined by
 [`06-platform-matrix.md`](06-platform-matrix.md). Every planned cell is an
 artifact, an explicit policy-backed `not-applicable`, or an edge/RC-only
 `blocked` result. Stable-eligible bundles contain no blocked cell.
