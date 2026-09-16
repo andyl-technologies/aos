@@ -63,8 +63,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest as _, Sha256};
 
 use super::model::{
-    ManagerCustodyEvidenceV2, ManagerCustodyOriginV2, ProviderIntentV2,
-    SourceProviderQueryAttemptV2, SourceProviderSessionV2, StoredEnvelopeV2, StoredRecordV2,
+    ManagerCustodyEvidenceV2, ManagerCustodyLossEvidenceV2, ManagerCustodyLossKindV2,
+    ManagerCustodyOriginV2, ProviderIntentV2, SourceProviderQueryAttemptV2,
+    SourceProviderSessionV2, StoredEnvelopeV2, StoredRecordV2,
 };
 use super::{MountSourceAcquisitionStateError, Result};
 

@@ -16,7 +16,8 @@ pub(super) fn validate_row(
     {
         return Err(state_error("acquisition row provider head is missing"));
     }
-    let request = decode_historical_acquire_mount_source_request(&row.mount_acquire_request)?;
+    let request = decode_historical_acquire_mount_source_request(&row.mount_acquire_request)
+        .map_err(|_| state_error("AOSMSA02 acquisition Mount request is invalid"))?;
     let request_digest = mount_source_acquisition_request_digest_v1(&row.mount_acquire_request);
     if row.revision == 0
         || row.record_digest == [0; 32]
@@ -659,7 +660,7 @@ pub(super) fn validate_row_attempt_evidence(
             attempt,
             acquisition_predecessor,
             inventory_digest,
-            inventory_observation_ordinal,
+            inventory_observation_ordinal: proof_inventory_observation_ordinal,
             projection_epoch,
         }) => {
             if row.release_terminal_attempt.is_some() {
@@ -689,10 +690,10 @@ pub(super) fn validate_row_attempt_evidence(
             if inventory.method != ProviderMethodV2::Inventory
                 || !is_complete(inventory)
                 || *inventory_digest == [0; 32]
-                || *inventory_observation_ordinal <= fence.inventory_observation_floor
-                || *inventory_observation_ordinal > head.inventory_observation_ordinal
+                || *proof_inventory_observation_ordinal <= fence.inventory_observation_floor
+                || *proof_inventory_observation_ordinal > head.inventory_observation_ordinal
                 || inventory_observation_ordinal(table, row.scope, inventory)?
-                    != *inventory_observation_ordinal
+                    != *proof_inventory_observation_ordinal
                 || *projection_epoch < fence.projection_epoch
                 || *projection_epoch > head.current_projection_epoch
                 || !attempt_happens_after(table, release_tail, inventory)?
@@ -710,7 +711,7 @@ pub(super) fn validate_row_attempt_evidence(
             {
                 return Err(state_error("provider Inventory release proof is invalid"));
             }
-            if *inventory_observation_ordinal == head.inventory_observation_ordinal
+            if *proof_inventory_observation_ordinal == head.inventory_observation_ordinal
                 && head.inventory_floor.as_ref().is_none_or(|floor| {
                     floor.attempt != *attempt || floor.inventory_digest != *inventory_digest
                 })
@@ -719,7 +720,7 @@ pub(super) fn validate_row_attempt_evidence(
                     "current Inventory ordinal differs from retained Release proof",
                 ));
             }
-            if *inventory_observation_ordinal < head.inventory_observation_ordinal {
+            if *proof_inventory_observation_ordinal < head.inventory_observation_ordinal {
                 let floor = head
                     .inventory_floor
                     .as_ref()

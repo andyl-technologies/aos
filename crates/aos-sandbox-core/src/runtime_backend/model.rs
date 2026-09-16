@@ -24,7 +24,7 @@ impl BackendOperationIdV1 {
     ///
     /// Returns [`RuntimeModelError::Unspecified`] for the zero sentinel.
     pub const fn new(bytes: [u8; 16]) -> Result<Self, RuntimeModelError> {
-        if bytes == [0; 16] {
+        if u128::from_be_bytes(bytes) == 0 {
             Err(RuntimeModelError::Unspecified)
         } else {
             Ok(Self(bytes))

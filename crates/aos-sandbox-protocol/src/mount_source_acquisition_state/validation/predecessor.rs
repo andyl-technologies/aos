@@ -490,7 +490,7 @@ pub(super) fn validate_predecessor_inventory_history(
             "provider-head predecessor Inventory floor does not reproduce",
         ));
     }
-    for later_complete in terminal
+    for later_complete in retained
         .into_iter()
         .filter(|candidate| is_complete(candidate))
     {

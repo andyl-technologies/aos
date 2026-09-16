@@ -6,36 +6,14 @@
 
 use aos_sandbox_core::ObjectDigest;
 
-use crate::crypto::SourceProviderSigningKeyV1;
 use crate::model::{
-    AcquireSourceRequestV1, InventoryLeaseStateV1, InventorySourceRequestV1,
-    ReleaseSourceRequestV1, SourceExportLeaseV1, SourceProviderInventoryEntryV1,
-    SourceProviderInventoryV1, SourceProviderReceiptV1, SourceReleaseReceiptV1,
+    AcquireSourceRequestV1, InventorySourceRequestV1, ReleaseSourceRequestV1, SourceExportLeaseV1,
+    SourceProviderInventoryEntryV1, SourceProviderInventoryV1, SourceReleaseReceiptV1,
 };
 use crate::proof::{
     BestEffortReplicaProofV1, ImmutablePublisherTreeProofV1, LocalLiveExportProofV1,
     ZfsHeldSnapshotProofV1,
 };
-
-impl SourceProviderSigningKeyV1 {
-    /// Returns the stable key ID.
-    #[must_use]
-    pub const fn key_id(&self) -> [u8; 16] {
-        self.key_id
-    }
-
-    /// Returns the key generation.
-    #[must_use]
-    pub const fn key_generation(&self) -> u64 {
-        self.key_generation
-    }
-
-    /// Returns SHA-256 over the exact Ed25519 public key.
-    #[must_use]
-    pub const fn public_key_digest(&self) -> ObjectDigest {
-        self.public_key_digest
-    }
-}
 
 impl AcquireSourceRequestV1 {
     /// Returns the exact deadline-free canonical `AOSMSEM1` bytes.
@@ -74,12 +52,6 @@ impl AcquireSourceRequestV1 {
         self.holder_authority_digest
     }
 
-    /// Returns the exclusive request deadline in Unix seconds.
-    #[must_use]
-    pub const fn deadline_seconds(&self) -> i64 {
-        self.deadline_seconds
-    }
-
     /// Returns the maximum requested provider lease duration.
     #[must_use]
     pub const fn requested_lease_seconds(&self) -> u64 {
@@ -112,12 +84,6 @@ impl AcquireSourceRequestV1 {
 }
 
 impl SourceExportLeaseV1 {
-    /// Returns the provider request ID that created this lease.
-    #[must_use]
-    pub const fn request_id(&self) -> [u8; 16] {
-        self.request_id
-    }
-
     /// Returns the stable Root Mount holder authority ID.
     #[must_use]
     pub const fn holder_authority_id(&self) -> [u8; 16] {
@@ -161,63 +127,7 @@ impl SourceExportLeaseV1 {
     }
 }
 
-impl SourceProviderReceiptV1 {
-    /// Returns the provider request ID.
-    #[must_use]
-    pub const fn request_id(&self) -> [u8; 16] {
-        self.request_id
-    }
-
-    /// Returns the digest of the exact acquisition query.
-    #[must_use]
-    pub const fn request_digest(&self) -> ObjectDigest {
-        self.request_digest
-    }
-
-    /// Returns the Mount-minted acquisition ID.
-    #[must_use]
-    pub const fn acquisition_id(&self) -> ObjectDigest {
-        self.acquisition_id
-    }
-
-    /// Returns the kernel boot ID claimed by the provider receipt.
-    #[must_use]
-    pub const fn kernel_boot_id(&self) -> [u8; 16] {
-        self.kernel_boot_id
-    }
-
-    /// Returns the device identity claimed by the provider receipt.
-    #[must_use]
-    pub const fn device(&self) -> u64 {
-        self.device
-    }
-
-    /// Returns the inode identity claimed by the provider receipt.
-    #[must_use]
-    pub const fn inode(&self) -> u64 {
-        self.inode
-    }
-
-    /// Returns the unique mount ID claimed by the provider receipt.
-    #[must_use]
-    pub const fn unique_mount_id(&self) -> u64 {
-        self.unique_mount_id
-    }
-
-    /// Returns the provider's digest of its complete proof claim.
-    #[must_use]
-    pub const fn observed_proof_digest(&self) -> ObjectDigest {
-        self.observed_proof_digest
-    }
-}
-
 impl ReleaseSourceRequestV1 {
-    /// Returns the claimed hello-transcript binding.
-    #[must_use]
-    pub const fn session_binding(&self) -> ObjectDigest {
-        self.session_binding
-    }
-
     /// Returns the client-to-provider sequence.
     #[must_use]
     pub const fn sequence(&self) -> u64 {
@@ -265,21 +175,9 @@ impl ReleaseSourceRequestV1 {
     pub const fn lease_digest(&self) -> ObjectDigest {
         self.lease_digest
     }
-
-    /// Returns the exclusive request deadline in Unix seconds.
-    #[must_use]
-    pub const fn deadline_seconds(&self) -> i64 {
-        self.deadline_seconds
-    }
 }
 
 impl InventorySourceRequestV1 {
-    /// Returns the claimed hello-transcript binding.
-    #[must_use]
-    pub const fn session_binding(&self) -> ObjectDigest {
-        self.session_binding
-    }
-
     /// Returns the client-to-provider sequence.
     #[must_use]
     pub const fn sequence(&self) -> u64 {
@@ -314,12 +212,6 @@ impl InventorySourceRequestV1 {
     #[must_use]
     pub const fn known_inventory_digest(&self) -> Option<ObjectDigest> {
         self.known_inventory_digest
-    }
-
-    /// Returns the exclusive request deadline in Unix seconds.
-    #[must_use]
-    pub const fn deadline_seconds(&self) -> i64 {
-        self.deadline_seconds
     }
 }
 
@@ -374,30 +266,6 @@ impl SourceReleaseReceiptV1 {
 }
 
 impl SourceProviderInventoryEntryV1 {
-    /// Returns the exact provider lease ID.
-    #[must_use]
-    pub const fn lease_id(&self) -> [u8; 16] {
-        self.lease_id
-    }
-
-    /// Returns the claimed digest of the exact signed lease.
-    #[must_use]
-    pub const fn lease_digest(&self) -> ObjectDigest {
-        self.lease_digest
-    }
-
-    /// Returns the Mount acquisition ID.
-    #[must_use]
-    pub const fn acquisition_id(&self) -> ObjectDigest {
-        self.acquisition_id
-    }
-
-    /// Returns the provider's claimed durable lease state.
-    #[must_use]
-    pub const fn state(&self) -> InventoryLeaseStateV1 {
-        self.state
-    }
-
     /// Returns the complete provider resource selection.
     #[must_use]
     pub const fn resource(&self) -> &crate::model::SourceResourceV1 {

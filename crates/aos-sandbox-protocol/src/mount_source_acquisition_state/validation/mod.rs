@@ -8,41 +8,43 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::semantics::project_final_mount_create_semantics_v1;
 use crate::{
-    MountSourcePhysicalProofV1, SourceRealizationBindingV1,
     decode_historical_acquire_mount_source_request, mount_source_acquisition_id_v1,
     mount_source_acquisition_request_digest_v1, mount_source_physical_proof_digest_v1,
     mount_source_proof_class_from_provider_v1, mount_source_realization_handle_v1,
+    MountSourcePhysicalProofV1, SourceRealizationBindingV1,
 };
 use aos_proto::aos::sandbox::local::v1::ReleaseMountSourceAcquisitionRequest;
 use aos_sandbox_core::{BrokerArgumentCommitment, ObjectDigest};
 use aos_sandbox_source_provider_protocol::{
-    InventoryLeaseStateV1, NormalizedAcquisitionIntentV2, SignedSourceExportLeaseV1,
-    SignedSourceProviderInventoryV1, SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1,
-    SignedSourceReleaseReceiptV1, SourceProviderAuthorityV1, SourceProviderDescriptorRole,
-    SourceProviderKeyUsageV1, SourceProviderSigningKeyV1, SourceResourceV1,
-    SourceRootObservationV1, SourceSelectionFloorV1, SourceUseV1, decode_acquire_request,
-    decode_inventory_request, decode_release_request, digest_acquire_request, digest_inventory,
-    digest_inventory_request, digest_logical_binding_bytes, digest_provider_proof,
-    digest_release_request, digest_signed_export_lease, prospective_mount_apply_template_digest_v1,
+    decode_acquire_request, decode_inventory_request, decode_release_request,
+    digest_acquire_request, digest_inventory, digest_inventory_request,
+    digest_logical_binding_bytes, digest_provider_proof, digest_release_request,
+    digest_signed_export_lease, prospective_mount_apply_template_digest_v1,
     provider_resource_commitment_v1, source_acquisition_id_v2,
     source_root_descriptor_commitment_v1, verify_inventory, verify_provider_receipt,
-    verify_provider_receipt_and_lease, verify_release_receipt,
+    verify_provider_receipt_and_lease, verify_release_receipt, InventoryLeaseStateV1,
+    NormalizedAcquisitionIntentV2, SignedSourceExportLeaseV1, SignedSourceProviderInventoryV1,
+    SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1, SignedSourceReleaseReceiptV1,
+    SourceProviderAuthorityV1, SourceProviderDescriptorRole, SourceProviderKeyUsageV1,
+    SourceProviderSigningKeyV1, SourceRootObservationV1, SourceSelectionFloorV1, SourceUseV1,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::checkpoint::{signer_matches, validate_attempt_checkpoint, validate_session_checkpoint};
 use super::format::{
-    MAXIMUM_LINEAGE_ATTEMPTS, MAXIMUM_SOURCE_ACQUISITIONS, MAXIMUM_SOURCE_HOLDER_SEQUENCES,
-    MAXIMUM_SOURCE_PROVIDER_ATTEMPTS, MAXIMUM_SOURCE_PROVIDER_HEADS,
-    MAXIMUM_SOURCE_PROVIDER_SESSIONS, attempt_id, death_digest, execution_digest, intent_digest,
-    record_digest, request_id, session_id, state_error,
+    attempt_id, death_digest, execution_digest, intent_digest, inventory_correlation_set_v2,
+    manager_custody_evidence_digest_v2, manager_custody_loss_evidence_digest_v2, record_digest,
+    request_id, session_id, state_error, transaction_id, validate_inventory_correlation_set_v2,
+    MutationTagV2, MAXIMUM_LINEAGE_ATTEMPTS, MAXIMUM_SOURCE_ACQUISITIONS,
+    MAXIMUM_SOURCE_HOLDER_SEQUENCES, MAXIMUM_SOURCE_PROVIDER_ATTEMPTS,
+    MAXIMUM_SOURCE_PROVIDER_HEADS, MAXIMUM_SOURCE_PROVIDER_SESSIONS,
 };
 use super::history::{attempt_is_terminal, validate_global_history};
 use super::model::*;
 use super::projection::{
-    inventory_entry_matches_evidence, project_row, project_scope, projection_from_entries,
-    reconciliation_conflict, reproduce_reconciliation,
+    inventory_correlation_for_row_v2, inventory_entry_matches_evidence, project_row, project_scope,
+    projection_from_entries, reconciliation_conflict, reproduce_reconciliation,
 };
 use super::{MountSourceAcquisitionStateError, Result, SourceAcquisitionTableV2};
 

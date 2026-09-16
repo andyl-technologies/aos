@@ -124,18 +124,10 @@ pub fn try_encode_environment(environment: &Environment) -> Result<Vec<u8>, Cano
 fn encode_environment_into(encoder: &mut Encoder, environment: &Environment) {
     encoder.array(5);
     encoder.unsigned(1);
-    encode_slice(&mut encoder, environment.closure(), encode_descriptor);
-    encode_slice(
-        &mut encoder,
-        environment.variables(),
-        encode_environment_entry,
-    );
-    encode_slice(&mut encoder, environment.command_search_path(), encode_path);
-    encode_slice(
-        &mut encoder,
-        environment.required_features(),
-        encode_feature,
-    );
+    encode_slice(encoder, environment.closure(), encode_descriptor);
+    encode_slice(encoder, environment.variables(), encode_environment_entry);
+    encode_slice(encoder, environment.command_search_path(), encode_path);
+    encode_slice(encoder, environment.required_features(), encode_feature);
 }
 
 fn environment_encoded_length(environment: &Environment) -> Result<usize, CanonicalCborError> {
@@ -489,10 +481,8 @@ mod tests {
     fn environment_round_trip_preserves_ordered_search_path() {
         let environment = Environment::new(
             vec![descriptor()],
-            vec![
-                EnvironmentEntry::new("PATH".to_owned(), "bin".to_owned())
-                    .unwrap_or_else(|error| panic!("test entry failed: {error}")),
-            ],
+            vec![EnvironmentEntry::new("PATH".to_owned(), "bin".to_owned())
+                .unwrap_or_else(|error| panic!("test entry failed: {error}"))],
             vec![crate::RelativePath::default()],
             Vec::new(),
         )

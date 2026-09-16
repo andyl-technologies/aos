@@ -8,12 +8,12 @@ use crate::{FeatureRef, GrantId, ObjectDigest, ResourceDimension, ResourceVector
 
 use super::{
     ExecutionAccessRouteV1, ExecutionCapturedOutputV1, ExecutionCapturedStreamKindV1,
-    ExecutionCommandV1, ExecutionEndpointCapabilityV1, ExecutionFailureReasonV1,
-    ExecutionObservationPhaseV1, ExecutionOutputModeV1, ExecutionResourceAdmissionV1,
-    ExecutionResourceRequestV1, ExecutionResourceRequestValueV1, ExecutionResourceSublimitV1,
-    ExecutionResourceSublimitValueV1, ExecutionTargetV1, ExecutionTerminalModeV1,
-    ExecutionTerminalResultV1, InvalidExecutionSpec, MAX_EXECUTION_ARGUMENT_BYTES,
-    MAX_EXECUTION_ARGUMENT_STRING_BYTES, MAX_EXECUTION_ARGUMENTS,
+    ExecutionCommandV1, ExecutionEndpointCapabilityV1, ExecutionEnvironmentEntry,
+    ExecutionFailureReasonV1, ExecutionObservationPhaseV1, ExecutionOutputModeV1,
+    ExecutionResourceAdmissionV1, ExecutionResourceRequestV1, ExecutionResourceRequestValueV1,
+    ExecutionResourceSublimitV1, ExecutionResourceSublimitValueV1, ExecutionTargetV1,
+    ExecutionTerminalModeV1, ExecutionTerminalResultV1, InvalidExecutionSpec,
+    MAX_EXECUTION_ARGUMENTS, MAX_EXECUTION_ARGUMENT_BYTES, MAX_EXECUTION_ARGUMENT_STRING_BYTES,
     MAX_EXECUTION_BASE_ENVIRONMENT_BYTES, MAX_EXECUTION_BASE_ENVIRONMENT_CBOR_ITEMS,
     MAX_EXECUTION_CAPTURED_STREAMS, MAX_EXECUTION_ENVIRONMENT_BYTES,
     MAX_EXECUTION_ENVIRONMENT_ENTRIES, OUTPUT_RESERVATION_COMMITMENT_DOMAIN,

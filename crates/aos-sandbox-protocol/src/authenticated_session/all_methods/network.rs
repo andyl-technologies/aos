@@ -4,10 +4,10 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerError, BrokerErrorCode, InventoryNetworksResponse, NetworkResult, NetworkState,
 };
 use aos_sandbox_core::FeatureRef;
-use buffa::{Enumeration as _, Message as _};
+use buffa::Message as _;
 
-use crate::ProtocolValidationError;
 use crate::semantics::{CanonicalNetworkSemanticsV1, NetworkOperation};
+use crate::ProtocolValidationError;
 
 pub(super) fn validate_network_apply_response(
     body: &[u8],

@@ -19,19 +19,19 @@ use aos_proto::aos::sandbox::local::v1::{
     MountSourceAcquisitionRecord, MountSourceProofClass, ReleaseMountSourceAcquisitionRequest,
     ReleaseMountSourceAcquisitionResponse,
 };
-use aos_sandbox_core::{ObjectDigest, ProtocolId, ProtocolVersion, encode_view_source};
+use aos_sandbox_core::{encode_view_source, ObjectDigest, ProtocolId, ProtocolVersion};
 use aos_sandbox_source_provider_protocol::{
-    MAXIMUM_SOURCE_LEASE_SECONDS, MAXIMUM_SOURCE_SUBMOUNTS, SourceRootObservationV1,
     digest_logical_binding_bytes, prospective_mount_apply_template_digest_v1,
-    source_root_descriptor_commitment_v1,
+    source_root_descriptor_commitment_v1, SourceRootObservationV1, MAXIMUM_SOURCE_LEASE_SECONDS,
+    MAXIMUM_SOURCE_SUBMOUNTS,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    MAXIMUM_REQUEST_BYTES, PeerCredentials, PeerPolicy, ProtocolValidationError,
-    SourceRealizationBindingV1, ValidatedAssignmentFence, ValidatedHeader, exact_nonzero,
-    validate_fence, validate_request_header,
+    exact_nonzero, validate_fence, validate_request_header, PeerCredentials, PeerPolicy,
+    ProtocolValidationError, SourceRealizationBindingV1, ValidatedAssignmentFence, ValidatedHeader,
+    MAXIMUM_REQUEST_BYTES,
 };
 
 const ACQUISITION_ID_DOMAIN: &[u8] = b"aos.sandbox.mount.source-acquisition-id.v1\0";
@@ -771,7 +771,17 @@ pub fn decode_mount_source_acquisition_inventory_response(
     bytes: &[u8],
     request: &ValidatedHeader,
 ) -> Result<ValidatedMountSourceAcquisitionInventory, ProtocolValidationError> {
-    if bytes.len() > request.maximum_response_bytes() as usize {
+    decode_mount_source_acquisition_inventory_response_with_maximum(
+        bytes,
+        request.maximum_response_bytes(),
+    )
+}
+
+pub(crate) fn decode_mount_source_acquisition_inventory_response_with_maximum(
+    bytes: &[u8],
+    maximum_response_bytes: u32,
+) -> Result<ValidatedMountSourceAcquisitionInventory, ProtocolValidationError> {
+    if bytes.len() > maximum_response_bytes as usize {
         return Err(ProtocolValidationError::ResponseTooLarge);
     }
     let response = InventoryMountSourceAcquisitionsResponse::decode_from_slice(bytes)
@@ -1188,7 +1198,11 @@ fn validate_record_presence(
                 return Err(ProtocolValidationError::InvalidField("fault"));
             }
             let from = from.ok_or(ProtocolValidationError::UnknownState)?;
-            if faulted { from } else { phase }
+            if faulted {
+                from
+            } else {
+                phase
+            }
         }
         None if faulted => return Err(ProtocolValidationError::MissingField("fault")),
         None => phase,

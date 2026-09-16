@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use sha2::{Digest as _, Sha256};
 
 use super::format::{
-    MAXIMUM_SOURCE_ACQUISITIONS, MAXIMUM_SOURCE_PROVIDER_HEADS, encode_mount_source_state_record_v2,
+    encode_mount_source_state_record_v2, MAXIMUM_SOURCE_ACQUISITIONS, MAXIMUM_SOURCE_PROVIDER_HEADS,
 };
 use super::migration_v1::{
     ProviderDispositionCheckpointV1, ProviderMethodV1, ProviderStatusV1, SourceAcquisitionPhaseV1,
@@ -19,8 +19,8 @@ use super::migration_v1::{
 };
 use super::model::{SourceAcquisitionPhaseV2, SourceAcquisitionProofClassV2, StoredRecordV2};
 use super::{
-    MountSourceAcquisitionStateError, MountSourceAcquisitionStateV2, Result,
-    validate_mount_source_state_graph_v2,
+    validate_mount_source_state_graph_v2, MountSourceAcquisitionStateError,
+    MountSourceAcquisitionStateV2, Result,
 };
 
 const LEGACY_SCHEMA: &str = "AOSMSA01";
@@ -434,8 +434,7 @@ fn validate_legacy_join(
             .get(&new.current_session_id)
             .ok_or_else(|| invalid("supplemental head session is absent"))?;
         let provider_outcome_signer = &session.signers[3];
-        if new.revision != old.revision
-            || new.scope.holder_authority_id != old.holder_authority_id
+        if new.scope.holder_authority_id != old.holder_authority_id
             || new.scope.provider_authority_id != old.provider_authority_id
             || new.scope.route_id != old.route_id
             || new.scope.resource_namespace_digest != old.resource_namespace_digest

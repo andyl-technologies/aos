@@ -18,9 +18,9 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    AcquireSourceRequestV1, MAXIMUM_SOURCE_LEASE_SECONDS, MAXIMUM_SOURCE_SUBMOUNTS,
-    SourceProviderAuthorityV1, SourceUseV1, digest_logical_binding_bytes,
-    prospective_mount_apply_template_digest_v1, source_acquisition_id_v2,
+    digest_logical_binding_bytes, prospective_mount_apply_template_digest_v1,
+    source_acquisition_id_v2, AcquireSourceRequestV1, SourceProviderAuthorityV1, SourceUseV1,
+    MAXIMUM_SOURCE_LEASE_SECONDS, MAXIMUM_SOURCE_SUBMOUNTS,
 };
 
 const MAXIMUM_APPLY_TEMPLATE_BYTES: usize = 2_048;
@@ -365,8 +365,10 @@ impl NormalizedAcquisitionIntentV1 {
             || self.prospective_apply_template.len() > MAXIMUM_APPLY_TEMPLATE_BYTES
             || self.binding.is_empty()
             || self.binding.len() > MAXIMUM_LOGICAL_BINDING_BYTES
-            || prospective_mount_apply_template_digest_v1(&self.prospective_apply_template)
-                != self.prospective_apply_template_digest
+            || !matches!(
+                prospective_mount_apply_template_digest_v1(&self.prospective_apply_template),
+                Ok(digest) if digest == self.prospective_apply_template_digest
+            )
             || digest_logical_binding_bytes(&self.binding) != self.binding_digest
         {
             return Err(NormalizedAcquisitionIntentError::Invalid);

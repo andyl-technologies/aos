@@ -12,6 +12,17 @@ const OPERATION_REQUEST_DOMAIN: &[u8] = b"aos-sandbox-agent-operation-v1\0";
 const MAX_EXECUTION_SPEC_BYTES: usize = 15 * 1_048_576;
 const MAX_AGENT_RESULT_BYTES: usize = 1_048_576;
 
+const fn contains_nonzero<const N: usize>(bytes: &[u8; N]) -> bool {
+    let mut index = 0;
+    while index < N {
+        if bytes[index] != 0 {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
 /// Identifies the exact node-internal agent protocol version.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AgentProtocolVersionV1;
@@ -41,7 +52,7 @@ impl AgentSessionIdV1 {
     ///
     /// Returns [`InvalidAgentModel::Unspecified`] for the zero sentinel.
     pub const fn new(bytes: [u8; 16]) -> Result<Self, InvalidAgentModel> {
-        if bytes == [0; 16] {
+        if !contains_nonzero(&bytes) {
             Err(InvalidAgentModel::Unspecified)
         } else {
             Ok(Self(bytes))
@@ -66,7 +77,7 @@ impl AgentNonceV1 {
     ///
     /// Returns [`InvalidAgentModel::Unspecified`] for the zero sentinel.
     pub const fn new(bytes: [u8; 32]) -> Result<Self, InvalidAgentModel> {
-        if bytes == [0; 32] {
+        if !contains_nonzero(&bytes) {
             Err(InvalidAgentModel::Unspecified)
         } else {
             Ok(Self(bytes))
@@ -419,7 +430,7 @@ impl AgentOperationIdV1 {
     ///
     /// Returns [`InvalidAgentModel::Unspecified`] for the zero sentinel.
     pub const fn new(bytes: [u8; 16]) -> Result<Self, InvalidAgentModel> {
-        if bytes == [0; 16] {
+        if !contains_nonzero(&bytes) {
             Err(InvalidAgentModel::Unspecified)
         } else {
             Ok(Self(bytes))

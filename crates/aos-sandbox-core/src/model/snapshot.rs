@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     AssignmentEpoch, AttachmentSlotId, FeatureRef, IncarnationId, IssuerId, NetworkEndpointId,
-    ObjectDescriptor, ObjectDigest, RestoreScopeId, SandboxId, SecretId, ServiceId,
+    ObjectDescriptor, ObjectDigest, ResourceId, RestoreScopeId, SandboxId, SecretId, ServiceId,
 };
 
 use super::ViewMutation;

@@ -7,6 +7,8 @@
 
 use std::collections::BTreeMap;
 
+use format::decode_value;
+
 #[doc(hidden)]
 pub mod checkpoint;
 #[doc(hidden)]
@@ -29,24 +31,25 @@ pub use floor::{
     protocol_selection_floor_v2, selection_floor_snapshot_v2,
 };
 pub use format::{
-    MAXIMUM_SOURCE_ACQUISITIONS, MAXIMUM_SOURCE_HOLDER_SEQUENCES, MAXIMUM_SOURCE_PROVIDER_ATTEMPTS,
-    MAXIMUM_SOURCE_PROVIDER_HEADS, MAXIMUM_SOURCE_PROVIDER_SESSIONS, MutationTagV2, RecordKindV2,
     acquisition_key, attempt_id, encode_mount_source_state_record_v2, holder_sequence_key,
     intent_digest, inventory_correlation_set_v2, key_kind, manager_custody_evidence_digest_v2,
     manager_custody_loss_evidence_digest_v2, mount_source_consumption_companion_digest_v2,
     provider_attempt_key, provider_head_key, provider_session_key, record_digest, request_id,
-    seal_record, session_id, transaction_id, validate_inventory_correlation_set_v2,
+    seal_record, session_id, transaction_id, validate_inventory_correlation_set_v2, MutationTagV2,
+    RecordKindV2, MAXIMUM_SOURCE_ACQUISITIONS, MAXIMUM_SOURCE_HOLDER_SEQUENCES,
+    MAXIMUM_SOURCE_PROVIDER_ATTEMPTS, MAXIMUM_SOURCE_PROVIDER_HEADS,
+    MAXIMUM_SOURCE_PROVIDER_SESSIONS,
 };
 pub use migration::{
+    decode_mount_source_state_graph_v1, plan_mount_source_state_migration_v2,
     LegacyMountSourceStateV1, MountSourceStateMigrationDispositionV2,
-    MountSourceStateMigrationPlanV2, decode_mount_source_state_graph_v1,
-    plan_mount_source_state_migration_v2,
+    MountSourceStateMigrationPlanV2,
 };
 pub use model::*;
 pub use projection::{
-    ProjectionV2, inventory_correlation_for_row_v2, inventory_entry_matches_evidence, project_row,
-    project_scope, projection_entries, projection_from_entries, reconciliation_commitment,
-    reproduce_reconciliation,
+    inventory_correlation_for_row_v2, inventory_entry_matches_evidence, project_row, project_scope,
+    projection_entries, projection_from_entries, reconciliation_commitment,
+    reproduce_reconciliation, ProjectionV2,
 };
 pub use validation::validate_recovered_table;
 

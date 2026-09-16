@@ -11,10 +11,10 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, BrokerRequestEnvelope, InventoryNetworksRequest,
 };
 use aos_sandbox_broker_session_protocol::{
-    BrokerOutcomeAdmissionV1, BrokerRequestAdmissionV1, BrokerSessionMethodProfileV1,
-    BrokerSessionReplayEvidenceV1, BrokerSessionSequenceError, BrokerSessionTrafficStateV1,
-    ProtectedBrokerSessionVerificationContextV1, authenticated_broker_method_profile_v1,
-    decode_canonical_request_v1, decode_canonical_response_v1,
+    authenticated_broker_method_profile_v1, decode_canonical_request_v1,
+    decode_canonical_response_v1, BrokerOutcomeAdmissionV1, BrokerRequestAdmissionV1,
+    BrokerSessionMethodProfileV1, BrokerSessionReplayEvidenceV1, BrokerSessionSequenceError,
+    BrokerSessionTrafficStateV1, ProtectedBrokerSessionVerificationContextV1,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -26,30 +26,30 @@ use crate::mount_catalog::{
     decode_mount_catalog_preparation, decode_mount_catalog_preparation_response,
 };
 use crate::mount_scope::{decode_mount_scope_request, decode_mount_scope_response};
+use crate::mount_source_acquisition::decode_mount_source_acquisition_inventory_response_with_maximum;
 use crate::payload_scope::{decode_payload_scope_request, decode_payload_scope_response};
 use crate::semantics::mount_scope::canonical_mount_scope_semantics_v1;
 use crate::semantics::payload_scope::canonical_payload_scope_semantics_v1;
 use crate::semantics::{
-    CanonicalNetworkSemanticsV1, CanonicalStoragePreparationSemanticsV1,
-    CanonicalStorageRepairSemanticsV1, CanonicalStorageSemanticsV1, CatalogBindingV1,
-    MountCatalogBindingV1, canonical_acquire_mount_source_semantics_v1,
-    canonical_destination_slot_semantics_v1, canonical_host_semantics_v1,
-    canonical_mount_semantics_v1, canonical_release_mount_source_acquisition_semantics_v1,
+    canonical_acquire_mount_source_semantics_v1, canonical_destination_slot_semantics_v1,
+    canonical_host_semantics_v1, canonical_mount_semantics_v1,
+    canonical_release_mount_source_acquisition_semantics_v1, CanonicalNetworkSemanticsV1,
+    CanonicalStoragePreparationSemanticsV1, CanonicalStorageRepairSemanticsV1,
+    CanonicalStorageSemanticsV1, CatalogBindingV1, MountCatalogBindingV1,
 };
 use crate::{
-    PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedBrokerError,
-    ValidatedBrokerRequestEnvelope, ValidatedHeader, decode_acquire_mount_source_request,
-    decode_acquire_mount_source_response, decode_destination_slot_inventory_request,
-    decode_destination_slot_inventory_response, decode_destination_slot_request,
-    decode_inventory_runtime_request_v1, decode_mount_inventory_request,
-    decode_mount_inventory_response, decode_mount_request, decode_mount_result_for_apply,
-    decode_mount_source_acquisition_inventory_request,
-    decode_mount_source_acquisition_inventory_response, decode_network_resource_inventory_request,
-    decode_network_resource_inventory_response, decode_observe_runtime_request_v1,
-    decode_query_runtime_effect_request_v1, decode_query_runtime_effect_response,
-    decode_release_mount_source_acquisition_request,
+    decode_acquire_mount_source_request, decode_acquire_mount_source_response,
+    decode_destination_slot_inventory_request, decode_destination_slot_inventory_response,
+    decode_destination_slot_request, decode_inventory_runtime_request_v1,
+    decode_mount_inventory_request, decode_mount_inventory_response, decode_mount_request,
+    decode_mount_result_for_apply, decode_mount_source_acquisition_inventory_request,
+    decode_network_resource_inventory_request, decode_network_resource_inventory_response,
+    decode_observe_runtime_request_v1, decode_query_runtime_effect_request_v1,
+    decode_query_runtime_effect_response, decode_release_mount_source_acquisition_request,
     decode_release_mount_source_acquisition_response, decode_storage_resource_inventory_request,
     decode_storage_resource_inventory_response, validate_runtime_effect_receipt_for_apply,
+    PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedBrokerError,
+    ValidatedBrokerRequestEnvelope, ValidatedHeader,
 };
 
 use super::{
@@ -1375,7 +1375,11 @@ fn validate_success_semantics(
             let RequestOutcomeContextV1::HostQuery(original) = &request.outcome_context else {
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             };
-            decode_query_runtime_effect_response(body, original)?;
+            let original_apply = original
+                .original_apply_candidate()
+                .canonical_request()
+                .ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
+            decode_query_runtime_effect_response(body, original_apply)?;
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE => {
             let RequestOutcomeContextV1::PayloadScope(original) = &request.outcome_context else {
@@ -1456,7 +1460,7 @@ fn validate_success_semantics(
             decode_release_mount_source_acquisition_response(body, original)?;
         }
         BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
-            decode_mount_source_acquisition_inventory_response(body, maximum)?;
+            decode_mount_source_acquisition_inventory_response_with_maximum(body, maximum)?;
         }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);

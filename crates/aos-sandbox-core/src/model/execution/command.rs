@@ -9,13 +9,14 @@ use crate::{
 };
 
 use super::validation::{
-    runtime_argument_evidence_commitment, validate_arguments, validate_environment_overlay,
-    visit_effective_environment,
+    runtime_argument_evidence_commitment, strictly_increasing, validate_arguments,
+    validate_environment_overlay, visit_effective_environment,
 };
 use super::{
-    EFFECTIVE_ENVIRONMENT_DIGEST_DOMAIN, EXEC_ARGUMENT_FIXED_HEADROOM_BYTES,
-    EXEC_ARGUMENT_POINTER_BYTES, InvalidExecutionSpec, MAX_EXECUTION_ENVIRONMENT_NAME_BYTES,
+    InvalidExecutionSpec, EFFECTIVE_ENVIRONMENT_DIGEST_DOMAIN, EXEC_ARGUMENT_FIXED_HEADROOM_BYTES,
+    EXEC_ARGUMENT_POINTER_BYTES, MAX_EXECUTION_ENVIRONMENT_NAME_BYTES,
     MAX_EXECUTION_ENVIRONMENT_VALUE_BYTES, MAX_EXECUTION_STRING_BYTES,
+    MAX_EXECUTION_SUPPLEMENTARY_GROUPS,
 };
 
 /// Stores a nonzero payload boot identity observed for one runtime generation.

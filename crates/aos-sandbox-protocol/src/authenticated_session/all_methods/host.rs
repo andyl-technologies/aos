@@ -4,7 +4,7 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerError, BrokerErrorCode, InventoryRuntimeResponse, RuntimeObservation, RuntimeState,
 };
 use aos_sandbox_core::FeatureRef;
-use buffa::{Enumeration as _, Message as _};
+use buffa::Message as _;
 
 use crate::{ProtocolValidationError, ValidatedObserveRuntimeRequestV1};
 

@@ -101,7 +101,7 @@ pub fn project_legacy_handshake_request_v1(
 ) -> Result<LegacyHandshakeProjectionV1, LegacyGuestAdapterError> {
     let header = request
         .header
-        .as_ref()
+        .as_option()
         .ok_or(LegacyGuestAdapterError::MissingField)?;
     validate_header(header)?;
     let request_id = exact_array(&header.request_id)?;
@@ -110,7 +110,7 @@ pub fn project_legacy_handshake_request_v1(
     }
     let fence = request
         .fence
-        .as_ref()
+        .as_option()
         .ok_or(LegacyGuestAdapterError::MissingField)?;
     let projected = project_fence(fence)?;
     let challenge = exact_array(&request.challenge)?;
@@ -139,13 +139,13 @@ pub fn project_legacy_execution_request_v1(
 ) -> Result<LegacyExecutionProjectionV1, LegacyGuestAdapterError> {
     let header = request
         .header
-        .as_ref()
+        .as_option()
         .ok_or(LegacyGuestAdapterError::MissingField)?;
     validate_header(header)?;
     let request_id = exact_array(&header.request_id)?;
     let fence = request
         .fence
-        .as_ref()
+        .as_option()
         .ok_or(LegacyGuestAdapterError::MissingField)?;
     let (sandbox, incarnation, assignment_epoch, desired_generation, assignment_digest) =
         project_fence(fence)?;
@@ -161,8 +161,10 @@ pub fn project_legacy_execution_request_v1(
     {
         return Err(LegacyGuestAdapterError::Sentinel);
     }
-    let action = match GuestExecutionAction::try_from(request.action)
-        .map_err(|_| LegacyGuestAdapterError::UnknownAction)?
+    let action = match request
+        .action
+        .as_known()
+        .ok_or(LegacyGuestAdapterError::UnknownAction)?
     {
         GuestExecutionAction::GUEST_EXECUTION_ACTION_AUTHORIZE
             if request.terminal_rows == 0
@@ -239,14 +241,16 @@ pub fn legacy_handshake_response_v1(response: &AgentHandshakeResponseV1) -> Gues
             namespace: "aos.sandbox.guest-agent".to_owned(),
             major: 1,
             minor: 0,
-        }),
+            ..Default::default()
+        })
+        .into(),
         features: response
             .features()
             .as_slice()
             .iter()
             .map(proto_feature)
             .collect(),
-        error: None,
+        ..Default::default()
     }
 }
 
@@ -296,7 +300,7 @@ pub fn legacy_execution_result_v1(
         exit_code,
         termination_reason,
         observation_sequence: outcome.sequence().get(),
-        error: None,
+        ..Default::default()
     })
 }
 
@@ -313,6 +317,7 @@ fn proto_feature(feature: &AgentFeatureV1) -> Feature {
         namespace: format!("aos.sandbox.guest-agent.{suffix}"),
         major: 1,
         minor: 0,
+        ..Default::default()
     }
 }
 
@@ -320,7 +325,7 @@ fn validate_header(header: &RequestHeader) -> Result<(), LegacyGuestAdapterError
     if header.protocol_major != 1
         || header.protocol_minor != 0
         || header.request_id.len() != 16
-        || header.audience != Audience::AUDIENCE_GUEST_AGENT.into()
+        || header.audience != Audience::AUDIENCE_GUEST_AGENT
         || header.deadline_boottime_nanoseconds == 0
         || !(4_096..=16 * 1_048_576).contains(&header.maximum_response_bytes)
     {
