@@ -180,62 +180,23 @@ def rollout_host(
     request: dict[str, Any],
     mode: str,
     label: str,
-    provider_incarnation_revision: str | None = None,
-    alternate_provider_incarnation_revision: str | None = None,
-    provider_package: str = "compatible",
-    provider_adoption_source_package: str | None = None,
-    provider_adoption_from: str | None = None,
-    provider_adoption_current_planning: str | None = None,
-    return_activation: bool = False,
-) -> Any:
-    """Writes an authenticated candidate host that retains the observer."""
+) -> str:
+    """Writes operator intent resolved to the selected production provider."""
 
-    activation = generate_rollout_activation(
-        request,
-        mode,
-        label,
-        provider_incarnation_revision,
-        alternate_provider_incarnation_revision,
-        provider_package,
-        provider_adoption_source_package,
-        provider_adoption_from,
-        provider_adoption_current_planning,
-    )
     path = f"/var/lib/aos/ability-boundary-test/rollout-host-{label}.nix"
-    selected_packages = [
-        (
-            "ability-reference-image-rollout-incompatible"
-            if provider_package == "incompatible"
-            else "ability-reference-image-rollout"
-        )
-    ]
-    if provider_adoption_source_package == "compatible":
-        selected_packages.append("ability-reference-image-rollout")
-    write_rollout_host(
-        path, activation, OBSERVER_HOST_MODULE, sorted(set(selected_packages))
-    )
+    write_rollout_host(path, request, OBSERVER_HOST_MODULE, mode != "retire")
     runtime.succeed(f"{OBSERVER_CONTROLLER} persist-file {shlex.quote(path)}")
-    return (path, activation) if return_activation else path
+    return path
 
 
 def settle_initial_rollout(
     request: dict[str, Any],
     label: str,
     mode: str = "rollout",
-    provider_incarnation_revision: str | None = None,
-    alternate_provider_incarnation_revision: str | None = None,
 ) -> None:
     """Completes one healthy rollout so a later retirement is authorized."""
 
-    host = rollout_host(
-        request,
-        mode,
-        label,
-        provider_incarnation_revision=provider_incarnation_revision,
-        alternate_provider_incarnation_revision=(
-            alternate_provider_incarnation_revision
-        ),
-    )
+    host = rollout_host(request, mode, label)
     boot_id = runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip()
     try:
         runtime.succeed(
@@ -271,24 +232,20 @@ def run_rollout_cancellation_cell(cell_id: str, evidence_builder: Any) -> None:
         f"{SYSTEMCTL} is-active --quiet multi-user.target", timeout=420
     )
     runtime.assert_published_image("predecessor")
-    publish_rollout_package()
     runtime.stage_published_candidate()
     candidate = stage_candidate()
     request = rollout_request(candidate)
 
-    baseline_label = "rollout-cancel-baseline"
-    runtime.expect_published_image("candidate")
-    settle_initial_rollout(
-        request, baseline_label, mode="qualification-rollout"
-    )
-    runtime.assert_published_image("candidate")
-
     if method == "retire":
+        baseline_label = "rollout-cancel-baseline"
+        runtime.expect_published_image("candidate")
+        settle_initial_rollout(request, baseline_label)
+        runtime.assert_published_image("candidate")
         deadline = request["retention_expires_at_millis"] // 1000 + 1
         runtime.succeed(f"{DATE} -s @{deadline}")
 
     label = "rollout-cancel-" + method.replace("-", "_")
-    host = rollout_host(request, f"qualification-{method}", label)
+    host = rollout_host(request, "retire" if method == "retire" else "rollout", label)
     flight = EFFECT_FLIGHT.EffectFlight(
         cell_id=cell_id,
         interface=interface,
@@ -332,7 +289,6 @@ def run_rollout_cell(cell_id: str, evidence_builder: Any) -> None:
         raise RuntimeError(f"rollout cohort received foreign adapter {adapter!r}")
     bootstrap_rollout_host()
     publish_system_candidate()
-    publish_rollout_package()
     candidate = stage_candidate()
     request = rollout_request(candidate)
     label = "rollout-" + method.replace("-", "_") + "-" + cell_id.rsplit("/", 1)[-1]

@@ -27,10 +27,9 @@
       };
     };
   '';
-  rollout = import ./_image-rollout-runtime-reference.nix {
-    inherit lib pkgs;
+  rollout = import ./_image-rollout-production.nix {
+    inherit pkgs cellId nativeAdapterMatrix;
     guestTools = true;
-    qualificationCell = true;
   };
 in
   import ./_ability-cancellation-cohort.nix {

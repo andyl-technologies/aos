@@ -2,8 +2,35 @@
 {
   pkgs,
   guestTools ? false,
-  qualificationSubject ? null,
+  nativeAdapterMatrix ? null,
+  cellId ? null,
 }: let
+  qualificationCell =
+    if nativeAdapterMatrix == null && cellId == null
+    then null
+    else let
+      matches = builtins.filter (cell: cell.id == cellId) nativeAdapterMatrix.applicable_cells;
+    in
+      assert nativeAdapterMatrix != null && cellId != null;
+      assert builtins.length matches == 1;
+        builtins.head matches;
+  qualificationAdapter =
+    if qualificationCell == null
+    then null
+    else let
+      matches = builtins.filter (
+        adapter: adapter.adapter == qualificationCell.adapter
+      ) nativeAdapterMatrix.spec.surface.adapters;
+    in
+      assert builtins.length matches == 1;
+        builtins.head matches;
+  qualificationSubject =
+    if qualificationCell == null
+    then null
+    else {
+      cell = qualificationCell;
+      adapter = qualificationAdapter;
+    };
   packageProjection = pkgs.aos.contract.value;
   qualificationImplementations = map (name: {
     inherit name;
