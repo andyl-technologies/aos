@@ -6,7 +6,6 @@
   ...
 }: let
   cfg = config.aos.sandbox.networkBroker;
-  controller = config.aos.sandbox.controller;
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = [
     {
@@ -22,6 +21,28 @@
     }
   ];
   brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
+  authorityCredentialFields = {
+    brokerPlanPolicy = "broker-plan-policy.cbor";
+    brokerPlanPublicKey = "broker-plan-public-key";
+    brokerRevocationScope = "broker-revocation-scope";
+    ownershipLeasePolicy = "ownership-lease-policy.cbor";
+    ownershipLeasePublicKey = "ownership-lease-public-key";
+    nodeId = "node-id";
+    journalMacKey = "journal-mac-key";
+    networkPolicyCatalog = "network-policy.catalog";
+  };
+  configuredAuthorityCredentials =
+    lib.filterAttrs (name: _: cfg.credentials.${name} != null) authorityCredentialFields;
+  anyAuthorityCredential = configuredAuthorityCredentials != {};
+  completeAuthorityCredentials =
+    builtins.length (builtins.attrNames configuredAuthorityCredentials)
+    == builtins.length (builtins.attrNames authorityCredentialFields);
+  authorityLoadCredentials =
+    lib.optionals completeAuthorityCredentials
+    (lib.mapAttrsToList (
+        name: _: "${authorityCredentialFields.${name}}:/run/credentials/@system/${cfg.credentials.${name}}"
+      )
+      authorityCredentialFields);
   protectedRoots = config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
   protectedRootsUnit = "aos-sandbox-network-roots.service";
   runtimeRootsExecutable = "${pkgs.aos-selinux-runtime-roots}/bin/aos-selinux-runtime-roots";
@@ -48,7 +69,15 @@ in {
       description = "The simultaneous Network namespace custody ceiling; 1024 keeps systemd's LISTEN_FDNAMES environment string below Linux's per-string exec limit.";
     };
 
-    credentials = brokerSession.mkOptions brokerSessionEndpoints;
+    credentials =
+      lib.mapAttrs (name: credentialFile:
+        lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
+        })
+      authorityCredentialFields
+      // brokerSession.mkOptions brokerSessionEndpoints;
   };
 
   config = lib.mkIf cfg.enable {
@@ -57,6 +86,10 @@ in {
         {
           assertion = config.aos.services.dbus.enable;
           message = "aos.sandbox.networkBroker requires aos.services.dbus for bounded systemd FD-store readback";
+        }
+        {
+          assertion = !anyAuthorityCredential || completeAuthorityCredentials;
+          message = "aos.sandbox.networkBroker authority and policy credentials must be configured together";
         }
       ]
       ++ brokerSessionConfiguration.assertions;
@@ -136,8 +169,8 @@ in {
           ExecStartPre =
             lib.optional protectedRoots "+${runtimeRootsCommand}"
             ++ brokerSessionConfiguration.installCommands;
-          ExecStart = "${cfg.package}/bin/aos-netd ${toString controller.uid} ${toString controller.gid}";
-          LoadCredential = brokerSessionConfiguration.loadCredentials;
+          ExecStart = "${cfg.package}/bin/aos-netd";
+          LoadCredential = authorityLoadCredentials ++ brokerSessionConfiguration.loadCredentials;
           Restart = "on-failure";
           RestartSec = "2s";
           FileDescriptorStoreMax = cfg.maximumRetainedNamespaces;
@@ -147,10 +180,8 @@ in {
           RuntimeDirectoryPreserve = "restart";
           UMask = "0077";
 
-          # This deployed broker remains capability-free and inventory-only.
-          # The internal preparation path isolates mutation in a fixed one-shot
-          # worker; public Apply awaits production composition and P0-06
-          # qualification.
+          # Kernel mutation remains isolated in fixed one-shot workers. The
+          # broker itself retains no ambient network-administration capability.
           CapabilityBoundingSet = "";
           DevicePolicy = "closed";
           LimitNOFILE = cfg.maximumRetainedNamespaces + 128;

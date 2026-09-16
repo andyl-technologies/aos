@@ -38,6 +38,10 @@ path = "src/bin/aos-sandbox-hostd.rs"
 name = "aos-storaged"
 path = "src/bin/aos-storaged.rs"
 
+[[bin]]
+name = "aos-netd"
+path = "src/bin/aos-netd.rs"
+
 [dev-dependencies]
 hex.workspace = true
 rustix = { workspace = true, features = ["net", "pipe"] }

@@ -41,7 +41,7 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-netd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-netd"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-lifecycle-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-namespace-inspector"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-worker"
@@ -55,7 +55,12 @@ in
     pname = "aos-netd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-network";
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-netd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-lifecycle-worker"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-namespace-inspector"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-worker"
+    ];
     cargoTestFlags = "-p aos-sandbox-network";
     cargoNextest = true;
     doCheck = true;

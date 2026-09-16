@@ -68,8 +68,10 @@ pub mod nftables_reader;
 pub mod policy;
 pub mod preparation_catalog;
 pub mod preparation_runtime;
+mod protected_policy;
 pub mod rtnetlink_reader;
 pub mod service;
+mod session_runtime;
 pub mod state;
 mod systemd_socket_instance;
 #[allow(
@@ -86,6 +88,7 @@ pub use allocation::{
     NetworkInterfaceNameV1, NetworkIpAddressV1, NetworkMacAddressV1, NetworkNamespacePlanV1,
     NetworkRouteV1,
 };
+pub use authorization::NetworkAuthorityConfigError;
 pub use authorization::{NetworkAdmissionError, NetworkAuthorityV1};
 pub use broker::{
     NetworkAdmissionOutcome, NetworkBrokerError, NetworkLifecycleAdmissionCoordinator,
@@ -174,10 +177,12 @@ pub use preparation_runtime::{
     begin_network_preparation_once, finalize_executed_network_preparation,
     finalize_recovered_ambiguous_network_preparation, publish_committed_network_preparation,
 };
+pub use protected_policy::{NETWORK_POLICY_CATALOG_FILE_NAME, ProtectedNetworkPolicyErrorV1};
 pub use rtnetlink_reader::{
     FixedRtnetlinkObservationReader, RtnetlinkLinkInventoryV1, RtnetlinkNamespaceInventoryV1,
 };
 pub use service::{NetworkConnectionOutcome, NetworkInventoryService, NetworkServiceError};
+pub use session_runtime::{NetworkBrokerSessionRuntimeErrorV1, NetworkBrokerSessionRuntimeV1};
 pub use state::{
     CommittedNetworkResultV1, DurableNetworkPhase, NetworkNamespaceCustodyV1, NetworkRecoveryEntry,
     NetworkRecoverySnapshotV1, NetworkStateError, NetworkStateStore, VerifiedNetworkResultV1,
