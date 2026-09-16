@@ -11,11 +11,12 @@
     description = "dnsmasq service checks";
     checks = [
       {
-        name = "dnsmasq-active";
-        description = "dnsmasq remains active after startup";
+        name = "local-dns-query";
+        description = "dnsmasq answers a local DNS request";
         script = ''
           vm.wait_until_succeeds(
-              "systemctl is-active --quiet dnsmasq.service", timeout=30
+              "dig -p ${toString config.aos.services.dnsmasq.port} @127.0.0.1 localhost A +short | grep -Fx 127.0.0.1",
+              timeout=30,
           )
         '';
       }

@@ -16,19 +16,12 @@ in {
     description = "Docker service checks";
     checks = [
       {
-        name = "docker-active";
-        description = "Docker reaches its ready state";
-        script = ''
-          vm.wait_until_succeeds(
-              "systemctl is-active --quiet docker.service", timeout=60
-          )
-        '';
-      }
-      {
         name = "docker-api";
         description = "The Docker CLI reaches the local daemon and plugins";
         script = ''
-          vm.succeed("docker version --format '{{.Server.Version}}'")
+          vm.wait_until_succeeds(
+              "docker version --format '{{.Server.Version}}'", timeout=60
+          )
           vm.succeed("docker info --format '{{.Driver}}' | grep -Fx '${storageDriver}'")
           vm.succeed("docker buildx version")
           vm.succeed("docker compose version")

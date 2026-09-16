@@ -504,13 +504,6 @@ in {
           description = "SSH server checks";
           checks = [
             {
-              name = "sshd-active";
-              description = "sshd service is active";
-              script = ''
-                vm.succeed("systemctl is-active sshd")
-              '';
-            }
-            {
               name = "sshd-config";
               description = "sshd_config exists";
               script = ''
@@ -569,19 +562,23 @@ in {
               script = ''
                 import textwrap
 
-                ssh_output = vm.succeed(
+                vm.succeed(
                     textwrap.dedent(r"""
                         set -e
                         ssh-keygen -t ed25519 -N "" -f /tmp/aos-test-key -q
                         cat /tmp/aos-test-key.pub > /etc/ssh/authorized_keys/root
-                        systemctl is-active --quiet sshd || systemctl start sshd
+                    """).strip()
+                )
+                ssh_output = vm.wait_until_succeeds(
+                    textwrap.dedent(r"""
                         ssh -i /tmp/aos-test-key \
                           -o StrictHostKeyChecking=no \
                           -o UserKnownHostsFile=/dev/null \
                           -o BatchMode=yes \
                           -o LogLevel=ERROR \
                           root@127.0.0.1 'echo $PATH'
-                    """).strip()
+                    """).strip(),
+                    timeout=30,
                 )
                 assert "/run/current-system/sw/bin" in ssh_output, (
                     f"non-interactive ssh PATH missing expected entries: {ssh_output!r}"

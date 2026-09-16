@@ -14,19 +14,8 @@
       aos.security.polkit.enable = true;
 
       system.checks.libvirt = {
-        description = "Libvirt daemon and local connection checks";
+        description = "Libvirt local connection checks";
         checks = [
-          {
-            name = "libvirt-active";
-            description = "Libvirt and its helper sockets become active";
-            script = ''
-              vm.wait_until_succeeds(
-                  "systemctl is-active --quiet libvirtd.service", timeout=60
-              )
-              vm.succeed("systemctl is-active --quiet virtlogd.socket")
-              vm.succeed("systemctl is-active --quiet virtlockd.socket")
-            '';
-          }
           {
             name = "libvirt-connect";
             description = "The client connects to the local QEMU driver";
