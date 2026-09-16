@@ -68,15 +68,15 @@ pub struct TransitionInputs<'a> {
     pub reconciliation: Option<&'a TransitionReconciliation>,
 }
 
-/// Selects one explicitly enabled pure provider in a source-composed stage.
+/// Selects one enabled provider derived from the final source fixed point.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SourceEnabledProvider {
+pub(crate) struct SourceEnabledProvider {
     /// Identifies the enabled deployment instance.
-    pub instance: InstanceId,
+    pub(crate) instance: InstanceId,
     /// Pins its exact implementation descriptor and artifact.
-    pub implementation: aos_ability_model::ProviderImplementationReference,
+    pub(crate) implementation: aos_ability_model::ProviderImplementationReference,
     /// Pins its authenticated package document.
-    pub package: Sha256Digest,
+    pub(crate) package: Sha256Digest,
 }
 
 /// Carries a checked effect graph and its source transition transcript.
@@ -285,7 +285,7 @@ impl<'a> TransitionPlanner<'a> {
         &self,
         authority: Sha256Digest,
         binding: &aos_ability_validate::CheckedBindingPlan,
-        enabled: &[SourceEnabledProvider],
+        fixed_point: &crate::SourceStageFixedPoint,
         evaluator: &mut impl CompositionEvaluator,
     ) -> Result<SourceTransitionPlan, TransitionError> {
         validate_resource_lifetime_continuity(
@@ -293,7 +293,12 @@ impl<'a> TransitionPlanner<'a> {
             &binding.desired_state().resources,
         )?;
         let packages = index_packages(binding.packages())?;
-        let groups = source_transition_groups(binding, enabled)?;
+        let enabled = fixed_point
+            .enabled_providers(binding.packages())
+            .map_err(|error| {
+                TransitionError::Encoding(format!("invalid source provider projection: {error}"))
+            })?;
+        let groups = source_transition_groups(binding, &enabled)?;
         let changes = resource_changes(
             &binding.environment().resources,
             &binding.desired_state().resources,

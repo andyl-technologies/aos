@@ -39,7 +39,7 @@ pub use source_stage::{
 pub use transition::{
     AuthorizedTransitionBinding, RUNTIME_OBSERVATIONS_SCHEMA, ResourceChange, ResourceChangeKind,
     RuntimeResourceHealth, RuntimeResourceObservation, RuntimeResourceState, ScopedDesiredState,
-    ScopedObservations, SourceEnabledProvider, SourceTransitionPlan, TRANSITION_CONTEXT_SCHEMA,
+    ScopedObservations, SourceTransitionPlan, TRANSITION_CONTEXT_SCHEMA,
     TRANSITION_FRAGMENT_SCHEMA, TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA,
     TransitionBindingAuthority, TransitionContext, TransitionError, TransitionEvaluation,
     TransitionEvaluationResult, TransitionExport, TransitionExportKind, TransitionFragment,
