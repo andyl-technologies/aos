@@ -679,6 +679,11 @@
     # `module.nix`, their entry path comes from the selected implementation's
     # signed ModuleLocator and may lie anywhere below its authenticated root.
     selectedProviderModules ? [],
+    # Static package projection evaluates declarations without a deployment
+    # selection. The complete configuration evaluator opts in once exact
+    # instances and bindings are present, exposing a package-scoped view that
+    # cannot collide with another package's local aliases.
+    enableAbilitySelection ? false,
     # Nested submodule evaluation retains resolver provenance for priority and
     # ownership, but the outer evaluation already validates the same authored
     # config at its full absolute option path. Re-checking a nested relative
@@ -803,6 +808,53 @@
                 "evalModules: package '${package}' reads undeclared package root '${root}'"))
             foreignPackageRoots);
 
+      abilitySelectionFor = package: packageConfig: let
+        implementationFor = localKey: let
+          matches = attrsets.filterAttrs
+            (_: implementation:
+              implementation.package == package
+              && implementation.localKey == localKey)
+            packageConfig.aos.abilities.implementations;
+          declarations = builtins.attrNames matches;
+        in
+          if builtins.length declarations != 1
+          then
+            throw
+            "evalModules: package '${package}' local implementation '${localKey}' does not identify exactly one authenticated declaration"
+          else let
+            declaration = builtins.head declarations;
+          in {
+            inherit declaration localKey package;
+            value = matches.${declaration};
+          };
+        bindingsForImplementation = localKey: let
+          implementation = implementationFor localKey;
+          bindingNames = builtins.filter
+            (name:
+              packageConfig.aos.abilities.bindings.${name}.implementation
+              == implementation.declaration)
+            (builtins.attrNames packageConfig.aos.abilities.bindings);
+        in
+          builtins.map (navigationKey: let
+            binding = packageConfig.aos.abilities.bindings.${navigationKey};
+            providerDeclaration = binding.providerInstance;
+          in {
+            # This key locates authored Nix data only. Runtime identity comes
+            # from the checked request, implementation, instance and slot.
+            inherit navigationKey binding implementation;
+            providerInstance = {
+              declaration = providerDeclaration;
+              value = packageConfig.aos.abilities.instances.${providerDeclaration};
+              identity = packageConfig.aos.abilities.instanceIdentities.${providerDeclaration};
+            };
+          })
+          bindingNames;
+      in {
+        inherit implementationFor bindingsForImplementation;
+        isImplementationSelected = localKey:
+          bindingsForImplementation localKey != [];
+      };
+
       pathWithin = root: path: let
         rootString = builtins.toString root;
         pathString = builtins.toString path;
@@ -863,6 +915,10 @@
                         {
                           packageName = packageIdentity.name;
                           packageVersion = packageIdentity.version;
+                          abilitySelection =
+                            if enableAbilitySelection
+                            then abilitySelectionFor packageIdentity.name (visibleConfigFor provenance)
+                            else null;
                         }
                         // (
                           if packageIdentity ? artifactLocatorFor
@@ -1811,7 +1867,7 @@
       in
         evalModules ({
             modules = modules ++ extraModules;
-            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enforcePackageAuthorship enforceRuntimeDeclarations;
+            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enableAbilitySelection enforcePackageAuthorship enforceRuntimeDeclarations;
           }
           // builtins.removeAttrs args ["modules"]);
 

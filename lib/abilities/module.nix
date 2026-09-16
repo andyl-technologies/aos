@@ -151,7 +151,7 @@
     else if builtins.isList value
     then builtins.map (qualifyDeferredResults package) value
     else value;
-  qualifyAbilityValue = collection: package: value:
+  qualifyAbilityValue = collection: package: localKey: value:
     if package == null
     then value
     else if collection == "interfaces"
@@ -162,7 +162,10 @@
         owner = package;
         value = qualifyImplementationGuarantees package value;
       })
-      // {package = package;}
+      // {
+        package = package;
+        inherit localKey;
+      }
       // (
         if value ? interface
         then {
@@ -182,6 +185,10 @@
         owner = package;
         value = qualifyDeferredResults package value;
       })
+      // {
+        package = package;
+        inherit localKey;
+      }
       // (
         if !(value ? implementation)
         then {}
@@ -198,7 +205,10 @@
         owner = package;
         value = qualifyDeferredResults package value;
       })
-      // {package = package;}
+      // {
+        package = package;
+        inherit localKey;
+      }
       // (
         if value ? requirement
         then {requirement = qualify package value.requirement;}
@@ -225,7 +235,7 @@
           // {
             value = builtins.listToAttrs (builtins.map (name: {
                 name = qualify package name;
-                value = qualifyAbilityValue collection package definition.value.${name};
+                value = qualifyAbilityValue collection package name definition.value.${name};
               })
               (builtins.attrNames definition.value));
           })
@@ -743,6 +753,12 @@
       internal = true;
       description = "Owning package injected by the package ability carrier.";
     };
+    localKey = mkOption {
+      type = moduleTypes.nullOr localKeyType;
+      default = null;
+      internal = true;
+      description = "Package-local declaration key injected by the package ability carrier.";
+    };
     interface = mkOption {
       type = implementationInterfaceType;
       description = "Package-local declaration alias or exact shared provider-neutral interface identity.";
@@ -985,6 +1001,18 @@
       config.aos.abilities.instances;
 
   instanceBaseType = strictSubmodule {
+    package = mkOption {
+      type = moduleTypes.nullOr packageNameType;
+      default = null;
+      internal = true;
+      description = "Owning package injected by the package ability carrier.";
+    };
+    localKey = mkOption {
+      type = moduleTypes.nullOr localKeyType;
+      default = null;
+      internal = true;
+      description = "Package-local declaration key injected by the package ability carrier.";
+    };
     implementation = mkOption {
       type = moduleTypes.nullOr declarationKeyType;
       default = null;
@@ -1016,6 +1044,12 @@
       default = null;
       internal = true;
       description = "Owning package injected by the package ability carrier.";
+    };
+    localKey = mkOption {
+      type = moduleTypes.nullOr localKeyType;
+      default = null;
+      internal = true;
+      description = "Package-local declaration key injected by the package ability carrier.";
     };
     requirement = mkOption {
       type = declarationKeyType;
