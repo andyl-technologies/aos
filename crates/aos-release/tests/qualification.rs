@@ -8,7 +8,7 @@ use aos_release::{
     },
 };
 
-#[path = "support/qualification_contract.rs"]
+#[path = "../src/test_support/qualification/contract.rs"]
 mod qualification_fixture;
 
 fn contract() -> QualificationContract {
