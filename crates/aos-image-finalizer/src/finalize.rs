@@ -162,13 +162,7 @@ pub async fn prepare_filesystems(
     .await?;
 
     if assembly.schema_version == crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2 {
-        verify_static_ability_contract_attachments(
-            assembly_root,
-            assembly,
-            &input,
-            &initrd_tree,
-            &root_tree,
-        )?;
+        verify_static_ability_contract_attachments(assembly_root, assembly, &input, &initrd_tree)?;
     }
 
     let certificate_digest = digest_regular_file(&module_certificate)?.1;
@@ -335,23 +329,23 @@ fn capture_copy(
     Ok(destination.to_path_buf())
 }
 
-/// Binds captured stage contracts to files inside extracted image trees.
+/// Captures both stage contracts and binds the initrd contract to its image file.
 ///
-/// The comparison opens every embedded path component without following
-/// links. `captured_inputs` must exist and must not already contain either
-/// captured contract filename.
+/// The initrd comparison opens every embedded path component without following
+/// links. The host contract remains authoritative through its captured store
+/// artifact and selected package-store locator. `captured_inputs` must exist
+/// and must not already contain either captured contract filename.
 ///
 /// # Errors
 ///
-/// Returns an error when an assembly sidecar changed, an embedded contract is
-/// absent or linked, a parent escapes its extracted tree, or the exact bytes
-/// differ.
+/// Returns an error when an assembly sidecar changed, the embedded initrd
+/// contract is absent or linked, a parent escapes its extracted tree, or its
+/// exact bytes differ.
 pub fn verify_static_ability_contract_attachments(
     assembly_root: &Path,
     assembly: &UnsignedImageAssemblyV1,
     captured_inputs: &Path,
     initrd_tree: &Path,
-    root_tree: &Path,
 ) -> Result<()> {
     let initrd_contract = capture_copy(
         assembly_root,
@@ -366,17 +360,11 @@ pub fn verify_static_ability_contract_attachments(
         "initrd static ability contract",
     )?;
 
-    let host_contract = capture_copy(
+    capture_copy(
         assembly_root,
         assembly,
         AssemblyFileKind::HostStaticAbilityContract,
         &captured_inputs.join("host-static-ability-contract.json"),
-    )?;
-    require_embedded_contract_matches(
-        &host_contract,
-        root_tree,
-        Path::new("usr/lib/aos/host/static-ability-contract.json"),
-        "host static ability contract",
     )?;
     Ok(())
 }

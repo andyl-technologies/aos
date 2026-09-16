@@ -413,8 +413,6 @@ in
             ${pkgs.erofs-utils}/bin/fsck.erofs \
               --extract=root-tree --xattrs --preserve \
               ${assembly}/inputs/root.img >/dev/null
-            cmp "$host_abilities" \
-              root-tree/usr/lib/aos/host/static-ability-contract.json
             cmp "$initrd_abilities" \
               root-tree/usr/lib/aos/initrd/static-ability-contract.json
             root_toplevel=$(resolve_archived_store_path root-tree/nix.lower \
