@@ -14,6 +14,13 @@
   resultOf = lib.abilities.resultOf;
   consumerInstance = "control-plane";
   runtimeArtifact = lib.abilities.packageOutput {output = "packageRuntime";};
+  hostStageReceived = serviceManagement.forProducer {
+    inherit consumerInstance;
+    key = "host-stage-received";
+    interface = serviceManagement.interfaces.systemMilestoneReadiness;
+    parameters.milestone = "host-stage-received";
+  };
+  hostStageReceivedReadiness = resultOf "host-stage-received" "readiness-resource";
 
   command = artifact: entryPoint: arguments: {
     executable = {
@@ -36,7 +43,7 @@
         required_members = requiredMembers;
       };
     };
-  configGroup = activationGroup "aos-config" "AOS on-host config applied" [] [] [
+  configGroup = activationGroup "aos-config" "AOS on-host config applied" [hostStageReceivedReadiness] [] [
     (resultOf "aos-activate-lifecycle" "service-resource")
   ];
 
@@ -171,7 +178,9 @@
     dependencies =
       defaultDependencies
       // {
+        after = [hostStageReceivedReadiness];
         prerequisites = [
+          hostStageReceivedReadiness
           (resultOf "configuration-evaluation-lifecycle" "service-resource")
         ];
       };
@@ -241,7 +250,7 @@
     };
   };
 
-  fragments = [configGroup activationPreflight activate];
+  fragments = [hostStageReceived configGroup activationPreflight activate];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.aos.config.unitGraph = {
