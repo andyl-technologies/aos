@@ -48,6 +48,7 @@ mod lifecycle_host_inventory;
 pub mod manifest;
 mod production_activation;
 mod production_dispatch;
+mod production_response;
 #[allow(
     dead_code,
     reason = "sealed handshake context access stays unreachable until P0-10"
@@ -127,6 +128,7 @@ pub use production_dispatch::{
     ProductionMountBrokerDispatchErrorV1, ProductionNetworkBrokerDispatchErrorV1,
     ProductionStorageBrokerDispatchErrorV1,
 };
+pub use production_response::ProductionBrokerResponseErrorV1;
 pub use recovery::{
     ProtectedBrokerOutcomeAdmissionGateV1, ProtectedBrokerOutcomeAdmissionV1,
     ProtectedBrokerOutcomeCommitReadbackV1, ProtectedBrokerOutcomeCommitRecoveryV1,

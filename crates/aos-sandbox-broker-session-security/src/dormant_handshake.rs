@@ -79,7 +79,7 @@ impl From<handshake::DormantBrokerSessionHandshakeErrorV1>
     }
 }
 
-fn wait_for_handshake_readiness(
+pub(crate) fn wait_for_handshake_readiness(
     descriptor: BorrowedFd<'_>,
     wants_write: bool,
     deadline_boottime_nanoseconds: u64,
@@ -938,6 +938,16 @@ impl DormantBrokerDescriptorSendRecoveryV1 {
     #[must_use]
     pub const fn error(&self) -> &DormantBrokerSessionHandshakeErrorV1 {
         &self.error
+    }
+
+    /// Consumes failed transport custody into its redacted error.
+    ///
+    /// This deliberately drops the inseparable committed response and
+    /// descriptors. It is suitable only when the owning authenticated session
+    /// is also consumed so recovery must proceed by reconnect and exact replay.
+    #[must_use]
+    pub fn into_error(self) -> DormantBrokerSessionHandshakeErrorV1 {
+        self.error
     }
 }
 
