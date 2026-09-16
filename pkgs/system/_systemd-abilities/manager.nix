@@ -41,9 +41,10 @@
 
   buildManagerConfiguration = buildContext: let
     inherit (buildContext) runCommand;
+    renderer = rendererPackages buildContext;
     systemdLib = import ./platform/render.nix {
       inherit lib;
-      pkgs = rendererPackages buildContext;
+      pkgs = renderer;
     };
     baseUnits = systemdLib.materializeUnits {
       type = "system";
@@ -84,11 +85,36 @@
       builtins.map renderPlan config.systemd.providerManagerConfigurationPlans;
     networkConfigurations =
       builtins.map renderPlan config.systemd.providerNetworkConfigurationPlans;
+    udevRules =
+      runCommand "systemd-udev-rules" {
+        exportReferencesGraph.systemdClosure = [systemdPackage];
+      } ''
+        set -eu
+        mkdir -p "$out"
+
+        ${renderer.grep}/bin/grep -h '^/nix/store/' systemdClosure \
+          | ${renderer.coreutils}/bin/sort -u \
+          | while IFS= read -r storePath; do
+          rulesDirectory="$storePath/lib/udev/rules.d"
+          [ -d "$rulesDirectory" ] || continue
+
+          for rule in "$rulesDirectory"/*.rules; do
+            [ -e "$rule" ] || continue
+            name=$(${renderer.coreutils}/bin/basename "$rule")
+            if [ -e "$out/$name" ]; then
+              echo "systemd manager: duplicate udev rule $name" >&2
+              exit 1
+            fi
+            ln -s "$rule" "$out/$name"
+          done
+        done
+      '';
   in
     runCommand "systemd-manager-configuration" {} ''
       mkdir -p "$out"
       ln -s ${units} "$out/systemd-units"
       ln -s ${presets} "$out/systemd-presets"
+      ln -s ${udevRules} "$out/systemd-udev-rules"
       ${lib.optionalString (managerConfigurations != []) ''
         ln -s ${builtins.head managerConfigurations} "$out/systemd-manager-configuration"
       ''}
@@ -123,6 +149,11 @@
             destination = "/usr/lib/systemd/system-preset";
             source = "systemd-presets";
           }
+          {
+            collision = "reject";
+            destination = "/usr/lib/udev/rules.d";
+            source = "systemd-udev-rules";
+          }
         ];
       };
     };
@@ -142,6 +173,7 @@ in {
     ./platform/system.nix
     ./platform/initrd.nix
     ./platform/presets.nix
+    ./platform/users.nix
   ];
 
   config = {
