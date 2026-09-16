@@ -1,11 +1,13 @@
 //! Protected local foundation for Broker Session Authentication 1.0.
 //!
-//! This production-inert crate decodes one fixed protected manifest, retains
+//! This crate decodes one fixed protected manifest, retains
 //! role-local signing seeds behind protected file descriptors, detects local
 //! configuration replacement, pins the custody process through a retained
 //! self pidfd, and obtains process identifiers, hello nonces, and time directly
-//! from the Linux kernel. Its public dormant composition adopts one connected
-//! sequenced-packet socket, completes the authenticated hello flights, opens
+//! from the Linux kernel. Its fixed activation owner adopts only the exact
+//! systemd listener table for a selected broker service. The protected
+//! composition accepts one connected sequenced-packet socket, completes the
+//! authenticated hello flights, opens
 //! the matching protected journal, and exposes the complete post-handshake
 //! request, response, replay, and recovery state machine. Transcript, peer,
 //! protected time, descriptor custody, and journal ownership remain inseparable;
@@ -17,8 +19,9 @@
 //! Network adapters cover the closed method profile, including observation and
 //! inventory, and bind the signed terminal outcome to the protected domain
 //! observation. Ambiguous effects and commits retain exact recovery custody.
-//! The crate creates no listener, registers no service, advertises no feature,
-//! and changes no production readiness path.
+//! The crate creates no listener and registers no service by itself. Production
+//! daemons must explicitly own its activation object, dispatch the closed
+//! method profile, and retain recovery custody before advertising readiness.
 //!
 //! [`manifest`] owns the fixed `AOSBSC01` format. The private protected-files
 //! module pins the endpoint directory and its three role-local files. The
@@ -43,6 +46,7 @@ mod handshake;
 mod lifecycle_domain_effect;
 mod lifecycle_host_inventory;
 pub mod manifest;
+mod production_activation;
 #[allow(
     dead_code,
     reason = "sealed handshake context access stays unreachable until P0-10"
@@ -113,6 +117,9 @@ pub use manifest::{
     BROKER_SESSION_SECURITY_MANIFEST_BYTES, BrokerSessionManifestBindingV1,
     BrokerSessionSecurityAudienceV1, BrokerSessionSecurityKeyPinV1,
     BrokerSessionSecurityManifestV1,
+};
+pub use production_activation::{
+    ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
 };
 pub use recovery::{
     ProtectedBrokerOutcomeAdmissionGateV1, ProtectedBrokerOutcomeAdmissionV1,
