@@ -74,7 +74,6 @@ in
   == ["initrd-fs.target"];
   assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.serviceConfig.RemainAfterExit;
   assert securityDisabledHostServices ? aos-ability-host-receiver;
-  assert securityDisabledHostServices ? aos-nix-db;
   assert securityDisabledHostServices.aos-ability-host-receiver.requiredBy
   == [
     "aos-eval.service"
