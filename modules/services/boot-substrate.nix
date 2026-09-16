@@ -212,11 +212,13 @@ in {
 
     environment.systemPackages = [pkgs.aos-boot-preparations];
     aos.boot.initrd.packageRoots = [pkgs.aos-boot-preparations];
+    aos.boot.substrateServices.handoffEnabled = config.aos.boot.initrd.abilityHandoff.enable;
     aos.abilities.stages.initrd = {
       modules = [
         {
           aos.boot.substrateServices = {
             enable = true;
+            handoffEnabled = config.aos.boot.initrd.abilityHandoff.enable;
             verityEnabled = config.aos.security.verity.enable;
             zfsEnabled = config.aos.boot.storage.backend == "zfs-zvol";
             zfsPool = config.aos.boot.storage.zfs.poolName;

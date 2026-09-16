@@ -10,13 +10,19 @@
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "boot-preparations";
-  initrdStage =
-    config.aos.abilities.environment
-    != null
-    && config.aos.abilities.environment.stage == "initrd";
+  stage =
+    if config.aos.abilities.environment == null
+    then null
+    else config.aos.abilities.environment.stage;
+  initrdStage = stage == "initrd";
+  hostStage = stage == "host";
 
   packageArtifact = lib.abilities.packageOutput {};
   artifact = package: lib.abilities.packageOutput {inherit package;};
+  runtimeArtifact = lib.abilities.packageOutput {
+    package = "aos";
+    output = "packageRuntime";
+  };
 
   command = operation: {
     executable = {
@@ -164,6 +170,143 @@
     implicit_dependencies = false;
   };
   serviceResource = key: resultOf "${key}-lifecycle" "service-resource";
+  externalServiceResource = request: resultOf request "service-resource";
+  handoffCommand = arguments: {
+    executable = {
+      artifact = runtimeArtifact;
+      entry_point = "bin/.aos-package-runtime-unwrapped";
+      inherit arguments;
+    };
+    ignore_failure = false;
+  };
+  handoffService = {
+    key,
+    description,
+    arguments,
+    dependencies,
+    logging ? null,
+  }:
+    serviceManagement.forService {
+      inherit serviceTypes consumerInstance;
+      declaration =
+        {
+          service = key;
+          enabled = true;
+          lifecycle = {
+            inherit description;
+            execution_model = "oneshot";
+            environment_files = [];
+            condition = [];
+            pre_start = [];
+            start = [(handoffCommand arguments)];
+            post_start = [];
+            stop = [];
+            post_stop = [];
+            restart = "never";
+            restart_delay_millis = 0;
+            configuration_change_action = "restart";
+            remain_after_exit = true;
+            start_timeout_millis = 90000;
+            stop_timeout_millis = 90000;
+          };
+          inherit dependencies;
+          readiness = {
+            mechanism = "successful-exit";
+            signal_scope = "none";
+            timeout_millis = 90000;
+          };
+        }
+        // lib.optionalAttrs (logging != null) {inherit logging;};
+    };
+
+  initrdController = handoffService {
+    key = "aos-ability-initrd-controller";
+    description = "Execute and release initrd-stage ability ownership";
+    arguments = [
+      "__ability-stage-run"
+      "--stage"
+      "initrd"
+      "--root"
+      "/sysroot"
+      "--resolved-stage"
+      "/lib/aos/initrd/resolved-ability-stage.json"
+    ];
+    dependencies =
+      emptyDependencies
+      // {
+        after = [
+          sysrootReadiness
+          (externalServiceResource "aos-boot-storage:aos-boot-transaction-storage-lifecycle")
+        ];
+        before = [
+          (serviceResource "mount-var")
+          initrdFilesystemsReadiness
+          switchRootReadiness
+        ];
+        requires = [
+          sysrootReadiness
+          (externalServiceResource "aos-boot-storage:aos-boot-transaction-storage-lifecycle")
+        ];
+        required_by = [initrdFilesystemsReadiness];
+        implicit_dependencies = false;
+      };
+  };
+  initrdHandoffBarrier = handoffService {
+    key = "aos-ability-initrd-handoff-barrier";
+    description = "Authenticate released initrd ability ownership";
+    arguments = [
+      "__ability-stage-validate"
+      "--from-stage"
+      "initrd"
+      "--root"
+      "/sysroot"
+    ];
+    dependencies =
+      emptyDependencies
+      // {
+        after = [(serviceResource "aos-ability-initrd-controller")];
+        before = [
+          (serviceResource "mount-var")
+          initrdFilesystemsReadiness
+          switchRootReadiness
+        ];
+        requires = [(serviceResource "aos-ability-initrd-controller")];
+        required_by = [
+          (serviceResource "mount-var")
+          initrdFilesystemsReadiness
+        ];
+        implicit_dependencies = false;
+      };
+    logging = substrateLogging;
+  };
+  hostReceiver = handoffService {
+    key = "aos-ability-host-receiver";
+    description = "Revalidate and receive initrd ability ownership";
+    arguments = [
+      "__ability-stage-receive"
+      "--from-stage"
+      "initrd"
+      "--image-profile"
+      "/var/lib/profiles/image"
+    ];
+    dependencies =
+      emptyDependencies
+      // {
+        after = [(resultOf "aos:local-filesystems" "readiness-resource")];
+        before = [
+          (externalServiceResource "aos:configuration-evaluation-lifecycle")
+          (externalServiceResource "aos:aos-graph-compile-lifecycle")
+          (resultOf "aos:aos-config" "activation-resource")
+        ];
+        requires = [(resultOf "aos:local-filesystems" "readiness-resource")];
+        required_by = [
+          (externalServiceResource "aos:configuration-evaluation-lifecycle")
+          (externalServiceResource "aos:aos-graph-compile-lifecycle")
+          (resultOf "aos:aos-config" "activation-resource")
+        ];
+        required_mounts = ["/var/lib/profiles/image"];
+      };
+  };
   substrateEnvironment = {
     variables = {
       AOS_DB_CERT = cfg.dbCertificate;
@@ -381,6 +524,72 @@
         required_by = [initrdFilesystemsReadiness];
       };
   };
+  handoffInterface = lib.abilities.interfaces.bootPreparation.interfaces.handoff;
+  handoffDeclaration = {
+    requirementTemplates.boot-preparation-handoff =
+      lib.abilities.interfaceSelector {
+        name = handoffInterface.name;
+        abi = 1;
+      }
+      // {
+        description = "Transfers exact successful initrd preparation evidence to the host stage.";
+        methods = handoffInterface.methods;
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+  };
+  handoffRequest = {
+    requests.boot-preparation-handoff = {
+      requirement = "boot-preparation-handoff";
+      consumer = consumerInstance;
+      scope = ["initrd-to-host"];
+      parameters = {
+        source_stage = "initrd";
+        receiver_stage = "host";
+        completion = initrdFilesystemsReadiness;
+        preparations = [
+          (serviceResource "aos-ability-initrd-controller")
+          (serviceResource "aos-ability-initrd-handoff-barrier")
+          (serviceResource "aos-config-seed")
+          (serviceResource "aos-machine-id")
+          (serviceResource "aos-seed-profiles")
+          (serviceResource "etc-overlay-setup")
+          (serviceResource "mount-var")
+          (serviceResource "nix-overlay-setup")
+          (serviceResource "run-etc-setup")
+        ];
+        preserved_mounts = [
+          {
+            initrd_path = "/run";
+            host_path = "/run";
+          }
+          {
+            initrd_path = "/sysroot/etc";
+            host_path = "/etc";
+          }
+          {
+            initrd_path = "/sysroot/nix";
+            host_path = "/nix";
+          }
+          {
+            initrd_path = "/sysroot/var";
+            host_path = "/var";
+          }
+        ];
+        durable_state_roots = [
+          {
+            initrd_path = "/sysroot/var/lib/profiles/image";
+            host_path = "/var/lib/profiles/image";
+          }
+          {
+            initrd_path = "/sysroot/var/lib/profiles/system";
+            host_path = "/var/lib/profiles/system";
+          }
+        ];
+      };
+    };
+  };
   systemdPackagedUnitAlias = "systemd-packaged-unit";
   networkWaitOnline = {
     requirementTemplates.${systemdPackagedUnitAlias} =
@@ -435,7 +644,11 @@
     etcOverlaySetup
     networkWaitOnline
   ];
+  handoffInitrdFragments = [initrdController initrdHandoffBarrier];
+  handoffHostFragments = [hostReceiver];
   substrateContributions = builtins.map serviceManagement.splitContribution substrateFragments;
+  handoffInitrdContributions = builtins.map serviceManagement.splitContribution handoffInitrdFragments;
+  handoffHostContributions = builtins.map serviceManagement.splitContribution handoffHostFragments;
 in {
   options.aos.boot.substrateServices = {
     enable = lib.mkOption {
@@ -492,12 +705,24 @@ in {
       internal = true;
       description = "Secure Boot database certificate used to verify the recovery image.";
     };
+    handoffEnabled = lib.mkOption {
+      type = lib.abilities.types.boolean;
+      default = false;
+      internal = true;
+      description = "Whether checked initrd-to-host ability ownership transfer is active.";
+    };
   };
 
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) (baseContributions ++ substrateContributions)
+        [handoffDeclaration]
+        ++ builtins.map (contribution: contribution.declarations) (
+          baseContributions
+          ++ substrateContributions
+          ++ handoffInitrdContributions
+          ++ handoffHostContributions
+        )
       );
     }
     (lib.mkIf initrdStage {
@@ -509,6 +734,18 @@ in {
     (lib.mkIf (initrdStage && cfg.enable) {
       aos.abilities = lib.mkMerge (
         builtins.map (contribution: contribution.configured) substrateContributions
+      );
+    })
+    (lib.mkIf (initrdStage && cfg.handoffEnabled) {
+      aos.abilities = lib.mkMerge (
+        [handoffRequest]
+        ++ builtins.map (contribution: contribution.configured) handoffInitrdContributions
+      );
+    })
+    (lib.mkIf (hostStage && cfg.handoffEnabled) {
+      aos.abilities = lib.mkMerge (
+        [{instances.${consumerInstance} = {};}]
+        ++ builtins.map (contribution: contribution.configured) handoffHostContributions
       );
     })
   ];

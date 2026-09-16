@@ -85,6 +85,8 @@
     resourceInterface = networkConfiguration.identity;
     inherit (lib.abilities) transitionFragment;
   };
+  bootPreparationHandoff = lib.abilities.interfaces.bootPreparation.interfaces.handoff;
+  bootPreparationHandoffAlias = bootPreparationHandoff.alias;
   serviceResourceFields = serviceManagement.types.serviceDeclaration._abilitySchema.fields;
   serviceImplementationNames = builtins.filter (featureName: let
     selected = allServiceInterfaces.${featureName};
@@ -142,7 +144,7 @@
       (builtins.attrValues bindings);
   in
     if builtins.length matches != 1
-    then throw "a systemd packaged-unit request must have exactly one selected binding"
+    then throw "a systemd provider request must have exactly one selected binding"
     else builtins.head matches;
 
   basename = path: let
@@ -720,6 +722,63 @@
     then throw "systemd dependencies resolve multiple resources to the same unit"
     else units;
 
+  provideBootPreparationHandoff = {
+    instance,
+    requests,
+    bindings,
+    ...
+  }: let
+    entries = builtins.map (requestName: let
+      binding = bindingFor bindings requestName;
+    in {
+      inherit requestName binding;
+      parameters = requests.${requestName}.parameters;
+    }) (builtins.attrNames requests);
+    referenceForHandoff = key: {
+      interface = bootPreparationHandoff.identity;
+      resource = {
+        provider = instance.id;
+        inherit key;
+      };
+      operations = ["observe"];
+      lifetime = "transaction";
+    };
+  in
+    emptyResult
+    // {
+      outputs = builtins.listToAttrs (builtins.map (entry: {
+          name = entry.requestName;
+          value.readiness-resource = referenceForHandoff entry.binding.slot;
+        })
+        entries);
+      resourceFragments = builtins.listToAttrs (builtins.map (entry: {
+          name = entry.binding.slot;
+          value = {
+            kind = bootPreparationHandoff.name;
+            lifetime = "transaction";
+            value = entry.parameters;
+          };
+        })
+        entries);
+    };
+
+  composeBootPreparationHandoff = {allResources, resources, ...}:
+    emptyResult
+    // {
+      realizations = builtins.mapAttrs (_: resource: {
+        schema = "aos.systemd.boot-preparation-handoff-realization/v1";
+        mechanism = "systemd-switch-root";
+        completion_unit = unitIdentityForPlannedReference allResources resource.value.completion;
+        required_units =
+          builtins.sort
+          (left: right: builtins.toJSON left < builtins.toJSON right)
+          (builtins.map
+            (unitIdentityForPlannedReference allResources)
+            resource.value.preparations);
+      })
+      resources;
+    };
+
   observationSchemaFor = selected:
     lib.abilities.singletonSchemaDiscriminator
     "systemd service observation"
@@ -1157,6 +1216,11 @@ in {
         provide = provideNetworkConfiguration;
         compose = composeNetworkConfiguration;
         transition = networkConfigurationTransition;
+      };
+      ${bootPreparationHandoffAlias} = {
+        provide = provideBootPreparationHandoff;
+        compose = composeBootPreparationHandoff;
+        transition = _: lib.abilities.transitionFragment {};
       };
       ${implementationAlias} = {
         inherit provide compose;

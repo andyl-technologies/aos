@@ -115,11 +115,21 @@
 
   handoff = let
     name = "aos.boot.preparation-handoff";
+    pathMapping = types.record {
+      fields = {
+        initrd_path = types.executionPath;
+        host_path = types.executionPath;
+      };
+    };
+    pathMappings = canonicalList pathMapping 16;
     requestType = types.record {
       fields = {
         source_stage = types.enum ["initrd"];
         receiver_stage = types.enum ["host"];
+        completion = types.deferredResult types.resourceReference;
         preparations = requestedResources;
+        preserved_mounts = pathMappings;
+        durable_state_roots = pathMappings;
       };
     };
     bootIdentity = types.string {
