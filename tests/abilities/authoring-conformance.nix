@@ -932,6 +932,15 @@
         type = lib.types.bool;
         default = false;
       };
+      options.requestSelectionProbe.${package} = lib.mkOption {
+        type = lib.types.str;
+      };
+      options.interfaceSelectionProbe.${package} = lib.mkOption {
+        type = lib.types.str;
+      };
+      options.resultSelectionProbe.${package} = lib.mkOption {
+        type = lib.types.attrs;
+      };
       config = {
         selectionProbe.${package} =
           if abilitySelection == null
@@ -949,9 +958,22 @@
               ))
               true))
             .success;
+        requestSelectionProbe.${package} =
+          if abilitySelection == null
+          then ""
+          else (abilitySelection.requestFor "shared").declaration;
+        interfaceSelectionProbe.${package} =
+          if abilitySelection == null
+          then ""
+          else (abilitySelection.interfaceFor "shared").declaration;
+        resultSelectionProbe.${package} =
+          if abilitySelection == null
+          then {}
+          else abilitySelection.resultOfRequest "shared" "result";
         aos.abilities = {
           interfaces.shared = implementationInterface;
           implementations.shared = implementation // {
+            interface = "shared";
             compose = null;
             transition = null;
           };
@@ -1006,6 +1028,233 @@
   };
   alphaSelection = builtins.head packageSelectionEvaluation.config.selectionProbe.alpha;
   betaSelection = builtins.head packageSelectionEvaluation.config.selectionProbe.beta;
+  alphaResultProvenance = lib.abilities.requestOutputIdentity {
+    requests = packageSelectionEvaluation.config.aos.abilities.requests;
+    reference = packageSelectionEvaluation.config.resultSelectionProbe.alpha;
+  };
+  invalidResultIdentityField = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.requestOutputIdentity {
+      requests = packageSelectionEvaluation.config.aos.abilities.requests;
+      reference = packageSelectionEvaluation.config.resultSelectionProbe.alpha // {extra = true;};
+    })
+    true);
+  invalidResultIdentityRequest = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.requestOutputIdentity {
+      requests = packageSelectionEvaluation.config.aos.abilities.requests;
+      reference = {
+        _type = "aos-request-output-reference";
+        request = "invalid";
+        output = "result";
+      };
+    })
+    true);
+  invalidResultIdentityOutput = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.requestOutputIdentity {
+      requests = packageSelectionEvaluation.config.aos.abilities.requests;
+      reference = {
+        _type = "aos-request-output-reference";
+        request = "alpha:shared";
+        output = "not valid";
+      };
+    })
+    true);
+  moduleSelector = lib.abilities.packageOutput {
+    package = "self";
+    output = "module";
+  };
+  moduleSelectorKey = builtins.toJSON (builtins.removeAttrs moduleSelector ["_type"]);
+  artifactPackageModuleFor = package: modulePath: {
+    name = package;
+    outputs = {
+      self = "/nix/store/00000000000000000000000000000000-${package}";
+      dependencies.${moduleSelectorKey} = modulePath;
+    };
+    module = {packageArtifactFor, ...}: {
+      options.artifactProbe.${package} = lib.mkOption {
+        type = lib.types.str;
+      };
+      config.artifactProbe.${package} = packageArtifactFor moduleSelector;
+    };
+  };
+  artifactSelectionEvaluation = lib.evalModules {
+    modules = [];
+    packageModules = [
+      (artifactPackageModuleFor "alpha" "/nix/store/11111111111111111111111111111111-alpha-module")
+      (artifactPackageModuleFor "beta" "/nix/store/22222222222222222222222222222222-beta-module")
+    ];
+  };
+  unrelatedArtifactSelection = builtins.tryEval (builtins.deepSeq ((lib.evalModules {
+        modules = [];
+        packageModules = [
+          {
+            name = "alpha";
+            outputs = {
+              self = "/nix/store/00000000000000000000000000000000-alpha";
+              dependencies = {};
+            };
+            module = {packageArtifactFor, ...}: {
+              options.value = lib.mkOption {type = lib.types.str;};
+              config.value = packageArtifactFor (lib.abilities.packageOutput {
+                package = "beta";
+              });
+            };
+          }
+        ];
+      }).config.value)
+    true);
+  fakePackage = {
+    name,
+    path,
+    runtimeDeps ? [],
+    selectors ? [],
+  }: {
+    pname = name;
+    version = "1";
+    outPath = path;
+    outputName = "out";
+    module = "${path}-module";
+    inherit runtimeDeps;
+    contract = {
+      value.package = {inherit name;};
+      inherit selectors;
+    };
+  };
+  transitiveLeaf = fakePackage {
+    name = "leaf";
+    path = "/nix/store/33333333333333333333333333333333-leaf";
+  };
+  transitiveMiddle = fakePackage {
+    name = "middle";
+    path = "/nix/store/44444444444444444444444444444444-middle";
+    runtimeDeps = [transitiveLeaf];
+  };
+  transitiveOwner = fakePackage {
+    name = "owner";
+    path = "/nix/store/55555555555555555555555555555555-owner";
+    runtimeDeps = [transitiveMiddle];
+    selectors = [{package = "leaf"; output = "out";}];
+  };
+  transitiveOutputs = lib.abilities.authenticatedPackageOutputsFor transitiveOwner;
+  unrelatedOutput = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.authenticatedPackageOutputFor {
+      package = transitiveOwner;
+      selector = {
+        package = "unrelated";
+        output = "out";
+      };
+    })
+    true);
+  ambiguousOwner = fakePackage {
+    name = "ambiguous-owner";
+    path = "/nix/store/66666666666666666666666666666666-owner";
+    selectors = [{package = "duplicate"; output = "out";}];
+    runtimeDeps = [
+      (fakePackage {
+        name = "duplicate";
+        path = "/nix/store/77777777777777777777777777777777-duplicate";
+      })
+      (fakePackage {
+        name = "duplicate";
+        path = "/nix/store/88888888888888888888888888888888-duplicate";
+      })
+    ];
+  };
+  ambiguousOutput = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.authenticatedPackageOutputFor {
+      package = ambiguousOwner;
+      selector = {
+        package = "duplicate";
+        output = "out";
+      };
+    })
+    true);
+  globallySelectedForeign = fakePackage {
+    name = "foreign";
+    path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-foreign";
+  };
+  foreignSelectorOwner = fakePackage {
+    name = "foreign-selector-owner";
+    path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-foreign-selector-owner";
+    selectors = [{package = "foreign"; output = "out";}];
+  };
+  globallySelectedPackages = [foreignSelectorOwner globallySelectedForeign];
+  globallySelectedForeignOutput = builtins.tryEval (builtins.deepSeq
+    globallySelectedPackages
+    (lib.abilities.authenticatedPackageOutputFor {
+      package = foreignSelectorOwner;
+      selector = {package = "foreign"; output = "out";};
+    }));
+  callerModuleRecord = {
+    name = "owner";
+    version = "1";
+    configRoot = "/nix/store/99999999999999999999999999999999-caller-module";
+    module = "/nix/store/99999999999999999999999999999999-caller-module/module.nix";
+    outputs = {
+      self = "/nix/store/55555555555555555555555555555555-owner";
+      dependencies = {};
+    };
+  };
+  selectedCallerRecords = lib.abilities.selectAuthenticatedPackageModuleRecords
+    [transitiveOwner]
+    [callerModuleRecord];
+  providerTerminalBase = {
+    guarantees = {};
+    interfaces = {};
+    implementations.provider = {};
+    requirementTemplates = {};
+    instances = {};
+    requests = {};
+    bindings.selected = {request = "request";};
+  };
+  checkedProviderTerminal = lib.abilities.checkedProviderModuleEvaluation {
+    before = providerTerminalBase;
+    after = providerTerminalBase;
+  };
+  providerIntroducedImplementation = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.checkedProviderModuleEvaluation {
+      before = providerTerminalBase;
+      after = providerTerminalBase // {
+        implementations = providerTerminalBase.implementations // {nested = {};};
+      };
+    })
+    true);
+  providerIntroducedBinding = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.checkedProviderModuleEvaluation {
+      before = providerTerminalBase;
+      after = providerTerminalBase // {
+        bindings = providerTerminalBase.bindings // {nested = {request = "nested";};};
+      };
+    })
+    true);
+  staticBinding = lib.abilities.staticBinding {
+    request = "consumer:request";
+    implementation = "provider:implementation";
+    providerInstance = "provider:instance";
+    slot = "selected";
+  };
+  storeViewLib = import ../../lib/build/store-view.nix {inherit lib;};
+  checkedStoreView = {
+    schema = "aos.package-store.read-view-locator/v1";
+    identity_root = "/identity/store";
+    read_root = "/read/store";
+    static_contract = "/identity/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-contract/contract.json";
+  };
+  mappedModulePath = storeViewLib.readPathFor checkedStoreView
+    "/identity/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-module/module.nix";
+  mappedAuthenticatedModule = storeViewLib.mapAuthenticatedModule checkedStoreView {
+    name = "caller";
+    version = "1";
+    configRoot = "/identity/store/cccccccccccccccccccccccccccccccc-caller-module";
+    module = "/identity/store/cccccccccccccccccccccccccccccccc-caller-module/module.nix";
+    outputs = {
+      self = "/identity/store/dddddddddddddddddddddddddddddddd-caller";
+      dependencies."{\"output\":\"module\",\"package\":\"self\"}" =
+        "/identity/store/cccccccccccccccccccccccccccccccc-caller-module";
+    };
+  };
+  escapedStorePath = builtins.tryEval (builtins.deepSeq
+    (storeViewLib.readPathFor checkedStoreView "/different/store/module.nix")
+    true);
   instanceIdentityEvaluation = lib.evalModules {
     inherit lib;
     modules = [
@@ -1117,7 +1366,9 @@ in
     fallback = null;
     guarantees = [];
     interface = "aos.test.database";
+    localKey = null;
     methods = ["start" "stop"];
+    package = null;
     strength = "required";
   };
   assert !invalidCanonicalAbility.success;
@@ -1150,6 +1401,12 @@ in
   assert lib.abilities.types.localKey.check derivedInstanceIdentity.key;
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".package == "alpha";
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".localKey == "test";
+  assert combinedPackageEvaluation.config.aos.abilities.interfaces."alpha:test".package == "alpha";
+  assert combinedPackageEvaluation.config.aos.abilities.interfaces."alpha:test".localKey == "test";
+  assert combinedPackageEvaluation.config.aos.abilities.guarantees."alpha:authoring".package == "alpha";
+  assert combinedPackageEvaluation.config.aos.abilities.guarantees."alpha:authoring".localKey == "authoring";
+  assert builtins.attrNames alphaCombinedProjection.value.guarantees == ["authoring"];
+  assert builtins.attrNames alphaCombinedProjection.value.interfaces == ["test"];
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".interface == "alpha:test";
   assert (builtins.head alphaCombinedProjection.value.implementation.providers).name == "test";
   assert !((builtins.head alphaCombinedProjection.value.implementation.providers) ? package);
@@ -1158,10 +1415,74 @@ in
   assert builtins.length packageSelectionEvaluation.config.selectionProbe.beta == 1;
   assert !packageSelectionEvaluation.config.foreignSelectionProbe.alpha;
   assert !packageSelectionEvaluation.config.foreignSelectionProbe.beta;
+  assert packageSelectionEvaluation.config.requestSelectionProbe == {
+    alpha = "alpha:shared";
+    beta = "beta:shared";
+  };
+  assert packageSelectionEvaluation.config.interfaceSelectionProbe == {
+    alpha = "alpha:shared";
+    beta = "beta:shared";
+  };
+  assert packageSelectionEvaluation.config.aos.abilities.requirementTemplates."alpha:shared".package == "alpha";
+  assert packageSelectionEvaluation.config.aos.abilities.requirementTemplates."alpha:shared".localKey == "shared";
+  assert packageSelectionEvaluation.config.resultSelectionProbe.alpha == {
+    _type = "aos-request-output-reference";
+    request = "alpha:shared";
+    output = "result";
+  };
+  assert alphaResultProvenance == {
+    package = "alpha";
+    localKey = "shared";
+    output = "result";
+  };
+  assert !invalidResultIdentityField.success;
+  assert !invalidResultIdentityRequest.success;
+  assert !invalidResultIdentityOutput.success;
   assert alphaSelection.implementation.package == "alpha";
   assert alphaSelection.implementation.localKey == "shared";
   assert alphaSelection.binding.implementation == "alpha:shared";
   assert alphaSelection.providerInstance.declaration == "alpha:provider";
+  assert artifactSelectionEvaluation.config.artifactProbe == {
+    alpha = "/nix/store/11111111111111111111111111111111-alpha-module";
+    beta = "/nix/store/22222222222222222222222222222222-beta-module";
+  };
+  assert !unrelatedArtifactSelection.success;
+  assert transitiveOutputs.dependencies."{\"output\":\"out\",\"package\":\"leaf\"}"
+  == "/nix/store/33333333333333333333333333333333-leaf";
+  assert !unrelatedOutput.success;
+  assert !ambiguousOutput.success;
+  assert !globallySelectedForeignOutput.success;
+  assert selectedCallerRecords == [callerModuleRecord];
+  assert checkedProviderTerminal == providerTerminalBase;
+  assert !providerIntroducedImplementation.success;
+  assert !providerIntroducedBinding.success;
+  assert staticBinding.value == {
+    request = "consumer:request";
+    implementation = "provider:implementation";
+    providerInstance = "provider:instance";
+    slot = "selected";
+  };
+  assert staticBinding.name
+  == (lib.abilities.staticBinding {
+    request = "consumer:request";
+    implementation = "provider:implementation";
+    providerInstance = "provider:instance";
+    slot = "selected";
+  }).name;
+  assert mappedModulePath
+  == "/read/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-module/module.nix";
+  assert mappedAuthenticatedModule == {
+    name = "caller";
+    version = "1";
+    configRoot = "/read/store/cccccccccccccccccccccccccccccccc-caller-module";
+    module = "/read/store/cccccccccccccccccccccccccccccccc-caller-module/module.nix";
+    outputs = {
+      self = "/read/store/dddddddddddddddddddddddddddddddd-caller";
+      dependencies."{\"output\":\"module\",\"package\":\"self\"}" =
+        "/read/store/cccccccccccccccccccccccccccccccc-caller-module";
+    };
+  };
+  assert !escapedStorePath.success;
   assert betaSelection.implementation.package == "beta";
   assert betaSelection.implementation.localKey == "shared";
   assert betaSelection.binding.implementation == "beta:shared";
@@ -1275,7 +1596,10 @@ in
   assert !invalidResourceReference.success;
   assert validExecutableRequest.config.aos.abilities.requests."authoring:executable".parameters.executable.entry_point == "bin/server";
   assert !(authoredGuarantee ? descriptor);
-  assert guaranteeReferenceEvaluation.config.aos.abilities.guarantees."authoring:authoring" == authoredGuarantee;
+  assert builtins.removeAttrs
+  guaranteeReferenceEvaluation.config.aos.abilities.guarantees."authoring:authoring"
+  ["package" "localKey"]
+  == authoredGuarantee;
   assert guaranteeReferenceEvaluation.config.aos.abilities.interfaces."authoring:test".guarantees == ["authoring:authoring"];
   assert sharedImplementationEvaluation.config.aos.abilities.implementations."authoring:shared".interface
   == sharedInterfaceIdentity;

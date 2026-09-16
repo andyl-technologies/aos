@@ -2,15 +2,14 @@
 {
   config,
   lib,
-  packageName,
+  abilitySelection,
   ...
 }: let
   interfaceAlias = "nix-store-database";
-  qualifiedAlias = "${packageName}:${interfaceAlias}";
-  declaration = config.aos.abilities.interfaces.${qualifiedAlias};
+  declaration = (abilitySelection.interfaceFor interfaceAlias).value;
   document = lib.abilities.interfaceDocumentFromDeclaration declaration;
   identity = lib.abilities.interfaceIdentity document;
-  controller = config.aos.abilities.implementations.${qualifiedAlias};
+  controller = (abilitySelection.implementationFor interfaceAlias).value;
   effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
 
   emptyResult = {

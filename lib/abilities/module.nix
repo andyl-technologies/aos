@@ -154,7 +154,19 @@
     if package == null
     then value
     else if collection == "interfaces"
-    then qualifyInterfaceGuarantees package value
+    then
+      qualifyInterfaceGuarantees package value
+      // {
+        package = package;
+        inherit localKey;
+      }
+    else if collection == "guarantees"
+    then
+      value
+      // {
+        package = package;
+        inherit localKey;
+      }
     else if collection == "implementations"
     then
       (normalizePackageOutputSelectors {
@@ -219,7 +231,12 @@
         else {}
       )
     else if collection == "requirementTemplates"
-    then qualifyRequirementGuarantees package value
+    then
+      qualifyRequirementGuarantees package value
+      // {
+        package = package;
+        inherit localKey;
+      }
     else value;
   abilityMapType = collection: elementType: let
     base = moduleTypes.attrsOf elementType;
@@ -467,6 +484,18 @@
   };
 
   interfaceDeclarationBaseType = strictSubmodule {
+    package = mkOption {
+      type = moduleTypes.nullOr packageNameType;
+      default = null;
+      internal = true;
+      description = "Owning package injected by the package ability carrier.";
+    };
+    localKey = mkOption {
+      type = moduleTypes.nullOr localKeyType;
+      default = null;
+      internal = true;
+      description = "Package-local declaration key injected by the package ability carrier.";
+    };
     description = mkOption {
       type = moduleTypes.nullOr descriptionType;
       default = null;
@@ -895,6 +924,18 @@
       localKeyType.check value || declarationKeyType.check value);
 
   guaranteeDeclarationType = strictSubmodule {
+    package = mkOption {
+      type = moduleTypes.nullOr packageNameType;
+      default = null;
+      internal = true;
+      description = "Owning package injected by the package ability carrier.";
+    };
+    localKey = mkOption {
+      type = moduleTypes.nullOr localKeyType;
+      default = null;
+      internal = true;
+      description = "Package-local declaration key injected by the package ability carrier.";
+    };
     name = mkOption {
       type = qualifiedNameType;
       description = "Provider-neutral guarantee name.";
@@ -914,6 +955,18 @@
   };
 
   requirementBaseType = strictSubmodule {
+    package = mkOption {
+      type = moduleTypes.nullOr packageNameType;
+      default = null;
+      internal = true;
+      description = "Owning package injected by the package ability carrier.";
+    };
+    localKey = mkOption {
+      type = moduleTypes.nullOr localKeyType;
+      default = null;
+      internal = true;
+      description = "Package-local declaration key injected by the package ability carrier.";
+    };
     description = mkOption {
       type = descriptionType;
     };
@@ -1509,10 +1562,14 @@ in {
       type = abilityMapType "requirementTemplates" requirementBaseType;
       default = {};
       contributable = true;
-      apply = requirements:
-        if builtins.all requirementAccepted (builtins.attrValues requirements)
+      apply = requirements: let
+        rejected = builtins.filter
+          (name: !requirementAccepted requirements.${name})
+          (builtins.attrNames requirements);
+      in
+        if rejected == []
         then requirements
-        else throw "An ability requirement fallback does not match its declared interface output type.";
+        else throw "Ability requirements do not match their declared interface contracts: ${builtins.concatStringsSep ", " rejected}.";
       description = "Package-owned ability requirements available to configured instances.";
     };
     instances = mkOption {

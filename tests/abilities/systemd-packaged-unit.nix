@@ -8,17 +8,12 @@
     inherit lib;
     package = pkgs.systemd;
     implementation = "systemd-packaged-unit";
-    artifactLocators.${
+    dependencies.${
       builtins.toJSON {
         output = artifact.output;
         package = artifact.package;
       }
-    } = let
-      located = artifactLocatorFor artifact;
-    in {
-      inherit (located) path;
-      artifactReference = builtins.removeAttrs located.artifactReference ["_type"];
-    };
+    } = (artifactLocatorFor artifact).path;
   };
   artifact = lib.abilities.packageOutput {package = "consumer";};
   artifactLocatorFor = selector:

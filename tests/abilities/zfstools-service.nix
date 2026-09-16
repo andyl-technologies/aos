@@ -54,6 +54,7 @@
           };
         }
       ];
+      enableAbilitySelection = true;
       packageModules = builtins.map packageModule [pkgs.aos-zfs-provider pkgs.systemd pkgs.zfstools];
     };
   disabled = evaluate false;
@@ -69,6 +70,12 @@
   schedule = requests."zfstools:hourly-schedule".parameters;
   activation = requests."zfstools:zfs-auto-snapshot-hourly-activation".parameters;
   storageReadiness = enabled.config.aos.filesystems.zfs.readinessResources;
+  poolRequests = builtins.attrNames (lib.filterAttrs
+    (_: request:
+      request.package == "aos-zfs-provider"
+      && request.localKey == "pool")
+    requests);
+  poolRequest = builtins.head poolRequests;
   datasetRequests = builtins.attrNames (lib.filterAttrs
     (_: request:
       request.package == "aos-zfs-provider"
@@ -133,7 +140,7 @@ in
   == [(outputReference "zfstools:prepare-lifecycle" "service-resource")];
   assert storageReadiness
   == [
-    (outputReference "aos-zfs-provider:pool" "readiness-resource")
+    (outputReference poolRequest "readiness-resource")
     (outputReference datasetRequest "readiness-resource")
   ];
   assert requests."zfstools:prepare-dependencies".parameters.requires == storageReadiness;

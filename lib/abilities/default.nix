@@ -39,6 +39,30 @@
       })
       projection.requirements);
   };
+  authenticatedPackageOutputs = import ./authenticated-package-outputs.nix {};
+  checkedProviderModuleEvaluation = {
+    before,
+    after,
+  }: let
+    declarationCollections = [
+      "guarantees"
+      "interfaces"
+      "implementations"
+      "requirementTemplates"
+      "instances"
+      "requests"
+    ];
+    introducedDeclarations = builtins.filter
+      (collection:
+        builtins.attrNames after.${collection}
+        != builtins.attrNames before.${collection})
+      declarationCollections;
+  in
+    if builtins.deepSeq (builtins.attrValues after.bindings) after.bindings != before.bindings
+    then throw "selected provider modules introduced bindings outside the explicit source composition"
+    else if introducedDeclarations != []
+    then throw "selected provider modules changed declaration collections: ${builtins.concatStringsSep ", " introducedDeclarations}"
+    else after;
   interfaceRegistry = import ./interfaces {
     inherit
       declareInterface
@@ -1707,10 +1731,17 @@ in rec {
     packageOutputSelectorsFor
     packageProjectionFor
     packageAbilitiesFromProjection
+    checkedProviderModuleEvaluation
     resourceRevision
     identityKeyFor
     singletonSchemaDiscriminator
     transitionFragment
+    ;
+  inherit (authenticatedPackageOutputs)
+    authenticatedPackageOutputFor
+    authenticatedPackageOutputsFor
+    authenticatedPackageModuleRecordFor
+    selectAuthenticatedPackageModuleRecords
     ;
   types = abilityTypes;
   interfaces = interfaceRegistry.readView;
@@ -1767,6 +1798,29 @@ in rec {
     request = requireLocalKey "result request" request;
     output = requireLocalKey "result output" output;
   };
+
+  requestOutputIdentity = args: let
+    checked = requireAttrs "request output identity" ["requests" "reference"] args;
+    reference = checked.reference;
+  in
+    if
+      !builtins.isAttrs reference
+      || builtins.attrNames reference != ["_type" "output" "request"]
+      || (reference._type or null) != "aos-request-output-reference"
+      || !abilityTypes.declarationKey.check (reference.request or null)
+      || !abilityTypes.localKey.check (reference.output or null)
+    then throw "Request output identity requires one exact typed request-output reference."
+    else let
+      request =
+        checked.requests.${reference.request}
+        or (throw "Request output reference '${reference.request}' has no exact evaluated request declaration.");
+    in
+      if (request.package or null) == null || (request.localKey or null) == null
+      then throw "Request output reference '${reference.request}' has no retained package provenance."
+      else {
+        inherit (request) package localKey;
+        output = reference.output;
+      };
 
   canonicalJsonOf = {
     type,
@@ -1845,6 +1899,19 @@ in rec {
     provider_instance = requireDeclarationKey "composition provider instance" checked.providerInstance;
     key = requireLocalKey "composition request key" checked.key;
   }}";
+
+  staticBinding = args: let
+    checked = requireAttrs "static binding" ["request" "implementation" "providerInstance" "slot"] args;
+    value = {
+      request = requireDeclarationKey "static binding request" checked.request;
+      implementation = requireDeclarationKey "static binding implementation" checked.implementation;
+      providerInstance = requireDeclarationKey "static binding provider instance" checked.providerInstance;
+      slot = requireLocalKey "static binding slot" checked.slot;
+    };
+  in {
+    name = "source:binding-${identityKeyFor "aos.ability.static-binding-key/v1" value}";
+    inherit value;
+  };
 
   packageOutput = args: let
     checked = requireAttrs "package output selector" ["package" "output"] args;
