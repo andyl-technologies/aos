@@ -19,16 +19,17 @@
 //! - [`aws`] — AWS IMDSv2; [`cloud`] — the other native cloud fetchers.
 //! - [`staticnet`] — DHCP-less network parsing + networkd render.
 //! - [`facts_render`] — `facts.json` → `host-facts.nix`.
-//! - [`stash`] — private transaction-local acquisition state.
-//! - [`provisioning`] — whole-input authorization and host extraction.
-//! - [`repart`] — shared typed storage validation.
+//! - [`policy`] — whole-input authorization and provisioning-plan projection.
+//! - [`provisioning`] — exact host-input authorization and restricted
+//!   provisioning evaluation.
+//! - [`trust`] — configuration signature authentication.
 //!
 //! # Testability
 //!
 //! Every system surface — DMI sysfs, `blkid`/`mount`, the HTTP/IMDS client — is
-//! behind a trait or a path parameter, so the whole agent is unit-tested off-box
-//! with fixtures. Genuinely builder-gated: real `blkid`/`mount` (root), live
-//! IMDS, and the initrd systemd services.
+//! behind a trait or a path parameter, so the whole agent is unit-tested with
+//! fixtures. Real block-device probing and live metadata services remain
+//! integration-tested by the selected provider package.
 
 pub mod aws;
 pub mod cloud;
@@ -39,15 +40,15 @@ pub mod fetcher;
 pub mod http;
 pub mod mount;
 pub mod offline;
+pub mod policy;
 pub mod provider;
-pub mod stash;
+pub mod provisioning;
 pub mod staticnet;
+pub mod trust;
 mod yaml;
 
 #[cfg(test)]
 mod tests;
-
-use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
@@ -60,7 +61,6 @@ pub use facts_render::{canonicalize_host_facts, normalize_host_facts};
 pub use fetcher::{Facts, PlatformFetcher, StaticNetwork, UserData};
 pub use http::{EngineHttp, MetadataHttp};
 pub use mount::{BlkidProbe, ConfigDriveProbe};
-pub use stash::{MetadataResult, Stash};
 
 use aos_net::transfer::{TransferEngine, TransferEngineConfig};
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,17 @@ pub struct AcquiredMetadata {
     /// Detached signature over the exact module bytes, when supplied.
     pub host_module_signature: Option<String>,
     /// Normalized observational instance facts.
+    pub facts: Facts,
+}
+
+/// Exact metadata payloads returned by one platform acquisition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FetchedMetadata {
+    /// Exact operator module text, when supplied by the platform.
+    pub host_module: Option<String>,
+    /// Detached signature over the exact module text, when supplied.
+    pub host_module_signature: Option<String>,
+    /// Canonical observational instance facts.
     pub facts: Facts,
 }
 
@@ -130,89 +141,52 @@ pub fn select_fetcher(context: &AcquisitionContext) -> Result<Box<dyn PlatformFe
     Ok(fetcher)
 }
 
-/// Options for [`run_fetch`].
-pub struct FetchOptions {
-    /// The stash directory receiving provider-private acquisition outputs.
-    pub stash_dir: PathBuf,
-    /// The typed platform selection produced by the detector.
-    pub context: AcquisitionContext,
-}
-
-/// Selects the fetcher and acquires exact payload bytes and instance facts.
-///
-/// Uses the typed acquisition context directly. Writes `user-data` (+
-/// `user-data.sig`), `facts.json`, and the
-/// `.metadata-result.json` acquisition record. Network facts remain typed
-/// provider output and are never rendered into an ambient configuration file.
+/// Selects the platform fetcher and returns its exact typed result.
 ///
 /// # Errors
 ///
-/// Returns `Err` on transport failure after retries, an unreadable
-/// acquisition context, or a stash write failure. A platform with no user-data
-/// attached is *not* an error: the run record records `fetched_user_data:
-/// false` and no `host.nix` is written.
-pub async fn run_fetch(opts: &FetchOptions) -> Result<()> {
-    let stash = Stash::open(&opts.stash_dir)?;
-    let fetcher = select_fetcher(&opts.context)?;
+/// Returns an error on transport failure, invalid UTF-8 operator input, or
+/// facts that cannot be represented in canonical form.
+pub async fn fetch_metadata(context: &AcquisitionContext) -> Result<FetchedMetadata> {
+    let fetcher = select_fetcher(context)?;
 
     let engine = TransferEngine::new(TransferEngineConfig::default());
     let http = EngineHttp::new(engine);
 
-    run_fetch_with(&stash, &*fetcher, &http, opts.context.platform.as_str()).await
+    fetch_metadata_with(&*fetcher, &http).await
 }
 
-/// The testable core of [`run_fetch`]: drive a given fetcher + HTTP surface and
-/// write the stash. Exposed within the crate for unit tests against recorded
-/// fixtures.
+/// Drives one fetcher against an injected HTTP surface.
 ///
 /// # Errors
 ///
-/// As [`run_fetch`].
-pub(crate) async fn run_fetch_with(
-    stash: &Stash,
+/// As [`fetch_metadata`].
+pub(crate) async fn fetch_metadata_with(
     fetcher: &dyn PlatformFetcher,
     http: &dyn MetadataHttp,
-    platform_id: &str,
-) -> Result<()> {
-    stash.clear_fetch_outputs()?;
-
-    // 1. Exact user-data, resolving the top-level pointer form if present.
+) -> Result<FetchedMetadata> {
     let user_data = fetcher
         .fetch_user_data(http)
         .await
         .context("fetching user-data")?;
-    let (fetched, user_data_sha256, sig_present) = match user_data {
+    let (host_module, host_module_signature) = match user_data {
         Some(ud) => {
             let resolved = ud.resolve(http).await.context("resolving user-data")?;
-            let sha = stash.write_user_data(&resolved.payload, resolved.sig.as_deref())?;
-            (true, Some(sha), resolved.sig.is_some())
+            let module = String::from_utf8(resolved.payload)
+                .context("operator module is not valid UTF-8")?;
+            (Some(module), resolved.sig)
         }
-        None => (false, None, false),
+        None => (None, None),
     };
 
-    // 2. Facts (recorded, unauthenticated).
     let facts = fetcher.fetch_facts(http).await.context("fetching facts")?;
-    let facts_hash = stash.write_facts(&facts)?;
+    let facts = canonicalize_host_facts(&facts)?;
 
-    // 3. Run record.
-    let result = MetadataResult {
-        platform_id: platform_id.to_string(),
-        fetched_user_data: fetched,
-        user_data_source: user_data_source(platform_id).to_string(),
-        user_data_sha256,
-        sig_present,
-        facts_hash,
-        timestamp: now_rfc3339(),
-    };
-    stash.write_result(&result)?;
-    Ok(())
-}
-
-/// The `user_data_source` tag recorded for a platform.
-fn user_data_source(platform_id: &str) -> &'static str {
-    PlatformId::parse(platform_id)
-        .map(PlatformId::user_data_source)
-        .unwrap_or("unknown")
+    Ok(FetchedMetadata {
+        host_module,
+        host_module_signature,
+        facts,
+    })
 }
 
 /// A best-effort RFC 3339 UTC timestamp.

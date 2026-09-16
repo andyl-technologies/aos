@@ -54,6 +54,7 @@ pub(crate) use native_activation::{RetainedNativePreflightError, preflight_retai
 mod cancellation;
 mod execution_observer;
 pub(crate) mod provisioning_evaluator;
+pub mod provisioning_evaluator_provider;
 pub mod registry_snapshot_provider;
 pub mod runtime;
 pub mod runtime_modules;
@@ -1104,19 +1105,19 @@ fn enrich_manifest(
             Some(path) => {
                 let bytes = std::fs::read(path)
                     .with_context(|| format!("reading facts {}", path.display()))?;
-                let facts = serde_json::from_slice::<crate::metadata::fetcher::Facts>(&bytes)
+                let facts = serde_json::from_slice::<aos_metadata::fetcher::Facts>(&bytes)
                     .with_context(|| format!("parsing facts {}", path.display()))?;
                 (facts, bytes, Some(path))
             }
             None => {
-                let facts = crate::metadata::fetcher::Facts::default();
+                let facts = aos_metadata::fetcher::Facts::default();
                 let bytes =
                     serde_json::to_vec(&facts).context("serializing default instance facts")?;
                 (facts, bytes, None)
             }
         };
 
-    let normalized_facts = crate::metadata::facts_render::normalize_host_facts(&facts);
+    let normalized_facts = aos_metadata::facts_render::normalize_host_facts(&facts);
     let facts_identity = serde_json::to_vec(&normalized_facts)?;
     let retained_facts = cmd.eval_root.join("instance-facts.json");
     std::fs::create_dir_all(&cmd.eval_root)
@@ -1894,9 +1895,9 @@ fn validate_cross_abi_inputs(
     }
     let facts_bytes = std::fs::read(&retained.facts_ref)
         .with_context(|| format!("reading retained facts {}", retained.facts_ref))?;
-    let facts: crate::metadata::fetcher::Facts = serde_json::from_slice(&facts_bytes)
+    let facts: aos_metadata::fetcher::Facts = serde_json::from_slice(&facts_bytes)
         .with_context(|| format!("parsing retained facts {}", retained.facts_ref))?;
-    let normalized = crate::metadata::facts_render::normalize_host_facts(&facts);
+    let normalized = aos_metadata::facts_render::normalize_host_facts(&facts);
     let normalized_bytes = serde_json::to_vec(&normalized)?;
     if sha256_identity(&normalized_bytes) != retained.facts_hash {
         anyhow::bail!("retained facts bytes do not match the recorded facts_hash");

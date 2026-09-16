@@ -757,7 +757,7 @@ fn config_generation_record(
 ) -> Result<ConfigGeneration> {
     Ok(ConfigGeneration {
         number,
-        created_at: crate::metadata::now_rfc3339(),
+        created_at: aos_metadata::now_rfc3339(),
         image_gen_parent: running_image.number,
         module_abi_pinned: module_abi,
         manifest_hash: manifest_hash.to_string(),

@@ -1,29 +1,30 @@
-//! Generic authorization, plan, and configuration-evaluation ability handler.
+//! Package-owned metadata authorization and provisioning-plan handler.
 //!
-//! The handler keeps acquisition scratch private to one invocation. Exact host
-//! bytes and semantic early-network facts cross into later operations only
-//! through protected typed outputs. No path below the metadata stash is a
-//! cross-provider data channel.
+//! Exact host bytes and semantic early-network facts cross operations only
+//! through protected typed outputs. Authorization consumes those values
+//! directly; the plan observer materializes them only inside the private Nix
+//! evaluator boundary.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
+use crate::AcquiredMetadata;
+use crate::executable::ExecutableReference;
+use crate::provisioning::evaluate_provisioning_plan;
+use crate::trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload_files};
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, MethodReference,
     ResourceReference,
 };
-use aos_metadata::executable::ExecutableReference;
-use aos_metadata::{AcquiredMetadata, MetadataResult, Stash};
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
     InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, TRANSACTION_BLOB_OUTPUT_DIRECTORY_ENV, TRANSACTION_BLOB_OUTPUT_TYPE,
-    TransactionBlobOutput, resource_set_digest, validate_admission_resource,
+    SupportedPurposes, TRANSACTION_BLOB_OUTPUT_TYPE, TransactionBlobOutput,
+    publish_transaction_blob_output, resource_set_digest, validate_admission_resource,
     validate_resource_context, validate_resource_contexts,
 };
 use aos_storage_provisioning::{
@@ -33,17 +34,9 @@ use aos_storage_provisioning::{
     validate_authorized_provisioning_input, validate_provisioning_intent,
 };
 use serde::{Deserialize, Serialize};
-use tempfile::Builder;
-
-use super::provisioning::{
-    AuthorizeOptions, EvalProvisioningOptions, ProvisioningTrust,
-    evaluate_canonical_provisioning_plan, run_authorize,
-};
-use crate::config_eval::provisioning_evaluator::{self, EvaluationParameters, MANIFEST_SLOT};
 
 const AUTHORIZATION_OBSERVATION: &str = "aos.metadata.provisioning-authorization-observation/v1";
 const PLAN_OBSERVATION: &str = "aos.metadata.provisioning-plan-observation/v1";
-const EVALUATION_OBSERVATION: &str = "aos.configuration.provisioning-evaluation-observation/v1";
 const PROVIDER_CONTEXT: &str = "aos.metadata.provisioning-provider-context/v1";
 const AUTHORIZED_INPUT_SLOT: &str = "authorized-provisioning-input";
 
@@ -51,7 +44,6 @@ const AUTHORIZED_INPUT_SLOT: &str = "authorized-provisioning-input";
 #[serde(rename_all = "kebab-case")]
 enum MetadataRole {
     Authorization,
-    ConfigurationEvaluation,
     PlanObservation,
 }
 
@@ -61,9 +53,6 @@ impl MetadataRole {
             ("aos.metadata.storage-provisioning-input-authorization", "authorize") => {
                 Ok(Self::Authorization)
             }
-            ("aos.configuration.storage-provisioning-evaluation", "evaluate") => {
-                Ok(Self::ConfigurationEvaluation)
-            }
             ("aos.metadata.storage-provisioning-plan", "observe") => Ok(Self::PlanObservation),
             _ => bail!("interface method does not select a checked metadata handler role"),
         }
@@ -72,7 +61,6 @@ impl MetadataRole {
     const fn method(self) -> &'static str {
         match self {
             Self::Authorization => "authorize",
-            Self::ConfigurationEvaluation => "evaluate",
             Self::PlanObservation => "observe",
         }
     }
@@ -80,7 +68,6 @@ impl MetadataRole {
     fn initial_observation(self) -> Result<AbilityValue> {
         match self {
             Self::Authorization => authorization_observation(None, "ready"),
-            Self::ConfigurationEvaluation => evaluation_observation(None, "ready"),
             Self::PlanObservation => plan_observation(None, "ready"),
         }
     }
@@ -156,15 +143,6 @@ struct PlanObservation {
     state: &'static str,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(deny_unknown_fields)]
-struct EvaluationObservation {
-    schema: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    manifest_sha256: Option<String>,
-    state: &'static str,
-}
-
 /// Runs an authorization or plan-normalization call from the process streams.
 ///
 /// # Errors
@@ -172,21 +150,10 @@ struct EvaluationObservation {
 /// Returns an error when the selected ABI, checked authority, metadata input,
 /// restricted evaluation, or provider result is invalid.
 pub async fn run_policy_provider_from_process() -> Result<()> {
-    run_provider_from_process(&[MetadataRole::Authorization, MetadataRole::PlanObservation]).await
+    run_provider_from_process().await
 }
 
-/// Runs one retained-input configuration-evaluation call from the process
-/// streams.
-///
-/// # Errors
-///
-/// Returns an error when the selected ABI, checked authority, retained input,
-/// restricted evaluation, or provider result is invalid.
-pub async fn run_evaluator_provider_from_process() -> Result<()> {
-    run_provider_from_process(&[MetadataRole::ConfigurationEvaluation]).await
-}
-
-async fn run_provider_from_process(allowed_roles: &[MetadataRole]) -> Result<()> {
+async fn run_provider_from_process() -> Result<()> {
     let arguments = std::env::args_os().collect::<Vec<_>>();
     ensure!(
         arguments.len() == 3 && arguments[1] == HANDLER_ABI_ARGUMENT,
@@ -210,20 +177,12 @@ async fn run_provider_from_process(allowed_roles: &[MetadataRole]) -> Result<()>
             let request: AdmissionRequest =
                 aos_contract::canonical::from_slice(&input, "metadata admission")?;
             let role = MetadataRole::from_method(&request.method)?;
-            ensure!(
-                allowed_roles.contains(&role),
-                "method is not exposed by this provider entry point"
-            );
             serde_json::to_value(admit(role, request)?)?
         }
         "effect" | "reconcile" | "cancel" => {
             let invocation: Invocation =
                 aos_contract::canonical::from_slice(&input, "metadata invocation")?;
             let role = MetadataRole::from_method(&invocation.method)?;
-            ensure!(
-                allowed_roles.contains(&role),
-                "method is not exposed by this provider entry point"
-            );
             serde_json::to_value(invoke(role, invocation, purpose).await?)?
         }
         purpose => bail!("unsupported metadata provider purpose {purpose:?}"),
@@ -333,7 +292,8 @@ async fn invoke(
             let authorized_input = serde_json::to_value(&input)?;
             let authorized_input_bytes =
                 aos_contract::canonical::canonical_json(&authorized_input)?;
-            publish_blob_output(AUTHORIZED_INPUT_SLOT, &authorized_input_bytes)?;
+            let output_slot = LocalKey::new(AUTHORIZED_INPUT_SLOT)?;
+            publish_transaction_blob_output(&output_slot, &authorized_input_bytes)?;
             completed_result(
                 &invocation,
                 evidence,
@@ -375,24 +335,6 @@ async fn invoke(
                 )])?,
             )
         }
-        MetadataRole::ConfigurationEvaluation => {
-            let parameters: EvaluationParameters = decode(&invocation.request.inputs)?;
-            ensure!(
-                parameters.request == intent,
-                "configuration evaluation request differs from the checked resource"
-            );
-            let output = provisioning_evaluator::evaluate(parameters)?;
-            publish_blob_output(MANIFEST_SLOT, &output.manifest)?;
-            let manifest_sha256 = output.result.manifest_sha256.to_string();
-            completed_result(
-                &invocation,
-                evaluation_observation(Some(manifest_sha256), "evaluated")?,
-                method_outputs([(
-                    "configuration-result",
-                    ability_value(serde_json::to_value(output.result)?)?,
-                )])?,
-            )
-        }
     }
 }
 
@@ -402,56 +344,48 @@ fn authorize(
 ) -> Result<AuthorizedProvisioningInput> {
     validate_authorization_configuration(configuration)?;
     validate_acquired_metadata(acquired)?;
-    let scratch = Builder::new()
-        .prefix("aos-metadata-authorization-")
-        .tempdir()?;
-    let stash_dir = scratch.path().join("stash");
-    let stash = Stash::open(&stash_dir)?;
-    if let Some(module) = &acquired.host_module {
-        stash.write_user_data(module.as_bytes(), acquired.host_module_signature.as_deref())?;
-    }
-    let facts_hash = stash.write_facts(&acquired.facts)?;
-    stash.write_result(&MetadataResult {
-        platform_id: acquired.platform_id.clone(),
-        fetched_user_data: acquired.host_module.is_some(),
-        user_data_source: "typed-provider-output".into(),
-        user_data_sha256: acquired
-            .host_module
-            .as_ref()
-            .map(|module| aos_metadata::stash::sha256_hex(module.as_bytes())),
-        sig_present: acquired.host_module_signature.is_some(),
-        facts_hash,
-        timestamp: aos_metadata::now_rfc3339(),
-    })?;
+    authorize_validated_input(configuration, acquired)
+}
 
-    let trusted_key_files = trusted_key_files(&configuration.trusted_config_keys)?;
-    let trusted_key_dir = scratch.path().join("trusted-config-keys");
-    materialize_trusted_keys(&trusted_key_files, &trusted_key_dir)?;
-    let trust = match configuration.trust_mode {
-        ProvisioningTrustMode::Platform => ProvisioningTrust::Platform,
-        ProvisioningTrustMode::Signed => ProvisioningTrust::Signed,
-    };
-    let result = run_authorize(&AuthorizeOptions {
-        stash_dir: stash_dir.clone(),
-        platform_id: acquired.platform_id.clone(),
-        trust,
-        trusted_config_key_dirs: vec![trusted_key_dir],
-    })?;
+fn authorize_validated_input(
+    configuration: &AuthorizationConfiguration,
+    acquired: &AcquiredMetadata,
+) -> Result<AuthorizedProvisioningInput> {
     let facts = observed_instance_facts(serde_json::to_value(&acquired.facts)?)?;
-    let input = match result {
-        Some(result) => AuthorizedProvisioningInput {
-            schema: "aos.metadata.authorized-provisioning-input/v1".into(),
-            source: CanonicalProvisioningSource::Operator,
-            host_module: acquired.host_module.clone(),
-            host_module_sha256: Some(format!("sha256:{}", result.host_nix_sha256)),
-            authorization: ProvisioningAuthorization {
-                trust_mode: configuration.trust_mode,
-                platform_id: acquired.platform_id.clone(),
-                signer: result.signer,
-            },
-            facts,
-            base_library: configuration.base_library.clone(),
-        },
+    let input = match &acquired.host_module {
+        Some(module) => {
+            let signer = match configuration.trust_mode {
+                ProvisioningTrustMode::Platform => None,
+                ProvisioningTrustMode::Signed => {
+                    let trusted_keys = trusted_key_files(&configuration.trusted_config_keys)?;
+                    Some(
+                        authenticate_config_payload_files(
+                            module.as_bytes(),
+                            acquired.host_module_signature.as_deref(),
+                            &trusted_keys,
+                            CONFIG_SIGNATURE_NAMESPACE,
+                        )
+                        .map_err(anyhow::Error::new)
+                        .context("authorizing signed host module")?
+                        .operator_key,
+                    )
+                }
+            };
+
+            AuthorizedProvisioningInput {
+                schema: "aos.metadata.authorized-provisioning-input/v1".into(),
+                source: CanonicalProvisioningSource::Operator,
+                host_module: Some(module.clone()),
+                host_module_sha256: Some(digest(module.as_bytes())),
+                authorization: ProvisioningAuthorization {
+                    trust_mode: configuration.trust_mode,
+                    platform_id: acquired.platform_id.clone(),
+                    signer,
+                },
+                facts,
+                base_library: configuration.base_library.clone(),
+            }
+        }
         None => AuthorizedProvisioningInput {
             schema: "aos.metadata.authorized-provisioning-input/v1".into(),
             source: CanonicalProvisioningSource::Fallback,
@@ -475,13 +409,13 @@ fn validate_acquired_metadata(acquired: &AcquiredMetadata) -> Result<()> {
         acquired.schema == "aos.metadata.acquired-provisioning-input/v1",
         "unsupported acquired metadata result"
     );
-    aos_metadata::detect::PlatformId::parse(&acquired.platform_id)?;
+    crate::detect::PlatformId::parse(&acquired.platform_id)?;
     ensure!(
         acquired.host_module.is_some() || acquired.host_module_signature.is_none(),
         "metadata signature has no corresponding host module"
     );
     ensure!(
-        aos_metadata::canonicalize_host_facts(&acquired.facts)? == acquired.facts,
+        crate::canonicalize_host_facts(&acquired.facts)? == acquired.facts,
         "acquired metadata facts are not canonical"
     );
     Ok(())
@@ -495,75 +429,7 @@ fn observe_plan(
 ) -> Result<CanonicalProvisioningPlan> {
     validate_authorized_provisioning_input(input)?;
     verify_base_library(&input.base_library)?;
-    let scratch = Builder::new().prefix("aos-provisioning-plan-").tempdir()?;
-    let stash_dir = scratch.path().join("input");
-    fs::create_dir_all(&stash_dir)?;
-    if let Some(module) = &input.host_module {
-        fs::write(stash_dir.join("host.nix"), module)?;
-    }
-    evaluate_canonical_provisioning_plan(&EvalProvisioningOptions {
-        stash_dir,
-        base_lib: PathBuf::from(&input.base_library.store_path),
-        eval_root: scratch.path().join("eval"),
-        measured_boot: request.measured_boot,
-        marker: marker.clone(),
-        nix_instantiate: nix_instantiate.to_path_buf(),
-    })
-}
-
-fn publish_blob_output(slot: &str, contents: &[u8]) -> Result<()> {
-    let output = std::env::var_os(TRANSACTION_BLOB_OUTPUT_DIRECTORY_ENV)
-        .context("reading the private transaction blob output directory")?;
-    let directory = PathBuf::from(output);
-    ensure!(
-        directory.is_absolute()
-            && directory
-                .components()
-                .all(|component| matches!(component, Component::RootDir | Component::Normal(_))),
-        "transaction blob output directory is not a normalized absolute path"
-    );
-    let metadata = fs::symlink_metadata(&directory)
-        .context("inspecting the private transaction blob output directory")?;
-    ensure!(
-        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
-        "transaction blob output directory is not a real directory"
-    );
-    ensure!(
-        fs::canonicalize(&directory)? == directory,
-        "transaction blob output directory is not canonical"
-    );
-
-    publish_blob_output_at(&directory, slot, contents)
-}
-
-fn publish_blob_output_at(directory: &Path, slot: &str, contents: &[u8]) -> Result<()> {
-    let destination = directory.join(slot);
-    match fs::symlink_metadata(&destination) {
-        Ok(metadata) => {
-            ensure!(
-                metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
-                "transaction blob output slot is not a regular file"
-            );
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("inspecting the transaction blob output slot"),
-    }
-
-    let mut temporary = Builder::new()
-        .prefix(".aos-transaction-blob-")
-        .tempfile_in(&directory)
-        .context("creating a private transaction blob output")?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
-    temporary.write_all(contents)?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(&destination)
-        .map_err(|error| error.error)
-        .context("publishing the transaction blob output")?;
-    fs::File::open(&directory)?.sync_all()?;
-    Ok(())
+    evaluate_provisioning_plan(request, input, marker, nix_instantiate)
 }
 
 fn validate_authorization_configuration(configuration: &AuthorizationConfiguration) -> Result<()> {
@@ -587,6 +453,7 @@ fn validate_authorization_configuration(configuration: &AuthorizationConfigurati
 
 fn trusted_key_files(files: &[TrustedKeyFile]) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
+    let mut names = std::collections::BTreeSet::new();
     for file in files {
         let path = match file {
             TrustedKeyFile::ArtifactFile { reference } => artifact_file(reference)?,
@@ -610,18 +477,10 @@ fn trusted_key_files(files: &[TrustedKeyFile]) -> Result<Vec<PathBuf>> {
             path.is_file(),
             "trusted configuration key is not a regular file"
         );
-        if !paths.iter().any(|existing| existing == &path) {
-            paths.push(path);
+        if paths.iter().any(|existing| existing == &path) {
+            continue;
         }
-    }
-    Ok(paths)
-}
-
-fn materialize_trusted_keys(files: &[PathBuf], directory: &Path) -> Result<()> {
-    fs::create_dir_all(directory)?;
-    let mut names = std::collections::BTreeSet::new();
-    for source in files {
-        let name = source
+        let name = path
             .file_name()
             .and_then(|name| name.to_str())
             .context("trusted configuration key has no UTF-8 file name")?;
@@ -633,9 +492,9 @@ fn materialize_trusted_keys(files: &[PathBuf], directory: &Path) -> Result<()> {
             names.insert(name.to_string()),
             "trusted configuration key names collide"
         );
-        fs::copy(source, directory.join(name))?;
+        paths.push(path);
     }
-    Ok(())
+    Ok(paths)
 }
 
 fn artifact_file(reference: &ArtifactPathReference) -> Result<PathBuf> {
@@ -714,17 +573,6 @@ fn plan_observation(
     })?)
 }
 
-fn evaluation_observation(
-    manifest_sha256: Option<String>,
-    state: &'static str,
-) -> Result<AbilityValue> {
-    ability_value(serde_json::to_value(EvaluationObservation {
-        schema: EVALUATION_OBSERVATION,
-        manifest_sha256,
-        state,
-    })?)
-}
-
 fn completed_result(
     invocation: &Invocation,
     evidence: AbilityValue,
@@ -786,7 +634,6 @@ fn purpose_name(purpose: InvocationPurpose) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
-    use std::os::unix::fs::{MetadataExt as _, symlink};
 
     use aos_ability_model::{InterfaceKey, InterfaceName};
     use aos_contract::Sha256Digest;
@@ -817,11 +664,6 @@ mod tests {
                 MetadataRole::PlanObservation,
                 "observe",
             ),
-            (
-                "aos.configuration.storage-provisioning-evaluation",
-                MetadataRole::ConfigurationEvaluation,
-                "evaluate",
-            ),
         ];
 
         for (interface, expected, method) in cases {
@@ -836,31 +678,41 @@ mod tests {
     }
 
     #[test]
-    fn transaction_blob_publication_is_atomic_and_recoverable() {
-        let directory = tempfile::tempdir().expect("private blob output directory");
+    fn platform_authorization_preserves_typed_input_without_file_round_trip() {
+        let host_module = "{ aos.provisioning.storage.partitions = {}; }";
+        let configuration = AuthorizationConfiguration {
+            schema: "aos.metadata.provisioning-authorization-configuration/v1".into(),
+            trust_mode: ProvisioningTrustMode::Platform,
+            trusted_config_keys: Vec::new(),
+            base_library: BaseLibraryIdentity {
+                store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-base-lib".into(),
+                abi_hash: format!("sha256:{}", "00".repeat(32)),
+            },
+        };
+        let acquired = AcquiredMetadata {
+            schema: "aos.metadata.acquired-provisioning-input/v1".into(),
+            platform_id: "qemu".into(),
+            host_module: Some(host_module.into()),
+            host_module_signature: None,
+            facts: crate::Facts {
+                hostname: Some("provisioning-test".into()),
+                ..Default::default()
+            },
+        };
 
-        publish_blob_output_at(directory.path(), MANIFEST_SLOT, b"first")
-            .expect("first blob publication");
-        publish_blob_output_at(directory.path(), MANIFEST_SLOT, b"replacement")
-            .expect("recovered blob publication");
+        let authorized =
+            authorize_validated_input(&configuration, &acquired).expect("typed authorization");
 
-        let path = directory.path().join(MANIFEST_SLOT);
-        assert_eq!(fs::read(&path).expect("published blob"), b"replacement");
+        assert_eq!(authorized.source, CanonicalProvisioningSource::Operator);
+        assert_eq!(authorized.host_module.as_deref(), Some(host_module));
         assert_eq!(
-            fs::metadata(path).expect("published blob metadata").mode() & 0o7777,
-            0o600
+            authorized.host_module_sha256,
+            Some(digest(host_module.as_bytes()))
         );
-    }
-
-    #[test]
-    fn transaction_blob_publication_rejects_a_symbolic_link_slot() {
-        let directory = tempfile::tempdir().expect("private blob output directory");
-        let outside = tempfile::NamedTempFile::new().expect("outside file");
-        symlink(outside.path(), directory.path().join(MANIFEST_SLOT)).expect("symbolic link");
-
-        let error = publish_blob_output_at(directory.path(), MANIFEST_SLOT, b"manifest")
-            .expect_err("symbolic link is rejected");
-
-        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(authorized.authorization.signer, None);
+        assert_eq!(
+            authorized.facts.value["hostname"],
+            serde_json::Value::String("provisioning-test".into())
+        );
     }
 }

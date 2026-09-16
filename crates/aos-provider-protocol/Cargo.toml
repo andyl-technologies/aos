@@ -10,3 +10,4 @@ aos-ability-model.workspace = true
 aos-contract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true

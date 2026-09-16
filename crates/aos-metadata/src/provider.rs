@@ -5,7 +5,6 @@
 //! only typed operation results cross into the generic authorization provider.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,9 +27,8 @@ use tempfile::Builder;
 
 use crate::detect::{AcquisitionContext, PlatformId, detect};
 use crate::executable::ExecutableReference;
-use crate::facts_render::canonicalize_host_facts;
 use crate::mount::BlkidProbe;
-use crate::{AcquiredMetadata, DetectedPlatform, FetchOptions, run_fetch};
+use crate::{AcquiredMetadata, DetectedPlatform, fetch_metadata};
 
 const ACQUIRED_METADATA_SCHEMA: &str = "aos.metadata.acquired-provisioning-input/v1";
 const ACQUISITION_OBSERVATION: &str = "aos.metadata.provisioning-acquisition-observation/v1";
@@ -334,7 +332,6 @@ async fn acquire(
     let scratch = Builder::new()
         .prefix("aos-metadata-acquisition-")
         .tempdir()?;
-    let stash_dir = scratch.path().join("stash");
     let context = detect_environment(scratch.path().join("media"), tools)?;
     let actual_platform = detected_platform(&context);
     let actual_platform = match actual_platform {
@@ -347,32 +344,20 @@ async fn acquire(
             actual_platform == *expected_platform,
             "metadata platform changed after the checked detection operation"
         );
-        run_fetch(&FetchOptions {
-            stash_dir: stash_dir.clone(),
-            context: context.clone(),
-        })
-        .await?;
-
-        let bytes =
-            fs::read(stash_dir.join("facts.json")).context("reading normalized instance facts")?;
-        let facts: crate::fetcher::Facts =
-            serde_json::from_slice(&bytes).context("decoding normalized instance facts")?;
-        let facts = canonicalize_host_facts(&facts)?;
+        let fetched = fetch_metadata(&context).await?;
+        let facts = fetched.facts;
         let network_bootstrap = facts
             .network
             .as_ref()
             .filter(|network| network.is_seedable())
             .map(network_bootstrap)
             .transpose()?;
-        let host_module = optional_utf8_file(&stash_dir.join("user-data"))?;
-        let host_module_signature = optional_utf8_file(&stash_dir.join("user-data.sig"))?;
-
         Ok((
             AcquiredMetadata {
                 schema: ACQUIRED_METADATA_SCHEMA.into(),
                 platform_id: actual_platform.platform_id,
-                host_module,
-                host_module_signature,
+                host_module: fetched.host_module,
+                host_module_signature: fetched.host_module_signature,
                 facts,
             },
             network_bootstrap,
@@ -446,16 +431,6 @@ fn finish_config_drive<T>(
         (Err(error), Err(cleanup_error)) => Err(error.context(format!(
             "config-drive cleanup also failed: {cleanup_error:#}"
         ))),
-    }
-}
-
-fn optional_utf8_file(path: &Path) -> Result<Option<String>> {
-    match fs::read(path) {
-        Ok(bytes) => String::from_utf8(bytes)
-            .context("metadata input is not UTF-8")
-            .map(Some),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
     }
 }
 

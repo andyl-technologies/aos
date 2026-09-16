@@ -2,7 +2,8 @@
 
 #[tokio::main]
 async fn main() {
-    if let Err(error) = aos_package::metadata::provider::run_evaluator_provider_from_process().await
+    if let Err(error) =
+        aos_package::config_eval::provisioning_evaluator_provider::run_from_process().await
     {
         eprintln!("aos-provisioning-configuration-evaluator: {error:#}");
         std::process::exit(1);

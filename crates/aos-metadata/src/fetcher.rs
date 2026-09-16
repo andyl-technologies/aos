@@ -2,14 +2,14 @@
 //!
 //! A fetcher encodes one platform's documented user-data + instance-metadata
 //! contract (endpoint paths, required headers, payload encoding, facts
-//! locations) over the shared HTTP surface ([`crate::metadata::http`]). It is
+//! locations) over the shared HTTP surface ([`crate::http`]). It is
 //! the only seam the dispatcher knows about; selection is by `PLATFORM_ID`
 //! from `detect`.
 //!
 //! # Trust boundary
 //!
-//! Everything a fetcher returns is untrusted. [`UserData`] bytes are stashed
-//! verbatim; the following initrd authorization phase owns the trust decision.
+//! Everything a fetcher returns is untrusted. [`UserData`] bytes remain exact;
+//! the following initrd authorization operation owns the trust decision.
 //! A fetcher must never promote a [`Facts`] field into a security decision.
 //!
 //! # Data shapes
@@ -17,9 +17,9 @@
 //! - [`UserData`] — literal `host.nix`, or a size-cap transport pointer to the
 //!   exact `host.nix` bytes.
 //! - [`Facts`] — normalized, unauthenticated instance facts rendered to
-//!   `host-facts.nix` as `host.facts.*` ([`crate::metadata::facts_render`]).
+//!   `host-facts.nix` as `host.facts.*` ([`crate::facts_render`]).
 //! - [`StaticNetwork`] — the parsed DHCP-less network config seeded into
-//!   networkd ([`crate::metadata::staticnet`]).
+//!   networkd ([`crate::staticnet`]).
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -157,7 +157,7 @@ impl UserData {
 /// Normalized, unauthenticated instance facts.
 ///
 /// Rendered to `host-facts.nix` as `host.facts.*`
-/// ([`crate::metadata::facts_render`]) and recorded under `facts_hash`. Every
+/// ([`crate::facts_render`]) and recorded under `facts_hash`. Every
 /// field is data the operator's modules may *read*, never an authorization.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -195,7 +195,7 @@ pub struct MacIface {
 ///
 /// Normalized from OpenStack `network_data.json`, NoCloud netplan
 /// `network-config`, or a DigitalOcean IMDS interface document, and rendered
-/// to the typed network bootstrap value ([`crate::metadata::staticnet`]).
+/// to the typed network bootstrap value ([`crate::staticnet`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StaticNetwork {
