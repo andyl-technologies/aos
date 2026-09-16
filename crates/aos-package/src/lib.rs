@@ -572,32 +572,6 @@ pub enum PackageCommand {
         #[command(subcommand)]
         op: TestSystemdClientOp,
     },
-    /// Hidden: verify an RFC-0001 package attestation event log.
-    #[command(name = "_test-verify-package-attestation", hide = true)]
-    TestVerifyPackageAttestation {
-        /// Use system registry metadata
-        #[arg(long)]
-        system: bool,
-        /// Package event log JSONL path
-        #[arg(long)]
-        event_log: PathBuf,
-        /// Quoted PCR 15 value as SHA-256 hex
-        #[arg(long)]
-        pcr15: String,
-        /// Expected PCR 15 value before package measurements
-        #[arg(long)]
-        pcr15_baseline: Option<String>,
-    },
-    /// Hidden: produce an RFC-0001 package attestation TPM quote.
-    #[command(name = "_test-produce-package-attestation-quote", hide = true)]
-    TestProducePackageAttestationQuote {
-        /// Verifier nonce as an even-length hex string
-        #[arg(long)]
-        nonce: String,
-        /// Directory where quote artifacts are written
-        #[arg(long)]
-        output_dir: PathBuf,
-    },
     /// Hidden: produce the host package-attestation quote for the service controller.
     #[command(name = "__attest-service", hide = true)]
     AttestService,
@@ -1302,8 +1276,6 @@ impl PackageCommand {
                 | PackageCommand::ActivateRestoreRoutedSources { .. }
                 | PackageCommand::RecoverCredentialTransactions
                 | PackageCommand::TestSystemdClient { .. }
-                | PackageCommand::TestVerifyPackageAttestation { .. }
-                | PackageCommand::TestProducePackageAttestationQuote { .. }
                 | PackageCommand::AttestService
                 | PackageCommand::Attest {
                     command: AttestCommand::VerifyBootCommit { .. }
@@ -1385,8 +1357,6 @@ impl PackageCommand {
             | PackageCommand::Credential(..)
             | PackageCommand::Registry { .. }
             | PackageCommand::TestSystemdClient { .. }
-            | PackageCommand::TestVerifyPackageAttestation { .. }
-            | PackageCommand::TestProducePackageAttestationQuote { .. }
             | PackageCommand::AttestService
             | PackageCommand::Eval { .. }
             | PackageCommand::Materialize { .. }
@@ -1421,7 +1391,6 @@ impl PackageCommand {
             PackageCommand::Held { system, .. } => *system,
             PackageCommand::Orphans { system, .. } => *system,
             PackageCommand::Clean { system, .. } => *system,
-            PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
             PackageCommand::Schema { system, .. } => *system,
             _ => false,
         }
@@ -3936,10 +3905,6 @@ pub async fn run(
         std::process::exit(code);
     }
 
-    if let PackageCommand::TestProducePackageAttestationQuote { nonce, output_dir } = command {
-        return run_produce_package_attestation_quote(nonce, output_dir, printer);
-    }
-
     if let PackageCommand::AttestService = command {
         return run_package_attestation_service();
     }
@@ -4383,26 +4348,6 @@ pub async fn run(
         }
         PackageCommand::Registry { command, .. } => {
             run_apm_registry(&config, command, printer).await
-        }
-        PackageCommand::TestVerifyPackageAttestation {
-            event_log,
-            pcr15,
-            pcr15_baseline,
-            ..
-        } => run_verify_package_attestation(
-            &config,
-            event_log,
-            AttestationMeasurement::Pcr15(pcr15.clone()),
-            &[],
-            pcr15_baseline,
-            None,
-            None,
-            None,
-            None,
-            printer,
-        ),
-        PackageCommand::TestProducePackageAttestationQuote { .. } => {
-            unreachable!("TestProducePackageAttestationQuote is handled before ApmConfig::load")
         }
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
