@@ -1348,7 +1348,7 @@ in {
           requiredFeatures = [];
         };
         ${networkConfigurationEffectsAlias} = {
-          description = "Executes checked systemd-networkd configuration and metadata-seed convergence.";
+          description = "Executes checked systemd-networkd configuration effects.";
           interface = networkConfigurationEffectsAlias;
           artifact = handlerArtifact;
           inherit (networkConfigurationEffects) methods;
