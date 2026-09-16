@@ -248,6 +248,9 @@ fn classify_node(node: &InspectionNode, kinds: &mut BTreeSet<SemanticChangeKind>
                 kinds.insert(SemanticChangeKind::EnforcementGuarantee);
             }
         }
+        InspectionNode::Implementation { .. } => {
+            kinds.insert(SemanticChangeKind::ProviderAbi);
+        }
         InspectionNode::Provider { configuration, .. } => {
             if configuration.is_some() {
                 kinds.insert(SemanticChangeKind::ConfigurationContribution);
@@ -281,6 +284,11 @@ fn classify_node(node: &InspectionNode, kinds: &mut BTreeSet<SemanticChangeKind>
 fn classify_edge(edge: &InspectionEdge, kinds: &mut BTreeSet<SemanticChangeKind>) {
     match edge.relation {
         InspectionRelation::SelectsProvider | InspectionRelation::SuppliesInterface => {
+            kinds.insert(SemanticChangeKind::ProviderAbi);
+        }
+        InspectionRelation::DeclaresImplementation
+        | InspectionRelation::ExportsImplementation
+        | InspectionRelation::ImplementsInterface => {
             kinds.insert(SemanticChangeKind::ProviderAbi);
         }
         InspectionRelation::ContributesToAggregate | InspectionRelation::OwnsAggregate => {
@@ -541,6 +549,9 @@ const fn removal_disposition(relation: InspectionRelation) -> RemovalDisposition
         | InspectionRelation::BackedByPackage
         | InspectionRelation::RunsPackage
         | InspectionRelation::ExportsInterface
+        | InspectionRelation::DeclaresImplementation
+        | InspectionRelation::ExportsImplementation
+        | InspectionRelation::ImplementsInterface
         | InspectionRelation::RequiresInterface
         | InspectionRelation::ContributesToAggregate
         | InspectionRelation::OwnsAggregate

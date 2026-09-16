@@ -1227,11 +1227,7 @@ mod tests {
 
         PackageAbilityReference {
             schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
-            required_features: vec![
-                RequiredFeature::new("abilities-v1").unwrap(),
-                RequiredFeature::new(aos_doc_model::ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
-                    .unwrap(),
-            ],
+            required_features: vec![RequiredFeature::new("abilities-v1").unwrap()],
             package: LocalKey::new("nginx").unwrap(),
             version: "1.0".to_string(),
             manifest_sha256: Sha256Digest::of_bytes("manifest"),
@@ -1263,7 +1259,6 @@ mod tests {
                 name: LocalKey::new("server").unwrap(),
                 implementation: implementation_key,
                 interface: interface_key.clone(),
-                requirements: vec![requirement],
             }],
             requirements: Vec::new(),
             handlers: vec![AbilityHandlerReference {
@@ -1325,7 +1320,7 @@ mod tests {
             .map(|row| row.key.as_str())
             .collect::<std::collections::BTreeSet<_>>();
         assert!(capability_keys.contains("provided:server"));
-        assert!(capability_keys.contains("consumed:export:server:service-runtime"));
+        assert!(capability_keys.contains("consumed:implementation:server:service-runtime"));
 
         let options = search_loaded_documents(&[loaded], "", Some("option"), 25)
             .expect("empty kind-filtered search browses that projection");
@@ -1376,7 +1371,7 @@ mod tests {
         assert!(plain.contains("PROVIDED ABILITIES"));
         assert!(plain.contains("CONSUMED ABILITIES"));
         assert!(plain.contains("declared export\tserver\taos.test.echo\tABI 1"));
-        assert!(plain.contains("service-runtime\trequired\tconsumed by export server"));
+        assert!(plain.contains("service-runtime\trequired\tconsumed by implementation server"));
         assert!(plain.contains("declared request or contribution schema"));
         assert!(plain.contains("declared operator-owned provider instance configuration schema"));
         assert!(plain.contains("\"max_length\": 64"));
@@ -1390,7 +1385,7 @@ mod tests {
         assert!(html.contains("Declared request or contribution schema"));
         assert!(html.contains("Provided abilities"));
         assert!(html.contains("Consumed abilities"));
-        assert!(html.contains("consumed by <code>export server</code>"));
+        assert!(html.contains("consumed by <code>implementation server</code>"));
         assert!(html.contains("Declared operator-owned provider instance configuration schema"));
         assert!(html.contains("&quot;max_length&quot;: 64"));
         assert!(html.contains("public schemas only, never deployed instance values"));
@@ -1417,9 +1412,6 @@ mod tests {
         let implementation_key = reference.implementations[0].descriptor_digest().unwrap();
         reference.exports[0].interface = interface_key.clone();
         reference.exports[0].implementation = implementation_key;
-        for requirement in &mut reference.exports[0].requirements {
-            requirement.accepted_interfaces = vec![interface_key.clone().into()];
-        }
         assert!(
             without_configuration
                 .render_plain()

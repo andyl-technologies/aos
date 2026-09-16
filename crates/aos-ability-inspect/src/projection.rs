@@ -226,6 +226,7 @@ fn node_is_visible(kind: ProjectionKind, node: &InspectionNode) -> bool {
             node,
             InspectionNode::Interface { .. }
                 | InspectionNode::Package { .. }
+                | InspectionNode::Implementation { .. }
                 | InspectionNode::Request { .. }
                 | InspectionNode::Provider { .. }
                 | InspectionNode::Aggregate { .. }
@@ -234,6 +235,7 @@ fn node_is_visible(kind: ProjectionKind, node: &InspectionNode) -> bool {
             node,
             InspectionNode::Interface { .. }
                 | InspectionNode::Package { .. }
+                | InspectionNode::Implementation { .. }
                 | InspectionNode::Request { .. }
                 | InspectionNode::Binding { .. }
                 | InspectionNode::Provider { .. }
@@ -256,6 +258,7 @@ fn node_is_visible(kind: ProjectionKind, node: &InspectionNode) -> bool {
         ProjectionKind::Retention => matches!(
             node,
             InspectionNode::Package { .. }
+                | InspectionNode::Implementation { .. }
                 | InspectionNode::Request { .. }
                 | InspectionNode::Binding { .. }
                 | InspectionNode::Provider { .. }
@@ -277,6 +280,9 @@ fn relation_is_visible(kind: ProjectionKind, relation: InspectionRelation) -> bo
                 | InspectionRelation::SuppliesInterface
                 | InspectionRelation::RunsPackage
                 | InspectionRelation::ExportsInterface
+                | InspectionRelation::DeclaresImplementation
+                | InspectionRelation::ExportsImplementation
+                | InspectionRelation::ImplementsInterface
                 | InspectionRelation::RequiresInterface
                 | InspectionRelation::BackedByPackage
                 | InspectionRelation::ContributesToAggregate

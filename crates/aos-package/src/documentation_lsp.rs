@@ -813,7 +813,6 @@ mod tests {
                 name: LocalKey::new("lifecycle-provider").expect("valid export name"),
                 interface: interface_key,
                 implementation: implementation_key,
-                requirements: Vec::new(),
             }],
             requirements: Vec::new(),
             handlers: Vec::new(),

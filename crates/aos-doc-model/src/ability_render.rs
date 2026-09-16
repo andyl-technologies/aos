@@ -197,18 +197,18 @@ pub(crate) fn plain(reference: &PackageAbilityReference) -> String {
     output.push_str("\nCONSUMED ABILITIES\n");
     if reference.requirements.is_empty()
         && reference
-            .exports
+            .implementations
             .iter()
-            .all(|export| export.requirements.is_empty())
+            .all(|implementation| implementation.requirements.is_empty())
     {
         output.push_str("No consumed ability requirements are declared.\n");
     }
     for requirement in &reference.requirements {
         plain_requirement(&mut output, "package", requirement);
     }
-    for export in &reference.exports {
-        let consumer = format!("export {}", export.name.as_str());
-        for requirement in &export.requirements {
+    for implementation in &reference.implementations {
+        let consumer = format!("implementation {}", implementation.name.as_str());
+        for requirement in &implementation.requirements {
             plain_requirement(&mut output, &consumer, requirement);
         }
     }
@@ -446,9 +446,9 @@ pub(crate) fn html(reference: &PackageAbilityReference) -> String {
     output.push_str("<h3>Consumed abilities</h3>");
     if reference.requirements.is_empty()
         && reference
-            .exports
+            .implementations
             .iter()
-            .all(|export| export.requirements.is_empty())
+            .all(|implementation| implementation.requirements.is_empty())
     {
         output.push_str("<p>No consumed ability requirements are declared.</p>");
     } else {
@@ -456,9 +456,9 @@ pub(crate) fn html(reference: &PackageAbilityReference) -> String {
         for requirement in &reference.requirements {
             html_requirement(&mut output, "package", requirement);
         }
-        for export in &reference.exports {
-            let consumer = format!("export {}", export.name.as_str());
-            for requirement in &export.requirements {
+        for implementation in &reference.implementations {
+            let consumer = format!("implementation {}", implementation.name.as_str());
+            for requirement in &implementation.requirements {
                 html_requirement(&mut output, &consumer, requirement);
             }
         }

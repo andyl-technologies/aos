@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_ability_model::{ABILITY_LIMITS_V1, RequiredFeature};
+use aos_ability_model::{ABILITY_LIMITS_V1, InterfaceKey, RequiredFeature, RequirementDeclaration};
 use aos_contract::Sha256Digest;
 use aos_contract::limits::JsonLimits;
 use aos_doc_model::{
@@ -317,61 +317,60 @@ impl ReferenceInspectionView {
             },
         )]);
         let mut edges = BTreeSet::new();
+        let exported_implementations = reference
+            .exports
+            .iter()
+            .map(|export| export.implementation)
+            .collect::<BTreeSet<_>>();
 
-        for export in &reference.exports {
-            let interface = reference
-                .interface_for_export(export)
+        for implementation in &reference.implementations {
+            let digest = implementation
+                .descriptor_digest()
                 .map_err(|error| ReferenceInspectionError::InvalidReference(error.to_string()))?;
-            let key = export.interface.clone();
-            let node_key = NodeKey::Interface(key.clone());
-            let node = InspectionNode::Interface {
-                key,
-                descriptor: interface.interface.clone(),
-            };
-            if nodes
-                .insert(node_key.clone(), node.clone())
-                .is_some_and(|existing| existing != node)
-            {
-                return Err(ReferenceInspectionError::InconsistentInterface);
-            }
+            let implementation_key = NodeKey::Implementation(digest);
+            nodes.insert(
+                implementation_key.clone(),
+                InspectionNode::Implementation {
+                    digest,
+                    name: implementation.name.clone(),
+                    interface: implementation.interface.clone(),
+                    description: implementation.description.clone(),
+                },
+            );
             edges.insert(InspectionEdge {
                 from: package.clone(),
-                to: node_key,
-                relation: InspectionRelation::ExportsInterface,
+                to: implementation_key.clone(),
+                relation: if exported_implementations.contains(&digest) {
+                    InspectionRelation::ExportsImplementation
+                } else {
+                    InspectionRelation::DeclaresImplementation
+                },
             });
+
+            let interface_key =
+                insert_reference_interface(reference, &implementation.interface, &mut nodes)?;
+            edges.insert(InspectionEdge {
+                from: implementation_key.clone(),
+                to: interface_key,
+                relation: InspectionRelation::ImplementsInterface,
+            });
+
+            insert_reference_requirements(
+                reference,
+                &implementation_key,
+                &implementation.requirements,
+                &mut nodes,
+                &mut edges,
+            )?;
         }
 
-        for requirement in &reference.requirements {
-            for selector in &requirement.accepted_interfaces {
-                let retained = reference.interfaces.values().find_map(|document| {
-                    let key = document.interface_key().ok()?;
-                    selector.matches(&key).then_some((key, document))
-                });
-                let node_key = if let Some((key, document)) = retained {
-                    let node_key = NodeKey::Interface(key.clone());
-                    nodes
-                        .entry(node_key.clone())
-                        .or_insert_with(|| InspectionNode::Interface {
-                            key,
-                            descriptor: document.interface.clone(),
-                        });
-                    node_key
-                } else {
-                    let node_key = NodeKey::InterfaceSelector(selector.clone());
-                    nodes.entry(node_key.clone()).or_insert_with(|| {
-                        InspectionNode::InterfaceReference {
-                            selector: selector.clone(),
-                        }
-                    });
-                    node_key
-                };
-                edges.insert(InspectionEdge {
-                    from: package.clone(),
-                    to: node_key,
-                    relation: InspectionRelation::RequiresInterface,
-                });
-            }
-        }
+        insert_reference_requirements(
+            reference,
+            &package,
+            &reference.requirements,
+            &mut nodes,
+            &mut edges,
+        )?;
 
         let view = Self {
             schema: REFERENCE_INSPECTION_VIEW_SCHEMA.to_string(),
@@ -411,6 +410,39 @@ impl ReferenceInspectionView {
             truncated: selection.truncated,
             nodes: selection.nodes,
             edges: selection.edges,
+        };
+        let _ = slice.canonical_bytes()?;
+        Ok(slice)
+    }
+
+    /// Returns the complete checked public-reference graph without frontend-owned sizing logic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the complete slice cannot be canonically encoded.
+    pub fn complete_slice(&self) -> Result<ReferenceGraphSlice, ReferenceInspectionError> {
+        let roots = self
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                InspectionNode::Package { digest, .. } => Some(NodeKey::Package(*digest)),
+                _ => None,
+            })
+            .collect();
+        let slice = ReferenceGraphSlice {
+            schema: REFERENCE_GRAPH_SLICE_SCHEMA.to_string(),
+            required_features: Vec::new(),
+            anchor: self.anchor.clone(),
+            disclosure: self.disclosure,
+            diagnostics: self.diagnostics.clone(),
+            roots,
+            direction: Direction::Outgoing,
+            after: None,
+            max_depth: crate::INSPECTION_QUERY_MAX_DEPTH,
+            max_nodes: self.nodes.len(),
+            truncated: false,
+            nodes: self.nodes.clone(),
+            edges: self.edges.clone(),
         };
         let _ = slice.canonical_bytes()?;
         Ok(slice)
@@ -512,6 +544,79 @@ impl ReferenceGraphSlice {
     }
 }
 
+fn insert_reference_interface(
+    reference: &PackageAbilityReference,
+    expected: &InterfaceKey,
+    nodes: &mut BTreeMap<NodeKey, InspectionNode>,
+) -> Result<NodeKey, ReferenceInspectionError> {
+    let document = reference
+        .interfaces
+        .values()
+        .find(|document| document.interface_key().ok().as_ref() == Some(expected))
+        .ok_or_else(|| {
+            ReferenceInspectionError::InvalidReference(
+                "provider implementation has no retained interface document".to_string(),
+            )
+        })?;
+    let node_key = NodeKey::Interface(expected.clone());
+    let node = InspectionNode::Interface {
+        key: expected.clone(),
+        descriptor: document.interface.clone(),
+    };
+    if nodes
+        .insert(node_key.clone(), node.clone())
+        .is_some_and(|existing| existing != node)
+    {
+        return Err(ReferenceInspectionError::InconsistentInterface);
+    }
+    Ok(node_key)
+}
+
+fn insert_reference_requirements(
+    reference: &PackageAbilityReference,
+    consumer: &NodeKey,
+    requirements: &[RequirementDeclaration],
+    nodes: &mut BTreeMap<NodeKey, InspectionNode>,
+    edges: &mut BTreeSet<InspectionEdge>,
+) -> Result<(), ReferenceInspectionError> {
+    for requirement in requirements {
+        for selector in &requirement.accepted_interfaces {
+            let retained = reference.interfaces.values().find_map(|document| {
+                let key = document.interface_key().ok()?;
+                selector.matches(&key).then_some((key, document))
+            });
+            let node_key = if let Some((key, document)) = retained {
+                let node_key = NodeKey::Interface(key.clone());
+                let node = InspectionNode::Interface {
+                    key,
+                    descriptor: document.interface.clone(),
+                };
+                if nodes
+                    .insert(node_key.clone(), node.clone())
+                    .is_some_and(|existing| existing != node)
+                {
+                    return Err(ReferenceInspectionError::InconsistentInterface);
+                }
+                node_key
+            } else {
+                let node_key = NodeKey::InterfaceSelector(selector.clone());
+                nodes.entry(node_key.clone()).or_insert_with(|| {
+                    InspectionNode::InterfaceReference {
+                        selector: selector.clone(),
+                    }
+                });
+                node_key
+            };
+            edges.insert(InspectionEdge {
+                from: consumer.clone(),
+                to: node_key,
+                relation: InspectionRelation::RequiresInterface,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn reference_anchor(checked: &CheckedReferenceInspection) -> ReferenceInspectionAnchor {
     if checked.is_externally_anchored() {
         ReferenceInspectionAnchor::ExternallyAnchoredReference {
@@ -607,6 +712,27 @@ mod tests {
         assert_eq!(slice.diagnostics().len(), 3);
         let encoded = slice.canonical_bytes()?;
         assert!(!String::from_utf8(encoded)?.contains("deployment-values"));
+
+        let implementation = reference
+            .implementation_for_export(&reference.exports[0])?
+            .descriptor_digest()?;
+        let implementation = NodeKey::Implementation(implementation);
+        let complete = view.complete_slice()?;
+        assert!(complete.edges().iter().any(|edge| {
+            edge.from == NodeKey::Package(reference.manifest_sha256)
+                && edge.to == implementation
+                && edge.relation == InspectionRelation::ExportsImplementation
+        }));
+        assert!(complete.edges().iter().any(|edge| {
+            edge.from == implementation && edge.relation == InspectionRelation::ImplementsInterface
+        }));
+        assert!(complete.edges().iter().any(|edge| {
+            edge.from == implementation && edge.relation == InspectionRelation::RequiresInterface
+        }));
+        assert!(complete.edges().iter().any(|edge| {
+            edge.from == NodeKey::Package(reference.manifest_sha256)
+                && edge.relation == InspectionRelation::RequiresInterface
+        }));
         Ok(())
     }
 

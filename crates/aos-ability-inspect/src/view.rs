@@ -106,6 +106,8 @@ pub enum NodeKey {
     InterfaceSelector(InterfaceSelector),
     /// Names one authenticated package manifest.
     Package(Sha256Digest),
+    /// Names one exact provider implementation descriptor.
+    Implementation(Sha256Digest),
     /// Names one consumer request.
     Request(RequestId),
     /// Names one plan-local provider binding.
@@ -177,6 +179,17 @@ pub enum InspectionNode {
         name: LocalKey,
         /// Retains the authored package version.
         version: String,
+    },
+    /// Describes one exact package-owned provider implementation.
+    Implementation {
+        /// Identifies the complete implementation descriptor.
+        digest: Sha256Digest,
+        /// Names the implementation inside its package.
+        name: LocalKey,
+        /// Identifies the interface implemented by this descriptor.
+        interface: InterfaceKey,
+        /// Carries the package-authored implementation description.
+        description: String,
     },
     /// Describes one typed consumer request.
     Request {
@@ -314,6 +327,7 @@ impl InspectionNode {
             Self::Interface { key, .. } => NodeKey::Interface(key.clone()),
             Self::InterfaceReference { selector } => NodeKey::InterfaceSelector(selector.clone()),
             Self::Package { digest, .. } => NodeKey::Package(*digest),
+            Self::Implementation { digest, .. } => NodeKey::Implementation(*digest),
             Self::Request { id, .. } => NodeKey::Request(id.clone()),
             Self::Binding { id, .. } => NodeKey::Binding(id.clone()),
             Self::Provider { id, .. } => NodeKey::Provider(id.clone()),
@@ -348,6 +362,12 @@ pub enum InspectionRelation {
     RunsPackage,
     /// An authenticated package manifest exports one exact public interface.
     ExportsInterface,
+    /// An authenticated package manifest declares one provider implementation.
+    DeclaresImplementation,
+    /// An authenticated package manifest exposes one provider implementation.
+    ExportsImplementation,
+    /// A provider implementation implements one exact public interface.
+    ImplementsInterface,
     /// An authenticated package requirement accepts one exact public interface.
     RequiresInterface,
     /// An authenticated package manifest retains an exact artifact.
