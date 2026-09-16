@@ -76,10 +76,10 @@ apm install curl jq
 apm list --installed
 ```
 
-Machine-wide package sets can be reconciled from a reviewed desired-state
-file with `apm install --system --from`. See [Manage packages](packages.md) for
-user and system scopes, upgrades, and rollback, and [Configure package
-registries](registries.md) for origin and trust policy.
+Select machine-wide packages with `aos.apm.desiredPackages` in the same
+authenticated module transaction as their configuration. See [Manage
+packages](packages.md) for user and system scopes, upgrades, and rollback, and
+[Configure package registries](registries.md) for origin and trust policy.
 
 ## Discover package configuration
 

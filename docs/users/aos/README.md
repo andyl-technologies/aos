@@ -20,7 +20,7 @@ production deployments must supply their own trust material.
 | First-boot storage | Literal `host.nix` supplied through metadata | Committed once; later changes are drift |
 | Host configuration | Pure `host.nix` evaluation and authenticated package configuration | Numbered configuration generations under `/var/lib/profiles/system` |
 | User packages | `apm install`, `upgrade`, `remove`, and `rollback` after account storage is provisioned | Per-user profile generations under `/var/lib/profiles/per-user` |
-| Runtime system packages | `apm install --system --from DESIRED.toml` | Machine-wide package generations under `/var/lib/profiles/system-packages` |
+| Host-selected packages | `aos.apm.desiredPackages` in authenticated `host.nix` | The same numbered host-configuration generations |
 | OS image | `apm upgrade --system` and `apm rollback --system --image` | A/B image generations under `/var/lib/profiles/image` |
 
 Three command names cover different jobs in the AOS toolchain:

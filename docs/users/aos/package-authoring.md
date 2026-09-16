@@ -401,25 +401,28 @@ apr publish "$STORE_PATH" \
 
 Create and upload a signed registry release using the workflow in
 [Publish packages and releases](../registry/publishing.md). Once the consumer
-has synchronized that registry, declare the service in a machine-wide desired
-file:
+has synchronized that registry, select the service in the machine's
+authenticated `host.nix`:
 
-```toml
-packages = ["acme-health-agent"]
+```nix
+{
+  aos.apm.desiredPackages = ["acme-health-agent"];
+}
 ```
 
-Preview and reconcile the complete desired set:
+Preview and apply the complete host configuration:
 
 ```sh
 apm update --system
-apm install --system --from ./desired.toml --dry-run
-apm install --system --from ./desired.toml --yes
+apm switch --from ./host.nix --dry-run
+apm switch --from ./host.nix
 systemctl status acme-health-agent.service
 ```
 
-The file is authoritative: packages omitted from it are removed during
-reconciliation. `apm install PACKAGE --system` is instead the OS-sysroot
-install path and rejects an ordinary application package.
+The module fixed point is authoritative: packages omitted from
+`aos.apm.desiredPackages` are removed from the next configuration generation.
+`apm install PACKAGE --system` is the OS-sysroot install path and rejects an
+ordinary application package.
 
 ## Ship a new version
 

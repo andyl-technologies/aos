@@ -86,36 +86,29 @@ apm rollback --generation N
 
 ## Manage machine-wide packages
 
-Ordinary machine-wide packages are reconciled from an authoritative desired
-file. Create `desired.toml`:
+Machine-wide package selection is part of the authenticated host configuration
+fixed point. Add the package names to `host.nix`:
 
-```toml
-packages = ["nginx", "curl"]
+```nix
+{
+  aos.apm.desiredPackages = ["nginx" "curl"];
+}
 ```
 
-Preview and apply the complete set:
+Preview and apply the complete configuration:
 
 ```sh
 apm update --system
-apm install --system --from ./desired.toml --dry-run
-apm install --system --from ./desired.toml --yes
+apm switch --from ./host.nix --dry-run
+apm switch --from ./host.nix
 ```
 
-The explicit update makes the preview predictable: dry-run never refreshes
-metadata. When applying additions, reconciliation also attempts an update and
-falls back to cached metadata with a warning if that update fails. A change
-with no additions does not refresh metadata.
-
-The list is declarative. Explicit packages omitted from the next file are
-removed during reconciliation, including packages made unreachable by that
-change. To remove `nginx`, delete it from `packages` and run the same command
-again. There is no `apm remove --system` command.
-
-The desired format can also carry package configuration and credential input.
-APM checks those inputs before mutating the package profile. Prefer systemd
-system-credential references; if a separately managed desired file contains
-bytes, protect it as secret state. Evaluated `host.nix` contains only opaque
-`secretRef` handles, never those bytes.
+The explicit update makes the preview predictable: dry-run does not refresh
+registry metadata. The package list is declarative. Removing `nginx` from
+`aos.apm.desiredPackages` removes it from the next configuration generation and
+stops its selected services. Package configuration and opaque credential
+references belong in the same module transaction; secret bytes never enter
+evaluated `host.nix`.
 
 Machine-wide runtime package generations are stored separately from the OS:
 
