@@ -2,6 +2,7 @@
 {
   imports = [
     ./core.nix
+    ./linux-service-features.nix
     ./verity-root.nix
   ];
 }

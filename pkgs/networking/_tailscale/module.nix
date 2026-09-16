@@ -33,6 +33,44 @@
     device = "/dev/net/tun";
   };
   service = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = {
+          allow_privilege_escalation = false;
+          ambient_capabilities = ["CAP_NET_ADMIN" "CAP_NET_RAW"];
+          capability_bounds = {
+            kind = "restricted";
+            capabilities = ["CAP_NET_ADMIN" "CAP_NET_RAW"];
+          };
+          control_group_delegation = false;
+          control_group_access = "host";
+          device_namespace = "shared";
+          kernel_clock_mutation = true;
+          kernel_hostname_mutation = true;
+          kernel_log_access = true;
+          kernel_module_access = true;
+          kernel_tunable_access = true;
+          lock_personality = false;
+          memory_write_execute = true;
+          namespace_isolation = [];
+          network_address_families = ["ipv4" "ipv6" "netlink" "packet" "unix"];
+          oom_score_adjust = 0;
+          permit_realtime = true;
+          permit_suid_sgid = false;
+          process_visibility = "all";
+          syscall_architectures = [];
+          syscall_allow = [];
+          syscall_deny = [];
+          syscall_profile = "privileged";
+          user_namespace_ownership = "none";
+        };
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "service";
     declaration = {
@@ -120,35 +158,6 @@
         ];
         host_paths = [];
         permit_core_dumps = false;
-      };
-      linux_isolation = {
-        allow_privilege_escalation = false;
-        ambient_capabilities = ["CAP_NET_ADMIN" "CAP_NET_RAW"];
-        capability_bounds = {
-          kind = "restricted";
-          capabilities = ["CAP_NET_ADMIN" "CAP_NET_RAW"];
-        };
-        control_group_delegation = false;
-        control_group_access = "host";
-        device_namespace = "shared";
-        kernel_clock_mutation = true;
-        kernel_hostname_mutation = true;
-        kernel_log_access = true;
-        kernel_module_access = true;
-        kernel_tunable_access = true;
-        lock_personality = false;
-        memory_write_execute = true;
-        namespace_isolation = [];
-        network_address_families = ["ipv4" "ipv6" "netlink" "packet" "unix"];
-        oom_score_adjust = 0;
-        permit_realtime = true;
-        permit_suid_sgid = false;
-        process_visibility = "all";
-        syscall_architectures = [];
-        syscall_allow = [];
-        syscall_deny = [];
-        syscall_profile = "privileged";
-        user_namespace_ownership = "none";
       };
     };
   };

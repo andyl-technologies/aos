@@ -102,6 +102,44 @@
     relativePath = "system_bus_socket";
   };
   service = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = {
+          allow_privilege_escalation = true;
+          ambient_capabilities = [];
+          capability_bounds.kind = "unrestricted";
+          control_group_delegation = false;
+          control_group_access = "host";
+          device_namespace = "shared";
+          kernel_clock_mutation = true;
+          kernel_hostname_mutation = true;
+          kernel_log_access = true;
+          kernel_module_access = true;
+          kernel_tunable_access = true;
+          lock_personality = false;
+          memory_write_execute = true;
+          remove_ipc = false;
+          namespace_isolation = [];
+          namespace_creation = "allowed";
+          network_address_families = [];
+          oom_score_adjust = -900;
+          permit_realtime = true;
+          permit_suid_sgid = true;
+          process_visibility = "all";
+          syscall_architectures = [];
+          syscall_allow = [];
+          syscall_deny = [];
+          syscall_denial_action = "kill-process";
+          syscall_profile = "privileged";
+          user_namespace_ownership = "full";
+        };
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "system-bus";
     declaration =
@@ -212,35 +250,6 @@
           devices = [];
           host_paths = [];
           permit_core_dumps = true;
-        };
-        linux_isolation = {
-          allow_privilege_escalation = true;
-          ambient_capabilities = [];
-          capability_bounds.kind = "unrestricted";
-          control_group_delegation = false;
-          control_group_access = "host";
-          device_namespace = "shared";
-          kernel_clock_mutation = true;
-          kernel_hostname_mutation = true;
-          kernel_log_access = true;
-          kernel_module_access = true;
-          kernel_tunable_access = true;
-          lock_personality = false;
-          memory_write_execute = true;
-          remove_ipc = false;
-          namespace_isolation = [];
-          namespace_creation = "allowed";
-          network_address_families = [];
-          oom_score_adjust = -900;
-          permit_realtime = true;
-          permit_suid_sgid = true;
-          process_visibility = "all";
-          syscall_architectures = [];
-          syscall_allow = [];
-          syscall_deny = [];
-          syscall_denial_action = "kill-process";
-          syscall_profile = "privileged";
-          user_namespace_ownership = "full";
         };
       }
       // lib.optionalAttrs (cfg.openFileLimit != null) {

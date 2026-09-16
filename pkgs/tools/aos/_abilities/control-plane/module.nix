@@ -55,10 +55,12 @@
     termination_scope = "all-processes";
     temporary_directory = "private";
     devices = [];
-    host_paths = builtins.map (source: {
-      inherit source;
-      mode = "read-write";
-    }) readWritePaths;
+    host_paths =
+      builtins.map (source: {
+        inherit source;
+        mode = "read-write";
+      })
+      readWritePaths;
     permit_core_dumps = true;
   };
   linuxIsolation = {
@@ -133,7 +135,18 @@
   };
   service = declaration:
     serviceManagement.forService {
-      inherit serviceTypes consumerInstance declaration;
+      inherit serviceTypes consumerInstance;
+      declaration = builtins.removeAttrs declaration ["linux_isolation"];
+      featureContributions = lib.optional (declaration ? linux_isolation) (
+        serviceManagement.featureContribution {
+          key = "linux_isolation";
+          requirementAlias = "linux-service-isolation";
+          description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+          interface = "aos.platform.linux.service-isolation";
+          abi = 1;
+          parameters = declaration.linux_isolation;
+        }
+      );
     };
 
   activationPreflight = service {
@@ -155,11 +168,13 @@
       remainAfterExit = true;
       timeoutMillis = 90000;
     };
-    dependencies = defaultDependencies // {
-      prerequisites = [
-        (resultOf "configuration-evaluation-lifecycle" "service-resource")
-      ];
-    };
+    dependencies =
+      defaultDependencies
+      // {
+        prerequisites = [
+          (resultOf "configuration-evaluation-lifecycle" "service-resource")
+        ];
+      };
     conditions.all = [
       {
         kind = "path";
@@ -200,13 +215,15 @@
       remainAfterExit = true;
       timeoutMillis = 180000;
     };
-    dependencies = defaultDependencies // {
-      after = [(resultOf "aos-graph-compile-lifecycle" "service-resource")];
-      prerequisites = [
-        (resultOf "package-profile-convergence-lifecycle" "service-resource")
-        (resultOf "aos-graph-compile-lifecycle" "service-resource")
-      ];
-    };
+    dependencies =
+      defaultDependencies
+      // {
+        after = [(resultOf "aos-graph-compile-lifecycle" "service-resource")];
+        prerequisites = [
+          (resultOf "package-profile-convergence-lifecycle" "service-resource")
+          (resultOf "aos-graph-compile-lifecycle" "service-resource")
+        ];
+      };
     conditions.all = [
       {
         kind = "path";

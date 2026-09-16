@@ -162,6 +162,83 @@
     };
   };
   service = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_device_policy";
+        requirementAlias = "linux-service-device-policy";
+        description = "Requires the selected Linux platform to enforce the declared device access policy.";
+        interface = "aos.platform.linux.service-device-policy";
+        abi = 1;
+        parameters = {
+          baseline_access = "standard-runtime-devices";
+          rules =
+            map
+            (class: {
+              selector = {
+                kind = "class";
+                device_type = "character";
+                inherit class;
+              };
+              read = true;
+              write = true;
+              create_node = false;
+            })
+            [
+              "fuse"
+              "kernel-message"
+              "network-tunnel"
+            ];
+        };
+      })
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = {
+          allow_privilege_escalation = true;
+          ambient_capabilities = [];
+          capability_bounds = {
+            kind = "restricted";
+            capabilities = [
+              "CAP_SYS_ADMIN"
+              "CAP_NET_ADMIN"
+              "CAP_NET_RAW"
+              "CAP_SYS_RESOURCE"
+              "CAP_SYS_PTRACE"
+            ];
+          };
+          control_group_delegation = true;
+          control_group_access = "host";
+          device_namespace = "shared";
+          kernel_clock_mutation = true;
+          kernel_hostname_mutation = true;
+          kernel_log_access = true;
+          kernel_module_access = true;
+          kernel_tunable_access = true;
+          lock_personality = false;
+          memory_write_execute = true;
+          namespace_isolation = [];
+          network_address_families = [
+            "ipv4"
+            "ipv6"
+            "netlink"
+            "packet"
+            "unix"
+          ];
+          oom_score_adjust = 0;
+          permit_realtime = true;
+          permit_suid_sgid = true;
+          process_visibility = "all";
+          syscall_architectures = [];
+          syscall_allow = [];
+          syscall_deny = [];
+          syscall_profile = "privileged";
+          user_namespace_ownership = "none";
+        };
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "service";
     declaration = {
@@ -302,67 +379,6 @@
           }
         ];
         permit_core_dumps = true;
-      };
-      linux_isolation = {
-        allow_privilege_escalation = true;
-        ambient_capabilities = [];
-        capability_bounds = {
-          kind = "restricted";
-          capabilities = [
-            "CAP_SYS_ADMIN"
-            "CAP_NET_ADMIN"
-            "CAP_NET_RAW"
-            "CAP_SYS_RESOURCE"
-            "CAP_SYS_PTRACE"
-          ];
-        };
-        control_group_delegation = true;
-        control_group_access = "host";
-        device_namespace = "shared";
-        kernel_clock_mutation = true;
-        kernel_hostname_mutation = true;
-        kernel_log_access = true;
-        kernel_module_access = true;
-        kernel_tunable_access = true;
-        lock_personality = false;
-        memory_write_execute = true;
-        namespace_isolation = [];
-        network_address_families = [
-          "ipv4"
-          "ipv6"
-          "netlink"
-          "packet"
-          "unix"
-        ];
-        oom_score_adjust = 0;
-        permit_realtime = true;
-        permit_suid_sgid = true;
-        process_visibility = "all";
-        syscall_architectures = [];
-        syscall_allow = [];
-        syscall_deny = [];
-        syscall_profile = "privileged";
-        user_namespace_ownership = "none";
-      };
-      linux_device_policy = {
-        baseline_access = "standard-runtime-devices";
-        rules =
-          map
-          (class: {
-            selector = {
-              kind = "class";
-              device_type = "character";
-              inherit class;
-            };
-            read = true;
-            write = true;
-            create_node = false;
-          })
-          [
-            "fuse"
-            "kernel-message"
-            "network-tunnel"
-          ];
       };
     };
   };

@@ -328,6 +328,16 @@
       user_namespace_ownership = "none";
     };
     initializeService = serviceManagement.forService {
+      featureContributions = [
+        (serviceManagement.featureContribution {
+          key = "linux_isolation";
+          requirementAlias = "linux-service-isolation";
+          description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+          interface = "aos.platform.linux.service-isolation";
+          abi = 1;
+          parameters = commonLinuxIsolation;
+        })
+      ];
       inherit serviceTypes;
       consumerInstance = "mariadb";
       declaration = {
@@ -373,10 +383,19 @@
         storage = commonStorage;
         identity = commonIdentity;
         isolation = commonIsolation;
-        linux_isolation = commonLinuxIsolation;
       };
     };
     mainService = serviceManagement.forService {
+      featureContributions = [
+        (serviceManagement.featureContribution {
+          key = "linux_isolation";
+          requirementAlias = "linux-service-isolation";
+          description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+          interface = "aos.platform.linux.service-isolation";
+          abi = 1;
+          parameters = commonLinuxIsolation;
+        })
+      ];
       inherit serviceTypes;
       consumerInstance = "mariadb";
       declaration = {
@@ -453,7 +472,6 @@
           kind = "maximum";
           value = 65536;
         };
-        linux_isolation = commonLinuxIsolation;
       };
     };
     base = [

@@ -389,12 +389,6 @@
           negated = true;
         }
       ];
-      linux_conditions.capabilities = [
-        {
-          capability = "CAP_SYS_TIME";
-          available = true;
-        }
-      ];
       instantiation = {
         kind = "singleton";
       };
@@ -488,21 +482,6 @@
           relationship = "resource-triggers-service";
         }
       ];
-      linux_device_policy = {
-        baseline_access = "standard-runtime-devices";
-        rules = [
-          {
-            selector = {
-              kind = "class";
-              device_type = "character";
-              class = "ptp";
-            };
-            read = true;
-            write = true;
-            create_node = false;
-          }
-        ];
-      };
     };
   richStaticTemplate =
     extendedService
@@ -645,68 +624,11 @@
         maximum_size_bytes = 4096;
       };
     };
-  restrictedCapabilityBounds = {
-    kind = "restricted";
-    capabilities = ["CAP_NET_BIND_SERVICE"];
-  };
-  unrestrictedCapabilityBounds.kind = "unrestricted";
   maximumResourceLimit = {
     kind = "maximum";
     value = 4096;
   };
   unboundedResourceLimit.kind = "unbounded";
-  linuxIsolation = {
-    allow_privilege_escalation = false;
-    ambient_capabilities = ["CAP_NET_BIND_SERVICE"];
-    capability_bounds = restrictedCapabilityBounds;
-    control_group_delegation = false;
-    control_group_access = "read-only";
-    device_namespace = "shared";
-    kernel_clock_mutation = false;
-    kernel_hostname_mutation = false;
-    kernel_log_access = false;
-    kernel_module_access = false;
-    kernel_tunable_access = false;
-    lock_personality = true;
-    memory_write_execute = false;
-    namespace_isolation = [];
-    network_address_families = ["ipv4" "ipv6" "unix"];
-    oom_score_adjust = 0;
-    permit_realtime = false;
-    permit_suid_sgid = false;
-    process_visibility = "all";
-    syscall_architectures = [];
-    syscall_allow = [];
-    syscall_deny = [];
-    syscall_profile = "system-service";
-    user_namespace_ownership = "none";
-  };
-  invalidLinuxIsolation =
-    linuxIsolation
-    // {
-      ambient_capabilities = ["CAP_SYS_ADMIN"];
-    };
-  invalidLinuxConditions.capabilities = [
-    {
-      capability = "sys-time";
-      available = true;
-    }
-  ];
-  invalidLinuxDevicePolicy = {
-    baseline_access = "standard-runtime-devices";
-    rules = [
-      {
-        selector = {
-          kind = "number";
-          device_type = "character";
-          major = -1;
-        };
-        read = true;
-        write = false;
-        create_node = false;
-      }
-    ];
-  };
   namedCredentialResolution = serviceManagement.forProducer {
     consumerInstance = "system:registry-hub";
     key = "credential-source";
@@ -1199,12 +1121,8 @@ in
   assert !succeedsAs serviceTypes.storageAllocation invalidPlacedStorageAllocation;
   assert succeedsAs serviceTypes.filesystemEntry filesystemDirectory;
   assert !succeedsAs serviceTypes.filesystemEntry invalidFilesystemDirectory;
-  assert succeedsAs serviceTypes.capabilityBounds restrictedCapabilityBounds;
-  assert succeedsAs serviceTypes.capabilityBounds unrestrictedCapabilityBounds;
   assert succeedsAs serviceTypes.resourceLimit maximumResourceLimit;
   assert succeedsAs serviceTypes.resourceLimit unboundedResourceLimit;
-  assert validates (minimalService // {linux_isolation = linuxIsolation;});
-  assert !validates (minimalService // {linux_isolation = invalidLinuxIsolation;});
   assert succeedsAs serviceTypes.isolation ({
       service = "smartd";
       enabled = true;
@@ -1217,32 +1135,6 @@ in
     }
     // serviceIsolation
     // {home_access = "hidden";});
-  assert succeedsAs serviceTypes.linuxConditions {
-    service = "clock";
-    enabled = true;
-    capabilities = [
-      {
-        capability = "CAP_SYS_TIME";
-        available = true;
-      }
-    ];
-  };
-  assert !succeedsAs serviceTypes.linuxConditions ({
-      service = "clock";
-      enabled = true;
-    }
-    // invalidLinuxConditions);
-  assert succeedsAs serviceTypes.linuxDevicePolicy {
-    service = "clock";
-    enabled = true;
-    baseline_access = "standard-runtime-devices";
-    rules = extendedService.linux_device_policy.rules;
-  };
-  assert !succeedsAs serviceTypes.linuxDevicePolicy ({
-      service = "clock";
-      enabled = true;
-    }
-    // invalidLinuxDevicePolicy);
   assert builtins.attrNames expanded.requests == ["main-lifecycle"];
   assert builtins.attrNames splitExpanded.declarations == ["requirementTemplates"];
   assert splitExpanded.declarations.requirementTemplates == expanded.requirementTemplates;
@@ -1312,8 +1204,6 @@ in
     "main-failure_policy"
     "main-instantiation"
     "main-lifecycle"
-    "main-linux_conditions"
-    "main-linux_device_policy"
     "main-reload"
     "main-resources"
     "main-scheduling"
@@ -1342,8 +1232,6 @@ in
     "core:service-condition-mandatory-access-control"
     "core:service-condition-path"
   ];
-  assert expandedExtended.requirementTemplates.linux-service-conditions.guarantees
-  == ["core:linux-service-condition-capability"];
   assert expandedExtended.requests.main-environment.parameters.variables.INSTANCE == "blue";
   assert !validates (extendedService
     // {

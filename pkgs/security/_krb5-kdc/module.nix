@@ -353,6 +353,16 @@
   };
 
   initializeService = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = (linuxIsolation []) // {network_address_families = ["unix"];};
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "krb5";
     declaration = {
@@ -386,10 +396,19 @@
       storage = commonStorage;
       identity = commonIdentity;
       isolation = commonIsolation // {network = "none";};
-      linux_isolation = (linuxIsolation []) // {network_address_families = ["unix"];};
     };
   };
   kdcService = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = linuxIsolation ["CAP_NET_BIND_SERVICE"];
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "krb5";
     declaration = {
@@ -421,10 +440,19 @@
       };
       identity = commonIdentity;
       isolation = commonIsolation;
-      linux_isolation = linuxIsolation ["CAP_NET_BIND_SERVICE"];
     };
   };
   administrationService = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = linuxIsolation [];
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "krb5";
     declaration = {
@@ -456,7 +484,6 @@
       };
       identity = commonIdentity;
       isolation = commonIsolation;
-      linux_isolation = linuxIsolation [];
     };
   };
 

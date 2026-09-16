@@ -23,6 +23,42 @@
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceInterfaces = serviceManagement.interfaces;
+  linuxServiceFacets = {
+    linuxConditions = {
+      alias = "linux-service-conditions";
+      facet = "linux_conditions";
+    };
+    linuxIsolation = {
+      alias = "linux-service-isolation";
+      facet = "linux_isolation";
+    };
+    linuxDevicePolicy = {
+      alias = "linux-service-device-policy";
+      facet = "linux_device_policy";
+    };
+  };
+  selectedLinuxInterface = _: feature: let
+    alias = feature.alias;
+    declaration = config.aos.abilities.interfaces."${packageName}:${alias}";
+    semanticDeclaration =
+      declaration
+      // {
+        guarantees = builtins.map semanticGuarantee declaration.guarantees;
+        methods = builtins.mapAttrs (_: method:
+          method // {guarantees = builtins.map semanticGuarantee method.guarantees;})
+        declaration.methods;
+      };
+    document = lib.abilities.interfaceDocumentFromDeclaration semanticDeclaration;
+  in {
+    inherit alias declaration document;
+    identity = lib.abilities.interfaceIdentity document;
+    methods = builtins.attrNames declaration.methods;
+    guarantees = declaration.guarantees;
+    requestType = declaration.requestType;
+    observationType = declaration.methods.observe.outcome.observationEvidence;
+  };
+  linuxServiceInterfaces = builtins.mapAttrs selectedLinuxInterface linuxServiceFacets;
+  allServiceInterfaces = serviceInterfaces // linuxServiceInterfaces;
   serviceEffectsInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-service-effects"
   );
@@ -51,23 +87,23 @@
   };
   serviceResourceFields = serviceManagement.types.serviceDeclaration._abilitySchema.fields;
   serviceImplementationNames = builtins.filter (featureName: let
-    selected = serviceInterfaces.${featureName};
+    selected = allServiceInterfaces.${featureName};
     aggregation = selected.document.interface.aggregation;
   in
     selected.methods
     != []
     && aggregation.controller_group == "service"
     && aggregation.merge_contract != null)
-  (builtins.attrNames serviceInterfaces);
+  (builtins.attrNames allServiceInterfaces);
   controlsService = featureName: let
-    selected = serviceInterfaces.${featureName};
+    selected = allServiceInterfaces.${featureName};
   in
     builtins.any (methodName:
       selected.declaration.methods.${methodName}.semantics.requiredTargetAccess == "exclusive-write")
     selected.methods;
   serviceControllerImplementationNames =
     builtins.map
-    (featureName: "${packageName}:${serviceInterfaces.${featureName}.alias}")
+    (featureName: "${packageName}:${allServiceInterfaces.${featureName}.alias}")
     (builtins.filter controlsService serviceImplementationNames);
   networkReadinessAlias = serviceInterfaces.networkReadiness.alias;
   filesystemReadinessAlias = serviceInterfaces.filesystemReadiness.alias;
@@ -192,6 +228,10 @@
   facetProjectionFor = selected: let
     requestFields = builtins.removeAttrs selected.requestType._abilitySchema.fields ["service" "enabled"];
     requestFieldNames = builtins.attrNames requestFields;
+    configuredPlatformFacet =
+      builtins.filter
+      (feature: linuxServiceInterfaces.${feature}.identity == selected.identity)
+      (builtins.attrNames linuxServiceInterfaces);
     candidates =
       builtins.concatMap (facet: let
         schema = serviceResourceFields.${facet};
@@ -222,11 +262,16 @@
         (fieldName: fieldName != "service" && fieldName != "enabled")
         (builtins.attrNames serviceResourceFields));
   in
-    if builtins.length candidates != 1
+    if builtins.length configuredPlatformFacet == 1
+    then {
+      facet = linuxServiceFacets.${builtins.head configuredPlatformFacet}.facet;
+      field = null;
+    }
+    else if builtins.length candidates != 1
     then throw "systemd service interface '${selected.alias}' must select exactly one canonical service resource facet"
     else builtins.head candidates;
   provideServiceFacet = featureName: context: let
-    selected = serviceInterfaces.${featureName};
+    selected = allServiceInterfaces.${featureName};
     projection = facetProjectionFor selected;
     publishesServiceResource = builtins.hasAttr "service-resource" selected.declaration.outputs;
     entries = builtins.map (requestName: let
@@ -513,10 +558,12 @@
           value = request;
         }) (lifecycleRequests resource)) {}
       resources;
-      realizations = builtins.mapAttrs (_: _: {
-        schema = realizationSchema;
-        systemd = systemdReference;
-      }) resources;
+      realizations =
+        builtins.mapAttrs (_: _: {
+          schema = realizationSchema;
+          systemd = systemdReference;
+        })
+        resources;
     };
 
   composeManagerWatchdog = {resources, ...}:
@@ -677,7 +724,7 @@
     builtins.sort
     (left: right: builtins.toJSON left < builtins.toJSON right)
     (builtins.map (featureName: let
-        selected = serviceInterfaces.${featureName};
+        selected = allServiceInterfaces.${featureName};
       in {
         interface = selected.identity;
         facet = (facetProjectionFor selected).facet;
@@ -831,7 +878,7 @@
     resources,
     ...
   }: let
-    selected = serviceInterfaces.${featureName};
+    selected = allServiceInterfaces.${featureName};
     implementation = "${packageName}:${selected.alias}";
     selectedBindings = builtins.attrValues bindings;
     providerInstance =
@@ -1048,7 +1095,7 @@
       })
       selectedNetworkConfigurationResources;
   serviceProviderImplementations = builtins.listToAttrs (builtins.map (featureName: let
-      selected = serviceInterfaces.${featureName};
+      selected = allServiceInterfaces.${featureName};
     in {
       name = selected.alias;
       value = {

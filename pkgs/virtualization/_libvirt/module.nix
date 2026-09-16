@@ -50,7 +50,8 @@
   accessMembership = producer "access-membership" interfaces.groupMembership {
     name = "libvirt-access";
     group = resultOf "access-group" "identity-resource";
-    principals = builtins.sort
+    principals =
+      builtins.sort
       (left: right: builtins.toJSON left < builtins.toJSON right)
       (builtins.map
         (name: resultOf (allowedPrincipalKey name) "identity-resource")
@@ -218,7 +219,18 @@
   };
   service = declaration:
     serviceManagement.forService {
-      inherit serviceTypes consumerInstance declaration;
+      inherit serviceTypes consumerInstance;
+      declaration = builtins.removeAttrs declaration ["linux_isolation"];
+      featureContributions = lib.optional (declaration ? linux_isolation) (
+        serviceManagement.featureContribution {
+          key = "linux_isolation";
+          requirementAlias = "linux-service-isolation";
+          description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+          interface = "aos.platform.linux.service-isolation";
+          abi = 1;
+          parameters = declaration.linux_isolation;
+        }
+      );
     };
   daemon = {
     name,

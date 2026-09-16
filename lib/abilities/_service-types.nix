@@ -13,24 +13,6 @@
     element = localKey;
     maxItems = 256;
   };
-  capabilityNames = types.list {
-    element = types.capabilityName;
-    maxItems = 256;
-  };
-  capabilityBounds = types.taggedUnion {
-    tag = "kind";
-    variants = {
-      restricted = types.record {
-        fields = {
-          kind = types.enum ["restricted"];
-          capabilities = capabilityNames;
-        };
-      };
-      unrestricted = types.record {
-        fields.kind = types.enum ["unrestricted"];
-      };
-    };
-  };
   executionPath = types.executionPath;
   configurationPath = executionPath;
   credentialPath = executionPath;
@@ -288,20 +270,6 @@
     };
   } [];
   conditions = request conditionsFeature;
-
-  linuxCapabilityCondition = types.record {
-    fields = {
-      capability = types.capabilityName;
-      available = types.boolean;
-    };
-  };
-  linuxConditionsFeature = feature {
-    capabilities = types.list {
-      element = linuxCapabilityCondition;
-      maxItems = 256;
-    };
-  } [];
-  linuxConditions = request linuxConditionsFeature;
 
   instantiationSelection = types.taggedUnion {
     tag = "kind";
@@ -803,113 +771,6 @@
     };
   } [];
   isolation = request isolationFeature;
-
-  linuxIsolationFeature = feature {
-    allow_privilege_escalation = types.boolean;
-    ambient_capabilities = capabilityNames;
-    capability_bounds = capabilityBounds;
-    control_group_delegation = types.boolean;
-    control_group_access = types.enum ["host" "private" "read-only"];
-    device_namespace = types.enum ["private" "shared"];
-    kernel_clock_mutation = types.boolean;
-    kernel_hostname_mutation = types.boolean;
-    kernel_log_access = types.boolean;
-    kernel_module_access = types.boolean;
-    kernel_tunable_access = types.boolean;
-    lock_personality = types.boolean;
-    memory_write_execute = types.boolean;
-    remove_ipc = {
-      type = types.boolean;
-      default = false;
-    };
-    namespace_isolation = types.list {
-      element = types.enum ["cgroup" "ipc" "mount" "network" "pid" "time" "user" "uts"];
-      maxItems = 8;
-    };
-    namespace_creation = {
-      type = types.enum ["allowed" "denied"];
-      default = "allowed";
-    };
-    network_address_families = types.list {
-      element = types.enum ["ipv4" "ipv6" "netlink" "packet" "unix"];
-      maxItems = 5;
-    };
-    oom_score_adjust = types.integer {
-      minimum = -1000;
-      maximum = 1000;
-    };
-    permit_realtime = types.boolean;
-    permit_suid_sgid = types.boolean;
-    process_visibility = types.enum ["all" "same-user" "self"];
-    security_label = {
-      type = types.optional (boundedString 4096);
-      optional = true;
-    };
-    syscall_architectures = localKeys;
-    syscall_allow = types.list {
-      element = boundedString 128;
-      maxItems = 256;
-    };
-    syscall_deny = types.list {
-      element = boundedString 128;
-      maxItems = 256;
-    };
-    syscall_denial_action = {
-      type = types.enum ["kill-process" "return-permission-denied"];
-      default = "kill-process";
-    };
-    syscall_profile = types.enum ["privileged" "restricted" "system-service"];
-    user_namespace_ownership = types.enum ["full" "identity" "none" "self"];
-  } [];
-  linuxIsolation = request linuxIsolationFeature;
-
-  linuxDeviceClass = types.record {
-    fields = {
-      kind = types.enum ["class"];
-      device_type = types.enum ["block" "character"];
-      class = localKey;
-    };
-  };
-  linuxDeviceNumber = types.record {
-    fields = {
-      kind = types.enum ["number"];
-      device_type = types.enum ["block" "character"];
-      major = types.integer {
-        minimum = 0;
-        maximum = 4294967295;
-      };
-      minor = {
-        type = types.optional (types.integer {
-          minimum = 0;
-          maximum = 4294967295;
-        });
-        optional = true;
-      };
-    };
-  };
-  linuxDeviceSelector = types.taggedUnion {
-    tag = "kind";
-    variants = {
-      class = linuxDeviceClass;
-      number = linuxDeviceNumber;
-    };
-  };
-  linuxDeviceRule = types.record {
-    fields = {
-      selector = linuxDeviceSelector;
-      read = types.boolean;
-      write = types.boolean;
-      create_node = types.boolean;
-    };
-  };
-  linuxDevicePolicyFeature = feature {
-    baseline_access = types.enum ["standard-runtime-devices" "declared-devices-only"];
-    rules = types.list {
-      element = linuxDeviceRule;
-      maxItems = 256;
-    };
-  } [];
-  linuxDevicePolicy = request linuxDevicePolicyFeature;
 
   inlineConfigurationSource = types.record {
     fields = {
@@ -1710,10 +1571,6 @@
           type = types.optional conditionsFeature;
           optional = true;
         };
-        linux_conditions = {
-          type = types.optional linuxConditionsFeature;
-          optional = true;
-        };
         instantiation = {
           type = types.optional instantiationSelection;
           optional = true;
@@ -1806,14 +1663,6 @@
           type = types.optional isolationFeature;
           optional = true;
         };
-        linux_isolation = {
-          type = types.optional linuxIsolationFeature;
-          optional = true;
-        };
-        linux_device_policy = {
-          type = types.optional linuxDevicePolicyFeature;
-          optional = true;
-        };
       };
   };
   serviceResourceSchema = types.schemaOf "service resource" serviceDeclaration;
@@ -1848,7 +1697,6 @@
     templateDefinition = observationFor "template-definition" templateDefinition featureState {};
     dependencies = observationFor "dependencies" dependencies featureState {};
     conditions = observationFor "conditions" conditions featureState {};
-    linuxConditions = observationFor "linux-conditions" linuxConditions featureState {};
     instantiation = observationFor "instantiation" instantiation featureState {};
     managerIdentity = observationFor "manager-identity" managerIdentity featureState {};
     supervision = observationFor "supervision" supervision featureState {};
@@ -1872,8 +1720,6 @@
     terminal = observationFor "terminal" terminal featureState {};
     identity = observationFor "identity" identity featureState {};
     isolation = observationFor "isolation" isolation featureState {};
-    linuxIsolation = observationFor "linux-isolation" linuxIsolation featureState {};
-    linuxDevicePolicy = observationFor "linux-device-policy" linuxDevicePolicy featureState {};
   };
 in {
   inherit
@@ -1892,7 +1738,6 @@ in {
     groupName
     restartToken
     resourceLimit
-    capabilityBounds
     configurationMaterialization
     configurationMaterializationObservation
     networkReadiness
@@ -1933,7 +1778,6 @@ in {
     templateDefinition
     dependencies
     conditions
-    linuxConditions
     instantiation
     managerIdentity
     supervision
@@ -1957,8 +1801,6 @@ in {
     terminal
     identity
     isolation
-    linuxIsolation
-    linuxDevicePolicy
     observations
     ;
   resourceReference = types.resourceReference;

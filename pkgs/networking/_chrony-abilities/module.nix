@@ -116,6 +116,89 @@
     };
   };
   service = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_conditions";
+        requirementAlias = "linux-service-conditions";
+        description = "Requires the selected Linux platform to evaluate declared capability conditions.";
+        interface = "aos.platform.linux.service-conditions";
+        abi = 1;
+        parameters.capabilities = [
+          {
+            capability = "CAP_SYS_TIME";
+            available = true;
+          }
+        ];
+      })
+      (serviceManagement.featureContribution {
+        key = "linux_device_policy";
+        requirementAlias = "linux-service-device-policy";
+        description = "Requires the selected Linux platform to enforce the declared device access policy.";
+        interface = "aos.platform.linux.service-device-policy";
+        abi = 1;
+        parameters = {
+          baseline_access = "standard-runtime-devices";
+          rules =
+            builtins.map
+            (class: {
+              selector = {
+                kind = "class";
+                device_type = "character";
+                inherit class;
+              };
+              read = true;
+              write = true;
+              create_node = false;
+            })
+            ["pps" "ptp" "rtc"];
+        };
+      })
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = {
+          allow_privilege_escalation = false;
+          ambient_capabilities = [];
+          capability_bounds = {
+            kind = "restricted";
+            capabilities = [
+              "CAP_CHOWN"
+              "CAP_DAC_OVERRIDE"
+              "CAP_NET_BIND_SERVICE"
+              "CAP_SETGID"
+              "CAP_SETUID"
+              "CAP_SYS_RESOURCE"
+              "CAP_SYS_TIME"
+            ];
+          };
+          control_group_delegation = false;
+          control_group_access = "read-only";
+          device_namespace = "shared";
+          kernel_clock_mutation = true;
+          kernel_hostname_mutation = false;
+          kernel_log_access = false;
+          kernel_module_access = false;
+          kernel_tunable_access = false;
+          lock_personality = true;
+          memory_write_execute = false;
+          remove_ipc = true;
+          namespace_isolation = ["mount"];
+          network_address_families = ["ipv4" "ipv6" "unix"];
+          oom_score_adjust = 0;
+          permit_realtime = false;
+          permit_suid_sgid = false;
+          process_visibility = "self";
+          syscall_architectures = ["native"];
+          syscall_allow = ["@chown" "@clock" "@setuid" "capset"];
+          syscall_deny = ["@cpu-emulation" "@debug" "@keyring" "@mount" "@obsolete" "@privileged" "@resources"];
+          syscall_profile = "system-service";
+          user_namespace_ownership = "none";
+        };
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "service";
     declaration = {
@@ -143,12 +226,6 @@
         requires = [];
         wants = [(resultOf "chrony-network-readiness" "readiness-resource")];
       };
-      linux_conditions.capabilities = [
-        {
-          capability = "CAP_SYS_TIME";
-          available = true;
-        }
-      ];
       supervision = {
         startup_protocol = "notification";
         notification_access = "main-process";
@@ -227,60 +304,6 @@
           }
         ];
         permit_core_dumps = false;
-      };
-      linux_isolation = {
-        allow_privilege_escalation = false;
-        ambient_capabilities = [];
-        capability_bounds = {
-          kind = "restricted";
-          capabilities = [
-            "CAP_CHOWN"
-            "CAP_DAC_OVERRIDE"
-            "CAP_NET_BIND_SERVICE"
-            "CAP_SETGID"
-            "CAP_SETUID"
-            "CAP_SYS_RESOURCE"
-            "CAP_SYS_TIME"
-          ];
-        };
-        control_group_delegation = false;
-        control_group_access = "read-only";
-        device_namespace = "shared";
-        kernel_clock_mutation = true;
-        kernel_hostname_mutation = false;
-        kernel_log_access = false;
-        kernel_module_access = false;
-        kernel_tunable_access = false;
-        lock_personality = true;
-        memory_write_execute = false;
-        remove_ipc = true;
-        namespace_isolation = ["mount"];
-        network_address_families = ["ipv4" "ipv6" "unix"];
-        oom_score_adjust = 0;
-        permit_realtime = false;
-        permit_suid_sgid = false;
-        process_visibility = "self";
-        syscall_architectures = ["native"];
-        syscall_allow = ["@chown" "@clock" "@setuid" "capset"];
-        syscall_deny = ["@cpu-emulation" "@debug" "@keyring" "@mount" "@obsolete" "@privileged" "@resources"];
-        syscall_profile = "system-service";
-        user_namespace_ownership = "none";
-      };
-      linux_device_policy = {
-        baseline_access = "standard-runtime-devices";
-        rules =
-          builtins.map
-          (class: {
-            selector = {
-              kind = "class";
-              device_type = "character";
-              inherit class;
-            };
-            read = true;
-            write = true;
-            create_node = false;
-          })
-          ["pps" "ptp" "rtc"];
       };
     };
   };
