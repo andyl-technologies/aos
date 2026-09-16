@@ -1,5 +1,6 @@
 ##! systemd boot platform implementation of the package-store read view.
 {
+  abilitySelection ? null,
   config,
   lib,
   ...
@@ -24,7 +25,8 @@ in {
 
     instances = lib.mkIf (
       config.aos.abilities.environment != null
-      && config.aos.boot.systemdBoot.enable
+      && abilitySelection != null
+      && abilitySelection.isImplementationSelected "package-store-read-view"
     ) {
       package-store-read-view.implementation = "package-store-read-view";
     };

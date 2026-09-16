@@ -35,6 +35,7 @@
   };
   evaluated = lib.evalModules {
     inherit lib;
+    enableAbilitySelection = true;
     modules = [
       lib.abilities.module
       ../../modules/base/_kernel-parameter-contributions.nix
