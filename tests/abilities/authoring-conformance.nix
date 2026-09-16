@@ -988,10 +988,19 @@
             implementation = "shared";
             configuration = true;
           };
-          requests.shared = {
-            requirement = "shared";
-            consumer = "provider";
-            parameters = true;
+          requests = {
+            shared = {
+              requirement = "shared";
+              consumer = "provider";
+              parameters = true;
+            };
+          }
+          // lib.optionalAttrs (package == "alpha") {
+            foreign = {
+              requirement = "beta:shared";
+              consumer = "alpha:provider";
+              parameters = true;
+            };
           };
         };
       };
@@ -1032,6 +1041,25 @@
     requests = packageSelectionEvaluation.config.aos.abilities.requests;
     reference = packageSelectionEvaluation.config.resultSelectionProbe.alpha;
   };
+  malformedQualifiedReference = builtins.tryEval (builtins.deepSeq
+    (lib.evalModules {
+      modules = [lib.abilities.module];
+      packageModules = [
+        {
+          name = "authoring";
+          module.config.aos.abilities.requests.invalid = {
+            requirement = "foreign:shared:invalid";
+            consumer = "authoring:provider";
+            parameters = true;
+          };
+        }
+      ];
+    })
+    .config
+    .aos
+    .abilities
+    .requests
+    true);
   invalidResultIdentityField = builtins.tryEval (builtins.deepSeq
     (lib.abilities.requestOutputIdentity {
       requests = packageSelectionEvaluation.config.aos.abilities.requests;
@@ -1459,6 +1487,10 @@ in
   };
   assert packageSelectionEvaluation.config.aos.abilities.requirementTemplates."alpha:shared".package == "alpha";
   assert packageSelectionEvaluation.config.aos.abilities.requirementTemplates."alpha:shared".localKey == "shared";
+  assert packageSelectionEvaluation.config.aos.abilities.requests."alpha:shared".requirement == "alpha:shared";
+  assert packageSelectionEvaluation.config.aos.abilities.requests."alpha:foreign".requirement == "beta:shared";
+  assert packageSelectionEvaluation.config.aos.abilities.requests."alpha:foreign".consumer == "alpha:provider";
+  assert !malformedQualifiedReference.success;
   assert packageSelectionEvaluation.config.resultSelectionProbe.alpha == {
     _type = "aos-request-output-reference";
     request = "alpha:shared";

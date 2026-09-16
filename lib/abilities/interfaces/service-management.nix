@@ -20,7 +20,7 @@
   };
   inherit (interfaceCatalog) interfaces;
   constructors = import ../_service-declaration.nix {
-    inherit interfaceDocumentFromDeclaration interfaceIdentity;
+    inherit interfaceDocumentFromDeclaration interfaceIdentity types;
     inherit serviceTypes;
     serviceInterfaces = interfaces;
   };
