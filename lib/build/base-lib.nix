@@ -41,17 +41,69 @@
   moduleAbi,
   ## A short name for the variant, used only in the derivation name.
   systemName ? "system",
+  ## Exact authenticated package modules selected for the host graph.
+  hostPackageModules ? [],
+  ## Exact authenticated provider modules selected by host bindings.
+  hostProviderModules ? [],
+  ## Exact source-composed host bindings.
+  hostAbilityBindings ? {},
+  ## Typed host ability environment.
+  hostAbilityEnvironment,
+  ## Exact authenticated package modules selected for the initrd graph.
+  initrdPackageModules ? [],
+  ## Exact authenticated provider modules selected by initrd bindings.
+  initrdProviderModules ? [],
+  ## Exact source-composed initrd bindings.
+  initrdAbilityBindings ? {},
+  ## Typed initrd ability environment.
+  initrdAbilityEnvironment,
+  ## Exact static contract projected by the complete initrd fixed point.
+  initrdStaticAbilityContract,
 }: let
   freeze = import ./freeze-pkgs.nix {inherit lib;};
 
+  uniqueRecords = records: lib.unique records;
+  checkedHostPackageModules = uniqueRecords hostPackageModules;
+  checkedHostProviderModules = uniqueRecords hostProviderModules;
+  checkedInitrdPackageModules = uniqueRecords initrdPackageModules;
+  checkedInitrdProviderModules = uniqueRecords initrdProviderModules;
+
+  evaluationFor = {
+    environment,
+    packageModules,
+    selectedProviderModules,
+    abilityBindings,
+    extraModules ? [],
+  }:
+    lib.evalModules {
+      modules =
+        baseModules
+        ++ systemModules
+        ++ [
+          {aos.system.moduleAbi = lib.mkForce moduleAbi;}
+          {aos.abilities.environment = environment;}
+        ]
+        ++ extraModules;
+      inherit pkgs lib packageModules selectedProviderModules;
+      enableAbilitySelection = true;
+      runtimeModules = lib.optional (abilityBindings != {}) {
+        aos.abilities.bindings = abilityBindings;
+      };
+    };
+
   # Evaluate the schema first so the ABI hash is available to the complete
   # image-baseline evaluation below without introducing a recursive value.
-  schemaEval = lib.evalModules {
-    modules =
-      baseModules
-      ++ systemModules
-      ++ [{aos.system.moduleAbi = lib.mkForce moduleAbi;}];
-    inherit pkgs lib;
+  hostSchemaEval = evaluationFor {
+    environment = hostAbilityEnvironment;
+    packageModules = checkedHostPackageModules;
+    selectedProviderModules = checkedHostProviderModules;
+    abilityBindings = hostAbilityBindings;
+  };
+  initrdSchemaEval = evaluationFor {
+    environment = initrdAbilityEnvironment;
+    packageModules = checkedInitrdPackageModules;
+    selectedProviderModules = checkedInitrdProviderModules;
+    abilityBindings = initrdAbilityBindings;
   };
 
   # A base library is bound to the complete option schema it exposes, not to
@@ -61,7 +113,11 @@
   # module engine; sort explicitly here so this remains a set identity if the
   # engine's representation changes.
   optionSchema = builtins.sort (a: b: builtins.head a < builtins.head b) (
-    builtins.map (decl: [decl.pathStr decl.typeSig]) schemaEval._optionDecls
+    lib.unique (
+      builtins.map
+      (decl: [decl.pathStr decl.typeSig])
+      (hostSchemaEval._optionDecls ++ initrdSchemaEval._optionDecls)
+    )
   );
   abiHash = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
     abi = moduleAbi;
@@ -74,20 +130,19 @@
   # exact same self-reference as later on-host evaluations.
   baseLibOut = builtins.placeholder "out";
   placeholderBaseLibDigest = builtins.hashString "sha256" baseLibOut;
-  realEval = lib.evalModules {
-    modules =
-      baseModules
-      ++ systemModules
-      ++ [
-        {
-          aos.system.moduleAbi = lib.mkForce moduleAbi;
-          aos.config.evalAtBoot = {
-            baseLib = baseLibOut;
-            baseLibAbiHash = abiHash;
-          };
-        }
-      ];
-    inherit pkgs lib;
+  realEval = evaluationFor {
+    environment = hostAbilityEnvironment;
+    packageModules = checkedHostPackageModules;
+    selectedProviderModules = checkedHostProviderModules;
+    abilityBindings = hostAbilityBindings;
+    extraModules = [
+      {
+        aos.config.evalAtBoot = {
+          baseLib = baseLibOut;
+          baseLibAbiHash = abiHash;
+        };
+      }
+    ];
   };
 
   # Root ownership shipped by the image is local system state, just like
@@ -146,6 +201,32 @@
 
   frozenPkgsFile = builtins.toFile "frozen-pkgs.json" (freeze.freezeToJSON pkgs);
   frozenArtifactsFile = builtins.toFile "frozen-artifacts.json" (builtins.toJSON frozenArtifacts);
+  plainJson = name: value:
+    builtins.toFile name (builtins.unsafeDiscardStringContext (builtins.toJSON value));
+  initrdPackageModulesFile = plainJson "initrd-package-modules.json" checkedInitrdPackageModules;
+  initrdProviderModulesFile = plainJson "initrd-provider-modules.json" checkedInitrdProviderModules;
+  initrdEvaluationInputsFile = plainJson "initrd-evaluation-inputs.json" {
+    environment = initrdAbilityEnvironment;
+    abilityBindings = initrdAbilityBindings;
+    staticContractIdentity = builtins.toString initrdStaticAbilityContract + "/contract.json";
+  };
+  initrdAuthenticatedRoots = lib.unique (builtins.concatMap
+    (record:
+      [record.configRoot record.outputs.self]
+      ++ builtins.attrValues record.outputs.dependencies)
+    (checkedInitrdPackageModules ++ checkedInitrdProviderModules)
+    ++ [initrdStaticAbilityContract]);
+  checkedInitrdAuthenticatedRoots = builtins.map
+    (root:
+      if builtins.getContext (builtins.toString root) == {}
+      then throw "base-lib: frozen initrd authenticated root '${builtins.toString root}' has no retained store identity"
+      else root)
+    initrdAuthenticatedRoots;
+  hostStaticAbilityContract = realEval.config.system.build.staticAbilityContract;
+  stageContractsDistinct =
+    if builtins.toString hostStaticAbilityContract == builtins.toString initrdStaticAbilityContract
+    then throw "base-lib: host and initrd fixed points must retain distinct static ability contracts"
+    else true;
   rawImageManifest = realEval.config.system.build.configManifest;
   # Output placeholders acquire their real store-path context only when Nix
   # realizes this derivation. Add the self-reference explicitly so the
@@ -185,7 +266,8 @@
     {aos.system.moduleAbi = ${toString moduleAbi};}
   '';
 in
-  pkgs.runCommand "aos-base-lib-${systemName}" {
+  assert stageContractsDistinct;
+    pkgs.runCommand "aos-base-lib-${systemName}" {
     passthru = {inherit frozenArtifacts optionSchema moduleAbi abiHash;};
     inherit imageManifest placeholderBaseLibDigest;
     passAsFile = ["imageManifest"];
@@ -208,6 +290,14 @@ in
       ${./base-lib-entry.nix} > "$out/default.nix"
     cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
     cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
+    cp ${initrdPackageModulesFile} "$out/initrd-package-modules.json"
+    cp ${initrdProviderModulesFile} "$out/initrd-provider-modules.json"
+    cp ${initrdEvaluationInputsFile} "$out/initrd-evaluation-inputs.json"
+    mkdir -p "$out/initrd-authenticated-roots"
+    ${lib.concatStringsSep "\n" (lib.imap0 (index: root: ''
+        ln -s ${root} "$out/initrd-authenticated-roots/${toString index}"
+      '')
+      checkedInitrdAuthenticatedRoots)}
     mkdir -p "$out/artifact-roots"
     ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: artifact: ''
         ln -s ${artifact} "$out/artifact-roots/${name}"

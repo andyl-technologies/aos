@@ -64,6 +64,15 @@
       module = readPathFor storeView record.module;
       outputs = mapOutputs storeView record.outputs;
     };
+  staticContractFor = storeView: identity: let
+    checked = validate storeView;
+  in
+    if checked.static_contract != identity
+    then throw "base-lib: store view does not authenticate the requested stage static contract"
+    else {
+      inherit identity;
+      path = readPathFor checked identity;
+    };
 in {
-  inherit validate readPathFor mapAuthenticatedModule;
+  inherit validate readPathFor mapAuthenticatedModule staticContractFor;
 }

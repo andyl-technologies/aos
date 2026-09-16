@@ -1255,6 +1255,20 @@
   escapedStorePath = builtins.tryEval (builtins.deepSeq
     (storeViewLib.readPathFor checkedStoreView "/different/store/module.nix")
     true);
+  initrdStaticContract = storeViewLib.staticContractFor
+    checkedStoreView
+    checkedStoreView.static_contract;
+  hostStoreView = checkedStoreView // {
+    static_contract = "/identity/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-host-contract/contract.json";
+  };
+  hostStaticContract = storeViewLib.staticContractFor
+    hostStoreView
+    hostStoreView.static_contract;
+  mismatchedStageContract = builtins.tryEval (builtins.deepSeq
+    (storeViewLib.staticContractFor checkedStoreView hostStoreView.static_contract)
+    true);
+  retainedContextRoot = builtins.toString (builtins.toFile "authenticated-root" "retained");
+  frozenContextRoot = builtins.unsafeDiscardStringContext retainedContextRoot;
   instanceIdentityEvaluation = lib.evalModules {
     inherit lib;
     modules = [
@@ -1483,6 +1497,15 @@ in
     };
   };
   assert !escapedStorePath.success;
+  assert initrdStaticContract == {
+    identity = checkedStoreView.static_contract;
+    path = "/read/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-contract/contract.json";
+  };
+  assert hostStaticContract.identity != initrdStaticContract.identity;
+  assert hostStaticContract.path != initrdStaticContract.path;
+  assert !mismatchedStageContract.success;
+  assert builtins.getContext retainedContextRoot != {};
+  assert builtins.getContext frozenContextRoot == {};
   assert betaSelection.implementation.package == "beta";
   assert betaSelection.implementation.localKey == "shared";
   assert betaSelection.binding.implementation == "beta:shared";

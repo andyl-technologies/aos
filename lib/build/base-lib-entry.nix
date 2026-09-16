@@ -68,6 +68,16 @@ let
   # packages, which arrive at stage-2 as authenticated `packageModules`).
   baseModules = import ./modules;
   systemModules = import ./system-modules.nix;
+  initrdPackageModules =
+    builtins.fromJSON
+    (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-package-modules.json));
+  initrdProviderModules =
+    builtins.fromJSON
+    (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-provider-modules.json));
+  frozenInitrdEvaluationInputs =
+    builtins.fromJSON
+    (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-evaluation-inputs.json));
+  storeViewLib = import ./lib/build/store-view.nix {inherit lib;};
 
   projectAbilityRound = evaluated: manifest: let
     abilities = evaluated.config.aos.abilities;
@@ -75,15 +85,6 @@ let
       builtins.filter
       (name: abilities.bindings.${name}.request == requestName)
       (builtins.attrNames abilities.bindings);
-    authoredRequestKey = requestName: request: let
-      prefix =
-        if request.package == null
-        then ""
-        else "${request.package}:";
-    in
-      if prefix != "" && lib.hasPrefix prefix requestName
-      then lib.removePrefix prefix requestName
-      else throw "authored ability request '${requestName}' has no authenticated package-local key";
     unresolvedAuthoredRequests = lib.filterAttrs
       (name: _: bindingNamesForRequest name == [])
       abilities.requests;
@@ -94,7 +95,7 @@ let
         identity = {
           consumer = abilities.instanceIdentities.${request.consumer};
           inherit (request) scope;
-          key = authoredRequestKey name request;
+          key = request.localKey;
         };
         declaration = request;
       })
@@ -135,8 +136,9 @@ let
           abilities.instances;
       };
     };
-in {
+in rec {
   inherit lib imageManifest projectAbilityRound;
+  inherit (storeViewLib) readPathFor;
 
   ## Merge an evaluated runtime candidate with the immutable image baseline.
   mergeImageManifest = {
@@ -144,47 +146,6 @@ in {
     candidate,
   }:
     mergeImageManifestImpl {inherit imageManifest baseline candidate;};
-
-  ## Evaluate the closed one-time provisioning projection.
-  ##
-  ## This entrypoint is used in the initrd before package configuration modules
-  ## or registry access exist. Only the provisioning schema module is declared,
-  ## so unrelated `host.nix` definitions are dropped by the intentionally
-  ## non-strict AOS module engine and are never forced.
-  evalProvisioningConfig = {operatorModules ? []}: let
-    evaluated = lib.evalModules {
-      # This closed projection has no package modules to arbitrate. Append the
-      # operator module at the normal tier so attrsOf/submodule values merge
-      # per key and field; the full evaluator retains the reserved priority-75
-      # operator tier needed to beat package contributions.
-      modules = [./modules/base/provisioning.nix] ++ operatorModules;
-      pkgs = frozenPkgs;
-      inherit lib;
-    };
-    partitions =
-      builtins.mapAttrs
-      (_: partition: {
-        inherit
-          (partition)
-          device
-          label
-          type
-          sizeMin
-          sizeMax
-          weight
-          format
-          uuid
-          grow
-          growFs
-          priority
-          ;
-      })
-      evaluated.config.aos.provisioning.storage.partitions;
-  in {
-    # Do not return the module engine's internal `_module` metadata. This
-    # closed value is the complete initrd/Rust data contract.
-    config.aos.provisioning.storage = {inherit partitions;};
-  };
 
   ## Evaluate the package-name seed required before registry module resolution.
   evalHostSelection = {
@@ -198,7 +159,7 @@ in {
       enforceRuntimeDeclarations = false;
     };
 
-  ## Evaluate a host configuration on-host into a config manifest.
+  ## Evaluates one complete authenticated configuration fixed point.
   ##
   ## `operatorModules` is the verified leaf `host.nix` (CS4 operator-provenance
   ## seam — its bare defs win at the reserved priority-75 band). `packageModules`
@@ -206,13 +167,15 @@ in {
   ## fetched from the registry. Returns
   ## the full `evalModules` result; the caller forces
   ## `config.system.build.configManifest`.
-  evalHostConfig = {
+  evalCompleteConfig = {
+    environment ? null,
     operatorModules ? [],
     runtimeModules ? [],
     packageModules ? [],
     selectedProviderModules ? [],
     abilityBindings ? {},
     factsModules ? [],
+    configurationModules ? [],
   }:
     lib.evalModules {
       modules =
@@ -231,9 +194,14 @@ in {
               builtins.unsafeDiscardStringContext (builtins.toString ./.);
             aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
           }
-        ];
+        ]
+        ++ configurationModules
+        ++ lib.optional (environment != null) {
+          aos.abilities.environment = environment;
+        };
       pkgs = frozenPkgs;
       inherit lib operatorModules packageModules selectedProviderModules;
+      enableAbilitySelection = true;
       runtimeModules =
         runtimeModules
         ++ lib.optional (abilityBindings != {}) {
@@ -241,34 +209,53 @@ in {
         };
     };
 
-  ## Evaluates one build-stage ability graph without the host module surface.
-  ##
-  ## The caller supplies only a normalized data-only stage intent, authenticated
-  ## package modules, checked provider selections, and their exact bindings.
-  ## The returned module evaluation is projected through `projectAbilityRound`;
-  ## no pending request is accepted by the build-stage adapter.
-  evalAbilityStage = {
-    stage,
-    authority,
-    key,
-    intentModules ? [],
+  ## Maps the frozen canonical initrd inputs into one checked read view.
+  initrdEvaluationInputs = storeView: let
+    checked = storeViewLib.validate storeView;
+    staticContractIdentity = frozenInitrdEvaluationInputs.staticContractIdentity;
+    staticContract = storeViewLib.staticContractFor checked staticContractIdentity;
+  in
+    {
+      environment = frozenInitrdEvaluationInputs.environment;
+      abilityBindings = frozenInitrdEvaluationInputs.abilityBindings;
+      packageModules = builtins.map (storeViewLib.mapAuthenticatedModule checked) initrdPackageModules;
+      selectedProviderModules = builtins.map (storeViewLib.mapAuthenticatedModule checked) initrdProviderModules;
+      inherit staticContract;
+    };
+
+  ## Evaluates the frozen initrd through the same complete configuration graph.
+  evalCompleteInitrdConfig = {
+    storeView,
+    operatorModules ? [],
+    runtimeModules ? [],
+    factsModules ? [],
+    configurationModules ? [],
+  }: let
+    frozen = initrdEvaluationInputs storeView;
+    evaluated = evalCompleteConfig {
+      inherit operatorModules runtimeModules factsModules configurationModules;
+      inherit (frozen) environment abilityBindings packageModules selectedProviderModules;
+    };
+  in
+    evaluated // {initrdStaticContract = frozen.staticContract;};
+
+  ## Evaluates a host configuration through the common complete graph.
+  evalHostConfig = {
+    operatorModules ? [],
+    runtimeModules ? [],
     packageModules ? [],
     selectedProviderModules ? [],
     abilityBindings ? {},
+    factsModules ? [],
   }:
-    lib.evalModules {
-      modules =
-        [
-          lib.abilities.module
-          {
-            aos.abilities.environment = {inherit authority key stage;};
-          }
-        ]
-        ++ intentModules;
-      pkgs = frozenPkgs;
-      inherit lib packageModules selectedProviderModules;
-      runtimeModules = lib.optional (abilityBindings != {}) {
-        aos.abilities.bindings = abilityBindings;
-      };
+    evalCompleteConfig {
+      inherit
+        operatorModules
+        runtimeModules
+        packageModules
+        selectedProviderModules
+        abilityBindings
+        factsModules
+        ;
     };
 }

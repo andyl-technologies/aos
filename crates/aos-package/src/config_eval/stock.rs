@@ -915,7 +915,7 @@ where
                 )
             })?;
             items.push(format!(
-                    "    (let configRoot = {config_root}; in {{ name = {}; packageVersion = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
+                    "    (let configRoot = {config_root}; in {{ name = {}; version = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
                     nix_string(&member.package),
                     nix_string(package_version),
                     nix_string(&format!("/{entry_point}")),
@@ -976,26 +976,8 @@ where
             })
             .collect::<Result<Vec<_>>>()?
             .join(" ");
-        let artifact_locators = selected
-            .artifact_locators
-            .iter()
-            .map(|(selector, artifact)| {
-                let selector_json = serde_json::to_string(selector)
-                    .context("encoding selected package-output selector")?;
-                let artifact_json = serde_json::to_string(artifact)
-                    .context("encoding authenticated artifact reference")?;
-                let path = render_output_path_with(&artifact.store_path, locked, &mut lock_input)?;
-                Ok(format!(
-                    "{} = {{ artifactReference = builtins.fromJSON {}; path = {path}; }};",
-                    nix_string(&selector_json),
-                    nix_string(&artifact_json),
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?
-            .join(" ");
-
         items.push(format!(
-            "    (let configRoot = {authenticated_root}; in {{ name = {}; packageVersion = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependencies} }}; }}; artifactLocators = {{ {artifact_locators} }}; }})",
+            "    (let configRoot = {authenticated_root}; in {{ name = {}; version = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependencies} }}; }}; }})",
             nix_string(&selected.package),
             nix_string(&selected.version),
             nix_string(&format!("/{}", selected.locator.path.as_str())),
@@ -1549,7 +1531,7 @@ mod tests {
                 Some(Sha256Digest::of_bytes(b"web module NAR").to_string()),
             )]
         );
-        assert!(rendered.contains("packageVersion = \"1.0.0\""));
+        assert!(rendered.contains("version = \"1.0.0\""));
         assert!(rendered.contains("module = configRoot + \"/abilities/module.nix\""));
     }
 
@@ -1680,8 +1662,9 @@ mod tests {
         assert!(rendered.contains("name = \"consumer\""));
         assert!(rendered.contains("name = \"provider\""));
         assert!(rendered.contains("module = configRoot + \"/lib/aos/provider.nix\""));
-        assert!(rendered.contains("artifactLocators"));
-        assert!(rendered.contains("artifactReference = builtins.fromJSON"));
+        assert!(rendered.contains("outputs = { self = "));
+        assert!(rendered.contains("dependencies = {"));
+        assert!(!rendered.contains("artifactLocators"));
         assert!(rendered.contains("\"binding-child\" = { request = \"request-child\""));
         assert!(!rendered.contains("-A abilityRound"));
     }
