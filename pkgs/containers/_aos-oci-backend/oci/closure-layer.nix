@@ -1,4 +1,4 @@
-##! lib/build/oci/closure-layer.nix -- deterministic Nix-closure OCI layers.
+##! Package-owned deterministic Nix-closure OCI layers.
 ##!
 ##! `mkClosureLayer` archives the realized reference-graph delta
 ##! `closure(roots) - closure(subtractRoots)`.  It deliberately consumes Nix's

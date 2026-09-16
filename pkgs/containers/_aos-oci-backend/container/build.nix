@@ -1,4 +1,4 @@
-##! lib/containers/build.nix — Typed container definition assembler
+##! Package-owned typed OCI container definition assembler.
 ##!
 ##! Converts one evaluated container definition into deterministic closure
 ##! layers, scratch metadata, a platform OCI layout/archive, a Docker-load
@@ -9,6 +9,8 @@
   pkgs,
   buildPkgs,
   oci,
+  runtimeClosureAudit,
+  packageProjections,
   container,
   systemIdentity,
   definitionAttribute,
@@ -49,9 +51,13 @@
     .result;
 
   auditRoots = uniqueByPath (builtins.concatMap (layer: layer.roots) container.layers);
+  packageRootPaths = map builtins.toString container.packageRoots;
+  retainedPackageProjections = builtins.filter (
+    projection: builtins.elem (builtins.toString projection.payload) packageRootPaths
+  ) packageProjections;
   # Audits and OCI assemblers execute on the coordinator. Target packages stay
   # as data dependencies through exportReferencesGraph and store-path inputs.
-  runtimeAudit = import ../build/runtime-closure-audit.nix {
+  runtimeAudit = runtimeClosureAudit {
     inherit lib;
     pkgs = buildPkgs;
     name = "container-${container.name}";
@@ -205,8 +211,7 @@
     platform = {
       inherit (container.platform) os architecture;
     };
-    packageRoots = container.packageRoots;
-    packageRegistry = pkgs;
+    packageProjections = retainedPackageProjections;
     runtimeRoots = auditRoots;
   };
   osRelease = ''

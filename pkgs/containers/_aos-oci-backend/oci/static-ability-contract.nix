@@ -1,13 +1,13 @@
-##! lib/build/oci/static-ability-contract.nix -- Static OCI ability contracts.
+##! Package-owned static OCI ability contracts.
 ##!
-##! This is the local orchestration boundary for symbolic package projections.
-##! It binds each `(package, output)` selector through the caller's canonical
-##! package registry, derives exact Nix artifact metadata, and then assembles the
-##! realized platform contract. Container contracts preserve their existing
-##! schema. Bootable host and initrd contracts add an explicit execution stage
-##! so an artifact cannot claim that a later manager satisfies an early
-##! consumer. Every form retains unresolved required bindings while carrying no
-##! runtime grants.
+##! This is the local orchestration boundary for checked package projections.
+##! Each projection carries its authenticated package origin and a resolver
+##! closed over that origin's exact retained outputs. The builder never performs
+##! package-name lookup or infers provenance from a selector string. Container
+##! contracts preserve their existing schema. Bootable host and initrd contracts
+##! add an explicit execution stage so an artifact cannot claim that a later
+##! manager satisfies an early consumer. Every form retains unresolved required
+##! bindings while carrying no runtime grants.
 {
   lib,
   mkDerivation,
@@ -16,14 +16,14 @@
 }: {
   platform ? null,
   targetPlatform ? null,
-  packageRegistry ? null,
-  packageRoots ? [],
+  packageProjections ? [],
   runtimeRoots ? [],
   contracts ? [],
   pname ? "aos-container-static-ability-contract",
   artifactClass ? "container",
   executionStage ? null,
 }: let
+  packageOrigins = import ./checked-package-origin.nix {inherit common;};
   supportedArtifactClasses = ["container" "bootable"];
   supportedExecutionStages = ["initrd" "host"];
   schema =
@@ -34,19 +34,7 @@
     if artifactClass == "container"
     then "application/vnd.aos.container.static-abilities.v1+json"
     else "application/vnd.aos.boot.static-abilities.v1+json";
-  contractPackageRoots =
-    builtins.filter (
-      package: builtins.isAttrs package && package ? contract
-    )
-    packageRoots;
-  selectedPackages = map (package:
-    if package ? contract
-    then {
-      payload = package;
-      inherit (package) contract;
-    }
-    else common.fail "static ability contract package roots must expose one package contract")
-  contractPackageRoots;
+  selectedPackages = map packageOrigins.checkedProjection packageProjections;
   payloadPaths = map (entry: builtins.toString entry.payload) selectedPackages;
   validPackageContract = contract:
     builtins.isAttrs contract
@@ -56,26 +44,6 @@
     && builtins.isList contract.selectors
     && builtins.isAttrs contract.value
     && contract.selectors == contract.value.artifacts;
-  resolvePackageOutput = payload: selector: let
-    package =
-      if selector.package == "self"
-      then payload
-      else if builtins.isAttrs packageRegistry && builtins.hasAttr selector.package packageRegistry
-      then builtins.getAttr selector.package packageRegistry
-      else common.fail "ability selector names unknown package '${selector.package}'";
-    moduleOutput =
-      if selector.output == "module" && package ? module
-      then package.module
-      else null;
-    outputs = lib.unique ((package.outputs or ["out"]) ++ lib.optional (moduleOutput != null) "module");
-  in
-    if !(builtins.elem selector.output outputs)
-    then common.fail "ability selector names missing output '${selector.output}' on package '${selector.package}'"
-    else if moduleOutput != null
-    then moduleOutput
-    else if selector.output == "out"
-    then package.out or package
-    else builtins.getAttr selector.output package;
   contractPaths = map (contract: builtins.toString contract.artifact) contracts;
   platformMode = platform != null && contracts == [];
   combinedMode = platform == null && selectedPackages == [] && runtimeRoots == [] && contracts != [];
@@ -117,7 +85,11 @@
         && entry.contract.value.package.name == entry.payload.pname
         && entry.contract.value.package.version == entry.payload.version)
       selectedPackages
-      && builtins.isAttrs packageRegistry
+      && lib.all (entry:
+        entry.origin.package.name == entry.contract.value.package.name
+        && entry.origin.package.version == entry.contract.value.package.version
+        && entry.origin.package.document == builtins.toString entry.contract.document)
+      selectedPackages
       && lib.all (path: builtins.elem path runtimeRootPaths) payloadPaths
       && builtins.length payloadPaths == builtins.length (lib.unique payloadPaths)
       && builtins.length selectedPackages
@@ -128,7 +100,7 @@
     entry = builtins.elemAt selectedPackages packageIndex;
     selectorArtifacts = builtins.genList (selectorIndex: let
       selector = builtins.elemAt entry.contract.selectors selectorIndex;
-      selected = resolvePackageOutput entry.payload selector;
+      selected = packageOrigins.resolve entry selector;
     in {
       inherit (selector) package output;
       path = builtins.toString selected;

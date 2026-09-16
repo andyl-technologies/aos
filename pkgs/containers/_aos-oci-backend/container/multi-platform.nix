@@ -1,4 +1,4 @@
-##! lib/containers/multi-platform.nix -- Production container coordinator
+##! Package-owned production OCI artifact coordinator.
 ##!
 ##! Combines independently evaluated x86_64 and aarch64 production container
 ##! images into one canonical OCI index. A second, equivalent pipeline proves
@@ -10,6 +10,8 @@
   oci,
   name,
   platformBuilds,
+  releaseTargets,
+  qualificationCheck,
 }: let
   discard = value:
     builtins.unsafeDiscardStringContext (builtins.toString value);
@@ -37,8 +39,9 @@
     )
     platformBuilds;
   first = builtins.head sortedBuilds;
-  expectedSystems = ["aarch64-linux" "x86_64-linux"];
-  expectedArchitectures = ["arm64" "amd64"];
+  sortedTargets = builtins.sort (left: right: left.system < right.system) releaseTargets;
+  expectedSystems = map (target: target.system) sortedTargets;
+  expectedArchitectures = map (target: target.architecture) sortedTargets;
   schedulerSystem = pkgs.stdenv.buildPlatform.system;
   executionMode = system:
     if schedulerSystem == system
@@ -54,9 +57,7 @@
     if !builtins.isList platformBuilds
     then throw "container multi-platform coordinator: platformBuilds must be a list"
     else if systems != expectedSystems
-    then
-      throw
-      "container multi-platform coordinator: exact production systems must be aarch64-linux and x86_64-linux"
+    then throw "container multi-platform coordinator: builds do not match the caller-selected release targets"
     else if architectures != expectedArchitectures
     then
       throw
@@ -179,7 +180,7 @@
     evidenceLayout = evidenceRepeat;
   };
 
-  check = import ../../tests/containers/production-multi-platform.nix {
+  check = qualificationCheck {
     inherit
       lib
       pkgs
@@ -192,8 +193,11 @@
       publicationInputsRepeat
       ;
     inherit schedulerSystem;
-    armExecution = executionMode "aarch64-linux";
-    amdExecution = executionMode "x86_64-linux";
+    targetExecution = builtins.listToAttrs (map (system: {
+        name = system;
+        value = executionMode system;
+      })
+      expectedSystems);
     platformChecks = map (build: build.qualification.reproducibility) sortedBuilds;
   };
 in
@@ -217,10 +221,11 @@ in
       execution = {
         inherit schedulerSystem;
         targetSystems = expectedSystems;
-        targetExecution = {
-          "aarch64-linux" = executionMode "aarch64-linux";
-          "x86_64-linux" = executionMode "x86_64-linux";
-        };
+        targetExecution = builtins.listToAttrs (map (system: {
+            name = system;
+            value = executionMode system;
+          })
+          expectedSystems);
         requiresConfiguredBinfmt = builtins.filter (system: system != schedulerSystem) expectedSystems;
         nativeTargetBuilderRequired = false;
       };

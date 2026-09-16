@@ -1,13 +1,14 @@
-##! lib/build/oci/default.nix -- hermetic AOS OCI builder API.
+##! Hermetic OCI builder API owned by the AOS OCI backend package.
 ##!
 ##! Import this file with explicit AOS package arguments; it never imports
 ##! nixpkgs or discovers host tools:
 ##!
 ##! ```nix
-##! oci = import ./lib/build/oci {
+##! oci = import ./oci {
 ##!   inherit lib;
 ##!   inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
 ##!   abilityContractValidator = pkgs.aos-ability-contract-validator;
+##!   inherit mkReferenceGraph;
 ##! };
 ##! ```
 ##!
@@ -23,18 +24,17 @@
   jq,
   tar,
   abilityContractValidator,
+  mkReferenceGraph,
 }: let
   common = import ./common.nix {inherit lib;};
+  checkedPackageOrigin = import ./checked-package-origin.nix {inherit common;};
   baseDependencies = {
     inherit lib mkDerivation coreutils findutils gzip jq tar common;
   };
   abilityContractDependencies = baseDependencies // {inherit abilityContractValidator;};
-  mkReferenceGraph = import ../reference-graph.nix {
-    inherit lib mkDerivation coreutils jq;
-  };
   dependencies = baseDependencies // {inherit mkReferenceGraph;};
 in rec {
-  inherit common;
+  inherit common checkedPackageOrigin;
   inherit mkReferenceGraph;
 
   layerAbi = "aos.container.layer/v2";

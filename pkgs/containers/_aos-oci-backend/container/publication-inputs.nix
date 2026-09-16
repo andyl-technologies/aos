@@ -1,4 +1,4 @@
-##! lib/containers/publication-inputs.nix -- Unsigned publication bundle
+##! Package-owned unsigned OCI publication bundle.
 ##!
 ##! Packages one exact OCI subject and its deterministic evidence as the
 ##! complete non-secret input to the external container signing boundary.

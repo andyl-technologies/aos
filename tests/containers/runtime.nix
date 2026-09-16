@@ -12,8 +12,12 @@
   goldenRoots,
   forbiddenRuntimeRoots,
 }: let
-  oci = import ../../lib/build/oci {
+  mkReferenceGraph = import ../../lib/build/reference-graph.nix {
     inherit lib;
+    inherit (pkgs) mkDerivation coreutils jq;
+  };
+  oci = import ../../pkgs/containers/_aos-oci-backend/oci {
+    inherit lib mkReferenceGraph;
     inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
     abilityContractValidator = pkgs.aos-ability-contract-validator;
   };
@@ -45,7 +49,7 @@
     text = builtins.concatStringsSep "\n" (map builtins.toString roots) + "\n";
     destination = "/baked-roots";
   };
-  facadeLayer = import ../../lib/containers/facade-layer.nix {
+  facadeLayer = import ../../pkgs/containers/_aos-oci-backend/container/facade-layer.nix {
     inherit lib pkgs oci referenceGraph;
     packageRoots = roots;
     expectedCollisions = ["shared"];
@@ -71,7 +75,7 @@
     done
   '';
   testRoot = "/build/aos-container-runtime-root";
-  initText = import ../../lib/containers/init-script.nix {
+  initText = import ../../pkgs/containers/_aos-oci-backend/container/init-script.nix {
     inherit lib pkgs;
     rootPrefix = testRoot;
     registrationPath = "${referenceGraph}/registration";

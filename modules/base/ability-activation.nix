@@ -1,39 +1,36 @@
 ##! Deployment inputs for structured ability activation.
 {
   config,
+  checkedPackageProjections ? [],
   pkgs,
   lib,
   ...
 }: let
   buildPkgs = pkgs.buildPackages;
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (buildPkgs) mkDerivation coreutils findutils gzip jq tar;
-    abilityContractValidator = buildPkgs.aos-ability-contract-validator;
+  selectedStaticContractBackend = config.aos.artifacts.staticContractBackend or null;
+  staticContractBackend =
+    if
+      builtins.isAttrs selectedStaticContractBackend
+      && (selectedStaticContractBackend._type or null) == "aos-package-artifact-backend"
+    then selectedStaticContractBackend
+    else throw "host static ability contracts require one selected package-owned artifact backend";
+  targetPlatform = {
+    os = pkgs.stdenv.hostPlatform.constraints.os;
+    cpu = pkgs.stdenv.hostPlatform.constraints.cpu;
+    abi = pkgs.stdenv.hostPlatform.constraints.abi;
+    features = pkgs.stdenv.hostPlatform.constraints.features;
   };
-  bootPlatform =
-    if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
-    then {
-      os = "linux";
-      architecture = "amd64";
-    }
-    else if pkgs.stdenv.hostPlatform.system == "aarch64-linux"
-    then {
-      os = "linux";
-      architecture = "arm64";
-    }
-    else throw "bootable static ability contracts require a supported Linux image platform";
-  staticAbilityContractBuild = oci.mkStaticAbilityContract {
+  mkReferenceGraph = import ../../lib/build/reference-graph.nix {
+    inherit lib;
+    inherit (buildPkgs) mkDerivation coreutils jq;
+  };
+  staticAbilityContractBuild = staticContractBackend.buildStaticContract {
+    inherit lib targetPlatform mkReferenceGraph;
+    buildPackages = buildPkgs;
     pname = "aos-host-static-abilities";
     artifactClass = "bootable";
     executionStage = "host";
-    platform = bootPlatform;
-    targetPlatform = {
-      system = pkgs.stdenv.hostPlatform.constraints.os;
-      architecture = pkgs.stdenv.hostPlatform.constraints.cpu;
-    };
-    packageRoots = config.environment.systemPackages;
-    packageRegistry = pkgs;
+    packageProjections = checkedPackageProjections;
     runtimeRoots = config.environment.systemPackages;
   };
   staticAbilityContractSource = staticAbilityContractBuild.artifact;

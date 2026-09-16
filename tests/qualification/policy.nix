@@ -26,7 +26,7 @@
     pname = "source-fixture";
     version = "1";
   };
-  sourceEvidence = import ../../lib/containers/package-evidence.nix {
+  sourceEvidence = import ../../pkgs/containers/_aos-oci-backend/container/package-evidence.nix {
     inherit lib;
     pkgs = {
       packageNames = ["fixture"];

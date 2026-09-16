@@ -1,4 +1,4 @@
-##! lib/containers/facade-layer.nix -- ordered golden-package PATH facade.
+##! OCI backend PATH facade over ordered package roots.
 ##!
 ##! The server login PATH is every golden package's `bin` directory in package
 ##! order followed by every `sbin` directory in that same order.  This builder

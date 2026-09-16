@@ -1,4 +1,4 @@
-##! lib/build/oci/evidence-source-graph.nix -- Realized evidence source selector
+##! Package-owned realized OCI evidence source selection.
 ##!
 ##! Joins the authoritative realized runtime graph to the evaluated AOS package
 ##! catalog, then retains the exact source closure of every uniquely mapped
