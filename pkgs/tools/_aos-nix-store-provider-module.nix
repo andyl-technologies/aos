@@ -162,7 +162,7 @@ in {
       guarantees = [];
       handlerDescriptor = {
         artifact = providerArtifact;
-        entryPoint = "libexec/aos-nix-store-database-effects";
+        entryPoint = "libexec/aos-nix-store-provider";
         arguments = requestType;
         result = observationType;
       };
@@ -201,7 +201,7 @@ in {
       guarantees = [];
       handlerDescriptor = {
         artifact = providerArtifact;
-        entryPoint = "libexec/aos-content-addressed-object";
+        entryPoint = "libexec/aos-nix-store-provider";
         arguments = contentObject.methodParameters;
         result = contentObject.observationType;
       };
