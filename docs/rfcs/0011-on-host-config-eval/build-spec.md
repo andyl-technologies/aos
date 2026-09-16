@@ -1429,8 +1429,18 @@ and committed as fallback provenance; there is no image-baked parallel layout.
 
 Everything else is reuse; these four are the genuinely-new code, all small and independently testable.
 
-1. **Config-drive mount helper** — the only capability with no aos primitive. Probe `blkid -L {aos-metadata,cidata,config-2}` (ISO9660/vfat), mount RO, record `METADATA_DIR`. Implementation: shell out to `pkgs.util-linux` `blkid`/`mount` (as `aos-platform-detect.nix:51-54` does) or bind `libblkid`. Must run in `detect`, before the cloud path, so an offline channel short-circuits the network.
-2. **Vendored YAML crate** — no YAML crate in `Cargo.lock`; vendor one to parse NoCloud `meta-data` / `network-config` and any cloud-config-shaped facts. JSON (`serde_json`) and TOML (`toml`) are already present.
+1. **Selected metadata provider's config-drive detector** — consume the exact
+   typed `blkid`, `mount`, and `umount` executable references exposed to the
+   provider package, probe the `aos-metadata`, `cidata`, and `config-2` labels,
+   and mount the selected device read-only in invocation-private scratch. The
+   operation returns a typed channel observation; it does not publish an
+   ambient `METADATA_DIR` or receive tools through global environment
+   variables. Detection runs before the cloud path so an offline channel
+   short-circuits network acquisition.
+2. **Bounded NoCloud parser** — parse only the scalar metadata and v1/v2
+   network fields AOS consumes with the safe in-tree parser. Unsupported YAML
+   syntax fails closed; no general YAML implementation or `unsafe-libyaml`
+   enters the early-boot closure.
 3. **`tokio::time::timeout` shim** — `aos-net`'s client is a process-wide singleton with only a 10s `connect_timeout`, and `HttpProtocol::with_client` isn't wired through the engine. Wrap each IMDS `engine.execute(...)` in `tokio::time::timeout` so a black-hole metadata endpoint can't wedge boot.
 4. **Per-platform fetchers** — thin `PlatformFetcher` impls (facts-from-docs over `TransferEngine` + `with_header` + `RetryConfig`), recorded-fixture tested off-box. AWS IMDSv2 ([§4](#4-aws-imdsv2-fetcher-cloud-exemplar)) is the reference impl; GCP (`Metadata-Flavor: Google`), Azure (`Metadata:true` + base64 + OVF), DigitalOcean, OpenStack-IMDS follow.
 
@@ -1439,10 +1449,10 @@ tested. Ignition compatibility is not part of the end-state contract.
 
 ---
 
-Grounding files: `docs/rfcs/0011-on-host-config-eval/provisioning.md`, the
-historical Ignition service and platform-detection package removed by this RFC,
-`crates/aos-net/src/{transfer.rs,types.rs,retry.rs,protocol/http.rs}`, and
-`crates/aos-package/src/security.rs`.
+Grounding files: `docs/rfcs/0011-on-host-config-eval/provisioning.md`,
+`crates/aos-metadata/src/{provider.rs,detect.rs,mount.rs}`,
+`crates/aos-net/src/{transfer.rs,types.rs,retry.rs,protocol/http.rs}`, and the
+selected metadata provider package declaration.
 
 
 ---
