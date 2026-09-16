@@ -55,11 +55,7 @@
         }
       ];
       packageModules = [
-        {
-          name = "systemd";
-          version = pkgs.systemd.version;
-          module = pkgs.systemd.module + "/module.nix";
-        }
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
         {
           name = "k3s-combined";
           version = pkgs.k3s-combined.version;

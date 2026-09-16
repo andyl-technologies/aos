@@ -260,71 +260,54 @@
       else if conflictingAbilityOutputs != []
       then throw "mkDerivation abilities for package '${packageName}' reserves output names ${builtins.toJSON conflictingAbilityOutputs}"
       else if !builtins.isPath authoredAbilities
-      then throw "mkDerivation abilities for package '${packageName}' must be a path-backed file or directory module"
+      then throw "mkDerivation abilities for package '${packageName}' must be a path-backed module directory"
       else let
         sourceType = builtins.readFileType authoredAbilities;
         modulePath = authoredAbilities + "/module.nix";
       in
-        if sourceType == "regular"
-        then {
-          source = authoredAbilities;
-          isDirectory = false;
-          path = "module.nix";
-        }
-        else if sourceType != "directory"
-        then throw "mkDerivation abilities for package '${packageName}' must name a regular file or directory"
+        if sourceType != "directory"
+        then throw "mkDerivation abilities for package '${packageName}' must name a directory"
         else if !builtins.pathExists modulePath || builtins.readFileType modulePath != "regular"
         then throw "mkDerivation abilities directory for package '${packageName}' must contain a regular module.nix"
         else {
           source = authoredAbilities;
-          isDirectory = true;
           path = "module.nix";
         };
     abilityModules =
       if authoredAbilities == null
       then []
-      else if abilityModuleSource.isDirectory
-      then [(abilityModuleSource.source + "/module.nix")]
-      else [abilityModuleSource.source];
+      else [(abilityModuleSource.source + "/module.nix")];
     retainedAbilityModule = {imports = abilityModules;};
+    validAbilityModuleTree = path:
+      builtins.all
+      (name: let
+        type = (builtins.readDir path).${name};
+      in
+        type == "regular"
+        || (type == "directory" && validAbilityModuleTree (path + "/${name}")))
+      (builtins.attrNames (builtins.readDir path));
     abilityModuleArtifact =
       if abilityModuleSource == null
       then null
+      else if !validAbilityModuleTree abilityModuleSource.source
+      then throw "mkDerivation abilities for package '${packageName}' may contain only regular files and directories"
       else
         lib.throwIf
         (builtins.elem "module" existingOutputs)
         "mkDerivation abilities for package '${packageName}' reserve the 'module' output name for the separately built ability module"
-        (rawMkDerivation {
-          pname = "${packageName}-module";
-          version = args.version or "0";
-          src = null;
-          outputs = ["module"];
-          buildDeps = [resolvedBuildPackages.nix];
-          phases = [
-            {
-              name = "install";
-              script = ''
-                mkdir -p "$module"
-                ${
-                  if abilityModuleSource.isDirectory
-                  then ''cp -R ${abilityModuleSource.source}/. "$module/"''
-                  else ''cp ${abilityModuleSource.source} "$module/module.nix"''
-                }
-                test -f "$module/module.nix"
-                invalid_entry=$(${stdenv.findutils}/bin/find "$module" ! -type d ! -type f -print -quit)
-                if [ -n "$invalid_entry" ]; then
-                  echo "ability module for '${packageName}' contains a non-regular entry: $invalid_entry" >&2
-                  exit 1
-                fi
-                ${stdenv.findutils}/bin/find "$module" -type f -name '*.nix' \
-                  -exec ${resolvedBuildPackages.nix}/bin/nix-instantiate --store dummy:// --parse {} \; >/dev/null
-              '';
+        (
+          if lib.hasPrefix "/nix/store/" (builtins.toString abilityModuleSource.source)
+          then
+            builtins.path {
+              path = abilityModuleSource.source;
+              name = "${packageName}-module";
             }
-          ];
-          outputChecks.module.allowedReferences = [];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        });
+          else
+            (builtins.fetchTree {
+              type = "path";
+              path = builtins.toString abilityModuleSource.source;
+            }).outPath
+        );
     symbolicAbilityModuleLocator =
       if abilityModuleArtifact == null
       then null
@@ -384,9 +367,7 @@
           source = builtins.toString declaration.source;
           directoryPrefix = "${moduleSource}/";
         in
-          if !abilityModuleSource.isDirectory && source == moduleSource
-          then "module.nix"
-          else if abilityModuleSource.isDirectory && lib.hasPrefix directoryPrefix source
+          if lib.hasPrefix directoryPrefix source
           then builtins.substring (builtins.stringLength directoryPrefix) (-1) source
           else throw "ability option '${declaration.pathStr}' for package '${packageName}' is declared outside its authenticated module tree";
       in
@@ -489,7 +470,7 @@
           abilities = packageAbilityProjection;
           # Module selection and artifact binding use the package's real
           # module output. The static ability view contains semantic data only.
-          module = abilityModuleArtifact.module;
+          module = abilityModuleArtifact;
         };
     platformAttrs = lib.optionalAttrs (packagePlatformSupport != null) {
       platformSupport = packagePlatformSupport;

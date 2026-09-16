@@ -9,7 +9,8 @@
     total_recovery_millis = 1200000;
   };
   actionable = builtins.filter (change:
-    change.resource.provider == context.provider
+    change.resource.provider
+    == context.provider
     && builtins.elem change.kind [
       "create"
       "update"
@@ -45,12 +46,14 @@
   bindingFor = change: method: let
     authorityRole = authorityFor change;
     matches = builtins.filter (entry:
-      entry.authority.role == authorityRole
+      entry.authority.role
+      == authorityRole
       && entry.binding.interface == effectsInterface
       && builtins.elem method entry.binding.caller_grant.methods
       && builtins.elem "observe" entry.binding.caller_grant.methods
       && builtins.length (builtins.filter (permission:
-        permission.resource == change.resource
+        permission.resource
+        == change.resource
         && permission.access == "exclusive-write"
         && builtins.elem method permission.operations)
       entry.binding.caller_grant.resources)

@@ -73,7 +73,7 @@ mkDerivation {
   buildDeps = [ buildPackages.go ];
   runtimeDeps = [ ];
 
-  abilities = ./_cloudcore-config/module.nix;
+  abilities = ./_cloudcore-config;
 
   phases = [
     {

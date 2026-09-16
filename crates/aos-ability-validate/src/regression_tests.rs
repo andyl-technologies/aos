@@ -873,6 +873,7 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
         artifact: artifact.clone(),
         requirements: Vec::new(),
         desired_schema: None,
+        composition_schema: None,
         provider_module: Some(ModuleLocator {
             artifact: artifact.clone(),
             path: RelativePath::new("default.nix").expect("valid module path"),

@@ -96,7 +96,7 @@ in
     runtimeDeps = [bash coreutils grep policycoreutils libselinux];
     propagatedDeps = [];
 
-    abilities = ./_refpolicy/module.nix;
+    abilities = ./_refpolicy;
 
     phases = [
       {

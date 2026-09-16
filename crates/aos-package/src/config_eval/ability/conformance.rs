@@ -236,6 +236,7 @@ fn implementation_at(store_path: &str, nar_hash: Sha256Digest) -> ProviderImplem
         },
         requirements: Vec::new(),
         desired_schema: None,
+        composition_schema: None,
         provider_module: None,
         handler: None,
         owns_resource_kinds: Vec::new(),

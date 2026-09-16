@@ -88,7 +88,7 @@ in
     cargoFlags = "-p aos-ebpf-net-policy-provider --bin aos-ebpf-net-policy-provider";
     cargoTestFlags = "-p aos-ebpf-net-policy-provider";
     doCheck = true;
-    abilities = ./_aos-ebpf-net-policy/module.nix;
+    abilities = ./_aos-ebpf-net-policy;
 
     buildDeps = [
       linux-headers

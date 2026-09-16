@@ -423,7 +423,8 @@
     if cfg.topology == "standby"
     then "replication-passfile"
     else "bootstrap-superuser-password";
-  initializationCredentialMatches = builtins.filter
+  initializationCredentialMatches =
+    builtins.filter
     (credential: credential.name == initializationCredential)
     configuredCredentials;
   initializationCredentialReference =
@@ -529,13 +530,21 @@
     };
   };
   mainCredentialNames =
-    lib.optional (cfg.topology == "standby") "replication-passfile"
+    lib.optional (
+      cfg.topology
+      == "standby"
+      && serviceManagement.credentialReferenceConfigured replicationPassfile
+    ) "replication-passfile"
     ++ lib.optionals cfg.tls.enable (
-      ["tls-certificate" "tls-private-key"]
+      lib.optional (serviceManagement.credentialReferenceConfigured tlsCertificate) "tls-certificate"
+      ++ lib.optional (serviceManagement.credentialReferenceConfigured tlsPrivateKey) "tls-private-key"
       ++ lib.optional (serviceManagement.credentialReferenceConfigured tlsCa) "tls-ca"
     );
-  credentialByName = name:
-    builtins.head (builtins.filter (credential: credential.name == name) configuredCredentials);
+  credentialsByName = builtins.listToAttrs (builtins.map (credential: {
+      inherit (credential) name;
+      value = credential;
+    })
+    configuredCredentials);
   mainService = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
@@ -599,7 +608,7 @@
         else {
           views =
             builtins.map (name: let
-              credential = credentialByName name;
+              credential = credentialsByName.${name};
             in {
               inherit name;
               inherit (credential.reference) encrypted;

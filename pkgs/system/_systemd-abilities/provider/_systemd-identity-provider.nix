@@ -1,6 +1,5 @@
 ##! Pure systemd identity composition and provider transition wiring.
 {
-  artifactLocatorFor,
   config,
   lib,
   packageName,
@@ -12,12 +11,8 @@
     outputs = {};
     resourceFragments = {};
   };
-  executableReference = artifact: entry_point: let
-    locator = artifactLocatorFor artifact;
-  in {
-    artifact =
-      {_type = "aos-artifact-reference";}
-      // locator.artifactReference;
+  executableReference = artifact: entry_point: {
+    inherit artifact;
     inherit entry_point;
     arguments = [];
   };

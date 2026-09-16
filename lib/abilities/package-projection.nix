@@ -146,6 +146,10 @@
         if implementation.desiredType == null
         then null
         else abilities.types.schemaOf "implementation desired realization" implementation.desiredType;
+      composition_schema =
+        if implementation.compositionType == null
+        then null
+        else abilities.types.schemaOf "implementation composition resource" implementation.compositionType;
     }
     // lib.optionalAttrs (implementation.providerModule != null) {
       provider_module = moduleLocator implementation;

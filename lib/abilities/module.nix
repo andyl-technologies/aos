@@ -694,26 +694,22 @@
   interfacesMatchingRequirement = requirement:
     uniqueInterfaceDeclarations (builtins.filter (declaration: let
       identity = interfaceIdentityForDeclaration "requirement interface" declaration;
+      selectorMatches = selector:
+        identity.name
+        == selector.name
+        && identity.abi == selector.abi
+        && (selector.descriptor == null || identity.descriptor == selector.descriptor);
     in
-      identity.name
-      == requirement.interface
-      && identity.abi == requirement.abi
-      && (requirement.descriptor == null || identity.descriptor == requirement.descriptor))
+      if requirement ? accepted_interfaces
+      then builtins.any selectorMatches requirement.accepted_interfaces
+      else
+        identity.name
+        == requirement.interface
+        && identity.abi == requirement.abi
+        && (requirement.descriptor == null || identity.descriptor == requirement.descriptor))
     (builtins.attrValues configuredInterfaces));
   typeAccepts = optionType: value:
-    (builtins.tryEval (builtins.deepSeq
-      (evalModules {
-        modules = [
-          {
-            options.value = mkOption {type = optionType;};
-            config.value = value;
-          }
-        ];
-      })
-      .config
-      .value
-      true))
-    .success;
+    abilityTypes.accepts "ability value" optionType value;
 
   handlerType = strictSubmodule {
     artifact = mkOption {
@@ -846,6 +842,11 @@
       default = null;
       description = "Provider realization value accepted after this implementation is selected.";
     };
+    compositionType = mkOption {
+      type = moduleTypes.nullOr portableType;
+      default = null;
+      description = "Complete aggregated resource value accepted by this implementation's pure composer.";
+    };
     requiredFeatures = mkOption {
       type = moduleTypes.listOf localKeyType;
       default = [];
@@ -884,7 +885,8 @@
       implementation.qualification
       == null
       || (
-        implementation.qualification.conformanceFamilies != []
+        implementation.qualification.conformanceFamilies
+        != []
         && uniqueValues implementation.qualification.conformanceFamilies
       )
     )
@@ -1119,15 +1121,39 @@
       )
       ++ methodOutputs
     );
-    lifetimes = builtins.attrNames (builtins.listToAttrs (builtins.map (lifetime: {
-        name = lifetime;
-        value = true;
-      })
-      outputLifetimes));
+    lifetimeRank = {
+      attempt = 0;
+      transaction = 1;
+      instance = 2;
+      persistent = 3;
+    };
+    longerLifetime = current: candidate:
+      if lifetimeRank.${candidate} > lifetimeRank.${current}
+      then candidate
+      else current;
   in
-    if builtins.length lifetimes == 1
-    then builtins.head lifetimes
-    else throw "Ability request '${request.requirement}' does not derive one canonical lifetime from its selected interface methods and outputs.";
+    if outputLifetimes == []
+    then throw "Ability request '${request.requirement}' has no selected interface output lifetime."
+    else builtins.foldl' longerLifetime "attempt" outputLifetimes;
+
+  normalizeRequest = request: let
+    requirement =
+      config.aos.abilities.requirementTemplates.${request.requirement}
+      or (config.aos.abilities.compositionRequirements.${request.requirement}.requirement or null);
+    matches =
+      if requirement == null
+      then []
+      else interfacesMatchingRequirement requirement;
+    interface =
+      if builtins.length matches == 1
+      then builtins.head matches
+      else throw "Ability request '${request.requirement}' does not select one exact interface.";
+  in
+    request
+    // {
+      parameters = abilityTypes.normalize "ability request parameters" interface.requestType request.parameters;
+      lifetime = requestLifetime request;
+    };
 
   requestBaseType = strictSubmodule {
     package = mkOption {
@@ -1308,6 +1334,10 @@
       if implementation.desiredType == null
       then null
       else abilityTypes.schemaOf "provider realization" implementation.desiredType;
+    composition_schema =
+      if implementation.compositionType == null
+      then null
+      else abilityTypes.schemaOf "provider composition resource" implementation.compositionType;
   };
 
   resolveResource = _: authored: let
@@ -1365,12 +1395,15 @@
       config.aos.abilities.requests.${requestName}
       or config.aos.abilities.compositionRequests.${requestName}
       or (throw "Published resource output '${requestName}' has no exact request declaration.");
-    normalizedRequest = (evalModules {
-      modules = [{
-        options.value = mkOption {type = declaration.requestType;};
-        config.value = request.parameters;
-      }];
-    }).config.value;
+    normalizedRequest =
+      (evalModules {
+        modules = [
+          {
+            options.value = mkOption {type = declaration.requestType;};
+            config.value = request.parameters;
+          }
+        ];
+      }).config.value;
     selectedImplementation = semanticImplementation binding.value.implementation implementation;
     publication = {
       schema = "aos.ability.resource-publication/v1";
@@ -1471,12 +1504,16 @@
           if builtins.length resourceDeclarations == 1
           then builtins.head resourceDeclarations
           else null;
+        resourceType =
+          if implementation.compositionType == null
+          then resourceDeclaration.requestType
+          else implementation.compositionType;
       in
         resourceDeclaration
         != null
         && resource.resource.provider == config.aos.abilities.instanceIdentities.${binding.providerInstance}
         && controlsKind
-        && typeAccepts resourceDeclaration.requestType resource.value
+        && typeAccepts resourceType resource.value
         && implementation.desiredType != null
         && typeAccepts implementation.desiredType resource.realization;
 
@@ -1518,7 +1555,8 @@
       then null
       else outputs.${selected.socketOutput} or null;
     protectedPlanningOutput = output:
-      output != null
+      output
+      != null
       && output.phase == "planning"
       && output.visibility == "protected";
   in
@@ -1608,7 +1646,8 @@ in {
       default = {};
       contributable = true;
       apply = requirements: let
-        rejected = builtins.filter
+        rejected =
+          builtins.filter
           (name: !requirementAccepted requirements.${name})
           (builtins.attrNames requirements);
       in
@@ -1641,15 +1680,14 @@ in {
       default = {};
       contributable = true;
       apply = requests: let
-        withLifetime = builtins.mapAttrs (_: request:
-          request // {lifetime = requestLifetime request;})
-        requests;
+        normalized = builtins.mapAttrs (_: normalizeRequest) requests;
       in
         if builtins.all requestAccepted (builtins.attrValues requests)
-        then withLifetime
+        then normalized
         else let
           rejected = builtins.filter (name: !requestAccepted requests.${name}) (builtins.attrNames requests);
-        in throw "Ability request(s) do not match their requirement interface request type: ${builtins.concatStringsSep ", " rejected}";
+        in
+          throw "Ability request(s) do not match their requirement interface request type: ${builtins.concatStringsSep ", " rejected}";
       description = "Concrete ability requests emitted by configured instances.";
     };
     bindings = mkOption {
@@ -1683,8 +1721,7 @@ in {
     compositionRequests = mkOption {
       type = moduleTypes.attrsOf requestBaseType;
       default = {};
-      apply = builtins.mapAttrs (_: request:
-        request // {lifetime = requestLifetime request;});
+      apply = builtins.mapAttrs (_: normalizeRequest);
       readOnly = true;
       internal = true;
       description = "Exact provider child requests derived inside the module fixed point.";
@@ -1713,10 +1750,15 @@ in {
     desiredResources = mkOption {
       type = abilityMapType "desiredResources" desiredResourceBaseType;
       default = {};
-      apply = resources:
-        if builtins.all desiredResourceAccepted (builtins.attrValues resources)
+      apply = resources: let
+        rejected =
+          builtins.filter
+          (name: !desiredResourceAccepted resources.${name})
+          (builtins.attrNames resources);
+      in
+        if rejected == []
         then resources
-        else throw "A desired ability resource does not match its declared interface request type.";
+        else throw "Desired ability resources do not match their controller contracts: ${builtins.concatStringsSep ", " rejected}.";
       description = "Provider-owned desired resources derived during module evaluation.";
     };
     resolvedResources = mkOption {

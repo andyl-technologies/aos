@@ -73,7 +73,7 @@ in
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [];
-    abilities = ./_aos-boot-preparation-provider/module.nix;
+    abilities = ./_aos-boot-preparation-provider;
 
     preBuild = staticBuildSetup;
 

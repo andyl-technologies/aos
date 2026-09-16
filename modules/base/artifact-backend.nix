@@ -21,7 +21,7 @@
           type = lib.types.nonEmptyStr;
         };
         artifact = lib.mkOption {
-          type = lib.abilities.types.artifactReference;
+          type = lib.abilities.types.packageOutputSelector;
         };
         package = lib.mkOption {
           type = storeRoot;
@@ -37,7 +37,7 @@
         };
       };
     })
-    (backend: backend.artifact.store_path == builtins.toString backend.package);
+    (backend: backend.artifact == lib.abilities.packageOutput {});
 in {
   options.aos.artifacts.backend = lib.mkOption {
     type = lib.types.nullOr (lib.types.uniq backendType);

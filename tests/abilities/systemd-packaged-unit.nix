@@ -3,7 +3,7 @@
   lib,
   pkgs,
 }: let
-  interfaceModule = pkgs.systemd.module + "/module.nix";
+  packageModule = lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd;
   selectedSystemdProvider = import ./_selected-package-provider.nix {
     inherit lib;
     package = pkgs.systemd;
@@ -13,22 +13,9 @@
         output = artifact.output;
         package = artifact.package;
       }
-    } = (artifactLocatorFor artifact).path;
+    } = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
   };
   artifact = lib.abilities.packageOutput {package = "consumer";};
-  artifactLocatorFor = selector:
-    if (selector._type or null) != "aos-package-output-selector"
-    then throw "provider attempted to resolve a materialized artifact reference"
-    else {
-      artifactReference = {
-        _type = "aos-artifact-reference";
-        content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-        nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-      };
-      path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-    };
   consumerModuleFor = unitFile: {config, ...}: let
     declaration = config.aos.abilities.interfaces."systemd:systemd-packaged-unit";
     identity = lib.abilities.interfaceIdentity (
@@ -85,7 +72,6 @@
       inherit lib;
       modules = [
         lib.abilities.module
-        ./_systemd-platform-module.nix
         {
           config.aos.abilities = {
             environment = {
@@ -99,11 +85,7 @@
         }
       ];
       packageModules = [
-        {
-          name = "systemd";
-          inherit (pkgs.systemd) version;
-          module = interfaceModule;
-        }
+        packageModule
         {
           name = "consumer";
           module = consumerModule;
@@ -116,7 +98,6 @@
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
         };
-        inherit artifactLocatorFor;
       };
     };
 
@@ -176,12 +157,16 @@
     };
   composeFor = resolvedResources: compositionOutputs: resource: let
     provider = import selectedSystemdProvider.module {
-      inherit lib pkgs artifactLocatorFor;
+      inherit lib pkgs;
       packageName = "systemd";
       outputs = selectedSystemdProvider.outputs;
-      config.aos.abilities = {
-        inherit resolvedResources compositionOutputs;
-        interfaces."systemd:systemd-packaged-unit" = declaration;
+      options = {};
+      config.aos = {
+        abilities = {
+          inherit resolvedResources compositionOutputs;
+          inherit (abilities) interfaces;
+        };
+        inherit (evaluation.config.aos) systemd;
       };
     };
     composition = provider.config.aos.abilities.implementations.systemd-packaged-unit.compose {
@@ -286,7 +271,7 @@ in
   assert effectsChild.requirement == "packaged-unit-effects";
   assert abilities.implementations."systemd:systemd-packaged-unit".handlerDescriptor == null;
   assert abilities.implementations."systemd:systemd-packaged-unit-effects".providerModule == null;
-  assert desired.realization.source.artifact.store_path == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
+  assert desired.realization.source.artifact == artifact;
   assert requestSchema.fields.dependencies.fields.after.unique;
   assert requestSchema.fields.dependencies.fields.after.canonical_order;
   assert requestSchema.fields.prerequisites.unique;

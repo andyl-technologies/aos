@@ -123,7 +123,7 @@ in
     runtimeDeps = [cyrus-sasl krb5 openssl libtool bash coreutils];
     propagatedDeps = [];
 
-    abilities = ./_openldap/module.nix;
+    abilities = ./_openldap;
 
     phases = [
       {

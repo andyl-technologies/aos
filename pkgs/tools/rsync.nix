@@ -98,7 +98,7 @@ in
       );
     propagatedDeps = [];
 
-    abilities = ./_rsyncd/module.nix;
+    abilities = ./_rsyncd;
 
     phases = [
       {

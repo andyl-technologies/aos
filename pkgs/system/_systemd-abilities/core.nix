@@ -3,6 +3,7 @@
   config ? null,
   lib,
   packageArtifactFor,
+  packageName ? "systemd",
   ...
 }: let
   types = lib.abilities.types;
@@ -178,6 +179,38 @@
     fallback = null;
   };
 
+  systemManagerServiceFacets =
+    if config == null
+    then {}
+    else config.aos.systemd.serviceFacets;
+  serviceFacetPayloadSchema = schema:
+    if schema.kind == "refined"
+    then schema // {value = serviceFacetPayloadSchema schema.value;}
+    else if schema.kind == "record"
+    then
+      schema
+      // {
+        fields = builtins.removeAttrs schema.fields ["enabled" "service"];
+        optional_fields =
+          builtins.filter
+          (name: !(builtins.elem name ["enabled" "service"]))
+          schema.optional_fields;
+      }
+    else throw "system-manager service facet request must be a record or refined record";
+  systemManagerServiceFacetTypes = builtins.listToAttrs (builtins.map (feature: let
+      declaration = config.aos.abilities.interfaces."${packageName}:${feature.alias}";
+      requestSchema = declaration.requestType._abilitySchema;
+    in {
+      name = feature.facet;
+      value = types.fromSchema (serviceFacetPayloadSchema requestSchema);
+    })
+    (builtins.attrValues systemManagerServiceFacets));
+  systemManagerServiceDeclaration = types.recordExtension {
+    base = serviceManagement.types.serviceDeclaration;
+    fields = systemManagerServiceFacetTypes;
+    optional = builtins.attrNames systemManagerServiceFacetTypes;
+  };
+
   resourceReferenceList = types.list {
     element = types.deferredResult types.resourceReference;
     maxItems = 256;
@@ -231,7 +264,7 @@
   };
   realizedPackagedUnitSource = types.record {
     fields = {
-      artifact = types.artifactReference;
+      artifact = types.artifactSelector;
       unit_file = types.relativePath;
     };
   };
@@ -245,7 +278,7 @@
     constraints = [
       {
         kind = "string-pattern";
-        pattern = "[A-Za-z0-9_.@:-]+\\.(service|socket|target|timer|path|mount|automount|swap|device)";
+        pattern = "([A-Za-z0-9_.@:-]|\\\\x[0-9A-Fa-f][0-9A-Fa-f])+\\.(service|socket|target|timer|path|mount|automount|swap|device)";
       }
     ];
   };
@@ -860,7 +893,7 @@
     variants.service = types.record {
       fields = {
         kind = types.enum ["service"];
-        desired = serviceManagement.types.serviceDeclaration;
+        desired = systemManagerServiceDeclaration;
       };
     };
   };
@@ -1057,8 +1090,8 @@
       guarantees = [];
       requirements.identity-effects = identityEffectsRequirement selected;
       providerModule = {
-        inherit artifact;
-        path = "share/aos/providers/systemd.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "provider/systemd.nix";
       };
       desiredType = identityRealizationType;
       requiredFeatures = [];
@@ -1257,8 +1290,8 @@
       guarantees = [];
       requirements.native-effects = nativeEffectsRequirement selected;
       providerModule = {
-        inherit artifact;
-        path = "share/aos/providers/systemd.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "provider/systemd.nix";
       };
       desiredType = nativeResourceRealizationType;
       requiredFeatures = [];
@@ -1364,12 +1397,16 @@
         directory-preparation = directoryPreparationRequirement;
       };
       providerModule = {
-        inherit artifact;
-        path = "share/aos/providers/systemd.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "provider/systemd.nix";
       };
       desiredType =
         if controlsService
         then serviceRealizationType
+        else null;
+      compositionType =
+        if controlsService
+        then systemManagerServiceDeclaration
         else null;
       requiredFeatures = [];
     };
@@ -1395,8 +1432,8 @@
           fallback = null;
         };
         providerModule = {
-          inherit artifact;
-          path = "share/aos/providers/systemd.nix";
+          artifact = lib.abilities.packageOutput {output = "module";};
+          path = "provider/systemd.nix";
         };
         desiredType = null;
         requiredFeatures = [];
@@ -1535,8 +1572,8 @@ in {
           guarantees = [];
           requirements.manager-watchdog-effects = managerWatchdogEffectsRequirement;
           providerModule = {
-            inherit artifact;
-            path = "share/aos/providers/systemd.nix";
+            artifact = lib.abilities.packageOutput {output = "module";};
+            path = "provider/systemd.nix";
           };
           desiredType = managerWatchdogRealization;
           requiredFeatures = [];
@@ -1567,8 +1604,8 @@ in {
             network-service-unit = networkServiceUnitRequirement;
           };
           providerModule = {
-            inherit artifact;
-            path = "share/aos/providers/systemd.nix";
+            artifact = lib.abilities.packageOutput {output = "module";};
+            path = "provider/systemd.nix";
           };
           desiredType = networkConfigurationRealization;
           requiredFeatures = [];
@@ -1612,8 +1649,8 @@ in {
           guarantees = [];
           requirements.packaged-unit-effects = packagedUnitEffectsRequirement;
           providerModule = {
-            inherit artifact;
-            path = "share/aos/providers/systemd.nix";
+            artifact = lib.abilities.packageOutput {output = "module";};
+            path = "provider/systemd.nix";
           };
           desiredType = realizationType;
           requiredFeatures = [];

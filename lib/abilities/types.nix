@@ -204,7 +204,8 @@
 
   decorateRecord = context: file: schema: normalizedFields: optionalFields: let
     fieldNames = builtins.attrNames normalizedFields;
-    requiredFields = builtins.filter
+    requiredFields =
+      builtins.filter
       (name: !(builtins.elem name optionalFields))
       fieldNames;
     recordCheck = value:
@@ -434,6 +435,22 @@ in rec {
     else if normalized.kind == "transaction-blob-reference"
     then transactionBlobReference
     else operationResultReferenceType;
+
+  ## Normalizes one value through an ability type's native module merge.
+  normalize = context: abilityType: value:
+    if moduleTypes.optionType.check abilityType && abilityType ? _abilitySchema
+    then
+      abilityType.merge [context] [
+        {
+          file = "<lib.abilities.types.normalize>";
+          inherit value;
+        }
+      ]
+    else throw "${context} must use an option type from lib.abilities.types";
+
+  ## Reports whether an ability type can merge and validate one value.
+  accepts = context: abilityType: value:
+    (builtins.tryEval (builtins.deepSeq (normalize context abilityType value) true)).success;
 
   boolean = decorate "boolean" schemas.boolean moduleTypes.bool;
 
@@ -735,6 +752,94 @@ in rec {
     };
   in
     decorateRecord "record" "<lib.abilities.types.record>" schema normalizedFields optionalFields;
+
+  ## Extends a record while retaining its native merge and deferred-value semantics.
+  recordExtension = {
+    base,
+    fields ? {},
+    optional ? [],
+  }: let
+    baseSchema = schemaOf "ability record extension base" base;
+    normalizedFields = builtins.mapAttrs (name: value:
+      normalizedField name (
+        if builtins.elem name optional
+        then
+          if builtins.isAttrs value && value ? type
+          then value // {optional = true;}
+          else {
+            type = value;
+            optional = true;
+          }
+        else value
+      ))
+    fields;
+    fieldNames = builtins.attrNames normalizedFields;
+    inferredOptional =
+      builtins.filter
+      (name: normalizedFields.${name}.optional)
+      fieldNames;
+    optionalFields = builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
+      inherit name;
+      value = true;
+    }) (optional ++ inferredOptional)));
+    requiredFields =
+      builtins.filter
+      (name: !(builtins.elem name optionalFields))
+      fieldNames;
+    schema = schemas.record {
+      fields =
+        baseSchema.fields
+        // builtins.mapAttrs
+        (_: field: schemaOf "ability record extension field" field.fieldType)
+        normalizedFields;
+      optional = baseSchema.optional_fields ++ optionalFields;
+    };
+    extensionType = moduleTypes.mkOptionType {
+      name = "extended ability record";
+      description = "an ability record with typed extension fields";
+      check = value:
+        builtins.isAttrs value
+        && base.check (builtins.removeAttrs value fieldNames)
+        && builtins.all (name: builtins.hasAttr name value) requiredFields
+        && builtins.all
+        (name: !(builtins.hasAttr name value) || normalizedFields.${name}.fieldType.check value.${name})
+        fieldNames;
+      merge = location: definitions: let
+        baseDefinitions =
+          builtins.map
+          (definition: definition // {value = builtins.removeAttrs definition.value fieldNames;})
+          definitions;
+        extensionEntries = builtins.concatMap (name: let
+          field = normalizedFields.${name};
+          fieldDefinitions =
+            builtins.map
+            (definition: definition // {value = definition.value.${name};})
+            (builtins.filter (definition: builtins.hasAttr name definition.value) definitions);
+        in
+          if fieldDefinitions != []
+          then [
+            {
+              inherit name;
+              value = field.fieldType.merge (location ++ [name]) fieldDefinitions;
+            }
+          ]
+          else if field.option ? default && field.option.default != null
+          then [
+            {
+              inherit name;
+              value = field.option.default;
+            }
+          ]
+          else [])
+        fieldNames;
+      in
+        base.merge location baseDefinitions
+        // builtins.listToAttrs extensionEntries;
+    };
+  in
+    if baseSchema.kind != "record"
+    then throw "recordExtension base must be a record from lib.abilities.types"
+    else decorate "record extension" schema extensionType;
 
   documentRecord = {
     keyMaxLength,

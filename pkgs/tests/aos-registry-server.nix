@@ -153,7 +153,7 @@ in
       }
     ];
 
-    abilities = ./_aos-registry-server/module.nix;
+    abilities = ./_aos-registry-server;
 
     meta = {
       description = "AOS registry and binary cache server test package";

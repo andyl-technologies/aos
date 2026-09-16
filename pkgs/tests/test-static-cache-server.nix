@@ -101,7 +101,7 @@ mkDerivation {
     }
   ];
 
-  abilities = ./_test-static-cache-server/module.nix;
+  abilities = ./_test-static-cache-server;
 
   meta = {
     description = "AOS static cache test HTTP server package";

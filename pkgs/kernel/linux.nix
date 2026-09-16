@@ -246,8 +246,7 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p $out/boot $out/lib/modules $out/share/aos/providers
-          cp ${./_linux-provider.nix} $out/share/aos/providers/linux.nix
+          mkdir -p $out/boot $out/lib/modules
 
           # Install kernel image (the self-decompressing, BTF-bearing image
           # the system actually boots).

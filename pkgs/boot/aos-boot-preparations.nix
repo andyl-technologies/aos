@@ -45,7 +45,7 @@ in
       util-linux
     ];
     propagatedDeps = [];
-    abilities = ./_aos-boot-preparations/module.nix;
+    abilities = ./_aos-boot-preparations;
 
     phases = [
       {

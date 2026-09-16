@@ -138,7 +138,7 @@ in
       zstd
     ];
 
-    abilities = ./_kmod-abilities.nix;
+    abilities = ./_kmod-abilities;
 
     phases = [
       {

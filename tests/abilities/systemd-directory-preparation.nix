@@ -100,7 +100,6 @@
       inherit lib;
       modules = [
         lib.abilities.module
-        ./_systemd-platform-module.nix
         {
           config.aos.abilities = {
             environment = {
@@ -114,11 +113,7 @@
         }
       ];
       packageModules = [
-        {
-          name = "systemd";
-          inherit (pkgs.systemd) version;
-          module = pkgs.systemd.module + "/module.nix";
-        }
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
         {
           name = "consumer";
           module = consumerModule;
@@ -127,7 +122,6 @@
       selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
         inherit pkgs;
-        artifactLocatorFor = _: throw "directory preparation fixture does not resolve artifacts";
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";

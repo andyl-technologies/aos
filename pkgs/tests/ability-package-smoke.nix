@@ -67,7 +67,7 @@ in
       }
     ];
 
-    abilities = ./_ability-package-smoke-module.nix;
+    abilities = ./_ability-package-smoke;
     qualification.packageProbe = qualification.packageProbe {
       primary = operation {
         input = "The installed package output.";

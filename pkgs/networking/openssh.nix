@@ -111,7 +111,7 @@ in
       );
     propagatedDeps = [];
 
-    abilities = ./_openssh/module.nix;
+    abilities = ./_openssh;
 
     phases = [
       {

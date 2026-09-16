@@ -15,7 +15,7 @@
       lifetime = "persistent";
       visibility = "protected";
       description = "References the authenticated package selected to supply kernel artifacts.";
-      schema = types.artifactReference;
+      schema = types.artifactSelector;
     };
     methods = {};
     lifecycle.persistentDeleteMethod = null;

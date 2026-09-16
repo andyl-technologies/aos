@@ -12,7 +12,8 @@
     static_contract = "${config.system.build.staticAbilityContract}/contract.json";
   };
   bindingFor = bindings: requestName: let
-    matches = builtins.filter
+    matches =
+      builtins.filter
       (binding: binding.request == requestName)
       (builtins.attrValues bindings);
   in

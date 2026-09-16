@@ -42,7 +42,7 @@ mkDerivation {
     }
   ];
 
-  abilities = ./_upgrade-transition-fixture/module.nix;
+  abilities = ./_upgrade-transition-fixture;
 
   meta = {
     description = "Test-only service for AOS generation reconciliation";

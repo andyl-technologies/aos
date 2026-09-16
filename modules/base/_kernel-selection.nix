@@ -90,8 +90,8 @@
           description = "Selected-kernel record discriminator.";
         };
         artifact = lib.mkOption {
-          type = lib.abilities.types.artifactReference;
-          description = "Checked planning output authenticating the selected kernel package.";
+          type = lib.abilities.types.packageOutputSelector;
+          description = "Symbolic planning output selecting the authenticated kernel package.";
         };
         configuration = lib.mkOption {
           type = configurationType;

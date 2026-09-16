@@ -1,6 +1,5 @@
 ##! Selected composition and static projection for systemd packaged units.
 {
-  artifactLocatorFor ? selector: throw "systemd provider has no authenticated locator for ${builtins.toJSON selector}",
   config,
   lib,
   options,
@@ -23,20 +22,7 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   milestones = serviceManagement.milestones;
   serviceInterfaces = serviceManagement.interfaces;
-  linuxServiceFacets = {
-    linuxConditions = {
-      alias = "linux-service-conditions";
-      facet = "linux_conditions";
-    };
-    linuxIsolation = {
-      alias = "linux-service-isolation";
-      facet = "linux_isolation";
-    };
-    linuxDevicePolicy = {
-      alias = "linux-service-device-policy";
-      facet = "linux_device_policy";
-    };
-  };
+  linuxServiceFacets = config.aos.systemd.serviceFacets;
   selectedLinuxInterface = _: feature: let
     alias = feature.alias;
     declaration = config.aos.abilities.interfaces."${packageName}:${alias}";
@@ -139,17 +125,14 @@
   };
 
   provideSystemManager = context: let
-    managerReference =
-      {
-        _type = "aos-artifact-reference";
-      }
-      // (artifactLocatorFor (lib.abilities.packageOutput {})).artifactReference;
+    managerArtifact = lib.abilities.packageOutput {};
   in
     emptyResult
     // {
+      resourceFragments = {};
       outputs =
         builtins.mapAttrs (_: _: {
-          selected-manager = managerReference;
+          selected-manager = managerArtifact;
         })
         context.requests;
     };
@@ -173,7 +156,7 @@
     builtins.isString name
     && builtins.stringLength name > 0
     && builtins.stringLength name <= 255
-    && builtins.match "[A-Za-z0-9_.@:-]+\\.(service|socket|target|timer|path|mount|automount|swap|device)" name != null;
+    && builtins.match "([A-Za-z0-9_.@:-]|\\\\x[0-9A-Fa-f][0-9A-Fa-f])+\\.(service|socket|target|timer|path|mount|automount|swap|device)" name != null;
 
   normalize = parameters: let
     inferred = basename parameters.source.unit_file;
@@ -522,11 +505,8 @@
     };
 
   composeNetworkConfiguration = {resources, ...}: let
-    systemdLocator = artifactLocatorFor (lib.abilities.packageOutput {});
     networkctl = {
-      artifact =
-        {_type = "aos-artifact-reference";}
-        // systemdLocator.artifactReference;
+      artifact = lib.abilities.packageOutput {};
       entry_point = "bin/networkctl";
       arguments = [];
     };
@@ -1081,13 +1061,10 @@
 
   realizationFor = resource: let
     parameters = resource.value;
-    sourceLocator = artifactLocatorFor parameters.source.artifact;
   in {
     schema = "aos.systemd.packaged-unit-realization/v1";
     source = {
-      artifact =
-        {_type = "aos-artifact-reference";}
-        // sourceLocator.artifactReference;
+      artifact = parameters.source.artifact;
       inherit (parameters.source) unit_file;
     };
     systemd_unit.unit_name = parameters.source.unit_name;
@@ -1203,7 +1180,7 @@
     })
     readinessControllers);
   identityProviderImplementations = import ./_systemd-identity-provider.nix {
-    inherit artifactLocatorFor config lib packageName;
+    inherit config lib packageName;
   };
   nativeResourceProviderImplementations = import ./_systemd-native-resource-provider.nix {
     inherit config lib packageName;

@@ -16,6 +16,7 @@ pub(super) fn pure_service_package(
         artifact: module.clone(),
         requirements: Vec::new(),
         desired_schema: None,
+        composition_schema: None,
         provider_module: Some(module_locator(module.clone())),
         handler: None,
         owns_resource_kinds: Vec::new(),

@@ -66,22 +66,16 @@
       ++ builtins.map (entry: entry.configured) ownerContributions
     );
   };
-  artifactLocatorFor = _selector: {
-    artifactReference = {
-      _type = "aos-artifact-reference";
-      content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-      store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-control-plane";
-      nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-      closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-    };
-    path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-control-plane";
+  selectedSystemdProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.systemd;
+    implementation = "service-lifecycle";
   };
   evaluate = bindings:
     lib.evalModules {
       inherit lib;
       modules = [
         lib.abilities.module
-        ./_systemd-platform-module.nix
         {
           config = {
             aos.abilities = {
@@ -90,6 +84,7 @@
                 key = "aos-control-plane";
                 stage = "host";
               };
+              instances."systemd:manager" = {};
               inherit bindings;
             };
             aos.config.unitGraph.enable = true;
@@ -101,19 +96,11 @@
           name = "aos";
           module = aosModule;
         }
-        {
-          name = "systemd";
-          module = {
-            imports = [
-              ../../pkgs/system/_systemd-abilities/core.nix
-              ../../pkgs/system/_systemd-provider.nix
-            ];
-            config.aos.abilities.instances.manager = {};
-          };
-        }
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
       ];
+      selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
-        inherit artifactLocatorFor pkgs;
+        inherit pkgs;
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
@@ -121,6 +108,10 @@
       };
     };
   initial = evaluate {};
+  authoredRequestNames =
+    builtins.filter
+    (requestName: initial.config.aos.abilities.requests.${requestName}.package == "aos")
+    (builtins.attrNames initial.config.aos.abilities.requests);
   authoredBindings = builtins.listToAttrs (builtins.map (requestName: let
       request = initial.config.aos.abilities.requests.${requestName};
       implementation = "systemd:${lib.removePrefix "aos:" request.requirement}";
@@ -135,7 +126,7 @@
         providerInstance = "systemd:manager";
       };
     })
-    (builtins.attrNames initial.config.aos.abilities.requests));
+    authoredRequestNames);
   composed = evaluate authoredBindings;
   implementations = composed.config.aos.abilities.implementations;
   interfaces = composed.config.aos.abilities.interfaces;
@@ -160,10 +151,11 @@
     (builtins.attrNames implementations);
   in
     assert builtins.length candidates == 1; builtins.head candidates;
-  childBindings = lib.mapAttrs' (requestName: pending: let
-    bindingKey =
-      lib.abilities.identityKeyFor "aos.test.child-binding-key/v1" requestName;
-  in {
+  childBindings =
+    lib.mapAttrs' (requestName: pending: let
+      bindingKey =
+        lib.abilities.identityKeyFor "aos.test.child-binding-key/v1" requestName;
+    in {
       name = "test:child-${bindingKey}";
       value = {
         request = requestName;

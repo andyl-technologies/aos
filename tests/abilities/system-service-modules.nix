@@ -50,7 +50,6 @@
           }
         ]
         ++ lib.optionals realizeService [
-          ./_systemd-platform-module.nix
           {
             aos.abilities = {
               instances."systemd:manager" = {};
@@ -79,11 +78,7 @@
             module = pkgs.nftables.module + "/module.nix";
           }
         ]
-        ++ lib.optional realizeService {
-          name = "systemd";
-          inherit (pkgs.systemd) version;
-          module = pkgs.systemd.module + "/module.nix";
-        };
+        ++ lib.optional realizeService (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd);
       selectedProviderModules = lib.optional realizeService selectedSystemdProvider;
     };
   baseline = evaluate {

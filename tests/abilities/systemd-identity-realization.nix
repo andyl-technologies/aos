@@ -19,7 +19,6 @@
     inherit lib;
     modules = [
       lib.abilities.module
-      ./_systemd-platform-module.nix
       {
         aos.abilities = {
           environment = {
@@ -46,11 +45,7 @@
       }
     ];
     packageModules = [
-      {
-        name = "systemd";
-        inherit (pkgs.systemd) version;
-        module = pkgs.systemd.module + "/module.nix";
-      }
+      (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
       {
         name = "consumer";
         module.config.aos.abilities = {
@@ -78,7 +73,6 @@
     selectedProviderModules = [selectedSystemdProvider];
     specialArgs = {
       inherit pkgs;
-      artifactLocatorFor = _: throw "identity realization contains no artifacts";
       provenance = {
         dependencyOwnersOfAttr = _: _: [];
         ownerOfListAttr = _: _: _: "@test";
@@ -99,10 +93,25 @@ in
   == {
     schema = "aos.systemd.identity-realization/v1";
     backend = "systemd-sysusers";
+    systemd_sysusers = {
+      artifact = lib.abilities.packageOutput {};
+      entry_point = "bin/systemd-sysusers";
+      arguments = [];
+    };
+    login_shell = {
+      artifact = lib.abilities.packageOutput {package = "bash";};
+      entry_point = "bin/bash";
+      arguments = [];
+    };
+    nologin_shell = {
+      artifact = lib.abilities.packageOutput {};
+      entry_point = "bin/nologin";
+      arguments = [];
+    };
   };
   assert request.parameters.desired == resource.value;
   assert outputs.group-name.value == "operators";
   assert controller.handlerDescriptor == null;
   assert builtins.isFunction controller.transition;
   assert terminal.providerModule == null;
-  assert terminal.handlerDescriptor.entryPoint == "bin/aos-systemd-provider"; true
+  assert terminal.handlerDescriptor.entryPoint == "libexec/aos-systemd-provider"; true

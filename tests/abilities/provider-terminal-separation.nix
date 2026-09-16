@@ -12,7 +12,6 @@
     inherit lib;
     modules = [
       lib.abilities.module
-      ./_systemd-platform-module.nix
       {
         config.aos.abilities = {
           environment = {
@@ -25,16 +24,11 @@
       }
     ];
     packageModules = [
-      {
-        name = "systemd";
-        inherit (pkgs.systemd) version;
-        module = pkgs.systemd.module + "/module.nix";
-      }
+      (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
     ];
     selectedProviderModules = [selectedSystemdProvider];
     specialArgs = {
       inherit pkgs;
-      artifactLocatorFor = _: throw "separation audit must not resolve an artifact";
       provenance = {
         dependencyOwnersOfAttr = _: _: [];
         ownerOfListAttr = _: _: _: "@test";
@@ -59,4 +53,4 @@ in
   assert serviceTerminal.qualification.adapter == "service-management";
   assert serviceTerminal.qualification.observationKind == "systemd";
   assert serviceTerminal.qualification.scope == "host-manager";
-  assert serviceTerminal.qualification.observer.entryPoint == "bin/aos-systemd-provider"; true
+  assert serviceTerminal.qualification.observer.entryPoint == "libexec/aos-systemd-provider"; true

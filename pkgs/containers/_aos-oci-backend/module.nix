@@ -27,6 +27,9 @@
     else
       config.aos.abilities.environment != null
       && config.aos.abilities.environment.stage == "host";
+  providerReady =
+    selected
+    && selectedBinding.implementation.value.provide != null;
 
   packageProjectionsFor = packages:
     builtins.map lib.abilities.authenticatedPackageProjectionFor (builtins.filter
@@ -122,8 +125,7 @@
     then null
     else if
       selectedBackendOutput != null
-      && selectedBackendOutput._type == "aos-artifact-reference"
-      && selectedBackendOutput.store_path == builtins.toString authoredBackend.package
+      && selectedBackendOutput == backendArtifact
     then authoredBackend // {artifact = selectedBackendOutput;}
     else throw "selected artifact backend projection differs from its checked planning output";
 in {
@@ -159,8 +161,8 @@ in {
         methods = [];
         guarantees = [];
         providerModule = {
-          artifact = backendArtifact;
-          path = "share/aos/providers/artifact-backend.nix";
+          artifact = lib.abilities.packageOutput {output = "module";};
+          path = "provider.nix";
         };
       };
       instances = lib.mkIf selected {
@@ -168,7 +170,7 @@ in {
       };
     };
 
-    aos.artifacts.backend = lib.mkIf selected backend;
+    aos.artifacts.backend = lib.mkIf providerReady backend;
     aos.containers = lib.mkIf selected {
       enable = true;
       default = "aos";

@@ -31,7 +31,6 @@
     inherit lib;
     modules = [
       lib.abilities.module
-      ./_systemd-platform-module.nix
       {
         config.aos.abilities = {
           environment = {
@@ -100,11 +99,7 @@
       }
     ];
     packageModules = [
-      {
-        name = "systemd";
-        inherit (pkgs.systemd) version;
-        module = pkgs.systemd.module + "/module.nix";
-      }
+      (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
       {
         name = "consumer";
         module.config.aos.abilities = {
@@ -183,7 +178,6 @@
     selectedProviderModules = [selectedSystemdProvider];
     specialArgs = {
       inherit pkgs;
-      artifactLocatorFor = _: throw "native-resource realization contains no artifacts";
       provenance = {
         dependencyOwnersOfAttr = _: _: [];
         ownerOfListAttr = _: _: _: "@test";
@@ -205,9 +199,7 @@
       implementation: let
         handler = implementation.handlerDescriptor;
       in
-        lib.optional
-        (handler != null && handler.artifact.package == "aos-systemd-provider")
-        handler.entryPoint
+        lib.optional (handler != null) handler.entryPoint
     )
     (builtins.attrValues abilities.implementations)));
 in
@@ -260,10 +252,10 @@ in
   assert abilities.implementations."systemd:mount-resource".handlerDescriptor == null;
   assert builtins.isFunction abilities.implementations."systemd:mount-resource".transition;
   assert abilities.implementations."systemd:systemd-mount-effects".providerModule == null;
-  assert abilities.implementations."systemd:systemd-mount-effects".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
+  assert abilities.implementations."systemd:systemd-mount-effects".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
   assert abilities.implementations."systemd:device-presence".providerModule == null;
-  assert abilities.implementations."systemd:device-presence".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
-  assert abilities.implementations."systemd:systemd-named-credential-resolution".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
-  assert abilities.implementations."systemd:systemd-credential-delivery".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
-  assert declaredHandlerEntryPoints == ["bin/aos-systemd-provider"];
+  assert abilities.implementations."systemd:device-presence".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
+  assert abilities.implementations."systemd:systemd-named-credential-resolution".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
+  assert abilities.implementations."systemd:systemd-credential-delivery".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
+  assert declaredHandlerEntryPoints == ["libexec/aos-systemd-provider"];
   assert builtins.length evaluation.config.systemd.providerUnitPlans == 4; true

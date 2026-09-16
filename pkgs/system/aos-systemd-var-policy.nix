@@ -18,7 +18,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "aos-systemd-var-policy";
-  abilities = ./_aos-systemd-var-policy/module.nix;
+  abilities = ./_aos-systemd-var-policy;
   qualification.packageProbe = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];

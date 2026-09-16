@@ -94,7 +94,7 @@ in
       ];
     propagatedDeps = [];
 
-    abilities = ./_chrony-abilities/module.nix;
+    abilities = ./_chrony-abilities;
 
     phases = [
       {

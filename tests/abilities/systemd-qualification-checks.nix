@@ -1,6 +1,6 @@
 ##! Systemd qualification derives exact manager subjects from realizations.
 {lib}: let
-  qualification = import ../../pkgs/system/_systemd-qualification-checks.nix {inherit lib;};
+  qualification = import ../../pkgs/system/_systemd-abilities/provider/_systemd-qualification-checks.nix {inherit lib;};
   unit = unit_name: {
     kind = "unit";
     inherit unit_name;

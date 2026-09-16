@@ -18,6 +18,13 @@
     builtins.length managerBindings
     == 1
     && (builtins.head managerBindings).binding.request == "system:manager";
+  selectedBinding =
+    if selected
+    then builtins.head managerBindings
+    else null;
+  providerReady =
+    selected
+    && selectedBinding.implementation.value.provide != null;
 
   packageOutput = package: lib.abilities.packageOutput {inherit package;};
   systemdPackage = packageArtifactFor (lib.abilities.packageOutput {});
@@ -124,8 +131,7 @@
     if
       selectedManagerOutput
       != null
-      && selectedManagerOutput._type == "aos-artifact-reference"
-      && selectedManagerOutput.store_path == builtins.toString systemdPackage
+      && selectedManagerOutput == managerArtifact
     then authoredManager
     else throw "selected system manager projection differs from its checked planning output";
 in {
@@ -147,12 +153,12 @@ in {
         methods = [];
         guarantees = [];
         providerModule = {
-          artifact = managerArtifact;
-          path = "share/aos/providers/systemd.nix";
+          artifact = lib.abilities.packageOutput {output = "module";};
+          path = "provider/systemd.nix";
         };
       };
     };
 
-    aos.manager.selected = lib.mkIf selected manager;
+    aos.manager.selected = lib.mkIf providerReady manager;
   };
 }

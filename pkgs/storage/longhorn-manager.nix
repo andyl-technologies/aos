@@ -81,7 +81,7 @@ in
     # authenticated runtime companions. Keep them in the package closure so
     # publication, installation, rollback, and GC retain one complete add-on.
     runtimeDeps = [longhorn-engine longhorn-instance-manager];
-    abilities = ./_longhorn-config/module.nix;
+    abilities = ./_longhorn-config;
 
     phases = [
       {

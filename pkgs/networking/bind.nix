@@ -110,7 +110,7 @@ in
     ];
     propagatedDeps = [];
 
-    abilities = ./_bind/module.nix;
+    abilities = ./_bind;
 
     phases = [
       {

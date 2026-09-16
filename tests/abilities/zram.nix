@@ -53,11 +53,7 @@
           inherit (pkgs.zram-generator) version;
           module = pkgs.zram-generator.module + "/module.nix";
         }
-        {
-          name = "systemd";
-          inherit (pkgs.systemd) version;
-          module = pkgs.systemd.module + "/module.nix";
-        }
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
       ];
     };
   baseline = evaluate {};
@@ -253,5 +249,7 @@ in
       search_path = [(lib.abilities.packageOutput {package = "util-linux";})];
     };
   };
-  assert !(baseline.config ? systemd);
+  assert baseline.config.systemd.providerUnitPlans == [];
+  assert baseline.config.systemd.providerManagerConfigurationPlans == [];
+  assert baseline.config.systemd.providerNetworkConfigurationPlans == [];
   assert !(baseline.config.aos ? kernel); true

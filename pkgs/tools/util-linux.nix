@@ -163,7 +163,7 @@ in
     ];
     propagatedDeps = [libselinux];
 
-    abilities = ./_util-linux-getty/module.nix;
+    abilities = ./_util-linux-getty;
 
     phases = [
       {

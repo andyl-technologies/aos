@@ -364,6 +364,9 @@ pub struct ProviderImplementation {
     /// Validates the provider realization emitted for this implementation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desired_schema: Option<ValueSchema>,
+    /// Validates the complete aggregated resource accepted by pure composition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_schema: Option<ValueSchema>,
     /// Locates the selected provider module when it contributes pure semantics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_module: Option<ModuleLocator>,
@@ -417,6 +420,7 @@ impl ProviderImplementation {
             artifact: ArtifactIdentity,
             requirements: Vec<SemanticRequirement<'a>>,
             desired_schema: &'a Option<ValueSchema>,
+            composition_schema: &'a Option<ValueSchema>,
             provider_module: Option<SemanticModuleLocator<'a>>,
             handler: &'a Option<LocalKey>,
             owns_resource_kinds: &'a [InterfaceName],
@@ -440,6 +444,7 @@ impl ProviderImplementation {
                 })
                 .collect(),
             desired_schema: &self.desired_schema,
+            composition_schema: &self.composition_schema,
             provider_module: self
                 .provider_module
                 .as_ref()
@@ -528,6 +533,15 @@ fn consume_provider_implementation_items(
     consume_items(remaining_items, implementation.requirements.len())?;
     consume_items(remaining_items, implementation.owns_resource_kinds.len())?;
     if let Some(schema) = &implementation.desired_schema {
+        consume_items(remaining_items, 1)?;
+        consume_json_value(
+            &serde_json::to_value(schema)?,
+            remaining_items,
+            2,
+            max_depth,
+        )?;
+    }
+    if let Some(schema) = &implementation.composition_schema {
         consume_items(remaining_items, 1)?;
         consume_json_value(
             &serde_json::to_value(schema)?,
@@ -898,6 +912,7 @@ mod tests {
                 fallback: Some(fallback),
             }],
             desired_schema: None,
+            composition_schema: None,
             provider_module: None,
             handler: None,
             owns_resource_kinds: vec![
@@ -1004,6 +1019,7 @@ mod tests {
             },
             requirements: Vec::new(),
             desired_schema: None,
+            composition_schema: None,
             provider_module: None,
             handler: Some(LocalKey::new("run").expect("valid handler name")),
             owns_resource_kinds: Vec::new(),

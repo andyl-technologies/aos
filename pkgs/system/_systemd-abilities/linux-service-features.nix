@@ -267,6 +267,21 @@
   };
   linuxDevicePolicyObservation = observation "linux-device-policy" linuxDevicePolicy;
 
+  serviceFacets = {
+    linuxConditions = {
+      alias = "linux-service-conditions";
+      facet = "linux_conditions";
+    };
+    linuxIsolation = {
+      alias = "linux-service-isolation";
+      facet = "linux_isolation";
+    };
+    linuxDevicePolicy = {
+      alias = "linux-service-device-policy";
+      facet = "linux_device_policy";
+    };
+  };
+
   capabilityGuaranteeAlias = "linux-service-condition-capability";
   capabilityGuarantee = {
     name = "aos.guarantee.linux-service-condition.capability";
@@ -275,23 +290,23 @@
     description = "Evaluates availability of an exact Linux capability for a service condition.";
   };
   interfaces = {
-    linux-service-conditions = interface {
-      alias = "linux-service-conditions";
+    ${serviceFacets.linuxConditions.alias} = interface {
+      inherit (serviceFacets.linuxConditions) alias;
       name = "aos.platform.linux.service-conditions";
       description = "Contributes Linux capability-availability conditions to a service resource.";
       requestType = linuxConditions;
       observationType = linuxConditionsObservation;
       guarantees = [capabilityGuaranteeAlias];
     };
-    linux-service-isolation = interface {
-      alias = "linux-service-isolation";
+    ${serviceFacets.linuxIsolation.alias} = interface {
+      inherit (serviceFacets.linuxIsolation) alias;
       name = "aos.platform.linux.service-isolation";
       description = "Contributes Linux-specific kernel isolation policy to a service resource.";
       requestType = linuxIsolation;
       observationType = linuxIsolationObservation;
     };
-    linux-service-device-policy = interface {
-      alias = "linux-service-device-policy";
+    ${serviceFacets.linuxDevicePolicy.alias} = interface {
+      inherit (serviceFacets.linuxDevicePolicy) alias;
       name = "aos.platform.linux.service-device-policy";
       description = "Contributes Linux cgroup device-class and device-number access policy to a service resource.";
       requestType = linuxDevicePolicy;
@@ -307,16 +322,31 @@
     guarantees = declaration.guarantees;
     requirements = {};
     providerModule = {
-      inherit artifact;
-      path = "share/aos/providers/systemd.nix";
+      artifact = lib.abilities.packageOutput {output = "module";};
+      path = "provider/systemd.nix";
     };
     desiredType = null;
     requiredFeatures = [];
   };
 in {
+  options.aos.systemd.serviceFacets = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule {
+      config._module.strict = true;
+      options = {
+        alias = lib.mkOption {type = types.localKey;};
+        facet = lib.mkOption {type = types.localKey;};
+      };
+    });
+    default = {};
+    readOnly = true;
+    internal = true;
+    description = "Selected system-manager service facet declarations.";
+  };
+
   config.aos.abilities = {
     guarantees.${capabilityGuaranteeAlias} = capabilityGuarantee;
     interfaces = interfaces;
     implementations = builtins.mapAttrs implementation interfaces;
   };
+  config.aos.systemd.serviceFacets = serviceFacets;
 }

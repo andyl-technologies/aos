@@ -16,8 +16,8 @@ in {
       inherit (readView) methods;
       guarantees = [];
       providerModule = {
-        inherit artifact;
-        path = "share/aos/providers/systemd-package-store-read-view.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "provider/systemd-package-store-read-view.nix";
       };
       desiredType = null;
       requiredFeatures = [];
