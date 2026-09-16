@@ -998,19 +998,19 @@ mod tests {
     fn checked_evidence_accepts_selected_cross_platform_identity() {
         let mut document = document();
         document.platforms.host = PlatformIdentity {
-            system: LocalKey::new("darwin").unwrap(),
-            architecture: LocalKey::new("aarch64").unwrap(),
+            system: LocalKey::new("test-host-system").unwrap(),
+            architecture: LocalKey::new("test-host-architecture").unwrap(),
         };
         document.platforms.target = PlatformIdentity {
-            system: LocalKey::new("freebsd").unwrap(),
-            architecture: LocalKey::new("riscv64").unwrap(),
+            system: LocalKey::new("test-target-system").unwrap(),
+            architecture: LocalKey::new("test-target-architecture").unwrap(),
         };
         let ArtifactConsumptionObservation::ElfStartupLinkage(observation) =
             &mut document.observation
         else {
             panic!("ELF observation fixture");
         };
-        observation.machine = "RISC-V".to_string();
+        observation.machine = "Test target machine".to_string();
 
         CheckedArtifactConsumptionEvidence::check(document).unwrap();
     }

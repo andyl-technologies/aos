@@ -454,7 +454,7 @@ in
           # This target realizes the provider-neutral boot-integrity-failure
           # milestone for the selected systemd boot platform.
           cp ${./aos-boot-integrity-failure.target} \
-            "$out/lib/systemd/system/aos-boot-identity-failure.target"
+            "$out/lib/systemd/system/aos-boot-integrity-failure.target"
 
           # Source generators must run with native Python during the cross
           # build. Retarget installed scripts to the AArch64 interpreter.

@@ -5,6 +5,7 @@ use aos_ability_model::encode_canonical;
 use serde_json::{Value, json};
 
 const EMPTY_CONTAINER: &[u8] = br#"{"platforms":[{"abilities":[],"packages":[],"platform":{"architecture":"amd64","os":"linux"},"unresolved_launch_obligations":[]}],"runtime_grants":[],"schema":"aos.container.static-abilities/v1"}"#;
+const EMPTY_BOOTABLE: &[u8] = br#"{"platforms":[{"abilities":[],"execution_stage":"host","packages":[],"platform":{"architecture":"amd64","os":"linux"},"target":{"architecture":"test-architecture","system":"test-system"},"unresolved_launch_obligations":[]}],"runtime_grants":[],"schema":"aos.boot.static-abilities/v1"}"#;
 
 fn expectation() -> StaticAbilityContractExpectation {
     StaticAbilityContractExpectation {
@@ -23,6 +24,14 @@ fn aggregate_expectation() -> StaticAbilityContractExpectation {
     StaticAbilityContractExpectation {
         artifact_class: StaticAbilityArtifactClass::Container,
         execution_stage: None,
+        platform: None,
+    }
+}
+
+fn boot_expectation() -> StaticAbilityContractExpectation {
+    StaticAbilityContractExpectation {
+        artifact_class: StaticAbilityArtifactClass::Bootable,
+        execution_stage: Some(StaticAbilityExecutionStage::Host),
         platform: None,
     }
 }
@@ -321,18 +330,32 @@ fn accepts_a_canonical_empty_container_contract() {
 
 #[test]
 fn retains_an_authenticated_target_platform() {
-    let mut contract: Value = serde_json::from_slice(EMPTY_CONTAINER).unwrap();
-    contract["platforms"][0]["target"] = json!({
-        "system": "freebsd",
-        "architecture": "riscv64",
-    });
-    let bytes = aos_contract::canonical::to_vec(&contract).unwrap();
-
-    let checked = validate_static_ability_contract(&bytes, &aggregate_expectation()).unwrap();
+    let checked = validate_static_ability_contract(EMPTY_BOOTABLE, &boot_expectation()).unwrap();
     let target = checked.platforms()[0].target.as_ref().unwrap();
 
-    assert_eq!(target.system.as_str(), "freebsd");
-    assert_eq!(target.architecture.as_str(), "riscv64");
+    assert_eq!(target.system.as_str(), "test-system");
+    assert_eq!(target.architecture.as_str(), "test-architecture");
+}
+
+#[test]
+fn rejects_missing_or_misplaced_target_platforms() {
+    let mut bootable: Value = serde_json::from_slice(EMPTY_BOOTABLE).unwrap();
+    bootable["platforms"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("target");
+    let bootable = aos_contract::canonical::to_vec(&bootable).unwrap();
+    validate_static_ability_contract(&bootable, &boot_expectation())
+        .expect_err("boot contracts must authenticate their exact target");
+
+    let mut container: Value = serde_json::from_slice(EMPTY_CONTAINER).unwrap();
+    container["platforms"][0]["target"] = json!({
+        "system": "linux",
+        "architecture": "x86_64",
+    });
+    let container = aos_contract::canonical::to_vec(&container).unwrap();
+    validate_static_ability_contract(&container, &aggregate_expectation())
+        .expect_err("container contracts cannot carry an AOS boot target");
 }
 
 #[test]
