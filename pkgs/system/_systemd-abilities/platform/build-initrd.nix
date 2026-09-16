@@ -147,10 +147,14 @@
     if config.aos.boot.preparationHandoff == null
     then throw "systemd initrd requires the exact selected boot preparation handoff"
     else config.aos.boot.preparationHandoff;
+  selectedKernel =
+    if config.aos.kernel.selected == null
+    then throw "systemd initrd requires the exact selected kernel projection"
+    else config.aos.kernel.selected;
   artifact = import ./_initrd-builder.nix {
     inherit lib runtimePackages handoff initrdNetworkDir initrdUnits;
     inherit (buildContext) mkDerivation;
-    kernel = config.system.build.kernel;
+    kernel = selectedKernel;
     kernelModulePackages = config.aos.boot.initrd.modulePackages;
     firmwarePackages = config.aos.boot.initrd.firmwarePackages;
     loadModules = config.aos.boot.initrd.loadModules;

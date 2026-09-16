@@ -1428,6 +1428,28 @@
     .users;
   selectedSystemdUsers = evaluateSystemdUsers managerSelection;
   unselectedSystemdUsers = evaluateSystemdUsers null;
+  evaluateNss = abilitySelection:
+    (lib.evalModules {
+      modules = [
+        {
+          options.environment.etc = lib.mkOption {
+            type = lib.types.attrsOf (lib.types.submodule {
+              config._module.strict = true;
+              options.text = lib.mkOption {type = lib.types.lines;};
+            });
+            default = {};
+          };
+        }
+        ../../modules/base/nsswitch.nix
+        (args:
+          import ../../pkgs/system/_systemd-abilities/platform/nsswitch.nix (
+            args // {inherit abilitySelection;}
+          ))
+      ];
+    })
+    .config;
+  selectedNss = evaluateNss managerSelection;
+  unselectedNss = evaluateNss null;
   handlerImplementation = artifact: entryPoint: {
     inherit (implementation) description interface methods guarantees requirements artifacts desiredType requiredFeatures;
     artifact = artifact;
@@ -1781,6 +1803,11 @@ in
     groups = {};
     users = {};
   };
+  assert selectedNss.aos.nsswitch.contributions ? systemd-host-resolve;
+  assert lib.hasInfix "hosts: files myhostname resolve [!UNAVAIL=return] dns" selectedNss.environment.etc."nsswitch.conf".text;
+  assert !(unselectedNss.aos.nsswitch.contributions ? systemd-host-resolve);
+  assert lib.hasInfix "hosts: files dns" unselectedNss.environment.etc."nsswitch.conf".text;
+  assert !lib.hasInfix "systemd" unselectedNss.environment.etc."nsswitch.conf".text;
   assert validExecutableRequest.config.aos.abilities.requests."authoring:executable".parameters.executable.entry_point == "bin/server";
   assert !(authoredGuarantee ? descriptor);
   assert builtins.removeAttrs
