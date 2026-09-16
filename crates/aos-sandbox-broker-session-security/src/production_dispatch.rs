@@ -10,12 +10,14 @@ use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use crate::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitResultV1,
     DormantBrokerDescriptorExecutionFailureV1, DormantBrokerExecutionErrorV1,
-    DormantBrokerExecutionFailureV1, DormantBrokerPublicationExecutionFailureV1,
-    DormantHostBrokerEffectAdapterV1, DormantHostBrokerObservationAdapterV1,
+    DormantBrokerExecutionFailureV1, DormantBrokerFailureV1,
+    DormantBrokerPublicationExecutionFailureV1, DormantHostBrokerEffectAdapterV1,
+    DormantHostBrokerObservationAdapterV1, DormantHostCatalogPublicationRecoveryProgressV1,
     DormantMountBrokerEffectAdapterV1, DormantMountBrokerInventoryAdapterV1,
     DormantMountCatalogPreparationAdapterV1, DormantNetworkBrokerEffectAdapterV1,
     DormantReceivedBrokerDescriptorRequestV1, DormantReceivedBrokerRequestV1,
-    DormantStorageBrokerEffectAdapterV1, ProtectedBrokerOutcomeCommitResultV1,
+    DormantStorageBrokerEffectAdapterV1, ProductionBrokerResponseErrorV1,
+    ProtectedBrokerOutcomeCommitResultV1,
 };
 
 /// Retains the exact commit shape produced by one Host method.
@@ -78,6 +80,109 @@ pub enum ProductionMountBrokerDispatchErrorV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Dispatches and completes one Host request through all recovery branches.
+    ///
+    /// This is the consuming production path from durably admitted Host
+    /// custody to an exact sent terminal response. It keeps catalog descriptor
+    /// readback, scope descriptor commit/finalization, ordinary observation,
+    /// and transport retry under the same authenticated session owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after consuming the session when an effect remains
+    /// unknown, exact protected recovery cannot complete, or response transport
+    /// exceeds the boot-time deadline. Such errors require reconnect and exact
+    /// replay; they never authorize generic redispatch.
+    pub async fn dispatch_host_request_to_completion(
+        mut self,
+        request: DormantReceivedBrokerDescriptorRequestV1,
+        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+        publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        let artifacts = request.authorization_artifacts().cloned();
+        let dispatched = self
+            .dispatch_host_request_and_commit(request, host, publisher)
+            .await;
+
+        match dispatched {
+            Ok(ProductionHostBrokerDispatchCommitV1::Ordinary(committed)) => {
+                self.finish_authenticated_response(committed, deadline_boottime_nanoseconds)
+            }
+            Ok(ProductionHostBrokerDispatchCommitV1::Descriptor(committed)) => {
+                let artifacts = artifacts
+                    .as_ref()
+                    .ok_or(ProductionBrokerResponseErrorV1::OutcomeRecovery)?;
+                self.finish_host_descriptor_response(
+                    committed,
+                    host,
+                    artifacts,
+                    deadline_boottime_nanoseconds,
+                )
+            }
+            Err(ProductionHostBrokerDispatchFailureV1::RequestShape(_)) => {
+                Err(ProductionBrokerResponseErrorV1::OutcomeRecovery)
+            }
+            Err(ProductionHostBrokerDispatchFailureV1::Ordinary(failure)) => {
+                self.finish_ordinary_dispatch(Err(failure), deadline_boottime_nanoseconds)
+            }
+            Err(ProductionHostBrokerDispatchFailureV1::Descriptor(failure)) => match failure {
+                DormantBrokerDescriptorExecutionFailureV1::BeforeEffect { error, request } => self
+                    .finish_ordinary_dispatch(
+                        Err::<ProtectedBrokerOutcomeCommitResultV1, _>(
+                            DormantBrokerExecutionFailureV1::<
+                                aos_sandbox_host::DormantHostBrokerCallErrorV1,
+                            >::BeforeEffect {
+                                error,
+                                request,
+                            },
+                        ),
+                        deadline_boottime_nanoseconds,
+                    ),
+                DormantBrokerDescriptorExecutionFailureV1::OutcomeUnknown { custody, .. } => {
+                    let artifacts = artifacts
+                        .as_ref()
+                        .ok_or(ProductionBrokerResponseErrorV1::OutcomeRecovery)?;
+                    let committed = self
+                        .retry_observed_host_scope_and_commit(
+                            custody,
+                            DormantHostBrokerEffectAdapterV1::new(host, artifacts),
+                        )
+                        .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?;
+                    self.finish_host_descriptor_response(
+                        committed,
+                        host,
+                        artifacts,
+                        deadline_boottime_nanoseconds,
+                    )
+                }
+            },
+            Err(ProductionHostBrokerDispatchFailureV1::Publication(failure)) => {
+                let committed = match failure {
+                    DormantBrokerPublicationExecutionFailureV1::BeforeEffect {
+                        request, ..
+                    } => self.commit_authenticated_publication_error_response(
+                        request,
+                        DormantBrokerFailureV1::InvalidRequest,
+                    )?,
+                    DormantBrokerPublicationExecutionFailureV1::OutcomeUnknown {
+                        recovery, ..
+                    } => match self.recover_host_catalog_publication(recovery, publisher) {
+                        Ok(DormantHostCatalogPublicationRecoveryProgressV1::ResponseCommit(
+                            committed,
+                        )) => committed,
+                        Ok(DormantHostCatalogPublicationRecoveryProgressV1::RetrySafe(retry)) => {
+                            self.retry_absent_host_catalog_publication(retry, publisher)
+                                .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?
+                        }
+                        Err(_) => return Err(ProductionBrokerResponseErrorV1::OutcomeRecovery),
+                    },
+                };
+                self.finish_authenticated_response(committed, deadline_boottime_nanoseconds)
+            }
+        }
+    }
+
     /// Dispatches every Host protocol method through sealed production owners.
     ///
     /// The request arrives through the mixed zero-or-one descriptor receive

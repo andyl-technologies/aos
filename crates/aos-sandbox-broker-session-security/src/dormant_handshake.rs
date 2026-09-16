@@ -614,6 +614,17 @@ impl DormantReceivedBrokerDescriptorRequestV1 {
         self.request.method()
     }
 
+    /// Returns the exact structurally validated authorization artifacts, if present.
+    ///
+    /// These remain untrusted until the sealed Host adapter authenticates the
+    /// complete signed plan and live protected authority.
+    #[must_use]
+    pub const fn authorization_artifacts(
+        &self,
+    ) -> Option<&aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts> {
+        self.request.authorization()
+    }
+
     /// Converts a descriptor-free request into ordinary broker custody.
     ///
     /// # Errors
@@ -3914,6 +3925,49 @@ impl DormantAuthenticatedBrokerSessionV1 {
             ..Default::default()
         };
         let pending = self.0.prepare_broker_outcome(&request.0, message)?;
+        Ok(self.0.commit_broker_outcome(pending))
+    }
+
+    /// Commits a terminal error for a rejected Host catalog descriptor request.
+    ///
+    /// The sole received descriptor is closed before terminal preparation, and
+    /// the signed response records its exact Host-catalog role and closed
+    /// disposition. This method cannot terminalize a request after publication
+    /// dispatch has begun.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the request is exactly `Host.PublishCatalog`
+    /// with one descriptor and the protected terminal error can be prepared.
+    pub fn commit_authenticated_publication_error_response(
+        &mut self,
+        request: DormantReceivedBrokerDescriptorRequestV1,
+        failure: DormantBrokerFailureV1,
+    ) -> Result<ProtectedBrokerOutcomeCommitResultV1, BrokerSessionSecurityError> {
+        if request.request.method() != BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
+            || request.descriptors.len() != 1
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let DormantReceivedBrokerDescriptorRequestV1 {
+            request,
+            descriptors,
+        } = request;
+        drop(descriptors);
+        let message = BrokerResponseEnvelope {
+            request_id: request.request_id().to_vec(),
+            method: request.method().into(),
+            error: Some(failure.error()?).into(),
+            request_descriptor_dispositions: vec![BrokerDescriptorDispositionEntry {
+                request_index: 0,
+                role: BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_CATALOG.into(),
+                disposition: BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED
+                    .into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let pending = self.0.prepare_broker_outcome(&request, message)?;
         Ok(self.0.commit_broker_outcome(pending))
     }
 
