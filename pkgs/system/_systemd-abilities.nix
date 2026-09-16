@@ -677,80 +677,19 @@
     fallback = null;
   };
   networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
-  networkConfigurationEffectsAlias = "systemd-network-configuration-effects";
+  networkConfigurationEffects = networkConfiguration.effects;
+  networkConfigurationEffectsAlias = networkConfigurationEffects.alias;
   networkConfigurationRealization = types.record {
     fields = {
       schema = types.enum ["aos.systemd.network-configuration-realization/v1"];
       systemd = types.artifactReference;
     };
   };
-  networkConfigurationEffectsRequest = types.taggedUnion {
-    tag = "kind";
-    variants.network-configuration = types.record {
-      fields = {
-        kind = types.enum ["network-configuration"];
-        bootstrap = {
-          type = types.optional networkConfiguration.types.bootstrap;
-          optional = true;
-        };
-      };
-    };
-  };
-  networkConfigurationEffectsObservation = types.record {
-    fields = {
-      kind = types.enum ["network-configuration"];
-      observation = networkConfiguration.observationType;
-    };
-  };
-  networkConfigurationEffectMethod = name: description: access: stopsProvider: {
-    inherit description;
-    semantics = {
-      requiredTargetAccess = access;
-      inherit stopsProvider;
-    };
-    parameters = networkConfigurationEffectsRequest;
-    targetResource = networkConfiguration.identity.name;
-    outputs.observation =
-      output
-      (if name == "observe" then "observation" else "runtime")
-      "attempt"
-      "Reports the exact terminal systemd network-configuration state."
-      networkConfigurationEffectsObservation;
-    permittedOperations = [name];
-    guarantees = [];
-    outcome = {
-      completionEvidence = networkConfigurationEffectsObservation;
-      observationEvidence = networkConfigurationEffectsObservation;
-      supportsRejectedBeforeEffect = true;
-      indeterminate = "reconcile";
-    };
-  };
-  networkConfigurationEffectsDeclaration = lib.abilities.declareInterface {
-    name = "aos.systemd.network-configuration-effects";
-    description = "Executes checked systemd-networkd effects for one provider-neutral network configuration.";
-    abi = 1;
-    requestType = networkConfigurationEffectsRequest;
-    outputs = {};
-    methods = {
-      create = networkConfigurationEffectMethod "create" "Creates and activates exact network configuration." "exclusive-write" false;
-      observe = networkConfigurationEffectMethod "observe" "Observes exact network configuration." "read" false;
-      reconcile = networkConfigurationEffectMethod "reconcile" "Repairs divergent network configuration." "exclusive-write" false;
-      remove = networkConfigurationEffectMethod "remove" "Removes exact owned network configuration." "exclusive-write" true;
-      update = networkConfigurationEffectMethod "update" "Updates exact network configuration." "exclusive-write" false;
-    };
-    lifecycle = networkConfiguration.declaration.lifecycle;
-    aggregation = networkConfiguration.declaration.aggregation // {controllerGroup = networkConfigurationEffectsAlias;};
-    configurationType = null;
-    guarantees = [];
-  };
-  networkConfigurationEffectsIdentity = lib.abilities.interfaceIdentity (
-    lib.abilities.interfaceDocumentFromDeclaration networkConfigurationEffectsDeclaration
-  );
   networkConfigurationEffectsRequirement = {
     alias = "network-configuration-effects";
-    description = "Selects the checked lower systemd network-configuration effect handler.";
-    accepted_interfaces = [networkConfigurationEffectsIdentity];
-    methods = ["create" "observe" "reconcile" "remove" "update"];
+    description = "Selects the checked lower provider-neutral network-configuration effect handler.";
+    accepted_interfaces = [networkConfigurationEffects.identity];
+    inherit (networkConfigurationEffects) methods;
     guarantees = [];
     strength = "required";
     fallback = null;
@@ -1339,7 +1278,7 @@ in {
       systemd-packaged-unit-effects = packagedUnitEffectsDeclaration;
       systemd-manager-watchdog = managerWatchdogDeclaration;
       systemd-manager-watchdog-effects = managerWatchdogEffectsDeclaration;
-      ${networkConfigurationEffectsAlias} = networkConfigurationEffectsDeclaration;
+      ${networkConfigurationEffectsAlias} = networkConfigurationEffects.declaration;
       systemd-service-effects = serviceEffectsDeclaration;
     }
     // builtins.listToAttrs (builtins.map (selected: {
@@ -1383,7 +1322,7 @@ in {
           description = "Executes checked terminal systemd manager-watchdog effects.";
           interface = "systemd-manager-watchdog-effects";
           artifact = handlerArtifact;
-          methods = ["create" "observe" "reconcile" "remove" "update"];
+          inherit (networkConfigurationEffects) methods;
           guarantees = [];
           handlerDescriptor = {
             artifact = handlerArtifact;
@@ -1412,13 +1351,13 @@ in {
           description = "Executes checked systemd-networkd configuration and metadata-seed convergence.";
           interface = networkConfigurationEffectsAlias;
           artifact = handlerArtifact;
-          methods = ["create" "observe" "reconcile" "remove" "update"];
+          inherit (networkConfigurationEffects) methods;
           guarantees = [];
           handlerDescriptor = {
             artifact = handlerArtifact;
             entryPoint = "bin/aos-systemd-network-configuration-effects";
-            arguments = networkConfigurationEffectsRequest;
-            result = networkConfigurationEffectsObservation;
+            arguments = networkConfigurationEffects.requestType;
+            result = networkConfigurationEffects.observationType;
           };
           desiredType = null;
           requiredFeatures = [];

@@ -215,6 +215,48 @@
   };
   document = interfaceDocumentFromDeclaration declaration;
   identity = interfaceIdentity document;
+  effectsAlias = "network-configuration-effects";
+  effectsMethod = name: description: access: stopsProvider: {
+    inherit description;
+    semantics = {
+      requiredTargetAccess = access;
+      inherit stopsProvider;
+    };
+    parameters = applyInputType;
+    targetResource = interfaceName;
+    outputs.observation =
+      output
+      (if name == "observe" then "observation" else "runtime")
+      "attempt"
+      "Reports the exact terminal network-configuration state."
+      observationType;
+    permittedOperations = [name];
+    guarantees = [];
+    outcome = {
+      completionEvidence = observationType;
+      observationEvidence = observationType;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+  effectsDeclaration = declareInterface {
+    name = "aos.network.configuration-effects";
+    description = "Executes one selected backend's checked effects for a provider-neutral host network configuration.";
+    abi = 1;
+    requestType = applyInputType;
+    outputs = {};
+    methods = {
+      apply = effectsMethod "apply" "Applies a persistent policy with optional authorized early-network input." "exclusive-write" false;
+      observe = effectsMethod "observe" "Observes the exact applied host network state." "read" false;
+      remove = effectsMethod "remove" "Removes the exact owned host network state." "exclusive-write" true;
+    };
+    inherit lifecycle;
+    aggregation = aggregation // {controllerGroup = effectsAlias;};
+    configurationType = null;
+    guarantees = [];
+  };
+  effectsDocument = interfaceDocumentFromDeclaration effectsDeclaration;
+  effectsIdentity = interfaceIdentity effectsDocument;
 in {
   interface = {
     inherit alias declaration document identity observationType realizationType;
@@ -225,6 +267,18 @@ in {
       applyInput = applyInputType;
     };
     methods = builtins.attrNames methods;
+    effects = {
+      alias = effectsAlias;
+      declaration = effectsDeclaration;
+      document = effectsDocument;
+      identity = effectsIdentity;
+      methods = builtins.attrNames effectsDeclaration.methods;
+      requestType = applyInputType;
+      inherit observationType;
+    };
   };
-  declarations.${alias} = declaration;
+  declarations = {
+    ${alias} = declaration;
+    ${effectsAlias} = effectsDeclaration;
+  };
 }

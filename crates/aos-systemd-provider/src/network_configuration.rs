@@ -14,10 +14,7 @@ use aos_ability_model::{
     AbilityValue, AccessMode, LocalKey, MethodReference, MethodSemantics, ResourceReference,
 };
 use aos_contract::Sha256Digest;
-use aos_net::{
-    Addressing, BootstrapNetwork, LinkSelector, NetworkApplyInput, NetworkAuthority,
-    NetworkConfiguration, NetworkLink, ResolverConfiguration,
-};
+use aos_net::{BootstrapLinkSelector, BootstrapNetwork};
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, INVOCATION_SCHEMA, Invocation, InvocationDisposition,
@@ -26,17 +23,84 @@ use aos_provider_protocol::{
     validate_resource_contexts,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use tempfile::NamedTempFile;
 use tokio::process::Command;
 
 use crate::{decode_value, target_context, value};
 
-pub(crate) const EFFECTS_INTERFACE_NAME: &str = "aos.systemd.network-configuration-effects";
+pub(crate) const EFFECTS_INTERFACE_NAME: &str = "aos.network.configuration-effects";
 pub(crate) const REALIZATION_SCHEMA: &str = "aos.systemd.network-configuration-realization/v1";
 pub(crate) const STATIC_INPUT_SCHEMA: &str = "aos.systemd.network-configuration-static-input/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.network-configuration-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.systemd.network-configuration-context/v1";
 const SEED_RELATIVE_PATH: &str = "systemd/network/10-aos-seed.network";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NetworkAuthority {
+    Image,
+    Operator,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LinkSelector {
+    Name(String),
+    Mac(String),
+    Ethernet,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Addressing {
+    dhcp: bool,
+    addresses: Vec<String>,
+    gateway: Option<String>,
+    dns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NetworkLink {
+    Ethernet {
+        name: LocalKey,
+        selector: LinkSelector,
+        addressing: Addressing,
+    },
+    Vlan {
+        name: LocalKey,
+        parent: LinkSelector,
+        id: u16,
+        addressing: Addressing,
+    },
+    Bond {
+        name: LocalKey,
+        members: Vec<LinkSelector>,
+        mode: String,
+        addressing: Addressing,
+    },
+}
+
+impl NetworkLink {
+    fn name(&self) -> &LocalKey {
+        match self {
+            Self::Ethernet { name, .. } | Self::Vlan { name, .. } | Self::Bond { name, .. } => name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolverConfiguration {
+    enabled: bool,
+    nameservers: Vec<String>,
+    search: Vec<String>,
+    dnssec: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NetworkConfiguration {
+    authority: NetworkAuthority,
+    links: Vec<NetworkLink>,
+    resolver: ResolverConfiguration,
+    prerequisites: Vec<ResourceReference>,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -56,51 +120,20 @@ pub(crate) struct NetworkConfigurationRealization {
     systemd: TaggedArtifactReference,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct StaticNetworkConfiguration {
-    pub(crate) schema: String,
-    pub(crate) desired: NetworkConfiguration,
-    pub(crate) realization: NetworkConfigurationRealization,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-enum EffectsRequest {
-    NetworkConfiguration {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        bootstrap: Option<BootstrapNetwork>,
-    },
-}
-
-impl EffectsRequest {
-    fn apply_input(&self) -> NetworkApplyInput {
-        match self {
-            Self::NetworkConfiguration { bootstrap } => NetworkApplyInput {
-                bootstrap: bootstrap.clone(),
-            },
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct NetworkObservation {
     schema: String,
     expected: NetworkConfiguration,
-    #[serde(skip_serializing_if = "Option::is_none")]
     applied_bootstrap: Option<BootstrapNetwork>,
     state: NetworkState,
     discrepancies: Vec<LocalKey>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum NetworkState {
     Absent,
     Ready,
     Drifted,
-    Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -120,9 +153,22 @@ pub(crate) fn supports(method: &MethodReference) -> bool {
     method.interface.name.as_str() == EFFECTS_INTERFACE_NAME
 }
 
-pub(crate) fn render_static(input: StaticNetworkConfiguration, output: &Path) -> Result<()> {
-    require_realization(&input.realization)?;
-    let rendered = render(&input.desired)?;
+pub(crate) fn render_static(value: Value, output: &Path) -> Result<()> {
+    let document = object(&value, "static network-configuration input")?;
+    if text_field(document, "schema")? != STATIC_INPUT_SCHEMA {
+        bail!("unsupported static network-configuration input schema");
+    }
+    let desired = ability_value_field(document, "desired")?;
+    let desired = network_configuration_from_validated(&desired)?;
+    let realization = serde_json::from_value(
+        document
+            .get("realization")
+            .context("static network-configuration input has no realization")?
+            .clone(),
+    )
+    .context("decoding systemd network-configuration realization")?;
+    require_realization(&realization)?;
+    let rendered = render(&desired)?;
 
     for (relative, bytes) in rendered.files {
         let destination = output.join("etc").join(relative);
@@ -135,6 +181,166 @@ pub(crate) fn render_static(input: StaticNetworkConfiguration, output: &Path) ->
     Ok(())
 }
 
+fn network_configuration_from_validated(value: &AbilityValue) -> Result<NetworkConfiguration> {
+    let document = object(value.as_json(), "validated network configuration")?;
+    let authority = match text_field(document, "authority")? {
+        "image" => NetworkAuthority::Image,
+        "operator" => NetworkAuthority::Operator,
+        _ => bail!("validated network configuration has an unknown authority"),
+    };
+    let links = array_field(document, "links")?
+        .iter()
+        .map(network_link_from_validated)
+        .collect::<Result<Vec<_>>>()?;
+    let resolver = resolver_from_validated(field(document, "resolver")?)?;
+    let prerequisites = serde_json::from_value(field(document, "prerequisites")?.clone())
+        .context("projecting validated network prerequisites")?;
+
+    Ok(NetworkConfiguration {
+        authority,
+        links,
+        resolver,
+        prerequisites,
+    })
+}
+
+fn network_link_from_validated(value: &Value) -> Result<NetworkLink> {
+    let document = object(value, "validated network link")?;
+    let name = LocalKey::new(text_field(document, "name")?)?;
+    let addressing = addressing_from_validated(field(document, "addressing")?)?;
+    match text_field(document, "kind")? {
+        "ethernet" => Ok(NetworkLink::Ethernet {
+            name,
+            selector: selector_from_validated(field(document, "selector")?)?,
+            addressing,
+        }),
+        "vlan" => {
+            let id = field(document, "id")?
+                .as_u64()
+                .and_then(|value| u16::try_from(value).ok())
+                .context("validated VLAN id is not an unsigned 16-bit integer")?;
+            Ok(NetworkLink::Vlan {
+                name,
+                parent: selector_from_validated(field(document, "parent")?)?,
+                id,
+                addressing,
+            })
+        }
+        "bond" => Ok(NetworkLink::Bond {
+            name,
+            members: array_field(document, "members")?
+                .iter()
+                .map(selector_from_validated)
+                .collect::<Result<Vec<_>>>()?,
+            mode: text_field(document, "mode")?.to_string(),
+            addressing,
+        }),
+        _ => bail!("validated network link has an unknown kind"),
+    }
+}
+
+fn selector_from_validated(value: &Value) -> Result<LinkSelector> {
+    let document = object(value, "validated network selector")?;
+    match text_field(document, "kind")? {
+        "name" => Ok(LinkSelector::Name(
+            text_field(document, "value")?.to_string(),
+        )),
+        "mac" => Ok(LinkSelector::Mac(
+            text_field(document, "value")?.to_string(),
+        )),
+        "ethernet" => Ok(LinkSelector::Ethernet),
+        _ => bail!("validated network selector has an unknown kind"),
+    }
+}
+
+fn addressing_from_validated(value: &Value) -> Result<Addressing> {
+    let document = object(value, "validated network addressing")?;
+    Ok(Addressing {
+        dhcp: field(document, "dhcp")?
+            .as_bool()
+            .context("validated network DHCP field is not Boolean")?,
+        addresses: string_list_field(document, "addresses")?,
+        gateway: optional_text_field(document, "gateway")?,
+        dns: string_list_field(document, "dns")?,
+    })
+}
+
+fn resolver_from_validated(value: &Value) -> Result<ResolverConfiguration> {
+    let document = object(value, "validated network resolver")?;
+    Ok(ResolverConfiguration {
+        enabled: field(document, "enabled")?
+            .as_bool()
+            .context("validated network resolver enabled field is not Boolean")?,
+        nameservers: string_list_field(document, "nameservers")?,
+        search: string_list_field(document, "search")?,
+        dnssec: text_field(document, "dnssec")?.to_string(),
+    })
+}
+
+fn bootstrap_from_apply_input(value: &AbilityValue) -> Result<Option<BootstrapNetwork>> {
+    let document = object(value.as_json(), "validated network apply input")?;
+    let Some(bootstrap) = document.get("bootstrap").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let bootstrap = AbilityValue::new(bootstrap.clone())
+        .context("projecting validated network bootstrap input")?;
+    BootstrapNetwork::from_validated(&bootstrap).map(Some)
+}
+
+fn ability_value_field(document: &Map<String, Value>, name: &str) -> Result<AbilityValue> {
+    AbilityValue::new(field(document, name)?.clone())
+        .with_context(|| format!("projecting validated network {name}"))
+}
+
+fn object<'a>(value: &'a Value, context: &str) -> Result<&'a Map<String, Value>> {
+    value
+        .as_object()
+        .with_context(|| format!("{context} is not an object"))
+}
+
+fn field<'a>(document: &'a Map<String, Value>, name: &str) -> Result<&'a Value> {
+    document
+        .get(name)
+        .with_context(|| format!("validated network value has no {name} field"))
+}
+
+fn text_field<'a>(document: &'a Map<String, Value>, name: &str) -> Result<&'a str> {
+    field(document, name)?
+        .as_str()
+        .with_context(|| format!("validated network {name} field is not text"))
+}
+
+fn optional_text_field(document: &Map<String, Value>, name: &str) -> Result<Option<String>> {
+    document
+        .get(name)
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .with_context(|| format!("validated network {name} field is not text"))
+        })
+        .transpose()
+}
+
+fn array_field<'a>(document: &'a Map<String, Value>, name: &str) -> Result<&'a Vec<Value>> {
+    field(document, name)?
+        .as_array()
+        .with_context(|| format!("validated network {name} field is not a list"))
+}
+
+fn string_list_field(document: &Map<String, Value>, name: &str) -> Result<Vec<String>> {
+    array_field(document, name)?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .with_context(|| format!("validated network {name} item is not text"))
+        })
+        .collect()
+}
+
 pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         bail!("unsupported admission request schema");
@@ -143,7 +349,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     require_method(&request.method, &request.semantics)?;
     validate_resource_contexts(&request.resources)?;
 
-    let expected: NetworkConfiguration = decode_value(&request.resource_spec.value)?;
+    let expected = network_configuration_from_validated(&request.resource_spec.value)?;
     require_resource_contexts(&expected.prerequisites, &request.resources)?;
     let realization: NetworkConfigurationRealization =
         decode_value(&request.resource_spec.realization)?;
@@ -196,10 +402,9 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
 
     let target = target_context(&invocation)?;
     let bound = validate_resource_context(target)?;
-    let expected: NetworkConfiguration = decode_value(&bound.resource_spec.value)?;
-    let effect: EffectsRequest = decode_value(&invocation.request.inputs)?;
-    let apply_input = effect.apply_input();
-    validate_apply_input(&expected, &apply_input)?;
+    let expected = network_configuration_from_validated(&bound.resource_spec.value)?;
+    let bootstrap = bootstrap_from_apply_input(&invocation.request.inputs)?;
+    validate_apply_input(&expected, bootstrap.as_ref())?;
     require_resource_contexts(&expected.prerequisites, &invocation.request.resources)?;
     let realization: NetworkConfigurationRealization =
         decode_value(&bound.resource_spec.realization)?;
@@ -213,12 +418,12 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     let removing = method == "remove";
     let mutate = invocation.purpose == InvocationPurpose::Effect
         || (invocation.purpose == InvocationPurpose::Reconcile
-            && matches!(method, "create" | "update" | "remove" | "reconcile"));
+            && matches!(method, "apply" | "remove"));
     if mutate {
         converge_seed(
             Path::new("/var/etc"),
             &expected.authority,
-            apply_input.bootstrap.as_ref(),
+            bootstrap.as_ref(),
         )?;
         reload_networkd(&realization).await?;
     }
@@ -232,11 +437,11 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     let seed_matches = seed_matches(
         Path::new("/var/etc"),
         &expected.authority,
-        apply_input.bootstrap.as_ref(),
+        bootstrap.as_ref(),
     )?;
     let raw = observation(
         &expected,
-        apply_input.bootstrap.as_ref(),
+        bootstrap.as_ref(),
         configuration_matches,
         seed_matches,
         removing,
@@ -261,7 +466,7 @@ fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Resu
     let expected = match method.method.as_str() {
         "observe" => MethodSemantics::ordinary(AccessMode::Read),
         "remove" => MethodSemantics::provider_stop(),
-        "create" | "reconcile" | "update" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+        "apply" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         _ => bail!("handler invocation selects an unsupported network method"),
     };
     if *semantics != expected {
@@ -349,16 +554,15 @@ fn validate_configuration(configuration: &NetworkConfiguration) -> Result<()> {
 
 fn validate_apply_input(
     configuration: &NetworkConfiguration,
-    input: &NetworkApplyInput,
+    bootstrap: Option<&BootstrapNetwork>,
 ) -> Result<()> {
-    if let Some(bootstrap) = &input.bootstrap {
+    if let Some(bootstrap) = bootstrap {
         if configuration.authority != NetworkAuthority::Image {
             bail!("only image-owned network policy may carry an early bootstrap result");
         }
         if bootstrap.addresses.is_empty() {
             bail!("bootstrap network requires at least one address");
         }
-        validate_exact_selector(&bootstrap.selector)?;
     }
     Ok(())
 }
@@ -369,13 +573,6 @@ fn validate_addressing(addressing: &Addressing) -> Result<()> {
     }
     if !addressing.dhcp && addressing.addresses.is_empty() {
         bail!("network link requires DHCP or at least one static address");
-    }
-    Ok(())
-}
-
-fn validate_exact_selector(selector: &LinkSelector) -> Result<()> {
-    if matches!(selector, LinkSelector::Ethernet) {
-        bail!("bootstrap network requires an exact link selector");
     }
     Ok(())
 }
@@ -412,14 +609,7 @@ fn render_link(link: &NetworkLink, files: &mut BTreeMap<PathBuf, Vec<u8>>) -> Re
             insert_file(
                 files,
                 format!("systemd/network/10-{name}.network"),
-                render_network(
-                    &LinkSelector::Name {
-                        value: name.to_string(),
-                    },
-                    addressing,
-                    &[],
-                    &[],
-                ),
+                render_network(&LinkSelector::Name(name.to_string()), addressing, &[], &[]),
             )?;
             insert_file(
                 files,
@@ -443,14 +633,7 @@ fn render_link(link: &NetworkLink, files: &mut BTreeMap<PathBuf, Vec<u8>>) -> Re
             insert_file(
                 files,
                 format!("systemd/network/10-{name}.network"),
-                render_network(
-                    &LinkSelector::Name {
-                        value: name.to_string(),
-                    },
-                    addressing,
-                    &[],
-                    &[],
-                ),
+                render_network(&LinkSelector::Name(name.to_string()), addressing, &[], &[]),
             )?;
             for (index, member) in members.iter().enumerate() {
                 insert_file(
@@ -508,8 +691,8 @@ fn render_network(
 
 fn render_selector(output: &mut String, selector: &LinkSelector) {
     match selector {
-        LinkSelector::Name { value } => output.push_str(&format!("Name={value}\n")),
-        LinkSelector::Mac { value } => output.push_str(&format!("MACAddress={value}\n")),
+        LinkSelector::Name(value) => output.push_str(&format!("Name={value}\n")),
+        LinkSelector::Mac(value) => output.push_str(&format!("MACAddress={value}\n")),
         LinkSelector::Ethernet => output.push_str("Name=en*\nType=ether\n"),
     }
 }
@@ -530,8 +713,12 @@ fn render_resolver(resolver: &ResolverConfiguration) -> String {
 }
 
 fn render_bootstrap(bootstrap: &BootstrapNetwork) -> String {
+    let selector = match &bootstrap.selector {
+        BootstrapLinkSelector::Name(value) => LinkSelector::Name(value.clone()),
+        BootstrapLinkSelector::Mac(value) => LinkSelector::Mac(value.clone()),
+    };
     render_network(
-        &bootstrap.selector,
+        &selector,
         &Addressing {
             dhcp: false,
             addresses: bootstrap.addresses.clone(),
@@ -700,10 +887,192 @@ fn observation(
 }
 
 fn effect_observation(observation: &NetworkObservation) -> Result<AbilityValue> {
-    value(&serde_json::json!({
-        "kind": "network-configuration",
-        "observation": observation,
-    }))
+    let mut document = Map::new();
+    document.insert(
+        "schema".to_string(),
+        Value::String(observation.schema.clone()),
+    );
+    document.insert(
+        "expected".to_string(),
+        network_configuration_to_json(&observation.expected)?,
+    );
+    if let Some(bootstrap) = &observation.applied_bootstrap {
+        document.insert(
+            "applied_bootstrap".to_string(),
+            bootstrap.clone().into_json(),
+        );
+    }
+    document.insert(
+        "state".to_string(),
+        Value::String(
+            match observation.state {
+                NetworkState::Absent => "absent",
+                NetworkState::Ready => "ready",
+                NetworkState::Drifted => "drifted",
+            }
+            .to_string(),
+        ),
+    );
+    document.insert(
+        "discrepancies".to_string(),
+        Value::Array(
+            observation
+                .discrepancies
+                .iter()
+                .map(|value| Value::String(value.to_string()))
+                .collect(),
+        ),
+    );
+    AbilityValue::new(Value::Object(document)).context("encoding network observation")
+}
+
+fn network_configuration_to_json(configuration: &NetworkConfiguration) -> Result<Value> {
+    let mut document = Map::new();
+    document.insert(
+        "authority".to_string(),
+        Value::String(
+            match configuration.authority {
+                NetworkAuthority::Image => "image",
+                NetworkAuthority::Operator => "operator",
+            }
+            .to_string(),
+        ),
+    );
+    document.insert(
+        "links".to_string(),
+        Value::Array(
+            configuration
+                .links
+                .iter()
+                .map(network_link_to_json)
+                .collect::<Result<Vec<_>>>()?,
+        ),
+    );
+    document.insert(
+        "resolver".to_string(),
+        resolver_to_json(&configuration.resolver),
+    );
+    document.insert(
+        "prerequisites".to_string(),
+        serde_json::to_value(&configuration.prerequisites)
+            .context("encoding network prerequisites")?,
+    );
+    Ok(Value::Object(document))
+}
+
+fn network_link_to_json(link: &NetworkLink) -> Result<Value> {
+    let (kind, name, selector_name, selector, addressing, extra) = match link {
+        NetworkLink::Ethernet {
+            name,
+            selector,
+            addressing,
+        } => ("ethernet", name, "selector", selector, addressing, None),
+        NetworkLink::Vlan {
+            name,
+            parent,
+            id,
+            addressing,
+        } => (
+            "vlan",
+            name,
+            "parent",
+            parent,
+            addressing,
+            Some(("id", Value::from(*id))),
+        ),
+        NetworkLink::Bond {
+            name,
+            members,
+            mode,
+            addressing,
+        } => {
+            let mut document = common_link_json("bond", name, addressing);
+            document.insert(
+                "members".to_string(),
+                Value::Array(members.iter().map(selector_to_json).collect()),
+            );
+            document.insert("mode".to_string(), Value::String(mode.clone()));
+            return Ok(Value::Object(document));
+        }
+    };
+    let mut document = common_link_json(kind, name, addressing);
+    document.insert(selector_name.to_string(), selector_to_json(selector));
+    if let Some((name, value)) = extra {
+        document.insert(name.to_string(), value);
+    }
+    Ok(Value::Object(document))
+}
+
+fn common_link_json(kind: &str, name: &LocalKey, addressing: &Addressing) -> Map<String, Value> {
+    let mut document = Map::new();
+    document.insert("kind".to_string(), Value::String(kind.to_string()));
+    document.insert("name".to_string(), Value::String(name.to_string()));
+    document.insert("addressing".to_string(), addressing_to_json(addressing));
+    document
+}
+
+fn selector_to_json(selector: &LinkSelector) -> Value {
+    let mut document = Map::new();
+    match selector {
+        LinkSelector::Name(value) => {
+            document.insert("kind".to_string(), Value::String("name".to_string()));
+            document.insert("value".to_string(), Value::String(value.clone()));
+        }
+        LinkSelector::Mac(value) => {
+            document.insert("kind".to_string(), Value::String("mac".to_string()));
+            document.insert("value".to_string(), Value::String(value.clone()));
+        }
+        LinkSelector::Ethernet => {
+            document.insert("kind".to_string(), Value::String("ethernet".to_string()));
+        }
+    }
+    Value::Object(document)
+}
+
+fn addressing_to_json(addressing: &Addressing) -> Value {
+    let mut document = Map::new();
+    document.insert("dhcp".to_string(), Value::Bool(addressing.dhcp));
+    document.insert(
+        "addresses".to_string(),
+        Value::Array(
+            addressing
+                .addresses
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    if let Some(gateway) = &addressing.gateway {
+        document.insert("gateway".to_string(), Value::String(gateway.clone()));
+    }
+    document.insert(
+        "dns".to_string(),
+        Value::Array(addressing.dns.iter().cloned().map(Value::String).collect()),
+    );
+    Value::Object(document)
+}
+
+fn resolver_to_json(resolver: &ResolverConfiguration) -> Value {
+    let mut document = Map::new();
+    document.insert("enabled".to_string(), Value::Bool(resolver.enabled));
+    document.insert(
+        "nameservers".to_string(),
+        Value::Array(
+            resolver
+                .nameservers
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    document.insert(
+        "search".to_string(),
+        Value::Array(resolver.search.iter().cloned().map(Value::String).collect()),
+    );
+    document.insert("dnssec".to_string(), Value::String(resolver.dnssec.clone()));
+    Value::Object(document)
 }
 
 #[cfg(test)]
@@ -712,14 +1081,12 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use aos_net::{
-        Addressing, BootstrapNetwork, LinkSelector, NetworkAuthority, NetworkConfiguration,
-        NetworkLink, ResolverConfiguration,
-    };
+    use aos_net::{BootstrapLinkSelector, BootstrapNetwork};
 
     use super::{
-        NetworkConfigurationRealization, Sha256Digest, StaticNetworkConfiguration, converge_seed,
-        render, render_static,
+        Addressing, LinkSelector, NetworkAuthority, NetworkConfiguration,
+        NetworkConfigurationRealization, NetworkLink, ResolverConfiguration, Sha256Digest,
+        converge_seed, network_configuration_to_json, render, render_static,
     };
 
     fn configuration(authority: NetworkAuthority) -> NetworkConfiguration {
@@ -727,9 +1094,7 @@ mod tests {
             authority,
             links: vec![NetworkLink::Ethernet {
                 name: aos_ability_model::LocalKey::new("host").expect("valid key"),
-                selector: LinkSelector::Mac {
-                    value: "02:00:00:00:00:01".to_string(),
-                },
+                selector: LinkSelector::Mac("02:00:00:00:00:01".to_string()),
                 addressing: Addressing {
                     dhcp: false,
                     addresses: vec!["192.0.2.10/24".to_string()],
@@ -749,9 +1114,7 @@ mod tests {
 
     fn bootstrap() -> BootstrapNetwork {
         BootstrapNetwork {
-            selector: LinkSelector::Mac {
-                value: "02:00:00:00:00:01".to_string(),
-            },
+            selector: BootstrapLinkSelector::Mac("02:00:00:00:00:01".to_string()),
             addresses: vec!["198.51.100.10/24".to_string()],
             gateway: Some("198.51.100.1".to_string()),
             dns: vec!["198.51.100.53".to_string()],
@@ -779,20 +1142,23 @@ mod tests {
     #[test]
     fn static_configuration_materializes_an_etc_tree() {
         let output = TempDir::new().expect("temporary output");
-        let input = StaticNetworkConfiguration {
-            schema: super::STATIC_INPUT_SCHEMA.to_string(),
-            desired: configuration(NetworkAuthority::Operator),
-            realization: NetworkConfigurationRealization {
-                schema: super::REALIZATION_SCHEMA.to_string(),
-                systemd: super::TaggedArtifactReference {
-                    value_type: "aos-artifact-reference".to_string(),
-                    content: Sha256Digest::from_bytes([1; 32]),
-                    store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd".to_string(),
-                    nar_hash: Sha256Digest::from_bytes([2; 32]),
-                    closure: Sha256Digest::from_bytes([3; 32]),
-                },
+        let desired = network_configuration_to_json(&configuration(NetworkAuthority::Operator))
+            .expect("semantic network value");
+        let realization = NetworkConfigurationRealization {
+            schema: super::REALIZATION_SCHEMA.to_string(),
+            systemd: super::TaggedArtifactReference {
+                value_type: "aos-artifact-reference".to_string(),
+                content: Sha256Digest::from_bytes([1; 32]),
+                store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd".to_string(),
+                nar_hash: Sha256Digest::from_bytes([2; 32]),
+                closure: Sha256Digest::from_bytes([3; 32]),
             },
         };
+        let input = serde_json::json!({
+            "schema": super::STATIC_INPUT_SCHEMA,
+            "desired": desired,
+            "realization": realization,
+        });
 
         render_static(input, output.path()).expect("static render succeeds");
 

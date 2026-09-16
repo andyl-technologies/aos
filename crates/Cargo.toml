@@ -230,7 +230,7 @@ aos-core = { path = "aos-core" }
 aos-oci-types = { path = "aos-oci-types" }
 aos-oci = { path = "aos-oci" }
 aos-boot-identity = { path = "aos-boot-identity" }
-aos-net = { path = "aos-net" }
+aos-net = { path = "aos-net", default-features = false }
 aos-proto = { path = "aos-proto" }
 aos-proto-types = { path = "aos-proto-types" }
 aos-server = { path = "aos-server" }
