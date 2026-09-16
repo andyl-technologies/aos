@@ -13,10 +13,9 @@ use crate::registry_ops::images::PublishedImage;
 use crate::registry_ops::provenance::bind_documentation_provenance;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::types::{
-    AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1,
-    FEATURE_ATTESTATION_V1, FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
-    PACKAGE_META_FORMAT, PackageContractMeta, validate_attestation_meta,
-    validate_documentation_artifact_meta,
+    AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ATTESTATION_V1,
+    FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, PACKAGE_META_FORMAT,
+    PackageContractMeta, validate_attestation_meta, validate_documentation_artifact_meta,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeSet, HashSet};
@@ -353,9 +352,15 @@ pub(crate) fn record_package_contract(
         .and_then(toml::Value::as_table_mut)
         .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
 
-    let mut features = BTreeSet::from([FEATURE_ABILITIES_V1.to_string()]);
-    if aos_ability_validate::package_uses_effects(package_document) {
-        features.insert(FEATURE_ABILITY_EFFECTS_V1.to_string());
+    let features = package_document
+        .required_features
+        .iter()
+        .map(|feature| feature.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+    if !features.contains(FEATURE_ABILITIES_V1) {
+        bail!(
+            "package {name} {version} contract does not declare its authenticated ability feature"
+        );
     }
     merge_feature_gate(platform_entry, "requires-features", &features)?;
     merge_minimum_format(platform_entry, "platform")?;

@@ -41,21 +41,15 @@ pub const FEATURE_PACKAGE_DOCUMENTATION_V1: &str = "package-documentation-v1";
 /// Registry feature flag for opaque provider-owned image artifact contracts.
 pub const FEATURE_IMAGE_ARTIFACT_CONTRACT_V1: &str = "image-artifact-contract-v1";
 
-/// Registry feature flag for an authenticated RFC-0022 ability manifest.
-pub const FEATURE_ABILITIES_V1: &str = "abilities-v1";
-
-/// Registry feature flag for RFC-0022 structured effect activation.
-pub const FEATURE_ABILITY_EFFECTS_V1: &str = "ability-effects-v1";
+pub use aos_ability_model::{FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1};
 
 /// Names the retained derivation output containing an ability manifest.
 pub const PACKAGE_CONTRACT_OUTPUT: &str = "contract";
 
-const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
+const SUPPORTED_NON_CONTRACT_FEATURES: &[&str] = &[
     FEATURE_ATTESTATION_V1,
     FEATURE_PACKAGE_DOCUMENTATION_V1,
     FEATURE_IMAGE_ARTIFACT_CONTRACT_V1,
-    FEATURE_ABILITIES_V1,
-    FEATURE_ABILITY_EFFECTS_V1,
 ];
 
 // ---------------------------------------------------------------------------
@@ -531,7 +525,28 @@ pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
 /// `CAP_SYS_MODULE` inside the workload instead of using the host-fulfilled
 /// `kernel-modules` permission.
 pub fn validate_supported_package_meta(meta: &PackageMeta) -> Result<()> {
-    validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, SUPPORTED_PACKAGE_FEATURES)
+    let supported_features = supported_package_features()?;
+    let supported_features = supported_features
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+
+    validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, &supported_features)
+}
+
+fn supported_package_features() -> Result<Vec<String>> {
+    let mut features = SUPPORTED_NON_CONTRACT_FEATURES
+        .iter()
+        .map(|feature| (*feature).to_string())
+        .collect::<Vec<_>>();
+    features.extend(
+        aos_ability_validate::package_source_supported_features()?
+            .into_iter()
+            .map(|feature| feature.as_str().to_string()),
+    );
+    features.sort();
+    features.dedup();
+    Ok(features)
 }
 
 /// Validate a package metadata entry against an explicit format/feature set.
@@ -3428,9 +3443,10 @@ pin = "v2026.02"
         validate_supported_package_meta(&meta)
             .expect("the current package reader understands native image rollouts");
 
-        let pre_change_features = SUPPORTED_PACKAGE_FEATURES
+        let supported_features = supported_package_features().expect("supported package features");
+        let pre_change_features = supported_features
             .iter()
-            .copied()
+            .map(String::as_str)
             .filter(|feature| *feature != FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)
             .collect::<Vec<_>>();
         let error =
@@ -3441,6 +3457,21 @@ pin = "v2026.02"
                 .to_string()
                 .contains(FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)
         );
+    }
+
+    #[test]
+    fn package_reader_features_include_the_shared_contract_reader_surface() {
+        let supported = supported_package_features().expect("supported package features");
+        let package_features = aos_ability_validate::package_source_supported_features()
+            .expect("package contract reader features");
+
+        for feature in package_features {
+            assert!(
+                supported
+                    .iter()
+                    .any(|candidate| candidate == feature.as_str())
+            );
+        }
     }
     fn sample_package_meta() -> PackageMeta {
         PackageMeta {

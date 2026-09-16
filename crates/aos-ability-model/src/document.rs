@@ -318,6 +318,9 @@ impl InterfaceDocument {
     }
 }
 
+/// Names the package-reader feature for authenticated ability contracts.
+pub const FEATURE_ABILITIES_V1: &str = "abilities-v1";
+
 /// Names the package-reader feature for package-owned effect implementations.
 pub const FEATURE_ABILITY_EFFECTS_V1: &str = "ability-effects-v1";
 

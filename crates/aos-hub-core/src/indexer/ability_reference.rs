@@ -229,7 +229,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use aos_ability_model::{
-        ArtifactReference, ExportDeclaration, ModuleLocator, PackageDocument,
+        ArtifactReference, ExportDeclaration, GuaranteeDeclaration, ModuleLocator, PackageDocument,
         PackageImplementation, ProviderImplementation, RelativePath, RequiredFeature,
         VersionedDocument, decode_canonical, encode_canonical,
     };
@@ -280,9 +280,10 @@ mod tests {
         Sha256Digest,
         Sha256Digest,
         Sha256Digest,
+        PackageDocument,
     ) {
         let features = BTreeSet::from([
-            RequiredFeature::new("abilities-v1").expect("valid feature"),
+            RequiredFeature::new(aos_ability_model::FEATURE_ABILITIES_V1).expect("valid feature"),
             RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
                 .expect("valid effect feature"),
         ]);
@@ -294,6 +295,16 @@ mod tests {
         )
         .expect("decode interface fixture");
         let interface_key = interface.interface_key().expect("interface key");
+        let readiness = GuaranteeDeclaration {
+            name: interface.interface.guarantees[0].name.clone(),
+            version: interface.interface.guarantees[0].version,
+            semantics: "the provider reports readiness for the requested revision".into(),
+            description: "Reports readiness for the requested revision.".into(),
+        };
+        assert_eq!(
+            readiness.key().expect("readiness guarantee key"),
+            interface.interface.guarantees[0]
+        );
         let artifact = ArtifactReference {
             content: Sha256Digest::from_bytes([1; 32]),
             store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-demo".into(),
@@ -326,12 +337,15 @@ mod tests {
                 payload: artifact.clone(),
                 source: artifact.clone(),
             },
-            artifacts: Vec::new(),
+            artifacts: vec![artifact.clone()],
             interfaces: BTreeMap::from([(
                 aos_ability_model::LocalKey::new("echo-interface").expect("valid interface alias"),
                 interface_key.clone(),
             )]),
-            guarantees: Default::default(),
+            guarantees: BTreeMap::from([(
+                aos_ability_model::LocalKey::new("readiness").expect("valid guarantee alias"),
+                readiness,
+            )]),
             package_module: Some(aos_ability_model::ModuleLocator {
                 artifact: artifact.clone(),
                 path: aos_ability_model::RelativePath::new("module.nix")
@@ -380,6 +394,16 @@ mod tests {
         projection["package_module"]["artifact"] = selector.clone();
         projection["implementation"]["providers"][0]["artifact"] = selector.clone();
         projection["implementation"]["providers"][0]["provider_module"]["artifact"] = selector;
+        for export in projection["exports"]
+            .as_array_mut()
+            .expect("package exports")
+        {
+            let export = export.as_object_mut().expect("package export");
+            let implementation_name = export
+                .remove("implementation_name")
+                .expect("resolved export implementation name");
+            export.insert("implementation".into(), implementation_name);
+        }
         projection.insert(
             "interface_documents".into(),
             serde_json::json!([{"descriptor": interface_key.descriptor, "document": interface}]),
@@ -444,12 +468,14 @@ mod tests {
             interface_key.descriptor,
             Sha256Digest::of_bytes(&package_bytes),
             package.content_digest().expect("package digest"),
+            package,
         )
     }
 
     #[tokio::test]
     async fn derives_reference_only_from_exact_signed_package_bytes() {
-        let (fetch, ability, interface_digest, manifest_digest, package_digest) = signed_fixture();
+        let (fetch, ability, interface_digest, manifest_digest, package_digest, package) =
+            signed_fixture();
 
         let reference = fetch_package_ability_reference(
             &fetch,
@@ -471,13 +497,37 @@ mod tests {
             reference.package_digest.to_string(),
             package_digest.to_string()
         );
-        assert_eq!(reference.exports.len(), 2);
+        assert_eq!(reference.required_features, package.required_features);
+        assert_eq!(reference.guarantees, package.guarantees);
+        assert_eq!(reference.option_declarations, package.option_declarations);
+        assert_eq!(reference.implementations, package.implementation.providers);
+        assert_eq!(reference.requirements, package.requirements);
+        assert_eq!(
+            reference.handlers.len(),
+            package.implementation.handlers.len()
+        );
+        assert_eq!(reference.interfaces.len(), package.interfaces.len());
+        for (alias, expected) in &package.interfaces {
+            let actual = reference
+                .interfaces
+                .get(alias)
+                .expect("Hub reference retains every package interface alias")
+                .interface_key()
+                .expect("Hub reference interface remains valid");
+            assert_eq!(&actual, expected);
+        }
+        assert_eq!(reference.exports.len(), package.exports.len());
+        for (actual, expected) in reference.exports.iter().zip(&package.exports) {
+            assert_eq!(actual.name, expected.name);
+            assert_eq!(actual.interface, expected.interface);
+            assert_eq!(actual.implementation, expected.implementation);
+        }
         assert_eq!(reference.exports[0].interface.descriptor, interface_digest);
     }
 
     #[tokio::test]
     async fn rejects_a_signed_locator_with_different_manifest_identity() {
-        let (fetch, mut ability, _, _, _) = signed_fixture();
+        let (fetch, mut ability, _, _, _, _) = signed_fixture();
         ability.document.document_sha256 = Sha256Digest::from_bytes([9; 32]).to_string();
 
         assert!(
@@ -497,7 +547,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_signed_package_projection_for_a_different_primary_payload() {
-        let (fetch, ability, _, _, _) = signed_fixture();
+        let (fetch, ability, _, _, _, _) = signed_fixture();
 
         let error = fetch_package_ability_reference(
             &fetch,

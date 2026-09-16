@@ -295,7 +295,7 @@ fn validate_local_declarations(
 pub fn package_source_supported_features()
 -> Result<BTreeSet<RequiredFeature>, PackageContractValidationError> {
     [
-        "abilities-v1",
+        aos_ability_model::FEATURE_ABILITIES_V1,
         aos_ability_model::FEATURE_ABILITY_EFFECTS_V1,
         aos_ability_model::PROVIDER_STATE_FORMAT_V1,
         aos_ability_model::PROVIDER_STATE_ADOPTION_V1,

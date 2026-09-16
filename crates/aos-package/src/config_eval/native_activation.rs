@@ -767,18 +767,16 @@ pub(super) fn production_evaluator_for_store_view(
 /// Returns an error if a built-in feature name violates the bounded feature
 /// identity contract.
 pub fn supported_native_ability_features() -> Result<std::collections::BTreeSet<RequiredFeature>> {
-    [
-        crate::types::FEATURE_ABILITIES_V1,
-        crate::types::FEATURE_ABILITY_EFFECTS_V1,
-        "native-platform-policy-v1",
-        "native-resource-map-v1",
-        aos_ability_model::PROVIDER_STATE_FORMAT_V1,
-        aos_ability_model::PROVIDER_STATE_ADOPTION_V1,
-    ]
-    .into_iter()
-    .map(RequiredFeature::new)
-    .collect::<std::result::Result<_, _>>()
-    .context("constructing native runtime implementation feature set")
+    let mut features = aos_ability_validate::package_source_supported_features()
+        .context("constructing package ability feature set")?;
+    features.extend(
+        ["native-platform-policy-v1", "native-resource-map-v1"]
+            .into_iter()
+            .map(RequiredFeature::new)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("constructing native runtime feature set")?,
+    );
+    Ok(features)
 }
 
 fn resolution_policy(

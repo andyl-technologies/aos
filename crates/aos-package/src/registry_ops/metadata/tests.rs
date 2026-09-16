@@ -10,7 +10,7 @@ use crate::registry_ops::test_support::{
     inspect_test_image, rewrite_test_image_parent, write_direct_image_output,
 };
 use crate::types::{
-    AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1,
+    AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1,
     FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, PACKAGE_META_FORMAT,
     PackageContractArtifactMeta, PackageContractClosureMemberMeta, PackageContractDocumentMeta,
     PackageContractMeta,
@@ -160,9 +160,13 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
         nar_hash: Sha256Digest::parse(&artifact.nar_hash).expect("valid NAR hash"),
         closure: closure_digest,
     };
-    let package_document = PackageDocument {
+    let mut package_document = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
-        required_features: vec![RequiredFeature::new("abilities-v1").expect("valid feature")],
+        required_features: vec![
+            RequiredFeature::new(FEATURE_ABILITIES_V1).expect("valid feature"),
+            RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
+                .expect("valid state-format feature"),
+        ],
         package: PackageSubject {
             name: LocalKey::new("demo").expect("valid package name"),
             version: "1".to_string(),
@@ -202,19 +206,31 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
         platform.requires_features.as_slice(),
         platform.references.requires_features(),
     ] {
-        assert!(features.iter().any(|feature| feature == "future-feature"));
-        assert!(
-            features
-                .iter()
-                .any(|feature| feature == FEATURE_ABILITIES_V1)
+        assert_eq!(
+            features.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec![
+                FEATURE_ABILITIES_V1,
+                "future-feature",
+                aos_ability_model::PROVIDER_STATE_FORMAT_V1,
+            ]
         );
     }
     assert_eq!(platform.contract.as_ref(), Some(&ability));
+
+    package_document.required_features.clear();
+    let error = record_package_contract(
+        &toml::to_string(&document).expect("serialize initial metadata"),
+        "demo",
+        "1",
+        "x86_64-linux",
+        &ability,
+        &package_document,
+    )
+    .expect_err("a package contract without the base ability feature must fail");
     assert!(
-        !platform
-            .requires_features
-            .iter()
-            .any(|feature| feature == FEATURE_ABILITY_EFFECTS_V1)
+        error
+            .to_string()
+            .contains("does not declare its authenticated ability feature")
     );
 }
 #[test]
