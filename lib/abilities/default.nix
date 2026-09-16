@@ -26,6 +26,19 @@
     abilities,
   }:
     import ./package-projection.nix {inherit lib abilities;};
+  packageAbilitiesFromProjection = projection: {
+    inherit (projection) guarantees interfaces;
+    implementations = builtins.listToAttrs (map (implementation: {
+        name = implementation.name;
+        value = implementation;
+      })
+      projection.implementation.providers);
+    requirementTemplates = builtins.listToAttrs (map (requirement: {
+        name = requirement.alias;
+        value = requirement;
+      })
+      projection.requirements);
+  };
   interfaceRegistry = import ./interfaces {
     inherit
       declareInterface
@@ -1693,6 +1706,7 @@ in rec {
     normalizePackageOutputSelectors
     packageOutputSelectorsFor
     packageProjectionFor
+    packageAbilitiesFromProjection
     resourceRevision
     identityKeyFor
     singletonSchemaDiscriminator

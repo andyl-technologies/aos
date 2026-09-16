@@ -4,12 +4,6 @@
   pkgs,
   ...
 }: let
-  expectedAbilityFields = [
-    "guarantees"
-    "implementations"
-    "interfaces"
-    "requirementTemplates"
-  ];
   legacyPassthruFields = [
     "abilities"
     "abilityModule"
@@ -86,19 +80,6 @@
 
   invalidPackages = builtins.filter (name: let
     package = abilityPackages.${name};
-    projectedAbilities = {
-      inherit (package.contract.value) guarantees interfaces;
-      implementations = builtins.listToAttrs (builtins.map (implementation: {
-          name = implementation.name;
-          value = implementation;
-        })
-        package.contract.value.implementation.providers);
-      requirementTemplates = builtins.listToAttrs (builtins.map (requirement: {
-          name = requirement.alias;
-          value = requirement;
-        })
-        package.contract.value.requirements);
-    };
     evaluatedAbilities = builtins.tryEval (builtins.toJSON {
       interfaceAliases = builtins.attrNames package.abilities.interfaces;
       implementationAliases = builtins.attrNames package.abilities.implementations;
@@ -119,8 +100,8 @@
     || !(builtins.isList abilities.implementationAliases)
     || !(builtins.isList abilities.requirementAliases)
     || !(builtins.isList abilities.guaranteeAliases)
-    || builtins.attrNames package.abilities != expectedAbilityFields
-    || package.abilities != projectedAbilities
+    || package.abilities
+    != lib.abilities.packageAbilitiesFromProjection package.contract.value
     || lib.hasInfix "\"_type\"" (builtins.toJSON package.contract.value)
     || builtins.any (field: builtins.hasAttr field (package.passthru or {})) legacyPassthruFields
     || !(package ? module)

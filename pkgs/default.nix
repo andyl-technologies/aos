@@ -425,19 +425,7 @@
     packageAbilityProjection =
       if evaluatedAbilities == null
       then null
-      else {
-        inherit (packageProjection) guarantees interfaces;
-        implementations = builtins.listToAttrs (map (implementation: {
-            name = implementation.name;
-            value = implementation;
-          })
-          packageProjection.implementation.providers);
-        requirementTemplates = builtins.listToAttrs (map (requirement: {
-            name = requirement.alias;
-            value = requirement;
-          })
-          packageProjection.requirements);
-      };
+      else packageProjectionResult.abilities;
     packageProjectionSource =
       if packageProjection == null
       then null
