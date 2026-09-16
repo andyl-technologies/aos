@@ -19,8 +19,10 @@ mkDerivation {
     {
       name = "install";
       script = ''
-        mkdir -p "$out/share/aos"
+        mkdir -p "$out/share/aos/providers"
         printf '%s\n' 'package-owned OCI artifact backend' > "$out/share/aos/backend"
+        cp ${./_aos-oci-backend/provider.nix} \
+          "$out/share/aos/providers/artifact-backend.nix"
       '';
     }
   ];

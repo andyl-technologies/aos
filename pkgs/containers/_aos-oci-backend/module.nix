@@ -7,31 +7,26 @@
   ...
 }: let
   schema = import ./container/schema.nix;
-  backendInterface = lib.abilities.declareInterface {
-    name = "aos.artifacts.backend";
-    abi = 1;
-    description = "Selects one package-owned artifact construction backend.";
-    requestType = lib.abilities.types.boolean;
-    outputs = {};
-    methods = {};
-    lifecycle.persistentDeleteMethod = null;
-    guarantees = [];
-    aggregation = {
-      scope = "provider-instance";
-      key = "slot";
-      rejectSlotCollisions = true;
-      mergeContract = null;
-      controllerGroup = "artifact-backend";
-    };
-  };
-  backendIdentity = lib.abilities.interfaceIdentity (
-    lib.abilities.interfaceDocumentFromDeclaration backendInterface
-  );
+  backendInterface = lib.abilities.interfaces.artifactBackend.interfaces.backend;
   backendArtifact = lib.abilities.packageOutput {};
+  selectedBindings =
+    if abilitySelection == null
+    then []
+    else abilitySelection.bindingsForImplementation "artifact-backend";
+  selectedBinding =
+    if builtins.length selectedBindings > 1
+    then throw "the OCI artifact backend implementation has several selected bindings"
+    else if selectedBindings == []
+    then null
+    else builtins.head selectedBindings;
   selected =
-    config.aos.abilities.environment != null
-    && abilitySelection != null
-    && abilitySelection.isImplementationSelected "artifact-backend";
+    if selectedBinding == null
+    then false
+    else if selectedBinding.binding.request != "system:artifact-backend"
+    then throw "the OCI artifact backend implementation requires the system:artifact-backend request"
+    else
+      config.aos.abilities.environment != null
+      && config.aos.abilities.environment.stage == "host";
 
   packageProjectionsFor = packages:
     builtins.map lib.abilities.authenticatedPackageProjectionFor (builtins.filter
@@ -66,7 +61,10 @@
       inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
       abilityContractValidator = buildPackages.aos-ability-contract-validator;
     };
-  backend = {
+  selectedBackendOutput =
+    config.aos.abilities.compositionOutputs."system:artifact-backend".artifact-reference.value
+    or null;
+  authoredBackend = {
     _type = "aos-package-artifact-backend";
     name = "oci";
     package = packageArtifactFor backendArtifact;
@@ -119,6 +117,15 @@
         inherit oci;
       };
   };
+  backend =
+    if !selected
+    then null
+    else if
+      selectedBackendOutput != null
+      && selectedBackendOutput._type == "aos-artifact-reference"
+      && selectedBackendOutput.store_path == builtins.toString authoredBackend.package
+    then authoredBackend // {artifact = selectedBackendOutput;}
+    else throw "selected artifact backend projection differs from its checked planning output";
 in {
   options = {
     aos.containers = {
@@ -145,33 +152,19 @@ in {
 
   config = {
     aos.abilities = {
-      interfaces.artifact-backend = backendInterface;
       implementations.artifact-backend = {
         description = "Builds static contracts and OCI artifacts from checked package origins.";
-        interface = "artifact-backend";
+        interface = backendInterface.identity;
         artifact = backendArtifact;
         methods = [];
         guarantees = [];
-      };
-      requirementTemplates.artifact-backend = {
-        description = "Requires one package-owned artifact construction backend.";
-        interface = backendIdentity.name;
-        inherit (backendIdentity) abi descriptor;
-      };
-      instances = lib.mkIf (config.aos.abilities.environment != null) (
-        {
-          artifact-backend-consumer = {};
-        }
-        // lib.optionalAttrs selected {
-          artifact-backend-provider.implementation = "artifact-backend";
-        }
-      );
-      requests = lib.mkIf (config.aos.abilities.environment != null) {
-        artifact-backend = {
-          requirement = "artifact-backend";
-          consumer = "artifact-backend-consumer";
-          parameters = true;
+        providerModule = {
+          artifact = backendArtifact;
+          path = "share/aos/providers/artifact-backend.nix";
         };
+      };
+      instances = lib.mkIf selected {
+        artifact-backend-provider.implementation = "artifact-backend";
       };
     };
 
