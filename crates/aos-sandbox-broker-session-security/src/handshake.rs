@@ -7,7 +7,7 @@
 //! resulting transcript with the adopted socket and protected journal owner.
 //! They register no peer, transport, descriptor, service, or effect authority.
 
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES, CLIENT_HELLO_MAXIMUM_BYTES,

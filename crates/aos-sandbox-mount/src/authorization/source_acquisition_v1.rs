@@ -12,12 +12,12 @@ use aos_proto::aos::sandbox::local::v1::{Audience, BrokerMethod};
 use aos_sandbox_broker::AdmissionRequest;
 use aos_sandbox_core::{BrokerAudience, ProtocolId, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_protocol::semantics::{
-    CanonicalMountSourceAcquisitionSemanticsV1, LiveValidatedAcquireMountSourceRequest,
-    LiveValidatedReleaseMountSourceAcquisitionRequest, canonical_acquire_mount_source_semantics_v1,
+    CanonicalMountSourceAcquisitionSemanticsV1, canonical_acquire_mount_source_semantics_v1,
     canonical_release_mount_source_acquisition_semantics_v1,
 };
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
+    LiveValidatedAcquireMountSourceRequest, LiveValidatedReleaseMountSourceAcquisitionRequest,
     ValidatedAssignmentFence, ValidatedBrokerRequestEnvelope, ValidatedHeader,
     mount_source_acquisition_request_digest_v1,
 };

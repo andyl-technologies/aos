@@ -103,7 +103,7 @@ where
             request,
             request_body,
             &observed,
-            prior,
+            &prior,
         )?;
         // Admission can propose a newer valid lease. This read path cannot
         // install that fence, and a newer request cannot prove an older runtime
@@ -197,8 +197,9 @@ where
         let prior = self
             .state
             .prior_authorization(fence.sandbox_id())
-            .ok_or(HostError::UnknownHandle)?;
-        let current = self.authority.open_fence(fence.sandbox_id(), prior)?;
+            .ok_or(HostError::UnknownHandle)?
+            .to_vec();
+        let current = self.authority.open_fence(fence.sandbox_id(), &prior)?;
         self.authority.check_current_fence(&current)?;
         if current.assignment() != expected_assignment {
             return Err(HostError::Fence(

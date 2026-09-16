@@ -707,7 +707,7 @@ impl CurrentProviderIngressSessionV1 {
     ///
     /// Returns [`SourceProviderSecurityError`] and poisons the session when
     /// custody changed or the lease does not name the current provider.
-    fn sign_current_export_lease(
+    pub(super) fn sign_current_export_lease(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,
@@ -762,7 +762,7 @@ impl CurrentProviderIngressSessionV1 {
     ///
     /// Returns [`SourceProviderSecurityError`] and poisons the session when
     /// custody changed or the receipt lineage is invalid.
-    fn sign_current_provider_receipt(
+    pub(super) fn sign_current_provider_receipt(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,
@@ -812,7 +812,7 @@ impl CurrentProviderIngressSessionV1 {
     ///
     /// Returns [`SourceProviderSecurityError`] and poisons the session when
     /// custody changed or the receipt does not name the current provider.
-    fn sign_current_release_receipt(
+    pub(super) fn sign_current_release_receipt(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,
@@ -857,7 +857,7 @@ impl CurrentProviderIngressSessionV1 {
     ///
     /// Returns [`SourceProviderSecurityError`] and poisons the session when
     /// custody changed or the inventory does not name the current provider.
-    fn sign_current_inventory(
+    pub(super) fn sign_current_inventory(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,
@@ -901,7 +901,7 @@ impl CurrentProviderIngressSessionV1 {
     ///
     /// Returns [`SourceProviderSecurityError`] and poisons the session when
     /// custody changed or the status names another session or execution.
-    fn sign_current_response_status(
+    pub(super) fn sign_current_response_status(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,

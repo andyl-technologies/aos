@@ -610,7 +610,7 @@ pub(crate) trait SourcePinRowV1Ext: Sized {
 
 impl SourcePinRowV1Ext for SourcePinRowV1 {
     /// Constructs the sole Mount-owned Active row from authenticated evidence.
-    pub(crate) fn active(
+    fn active(
         binding: &SourceRealizationBindingV1,
         evidence: SourceRealizationEvidenceV1,
         admission_operation_id: [u8; 16],

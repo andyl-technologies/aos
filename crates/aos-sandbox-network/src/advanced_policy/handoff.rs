@@ -133,6 +133,7 @@ impl DurablyCommittedAdvancedNetworkPolicyV1 {
             .state
             .candidate()
             .unwrap_or_else(|| self.state.active())
+            .source()
             .identity()
             .assignment();
         if controlling_assignment != broker_currentness.assignment() {

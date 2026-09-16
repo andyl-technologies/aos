@@ -642,7 +642,7 @@ impl ProtectedNetworkQuotaV1 {
         if projects.iter().any(|row| row.reservation_present) {
             return Err(AdvancedNetworkPolicyError::InvalidTransition);
         }
-        match projects.binary_search_by_key(&project, ProjectNetworkUsageV1::project) {
+        match projects.binary_search_by_key(&project, |account| account.project()) {
             Ok(index) => {
                 projects[index].reserved = candidate;
                 projects[index].reservation_present = true;
@@ -685,7 +685,7 @@ impl ProtectedNetworkQuotaV1 {
         if projects.iter().any(|row| row.reservation_present) {
             return Err(AdvancedNetworkPolicyError::InvalidTransition);
         }
-        match projects.binary_search_by_key(&project, ProjectNetworkUsageV1::project) {
+        match projects.binary_search_by_key(&project, |account| account.project()) {
             Ok(index) => {
                 projects[index].reserved = candidate;
                 projects[index].reservation_present = true;
@@ -799,7 +799,7 @@ impl ProtectedNetworkQuotaV1 {
         candidate: NetworkPolicyUsageV1,
     ) -> bool {
         self.projects
-            .binary_search_by_key(&project, ProjectNetworkUsageV1::project)
+            .binary_search_by_key(&project, |account| account.project())
             .ok()
             .and_then(|index| self.projects.get(index))
             .is_some_and(|account| account.reservation_present && account.reserved == candidate)
@@ -817,7 +817,7 @@ impl ProtectedNetworkQuotaV1 {
     #[must_use]
     pub fn covers_active(&self, project: ProjectId, usage: NetworkPolicyUsageV1) -> bool {
         self.projects
-            .binary_search_by_key(&project, ProjectNetworkUsageV1::project)
+            .binary_search_by_key(&project, |account| account.project())
             .ok()
             .and_then(|index| self.projects.get(index))
             .is_some_and(|account| {
@@ -848,7 +848,7 @@ impl ProtectedNetworkQuotaV1 {
             return false;
         }
         let mut expected = prior.projects.clone();
-        match expected.binary_search_by_key(&project, ProjectNetworkUsageV1::project) {
+        match expected.binary_search_by_key(&project, |account| account.project()) {
             Ok(index) if !expected[index].reservation_present => {
                 expected[index].reserved = candidate;
                 expected[index].reservation_present = true;
@@ -889,7 +889,7 @@ impl ProtectedNetworkQuotaV1 {
         }
         let mut projects = self.projects.clone();
         let index = projects
-            .binary_search_by_key(&project, ProjectNetworkUsageV1::project)
+            .binary_search_by_key(&project, |account| account.project())
             .map_err(|_| AdvancedNetworkPolicyError::QuotaExceeded)?;
         projects[index].active = projects[index]
             .active
@@ -919,7 +919,7 @@ impl ProtectedNetworkQuotaV1 {
         }
         let mut projects = self.projects.clone();
         let index = projects
-            .binary_search_by_key(&project, ProjectNetworkUsageV1::project)
+            .binary_search_by_key(&project, |account| account.project())
             .map_err(|_| AdvancedNetworkPolicyError::QuotaExceeded)?;
         projects[index].active = projects[index]
             .active
@@ -950,7 +950,7 @@ impl ProtectedNetworkQuotaV1 {
         }
         let mut projects = self.projects.clone();
         let index = projects
-            .binary_search_by_key(&project, ProjectNetworkUsageV1::project)
+            .binary_search_by_key(&project, |account| account.project())
             .map_err(|_| AdvancedNetworkPolicyError::QuotaExceeded)?;
         projects[index].reserved = NetworkPolicyUsageV1::default();
         projects[index].reservation_present = false;
@@ -975,7 +975,7 @@ impl ProtectedNetworkQuotaV1 {
         }
         let mut projects = self.projects.clone();
         let index = projects
-            .binary_search_by_key(&project, ProjectNetworkUsageV1::project)
+            .binary_search_by_key(&project, |account| account.project())
             .map_err(|_| AdvancedNetworkPolicyError::QuotaExceeded)?;
         projects[index].reserved = NetworkPolicyUsageV1::default();
         projects[index].reservation_present = false;

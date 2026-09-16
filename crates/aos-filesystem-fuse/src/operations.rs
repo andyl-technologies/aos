@@ -302,10 +302,10 @@ impl ImmutableOperations {
     ///
     /// Always returns the terminal ambiguity error after exact validation, or a
     /// stale error without accepting mismatched state.
-    pub(crate) fn record_rejected_close_ambiguity(
+    pub(crate) fn record_rejected_close_ambiguity<'index>(
         &mut self,
-        connection: &mut aos_filesystem_view::MetadataConnection<'_, '_, '_, '_>,
-        cleanup: RejectedOpenCleanup<'_>,
+        connection: &mut aos_filesystem_view::MetadataConnection<'_, 'index, '_, '_>,
+        cleanup: RejectedOpenCleanup<'index>,
     ) -> Result<(), OperationError> {
         self.validate_connection(connection)?;
         Ok(self

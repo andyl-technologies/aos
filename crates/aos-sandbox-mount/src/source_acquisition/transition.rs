@@ -65,7 +65,7 @@ pub(super) fn record_ref(record: &StoredRecordV2) -> Result<RecordRefV2> {
 }
 
 pub(super) fn seal(record: StoredRecordV2) -> Result<StoredRecordV2> {
-    seal_record(record)
+    Ok(seal_record(record)?)
 }
 
 pub(super) fn advance_head_projection(
@@ -236,7 +236,7 @@ pub(super) fn prepare_mutation(
 
     let sealed = records
         .into_iter()
-        .map(seal_record)
+        .map(|record| -> Result<_> { Ok(seal_record(record)?) })
         .collect::<Result<Vec<_>>>()?;
     let mut keys = BTreeSet::new();
     let journal_records = sealed

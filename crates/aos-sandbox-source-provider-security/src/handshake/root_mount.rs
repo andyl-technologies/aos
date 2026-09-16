@@ -419,7 +419,7 @@ impl RootMountHelloSentV1 {
         let session = SourceProviderSessionV1::authenticate(
             self.nonce,
             now,
-            self.signed_hello,
+            self.signed_hello.clone(),
             provider_hello,
             inner.trust(),
             inner.root_authority(),

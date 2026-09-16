@@ -680,7 +680,7 @@ fn record_bytes(record: StoredRecordV2) -> Result<Vec<u8>> {
         .ok_or_else(|| state_error("AOSMSA02 record materialized as a delete"))
 }
 
-const fn monotonic(
+fn monotonic(
     old_generation: u64,
     old_digest: [u8; 32],
     new_generation: u64,

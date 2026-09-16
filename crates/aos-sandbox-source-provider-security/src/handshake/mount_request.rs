@@ -48,6 +48,10 @@ pub use model::*;
 use model::{HistoricalMountAcquisitionLineageV2, historical_acquisition_commitment};
 use projection::*;
 
+fn current_unix_seconds() -> Result<i64, SourceProviderSecurityError> {
+    super::current_unix_seconds()
+}
+
 impl CurrentRootMountSourceProviderSessionV1 {
     /// Returns the fixed holder/provider identities and current validity ceiling.
     ///
@@ -85,7 +89,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         let now = super::current_unix_seconds()?;
         let projection =
             capture_session_projection(self, now).map_err(|error| self.poison(error))?;
-        Ok(ObjectDigest::from_bytes(projection.session_id))
+        Ok(projection.session_binding)
     }
 
     /// Proves one exact protected Mount session's provider execution is dead.

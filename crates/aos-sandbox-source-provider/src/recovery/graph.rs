@@ -7,6 +7,7 @@ pub(super) fn validate_graph(
     authority: &crate::model::AuthorityHeadRecordV1,
     catalog: &crate::model::CatalogHeadRecordV1,
     catalog_history: &BTreeMap<u64, crate::model::CatalogHeadRecordV1>,
+    sessions: &BTreeMap<([u8; 16], [u8; 16]), crate::model::HolderSessionHeadRecordV1>,
     session_history: &BTreeMap<
         ([u8; 16], [u8; 16], ObjectDigest),
         crate::model::HolderSessionHeadRecordV1,
@@ -321,6 +322,13 @@ pub(super) fn validate_graph(
     }
     validate_attempt_reverse_joins(attempts, acquisitions, releases)?;
     Ok(())
+}
+
+fn contiguous_from_one(values: &BTreeSet<u64>) -> bool {
+    let Ok(maximum) = u64::try_from(values.len()) else {
+        return false;
+    };
+    values.iter().copied().eq(1..=maximum)
 }
 
 pub(super) fn validate_attempt_reverse_joins(

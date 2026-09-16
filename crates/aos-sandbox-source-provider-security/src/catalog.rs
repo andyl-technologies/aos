@@ -790,7 +790,7 @@ pub(crate) fn retained_catalog_head_cleanup_status(
         || catalog.catalog_generation < catalog_floor.minimum_catalog_generation()
         || (catalog.catalog_generation == catalog_floor.minimum_catalog_generation()
             && catalog.catalog_digest != catalog_floor.minimum_catalog_digest())
-        || catalog.catalog_generation < authority.catalog_floor_generation
+        || authority.catalog_generation < catalog.catalog_floor_generation
         || catalog.publication_seconds > verified_at_seconds
     {
         return None;

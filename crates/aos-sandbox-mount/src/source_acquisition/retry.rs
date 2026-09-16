@@ -86,7 +86,7 @@ impl SourceAcquisitionTableV2 {
             || matches!(
                 &row.recovery,
                 AcquisitionRecoveryV2::RetryPermitted { root_attempt }
-                    if root_attempt == row.acquire_lineage.tail
+                    if *root_attempt == row.acquire_lineage.tail
             ))
         {
             return Err(state_error("Acquire retry lacks a recovery permit"));
@@ -378,7 +378,7 @@ impl SourceAcquisitionTableV2 {
             || matches!(
                 &row.recovery,
                 AcquisitionRecoveryV2::RetryPermitted { root_attempt }
-                    if root_attempt == lineage.tail
+                    if *root_attempt == lineage.tail
             ))
         {
             return Err(state_error("Release retry lacks a recovery permit"));

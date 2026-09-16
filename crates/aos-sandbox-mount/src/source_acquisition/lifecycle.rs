@@ -31,7 +31,7 @@ use super::transition::prepare_mutation;
 use super::transition::{MutationIdentityV2, commit_mutation, next_revision};
 use super::validation::validate_recovered_table;
 use crate::Result;
-use crate::authorization::admission_v1::MountAuthorityV1;
+use crate::authorization::MountAuthorityV1;
 use crate::authorization::semantics_v1::{MountCatalogCommitmentV1, canonical_mount_semantics_v1};
 use crate::source_pin::{
     SourcePinProofClassV1, SourcePinRowV1, SourcePinRowV1Ext, SourceRealizationEvidenceV1,
@@ -1323,7 +1323,7 @@ impl SourceAcquisitionTableV2 {
         )
     }
 
-    fn head_for_row(
+    pub(super) fn head_for_row(
         &self,
         row: &SourceAcquisitionRowV2,
     ) -> Result<&super::model::SourceProviderHeadV2> {
@@ -1335,7 +1335,7 @@ impl SourceAcquisitionTableV2 {
             .ok_or_else(|| state_error("source provider head is absent"))
     }
 
-    fn holder_sequence_revision(&self, holder_id: [u8; 16]) -> u64 {
+    pub(super) fn holder_sequence_revision(&self, holder_id: [u8; 16]) -> u64 {
         self.holder_sequences
             .get(&holder_id)
             .map_or(0, |value| value.revision)

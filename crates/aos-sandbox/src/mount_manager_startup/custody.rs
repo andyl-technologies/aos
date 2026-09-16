@@ -412,7 +412,8 @@ impl FreshManagerSourcePresenceV1 {
     ///
     /// Returns an error after target-row mutation, capture-history loss or
     /// corruption, or use with an unrelated protected authority.
-    pub(crate) fn validate_current(
+    #[doc(hidden)]
+    pub fn validate_current(
         &self,
         authority: &ProtectedJournalAuthority<'_>,
     ) -> Result<(), JournalError> {
@@ -521,7 +522,8 @@ impl FreshManagerSourceRemovalReceiptV1 {
     ///
     /// Returns an error after target-row mutation, capture-history loss or
     /// corruption, or use with an unrelated protected authority.
-    pub(crate) fn validate_current(
+    #[doc(hidden)]
+    pub fn validate_current(
         &self,
         authority: &ProtectedJournalAuthority<'_>,
     ) -> Result<(), JournalError> {

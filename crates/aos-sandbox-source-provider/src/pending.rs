@@ -124,7 +124,7 @@ fn validate_pending_acquire_observation(
         .cloned()
         .ok_or(ProviderLedgerError::Corrupt("missing Pending acquisition"))?;
     if acquisition.state != ProviderAcquisitionStateV1::Pending
-        || !progress.plan.matches_effect_acquisition(acquisition)
+        || !progress.plan.matches_effect_acquisition(&acquisition)
         || observed.backend_id != progress.plan.backend_id
         || observed.lineage_digest != progress.plan.lineage_digest()
         || observed.evidence.state() != BackendEvidenceStateV1::Acquired
@@ -149,5 +149,5 @@ fn validate_pending_acquire_observation(
             "Pending Acquire disposition graph",
         ));
     }
-    crate::acquire::validate_backend_selection(ledger, acquisition, &attempt, observed)
+    crate::acquire::validate_backend_selection(ledger, &acquisition, &attempt, observed)
 }

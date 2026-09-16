@@ -16,7 +16,7 @@ use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, decode_mount_scope_request,
     decode_mount_scope_request_for_protected_replay, decode_payload_scope_request,
-    decode_payload_scope_request_for_protected_replay,
+    decode_payload_scope_request_for_protected_replay, decode_query_runtime_effect_request_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -499,14 +499,14 @@ where
                 }
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => {
                     let artifacts = artifacts.ok_or(DormantHostBrokerCallErrorV1::StaleKernel)?;
-                    let request = crate::observation::decode_query_runtime_effect_request(
+                    let request = decode_query_runtime_effect_request_v1(
                         request_body,
                         peer,
                         policy,
                         current_clock.boottime_nanoseconds(),
                     )?;
-                    if request.header.request_id() != &request_id
-                        || request.header.protocol_version() != protocol_version
+                    if request.header().request_id() != &request_id
+                        || request.header().protocol_version() != protocol_version
                     {
                         return Err(DormantHostBrokerCallErrorV1::StaleKernel);
                     }

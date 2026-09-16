@@ -22,9 +22,9 @@ use serde_json::{Value, json};
 use super::*;
 use crate::namespace_inspector::{
     BrokerLifecycleWorkerInspectionContextV1, InspectorProcessIdentityV1,
-    KernelAuthenticatedInspectorPeerV1, KernelAuthenticatedSystemdManagerV1,
-    PendingLifecycleWorkerInspectionV1, ProvisionedNetworkNamespaceInspectorV1,
-    ValidatedLifecycleWorkerLeaderV1,
+    KernelAuthenticatedSystemdManagerV1, NetworkNamespaceInspectorPeerRoleV1,
+    PendingLifecycleWorkerInspectionV1, ProvisionedInspectorPeerRoleV1,
+    ProvisionedNetworkNamespaceInspectorV1, ValidatedLifecycleWorkerLeaderV1,
 };
 
 /// Lists the exact assertions made by the protected-store ext4 fixture.
@@ -391,8 +391,8 @@ fn expected_attempt(seed: u8) -> Result<ExpectedInspectorAttemptV1, Box<dyn Erro
     };
     let deployment = ProvisionedNetworkNamespaceInspectorV1 {
         boot_id: [0x07; 16],
-        broker: peer(100),
-        inspector: peer(200),
+        broker: provisioned_peer(NetworkNamespaceInspectorPeerRoleV1::Broker),
+        inspector: provisioned_peer(NetworkNamespaceInspectorPeerRoleV1::Inspector),
         systemd_manager: KernelAuthenticatedSystemdManagerV1 {
             pid: 1,
             thread_group_id: 1,
@@ -425,14 +425,9 @@ fn expected_attempt(seed: u8) -> Result<ExpectedInspectorAttemptV1, Box<dyn Erro
     Ok(pending.expected)
 }
 
-fn peer(seed: u32) -> KernelAuthenticatedInspectorPeerV1 {
-    KernelAuthenticatedInspectorPeerV1 {
-        process: InspectorProcessIdentityV1 {
-            pid: seed,
-            thread_group_id: seed,
-            parent_pid: seed - 1,
-            cgroup_id: u64::from(seed) * 17,
-        },
+fn provisioned_peer(role: NetworkNamespaceInspectorPeerRoleV1) -> ProvisionedInspectorPeerRoleV1 {
+    ProvisionedInspectorPeerRoleV1 {
+        role,
         uid: 0,
         gid: 0,
     }

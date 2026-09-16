@@ -219,7 +219,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                     ..
                 }
             )
-        ) && !super::outcome::graph_retains_recoverable_source_root_custody(
+        ) && !super::outcome::helpers::graph_retains_recoverable_source_root_custody(
             &graph,
             attempt_reference,
         ) {
@@ -577,7 +577,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
                 Some(ReopenedMountSourceRootV2 {
                     handoff,
-                    acquisition_id: *receipt.subject().acquisition_id().as_bytes(),
+                    acquisition_id: receipt.subject().acquisition_id(),
                     acquisition_sequence: attempt
                         .provider_acquisition
                         .map(|value| value.acquisition_sequence)
@@ -664,7 +664,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
         if current_session.session_id == predecessor_session.session_id
             || current_head.scope != row.scope
-            || !super::outcome::graph_retains_recoverable_source_root_custody(
+            || !super::outcome::helpers::graph_retains_recoverable_source_root_custody(
                 &graph,
                 evidence.acquire_attempt,
             )
@@ -1052,7 +1052,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
         absence: aos_sandbox::mount_manager_startup::TerminalMountSourceAbsenceV1,
     ) -> Result<crate::PreparedReleasedMountSourceRootV2, SourceProviderSecurityError> {
         use aos_sandbox_protocol::mount_source_acquisition_state::{
-            ProviderAttemptStateV2, ProviderMethodV2, ReleaseProofV2, SourceAcquisitionPhaseV2,
+            AcquisitionRecoveryV2, ProviderAttemptStateV2, ProviderMethodV2, ReleaseProofV2,
+            SourceAcquisitionPhaseV2,
         };
 
         self.revalidate()?;

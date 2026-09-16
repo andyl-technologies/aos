@@ -1767,10 +1767,10 @@ pub(crate) fn lifecycle_projection(
     hasher.update(session_binding.as_bytes());
     hasher.update(descriptor_commitment.as_bytes());
     hasher.update(signed_outcome_digest.as_bytes());
-    hasher.update(observation.kernel_boot_id);
-    hasher.update(observation.device.to_be_bytes());
-    hasher.update(observation.inode.to_be_bytes());
-    hasher.update(observation.unique_mount_id.to_be_bytes());
+    hasher.update(observation.kernel_boot_id());
+    hasher.update(observation.device().to_be_bytes());
+    hasher.update(observation.inode().to_be_bytes());
+    hasher.update(observation.unique_mount_id().to_be_bytes());
     hasher.update(manager_custody.map_or([0; 32], |custody| custody.evidence_digest));
     MountSourceRootCustodyProjectionV2 {
         mount_acquisition_id,
@@ -2008,10 +2008,10 @@ fn lost_release_projection(
     hasher.update(owner_session.session_binding);
     hasher.update(evidence.descriptor_commitment);
     hasher.update(signed_outcome_digest.as_bytes());
-    hasher.update(observation.kernel_boot_id);
-    hasher.update(observation.device.to_be_bytes());
-    hasher.update(observation.inode.to_be_bytes());
-    hasher.update(observation.unique_mount_id.to_be_bytes());
+    hasher.update(observation.kernel_boot_id());
+    hasher.update(observation.device().to_be_bytes());
+    hasher.update(observation.inode().to_be_bytes());
+    hasher.update(observation.unique_mount_id().to_be_bytes());
     hasher.update(
         row.manager_custody
             .map_or([0; 32], |custody| custody.evidence_digest),

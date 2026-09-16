@@ -1471,25 +1471,26 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 });
             }
         };
-        let publication = match aos_sandbox_protocol::decode_host_catalog_publication_request(
-            request.request.exact_body(),
-            request.request.peer(),
-            request.request.peer_policy(),
-            now,
-        ) {
-            Ok(publication)
-                if publication.header().request_id() == &request.request.request_id()
-                    && publication.header().protocol_version() == version =>
-            {
-                publication
-            }
-            _ => {
-                return Err(DormantBrokerPublicationExecutionFailureV1::BeforeEffect {
-                    error: BrokerSessionSecurityError::Currentness,
-                    request,
-                });
-            }
-        };
+        let publication =
+            match aos_sandbox_protocol::host_catalog::decode_host_catalog_publication_request(
+                request.request.exact_body(),
+                request.request.peer(),
+                request.request.peer_policy(),
+                now,
+            ) {
+                Ok(publication)
+                    if publication.header().request_id() == &request.request.request_id()
+                        && publication.header().protocol_version() == version =>
+                {
+                    publication
+                }
+                _ => {
+                    return Err(DormantBrokerPublicationExecutionFailureV1::BeforeEffect {
+                        error: BrokerSessionSecurityError::Currentness,
+                        request,
+                    });
+                }
+            };
         let descriptor = &request.descriptors[0];
         let snapshot = match validated_publication_snapshot(
             descriptor,
@@ -2539,15 +2540,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
                     return Ok(());
                 }
                 match request.0.method() {
-                    BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE => owner
-                        .prepare_and_send_fresh_acquire(
+                    BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE => match current_catalog {
+                        Some(current_catalog) => owner.prepare_and_send_fresh_acquire(
                             root_session,
                             catalog_journal,
-                            current_catalog.ok_or_else(|| {
-                                aos_sandbox_mount::MountError::State(
-                                    "Mount Acquire lacks protected catalog authority".to_owned(),
-                                )
-                            })?,
+                            current_catalog,
                             request.0.exact_body(),
                             request.0.peer(),
                             request.0.peer_policy(),
@@ -2555,6 +2552,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
                             mount_plan_digest,
                             ownership_lease_digest,
                         ),
+                        None => Err(aos_sandbox_mount::MountError::State(
+                            "Mount Acquire lacks protected catalog authority".to_owned(),
+                        )),
+                    },
                     BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => owner
                         .prepare_and_send_fresh_release(
                             root_session,
@@ -3410,10 +3411,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ) -> Result<DormantBrokerRequestReceiveProgressV1, DormantBrokerSessionHandshakeErrorV1> {
         let admission = match self.0.receive_authenticated_request() {
             Ok(value) => value,
-            Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 return Ok(DormantBrokerRequestReceiveProgressV1::Pending);
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         let (request, initialize) = match admission {
             crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::New {
@@ -3485,10 +3486,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
     {
         let (admission, descriptors) = match self.0.receive_authenticated_descriptor_request(1) {
             Ok(value) => value,
-            Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 return Ok(DormantBrokerDescriptorRequestReceiveProgressV1::Pending);
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         let (request, initialize) = match admission {
             crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::New {
@@ -3680,12 +3681,13 @@ impl DormantAuthenticatedBrokerSessionV1 {
         };
         Ok(match send {
             Ok(()) => DormantBrokerResponseSendProgressV1::Sent(committed),
-            Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 DormantBrokerResponseSendProgressV1::Pending(committed)
             }
-            Err(error) => {
-                DormantBrokerResponseSendProgressV1::RecoveryRequired { error, committed }
-            }
+            Err(error) => DormantBrokerResponseSendProgressV1::RecoveryRequired {
+                error: error.into(),
+                committed,
+            },
         })
     }
 
@@ -3743,12 +3745,13 @@ impl DormantAuthenticatedBrokerSessionV1 {
         };
         Ok(match send {
             Ok(()) => DormantBrokerTerminalReplaySendProgressV1::Sent(replay),
-            Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 DormantBrokerTerminalReplaySendProgressV1::Pending(replay)
             }
-            Err(error) => {
-                DormantBrokerTerminalReplaySendProgressV1::RecoveryRequired { error, replay }
-            }
+            Err(error) => DormantBrokerTerminalReplaySendProgressV1::RecoveryRequired {
+                error: error.into(),
+                replay,
+            },
         })
     }
 
@@ -3973,7 +3976,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Ok(()) => DormantBrokerDescriptorTerminalReplaySendProgressV1::Sent(
                 DormantBrokerTerminalReplayV1(replay),
             ),
-            Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 DormantBrokerDescriptorTerminalReplaySendProgressV1::Pending(
                     DormantReadyBrokerDescriptorTerminalReplayV1 {
                         replay: DormantBrokerTerminalReplayV1(replay),
@@ -3982,7 +3985,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 )
             }
             Err(error) => DormantBrokerDescriptorTerminalReplaySendProgressV1::RecoveryRequired {
-                error,
+                error: error.into(),
                 replay: DormantReadyBrokerDescriptorTerminalReplayV1 {
                     replay: DormantBrokerTerminalReplayV1(replay),
                     descriptors,
@@ -4107,7 +4110,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         };
         Ok(match send {
             Ok(()) => DormantBrokerDescriptorSendProgressV1::Sent(committed),
-            Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 DormantBrokerDescriptorSendProgressV1::Pending(
                     DormantCommittedBrokerDescriptorResponseV1::seal(
                         committed,
@@ -4118,7 +4121,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             }
             Err(error) => DormantBrokerDescriptorSendProgressV1::RecoveryRequired(
                 DormantBrokerDescriptorSendRecoveryV1 {
-                    error,
+                    error: error.into(),
                     response: DormantCommittedBrokerDescriptorResponseV1::seal(
                         committed,
                         descriptors,
@@ -4333,11 +4336,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Ok(()) => DormantBrokerDescriptorRequestSendProgressV1::Sent(
                 DormantOutstandingBrokerRequestV1(prepared.request),
             ),
-            Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 DormantBrokerDescriptorRequestSendProgressV1::Pending(prepared)
             }
             Err(error) => DormantBrokerDescriptorRequestSendProgressV1::RecoveryRequired(
-                DormantBrokerDescriptorRequestSendRecoveryV1 { error, prepared },
+                DormantBrokerDescriptorRequestSendRecoveryV1 {
+                    error: error.into(),
+                    prepared,
+                },
             ),
         }
     }
@@ -4365,10 +4371,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Ok(()) => Ok(DormantBrokerRequestSendProgressV1::Sent(
                 DormantOutstandingBrokerRequestV1(request.0),
             )),
-            Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 Ok(DormantBrokerRequestSendProgressV1::Pending(request))
             }
-            Err(error) => Err(error),
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -4386,10 +4392,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         let packet = match self.0.receive_response_packet(maximum) {
             Ok(packet) => packet,
-            Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 return Ok(DormantBrokerResponseProgressV1::Pending(outstanding));
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         let outcome = decode_canonical_response_v1(&packet)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
@@ -4436,12 +4442,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .receive_response_packet_with_descriptors(maximum, expected_descriptors)
         {
             Ok(received) => received,
-            Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+            Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 return Ok(DormantBrokerDescriptorResponseProgressV1::Pending(
                     outstanding,
                 ));
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         let outcome = decode_canonical_response_v1(&packet)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
@@ -4535,7 +4541,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
 
     /// Commits one pending outcome through the authenticated adopted session.
     #[must_use]
-    pub(crate) fn commit_broker_outcome(
+    pub fn commit_broker_outcome(
         &mut self,
         pending: ProtectedBrokerOutcomePendingAdvancementV1,
     ) -> ProtectedBrokerOutcomeCommitResultV1 {

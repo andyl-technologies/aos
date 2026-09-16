@@ -787,10 +787,10 @@ impl FileCallbackState {
     ///
     /// Returns [`FileCallbackError`] for stale state or after recording the
     /// terminal ambiguity.
-    pub(crate) fn record_rejected_close_ambiguity(
+    pub(crate) fn record_rejected_close_ambiguity<'index>(
         &mut self,
-        connection: &mut MetadataConnection<'_, '_, '_, '_>,
-        cleanup: RejectedOpenCleanup<'_>,
+        connection: &mut MetadataConnection<'_, 'index, '_, '_>,
+        cleanup: RejectedOpenCleanup<'index>,
     ) -> Result<(), FileCallbackError> {
         self.validate_connection(connection)?;
         if cleanup.worker_brand != self.worker_brand

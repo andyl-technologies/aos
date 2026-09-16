@@ -31,19 +31,19 @@ use super::transition::{MutationIdentityV2, commit_mutation, next_revision, reco
 use crate::Result;
 
 /// Retains the sole send authority for one durably Reserved provider attempt.
-pub(super) struct ReservedProviderQueryV2 {
+pub(crate) struct ReservedProviderQueryV2 {
     attempt_id: [u8; 32],
     reservation: ReservedMountProviderRequestV2,
 }
 
 /// Retains the sole verifier for one provider request handed to the carrier.
-pub(super) struct SentProviderQueryV2 {
+pub(crate) struct SentProviderQueryV2 {
     attempt_id: [u8; 32],
     sent: SentMountProviderRequestV2,
 }
 
 /// Retains the exact attempt and protected send recovery without redispatch authority.
-pub(super) struct ProviderQuerySendRecoveryV2 {
+pub(crate) struct ProviderQuerySendRecoveryV2 {
     attempt_id: [u8; 32],
     recovery: aos_sandbox_source_provider_security::MountProviderRequestSendRecoveryV2,
 }

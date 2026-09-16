@@ -504,6 +504,7 @@ pub struct MetadataConnection<'prepared, 'index, 'bytes, 'plan> {
     projection: &'prepared ValidatedViewProjection<'index, 'bytes>,
     lease: ConnectionLease,
     authority_binding: [u8; 32],
+    durable_state_key: [u8; 32],
     capabilities: FuseCapabilities,
     inodes: InodeTable<'index, 'bytes>,
     connection_brand: ConnectionBrandId,
@@ -515,6 +516,54 @@ pub struct MetadataConnection<'prepared, 'index, 'bytes, 'plan> {
 }
 
 impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'bytes, 'plan> {
+    /// Creates an unqualified connection for repository-owned test fixtures.
+    ///
+    /// This constructor is excluded from default and production builds. The
+    /// fixture must still supply a fully validated projection over the exact
+    /// presentation index; only protected broker qualification is bypassed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed worker error for mismatched artifacts, zero fixture
+    /// entropy, or bounded inode-state allocation failure.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn new_test_fixture(
+        projection: &'prepared ValidatedViewProjection<'index, 'bytes>,
+        presentation: &'prepared PreparedPresentation<'index, 'bytes, 'plan>,
+        connection_key: [u8; 32],
+        inode_limits: InodeTableLimits,
+        directory_limits: DirectoryHandleLimits,
+        limits: WorkerLimits,
+    ) -> Result<Self, WorkerError> {
+        if connection_key == [0; 32] || !std::ptr::eq(projection.index(), presentation.index()) {
+            return Err(WorkerError::IntegrityFailure);
+        }
+        let directory_enabled = directory_limits.maximum_directory_handles != 0
+            && directory_limits.maximum_total_handles != 0;
+        let inodes =
+            InodeTable::new_projected(projection, connection_key, inode_limits, directory_limits)
+                .map_err(map_inode)?;
+        let lease = ConnectionLease::from_authenticated([1; 16], 0, u64::MAX)
+            .ok_or(WorkerError::IntegrityFailure)?;
+        let connection_brand = mint_connection_brand()?;
+
+        Ok(Self {
+            presentation,
+            projection,
+            lease,
+            authority_binding: connection_key,
+            durable_state_key: connection_key,
+            capabilities: FuseCapabilities::metadata_only(),
+            inodes,
+            connection_brand,
+            callback_reducer_minted: false,
+            limits,
+            directory_enabled,
+            features: None,
+            faulted: false,
+        })
+    }
+
     /// Creates one uninitialized worker bound to the presentation's exact index.
     ///
     /// # Errors
@@ -555,6 +604,7 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
             projection,
             lease: prepared.lease(),
             authority_binding: prepared.binding(),
+            durable_state_key: prepared.inode_key(),
             capabilities: prepared.transport_profile().1,
             inodes,
             connection_brand,
@@ -584,6 +634,18 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     #[must_use]
     pub const fn connection_binding(&self) -> [u8; 32] {
         self.authority_binding
+    }
+
+    /// Creates a bounded codec tied to this exact live connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableStateError`] when the supplied limits are invalid.
+    pub fn durable_state_codec(
+        &self,
+        limits: DurableStateLimits,
+    ) -> Result<DurableStateCodec, DurableStateError> {
+        DurableStateCodec::new(self.authority_binding, self.durable_state_key, limits)
     }
 
     /// Returns the private process-local identity of this exact worker instance.

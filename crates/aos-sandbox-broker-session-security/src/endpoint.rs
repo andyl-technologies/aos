@@ -338,8 +338,10 @@ impl ProtectedBrokerSessionClientV1 {
         &mut self,
     ) -> Result<[u8; 16], BrokerSessionSecurityError> {
         self.inner.revalidate_before()?;
-        let request_id = nonzero_random::<16, _>(&mut KernelEntropy)
-            .map_err(|error| self.inner.poison(error))?;
+        let request_id = match nonzero_random::<16, _>(&mut KernelEntropy) {
+            Ok(request_id) => request_id,
+            Err(error) => return self.inner.poison(error),
+        };
         if let Err(error) = self.inner.revalidate_after() {
             return self.inner.poison(error);
         }

@@ -779,6 +779,24 @@ impl SourceRootObservationV1 {
         self.unique_mount_id
     }
 
+    /// Reports whether the observed descriptor has `O_PATH` semantics.
+    #[must_use]
+    pub const fn is_o_path(&self) -> bool {
+        self.o_path
+    }
+
+    /// Reports whether the observed descriptor names a directory.
+    #[must_use]
+    pub const fn is_directory(&self) -> bool {
+        self.directory
+    }
+
+    /// Reports whether the observed mount is read-only.
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     /// Constructs one shaped `O_PATH` directory descriptor observation.
     ///
     /// # Errors

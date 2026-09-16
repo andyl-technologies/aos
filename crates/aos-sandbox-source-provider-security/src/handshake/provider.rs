@@ -18,7 +18,10 @@ use aos_sandbox_source_provider_protocol::{
     verify_provider_request,
 };
 
-use super::{HandshakeTransitionV1, current_unix_seconds, process_identity};
+use super::{
+    CommittedProviderOutcomeV1, CurrentProviderRequestV1, HandshakeTransitionV1,
+    ProviderOutcomeAuthorizationV1, current_unix_seconds, process_identity,
+};
 use crate::SourceProviderSecurityError;
 use crate::carrier::{CarrierFailureV1, InertSourceProviderCarrierV1};
 use crate::custody::ProtectedProviderCustodyV1;
@@ -177,6 +180,47 @@ pub struct RevalidatedProviderReplayV1 {
     session_binding: aos_sandbox_core::ObjectDigest,
     response: Vec<u8>,
     has_source_root: bool,
+}
+
+fn journal_retains_exact_artifact(
+    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    response: &[u8],
+) -> Result<bool, SourceProviderSecurityError> {
+    use aos_sandbox_source_provider_ledger::ledger::model::{
+        DecodedRecordV1, ProviderAttemptStateV1,
+    };
+
+    journal
+        .validate_source_provider_authority()
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    let records = journal
+        .records()
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    let records = aos_sandbox_source_provider_ledger::collect_bounded_records(records)
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    aos_sandbox_source_provider_ledger::validate_prospective_records(
+        records
+            .iter()
+            .map(|(key, value)| (key.as_slice(), value.as_slice())),
+    )
+    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+
+    Ok(records.iter().any(|(key, value)| {
+        let Ok(DecodedRecordV1::Attempt(attempt)) =
+            aos_sandbox_source_provider_ledger::ledger::format::decode_record(key, value)
+        else {
+            return false;
+        };
+        attempt.state == ProviderAttemptStateV1::Completed
+            && attempt.completed_response == response
+            && attempt.response_digest
+                == Some(
+                    aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
+                        attempt.method,
+                        response,
+                    ),
+                )
+    }))
 }
 
 impl core::fmt::Debug for RevalidatedProviderReplayV1 {

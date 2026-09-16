@@ -20,14 +20,19 @@ use aos_filesystem_fuse::{RunError, TransportLimits, run_metadata};
 use aos_filesystem_view::{
     AclCapability, DirectoryHandleLimits, INDEX_MEDIA_TYPE, IdMapExtent, IdentityMap,
     IndexExpectation, IndexStaging, InodeTableLimits, MetadataConnection, ObjectSource,
-    PreparedPresentation, PresentationLimits, PresentationPlan, ReplyScratch, RequestBudget,
-    TreeCompileLimits, TreeCompiler, WorkerLimits, validate_index,
+    PreparedPresentation, PresentationLimits, PresentationPlan, ProjectionLimits, ReplyScratch,
+    RequestBudget, TreeCompileLimits, TreeCompiler, WorkerLimits, compile_view_projection,
+    validate_index,
 };
-use aos_sandbox_core::format::{encode_directory, encode_tree};
+use aos_sandbox_core::format::{encode_directory, encode_tree, encode_view};
 use aos_sandbox_core::model::{
-    ContentLayout, Directory, DirectoryEntry, FileNode, FilesystemMetadata, Node, SymlinkNode, Tree,
+    CacheDomain, CacheDomainKind, ContentLayout, Directory, DirectoryEntry, FileNode,
+    FilesystemMetadata, Node, SymlinkNode, Tree, View, ViewConsistency, ViewMutation, ViewSource,
 };
-use aos_sandbox_core::{MediaType, ObjectDescriptor, PathName, descriptor_for_bytes};
+use aos_sandbox_core::{
+    CacheDomainId, DecodeLimits, FeatureRef, MediaType, ObjectDescriptor, PathName, Revision,
+    ViewId, descriptor_for_bytes,
+};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -127,6 +132,43 @@ fn serve(connected: &OwnedFd, cancellation: &OwnedFd) -> Result<()> {
             tree_features: 0,
         },
     )?;
+    let view = View::new(
+        ViewSource::ImmutableTree { tree: tree.clone() },
+        Vec::new(),
+        ViewConsistency::Immutable,
+        ViewMutation::ReadOnly,
+        FeatureRef::new("aos.sandbox.identity.posix32", 1, 0)?,
+        CacheDomain::new(CacheDomainKind::Private, CacheDomainId::from_bytes([3; 16])),
+        Vec::new(),
+    )?;
+    let view_bytes = encode_view(&view);
+    let view_descriptor = descriptor_for_bytes(
+        MediaType::new("application/vnd.aos.sandbox.view.v1+cbor")?,
+        &view_bytes,
+    );
+    let projection = compile_view_projection(
+        &view_bytes,
+        &view_descriptor,
+        ViewId::from_bytes([4; 16]),
+        Revision::new(1),
+        &index,
+        ProjectionLimits {
+            decode: DecodeLimits {
+                maximum_bytes: 65_536,
+                maximum_collection_items: 128,
+                maximum_total_items: 512,
+                maximum_byte_string_bytes: 65_536,
+                maximum_text_bytes: 4_096,
+                maximum_depth: 32,
+            },
+            maximum_actions: 1,
+            maximum_source_records: 128,
+            maximum_projected_nodes: 128,
+            maximum_path_components: 64,
+            maximum_path_bytes: 1_048_576,
+            maximum_working_bytes: 16 * 1_048_576,
+        },
+    )?;
     let extent = IdMapExtent {
         portable_start: 0,
         presented_start: 1000,
@@ -141,7 +183,8 @@ fn serve(connected: &OwnedFd, cancellation: &OwnedFd) -> Result<()> {
     // Scratch retains both the 64 KiB names buffer and typed directory slots.
     let worker_limits =
         WorkerLimits::new(65_536, 128, 65_536, 131_072).with_maximum_forget_entries(128);
-    let connection = MetadataConnection::new(
+    let connection = MetadataConnection::new_test_fixture(
+        &projection,
         &presentation,
         [9; 32],
         InodeTableLimits::new(128, 1_048_576, 1024, 128, 128),

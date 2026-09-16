@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+default = []
+test-fixtures = []
+
 [dependencies]
 aos-sandbox-core.workspace = true
 sha2.workspace = true

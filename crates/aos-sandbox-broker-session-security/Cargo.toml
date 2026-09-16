@@ -20,6 +20,7 @@ aos-sandbox-network.workspace = true
 aos-sandbox-protocol.workspace = true
 aos-sandbox-storage.workspace = true
 aos-sandbox-source-provider.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
 aos-sandbox-source-provider-security.workspace = true
 buffa.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }

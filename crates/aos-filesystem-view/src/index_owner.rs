@@ -308,7 +308,10 @@ impl DormantIndexOwner {
             });
         }
         drop(file);
-        if read_bounded_at(&self.root, &temporary_name, MAXIMUM_HEAD_BYTES).as_ref() != Ok(&bytes) {
+        if !read_bounded_at(&self.root, &temporary_name, MAXIMUM_HEAD_BYTES)
+            .as_ref()
+            .is_ok_and(|current| current == &bytes)
+        {
             return Err(IndexOwnerError::Ambiguous {
                 source: std::io::Error::other("index head temporary readback failed"),
                 recovery: AmbiguousIndexReplacement {
@@ -469,8 +472,9 @@ impl DormantIndexOwner {
         {
             return Err(IndexOwnerError::ForeignTemporary);
         }
-        if read_bounded_at(&self.root, &recovery.temporary_name, MAXIMUM_HEAD_BYTES).as_ref()
-            != Ok(&head)
+        if !read_bounded_at(&self.root, &recovery.temporary_name, MAXIMUM_HEAD_BYTES)
+            .as_ref()
+            .is_ok_and(|current| current == &head)
         {
             self.revalidate_expected(recovery.predecessor)?;
             let mut file = File::from(descriptor);
@@ -747,7 +751,7 @@ fn read_bounded_at(root: &OwnedFd, name: &str, maximum: usize) -> Result<Vec<u8>
     }
     let mut file = File::from(descriptor);
     let mut bytes = Vec::new();
-    file.by_ref()
+    std::io::Read::by_ref(&mut file)
         .take((maximum + 1) as u64)
         .read_to_end(&mut bytes)?;
     if bytes.len() > maximum {

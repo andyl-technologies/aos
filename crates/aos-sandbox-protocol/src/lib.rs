@@ -74,6 +74,9 @@ pub use mount_destination_slot::{
 pub use mount_result::{
     ValidatedMountResult, decode_mount_result_for_apply, detached_mount_handle_v1,
 };
+pub use mount_scope::{
+    decode_mount_scope_request, decode_mount_scope_request_for_protected_replay,
+};
 pub use mount_source_acquisition::{
     LiveValidatedAcquireMountSourceRequest, LiveValidatedReleaseMountSourceAcquisitionRequest,
     MAXIMUM_MOUNT_SOURCE_ACQUISITION_RECORDS, ValidatedAcquireMountSourceRequest,
@@ -90,6 +93,9 @@ pub use network_inventory::{
     MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS, ValidatedNetworkInventory,
     ValidatedNetworkNamespace, decode_network_resource_inventory_request,
     decode_network_resource_inventory_response,
+};
+pub use payload_scope::{
+    decode_payload_scope_request, decode_payload_scope_request_for_protected_replay,
 };
 pub use source_realization::{
     MountSourcePhysicalProofV1, MountSourceProofClassV1, MountSourceProviderHistoryV1,

@@ -70,7 +70,7 @@ pub(super) fn validate_mount_release_request(row: &SourceAcquisitionRowV2) -> Re
     Ok(())
 }
 
-pub(super) const fn release_authority_dominates(
+pub(super) fn release_authority_dominates(
     assignment: AssignmentV2,
     release: ReleaseAuthorityV2,
 ) -> bool {

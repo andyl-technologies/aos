@@ -875,6 +875,7 @@ dependencies = [
  "aos-sandbox-network",
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider",
+ "aos-sandbox-source-provider-protocol",
  "aos-sandbox-source-provider-security",
  "aos-sandbox-storage",
  "buffa",

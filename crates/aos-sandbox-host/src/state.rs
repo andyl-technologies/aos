@@ -23,6 +23,7 @@ use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV1};
 use aos_sandbox_core::model::KeyUsage;
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb};
 use aos_sandbox_protocol::ValidatedAssignmentFence;
+use buffa::Enumeration as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -1484,8 +1485,7 @@ fn scope_replay_receipt_matches(
             && binding.protected_generation == receipt_binding.protected_generation()
             && binding.protected_head == receipt_binding.protected_head()
     };
-    let expected = aos_proto::aos::sandbox::local::v1::BrokerMethod::try_from(binding.method)
-        .ok()
+    let expected = aos_proto::aos::sandbox::local::v1::BrokerMethod::from_i32(binding.method)
         .and_then(|method| {
             aos_sandbox_protocol::BrokerTerminalCommitBindingV1::new(
                 reservation_locator,

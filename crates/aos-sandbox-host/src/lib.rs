@@ -28,7 +28,6 @@ pub mod catalog;
 mod dormant_broker_session;
 /// Source-only RFC-0021 adapters that are not connected to service dispatch.
 pub mod dormant_runtime_backend;
-#[cfg(test)]
 mod observation;
 pub mod peer;
 pub mod plan;

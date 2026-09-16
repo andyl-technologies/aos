@@ -184,7 +184,7 @@ impl ProtectedCurrentnessWitnessV1 {
             && self.sequence > prior.sequence
     }
 
-    pub(crate) const fn belongs_to(self, identity: ProtectedJournalIdentityV1) -> bool {
+    pub(crate) fn belongs_to(self, identity: ProtectedJournalIdentityV1) -> bool {
         self.owner == identity.owner
             && self.namespace == identity.namespace
             && self.journal == identity.journal

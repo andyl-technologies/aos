@@ -173,10 +173,10 @@ pub(in crate::handshake::mount_request) fn validate_lifecycle_row_in_graph(
         || projection
             .source_realization_handle()
             .is_some_and(|identity| identity != evidence.source_realization_handle)
-        || observation.kernel_boot_id != evidence.source_kernel_boot_id
-        || observation.device != evidence.source_device
-        || observation.inode != evidence.source_inode
-        || observation.unique_mount_id != evidence.source_unique_mount_id
+        || observation.kernel_boot_id() != evidence.source_kernel_boot_id
+        || observation.device() != evidence.source_device
+        || observation.inode() != evidence.source_inode
+        || observation.unique_mount_id() != evidence.source_unique_mount_id
         || graph.acquisitions.get(&row.acquisition_id) != Some(&row)
     {
         return Err(SourceProviderSecurityError::SessionContinuity);
@@ -459,9 +459,11 @@ fn validate_applied_lifecycle_transaction_id(
         match decode_mount_source_state_record_v2(record.key(), value)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
         {
-            StoredRecordV2::Acquisition { value } if row.replace(value).is_none() => {}
-            StoredRecordV2::ProviderQueryAttempt { value } if attempt.replace(value).is_none() => {}
-            StoredRecordV2::ProviderHead { value } if head.replace(value).is_none() => {}
+            StoredRecordV2::Acquisition { value } if row.is_none() => row = Some(value),
+            StoredRecordV2::ProviderQueryAttempt { value } if attempt.is_none() => {
+                attempt = Some(value);
+            }
+            StoredRecordV2::ProviderHead { value } if head.is_none() => head = Some(value),
             _ => return Err(SourceProviderSecurityError::SessionContinuity),
         }
     }
@@ -1087,7 +1089,7 @@ pub(super) fn graph_retains_pending_source_root_custody(
     rows.next().is_some() && rows.next().is_none()
 }
 
-pub(super) fn graph_retains_recoverable_source_root_custody(
+pub(in crate::handshake::mount_request) fn graph_retains_recoverable_source_root_custody(
     graph: &aos_sandbox_protocol::mount_source_acquisition_state::MountSourceAcquisitionStateV2,
     attempt: aos_sandbox_protocol::mount_source_acquisition_state::RecordRefV2,
 ) -> bool {
@@ -1235,15 +1237,15 @@ pub(in crate::handshake::mount_request) fn verify_historical_acquire_equivalent(
         || receipt.subject().observed_proof_digest() != proof_digest
         || receipt_observation
             != (
-                observation.kernel_boot_id,
-                observation.device,
-                observation.inode,
-                observation.unique_mount_id,
+                observation.kernel_boot_id(),
+                observation.device(),
+                observation.inode(),
+                observation.unique_mount_id(),
             )
-        || observation.kernel_boot_id != request_execution.1
-        || !observation.directory
-        || !observation.o_path
-        || !observation.read_only
+        || observation.kernel_boot_id() != request_execution.1
+        || !observation.is_directory()
+        || !observation.is_o_path()
+        || !observation.is_read_only()
         || lease.request_identity() != (request.request_id(), digest_acquire_request(&request))
         || lease_holder != request_holder
         || lease_commitments != (request.binding_digest(), request_execution.2)

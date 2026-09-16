@@ -1449,5 +1449,9 @@ const fn upstream_journal_limits() -> JournalLimits {
         maximum_record_bytes: 4096,
         maximum_key_bytes: 128,
         maximum_records_per_transaction: 5,
+        maximum_transaction_bytes: 24 * 1024,
+        maximum_transactions: 65_536,
+        maximum_materialized_bytes: 5 * (128 + 4096),
+        maximum_materialized_records: 5,
     }
 }

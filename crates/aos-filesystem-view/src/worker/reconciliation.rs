@@ -850,7 +850,7 @@ fn read_at(root: &OwnedFd, name: &str) -> Result<Vec<u8>, ReconciliationAdapterE
     }
     let mut file = File::from(descriptor);
     let mut bytes = Vec::new();
-    file.by_ref()
+    std::io::Read::by_ref(&mut file)
         .take((MAXIMUM_RECEIPT_JOURNAL_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
     if bytes.len() > MAXIMUM_RECEIPT_JOURNAL_BYTES {
@@ -1122,7 +1122,7 @@ impl DormantReconciliationReadbackOwner {
     ) -> Result<(), ReconciliationAdapterError> {
         match read_at(&self.root, &self.source_name) {
             Ok(previous)
-                if ObjectDigest::from_bytes(Sha256::digest(previous).into()) == expected =>
+                if ObjectDigest::from_bytes(Sha256::digest(&previous).into()) == expected =>
             {
                 Ok(())
             }

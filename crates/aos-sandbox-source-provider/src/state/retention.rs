@@ -713,10 +713,7 @@ impl<'a> ProviderLedgerV1<'a> {
             release.acquisition_record_digest = crate::format::record_digest(&acquisition_bytes)?;
         }
         let mut records = vec![
-            (
-                crate::format::acquisition_key(key.provider_id, key.holder_id, key.acquisition_id),
-                acquisition_bytes,
-            ),
+            (crate::format::acquisition_key(&key), acquisition_bytes),
             (
                 crate::format::authority_key(authority.provider.authority_id()),
                 crate::format::encode_authority(&authority),

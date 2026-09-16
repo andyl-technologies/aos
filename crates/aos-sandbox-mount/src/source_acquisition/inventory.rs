@@ -18,11 +18,13 @@ use aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV
 use super::SourceAcquisitionTableV2;
 use super::format::{
     MAXIMUM_LINEAGE_ATTEMPTS, MutationTagV2, acquisition_key, attempt_id, intent_digest,
-    provider_head_key, provider_session_key, put_record, request_id, state_error,
+    inventory_correlation_set_v2, provider_head_key, provider_session_key, put_record, request_id,
+    state_error,
 };
 use super::model::*;
 use super::projection::{
-    inventory_entry_matches_evidence, projection_entries, projection_from_entries,
+    inventory_correlation_for_row_v2, inventory_entry_matches_evidence, projection_entries,
+    projection_from_entries,
 };
 use super::reservation::{
     ReservedProviderQueryV2, confirm_reservation, sealed_attempt, sealed_head,

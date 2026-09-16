@@ -237,7 +237,8 @@ pub fn backend_acquisition_attestation_statement_v1(
     hasher.update(plan.effect_id());
     hasher.update(plan.normalized_intent_digest().as_bytes());
     hasher.update(plan.backend_id());
-    hasher.update(provider_resource_commitment_v1(resource).as_bytes());
+    hasher
+        .update(provider_resource_commitment_v1(resource, digest_provider_proof(proof)).as_bytes());
     hasher.update(digest_provider_proof(proof).as_bytes());
     hasher.update(Sha256::digest(evidence.encode()));
     hasher.update(Sha256::digest(reopen_identity.encode()));
@@ -434,7 +435,7 @@ impl ProtectedBackendVerifierV1 {
         let directory = open_verifier_directory()?;
         let directory_metadata = directory_metadata(&directory, group)?;
         let manifest = open_manifest(&directory)?;
-        let manifest_metadata = manifest_metadata(&manifest, group)?;
+        let retained_manifest_metadata = manifest_metadata(&manifest, group)?;
         rustix::fs::flock(&manifest, FlockOperation::NonBlockingLockExclusive).map_err(
             |error| {
                 if error == rustix::io::Errno::AGAIN {
@@ -448,7 +449,7 @@ impl ProtectedBackendVerifierV1 {
         )?;
         let exact_manifest = read_manifest(&manifest)?;
         if read_manifest(&manifest)? != exact_manifest
-            || manifest_metadata(&manifest, group)? != manifest_metadata
+            || manifest_metadata(&manifest, group)? != retained_manifest_metadata
         {
             return Err(ProviderLedgerError::Corrupt(
                 "backend verifier manifest changed while loading",
@@ -460,7 +461,7 @@ impl ProtectedBackendVerifierV1 {
             directory,
             directory_metadata,
             manifest,
-            manifest_metadata,
+            manifest_metadata: retained_manifest_metadata,
             exact_manifest,
             verifier_set_digest,
             entries,

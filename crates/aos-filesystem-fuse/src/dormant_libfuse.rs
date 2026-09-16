@@ -614,10 +614,10 @@ impl DormantLibfuseOperationsAdapterV2 {
     /// # Errors
     ///
     /// Returns the terminal ambiguity error after exact cleanup validation.
-    pub fn record_rejected_close_ambiguity(
+    pub fn record_rejected_close_ambiguity<'index>(
         &mut self,
-        connection: &mut MetadataConnection<'_, '_, '_, '_>,
-        cleanup: DormantRejectedOpenCloseV2<'_>,
+        connection: &mut MetadataConnection<'_, 'index, '_, '_>,
+        cleanup: DormantRejectedOpenCloseV2<'index>,
         authorization: DormantAuthorizedRejectedOpenCloseV2<'_>,
     ) -> Result<(), DormantLibfuseCallbackErrorV2> {
         if !cleanup.close_authorized

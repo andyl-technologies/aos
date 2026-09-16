@@ -544,8 +544,10 @@ pub fn compile_view_projection<'index, 'bytes>(
     let source_nodes = resolve_projected_sources(&nodes, &source, limits)?;
     enforce_result_limits(
         &nodes,
+        nodes.capacity(),
         &source_nodes,
         &profiles,
+        profiles.capacity(),
         decoded_view_heap_bytes,
         descriptor_heap_bytes,
         limits,
@@ -908,7 +910,7 @@ fn collect_source_nodes<'bytes>(
 ) -> Result<Vec<SourceNode<'bytes>>, ProjectionError> {
     let capacity = usize::try_from(index.summary().records)
         .map_err(|_| ProjectionError::LimitExceeded("source record"))?;
-    let mut result = Vec::new();
+    let mut result: Vec<SourceNode<'bytes>> = Vec::new();
     result
         .try_reserve_exact(capacity)
         .map_err(|_| ProjectionError::AllocationRefused)?;
@@ -1327,8 +1329,10 @@ fn is_immediate_child(parent: &RelativePath, candidate: &RelativePath) -> bool {
 
 fn enforce_result_limits(
     nodes: &[ProjectedNode],
+    node_capacity: usize,
     source_nodes: &[Option<IndexNodeView<'_>>],
     profiles: &[ProjectionProfile],
+    profile_capacity: usize,
     decoded_view_heap_bytes: u64,
     descriptor_heap_bytes: u64,
     limits: ProjectionLimits,
@@ -1346,10 +1350,10 @@ fn enforce_result_limits(
     if path_bytes > limits.maximum_path_bytes {
         return Err(ProjectionError::LimitExceeded("path byte"));
     }
-    let node_storage = (nodes.capacity() as u64)
+    let node_storage = (node_capacity as u64)
         .checked_mul(size_of::<ProjectedNode>() as u64)
         .ok_or(ProjectionError::LimitExceeded("working byte"))?;
-    let profile_storage = (profiles.capacity() as u64)
+    let profile_storage = (profile_capacity as u64)
         .checked_mul(size_of::<ProjectionProfile>() as u64)
         .ok_or(ProjectionError::LimitExceeded("working byte"))?;
     let source_storage = (source_nodes.len() as u64)

@@ -293,7 +293,7 @@ impl<'a> ProviderLedgerV1<'a> {
                     lease_id: release.lease_id,
                     lease_digest: release.lease_digest,
                     backend_id: release.backend_id,
-                    acquired_evidence: crate::backend::acquired_evidence(acquisition)?,
+                    acquired_evidence: crate::backend::acquired_evidence(&acquisition)?,
                 };
                 let backend_observation = backend.observe_release(&plan);
                 match self.poison_backend_result(acquisition_id, backend_observation)? {

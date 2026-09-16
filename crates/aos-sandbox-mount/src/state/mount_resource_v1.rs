@@ -130,7 +130,7 @@ pub(crate) trait ObjectDescriptorV1Ext: Sized {
 
 impl ObjectDescriptorV1Ext for ObjectDescriptorV1 {
     /// Converts and registry-validates this DTO for the filesystem-view role.
-    pub(crate) fn to_runtime(&self) -> Result<ObjectDescriptor> {
+    fn to_runtime(&self) -> Result<ObjectDescriptor> {
         if self.sha256_digest == [0; 32] || self.encoded_size == 0 {
             return Err(state_error("view descriptor contains a sentinel value"));
         }
@@ -147,7 +147,7 @@ impl ObjectDescriptorV1Ext for ObjectDescriptorV1 {
     }
 
     /// Converts a validated runtime view descriptor into its stable V1 DTO.
-    pub(crate) fn from_runtime(descriptor: &ObjectDescriptor) -> Result<Self> {
+    fn from_runtime(descriptor: &ObjectDescriptor) -> Result<Self> {
         validate_descriptor_role(DescriptorRole::FilesystemViewRevision, descriptor)
             .map_err(|error| state_error(error.to_string()))?;
         if descriptor.digest().as_bytes() == &[0; 32] || descriptor.encoded_size() == 0 {
@@ -590,7 +590,7 @@ pub(crate) trait MountResourceV1Ext {
 
 impl MountResourceV1Ext for MountResourceV1 {
     /// Reports whether this durable phase still owns its source realization.
-    pub(crate) fn retains_source_reference(&self) -> bool {
+    fn retains_source_reference(&self) -> bool {
         !matches!(self.state, MountResourceStateV1::Released { .. })
     }
 
@@ -771,15 +771,15 @@ impl MountResourceStateV1Ext for MountResourceStateV1 {
         match self {
             Self::Allocated { .. } => {}
             Self::Prepared { detached, .. } | Self::Publishing { detached, .. } => {
-                detached.validate()?;
+                validate_detached_mount_identity(detached)?;
             }
             Self::Installed {
                 detached,
                 installed,
                 publication,
             } => {
-                detached.validate()?;
-                installed.validate(limits)?;
+                validate_detached_mount_identity(detached)?;
+                validate_installed_mount_observation(installed, limits)?;
                 if installed.target_mount_namespace_id != publication.target_mount_namespace_id {
                     return Err(state_error(
                         "installed mount is in the wrong target namespace",
@@ -792,8 +792,8 @@ impl MountResourceStateV1Ext for MountResourceStateV1 {
                 installed,
                 detachment,
             } => {
-                detached.validate()?;
-                installed.validate(limits)?;
+                validate_detached_mount_identity(detached)?;
+                validate_installed_mount_observation(installed, limits)?;
                 validate_same_mount_identity(detached, installed)?;
                 validate_operation(detachment)?;
             }
@@ -802,8 +802,8 @@ impl MountResourceStateV1Ext for MountResourceStateV1 {
                 installed,
                 replaced_by,
             } => {
-                detached.validate()?;
-                installed.validate(limits)?;
+                validate_detached_mount_identity(detached)?;
+                validate_installed_mount_observation(installed, limits)?;
                 validate_same_mount_identity(detached, installed)?;
                 if *replaced_by == [0; 32] || *replaced_by == own_handle {
                     return Err(state_error("draining resource has an invalid successor"));
@@ -815,10 +815,10 @@ impl MountResourceStateV1Ext for MountResourceStateV1 {
                 release,
                 replaced_by,
             } => {
-                detached.validate()?;
+                validate_detached_mount_identity(detached)?;
                 validate_operation(release)?;
                 if let Some(observation) = installed {
-                    observation.validate(limits)?;
+                    validate_installed_mount_observation(observation, limits)?;
                     validate_same_mount_identity(detached, observation)?;
                 }
                 if installed.is_some() != replaced_by.is_some()
@@ -904,10 +904,10 @@ fn validate_fault(
         return Err(state_error("faulted resource has an invalid successor"));
     }
     if let Some(identity) = detached.as_ref() {
-        identity.validate()?;
+        validate_detached_mount_identity(identity)?;
     }
     if let Some(observation) = installed.as_ref() {
-        observation.validate(limits)?;
+        validate_installed_mount_observation(observation, limits)?;
     }
     if let (Some(identity), Some(observation)) = (detached.as_ref(), installed.as_ref()) {
         validate_same_mount_identity(identity, observation)?;
@@ -944,34 +944,33 @@ fn validate_same_mount_identity(
     Ok(())
 }
 
-impl DetachedMountIdentityV1 {
-    fn validate(&self) -> Result<()> {
-        if self.unique_mount_id == 0 {
-            return Err(state_error("detached mount identity is incomplete"));
-        }
-        Ok(())
+fn validate_detached_mount_identity(identity: &DetachedMountIdentityV1) -> Result<()> {
+    if identity.unique_mount_id == 0 {
+        return Err(state_error("detached mount identity is incomplete"));
     }
+    Ok(())
 }
 
-impl InstalledMountObservationV1 {
-    fn validate(&self, limits: MountResourceLimitsV1) -> Result<()> {
-        if self.unique_mount_id == 0
-            || self.parent_mount_id == 0
-            || self.target_mount_namespace_id == 0
-            || self.identity_map_digest == [0; 32]
-            || self.root.is_empty()
-            || self.mount_point.is_empty()
-            || self.root.len() > limits.path_bytes
-            || self.mount_point.len() > limits.path_bytes
-            || self.root.contains(&0)
-            || self.mount_point.contains(&0)
-        {
-            return Err(state_error(
-                "installed mount observation is incomplete or unbounded",
-            ));
-        }
-        Ok(())
+fn validate_installed_mount_observation(
+    observation: &InstalledMountObservationV1,
+    limits: MountResourceLimitsV1,
+) -> Result<()> {
+    if observation.unique_mount_id == 0
+        || observation.parent_mount_id == 0
+        || observation.target_mount_namespace_id == 0
+        || observation.identity_map_digest == [0; 32]
+        || observation.root.is_empty()
+        || observation.mount_point.is_empty()
+        || observation.root.len() > limits.path_bytes
+        || observation.mount_point.len() > limits.path_bytes
+        || observation.root.contains(&0)
+        || observation.mount_point.contains(&0)
+    {
+        return Err(state_error(
+            "installed mount observation is incomplete or unbounded",
+        ));
     }
+    Ok(())
 }
 
 fn validate_transition(

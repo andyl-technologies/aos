@@ -47,7 +47,10 @@ mod validation;
 
 pub(crate) use completion::complete_acquire;
 pub(crate) use reservation::reserve_acquire;
-use validation::*;
+pub(crate) use validation::{
+    derive_acquire_effect_id, derive_backend_plan_id, derive_lease_id, validate_backend_selection,
+};
+use validation::{enforce_acquire_limits, normalized_intent};
 
 const ACQUIRE_RESERVE_PURPOSE: &[u8] = b"reserve-acquire";
 const ACQUIRE_COMPLETE_PURPOSE: &[u8] = b"complete-acquire";

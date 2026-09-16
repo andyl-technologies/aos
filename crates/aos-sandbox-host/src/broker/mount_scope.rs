@@ -52,9 +52,13 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
             .ok_or(HostError::UnknownHandle)?
             .to_vec();
         let current = self.authority.open_fence(fence.sandbox_id(), &prior)?;
-        let admitted =
-            self.authority
-                .admit_mount_scope(artifacts, request, request_body, &clock()?, prior)?;
+        let admitted = self.authority.admit_mount_scope(
+            artifacts,
+            request,
+            request_body,
+            &clock()?,
+            &prior,
+        )?;
         if admitted.fence != current {
             return Err(HostError::Fence(
                 "mount scope query does not match installed authority",
@@ -140,8 +144,9 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
         let prior = self
             .state
             .prior_authorization(fence.sandbox_id())
-            .ok_or(HostError::UnknownHandle)?;
-        let current = self.authority.open_fence(fence.sandbox_id(), prior)?;
+            .ok_or(HostError::UnknownHandle)?
+            .to_vec();
+        let current = self.authority.open_fence(fence.sandbox_id(), &prior)?;
         self.authority.check_current_fence(&current)?;
         if current.assignment() != expected_assignment {
             return Err(HostError::Fence(

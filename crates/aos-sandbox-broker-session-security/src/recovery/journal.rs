@@ -985,7 +985,7 @@ impl ProtectedBrokerSessionJournalV1 {
             .is_none_or(|value| value.endpoint_publication != current_publication);
         let history = current
             .as_ref()
-            .map(ProtectedBrokerSessionJournalSnapshotV1::history_model)
+            .map(StoredProtocolHistoryV1::history_model)
             .transpose()?;
         let traffic = match history.as_ref() {
             Some(history) => reconstruct_traffic(history, transcript, &context)?,
@@ -1182,8 +1182,8 @@ impl ProtectedBrokerSessionJournalV1 {
         let (expected_generation, expected_head, expected_publication) = match before.as_ref() {
             None => (0, [0; 32], [0; 32]),
             Some(current) => {
-                let head = current
-                    .history_model()?
+                let history = current.history_model()?;
+                let head = history
                     .head()
                     .map_err(|_| BrokerSessionSecurityError::Currentness)?;
                 if current.endpoint_publication == endpoint_publication

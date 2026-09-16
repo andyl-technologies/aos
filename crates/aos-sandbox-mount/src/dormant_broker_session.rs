@@ -7,10 +7,11 @@
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::mount_catalog::decode_mount_catalog_preparation;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, decode_destination_slot_inventory_request,
-    decode_mount_catalog_preparation, decode_mount_inventory_request,
+    decode_mount_inventory_request,
 };
 use sha2::{Digest as _, Sha256};
 

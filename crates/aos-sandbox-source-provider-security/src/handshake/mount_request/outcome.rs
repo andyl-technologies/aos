@@ -19,50 +19,67 @@ fn startup_adoption_capability(
 {
     use aos_sandbox_protocol::mount_source_acquisition_state::SourceAcquisitionPhaseV2;
 
-    let manager_presence = Some(prepared.manager_presence);
+    let into_parts = |prepared: crate::PreparedStartupMountSourceAdoptionV2| {
+        (
+            prepared.observed,
+            prepared.projection,
+            Some(prepared.manager_presence),
+        )
+    };
     if prepared.cleanup_only {
+        let (observed, projection, manager_presence) = into_parts(prepared);
         return Ok(crate::RecoveredRetainedMountSourceRootV2::CleanupOnly(
             crate::PreparedMountSourceReleaseV2 {
                 custody: crate::descriptor::ReleaseCustodyV2::Retained {
-                    observed: prepared.observed,
+                    observed,
                     manager_presence,
                 },
-                projection: prepared.projection,
+                projection,
             },
         ));
     }
     match prepared.effective_phase {
-        SourceAcquisitionPhaseV2::DescriptorCustodied => Ok(
-            crate::RecoveredRetainedMountSourceRootV2::DescriptorCustodied(
-                crate::MountSourceRootCustodyV2 {
-                    observed: prepared.observed,
-                    projection: prepared.projection,
+        SourceAcquisitionPhaseV2::DescriptorCustodied => {
+            let (observed, projection, manager_presence) = into_parts(prepared);
+            Ok(
+                crate::RecoveredRetainedMountSourceRootV2::DescriptorCustodied(
+                    crate::MountSourceRootCustodyV2 {
+                        observed,
+                        projection,
+                        manager_presence,
+                    },
+                ),
+            )
+        }
+        SourceAcquisitionPhaseV2::Active => {
+            let (observed, projection, manager_presence) = into_parts(prepared);
+            Ok(crate::RecoveredRetainedMountSourceRootV2::Active(
+                crate::ActiveMountSourceRootV2 {
+                    observed,
+                    projection,
                     manager_presence,
                 },
-            ),
-        ),
-        SourceAcquisitionPhaseV2::Active => Ok(crate::RecoveredRetainedMountSourceRootV2::Active(
-            crate::ActiveMountSourceRootV2 {
-                observed: prepared.observed,
-                projection: prepared.projection,
-                manager_presence,
-            },
-        )),
-        SourceAcquisitionPhaseV2::Consumed => Ok(
-            crate::RecoveredRetainedMountSourceRootV2::Consumed(crate::ConsumedMountSourceRootV2 {
-                observed: prepared.observed,
-                projection: prepared.projection,
-                manager_presence,
-            }),
-        ),
+            ))
+        }
+        SourceAcquisitionPhaseV2::Consumed => {
+            let (observed, projection, manager_presence) = into_parts(prepared);
+            Ok(crate::RecoveredRetainedMountSourceRootV2::Consumed(
+                crate::ConsumedMountSourceRootV2 {
+                    observed,
+                    projection,
+                    manager_presence,
+                },
+            ))
+        }
         SourceAcquisitionPhaseV2::Releasing => {
+            let (observed, projection, manager_presence) = into_parts(prepared);
             Ok(crate::RecoveredRetainedMountSourceRootV2::Releasing(
                 crate::MountSourceReleaseAuthorityV2 {
                     custody: crate::descriptor::ReleaseCustodyV2::Retained {
-                        observed: prepared.observed,
+                        observed,
                         manager_presence,
                     },
-                    projection: prepared.projection,
+                    projection,
                 },
             ))
         }
@@ -330,7 +347,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 || !graph_retains_pending_source_root_custody(&graph, attempt_reference(&attempt))
                 || outcome.acquisition_id != Some(ObjectDigest::from_bytes(acquisition_id))
                 || outcome.session_binding != committed_session_binding
-                || source_root.acquisition_id != acquisition_id
+                || source_root.acquisition_id != ObjectDigest::from_bytes(acquisition_id)
                 || source_root.acquisition_sequence
                     != attempt
                         .provider_acquisition
@@ -1341,7 +1358,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         self.commit_released_mount_source_root_v2(journal, recovery.transaction, recovery.prepared)
     }
 
-    fn verify_provider_outcome_bytes_v2(
+    pub(super) fn verify_provider_outcome_bytes_v2(
         &mut self,
         catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         authorization: &AuthorizedMountProviderOutcomeV2,
@@ -1900,6 +1917,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         };
         Ok(VerifiedMountProviderOutcomeV2 {
             canonical_response,
+            method: authorization.method,
             status: status.status(),
             result_digest: status.result_digest(),
             descriptor_commitment: status.descriptor_commitment(),

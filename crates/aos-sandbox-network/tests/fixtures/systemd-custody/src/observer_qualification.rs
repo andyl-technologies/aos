@@ -761,7 +761,7 @@ fn run_observation(
         &artifacts,
         prepared.preparation(),
         &resolution,
-        kernel_plan,
+        kernel_plan.clone(),
         namespace_path,
     )?;
     let publication = coordinator
@@ -1155,6 +1155,7 @@ fn commit_or_recover(
     kernel_plan: NetworkKernelPlanV1,
     namespace_path: &Path,
 ) -> Result<aos_sandbox_network::CommittedNetworkResultV1> {
+    let current_clock = clock()?;
     let outcome = coordinator.admit_apply_intent(
         request,
         artifacts,
@@ -1162,7 +1163,7 @@ fn commit_or_recover(
         ProtocolVersion::new(1, 0),
         peer(),
         peer_policy(),
-        &clock()?,
+        &current_clock,
     )?;
     if let NetworkAdmissionOutcome::Replay(result) = outcome {
         return Ok(result);
@@ -1177,7 +1178,7 @@ fn commit_or_recover(
         effect_digest,
         request,
         kernel_plan,
-        &mut clock,
+        &mut || Ok(current_clock),
     )?;
     let NetworkPrepareExecutionOutcomeV1::Dispatch(dispatch) = outcome else {
         bail!("fresh observer qualification effect was unexpectedly aborted");

@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 aos-filesystem-fuse.workspace = true
-aos-filesystem-view.workspace = true
+aos-filesystem-view = { workspace = true, features = ["test-fixtures"] }
 aos-sandbox-core.workspace = true
 libc.workspace = true
 

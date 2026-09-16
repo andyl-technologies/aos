@@ -245,6 +245,7 @@ pub(crate) fn recover_records<'record>(
         &authority,
         &catalog,
         &catalogs,
+        &sessions,
         &session_history,
         &attempts,
         &acquisitions,
@@ -257,6 +258,7 @@ pub(crate) fn recover_records<'record>(
         &session_history,
         &attempts,
         &acquisitions,
+        &releases,
     )?;
 
     let (inventory_state_digest, active_lease_count) = global_inventory_state_digest(

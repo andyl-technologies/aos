@@ -864,13 +864,18 @@ pub struct DurableProviderReplyV1 {
     pub(crate) durability: DurableReplyAuthorityV1,
 }
 
-#[derive(Debug)]
 pub(crate) enum DurableReplyAuthorityV1 {
     Fresh(aos_sandbox_source_provider_security::CommittedProviderOutcomeV1),
     RevalidatedReplay {
         snapshot: ProtectedJournalSnapshot,
         attempt_key: Vec<u8>,
     },
+}
+
+impl core::fmt::Debug for DurableReplyAuthorityV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("DurableReplyAuthorityV1([protected durability])")
+    }
 }
 
 impl DurableProviderReplyV1 {

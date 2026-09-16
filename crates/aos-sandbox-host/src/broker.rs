@@ -470,7 +470,7 @@ where
 
         let effect = admitted.effect;
         if let Some((spec, payload)) = guardian_start {
-            return self
+            let body = self
                 .advance_guardian_start(
                     request.fence(),
                     request_id,
@@ -481,10 +481,15 @@ where
                     request.header().maximum_response_bytes(),
                     &mut trusted_clock,
                 )
-                .await;
+                .await?;
+            return Ok(ValidatedRuntimeApplyResponse {
+                request_id,
+                maximum_response_bytes: request.header().maximum_response_bytes(),
+                body,
+            });
         }
         if composite_stop {
-            return self
+            let body = self
                 .advance_composite_stop(
                     request.fence(),
                     request_id,
@@ -493,7 +498,12 @@ where
                     request.header().maximum_response_bytes(),
                     &mut trusted_clock,
                 )
-                .await;
+                .await?;
+            return Ok(ValidatedRuntimeApplyResponse {
+                request_id,
+                maximum_response_bytes: request.header().maximum_response_bytes(),
+                body,
+            });
         }
         let operation = operation.ok_or_else(|| {
             HostError::State("direct lifecycle request lost its compiled operation".to_owned())

@@ -30,7 +30,7 @@ pub use agent_process_effect::{
 };
 pub use agent_reducer::{
     AgentHandshakeSigner, AgentOperationCasError, AgentOutcomeRecoveryTokenV1, AgentProvisioningV1,
-    AgentReducerError,
+    AgentReducerError, agent_handshake_signing_message_v1, agent_outcome_signing_message_v1,
 };
 pub use agent_store::JournalAgentStoreError;
 pub use evidence::{

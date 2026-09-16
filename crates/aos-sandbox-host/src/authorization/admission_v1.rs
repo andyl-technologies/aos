@@ -531,14 +531,20 @@ fn terminal_verifier_metadata(
         device: metadata.st_dev,
         inode: metadata.st_ino,
         mode: metadata.st_mode,
-        links: metadata.st_nlink,
+        links: u32::try_from(metadata.st_nlink)
+            .map_err(|_| HostAuthorityConfigError::Invalid(BROKER_OUTCOME_VERIFIER_FILE))?,
         uid: metadata.st_uid,
         gid: metadata.st_gid,
-        size: metadata.st_size as u64,
-        modified_seconds: metadata.st_mtime,
-        modified_nanoseconds: metadata.st_mtime_nsec,
-        changed_seconds: metadata.st_ctime,
-        changed_nanoseconds: metadata.st_ctime_nsec,
+        size: u64::try_from(metadata.st_size)
+            .map_err(|_| HostAuthorityConfigError::Invalid(BROKER_OUTCOME_VERIFIER_FILE))?,
+        modified_seconds: u64::try_from(metadata.st_mtime)
+            .map_err(|_| HostAuthorityConfigError::Invalid(BROKER_OUTCOME_VERIFIER_FILE))?,
+        modified_nanoseconds: u32::try_from(metadata.st_mtime_nsec)
+            .map_err(|_| HostAuthorityConfigError::Invalid(BROKER_OUTCOME_VERIFIER_FILE))?,
+        changed_seconds: u64::try_from(metadata.st_ctime)
+            .map_err(|_| HostAuthorityConfigError::Invalid(BROKER_OUTCOME_VERIFIER_FILE))?,
+        changed_nanoseconds: u32::try_from(metadata.st_ctime_nsec)
+            .map_err(|_| HostAuthorityConfigError::Invalid(BROKER_OUTCOME_VERIFIER_FILE))?,
     })
 }
 

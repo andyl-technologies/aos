@@ -7,9 +7,9 @@ use super::*;
 /// The value is move-only. It exposes immutable bytes for durable reservation
 /// and retains the sole verifier for the corresponding provider outcome.
 pub struct PreparedMountProviderRequestV2 {
-    signed_request: Vec<u8>,
-    projection: MountProviderRequestProjectionV2,
-    outcome: AuthorizedMountProviderOutcomeV2,
+    pub(super) signed_request: Vec<u8>,
+    pub(super) projection: MountProviderRequestProjectionV2,
+    pub(super) outcome: AuthorizedMountProviderOutcomeV2,
 }
 
 /// Authorizes one exact protected catalog and optional retained-selection floor.
@@ -31,32 +31,32 @@ pub struct AuthorizedMountAcquireVerificationFloorV2 {
 
 /// Provides one move-only, nonauthorizing current-session planning snapshot.
 pub struct CurrentMountProviderSessionPlanV2 {
-    session: MountProviderSessionProjectionV2,
-    current_request_sequence: u64,
-    current_response_sequence: u64,
-    freshness_digest: ObjectDigest,
-    journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
-    head_key: Vec<u8>,
-    head_record: Vec<u8>,
-    predecessor_session_key: Option<Vec<u8>>,
-    predecessor_session_record: Option<Vec<u8>>,
-    predecessor_death_commitment: Option<ObjectDigest>,
+    pub(super) session: MountProviderSessionProjectionV2,
+    pub(super) current_request_sequence: u64,
+    pub(super) current_response_sequence: u64,
+    pub(super) freshness_digest: ObjectDigest,
+    pub(super) journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(super) head_key: Vec<u8>,
+    pub(super) head_record: Vec<u8>,
+    pub(super) predecessor_session_key: Option<Vec<u8>>,
+    pub(super) predecessor_session_record: Option<Vec<u8>>,
+    pub(super) predecessor_death_commitment: Option<ObjectDigest>,
 }
 
 /// Proves the exact prepared request is retained by a current protected reservation.
 pub struct ReservedMountProviderRequestV2 {
-    prepared: PreparedMountProviderRequestV2,
-    reservation_snapshot: aos_sandbox::ProtectedJournalSnapshot,
-    attempt_key: Vec<u8>,
-    attempt_record: Vec<u8>,
-    head_key: Vec<u8>,
-    head_record: Vec<u8>,
+    pub(super) prepared: PreparedMountProviderRequestV2,
+    pub(super) reservation_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(super) attempt_key: Vec<u8>,
+    pub(super) attempt_record: Vec<u8>,
+    pub(super) head_key: Vec<u8>,
+    pub(super) head_record: Vec<u8>,
 }
 
 /// Retains projections after a durably reserved request was handed to the carrier.
 pub struct SentMountProviderRequestV2 {
-    projection: MountProviderRequestProjectionV2,
-    outcome: AuthorizedMountProviderOutcomeV2,
+    pub(super) projection: MountProviderRequestProjectionV2,
+    pub(super) outcome: AuthorizedMountProviderOutcomeV2,
 }
 
 /// Retains an exact durable request reservation when carrier send is incomplete.
@@ -73,31 +73,31 @@ impl core::fmt::Debug for MountProviderRequestSendRecoveryV2 {
 
 /// Projects the exact identities committed by an authorized Acquire-v2 request.
 pub struct MountProviderRequestProjectionV2 {
-    method: SourceProviderMethod,
-    session: MountProviderSessionProjectionV2,
-    provider: SourceProviderAuthorityV1,
-    holder: SourceProviderAuthorityV1,
-    session_binding: ObjectDigest,
-    signer_set_commitment: ObjectDigest,
-    trust_generation: u64,
-    trust_digest: ObjectDigest,
-    revocation_generation: u64,
-    revocation_digest: ObjectDigest,
-    provider_process_instance: [u8; 16],
-    request_id: [u8; 16],
-    request_sequence: u64,
-    expected_response_sequence: u64,
-    acquisition_id: Option<ObjectDigest>,
-    acquisition_sequence: Option<u64>,
-    normalized_intent: Option<Vec<u8>>,
-    normalized_intent_digest: Option<ObjectDigest>,
-    typed_request_digest: ObjectDigest,
-    signed_request_digest: ObjectDigest,
-    deadline_seconds: i64,
-    catalog_floor: Option<ProviderCatalogFloorV1>,
-    selection_floor: Option<SourceSelectionFloorV1>,
-    current_catalog_head_commitment: Option<ObjectDigest>,
-    inventory_correlations:
+    pub(super) method: SourceProviderMethod,
+    pub(super) session: MountProviderSessionProjectionV2,
+    pub(super) provider: SourceProviderAuthorityV1,
+    pub(super) holder: SourceProviderAuthorityV1,
+    pub(super) session_binding: ObjectDigest,
+    pub(super) signer_set_commitment: ObjectDigest,
+    pub(super) trust_generation: u64,
+    pub(super) trust_digest: ObjectDigest,
+    pub(super) revocation_generation: u64,
+    pub(super) revocation_digest: ObjectDigest,
+    pub(super) provider_process_instance: [u8; 16],
+    pub(super) request_id: [u8; 16],
+    pub(super) request_sequence: u64,
+    pub(super) expected_response_sequence: u64,
+    pub(super) acquisition_id: Option<ObjectDigest>,
+    pub(super) acquisition_sequence: Option<u64>,
+    pub(super) normalized_intent: Option<Vec<u8>>,
+    pub(super) normalized_intent_digest: Option<ObjectDigest>,
+    pub(super) typed_request_digest: ObjectDigest,
+    pub(super) signed_request_digest: ObjectDigest,
+    pub(super) deadline_seconds: i64,
+    pub(super) catalog_floor: Option<ProviderCatalogFloorV1>,
+    pub(super) selection_floor: Option<SourceSelectionFloorV1>,
+    pub(super) current_catalog_head_commitment: Option<ObjectDigest>,
+    pub(super) inventory_correlations:
         Option<aos_sandbox_protocol::mount_source_acquisition_state::InventoryCorrelationSetV2>,
 }
 
@@ -106,64 +106,64 @@ pub struct MountProviderRequestProjectionV2 {
 /// This projection is minted only from a live revalidated Root Mount session.
 /// It grants no signing, carrier, descriptor, replay, or journal authority.
 pub struct MountProviderSessionProjectionV2 {
-    signed_root_mount_hello: Vec<u8>,
-    signed_provider_hello: Vec<u8>,
-    ordered_signers: [MountProviderSignerProjectionV2; 4],
-    authority_trust: [MountProviderAuthorityTrustProjectionV2; 2],
-    session_binding: ObjectDigest,
-    signer_set_commitment: ObjectDigest,
-    trust_generation: u64,
-    trust_digest: ObjectDigest,
-    revocation_generation: u64,
-    revocation_digest: ObjectDigest,
-    root_boot_id: [u8; 16],
-    node_id: [u8; 16],
-    root_process_instance: [u8; 16],
-    provider_process_instance: [u8; 16],
-    root_writer_uid: u32,
-    root_writer_gid: u32,
-    root_writer_tgid: u32,
-    root_writer_start_time_ticks: u64,
-    root_writer_cgroup_digest: ObjectDigest,
-    provider_tgid: u32,
-    provider_pid: u32,
-    provider_parent_pid: u32,
-    provider_start_time_ticks: u64,
-    provider_cgroup_id: u64,
-    provider_cgroup_digest: ObjectDigest,
-    provider_credentials: [u32; 8],
-    provider_execution_digest: ObjectDigest,
-    route_id: [u8; 16],
-    route_generation: u64,
-    route_digest: ObjectDigest,
-    resource_namespace_digest: ObjectDigest,
-    proof_class_capabilities: u8,
-    supports_recursive: bool,
-    supports_kernel_coupled: bool,
-    authenticated_at_seconds: i64,
-    current_valid_until_seconds: i64,
-    trusted_clock_evidence_digest: ObjectDigest,
+    pub(super) signed_root_mount_hello: Vec<u8>,
+    pub(super) signed_provider_hello: Vec<u8>,
+    pub(super) ordered_signers: [MountProviderSignerProjectionV2; 4],
+    pub(super) authority_trust: [MountProviderAuthorityTrustProjectionV2; 2],
+    pub(super) session_binding: ObjectDigest,
+    pub(super) signer_set_commitment: ObjectDigest,
+    pub(super) trust_generation: u64,
+    pub(super) trust_digest: ObjectDigest,
+    pub(super) revocation_generation: u64,
+    pub(super) revocation_digest: ObjectDigest,
+    pub(super) root_boot_id: [u8; 16],
+    pub(super) node_id: [u8; 16],
+    pub(super) root_process_instance: [u8; 16],
+    pub(super) provider_process_instance: [u8; 16],
+    pub(super) root_writer_uid: u32,
+    pub(super) root_writer_gid: u32,
+    pub(super) root_writer_tgid: u32,
+    pub(super) root_writer_start_time_ticks: u64,
+    pub(super) root_writer_cgroup_digest: ObjectDigest,
+    pub(super) provider_tgid: u32,
+    pub(super) provider_pid: u32,
+    pub(super) provider_parent_pid: u32,
+    pub(super) provider_start_time_ticks: u64,
+    pub(super) provider_cgroup_id: u64,
+    pub(super) provider_cgroup_digest: ObjectDigest,
+    pub(super) provider_credentials: [u32; 8],
+    pub(super) provider_execution_digest: ObjectDigest,
+    pub(super) route_id: [u8; 16],
+    pub(super) route_generation: u64,
+    pub(super) route_digest: ObjectDigest,
+    pub(super) resource_namespace_digest: ObjectDigest,
+    pub(super) proof_class_capabilities: u8,
+    pub(super) supports_recursive: bool,
+    pub(super) supports_kernel_coupled: bool,
+    pub(super) authenticated_at_seconds: i64,
+    pub(super) current_valid_until_seconds: i64,
+    pub(super) trusted_clock_evidence_digest: ObjectDigest,
 }
 
 /// Retains one current authority and its protected admission interval.
 pub struct MountProviderAuthorityTrustProjectionV2 {
-    authority: SourceProviderAuthorityV1,
-    valid_from_seconds: i64,
-    valid_until_seconds: i64,
-    state: SourceProviderAuthorityTrustStateV1,
+    pub(super) authority: SourceProviderAuthorityV1,
+    pub(super) valid_from_seconds: i64,
+    pub(super) valid_until_seconds: i64,
+    pub(super) state: SourceProviderAuthorityTrustStateV1,
 }
 
 /// Retains one ordered signer, its public key, and protected admission facts.
 pub struct MountProviderSignerProjectionV2 {
-    signer: aos_sandbox_source_provider_protocol::SourceProviderSigningKeyV1,
-    public_key: [u8; 32],
-    authority_valid_from_seconds: i64,
-    authority_valid_until_seconds: i64,
-    key_valid_from_seconds: i64,
-    key_valid_until_seconds: i64,
-    authority_state: SourceProviderAuthorityTrustStateV1,
-    key_state: SourceProviderKeyTrustStateV1,
-    superseded_by_key_generation: u64,
+    pub(super) signer: aos_sandbox_source_provider_protocol::SourceProviderSigningKeyV1,
+    pub(super) public_key: [u8; 32],
+    pub(super) authority_valid_from_seconds: i64,
+    pub(super) authority_valid_until_seconds: i64,
+    pub(super) key_valid_from_seconds: i64,
+    pub(super) key_valid_until_seconds: i64,
+    pub(super) authority_state: SourceProviderAuthorityTrustStateV1,
+    pub(super) key_state: SourceProviderKeyTrustStateV1,
+    pub(super) superseded_by_key_generation: u64,
 }
 
 /// Verifies exactly one outcome for an authorized Mount Acquire-v2 attempt.
@@ -214,6 +214,7 @@ pub(super) enum OutcomeDeadlinePolicyV2 {
 /// Carries one exact provider outcome verified against live Root Mount custody.
 pub struct VerifiedMountProviderOutcomeV2 {
     pub(super) canonical_response: Vec<u8>,
+    pub(super) method: SourceProviderMethod,
     pub(super) status: SourceProviderStatus,
     pub(super) result_digest: ObjectDigest,
     pub(super) descriptor_commitment: ObjectDigest,
@@ -240,8 +241,8 @@ pub(super) struct VerifiedTerminalLineageV2 {
 /// every other method or status is constructed only after proving that the
 /// ancillary descriptor set was empty.
 pub struct VerifiedReceivedMountProviderOutcomeV2 {
-    verified: VerifiedMountProviderOutcomeV2,
-    source_root: Option<crate::ObservedSourceRootV1>,
+    pub(super) verified: VerifiedMountProviderOutcomeV2,
+    pub(super) source_root: Option<crate::ObservedSourceRootV1>,
 }
 
 /// Separates a verified received outcome by its closed descriptor shape.
@@ -874,11 +875,11 @@ impl MountProviderRequestProjectionV2 {
         Option<&SourceSelectionFloorV1>,
         ObjectDigest,
     )> {
-        match &self.catalog_floor {
-            Some(catalog) => self
-                .current_catalog_head_commitment
-                .map(|commitment| (catalog, self.selection_floor.as_ref(), commitment)),
-            None => None,
+        match (&self.catalog_floor, self.current_catalog_head_commitment) {
+            (Some(catalog), Some(commitment)) => {
+                Some((catalog, self.selection_floor.as_ref(), commitment))
+            }
+            _ => None,
         }
     }
 
@@ -1329,6 +1330,7 @@ pub(super) fn historical_acquisition_commitment(
     hasher.update(authorization.lease_digest.as_bytes());
     hasher.update(authorization.session_binding.as_bytes());
     hasher.update([match authorization.inventory_expectation {
+        aos_sandbox_protocol::mount_source_acquisition_state::InventoryCorrelationExpectationV2::AbsentOrMatchingActive => 0,
         aos_sandbox_protocol::mount_source_acquisition_state::InventoryCorrelationExpectationV2::PresentActiveOrReaping => 1,
         aos_sandbox_protocol::mount_source_acquisition_state::InventoryCorrelationExpectationV2::ReapingReleasedOrAbsent => 2,
         aos_sandbox_protocol::mount_source_acquisition_state::InventoryCorrelationExpectationV2::ReleasedOrAbsent => 3,

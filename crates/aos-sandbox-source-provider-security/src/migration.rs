@@ -176,7 +176,7 @@ pub(crate) fn authorize_mount_source_state_migration_v2(
         .validate_source_provider_authority_snapshot(&provider_snapshot)
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
     mount_journal
-        .validate_mount_source_acquisition_snapshot(&mount_snapshot)
+        .validate_snapshot(&mount_snapshot)
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
     Ok(AuthorizedMountSourceStateMigrationV2 {
         plan,
@@ -712,7 +712,7 @@ fn collect_mount_migration_records(
     let mut records = Vec::new();
     let mut aggregate_bytes = 0usize;
     for (key, value) in journal
-        .mount_source_acquisition_records()
+        .records()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
     {
         aggregate_bytes = aggregate_bytes
@@ -791,7 +791,7 @@ fn digest_mount_records<'a>(records: impl Iterator<Item = &'a (Vec<u8>, Vec<u8>)
 }
 
 fn sum_mount_record_bytes<'a>(
-    records: impl Iterator<Item = &'a (Vec<u8>, Vec<u8>)>,
+    mut records: impl Iterator<Item = &'a (Vec<u8>, Vec<u8>)>,
 ) -> Result<u64, SourceProviderSecurityError> {
     records
         .try_fold(0_u64, |total, (key, value)| {

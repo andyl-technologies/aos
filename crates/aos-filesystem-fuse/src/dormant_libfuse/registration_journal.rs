@@ -176,7 +176,7 @@ impl ProtectedFuseRegistrationOwnerV2 {
         &'owner mut self,
         recovery: ProtectedFuseRegistrationRecoveryV2,
     ) -> ProtectedFuseRegistrationCommitResultV2<'owner> {
-        let result = (|| {
+        let mutation = (|| {
             let current = self.read_current()?;
             if current.as_ref() != Some(&recovery.target.replacement) {
                 if !recovery.target.matches_predecessor(current.as_ref()) {
@@ -184,9 +184,12 @@ impl ProtectedFuseRegistrationOwnerV2 {
                 }
                 self.commit(&recovery.target.replacement)?;
             }
-            self.confirm(&recovery.target.replacement)
+            Ok(())
         })();
-        match result {
+        if let Err(error) = mutation {
+            return ProtectedFuseRegistrationCommitResultV2::RecoveryRequired { error, recovery };
+        }
+        match self.confirm(&recovery.target.replacement) {
             Ok(readback) => ProtectedFuseRegistrationCommitResultV2::Confirmed(readback),
             Err(error) => {
                 ProtectedFuseRegistrationCommitResultV2::RecoveryRequired { error, recovery }

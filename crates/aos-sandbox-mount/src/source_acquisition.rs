@@ -68,12 +68,13 @@ use format::{
     MAXIMUM_SOURCE_ACQUISITIONS, MAXIMUM_SOURCE_HOLDER_SEQUENCES, MAXIMUM_SOURCE_PROVIDER_ATTEMPTS,
     MAXIMUM_SOURCE_PROVIDER_HEADS, MAXIMUM_SOURCE_PROVIDER_SESSIONS, state_error,
 };
+use lifecycle::SourceAcquisitionPostcommitOutcomeV2;
 use model::{
     HolderSequenceV2, ProviderAttemptStateV2, ProviderMethodV2, ProviderStatusV2, RecordRefV2,
     SourceAcquisitionRowV2, SourceProviderHeadV2, SourceProviderQueryAttemptV2,
     SourceProviderSessionV2,
 };
-pub use model::{SourceAcquisitionPhaseV2, SourceAcquisitionProofClassV2};
+pub(crate) use model::{SourceAcquisitionPhaseV2, SourceAcquisitionProofClassV2};
 use wire::source_acquisition_record;
 
 /// Maximum retained acquisition rows in one Mount journal.
@@ -585,7 +586,7 @@ impl FixedMountSourceAcquisitionOwnerV2 {
                 if live.header().request_id() != &authenticated_request_id {
                     return Ok(false);
                 }
-                *live.acquisition_id().as_bytes()
+                live.acquisition_id().as_bytes().to_owned()
             }
             BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
                 let live = decode_release_mount_source_acquisition_request(
@@ -597,7 +598,7 @@ impl FixedMountSourceAcquisitionOwnerV2 {
                 if live.header().request_id() != &authenticated_request_id {
                     return Ok(false);
                 }
-                *live.acquisition_id()
+                live.acquisition_id().as_bytes().to_owned()
             }
             _ => return Ok(false),
         };
@@ -2731,7 +2732,7 @@ impl FixedMountSourceAcquisitionOwnerV2 {
                 })
             })
             .map_err(|_| state_error("Root-Mount successor session is not current"))?
-            .ok_or_else(|| state_error("Root-Mount successor handshake is pending"))?;
+            .ok_or_else(|| state_error("Root-Mount successor handshake is pending"))??;
         match result {
             Ok(sent) => {
                 self.pending_inventory_recovery_replacement = None;
