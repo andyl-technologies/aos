@@ -32,11 +32,15 @@ const JOURNAL_EVENT_SCHEMA: &str = "aos.ability.stage-handoff-event/v1";
 const TRANSACTION_ROOT: &str = "ability-stage-transactions";
 const INITRD_TRANSACTION_ROOT: &str = "initrd";
 const JOURNAL_FILE: &str = "execution.journal";
+const RETAINED_CHECKPOINT_FILE: &str = "release-checkpoint.json";
 const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
 const INITRD_STATIC_CONTRACT_PATH: &str = "/usr/lib/aos/initrd/static-ability-contract.json";
 const INITRD_CHECKPOINT_PATH: &str = "/run/aos/ability-stage-handoff/initrd.json";
 const TRANSACTION_STORAGE_INTERFACE: &str = "aos.boot.transaction-storage-view";
 const TRANSACTION_STORAGE_PURPOSE: &str = "initrd-stage-journal";
+const CONTENT_OBJECT_INTERFACE: &str = "aos.artifact.content-addressed-object";
+const AUTHORIZED_INPUT_COMMIT_PREFIX: &str = "commit-authorized-input-";
+const ARTIFACT_RESOURCE_OUTPUT: &str = "artifact-resource";
 const DOCUMENT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Runs the initrd side of the stage handoff.
@@ -107,6 +111,7 @@ pub fn receive_initrd_stage(from_stage: &str, image_profile: &Path) -> Result<()
     )?;
 
     receive_initrd_stage_with(
+        image_profile,
         Path::new(INITRD_CHECKPOINT_PATH),
         &contract_bytes,
         &boot_id,
@@ -384,6 +389,38 @@ impl StageExecutionEvidence {
         Ok(&retained.resource)
     }
 
+    fn authorized_input_artifact(&self) -> Result<&ResourceReference> {
+        let matches = self
+            .retained_resources
+            .iter()
+            .filter(|retained| {
+                retained
+                    .operation
+                    .operation
+                    .key
+                    .as_str()
+                    .strip_prefix(AUTHORIZED_INPUT_COMMIT_PREFIX)
+                    .is_some_and(|resource_key| !resource_key.is_empty())
+                    && retained.output.as_str() == ARTIFACT_RESOURCE_OUTPUT
+            })
+            .collect::<Vec<_>>();
+        let [retained] = matches.as_slice() else {
+            bail!(
+                "initrd stage execution does not retain exactly one authorized provisioning input artifact"
+            )
+        };
+        let resource = &retained.resource;
+        ensure!(
+            resource.interface.name.as_str() == CONTENT_OBJECT_INTERFACE
+                && resource.lifetime == ResourceLifetime::Persistent
+                && resource.operations.len() == 2
+                && resource.operations[0].as_str() == "observe"
+                && resource.operations[1].as_str() == "remove",
+            "authorized provisioning input names an invalid retained content object"
+        );
+        Ok(resource)
+    }
+
     fn validate_exact_retained_resource(&self, expected: &ResourceReference) -> Result<()> {
         let matching = self
             .retained_resources
@@ -657,6 +694,7 @@ fn run_initrd_stage_with(
         bail!("initrd stage did not produce checked source completion")
     };
     execution.validate_exact_retained_resource(&transaction_storage.resource)?;
+    execution.authorized_input_artifact()?;
 
     let checkpoint = StageCheckpoint {
         schema: CHECKPOINT_SCHEMA.to_string(),
@@ -873,6 +911,7 @@ fn selected_resolution_policy(
 }
 
 fn receive_initrd_stage_with(
+    image_profile: &Path,
     checkpoint_path: &Path,
     contract_bytes: &[u8],
     boot_id: &str,
@@ -881,7 +920,7 @@ fn receive_initrd_stage_with(
     let release = load_validated_release(checkpoint_path, contract_bytes, boot_id, &image)?;
     let ownership = read_journal_ownership(&release, &image)?;
     if ownership == JournalOwnership::Received {
-        return Ok(());
+        return retain_host_handoff_evidence(image_profile, &release);
     }
 
     let opened = FileJournal::<StageEvent>::open(&release.journal_path, stage_journal_limits())
@@ -899,9 +938,10 @@ fn receive_initrd_stage_with(
         &image,
     )?;
     if ownership == JournalOwnership::Received {
-        return Ok(());
+        return retain_host_handoff_evidence(image_profile, &release);
     }
     let execution = source_execution(opened.recovery.records())?.clone();
+    execution.authorized_input_artifact()?;
     let received = StageEvent::HostReceived {
         schema: JOURNAL_EVENT_SCHEMA.to_string(),
         transaction: release.checkpoint.transaction.clone(),
@@ -913,6 +953,36 @@ fn receive_initrd_stage_with(
     };
     journal.ensure_capacity(1)?;
     journal.append(&received)?;
+    drop(journal);
+    retain_host_handoff_evidence(image_profile, &release)
+}
+
+fn retain_host_handoff_evidence(image_profile: &Path, release: &ValidatedRelease) -> Result<()> {
+    let journal_bytes = read_trusted_file(
+        &release.journal_path,
+        stage_journal_limits().max_file_bytes,
+        "received initrd stage journal",
+    )?;
+    let destination =
+        prepare_transaction_directory(image_profile, &release.checkpoint.transaction)?;
+    let retained_journal = destination.join(JOURNAL_FILE);
+    publish_atomic(&retained_journal, &journal_bytes)
+        .context("retaining received initrd stage journal with the current image")?;
+    publish_atomic(
+        &destination.join(RETAINED_CHECKPOINT_FILE),
+        &release.checkpoint_bytes,
+    )
+    .context("retaining initrd stage release checkpoint with the current image")?;
+
+    let retained =
+        FileJournal::<StageEvent>::read_only_snapshot(&retained_journal, stage_journal_limits())
+            .context("revalidating retained initrd stage journal")?;
+    ensure!(
+        retained.incomplete_tail_bytes() == 0
+            && retained.records().len() == 3
+            && retained.records()[1].digest() == release.checkpoint.journal_head,
+        "retained initrd stage journal differs from its released evidence"
+    );
     Ok(())
 }
 
@@ -1092,6 +1162,7 @@ fn validate_source_records(
         "initrd stage completion differs from the released checkpoint"
     );
     execution.validate()?;
+    execution.authorized_input_artifact()?;
     Ok(())
 }
 
@@ -1411,7 +1482,7 @@ mod tests {
         let resource = |key: &str| -> Result<ResourceReference> {
             Ok(serde_json::from_value(serde_json::json!({
                 "interface": {
-                    "name": "aos.test.resource",
+                    "name": CONTENT_OBJECT_INTERFACE,
                     "abi": 1,
                     "descriptor": format!("sha256:{}", "0".repeat(64)),
                 },
@@ -1431,7 +1502,7 @@ mod tests {
             }))?)
         };
         let first = StageRetainedResource {
-            operation: operation("commit-authorized-input")?,
+            operation: operation("commit-authorized-input-provisioning")?,
             output: LocalKey::new("artifact-resource")?,
             resource: resource("authorized-provisioning-input")?,
         };
@@ -1449,9 +1520,13 @@ mod tests {
 
         evidence.validate()?;
         assert_eq!(
-            evidence.retained_resource("commit-authorized-input", "artifact-resource")?,
+            evidence.retained_resource(
+                "commit-authorized-input-provisioning",
+                ARTIFACT_RESOURCE_OUTPUT,
+            )?,
             &first.resource
         );
+        assert_eq!(evidence.authorized_input_artifact()?, &first.resource);
 
         let mut noncanonical = evidence.clone();
         noncanonical.retained_resources.reverse();
