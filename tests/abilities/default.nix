@@ -21,6 +21,10 @@
   };
   canonicalInterface = builtins.toJSON interfaceDocument;
   expectedInterface = builtins.readFile ./fixtures/interface.json;
+  packageStoreReadViewDocument = lib.abilities.interfaceDocumentFromDeclaration
+    lib.abilities.interfaces.packageStoreReadView.interfaces.readView.declaration;
+  canonicalPackageStoreReadView = builtins.toJSON packageStoreReadViewDocument;
+  expectedPackageStoreReadView = builtins.readFile ../../crates/aos-package-store-model/tests/fixtures/package-store-read-view-interface.json;
 
   invalidNestedSchema = builtins.tryEval (builtins.deepSeq (
       lib.abilities.schemas.record {
@@ -719,6 +723,7 @@ in
   assert reservedAbilityOutputRejected "module";
   assert inlineAbilitiesRejected;
   assert canonicalInterface == expectedInterface;
+  assert canonicalPackageStoreReadView == expectedPackageStoreReadView;
   assert interfaceDocument.schema == "aos.ability.interface/v1";
   assert interfaceDocument.interface.name == "aos.test.echo";
   assert interfaceDocument.interface.methods.observe.outputs.ready.phase == "observation";
