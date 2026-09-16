@@ -28,6 +28,13 @@
   };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
+  datasetRequests = builtins.listToAttrs (
+    builtins.map
+    (request: lib.nameValuePair request.parameters.dataset request)
+    (builtins.filter
+      (request: request.parameters ? dataset)
+      (builtins.attrValues requests))
+  );
   resultOf = request: output: {
     _type = "aos-request-output-reference";
     inherit request output;
@@ -53,8 +60,8 @@ in
   assert requests ? "aos-zfs-provider:zfs-trim-schedule";
   assert requests ? "aos-zfs-provider:zfs-health-schedule";
   assert requests ? "aos-zfs-provider:zfs-metrics-schedule";
-  assert requests ? "aos-zfs-provider:dataset-${builtins.substring 0 32 (builtins.hashString "sha256" "srv/data")}";
-  assert requests."aos-zfs-provider:dataset-${builtins.substring 0 32 (builtins.hashString "sha256" "srv/data")}".parameters.properties.quota == "16G";
+  assert datasetRequests ? "srv/data";
+  assert datasetRequests."srv/data".parameters.properties.quota == "16G";
   assert requests."aos-zfs-provider:zfs-zed-lifecycle".parameters.execution_model == "foreground";
   assert (builtins.head requests."aos-zfs-provider:zfs-zed-lifecycle".parameters.start).executable.arguments
   == ["-F" "-p" "/run/zed/zed.pid" "-s" "/var/lib/zed/zed.state"];
