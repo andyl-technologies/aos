@@ -21,6 +21,13 @@
     lib.abilities.interfaceIdentity (
       lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:${alias}-effects"
     );
+  realizationSchemaFor = alias: let
+    implementation = config.aos.abilities.implementations."${packageName}:${alias}";
+    values = implementation.desiredType._abilitySchema.fields.schema.values or [];
+  in
+    if builtins.length values == 1
+    then builtins.head values
+    else throw "the filesystem ${alias} declaration must own one realization schema";
   withEffects = alias: resources: realizations:
     emptyComposition
     // {
@@ -139,7 +146,7 @@
     };
   storageCompose = alias: persistent: {resources, ...}:
     withEffects alias resources (builtins.mapAttrs (_: resource: {
-          schema = "aos.filesystem.storage-realization/v1";
+          schema = realizationSchemaFor alias;
           path = storagePath persistent resource.resource resource.value;
         })
         resources);
@@ -177,7 +184,7 @@
     };
   storageViewCompose = {resources, ...}:
     withEffects "storage-view" resources (builtins.mapAttrs (_: resource: {
-          schema = "aos.filesystem.storage-view-realization/v1";
+          schema = realizationSchemaFor "storage-view";
           inherit (resource.value) source;
           relative_path = resource.value.relative_path or null;
           path = storageViewPath resource.value;
@@ -185,7 +192,7 @@
         resources);
   entryCompose = {resources, ...}:
     withEffects "filesystem-entry" resources (builtins.mapAttrs (_: resource: {
-          schema = "aos.filesystem.entry-realization/v1";
+          schema = realizationSchemaFor "filesystem-entry";
           path = resource.value.destination;
           source_path = sourcePath resource.value.entry;
         })
