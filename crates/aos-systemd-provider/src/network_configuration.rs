@@ -1,7 +1,7 @@
 //! Systemd realization of the provider-neutral host network configuration.
 //!
 //! The pure renderer owns networkd and resolved file syntax. The live terminal
-//! owns only the exact metadata seed and networkd reload operation selected by
+//! owns only the exact authorized bootstrap and networkd reload operation selected by
 //! the checked controller resource.
 
 use std::collections::BTreeMap;
@@ -34,7 +34,7 @@ pub(crate) const REALIZATION_SCHEMA: &str = "aos.systemd.network-configuration-r
 pub(crate) const STATIC_INPUT_SCHEMA: &str = "aos.systemd.network-configuration-static-input/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.network-configuration-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.systemd.network-configuration-context/v1";
-const SEED_RELATIVE_PATH: &str = "systemd/network/10-aos-seed.network";
+const MANAGED_NETWORK_RELATIVE_PATH: &str = "systemd/network/10-aos-managed-host-network.network";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum NetworkAuthority {
@@ -141,7 +141,7 @@ enum NetworkState {
 struct NetworkContext {
     schema: String,
     configuration_matches: bool,
-    seed_matches: bool,
+    bootstrap_matches: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -378,7 +378,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
         native_context: value(&NetworkContext {
             schema: CONTEXT_SCHEMA.to_string(),
             configuration_matches,
-            seed_matches: true,
+            bootstrap_matches: true,
         })?,
         supported_purposes,
     })
@@ -420,7 +420,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         || (invocation.purpose == InvocationPurpose::Reconcile
             && matches!(method, "apply" | "remove"));
     if mutate {
-        converge_seed(
+        converge_bootstrap(
             Path::new("/var/etc"),
             &expected.authority,
             bootstrap.as_ref(),
@@ -434,7 +434,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     } else {
         rendered_matches(Path::new("/etc"), &rendered)?
     };
-    let seed_matches = seed_matches(
+    let bootstrap_matches = bootstrap_matches(
         Path::new("/var/etc"),
         &expected.authority,
         bootstrap.as_ref(),
@@ -443,7 +443,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         &expected,
         bootstrap.as_ref(),
         configuration_matches,
-        seed_matches,
+        bootstrap_matches,
         removing,
     )?;
     let evidence = effect_observation(&raw)?;
@@ -756,7 +756,7 @@ fn rendered_matches(root: &Path, rendered: &RenderedConfiguration) -> Result<boo
     Ok(true)
 }
 
-fn seed_matches(
+fn bootstrap_matches(
     root: &Path,
     authority: &NetworkAuthority,
     bootstrap: Option<&BootstrapNetwork>,
@@ -767,32 +767,32 @@ fn seed_matches(
         }
         (NetworkAuthority::Image, None) | (NetworkAuthority::Operator, None) => None,
         (NetworkAuthority::Operator, Some(_)) => {
-            bail!("operator-owned network policy cannot retain an image bootstrap seed")
+            bail!("operator-owned network policy cannot retain an image bootstrap")
         }
     };
-    match (desired, fs::read(root.join(SEED_RELATIVE_PATH))) {
+    match (desired, fs::read(root.join(MANAGED_NETWORK_RELATIVE_PATH))) {
         (Some(expected), Ok(actual)) => Ok(actual == expected),
         (None, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
         (Some(_), Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         (None, Ok(_)) => Ok(false),
-        (_, Err(error)) => Err(error).context("reading metadata network seed"),
+        (_, Err(error)) => Err(error).context("reading managed host network bootstrap"),
     }
 }
 
-fn converge_seed(
+fn converge_bootstrap(
     root: &Path,
     authority: &NetworkAuthority,
     bootstrap: Option<&BootstrapNetwork>,
 ) -> Result<()> {
-    let destination = root.join(SEED_RELATIVE_PATH);
+    let destination = root.join(MANAGED_NETWORK_RELATIVE_PATH);
     match (authority, bootstrap) {
         (NetworkAuthority::Image, Some(bootstrap)) => {
             let parent = destination
                 .parent()
-                .ok_or_else(|| anyhow::anyhow!("metadata seed path has no parent"))?;
-            ensure_seed_directory(root, parent)?;
+                .ok_or_else(|| anyhow::anyhow!("managed host network path has no parent"))?;
+            ensure_network_directory(root, parent)?;
             let mut temporary = NamedTempFile::new_in(parent)
-                .context("creating temporary metadata network seed")?;
+                .context("creating temporary managed host network bootstrap")?;
             temporary
                 .as_file()
                 .set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
@@ -801,7 +801,7 @@ fn converge_seed(
             temporary
                 .persist(&destination)
                 .map_err(|error| error.error)
-                .context("publishing metadata network seed")?;
+                .context("publishing managed host network bootstrap")?;
             fs::File::open(parent)?.sync_all()?;
         }
         (NetworkAuthority::Image, None) | (NetworkAuthority::Operator, None) => {
@@ -812,31 +812,31 @@ fn converge_seed(
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error).context("removing metadata network seed"),
+                Err(error) => return Err(error).context("removing managed host network bootstrap"),
             }
         }
         (NetworkAuthority::Operator, Some(_)) => {
-            bail!("operator-owned network policy cannot retain an image bootstrap seed")
+            bail!("operator-owned network policy cannot retain an image bootstrap")
         }
     }
     Ok(())
 }
 
-fn ensure_seed_directory(root: &Path, destination: &Path) -> Result<()> {
+fn ensure_network_directory(root: &Path, destination: &Path) -> Result<()> {
     let mut current = root.to_path_buf();
     for component in ["systemd", "network"] {
         current.push(component);
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-            Ok(_) => bail!("metadata seed path traverses a non-directory or symbolic link"),
+            Ok(_) => bail!("managed host network path traverses a non-directory or symbolic link"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&current).context("creating metadata seed directory")?;
+                fs::create_dir(&current).context("creating managed host network directory")?;
             }
-            Err(error) => return Err(error).context("inspecting metadata seed directory"),
+            Err(error) => return Err(error).context("inspecting managed host network directory"),
         }
     }
     if current != destination {
-        bail!("metadata seed directory differs from its fixed destination");
+        bail!("managed host network directory differs from its fixed destination");
     }
     Ok(())
 }
@@ -860,15 +860,15 @@ fn observation(
     expected: &NetworkConfiguration,
     applied_bootstrap: Option<&BootstrapNetwork>,
     configuration_matches: bool,
-    seed_matches: bool,
+    bootstrap_matches: bool,
     removing: bool,
 ) -> Result<NetworkObservation> {
     let mut discrepancies = Vec::new();
     if !configuration_matches {
         discrepancies.push(LocalKey::new("configuration-files")?);
     }
-    if !seed_matches {
-        discrepancies.push(LocalKey::new("metadata-seed")?);
+    if !bootstrap_matches {
+        discrepancies.push(LocalKey::new("managed-host-network")?);
     }
     let state = if removing {
         NetworkState::Absent
@@ -1086,7 +1086,7 @@ mod tests {
     use super::{
         Addressing, LinkSelector, NetworkAuthority, NetworkConfiguration,
         NetworkConfigurationRealization, NetworkLink, ResolverConfiguration, Sha256Digest,
-        converge_seed, network_configuration_to_json, render, render_static,
+        converge_bootstrap, network_configuration_to_json, render, render_static,
     };
 
     fn configuration(authority: NetworkAuthority) -> NetworkConfiguration {
@@ -1179,26 +1179,27 @@ mod tests {
     }
 
     #[test]
-    fn operator_configuration_retires_and_image_rollback_restores_seed() {
+    fn operator_configuration_retires_and_image_rollback_restores_bootstrap() {
         let root = TempDir::new().expect("temporary root");
         let bootstrap = bootstrap();
-        converge_seed(root.path(), &NetworkAuthority::Image, Some(&bootstrap))
-            .expect("seed is created");
-        let seed = root.path().join(super::SEED_RELATIVE_PATH);
+        converge_bootstrap(root.path(), &NetworkAuthority::Image, Some(&bootstrap))
+            .expect("bootstrap is created");
+        let managed_network = root.path().join(super::MANAGED_NETWORK_RELATIVE_PATH);
         assert!(
-            fs::read_to_string(&seed)
-                .expect("read seed")
+            fs::read_to_string(&managed_network)
+                .expect("read managed host network")
                 .contains("198.51.100.10/24")
         );
 
-        converge_seed(root.path(), &NetworkAuthority::Operator, None).expect("seed is retired");
-        assert!(!seed.exists());
+        converge_bootstrap(root.path(), &NetworkAuthority::Operator, None)
+            .expect("bootstrap is retired");
+        assert!(!managed_network.exists());
 
-        converge_seed(root.path(), &NetworkAuthority::Image, Some(&bootstrap))
-            .expect("seed is restored");
+        converge_bootstrap(root.path(), &NetworkAuthority::Image, Some(&bootstrap))
+            .expect("bootstrap is restored");
         assert!(
-            fs::read_to_string(seed)
-                .expect("read seed")
+            fs::read_to_string(managed_network)
+                .expect("read managed host network")
                 .contains("198.51.100.10/24")
         );
     }

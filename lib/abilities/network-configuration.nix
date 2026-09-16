@@ -17,25 +17,33 @@
       inherit maxLength;
       syntax = null;
     };
+  exactSelectorVariants = {
+    name = types.record {
+      fields = {
+        kind = types.enum ["name"];
+        value = text 64;
+      };
+    };
+    mac = types.record {
+      fields = {
+        kind = types.enum ["mac"];
+        value = text 32;
+      };
+    };
+  };
+  exactSelector = types.taggedUnion {
+    tag = "kind";
+    variants = exactSelectorVariants;
+  };
   selector = types.taggedUnion {
     tag = "kind";
-    variants = {
-      name = types.record {
-        fields = {
-          kind = types.enum ["name"];
-          value = text 64;
-        };
-      };
-      mac = types.record {
-        fields = {
-          kind = types.enum ["mac"];
-          value = text 32;
-        };
-      };
+    variants =
+      exactSelectorVariants
+      // {
       ethernet = types.record {
         fields.kind = types.enum ["ethernet"];
       };
-    };
+      };
   };
   addresses = types.list {
     element = text 128;
@@ -97,7 +105,7 @@
   };
   bootstrap = types.record {
     fields = {
-      inherit selector;
+      selector = exactSelector;
       inherit addresses;
       gateway = optional (text 128);
       dns = dnsServers;

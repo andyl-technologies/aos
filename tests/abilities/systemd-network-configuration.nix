@@ -192,6 +192,8 @@ in
   == lib.abilities.types.schemaOf "network apply input" networkInterface.types.applyInput;
   assert (lib.abilities.types.schemaOf "network apply input" networkInterface.types.applyInput).fields.bootstrap.value
   == lib.abilities.types.schemaOf "network bootstrap" networkInterface.types.bootstrap;
+  assert builtins.attrNames (lib.abilities.types.schemaOf "network bootstrap" networkInterface.types.bootstrap).fields.selector.variants
+  == ["mac" "name"];
   assert lib.abilities.types.schemaOf "network observe parameters" networkInterface.declaration.methods.observe.parameters
   == lib.abilities.types.schemaOf "network empty input" emptyInput;
   assert lib.abilities.types.schemaOf "network remove parameters" networkInterface.declaration.methods.remove.parameters
