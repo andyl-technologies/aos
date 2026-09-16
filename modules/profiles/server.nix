@@ -93,9 +93,5 @@ in {
       bundle = lib.mkDefault false;
     };
 
-    aos.packages.apm-systemd-client-test = {
-      package = pkgs.apm-systemd-client-test;
-      bundle = lib.mkDefault false;
-    };
   };
 }

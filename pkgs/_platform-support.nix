@@ -437,7 +437,6 @@ let
     "aos-secret-reference-test"
     "aos-system-image-e2e-fixture"
     "aos-test-agent"
-    "apm-systemd-client-test"
     "bazel-bootstrap"
     "crucible-fixtures"
     "desired-config-test"
@@ -846,7 +845,6 @@ let
     "tests/_aos-ability-boundary-observer.py" = "target-independent-source";
     "tests/_aos-secret-reference-test/module.nix" = "linux-only-config-source";
     "tests/_aos-test-agent/module.nix" = "linux-only-config-source";
-    "tests/_apm-systemd-client-test/module.nix" = "linux-only-config-source";
     "tests/_desired-config-test/module.nix" = "linux-only-config-source";
     "tests/_desired-prune-test/module.nix" = "linux-only-config-source";
     "tests/_landlock-argv-test/module.nix" = "linux-only-config-source";

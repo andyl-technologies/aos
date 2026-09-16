@@ -725,11 +725,9 @@ impl SystemdClient {
         }
     }
 
-    /// Read a single property off a unit's `org.freedesktop.systemd1.Unit`
-    /// interface, returning the raw `OwnedValue`. Callers convert with
-    /// `T::try_from(value)`. (The spec sketched a generic `unit_property::<T>`;
-    /// returning `OwnedValue` avoids gnarly trait bounds while serving the same
-    /// callers — `is_active` and the `_test-systemd-client property` op.)
+    /// Reads one property from a unit's `org.freedesktop.systemd1.Unit`
+    /// interface and returns its exact D-Bus value. Callers convert the
+    /// [`OwnedValue`] according to the property's declared type.
     ///
     /// # Errors
     ///

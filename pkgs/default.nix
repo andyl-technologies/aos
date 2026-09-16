@@ -1362,7 +1362,6 @@
     "aos-var-policy-migrate"
     "aos-verity-root-guard"
     "aos-vm"
-    "apm-systemd-client-test"
     "crucible"
     "crucible-controller"
     "crucible-fixtures"
