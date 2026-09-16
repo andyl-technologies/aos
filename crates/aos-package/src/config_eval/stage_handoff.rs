@@ -1,7 +1,8 @@
 //! Durable ownership transfer between the initrd and host ability controllers.
 //!
-//! The initrd writes a digest-chained journal beneath the image profile before
-//! publishing a checkpoint in preserved `/run`. The host authenticates its
+//! The initrd writes a digest-chained journal in the transaction-storage view
+//! selected by its checked ability fixed point before publishing a checkpoint
+//! in preserved `/run`. The host authenticates its
 //! running immutable image and the image-embedded copy of the initrd static
 //! contract, checks the exact released journal head, and then appends the
 //! receiving record. No process-private handle crosses the stage boundary.
@@ -13,8 +14,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::document::TerminalResult;
+use aos_ability_model::plan::ResourceRevision;
 use aos_ability_model::{
-    ExecutionStage, LocalKey, OperationId, PlanId, ResourceReference, RevisionId, TransactionId,
+    ExecutionStage, LocalKey, OperationId, PlanId, ResourceLifetime, ResourceReference, RevisionId,
+    TransactionId,
 };
 use aos_ability_plan::ResolutionPolicyDocument;
 use aos_ability_runtime::journal::{FileJournal, JournalLimits, JournalPayload, JournalRecord};
@@ -32,13 +35,15 @@ const JOURNAL_FILE: &str = "execution.journal";
 const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
 const INITRD_STATIC_CONTRACT_PATH: &str = "/usr/lib/aos/initrd/static-ability-contract.json";
 const INITRD_CHECKPOINT_PATH: &str = "/run/aos/ability-stage-handoff/initrd.json";
+const TRANSACTION_STORAGE_INTERFACE: &str = "aos.boot.transaction-storage-view";
+const TRANSACTION_STORAGE_PURPOSE: &str = "initrd-stage-journal";
 const DOCUMENT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Runs the initrd side of the stage handoff.
 ///
-/// `root` is the mounted host root (normally `/sysroot`), while
-/// `image_profile` names its durable image profile. The checked resolved stage
-/// and static contract are read from the current initrd.
+/// `root` is the mounted host root (normally `/sysroot`). The checked resolved
+/// stage selects the durable transaction-storage view, and the static contract
+/// is read from the current initrd.
 ///
 /// # Errors
 ///
@@ -46,12 +51,7 @@ const DOCUMENT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// malformed, noncanonical, or inconsistent, the running image cannot be
 /// authenticated, required execution has no supported typed executor, or any
 /// journal/checkpoint durability operation fails.
-pub fn run_initrd_stage(
-    stage: &str,
-    root: &Path,
-    image_profile: &Path,
-    resolved_stage: &Path,
-) -> Result<()> {
+pub fn run_initrd_stage(stage: &str, root: &Path, resolved_stage: &Path) -> Result<()> {
     ensure!(
         stage == "initrd",
         "ability stage runner supports only initrd"
@@ -71,9 +71,10 @@ pub fn run_initrd_stage(
         DOCUMENT_MAX_BYTES,
         "resolved initrd ability stage",
     )?;
+    let transaction_storage = selected_transaction_storage(&resolved_stage_bytes)?;
 
     run_initrd_stage_with(
-        image_profile,
+        &transaction_storage,
         Path::new(INITRD_CHECKPOINT_PATH),
         &contract_bytes,
         &boot_id,
@@ -106,7 +107,6 @@ pub fn receive_initrd_stage(from_stage: &str, image_profile: &Path) -> Result<()
     )?;
 
     receive_initrd_stage_with(
-        image_profile,
         Path::new(INITRD_CHECKPOINT_PATH),
         &contract_bytes,
         &boot_id,
@@ -125,7 +125,7 @@ pub fn receive_initrd_stage(from_stage: &str, image_profile: &Path) -> Result<()
 /// Returns an error when the source stage is not `initrd`, the checkpoint or
 /// journal is absent, unsafe, malformed, torn, already received, or
 /// inconsistent, or the boot, target image, or static contract differs.
-pub fn validate_initrd_stage(from_stage: &str, root: &Path, image_profile: &Path) -> Result<()> {
+pub fn validate_initrd_stage(from_stage: &str, root: &Path) -> Result<()> {
     ensure!(
         from_stage == "initrd",
         "ability stage validator supports only initrd"
@@ -142,7 +142,6 @@ pub fn validate_initrd_stage(from_stage: &str, root: &Path, image_profile: &Path
     )?;
 
     validate_initrd_stage_with(
-        image_profile,
         Path::new(INITRD_CHECKPOINT_PATH),
         &contract_bytes,
         &boot_id,
@@ -216,6 +215,8 @@ struct StageCheckpoint {
     receiver_stage: ExecutionStage,
     boot_id: String,
     transaction: TransactionId,
+    transaction_storage: ResourceReference,
+    transaction_root: String,
     image: ImageIdentity,
     static_ability_contract_sha256: Sha256Digest,
     resolved_stage_sha256: Sha256Digest,
@@ -244,6 +245,8 @@ impl StageCheckpoint {
             self.status == CheckpointStatus::OwnershipReleased,
             "stage checkpoint does not release source ownership"
         );
+        validate_transaction_storage_reference(&self.transaction_storage)?;
+        validate_transaction_storage_path(Path::new(&self.transaction_root))?;
         Ok(())
     }
 }
@@ -263,6 +266,8 @@ enum StageEvent {
         receiver_stage: ExecutionStage,
         boot_id: String,
         transaction: TransactionId,
+        transaction_storage: ResourceReference,
+        transaction_root: String,
         image: ImageIdentity,
         static_ability_contract_sha256: Sha256Digest,
         resolved_stage_sha256: Sha256Digest,
@@ -401,8 +406,138 @@ struct ValidatedRelease {
     journal_path: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TransactionStorageSelection {
+    resource: ResourceReference,
+    root: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransactionStorageRealization {
+    schema: String,
+    path: String,
+}
+
+fn selected_transaction_storage(
+    resolved_stage_bytes: &[u8],
+) -> Result<TransactionStorageSelection> {
+    let checked = super::build_stage::decode_resolved_stage(resolved_stage_bytes)?;
+    ensure!(
+        checked.environment.stage == ExecutionStage::Initrd,
+        "resolved ability stage does not select the initrd environment"
+    );
+
+    let matching_resources = checked
+        .fixed_point
+        .resolved_resources
+        .values()
+        .map(|value| {
+            serde_json::from_value::<ResourceRevision>(value.as_json().clone())
+                .context("decoding resolved initrd resource")
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|revision| {
+            revision.kind.as_str() == TRANSACTION_STORAGE_INTERFACE
+                && revision
+                    .value
+                    .as_json()
+                    .get("purpose")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(TRANSACTION_STORAGE_PURPOSE)
+        })
+        .collect::<Vec<_>>();
+    let [revision] = matching_resources.as_slice() else {
+        bail!("resolved initrd stage does not select exactly one transaction-storage view")
+    };
+    ensure!(
+        revision.lifetime == ResourceLifetime::Transaction,
+        "initrd transaction-storage view has the wrong lifetime"
+    );
+
+    let matching_bindings = checked
+        .fixed_point
+        .checked_bindings
+        .iter()
+        .filter(|binding| {
+            binding.interface.name == revision.kind
+                && binding.provider == revision.resource.provider
+                && binding
+                    .caller_grant
+                    .methods
+                    .iter()
+                    .any(|method| method.as_str() == "materialize")
+                && binding.caller_grant.resources.iter().any(|permission| {
+                    permission.resource == revision.resource
+                        && permission
+                            .operations
+                            .iter()
+                            .any(|operation| operation.as_str() == "materialize")
+                })
+        })
+        .collect::<Vec<_>>();
+    let [binding] = matching_bindings.as_slice() else {
+        bail!("resolved initrd transaction-storage view has no exact checked caller binding")
+    };
+
+    let realization: TransactionStorageRealization =
+        serde_json::from_value(revision.realization.as_json().clone())
+            .context("decoding initrd transaction-storage realization")?;
+    ensure!(
+        realization.schema == "aos.boot.transaction-storage-realization/v1",
+        "unsupported initrd transaction-storage realization"
+    );
+    let root = PathBuf::from(realization.path);
+    validate_transaction_storage_path(&root)?;
+
+    let resource = ResourceReference {
+        interface: binding.interface.clone(),
+        resource: revision.resource.clone(),
+        operations: vec![LocalKey::new("observe")?],
+        lifetime: revision.lifetime.clone(),
+    };
+    validate_transaction_storage_reference(&resource)?;
+    Ok(TransactionStorageSelection { resource, root })
+}
+
+fn validate_transaction_storage_reference(resource: &ResourceReference) -> Result<()> {
+    ensure!(
+        resource.interface.name.as_str() == TRANSACTION_STORAGE_INTERFACE
+            && resource.lifetime == ResourceLifetime::Transaction
+            && resource.operations.len() == 1
+            && resource.operations[0].as_str() == "observe",
+        "stage handoff names an invalid transaction-storage resource"
+    );
+    Ok(())
+}
+
+fn validate_transaction_storage_path(path: &Path) -> Result<()> {
+    ensure!(
+        path.is_absolute(),
+        "transaction-storage path is not absolute"
+    );
+    let path_text = path
+        .to_str()
+        .context("transaction-storage path is not UTF-8")?;
+    ensure!(
+        path_text != "/" && !path_text.ends_with('/') && !path_text.contains("//"),
+        "transaction-storage path is not canonical"
+    );
+    ensure!(
+        !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        }),
+        "transaction-storage path contains traversal components"
+    );
+    Ok(())
+}
+
 fn run_initrd_stage_with(
-    image_profile: &Path,
+    transaction_storage: &TransactionStorageSelection,
     checkpoint_path: &Path,
     contract_bytes: &[u8],
     boot_id: &str,
@@ -415,6 +550,11 @@ fn run_initrd_stage_with(
     let contract_digest = sha256_digest(contract_bytes);
 
     let transaction = transaction_for_boot(boot_id)?;
+    let transaction_root = transaction_storage
+        .root
+        .to_str()
+        .context("selected transaction-storage path is not UTF-8")?
+        .to_string();
     let resolved_stage_sha256 = sha256_digest(resolved_stage_bytes);
     let prepared = StageEvent::Prepared {
         schema: JOURNAL_EVENT_SCHEMA.to_string(),
@@ -422,11 +562,13 @@ fn run_initrd_stage_with(
         receiver_stage: ExecutionStage::Host,
         boot_id: boot_id.to_string(),
         transaction: transaction.clone(),
+        transaction_storage: transaction_storage.resource.clone(),
+        transaction_root: transaction_root.clone(),
         image: image.clone(),
         static_ability_contract_sha256: contract_digest,
         resolved_stage_sha256,
     };
-    let transaction_dir = prepare_transaction_directory(image_profile, &transaction)?;
+    let transaction_dir = prepare_transaction_directory(&transaction_storage.root, &transaction)?;
     let journal_path = transaction_dir.join(JOURNAL_FILE);
     let opened = FileJournal::<StageEvent>::open(&journal_path, stage_journal_limits())
         .context("opening initrd stage handoff journal")?;
@@ -443,7 +585,7 @@ fn run_initrd_stage_with(
                     execute_resolved_initrd_stage(
                         resolved_stage_bytes,
                         contract_bytes,
-                        image_profile,
+                        &transaction_storage.root,
                         transaction.clone(),
                     )
                 },
@@ -461,7 +603,7 @@ fn run_initrd_stage_with(
                     execute_resolved_initrd_stage(
                         resolved_stage_bytes,
                         contract_bytes,
-                        image_profile,
+                        &transaction_storage.root,
                         transaction.clone(),
                     )
                 },
@@ -502,6 +644,8 @@ fn run_initrd_stage_with(
         receiver_stage: ExecutionStage::Host,
         boot_id: boot_id.to_string(),
         transaction,
+        transaction_storage: transaction_storage.resource.clone(),
+        transaction_root,
         image,
         static_ability_contract_sha256: contract_digest,
         resolved_stage_sha256,
@@ -597,7 +741,7 @@ fn validate_resolved_initrd_stage_evidence(
 fn execute_resolved_initrd_stage(
     resolved_stage_bytes: &[u8],
     contract_bytes: &[u8],
-    image_profile: &Path,
+    transaction_root: &Path,
     transaction: TransactionId,
 ) -> Result<StageExecutionEvidence> {
     let checked = super::build_stage::decode_resolved_stage(resolved_stage_bytes)?;
@@ -616,7 +760,9 @@ fn execute_resolved_initrd_stage(
     let dispatcher =
         super::handler_dispatch::HandlerDispatcher::for_static_plan(&checked.plan, &packages)
             .context("constructing initrd handler dispatcher")?;
-    let stage_directory = image_profile.join("ability-stage-runtime").join("initrd");
+    let stage_directory = transaction_root
+        .join("ability-stage-runtime")
+        .join("initrd");
     let mut session = super::transaction_store::AbilityTransactionSession::open_stage(
         &checked.plan,
         transaction.clone(),
@@ -707,19 +853,12 @@ fn selected_resolution_policy(
 }
 
 fn receive_initrd_stage_with(
-    image_profile: &Path,
     checkpoint_path: &Path,
     contract_bytes: &[u8],
     boot_id: &str,
     image: ImageIdentity,
 ) -> Result<()> {
-    let release = load_validated_release(
-        image_profile,
-        checkpoint_path,
-        contract_bytes,
-        boot_id,
-        &image,
-    )?;
+    let release = load_validated_release(checkpoint_path, contract_bytes, boot_id, &image)?;
     let ownership = read_journal_ownership(&release, &image)?;
     if ownership == JournalOwnership::Received {
         return Ok(());
@@ -758,19 +897,12 @@ fn receive_initrd_stage_with(
 }
 
 fn validate_initrd_stage_with(
-    image_profile: &Path,
     checkpoint_path: &Path,
     contract_bytes: &[u8],
     boot_id: &str,
     image: ImageIdentity,
 ) -> Result<()> {
-    let release = load_validated_release(
-        image_profile,
-        checkpoint_path,
-        contract_bytes,
-        boot_id,
-        &image,
-    )?;
+    let release = load_validated_release(checkpoint_path, contract_bytes, boot_id, &image)?;
     let ownership = read_journal_ownership(&release, &image)?;
     ensure!(
         ownership == JournalOwnership::Released,
@@ -802,7 +934,6 @@ fn read_journal_ownership(
 }
 
 fn load_validated_release(
-    image_profile: &Path,
     checkpoint_path: &Path,
     contract_bytes: &[u8],
     boot_id: &str,
@@ -837,8 +968,9 @@ fn load_validated_release(
         "stage checkpoint names another initrd static ability contract"
     );
 
-    let journal_path =
-        existing_transaction_directory(image_profile, &checkpoint.transaction)?.join(JOURNAL_FILE);
+    let transaction_root = Path::new(&checkpoint.transaction_root);
+    let journal_path = existing_transaction_directory(transaction_root, &checkpoint.transaction)?
+        .join(JOURNAL_FILE);
     Ok(ValidatedRelease {
         checkpoint,
         checkpoint_bytes,
@@ -904,6 +1036,8 @@ fn validate_source_records(
         receiver_stage,
         boot_id,
         transaction,
+        transaction_storage,
+        transaction_root,
         image,
         static_ability_contract_sha256,
         resolved_stage_sha256,
@@ -917,6 +1051,8 @@ fn validate_source_records(
             && *receiver_stage == checkpoint.receiver_stage
             && boot_id == &checkpoint.boot_id
             && transaction == &checkpoint.transaction
+            && transaction_storage == &checkpoint.transaction_storage
+            && transaction_root == &checkpoint.transaction_root
             && image == &checkpoint.image
             && *static_ability_contract_sha256 == checkpoint.static_ability_contract_sha256
             && *resolved_stage_sha256 == checkpoint.resolved_stage_sha256,
@@ -985,11 +1121,12 @@ fn validate_received_record(
 }
 
 fn prepare_transaction_directory(
-    image_profile: &Path,
+    transaction_root: &Path,
     transaction: &TransactionId,
 ) -> Result<PathBuf> {
-    ensure_private_directory(image_profile, false)?;
-    let root = image_profile.join(TRANSACTION_ROOT);
+    validate_transaction_storage_path(transaction_root)?;
+    ensure_private_directory(transaction_root, false)?;
+    let root = transaction_root.join(TRANSACTION_ROOT);
     ensure_private_directory(&root, true)?;
     let initrd = root.join(INITRD_TRANSACTION_ROOT);
     ensure_private_directory(&initrd, true)?;
@@ -1000,10 +1137,11 @@ fn prepare_transaction_directory(
 }
 
 fn existing_transaction_directory(
-    image_profile: &Path,
+    transaction_root: &Path,
     transaction: &TransactionId,
 ) -> Result<PathBuf> {
-    let transaction_dir = image_profile
+    validate_transaction_storage_path(transaction_root)?;
+    let transaction_dir = transaction_root
         .join(TRANSACTION_ROOT)
         .join(INITRD_TRANSACTION_ROOT)
         .join(transaction.0.as_str());
@@ -1183,6 +1321,42 @@ mod tests {
         assert!(validate_boot_id("01234567-89ab-cdef-0123-456789abcdef").is_ok());
         assert!(validate_boot_id("01234567-89AB-CDEF-0123-456789ABCDEF").is_err());
         assert!(validate_boot_id("0123456789abcdef0123456789abcdef").is_err());
+    }
+
+    #[test]
+    fn transaction_storage_requires_exact_typed_reference_and_canonical_path() -> Result<()> {
+        let resource: ResourceReference = serde_json::from_value(serde_json::json!({
+            "interface": {
+                "name": TRANSACTION_STORAGE_INTERFACE,
+                "abi": 1,
+                "descriptor": format!("sha256:{}", "0".repeat(64)),
+            },
+            "resource": {
+                "provider": {
+                    "environment": {
+                        "authority": "test",
+                        "key": "initrd",
+                        "stage": "initrd",
+                    },
+                    "key": "boot-storage",
+                },
+                "key": TRANSACTION_STORAGE_PURPOSE,
+            },
+            "operations": ["observe"],
+            "lifetime": "transaction",
+        }))?;
+
+        validate_transaction_storage_reference(&resource)?;
+        validate_transaction_storage_path(Path::new(
+            "/run/aos-boot-transaction-storage/aos/initrd-stage-journal",
+        ))?;
+
+        let mut wrong_lifetime = resource;
+        wrong_lifetime.lifetime = ResourceLifetime::Persistent;
+        assert!(validate_transaction_storage_reference(&wrong_lifetime).is_err());
+        assert!(validate_transaction_storage_path(Path::new("relative/journal")).is_err());
+        assert!(validate_transaction_storage_path(Path::new("/run/aos/../journal")).is_err());
+        Ok(())
     }
 
     #[test]
