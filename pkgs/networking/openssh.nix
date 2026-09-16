@@ -188,6 +188,19 @@ in
             rm -rf $out/nix
           '';
       }
+      {
+        name = "install-service-helpers";
+        script = ''
+          mkdir -p "$out/libexec"
+          $CC -O2 -Wall -Wextra -Werror \
+            "-DSSH_KEYGEN_PATH=\"$out/bin/ssh-keygen\"" \
+            -o "$out/libexec/aos-openssh-host-key" \
+            ${./_openssh/host-key-helper.c}
+          $CC -O2 -Wall -Wextra -Werror \
+            -o "$out/libexec/aos-openssh-host-policy-wait" \
+            ${./_openssh/host-policy-wait.c}
+        '';
+      }
     ];
 
     meta = {
@@ -217,6 +230,24 @@ in
           test -f /tmp/testkey
           test -f /tmp/testkey.pub
           echo "==> ssh-keygen test passed"
+        '';
+      };
+
+      service-helpers = testing.mkVMTest {
+        name = "tool-openssh-service-helpers";
+        rootfsDeps = [self pkgs.coreutils];
+        testScript = ''
+          mkdir -p /var/etc/ssh /run/aos
+
+          ${self}/libexec/aos-openssh-host-key
+          test -s /var/etc/ssh/ssh_host_ed25519_key
+          test -s /var/etc/ssh/ssh_host_ed25519_key.pub
+          first_hash=$(sha256sum /var/etc/ssh/ssh_host_ed25519_key)
+          ${self}/libexec/aos-openssh-host-key
+          test "$first_hash" = "$(sha256sum /var/etc/ssh/ssh_host_ed25519_key)"
+
+          touch /run/aos/host-policy-live
+          ${self}/libexec/aos-openssh-host-policy-wait
         '';
       };
 

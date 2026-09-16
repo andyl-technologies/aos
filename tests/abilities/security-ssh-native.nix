@@ -30,8 +30,32 @@ in
   ];
   assert !requests."openssh:sshd-keygen-lifecycle".parameters.enabled;
   assert requests."openssh:sshd-keygen-lifecycle".parameters.remain_after_exit;
+  assert requests."openssh:sshd-keygen-lifecycle".parameters.start
+  == [
+    {
+      executable = {
+        artifact = lib.abilities.packageOutput {package = "openssh";};
+        entry_point = "libexec/aos-openssh-host-key";
+        arguments = [];
+      };
+      ignore_failure = false;
+    }
+  ];
+  assert requests."openssh:sshd-keygen-environment".parameters.search_path == [];
   assert !requests."openssh:aos-ssh-ready-lifecycle".parameters.enabled;
   assert requests."openssh:aos-ssh-ready-lifecycle".parameters.start_timeout_millis == 90000;
+  assert requests."openssh:aos-ssh-ready-lifecycle".parameters.start
+  == [
+    {
+      executable = {
+        artifact = lib.abilities.packageOutput {package = "openssh";};
+        entry_point = "libexec/aos-openssh-host-policy-wait";
+        arguments = [];
+      };
+      ignore_failure = false;
+    }
+  ];
+  assert requests."openssh:aos-ssh-ready-environment".parameters.search_path == [];
   assert dependencies.requires
   == [
     {

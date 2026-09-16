@@ -16,6 +16,7 @@
 in
   assert lifecycle.execution_model == "oneshot";
   assert lifecycle.remain_after_exit;
+  assert lifecycle.pre_start == [];
   assert lifecycle.start
   == [
     {
@@ -30,6 +31,7 @@ in
       ignore_failure = false;
     }
   ];
+  assert requests."aos:aos-ebpf-lsm-policies-environment".parameters.search_path == [];
   assert builtins.elem "CAP_BPF" isolation.capability_bounds.capabilities;
   assert builtins.elem "CAP_SYS_ADMIN" isolation.capability_bounds.capabilities;
   assert builtins.elem "CAP_SYS_RESOURCE" isolation.capability_bounds.capabilities;
