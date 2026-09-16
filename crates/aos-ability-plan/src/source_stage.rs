@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, BindingPlanDocument, DesiredStateDocument, EffectPlanDocument,
-    EnvironmentDocument, InterfaceDocument, PackageDocument, PlanId, ResourceRevision,
-    VersionedDocument,
+    EnvironmentDocument, EnvironmentId, InstanceId, InterfaceDocument, LocalKey, PackageDocument,
+    PlanId, RequestId, RequirementDeclaration, ResourceLifetime, ResourceRevision, ScopePath,
+    ValuePhase, VersionedDocument,
 };
 use aos_ability_validate::{
     BindingValidationInputs, CheckedEffectPlan, ValidationContext,
@@ -43,16 +44,115 @@ pub struct SourceStageStaticContract {
 }
 
 /// Retains the final source module fixed point used for native activation.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceStageFixedPoint {
+    /// Identifies the exact target environment selected by module evaluation.
+    pub environment: EnvironmentId,
+    /// Retains configured instances with carrier-injected package provenance.
+    pub instances: BTreeMap<String, SourceStageInstance>,
+    /// Retains canonical instance identities derived by the module system.
+    pub instance_identities: BTreeMap<String, InstanceId>,
+    /// Retains package-authored root requests.
+    pub requests: BTreeMap<String, SourceStageRequest>,
+    /// Retains provider-authored child requests from the completed fixed point.
+    pub composition_requests: BTreeMap<String, SourceStageRequest>,
+    /// Retains exact child requirement contracts selected by composition.
+    pub composition_requirements: BTreeMap<String, SourceStageCompositionRequirement>,
     /// Retains exact selected bindings keyed by their qualified declaration key.
-    pub bindings: BTreeMap<String, AbilityValue>,
+    pub bindings: BTreeMap<String, SourceStageBinding>,
+    /// Retains typed planning outputs keyed by request and output name.
+    pub composition_outputs: BTreeMap<String, BTreeMap<String, SourceStageOutput>>,
+    /// Proves that the completed fixed point has no unresolved child request.
+    pub composition_pending_requests: BTreeMap<String, AbilityValue>,
     /// Retains exact desired and published resource projections.
-    pub resolved_resources: BTreeMap<String, AbilityValue>,
+    pub resolved_resources: BTreeMap<String, SourceStageResolvedResource>,
     /// Selects the protected package-provided execution observation channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_observer: Option<AbilityValue>,
+}
+
+/// Retains one standard module-system instance declaration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceStageInstance {
+    /// Identifies the package carrier that declared the instance.
+    pub package: LocalKey,
+    /// Selects the exact provider implementation for enabled providers.
+    pub implementation: Option<String>,
+    /// Carries typed instance configuration.
+    pub configuration: AbilityValue,
+}
+
+/// Retains one standard module-system request declaration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceStageRequest {
+    /// Identifies the package carrier that authored the request.
+    pub package: LocalKey,
+    /// Names the exact root or generated requirement declaration.
+    pub requirement: String,
+    /// Names the consuming instance declaration.
+    pub consumer: String,
+    /// Carries the authored request scope.
+    pub scope: ScopePath,
+    /// Carries the authored local semantic key.
+    pub local_key: LocalKey,
+    /// Declares the request's semantic resource lifetime.
+    pub lifetime: ResourceLifetime,
+    /// Carries typed request parameters.
+    pub parameters: AbilityValue,
+}
+
+/// Retains one provider-activated nested requirement.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceStageCompositionRequirement {
+    /// Names the selected implementation that activated this requirement.
+    pub implementation: String,
+    /// Names the implementation-local requirement alias.
+    pub alias: LocalKey,
+    /// Carries the authenticated package requirement declaration.
+    pub requirement: RequirementDeclaration,
+}
+
+/// Retains one exact source-authored provider selection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceStageBinding {
+    /// Names the selected root or child request declaration.
+    pub request: String,
+    /// Names the selected package implementation declaration.
+    pub implementation: String,
+    /// Names the selected provider instance declaration.
+    pub provider_instance: String,
+    /// Names its exclusive aggregate contribution slot.
+    pub slot: LocalKey,
+}
+
+/// Retains one typed planning output from source composition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceStageOutput {
+    /// Carries the typed output value or symbolic expression.
+    pub value: AbilityValue,
+    /// Declares the earliest phase in which the value is available.
+    pub phase: ValuePhase,
+    /// Declares public or protected visibility.
+    pub visibility: String,
+    /// Declares the output's resource retention boundary.
+    pub lifetime: ResourceLifetime,
+}
+
+/// Retains one checked module-system resource projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceStageResolvedResource {
+    /// Carries the portable desired resource revision.
+    #[serde(flatten)]
+    pub revision: ResourceRevision,
+    /// Names the source binding that controls mutation, when any.
+    pub controller: Option<String>,
 }
 
 /// Retains pure transition construction performed under source authority.
@@ -359,24 +459,70 @@ impl SourceStageBundle {
         &self,
         binding: &aos_ability_validate::CheckedBindingPlan,
     ) -> Result<(), SourceStageBundleError> {
-        if self.fixed_point.bindings.len() != binding.bindings().len()
-            || self.fixed_point.bindings.keys().any(|key| {
-                binding
-                    .bindings()
-                    .iter()
-                    .all(|selected| selected.id.0.as_str() != key)
-            })
+        let fixed = &self.fixed_point;
+        if fixed.environment != binding.environment().environment
+            || !fixed.composition_pending_requests.is_empty()
+            || fixed.instances.len() != fixed.instance_identities.len()
+            || fixed.instances.keys().ne(fixed.instance_identities.keys())
+            || fixed.bindings.len() != binding.bindings().len()
         {
             return Err(SourceStageBundleError::FixedPointAuthority);
+        }
+
+        let requests = fixed
+            .requests
+            .iter()
+            .chain(&fixed.composition_requests)
+            .map(|(name, request)| {
+                let consumer = fixed.instance_identities.get(&request.consumer)?;
+                Some((
+                    name.as_str(),
+                    RequestId {
+                        consumer: consumer.clone(),
+                        scope: request.scope.clone(),
+                        key: request.local_key.clone(),
+                    },
+                ))
+            })
+            .collect::<Option<BTreeMap<_, _>>>()
+            .ok_or(SourceStageBundleError::FixedPointAuthority)?;
+        if requests.len() != binding.document().requests.len() {
+            return Err(SourceStageBundleError::FixedPointAuthority);
+        }
+        for selected in fixed.bindings.values() {
+            let request = requests
+                .get(selected.request.as_str())
+                .ok_or(SourceStageBundleError::FixedPointAuthority)?;
+            let provider = fixed
+                .instance_identities
+                .get(&selected.provider_instance)
+                .ok_or(SourceStageBundleError::FixedPointAuthority)?;
+            let matches = binding
+                .bindings()
+                .iter()
+                .filter(|checked| {
+                    checked.request == *request
+                        && checked.provider == *provider
+                        && (checked.caller_grant.contributions.is_empty()
+                            || checked.caller_grant.contributions.iter().any(|permission| {
+                                permission.slot == selected.slot
+                                    && permission.aggregate.provider == *provider
+                            }))
+                        && implementation_name(binding.packages(), checked)
+                            .is_some_and(|name| name == selected.implementation)
+                })
+                .count();
+            if matches != 1 {
+                return Err(SourceStageBundleError::FixedPointAuthority);
+            }
         }
 
         let mut projected_resources = self
             .fixed_point
             .resolved_resources
             .values()
-            .map(|value| serde_json::from_value::<ResourceRevision>(value.as_json().clone()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| SourceStageBundleError::FixedPointAuthority)?;
+            .map(|value| value.revision.clone())
+            .collect::<Vec<_>>();
         projected_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
         let mut checked_resources = binding.desired_state().resources.clone();
         checked_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
@@ -385,6 +531,32 @@ impl SourceStageBundle {
         }
         Ok(())
     }
+}
+
+fn implementation_name(
+    packages: &[PackageDocument],
+    binding: &aos_ability_model::Binding,
+) -> Option<String> {
+    let package_digest = binding.provider_package?;
+    packages.iter().find_map(|package| {
+        if package.content_digest().ok()? != package_digest {
+            return None;
+        }
+        package
+            .implementation
+            .providers
+            .iter()
+            .find(|provider| {
+                provider.descriptor_digest().ok() == Some(binding.implementation.descriptor)
+            })
+            .map(|provider| {
+                format!(
+                    "{}:{}",
+                    package.package.name.as_str(),
+                    provider.name.as_str()
+                )
+            })
+    })
 }
 
 impl CheckedSourceStageBundle {
@@ -469,18 +641,129 @@ mod tests {
         let (planning, transition) = verified_planning_transition_plan();
         let plan = transition.checked_effect();
         let binding = plan.binding_plan();
+        let mut instance_names = binding
+            .desired_state()
+            .instances
+            .iter()
+            .enumerate()
+            .map(|(index, instance)| (instance.instance.clone(), format!("instance-{index}")))
+            .collect::<BTreeMap<_, _>>();
+        for request in &binding.document().requests {
+            let next = instance_names.len();
+            instance_names
+                .entry(request.id.consumer.clone())
+                .or_insert_with(|| format!("instance-{next}"));
+        }
+        for selected in binding.bindings() {
+            let next = instance_names.len();
+            instance_names
+                .entry(selected.provider.clone())
+                .or_insert_with(|| format!("instance-{next}"));
+        }
+        let instance_identities = instance_names
+            .iter()
+            .map(|(identity, name)| (name.clone(), identity.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut instances = binding
+            .desired_state()
+            .instances
+            .iter()
+            .map(|instance| {
+                let name = instance_names[&instance.instance].clone();
+                let package = binding
+                    .packages()
+                    .iter()
+                    .find(|package| package.content_digest().ok() == Some(instance.package))
+                    .expect("instance package");
+                let implementation = binding
+                    .bindings()
+                    .iter()
+                    .find(|selected| selected.provider == instance.instance)
+                    .and_then(|selected| implementation_name(binding.packages(), selected));
+                (
+                    name,
+                    SourceStageInstance {
+                        package: package.package.name.clone(),
+                        implementation,
+                        configuration: instance
+                            .configuration
+                            .clone()
+                            .unwrap_or_else(|| AbilityValue::new(serde_json::json!({})).unwrap()),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        for request in &binding.document().requests {
+            let name = instance_names[&request.id.consumer].clone();
+            instances
+                .entry(name)
+                .or_insert_with(|| SourceStageInstance {
+                    package: request.package.clone(),
+                    implementation: None,
+                    configuration: AbilityValue::new(serde_json::json!({}))
+                        .expect("consumer configuration"),
+                });
+        }
+        for selected in binding.bindings() {
+            let name = instance_names[&selected.provider].clone();
+            let package_digest = selected.provider_package.expect("provider package");
+            let package = binding
+                .packages()
+                .iter()
+                .find(|package| package.content_digest().ok() == Some(package_digest))
+                .expect("provider package document");
+            instances
+                .entry(name)
+                .or_insert_with(|| SourceStageInstance {
+                    package: package.package.name.clone(),
+                    implementation: implementation_name(binding.packages(), selected),
+                    configuration: AbilityValue::new(serde_json::json!({}))
+                        .expect("provider configuration"),
+                });
+        }
+        let request_names = binding
+            .document()
+            .requests
+            .iter()
+            .enumerate()
+            .map(|(index, request)| (request.id.clone(), format!("request-{index}")))
+            .collect::<BTreeMap<_, _>>();
+        let requests = binding
+            .document()
+            .requests
+            .iter()
+            .map(|request| {
+                (
+                    request_names[&request.id].clone(),
+                    SourceStageRequest {
+                        package: request.package.clone(),
+                        requirement: format!("{}:fixture", request.package.as_str()),
+                        consumer: instance_names[&request.id.consumer].clone(),
+                        scope: request.id.scope.clone(),
+                        local_key: request.id.key.clone(),
+                        lifetime: request.lifetime,
+                        parameters: request.parameters.clone(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         let bindings = binding
             .bindings()
             .iter()
-            .map(|selected| {
+            .enumerate()
+            .map(|(index, selected)| {
                 (
-                    selected.id.0.as_str().to_string(),
-                    AbilityValue::new(serde_json::json!({
-                        "request": selected.request,
-                        "implementation": selected.implementation,
-                        "providerInstance": selected.provider,
-                    }))
-                    .expect("fixed-point binding value"),
+                    format!("source-binding-{index}"),
+                    SourceStageBinding {
+                        request: request_names[&selected.request].clone(),
+                        implementation: implementation_name(binding.packages(), selected)
+                            .expect("implementation name"),
+                        provider_instance: instance_names[&selected.provider].clone(),
+                        slot: selected.caller_grant.contributions.first().map_or_else(
+                            || LocalKey::new("selected").expect("fixture slot"),
+                            |permission| permission.slot.clone(),
+                        ),
+                    },
                 )
             })
             .collect();
@@ -493,8 +776,10 @@ mod tests {
             .map(|(index, resource)| {
                 (
                     format!("resource-{index}"),
-                    AbilityValue::new(serde_json::to_value(resource).expect("resource value"))
-                        .expect("fixed-point resource value"),
+                    SourceStageResolvedResource {
+                        revision: resource.clone(),
+                        controller: None,
+                    },
                 )
             })
             .collect();
@@ -507,7 +792,15 @@ mod tests {
                 sha256: Sha256Digest::separated("aos.test.contract/v1", b"contract"),
             },
             SourceStageFixedPoint {
+                environment: binding.environment().environment.clone(),
+                instances,
+                instance_identities,
+                requests,
+                composition_requests: BTreeMap::new(),
+                composition_requirements: BTreeMap::new(),
                 bindings,
+                composition_outputs: BTreeMap::new(),
+                composition_pending_requests: BTreeMap::new(),
                 resolved_resources,
                 execution_observer: None,
             },
