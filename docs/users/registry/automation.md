@@ -75,9 +75,6 @@ release plan:
 ```sh
 apr publish "$STORE_PATH" \
   --registry acme \
-  --description "Acme host health agent" \
-  --license Apache-2.0 \
-  --maintainer packages@example.com \
   --key-id release
 
 apr verify --registry acme

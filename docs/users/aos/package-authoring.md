@@ -393,11 +393,14 @@ STORE_PATH="$(nix build .#pkg-acme-health-agent \
 
 apr publish "$STORE_PATH" \
   --registry acme \
-  --description "Acme host health agent" \
-  --license Apache-2.0 \
-  --maintainer packages@example.com \
   --key-id release
 ```
+
+`apr publish` evaluates the package's target inventory and publishes its
+generated documentation, named outputs, and package contract from that exact
+record. Keep the package's version, description, homepage, license, and
+maintainers in its Nix `meta`; the registry command does not accept manual
+copies of those fields for ordinary packages.
 
 Create and upload a signed registry release using the workflow in
 [Publish packages and releases](../registry/publishing.md). Once the consumer
