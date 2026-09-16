@@ -94,6 +94,7 @@
           enable = true;
           maximumRetainedNamespaces = capacity;
         };
+        aos.sandbox.networkWorker.enable = true;
         aos.image.budgets = {
           maxRootMiB = 704;
           maxDownloadMiB = 832;

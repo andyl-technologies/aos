@@ -21,7 +21,7 @@
   lifecycleProbeSource = ../sandbox/network-lifecycle-landlock-probe.c;
   lifecycleSentinelSource = ../sandbox/network-lifecycle-sentinel-holder.c;
 
-  lifecycleLandlockPrefix = lib.concatStringsSep " " [
+  lifecycleProbeLandlockPrefix = lib.concatStringsSep " " [
     "${pkgs.aos-landlock}/bin/aos-landlock"
     "--require-abi 4"
     "--fs-read /proc/self/cgroup"
@@ -77,7 +77,7 @@
       *) test -n "$holder_pid" ;;
     esac
 
-    exec ${lifecycleLandlockPrefix} \
+    exec ${lifecycleProbeLandlockPrefix} \
       ${lifecycleQualificationTools}/bin/network-lifecycle-landlock-probe \
       ${authoritySentinel} \
       ${stateSentinel} \
@@ -199,12 +199,17 @@
       assertions = [
         {
           assertion =
-            config.systemd.services."aos-sandbox-network-lifecycle-worker@".serviceConfig.ExecStart
-            == "${lifecycleLandlockPrefix} ${pkgs.aos-netd}/bin/aos-sandbox-network-lifecycle-worker";
-          message = "lifecycle qualification Landlock prefix diverged from the production worker";
+            lib.hasPrefix
+            "${pkgs.aos-netd}/bin/aos-sandbox-network-lifecycle-worker "
+            config.systemd.services."aos-sandbox-network-lifecycle-worker@".serviceConfig.ExecStart;
+          message = "lifecycle qualification no longer exercises the production lifecycle worker entrypoint";
         }
       ];
 
+      # This independently requires the platform's alias-resistant Landlock
+      # behavior before the production effect worker is exercised. The effect
+      # worker itself needs authenticated authority and mutable journal access,
+      # so the admission-only wrapper is deliberately not inherited by it.
       systemd.services."aos-sandbox-network-lifecycle-worker@".serviceConfig.ExecStartPre = "${lifecycleProbeWrapper}/bin/aos-network-lifecycle-landlock-qualification";
 
       systemd.services.aos-network-lifecycle-sentinel-holder = {

@@ -23,6 +23,7 @@
       _qualificationAdmissionRelease = true;
     };
     aos.sandbox.networkBroker.enable = true;
+    aos.sandbox.networkWorker.enable = true;
     aos.services.dbus.enable = true;
     aos.boot.initrd.stage0 = lib.mkForce qualificationStage0;
     aos.image.erofsCompressionLevel = 1;
