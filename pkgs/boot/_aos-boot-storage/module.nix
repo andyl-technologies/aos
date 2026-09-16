@@ -6,6 +6,7 @@
 }: let
   cfg = config.aos.boot.storageServices;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  milestones = serviceManagement.milestones;
   serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
@@ -46,13 +47,13 @@
       interface = interfaces.systemMilestoneReadiness;
       parameters = {inherit milestone;};
     };
-  localFilesystems = systemMilestone "local-filesystems" "local-filesystems";
-  multiUser = systemMilestone "multi-user" "multi-user";
-  sysroot = systemMilestone "sysroot" "sysroot";
-  deviceSettle = systemMilestone "device-settle" "device-settle";
-  kernelModules = systemMilestone "kernel-modules" "kernel-modules";
-  bootIdentity = systemMilestone "boot-identity" "boot-identity-validated";
-  initrdStage = systemMilestone "initrd-stage" "initrd-stage-executed";
+  localFilesystems = systemMilestone "local-filesystems" milestones.localFilesystems;
+  multiUser = systemMilestone "multi-user" milestones.multiUser;
+  sysroot = systemMilestone "sysroot" milestones.sysroot;
+  deviceSettle = systemMilestone "device-settle" milestones.deviceSettle;
+  kernelModules = systemMilestone "kernel-modules" milestones.kernelModules;
+  bootIdentity = systemMilestone "boot-identity" milestones.bootIdentityValidated;
+  initrdStage = systemMilestone "initrd-stage" milestones.initrdStageExecuted;
   localFilesystemsReadiness = resultOf "local-filesystems" "readiness-resource";
   multiUserReadiness = resultOf "multi-user" "readiness-resource";
   sysrootReadiness = resultOf "sysroot" "readiness-resource";

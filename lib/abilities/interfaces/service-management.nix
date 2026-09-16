@@ -48,7 +48,7 @@
   guarantees = interfaceCatalog.guaranteeDeclarations;
   readView = {
     types = serviceTypes;
-    inherit (interfaceCatalog) aggregation guaranteeAliases guaranteeDeclarations mergeContract;
+    inherit (interfaceCatalog) aggregation guaranteeAliases guaranteeDeclarations mergeContract milestones;
     inherit interfaces declarations moduleDeclarations guarantees;
     inherit (constructors) credentialReferenceConfigured featureContribution featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitContribution structuredSource validate valueFromStructuredSource;
   };

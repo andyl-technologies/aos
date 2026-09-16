@@ -1019,32 +1019,7 @@
     };
   };
   systemMilestoneReadiness = types.record {
-    fields.milestone = types.enum [
-      "local-filesystems"
-      "multi-user"
-      "initrd-filesystems"
-      "initrd-root-filesystems"
-      "root-device"
-      "switch-root"
-      "sysroot"
-      "var"
-      "nix-overlay"
-      "etc-overlay"
-      "run-etc"
-      "device-settle"
-      "device-manager"
-      "device-events-triggered"
-      "kernel-modules"
-      "boot-identity-validated"
-      "boot-storage-unlocked"
-      "boot-integrity-failure"
-      "initrd-stage-executed"
-      "root-a-device"
-      "storage-provisioning-state-ready"
-      "storage-provisioning-plan-ready"
-      "verity-root-mapping-ready"
-      "verity-root-verified"
-    ];
+    fields.milestone = types.qualifiedName;
   };
   systemMilestoneReadinessObservation = types.record {
     fields = {

@@ -10,6 +10,7 @@
   cfg = config.aos.config.unitGraph;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  milestones = serviceManagement.milestones;
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "control-plane";
@@ -18,7 +19,7 @@
     inherit consumerInstance;
     key = "host-stage-received";
     interface = serviceManagement.interfaces.systemMilestoneReadiness;
-    parameters.milestone = "host-stage-received";
+    parameters.milestone = milestones.hostStageReceived;
   };
   hostStageReceivedReadiness = resultOf "host-stage-received" "readiness-resource";
 

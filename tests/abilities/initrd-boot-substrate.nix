@@ -3,6 +3,7 @@
   lib,
   pkgs,
 }: let
+  milestones = lib.abilities.interfaces.serviceManagement.milestones;
   packageModule = lib.abilities.authenticatedPackageModuleRecordFor;
   evaluated = lib.evalModules {
     inherit lib;
@@ -106,4 +107,4 @@ in
   assert implementations."aos:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
   == "libexec/aos-metadata-provisioning-provider";
   assert (request "aos-boot-preparations" "initrd-stage").milestone
-  == "initrd-stage-executed"; true
+  == milestones.initrdStageExecuted; true

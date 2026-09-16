@@ -5,6 +5,7 @@
   ...
 }: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  milestones = serviceManagement.milestones;
   serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
@@ -20,11 +21,11 @@
       interface = interfaces.systemMilestoneReadiness;
       parameters.milestone = name;
     };
-  bootIdentity = milestone "boot-identity" "boot-identity-validated";
-  deviceManager = milestone "device-manager" "device-manager";
-  deviceEvents = milestone "device-events" "device-events-triggered";
-  deviceSettle = milestone "device-settle" "device-settle";
-  integrityFailure = milestone "integrity-failure" "boot-integrity-failure";
+  bootIdentity = milestone "boot-identity" milestones.bootIdentityValidated;
+  deviceManager = milestone "device-manager" milestones.deviceManager;
+  deviceEvents = milestone "device-events" milestones.deviceEventsTriggered;
+  deviceSettle = milestone "device-settle" milestones.deviceSettle;
+  integrityFailure = milestone "integrity-failure" milestones.bootIntegrityFailure;
   readiness = key: resultOf key "readiness-resource";
 
   setup = serviceManagement.forService {

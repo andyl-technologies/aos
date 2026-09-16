@@ -6,6 +6,7 @@
 }: let
   cfg = config.aos.packageRuntime.configurationEvaluation;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  milestones = serviceManagement.milestones;
   serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
@@ -33,10 +34,10 @@
     milestone = "user-sessions-ready";
   };
   multiUser = producer "multi-user" interfaces.systemMilestoneReadiness {
-    milestone = "multi-user";
+    milestone = milestones.multiUser;
   };
   hostStageReceived = producer "host-stage-received" interfaces.systemMilestoneReadiness {
-    milestone = "host-stage-received";
+    milestone = milestones.hostStageReceived;
   };
   hostStageReceivedReadiness = resultOf "host-stage-received" "readiness-resource";
   storeDatabase = {

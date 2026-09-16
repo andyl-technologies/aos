@@ -6,6 +6,7 @@
 }: let
   cfg = config.aos.boot.substrateServices;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  milestones = serviceManagement.milestones;
   serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
@@ -53,20 +54,20 @@
       interface = interfaces.systemMilestoneReadiness;
       parameters = {inherit milestone;};
     };
-  switchRoot = systemMilestone "switch-root" "switch-root";
-  sysroot = systemMilestone "sysroot" "sysroot";
-  var = systemMilestone "var" "var";
-  nixOverlay = systemMilestone "nix-overlay" "nix-overlay";
-  etcOverlay = systemMilestone "etc-overlay" "etc-overlay";
-  runEtc = systemMilestone "run-etc" "run-etc";
-  initrdFilesystems = systemMilestone "initrd-filesystems" "initrd-filesystems";
-  initrdRootFilesystems = systemMilestone "initrd-root-filesystems" "initrd-root-filesystems";
-  deviceSettle = systemMilestone "device-settle" "device-settle";
-  initrdStageExecution = systemMilestone "initrd-stage" "initrd-stage-executed";
-  bootIdentity = systemMilestone "boot-identity" "boot-identity-validated";
-  bootStorageUnlocked = systemMilestone "boot-storage-unlocked" "boot-storage-unlocked";
-  localFilesystems = systemMilestone "local-filesystems" "local-filesystems";
-  hostStageReceived = systemMilestone "host-stage-received" "host-stage-received";
+  switchRoot = systemMilestone "switch-root" milestones.switchRoot;
+  sysroot = systemMilestone "sysroot" milestones.sysroot;
+  var = systemMilestone "var" milestones.var;
+  nixOverlay = systemMilestone "nix-overlay" milestones.nixOverlay;
+  etcOverlay = systemMilestone "etc-overlay" milestones.etcOverlay;
+  runEtc = systemMilestone "run-etc" milestones.runEtc;
+  initrdFilesystems = systemMilestone "initrd-filesystems" milestones.initrdFilesystems;
+  initrdRootFilesystems = systemMilestone "initrd-root-filesystems" milestones.initrdRootFilesystems;
+  deviceSettle = systemMilestone "device-settle" milestones.deviceSettle;
+  initrdStageExecution = systemMilestone "initrd-stage" milestones.initrdStageExecuted;
+  bootIdentity = systemMilestone "boot-identity" milestones.bootIdentityValidated;
+  bootStorageUnlocked = systemMilestone "boot-storage-unlocked" milestones.bootStorageUnlocked;
+  localFilesystems = systemMilestone "local-filesystems" milestones.localFilesystems;
+  hostStageReceived = systemMilestone "host-stage-received" milestones.hostStageReceived;
   switchRootReadiness = resultOf "switch-root" "readiness-resource";
   sysrootReadiness = resultOf "sysroot" "readiness-resource";
   varReadiness = resultOf "var" "readiness-resource";
@@ -632,7 +633,8 @@
   handoffHostFragments = [localFilesystems hostStageReceived hostReceiver];
   lifecycleResourceFor = fragment: let
     requests = (serviceManagement.splitContribution fragment).configured.requests or {};
-    lifecycleRequests = builtins.filter
+    lifecycleRequests =
+      builtins.filter
       (requestName: requests.${requestName}.requirement == interfaces.lifecycle.alias)
       (builtins.attrNames requests);
   in

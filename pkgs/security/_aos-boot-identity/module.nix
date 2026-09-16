@@ -6,6 +6,7 @@
 }: let
   cfg = config.aos.security.bootIdentityServices;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  milestones = serviceManagement.milestones;
   serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
@@ -22,9 +23,9 @@
       interface = interfaces.systemMilestoneReadiness;
       parameters = {inherit milestone;};
     };
-  deviceSettle = systemMilestone "device-settle" "device-settle";
-  initrdFilesystems = systemMilestone "initrd-filesystems" "initrd-filesystems";
-  integrityFailure = systemMilestone "integrity-failure" "boot-integrity-failure";
+  deviceSettle = systemMilestone "device-settle" milestones.deviceSettle;
+  initrdFilesystems = systemMilestone "initrd-filesystems" milestones.initrdFilesystems;
+  integrityFailure = systemMilestone "integrity-failure" milestones.bootIntegrityFailure;
   readiness = key: resultOf key "readiness-resource";
   serviceResource = key: resultOf "${key}-lifecycle" "service-resource";
   command = key: {

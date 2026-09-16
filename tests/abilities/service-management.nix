@@ -2,6 +2,37 @@
 {lib}: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
+  expectedMilestones = {
+    localFilesystems = "aos.system.local-filesystems";
+    multiUser = "aos.system.multi-user";
+    hostStageReceived = "aos.boot.host-stage-received";
+    imageBootCommitted = "aos.boot.image-committed";
+    espReady = "aos.boot.esp-ready";
+    packageProfileConverged = "aos.image.package-profile-converged";
+    imageMeasurementIndexed = "aos.image.measurement-indexed";
+    initrdFilesystems = "aos.boot.initrd-filesystems";
+    initrdRootFilesystems = "aos.boot.initrd-root-filesystems";
+    rootDevice = "aos.boot.root-device";
+    switchRoot = "aos.boot.switch-root";
+    sysroot = "aos.boot.sysroot";
+    var = "aos.boot.persistent-state";
+    nixOverlay = "aos.boot.nix-overlay";
+    etcOverlay = "aos.boot.etc-overlay";
+    runEtc = "aos.boot.run-etc";
+    deviceSettle = "aos.device.settled";
+    deviceManager = "aos.device.manager-ready";
+    deviceEventsTriggered = "aos.device.events-triggered";
+    kernelModules = "aos.kernel.modules-loaded";
+    bootIdentityValidated = "aos.boot.identity-validated";
+    bootStorageUnlocked = "aos.boot.storage-unlocked";
+    bootIntegrityFailure = "aos.boot.integrity-failure";
+    initrdStageExecuted = "aos.boot.initrd-stage-executed";
+    rootADevice = "aos.storage.root-a-device";
+    storageProvisioningStateReady = "aos.storage.provisioning-state-ready";
+    storageProvisioningPlanReady = "aos.storage.provisioning-plan-ready";
+    verityRootMappingReady = "aos.storage.verity-root-mapping-ready";
+    verityRootVerified = "aos.storage.verity-root-verified";
+  };
 
   command = {
     executable = {
@@ -995,6 +1026,7 @@
   };
   declaredAliases = builtins.attrNames serviceManagement.declarations;
 in
+  assert serviceManagement.milestones == expectedMilestones;
   assert succeedsAs serviceTypes.serviceDeclaration minimalService;
   assert succeedsAs serviceTypes.serviceDeclaration (minimalService
     // {
@@ -1331,8 +1363,9 @@ in
   assert succeedsAs serviceTypes.serviceDeclaration configurationDirectoryService;
   assert !succeedsAs serviceTypes.serviceDeclaration escapedDirectoryService;
   assert succeedsAs serviceTypes.filesystemReadiness {scope = "local-filesystems";};
-  assert succeedsAs serviceTypes.systemMilestoneReadiness {milestone = "root-device";};
-  assert !succeedsAs serviceTypes.systemMilestoneReadiness {milestone = "sysinit.target";};
+  assert succeedsAs serviceTypes.systemMilestoneReadiness {milestone = serviceManagement.milestones.rootDevice;};
+  assert succeedsAs serviceTypes.systemMilestoneReadiness {milestone = "vendor.platform-ready";};
+  assert !succeedsAs serviceTypes.systemMilestoneReadiness {milestone = "root-device";};
   assert succeedsAs serviceTypes.namedCredential {
     name = "hub-jwt";
     scope = "system";

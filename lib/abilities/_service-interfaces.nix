@@ -70,6 +70,40 @@
   write = semantics "exclusive-write" false;
   stopSemantics = semantics "exclusive-write" true;
 
+  # Package consumers share semantic milestones while each selected manager
+  # privately lowers them to its own target and unit identities.
+  milestones = {
+    localFilesystems = "aos.system.local-filesystems";
+    multiUser = "aos.system.multi-user";
+    hostStageReceived = "aos.boot.host-stage-received";
+    imageBootCommitted = "aos.boot.image-committed";
+    espReady = "aos.boot.esp-ready";
+    packageProfileConverged = "aos.image.package-profile-converged";
+    imageMeasurementIndexed = "aos.image.measurement-indexed";
+    initrdFilesystems = "aos.boot.initrd-filesystems";
+    initrdRootFilesystems = "aos.boot.initrd-root-filesystems";
+    rootDevice = "aos.boot.root-device";
+    switchRoot = "aos.boot.switch-root";
+    sysroot = "aos.boot.sysroot";
+    var = "aos.boot.persistent-state";
+    nixOverlay = "aos.boot.nix-overlay";
+    etcOverlay = "aos.boot.etc-overlay";
+    runEtc = "aos.boot.run-etc";
+    deviceSettle = "aos.device.settled";
+    deviceManager = "aos.device.manager-ready";
+    deviceEventsTriggered = "aos.device.events-triggered";
+    kernelModules = "aos.kernel.modules-loaded";
+    bootIdentityValidated = "aos.boot.identity-validated";
+    bootStorageUnlocked = "aos.boot.storage-unlocked";
+    bootIntegrityFailure = "aos.boot.integrity-failure";
+    initrdStageExecuted = "aos.boot.initrd-stage-executed";
+    rootADevice = "aos.storage.root-a-device";
+    storageProvisioningStateReady = "aos.storage.provisioning-state-ready";
+    storageProvisioningPlanReady = "aos.storage.provisioning-plan-ready";
+    verityRootMappingReady = "aos.storage.verity-root-mapping-ready";
+    verityRootVerified = "aos.storage.verity-root-verified";
+  };
+
   guaranteeDeclaration = name: semantics: description: {
     inherit name semantics description;
     version = 1;
@@ -321,7 +355,7 @@
   };
   systemMilestoneReadinessDeclaration = declareInterface {
     name = systemMilestoneReadinessName;
-    description = "Publishes readiness for a closed provider-neutral system milestone.";
+    description = "Publishes readiness for a qualified provider-neutral system milestone.";
     abi = 1;
     requestType = serviceTypes.systemMilestoneReadiness;
     outputs.readiness-resource =
@@ -1288,5 +1322,5 @@
   };
 in {
   interfaces = declarations;
-  inherit aggregation guaranteeAliases guaranteeDeclarations guaranteeAliasFor mergeContract;
+  inherit aggregation guaranteeAliases guaranteeDeclarations guaranteeAliasFor mergeContract milestones;
 }

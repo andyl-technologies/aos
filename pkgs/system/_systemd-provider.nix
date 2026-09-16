@@ -21,6 +21,7 @@
     inherit (lib.abilities) transitionFragment;
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  milestones = serviceManagement.milestones;
   serviceInterfaces = serviceManagement.interfaces;
   linuxServiceFacets = {
     linuxConditions = {
@@ -138,16 +139,19 @@
   };
 
   provideSystemManager = context: let
-    managerReference = {
-      _type = "aos-artifact-reference";
-    }
-    // (artifactLocatorFor (lib.abilities.packageOutput {})).artifactReference;
+    managerReference =
+      {
+        _type = "aos-artifact-reference";
+      }
+      // (artifactLocatorFor (lib.abilities.packageOutput {})).artifactReference;
   in
     emptyResult
     // {
-      outputs = builtins.mapAttrs (_: _: {
-        selected-manager = managerReference;
-      }) context.requests;
+      outputs =
+        builtins.mapAttrs (_: _: {
+          selected-manager = managerReference;
+        })
+        context.requests;
     };
 
   bindingFor = bindings: requestName: let
@@ -418,30 +422,33 @@
       stage = config.aos.abilities.environment.stage;
       selectedMilestone = parameters.milestone;
       hostUnits = {
-        local-filesystems = "local-fs.target";
-        multi-user = "multi-user.target";
+        "${milestones.localFilesystems}" = "local-fs.target";
+        "${milestones.multiUser}" = "multi-user.target";
+        "${milestones.hostStageReceived}" = "aos-ability-host-receiver.service";
+        "${milestones.imageBootCommitted}" = "aos-image-boot-commit.service";
+        "${milestones.espReady}" = "aos-mount-esp.service";
       };
       initrdUnits = {
-        initrd-filesystems = "initrd-fs.target";
-        initrd-root-filesystems = "initrd-root-fs.target";
-        root-device = "initrd-root-device.target";
-        switch-root = "initrd-switch-root.target";
-        sysroot = "sysroot.mount";
-        var = "mount-var.service";
-        nix-overlay = "nix-overlay-setup.service";
-        etc-overlay = "etc-overlay-setup.service";
-        run-etc = "run-etc-setup.service";
-        device-settle = "systemd-udev-settle.service";
-        device-manager = "systemd-udevd.service";
-        device-events-triggered = "systemd-udev-trigger.service";
-        kernel-modules = "systemd-modules-load.service";
-        boot-identity-validated = "aos-boot-identity-guard.service";
-        boot-storage-unlocked = "aos-zfs-unlock.service";
-        boot-integrity-failure = "aos-boot-integrity-failure.target";
-        initrd-stage-executed = "aos-ability-initrd-controller.service";
-        root-a-device = "dev-disk-by\\x2dpartlabel-root\\x2da.device";
-        verity-root-mapping-ready = "aos-systemd-verity-root-setup.service";
-        verity-root-verified = "aos-verity-root-verify.service";
+        "${milestones.initrdFilesystems}" = "initrd-fs.target";
+        "${milestones.initrdRootFilesystems}" = "initrd-root-fs.target";
+        "${milestones.rootDevice}" = "initrd-root-device.target";
+        "${milestones.switchRoot}" = "initrd-switch-root.target";
+        "${milestones.sysroot}" = "sysroot.mount";
+        "${milestones.var}" = "mount-var.service";
+        "${milestones.nixOverlay}" = "nix-overlay-setup.service";
+        "${milestones.etcOverlay}" = "etc-overlay-setup.service";
+        "${milestones.runEtc}" = "run-etc-setup.service";
+        "${milestones.deviceSettle}" = "systemd-udev-settle.service";
+        "${milestones.deviceManager}" = "systemd-udevd.service";
+        "${milestones.deviceEventsTriggered}" = "systemd-udev-trigger.service";
+        "${milestones.kernelModules}" = "systemd-modules-load.service";
+        "${milestones.bootIdentityValidated}" = "aos-boot-identity-guard.service";
+        "${milestones.bootStorageUnlocked}" = "aos-zfs-unlock.service";
+        "${milestones.bootIntegrityFailure}" = "aos-boot-integrity-failure.target";
+        "${milestones.initrdStageExecuted}" = "aos-ability-initrd-controller.service";
+        "${milestones.rootADevice}" = "dev-disk-by\\x2dpartlabel-root\\x2da.device";
+        "${milestones.verityRootMappingReady}" = "aos-systemd-verity-root-setup.service";
+        "${milestones.verityRootVerified}" = "aos-verity-root-verify.service";
       };
       units =
         if stage == "host"
@@ -775,21 +782,26 @@
         entries);
     };
 
-  composeBootPreparationHandoff = {allResources, resources, ...}:
+  composeBootPreparationHandoff = {
+    allResources,
+    resources,
+    ...
+  }:
     emptyResult
     // {
-      realizations = builtins.mapAttrs (_: resource: {
-        schema = "aos.systemd.boot-preparation-handoff-realization/v1";
-        mechanism = "systemd-switch-root";
-        completion_unit = unitIdentityForPlannedReference allResources resource.value.completion;
-        required_units =
-          builtins.sort
-          (left: right: builtins.toJSON left < builtins.toJSON right)
-          (builtins.map
-            (unitIdentityForPlannedReference allResources)
-            resource.value.preparations);
-      })
-      resources;
+      realizations =
+        builtins.mapAttrs (_: resource: {
+          schema = "aos.systemd.boot-preparation-handoff-realization/v1";
+          mechanism = "systemd-switch-root";
+          completion_unit = unitIdentityForPlannedReference allResources resource.value.completion;
+          required_units =
+            builtins.sort
+            (left: right: builtins.toJSON left < builtins.toJSON right)
+            (builtins.map
+              (unitIdentityForPlannedReference allResources)
+              resource.value.preparations);
+        })
+        resources;
     };
 
   observationSchemaFor = selected:
