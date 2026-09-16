@@ -282,6 +282,28 @@ impl SourceStageBundle {
         Ok(bundle)
     }
 
+    /// Derives source authority before pure transition construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when canonical authority material cannot be encoded.
+    pub fn authority_for(
+        static_contract: &SourceStageStaticContract,
+        fixed_point: &SourceStageFixedPoint,
+        binding: &aos_ability_validate::CheckedBindingPlan,
+        interfaces: &[InterfaceDocument],
+    ) -> Result<Sha256Digest, SourceStageBundleError> {
+        source_authority(
+            static_contract,
+            fixed_point,
+            interfaces,
+            binding.environment(),
+            binding.desired_state(),
+            binding.packages(),
+            binding.document(),
+        )
+    }
+
     /// Returns the source authority committed by the bundle.
     #[must_use]
     pub const fn authority(&self) -> Sha256Digest {
@@ -440,19 +462,15 @@ impl SourceStageBundle {
     }
 
     fn source_authority(&self) -> Result<Sha256Digest, SourceStageBundleError> {
-        let material = SourceAuthorityMaterial {
-            schema: "aos.ability.source-stage-authority/v1",
-            static_contract: &self.static_contract,
-            fixed_point: &self.fixed_point,
-            interfaces: &self.interfaces,
-            environment: &self.environment,
-            desired_state: &self.desired_state,
-            packages: &self.packages,
-            binding_document: &self.binding_document,
-        };
-        let bytes =
-            aos_contract::canonical::to_vec(&material).map_err(SourceStageBundleError::Encode)?;
-        Ok(Sha256Digest::separated(material.schema, bytes))
+        source_authority(
+            &self.static_contract,
+            &self.fixed_point,
+            &self.interfaces,
+            &self.environment,
+            &self.desired_state,
+            &self.packages,
+            &self.binding_document,
+        )
     }
 
     fn validate_fixed_point(
@@ -531,6 +549,85 @@ impl SourceStageBundle {
         }
         Ok(())
     }
+}
+
+impl SourceStageFixedPoint {
+    pub(crate) fn enabled_providers(
+        &self,
+        packages: &[PackageDocument],
+    ) -> Result<Vec<crate::transition::SourceEnabledProvider>, SourceStageBundleError> {
+        let mut providers = Vec::new();
+        for (name, instance) in &self.instances {
+            let Some(qualified) = &instance.implementation else {
+                continue;
+            };
+            let identity = self
+                .instance_identities
+                .get(name)
+                .ok_or(SourceStageBundleError::FixedPointAuthority)?;
+            let (package_name, implementation_name) = qualified
+                .split_once(':')
+                .ok_or(SourceStageBundleError::FixedPointAuthority)?;
+            if package_name != instance.package.as_str() {
+                return Err(SourceStageBundleError::FixedPointAuthority);
+            }
+            let package = packages
+                .iter()
+                .find(|package| package.package.name.as_str() == package_name)
+                .ok_or(SourceStageBundleError::FixedPointAuthority)?;
+            let implementation = package
+                .implementation
+                .providers
+                .iter()
+                .find(|provider| provider.name.as_str() == implementation_name)
+                .ok_or(SourceStageBundleError::FixedPointAuthority)?;
+            providers.push(crate::transition::SourceEnabledProvider {
+                instance: identity.clone(),
+                implementation: aos_ability_model::ProviderImplementationReference {
+                    descriptor: implementation
+                        .descriptor_digest()
+                        .map_err(SourceStageBundleError::Encode)?,
+                    artifact: implementation.artifact.clone(),
+                    handler: implementation.handler.clone(),
+                },
+                package: package
+                    .content_digest()
+                    .map_err(|error| SourceStageBundleError::Encode(anyhow::Error::new(error)))?,
+            });
+        }
+        providers.sort_by(|left, right| {
+            left.instance.cmp(&right.instance).then_with(|| {
+                left.implementation
+                    .descriptor
+                    .cmp(&right.implementation.descriptor)
+            })
+        });
+        Ok(providers)
+    }
+}
+
+fn source_authority(
+    static_contract: &SourceStageStaticContract,
+    fixed_point: &SourceStageFixedPoint,
+    interfaces: &[InterfaceDocument],
+    environment: &EnvironmentDocument,
+    desired_state: &DesiredStateDocument,
+    packages: &[PackageDocument],
+    binding_document: &BindingPlanDocument,
+) -> Result<Sha256Digest, SourceStageBundleError> {
+    let material = SourceAuthorityMaterial {
+        schema: "aos.ability.source-stage-authority/v1",
+        static_contract,
+        fixed_point,
+        interfaces,
+        environment,
+        desired_state,
+        packages,
+        binding_document,
+    };
+    let bytes =
+        aos_contract::canonical::to_vec(&material).map_err(SourceStageBundleError::Encode)?;
+    Ok(Sha256Digest::separated(material.schema, bytes))
 }
 
 fn implementation_name(
@@ -847,7 +944,7 @@ mod tests {
             .plan_source(
                 authority,
                 planning.checked_binding(),
-                &[],
+                bundle().fixed_point(),
                 &mut EmptyTransitionEvaluator,
             )
             .expect("direct source transition");
