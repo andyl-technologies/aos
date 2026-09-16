@@ -6,8 +6,8 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox_core::FeatureRef;
 use buffa::Message as _;
 
-use crate::semantics::{CanonicalNetworkSemanticsV1, NetworkOperation};
 use crate::ProtocolValidationError;
+use crate::semantics::{CanonicalNetworkSemanticsV1, NetworkOperation};
 
 pub(super) fn validate_network_apply_response(
     body: &[u8],

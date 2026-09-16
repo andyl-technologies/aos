@@ -18,9 +18,9 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    digest_logical_binding_bytes, prospective_mount_apply_template_digest_v1,
-    source_acquisition_id_v2, AcquireSourceRequestV1, SourceProviderAuthorityV1, SourceUseV1,
-    MAXIMUM_SOURCE_LEASE_SECONDS, MAXIMUM_SOURCE_SUBMOUNTS,
+    AcquireSourceRequestV1, MAXIMUM_SOURCE_LEASE_SECONDS, MAXIMUM_SOURCE_SUBMOUNTS,
+    SourceProviderAuthorityV1, SourceUseV1, digest_logical_binding_bytes,
+    prospective_mount_apply_template_digest_v1, source_acquisition_id_v2,
 };
 
 const MAXIMUM_APPLY_TEMPLATE_BYTES: usize = 2_048;

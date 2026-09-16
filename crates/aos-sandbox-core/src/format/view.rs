@@ -481,8 +481,10 @@ mod tests {
     fn environment_round_trip_preserves_ordered_search_path() {
         let environment = Environment::new(
             vec![descriptor()],
-            vec![EnvironmentEntry::new("PATH".to_owned(), "bin".to_owned())
-                .unwrap_or_else(|error| panic!("test entry failed: {error}"))],
+            vec![
+                EnvironmentEntry::new("PATH".to_owned(), "bin".to_owned())
+                    .unwrap_or_else(|error| panic!("test entry failed: {error}")),
+            ],
             vec![crate::RelativePath::default()],
             Vec::new(),
         )

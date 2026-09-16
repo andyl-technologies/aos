@@ -6,30 +6,30 @@ use sha2::{Digest as _, Sha256};
 
 use crate::mount_source_acquisition_state::mount_source_consumption_companion_digest_v2;
 use crate::mount_source_acquisition_state::{
-    validate_mount_source_state_graph_v2, AcquisitionRecoveryV2, ProviderAttemptStateV2,
-    ProviderMethodV2, ProviderStatusV2, ReleaseProofV2, SourceAcquisitionPhaseV2,
-    SourceAcquisitionProofClassV2,
+    AcquisitionRecoveryV2, ProviderAttemptStateV2, ProviderMethodV2, ProviderStatusV2,
+    ReleaseProofV2, SourceAcquisitionPhaseV2, SourceAcquisitionProofClassV2,
+    validate_mount_source_state_graph_v2,
 };
 use crate::mount_source_consumption_state::{
+    MOUNT_RESOURCE_KEY_PREFIX_V2, MountFaultPhaseV1, MountResourceStateV1, SourcePinLifecycleV1,
     decode_mount_resource_key_v2, decode_mount_resource_value_v2, decode_source_pin_key_v1,
-    decode_source_pin_value_v1, encode_source_pin_value_v1, source_pin_key_v1, MountFaultPhaseV1,
-    MountResourceStateV1, SourcePinLifecycleV1, MOUNT_RESOURCE_KEY_PREFIX_V2,
+    decode_source_pin_value_v1, encode_source_pin_value_v1, source_pin_key_v1,
 };
 use crate::{
+    MountSourcePhysicalProofV1, MountSourceProofClassV1, MountSourceProviderHistoryV1,
     mount_source_physical_proof_digest_v1, mount_source_provider_history_is_valid_v1,
-    mount_source_realization_handle_v1, MountSourcePhysicalProofV1, MountSourceProofClassV1,
-    MountSourceProviderHistoryV1,
+    mount_source_realization_handle_v1,
 };
 
 use super::{
+    DerivedMountManagerStartupV1, ExpectedStartupDescriptorV1, MAXIMUM_STARTUP_ABSENCE_SUBJECTS_V1,
+    MAXIMUM_STARTUP_DESCRIPTORS_V1, MountManagerStartupDerivationHeadV1,
+    MountManagerStartupPolicyV1, StartupCleanupEvidenceV1, StartupCleanupPhaseV1,
+    StartupCleanupSourceSubjectV1, StartupDescriptorPresenceV1, StartupDescriptorRoleV1,
+    StartupPersistedCustodyOwnerV1, StartupSourceSubjectV1, StartupTerminalSourceSubjectV1,
     encode_mount_manager_startup_policy_v1, mount_manager_startup_derivation_digest_v1,
     mount_manager_startup_listener_identity_v1, startup_expected_table_digest_v1,
-    startup_source_subjects_digest_v1, DerivedMountManagerStartupV1, ExpectedStartupDescriptorV1,
-    MountManagerStartupDerivationHeadV1, MountManagerStartupPolicyV1, StartupCleanupEvidenceV1,
-    StartupCleanupPhaseV1, StartupCleanupSourceSubjectV1, StartupDescriptorPresenceV1,
-    StartupDescriptorRoleV1, StartupPersistedCustodyOwnerV1, StartupSourceSubjectV1,
-    StartupTerminalSourceSubjectV1, MAXIMUM_STARTUP_ABSENCE_SUBJECTS_V1,
-    MAXIMUM_STARTUP_DESCRIPTORS_V1,
+    startup_source_subjects_digest_v1,
 };
 
 const MAXIMUM_INPUT_MATERIALIZED_BYTES: usize = 768 * 1_024 * 1_024;

@@ -10,10 +10,11 @@ use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    source_acquisition_id_v2, InventoryLeaseStateV1, SignedSourceProviderInventoryV1,
-    SourceProviderInventoryEntryV1,
+    InventoryLeaseStateV1, SignedSourceProviderInventoryV1, SourceProviderInventoryEntryV1,
+    source_acquisition_id_v2,
 };
 
+use super::Result;
 use super::format::state_error;
 use super::model::{
     InventoryCorrelationExpectationV2, InventoryCorrelationV2, ProjectionEntryV2,
@@ -22,7 +23,6 @@ use super::model::{
     SourceAcquisitionPhaseV2, SourceAcquisitionRowV2, SourceProviderHeadV2,
     SourceProviderQueryAttemptV2,
 };
-use super::Result;
 
 const PROJECTION_DOMAIN: &[u8] = b"aos.sandbox.mount.source-provider-projection.v2\0";
 

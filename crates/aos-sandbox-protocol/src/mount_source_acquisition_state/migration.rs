@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use sha2::{Digest as _, Sha256};
 
 use super::format::{
-    encode_mount_source_state_record_v2, MAXIMUM_SOURCE_ACQUISITIONS, MAXIMUM_SOURCE_PROVIDER_HEADS,
+    MAXIMUM_SOURCE_ACQUISITIONS, MAXIMUM_SOURCE_PROVIDER_HEADS, encode_mount_source_state_record_v2,
 };
 use super::migration_v1::{
     ProviderDispositionCheckpointV1, ProviderMethodV1, ProviderStatusV1, SourceAcquisitionPhaseV1,
@@ -19,8 +19,8 @@ use super::migration_v1::{
 };
 use super::model::{SourceAcquisitionPhaseV2, SourceAcquisitionProofClassV2, StoredRecordV2};
 use super::{
-    validate_mount_source_state_graph_v2, MountSourceAcquisitionStateError,
-    MountSourceAcquisitionStateV2, Result,
+    MountSourceAcquisitionStateError, MountSourceAcquisitionStateV2, Result,
+    validate_mount_source_state_graph_v2,
 };
 
 const LEGACY_SCHEMA: &str = "AOSMSA01";
