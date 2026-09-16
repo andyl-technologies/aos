@@ -150,10 +150,17 @@ pub(crate) fn record_pending_image_selection(
     target: u32,
     rollout: ImageRollout,
 ) -> Result<()> {
-    image_rollout::validate_active_rollout_selection(state, &rollout, target)?;
     let mut prepared = state.clone();
     prepared.pending = Some(target);
     prepared.active_rollout = Some(rollout);
+    image_rollout::validate_active_rollout_selection(
+        &prepared,
+        prepared
+            .active_rollout
+            .as_ref()
+            .context("prepared image selection lost its rollout")?,
+        target,
+    )?;
     write_atomic_durable(
         &profile.join(IMAGE_STATE_FILE),
         &serde_json::to_vec_pretty(&prepared)?,
