@@ -6,7 +6,6 @@
   guestTools ? false,
   effectQualification ? false,
   providerStateQualification ? false,
-  transitionTransform ? transition: transition,
 }: let
   reference = import ./_ability-runtime-reference.nix {
     inherit
@@ -16,7 +15,6 @@
       guestTools
       effectQualification
       providerStateQualification
-      transitionTransform
       ;
   };
   observerFixture = import ./_ability-execution-observer.nix {
