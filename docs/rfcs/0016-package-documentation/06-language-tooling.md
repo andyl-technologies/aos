@@ -20,13 +20,14 @@ the existing `aos-doc` crate. The language server and Hub never depend on that
 crate's native repository walker, `NixRunner`, mtime cache, Markdown parser, or
 ratatui TUI.
 
-The server resolves schemas in this order:
+The server resolves the two source objects for a tooling response in this order:
 
 1. exact documentation objects retained by the selected/installed APM
    generation;
 2. exact objects in the verified local documentation cache;
 3. an explicitly configured Hub/registry using the documentation API;
-4. summary-only legacy metadata, which provides no option validation.
+4. summary-only legacy metadata, which provides no tooling response and no
+   option or method validation.
 
 Workspace settings can pin registry, release/channel, version, platform,
 module ABI, and desired package set. Every diagnostic/hover response records the
@@ -105,8 +106,13 @@ Nix module merge algorithm and label that approximation authoritative.
 ## Schema/hint API
 
 The Hub `DocumentationService` is the language-tooling API; a second bespoke LSP
-database is not introduced. `apm schema` provides the same model locally. The
-API supports:
+database is not introduced. `apm schema <package>`,
+`GetPackageDocumentationSchema`, and `aos/packageDocumentation/schema` return
+the same `aos.package-tooling-response/v1` value. That value binds the canonical
+documentation identity to the checked `PackageAbilityReference` identity and
+derives option and method schemas from the latter. The LSP neither joins these
+objects independently nor maintains a handwritten method catalog. The API
+supports:
 
 - exact package or resolved desired-set schemas;
 - option prefix listing and single-option retrieval;

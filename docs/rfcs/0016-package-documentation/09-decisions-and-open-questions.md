@@ -26,6 +26,11 @@
     secret values.
 12. Handwritten per-package reference pages are removed only after generated
     parity and migration of unique conceptual content.
+13. Package documentation and ability references remain separate authenticated
+    artifacts. A versioned tooling response binds their exact identities and
+    derives option and method schemas from the checked ability reference.
+14. The standalone registry Web generator and SPA are distribution listings;
+    they do not define or mirror package schema objects.
 
 ## Rejected alternatives
 

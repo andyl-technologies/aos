@@ -2,9 +2,13 @@
 
 ## One resource model
 
-The documentation object model is richer than any individual API response.
-`aos-hub-core` defines bounded view resources that the Connect API, public HTTP
-JSON, server-rendered Web pages, CLI, and LSP adapters share:
+The canonical documentation object and package ability reference remain
+independent authenticated inputs. `aos-doc-model` defines one bounded
+`aos.package-tooling-response/v1` projection that Connect, CLI, and LSP share.
+It carries both unchanged source objects, their checked identities, and option
+and exported-method schemas derived only from `PackageAbilityReference`.
+
+`aos-hub-core` also defines bounded view resources for browsing and search:
 
 - `DocumentationArtifactRef`;
 - `PackageDocumentationSummary`;
@@ -36,6 +40,7 @@ ListPackageOptions
 GetOption
 ComparePackageDocumentation
 GetDocumentationArtifact
+GetPackageDocumentationSchema
 ```
 
 Requests select exact versions/platforms or a named release/channel that the
@@ -46,6 +51,12 @@ and page size. A cursor from a different query or generation fails cleanly.
 `GetDocumentationArtifact` returns the verified canonical JSON bytes or a
 bounded streamed response plus identity metadata. It does not expose an
 unverified cache object merely because a caller knows a store hash.
+
+`GetPackageDocumentationSchema` selects an exact package/version/platform,
+loads both authenticated source objects at the same registry commit, and
+returns the canonical tooling response plus the existing documentation and
+ability-reference identities. It never adds ability fields to the canonical
+documentation artifact.
 
 The Connect service is the authenticated and administrative API. Normal Hub
 resource-access policy applies to private registries, internal options, source
@@ -100,7 +111,7 @@ apm options search --installed --type opaque-reference
 apm options show nginx.virtualHosts.<name>.listenPort
 apm options compare nginx --from 1.28.0 --to 1.30.4
 
-apm schema nginx --format aos-json
+apm schema nginx
 apm schema --installed --format aos-json
 apm schema --desired ./desired.nix --format aos-json
 
@@ -122,8 +133,10 @@ rather than duplicating the complete renderer.
 
 All commands support existing AOS output conventions where meaningful: human
 terminal, table, `--json`, JSON Lines for streams, `--quiet`, and stable exit
-codes. JSON returns the shared resource/schema model, not terminal formatting
-internals.
+codes. `apm schema <package>` returns the exact same versioned tooling response
+as Hub and the LSP custom schema request. JSON returns the shared
+resource/schema model, not terminal formatting internals or a reconstructed
+option catalog.
 
 ## Hub CLI commands
 

@@ -183,11 +183,17 @@ plain forms and links. A content-addressed, self-hosted first-party JavaScript/
 WASM bundle enhances navigation, composer state, keyboard search, and diagrams.
 If it fails to load, reading and searching still work.
 
-The shared renderer produces the same page model on native and Worker. The
-static registry Web generator may pre-render public pages from authenticated
-documents and advertise a Hub API for dynamic search; it retains the same
-content-bearing floor. No page references a third-party script, font, analytics
-endpoint, or CDN asset.
+The shared renderer produces the same page model on native and Worker. The Hub
+documentation workspace consumes the checked package tooling response when it
+shows option or method schemas.
+
+The standalone registry Web generator and its SPA are explicitly a distribution
+listing. Their same-origin snapshots contain registry metadata, versions,
+platforms, and artifact coordinates; they do not publish a second option or
+method schema. A configured Hub link may open the schema-aware documentation
+workspace. This narrower static surface remains content-bearing without Hub and
+does not duplicate the verified tooling projection. No page references a
+third-party script, font, analytics endpoint, or CDN asset.
 
 ## Accessibility and interaction requirements
 

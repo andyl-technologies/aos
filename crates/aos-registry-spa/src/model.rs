@@ -1,10 +1,15 @@
-//! Serde models for the same-origin static snapshots the SPA consumes.
+//! Serde models for the same-origin distribution snapshots the SPA consumes.
 //!
 //! These structs mirror, field-for-field, the JSON `apr web generate`
 //! emits (see `aos_package::registry::webgen`): `web/config.json`,
 //! `web/index.json`, and `web/packages/<name>.json`. Keeping the field
 //! names identical is the data contract — the SPA reads exactly what the
 //! generator wrote, with no transform layer in between.
+//!
+//! These snapshots are intentionally limited to registry and artifact listing
+//! data. The SPA does not interpret them as package option or method schemas;
+//! schema-aware views consume the separately verified package tooling response
+//! from Hub.
 //!
 //! ```json
 //! // web/config.json
@@ -37,6 +42,7 @@ use serde::Deserialize;
 /// accept, but the SPA treats it as same-origin-integrity-trusted for
 /// branding and for the optional `hub_url` it dials.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Display name for the registry.
     pub name: String,
@@ -51,6 +57,7 @@ pub struct Config {
 
 /// One package's newest version and summary, from `index.json`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct IndexPackage {
     /// Package name.
     pub name: String,
@@ -64,6 +71,7 @@ pub struct IndexPackage {
 
 /// The `web/index.json` registry snapshot.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct IndexSnapshot {
     /// Registry display name.
     pub name: String,
@@ -84,6 +92,7 @@ pub struct IndexSnapshot {
 
 /// One platform artifact within a per-package snapshot.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PackagePlatform {
     /// Target platform (`x86_64-linux`, `aarch64-linux`).
     pub platform: String,
@@ -102,6 +111,7 @@ pub struct PackagePlatform {
 
 /// One version (with its platforms) within a per-package snapshot.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PackageVersion {
     /// Version string.
     pub version: String,
@@ -112,6 +122,7 @@ pub struct PackageVersion {
 
 /// The `web/packages/<name>.json` per-package snapshot.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PackageSnapshot {
     /// Package name.
     pub name: String,
@@ -234,5 +245,11 @@ mod tests {
         assert_eq!(pkg.versions.len(), 1);
         assert_eq!(pkg.versions[0].platforms[0].platform, "x86_64-linux");
         assert_eq!(pkg.versions[0].platforms[0].closure_size, 52428800);
+
+        let schema_claim = json.replace(
+            "\"versions\":",
+            "\"options\": [], \"methods\": [], \"versions\":",
+        );
+        assert!(serde_json::from_str::<PackageSnapshot>(&schema_claim).is_err());
     }
 }
