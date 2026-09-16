@@ -3,11 +3,7 @@
   lib,
   pkgs,
 }: let
-  packageModule = package: {
-    name = package.pname;
-    inherit (package) version;
-    module = package.module + "/module.nix";
-  };
+  packageModule = lib.abilities.authenticatedPackageModuleRecordFor;
   evaluated = lib.evalModules {
     inherit lib;
     modules = [

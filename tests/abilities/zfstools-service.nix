@@ -3,15 +3,7 @@
   lib,
   pkgs,
 }: let
-  packageModule = package: {
-    inherit (package) version;
-    name = package.pname;
-    module = package.module + "/module.nix";
-    outputs = {
-      self = builtins.toString package;
-      dependencies = {};
-    };
-  };
+  packageModule = lib.abilities.authenticatedPackageModuleRecordFor;
   evaluate = enabled:
     lib.evalModules {
       inherit lib;
@@ -72,13 +64,15 @@
   storageReadiness = enabled.config.aos.filesystems.zfs.readinessResources;
   poolRequests = builtins.attrNames (lib.filterAttrs
     (_: request:
-      request.package == "aos-zfs-provider"
+      request.package
+      == "aos-zfs-provider"
       && request.localKey == "pool")
     requests);
   poolRequest = builtins.head poolRequests;
   datasetRequests = builtins.attrNames (lib.filterAttrs
     (_: request:
-      request.package == "aos-zfs-provider"
+      request.package
+      == "aos-zfs-provider"
       && request.localKey
       == "dataset-${lib.abilities.identityKeyFor "aos.zfs.dataset-request/v1" {
         pool = "tank";
