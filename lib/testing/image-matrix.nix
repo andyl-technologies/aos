@@ -64,6 +64,7 @@
     secureBoot = config.aos.boot.secureBoot;
   in {
     inherit name;
+    extraDisks = map (disk: {inherit (disk) sizeMiB;}) config.aos.image.qualification.extraDisks;
     images = builtins.mapAttrs (_: image: toString image) system.build.image;
     expected = {
       toplevel = toString system.build.toplevel;

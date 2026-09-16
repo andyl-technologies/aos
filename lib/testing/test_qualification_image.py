@@ -82,6 +82,34 @@ class RebootEvidenceTests(unittest.TestCase):
         self.ready.assert_not_called()
         self.assertEqual(self.machine.counts.reboot_cycles, 0)
 
+    def test_arguments_attach_declared_disks_after_root(self):
+        machine = self.transport.VirtualMachine.__new__(self.transport.VirtualMachine)
+        machine.disk = Path("root.raw")
+        machine.vars = Path("OVMF_VARS.fd")
+        machine.host_config = Path("host.nix")
+        machine.serial_socket = Path("serial.sock")
+        machine.tpm_socket = Path("tpm.sock")
+        machine.extra_disks = [Path("extra-1.raw"), Path("extra-2.raw")]
+        machine.recovery_media = None
+        machine.port = 2222
+
+        with patch.object(self.transport.os, "access", return_value=True):
+            arguments = machine._arguments()
+
+        drives = [
+            arguments[index + 1]
+            for index, value in enumerate(arguments)
+            if value == "-drive"
+        ]
+        self.assertIn("file=root.raw,format=raw,if=virtio", drives)
+        self.assertEqual(
+            drives[-2:],
+            [
+                "file=extra-1.raw,format=raw,if=virtio",
+                "file=extra-2.raw,format=raw,if=virtio",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

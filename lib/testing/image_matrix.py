@@ -107,6 +107,19 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     for system in systems:
         require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", system["name"]) is not None, "unsafe system name")
         require(set(system["images"]) == set(FORMATS), f"{system['name']}: incomplete formats")
+        extra_disks = system.get("extraDisks")
+        require(
+            isinstance(extra_disks, list),
+            f"{system['name']}: missing extra disk inventory",
+        )
+        for disk in extra_disks:
+            require(
+                isinstance(disk, dict)
+                and set(disk) == {"sizeMiB"}
+                and type(disk["sizeMiB"]) is int
+                and disk["sizeMiB"] > 0,
+                f"{system['name']}: invalid extra disk",
+            )
         security = system["expected"]["security"]
         for field in ("readOnlyRoot", "verity", "secureBoot", "measuredBoot"):
             require(type(security.get(field)) is bool, f"{system['name']}: missing security expectation {field}")
