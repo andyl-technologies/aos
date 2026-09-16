@@ -1,7 +1,7 @@
 //! Domain-separated configuration signature authentication.
 //!
 //! Secure first-boot provisioning verifies exact `host.nix` bytes in the
-//! initrd before either restricted or full evaluation.
+//! initrd before complete evaluation for either initrd or stage 2.
 //! Manual configuration-evaluation commands can use the same implementation
 //! to verify a detached signature over a standalone `host.nix`.
 //!

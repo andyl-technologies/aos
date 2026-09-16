@@ -20,8 +20,8 @@
 //! - [`staticnet`] — DHCP-less network parsing + networkd render.
 //! - [`facts_render`] — `facts.json` → `host-facts.nix`.
 //! - [`policy`] — whole-input authorization and provisioning-plan projection.
-//! - [`provisioning`] — exact host-input authorization and restricted
-//!   provisioning evaluation.
+//! - [`provisioning`] — exact host-input authorization, complete initrd
+//!   configuration evaluation, and storage-plan projection.
 //! - [`trust`] — configuration signature authentication.
 //!
 //! # Testability
