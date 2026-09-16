@@ -9,9 +9,10 @@
   extraModules ? [],
   enableAbilitySelection ? false,
 }:
-  lib.evalModules {
-    inherit lib pkgs enableAbilitySelection;
-    modules = [
+lib.evalModules {
+  inherit lib pkgs enableAbilitySelection;
+  modules =
+    [
       lib.abilities.module
       ../../modules/_package-contributions.nix
       module
@@ -76,6 +77,7 @@
           stage = "host";
         };
       }
-    ] ++ extraModules;
-    packageModules = builtins.map lib.abilities.authenticatedPackageModuleRecordFor packages;
-  }
+    ]
+    ++ extraModules;
+  packageModules = builtins.map lib.abilities.authenticatedPackageModuleRecordFor packages;
+}
