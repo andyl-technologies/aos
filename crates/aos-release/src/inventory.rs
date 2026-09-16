@@ -4,7 +4,7 @@
 //! {"schema_version":"aos.release.package-inventory/v1",
 //!  "platforms":["x86_64-linux","aarch64-linux","x86_64-darwin","aarch64-darwin"],
 //!  "packages":[{"name":"example","platforms":[{"platform":"x86_64-linux",
-//!  "decision":{"state":"eligible","disposition":"target","wave":1,"blockers":[]}}]}]}
+//!  "decision":{"state":"eligible"}}]}]}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,19 +59,12 @@ pub struct InventoryPlatformCell {
 #[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InventoryDecision {
     /// The package is a public root on this target.
-    Eligible {
-        /// Structural package class.
-        disposition: String,
-        /// Cross-build wave, where applicable.
-        wave: Option<u8>,
-        /// Versioned implementation constraints retained for evidence.
-        blockers: Vec<String>,
-    },
+    Eligible {},
     /// A versioned policy proves this target is inapplicable.
     NotApplicable {
         /// Stable eligibility rule.
         rule: String,
-        /// Public explanation.
+        /// Public explanation authored by the target policy.
         reason: String,
     },
 }
@@ -320,7 +313,7 @@ impl PackageInventoryV1 {
     ///
     /// Returns an error for the wrong schema or platform roster, an empty,
     /// duplicate, or unsorted package list, incomplete cells, invalid policy
-    /// identifiers, or a disposition that conflicts with its platform.
+    /// identifiers, or an invalid package-owned projection.
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != PACKAGE_INVENTORY_V1 {
             bail!("unsupported package inventory schema");
@@ -355,7 +348,7 @@ impl PackageInventoryV1 {
                 bail!("inventory package platform cells are not in canonical order");
             }
             for cell in &package.platforms {
-                validate_decision(cell.platform, &cell.decision)?;
+                validate_decision(&cell.decision)?;
             }
         }
         Ok(())
@@ -376,9 +369,7 @@ impl PackageInventoryV1 {
             let mut platforms = Vec::with_capacity(package.platforms.len());
             for cell in &package.platforms {
                 let decision = match &cell.decision {
-                    InventoryDecision::Eligible { blockers, .. }
-                        if blockers.is_empty() && publication.is_some() =>
-                    {
+                    InventoryDecision::Eligible {} if publication.is_some() => {
                         let evaluated = derivations
                             .get(&(cell.platform, package.name.as_str()))
                             .ok_or_else(|| {
@@ -425,20 +416,13 @@ impl PackageInventoryV1 {
                             artifact: PlannedArtifactSet { artifacts },
                         }
                     }
-                    InventoryDecision::Eligible { blockers, .. } => {
-                        let blockers = if blockers.is_empty() {
-                            "distribution-metadata-missing".to_owned()
-                        } else {
-                            blockers.join(", ")
-                        };
-                        MatrixCell::Blocked {
-                            required_work: format!("Close package-platform blockers: {blockers}"),
-                            failure_evidence: crate::digest::Sha256Digest::of_canonical(
-                                "aos.release.package-blockers/v1",
-                                &(blockers, publication.is_some()),
-                            )?,
-                        }
-                    }
+                    InventoryDecision::Eligible {} => MatrixCell::Blocked {
+                        required_work: "Provide complete package publication metadata".to_owned(),
+                        failure_evidence: crate::digest::Sha256Digest::of_canonical(
+                            "aos.release.package-publication-metadata/v1",
+                            &(package.name.as_str(), cell.platform),
+                        )?,
+                    },
                     InventoryDecision::NotApplicable { rule, reason } => {
                         MatrixCell::NotApplicable {
                             rule: rule.clone(),
@@ -468,7 +452,7 @@ fn package_publication_metadata<'a>(
     let mut selected = None;
     let mut incomplete = false;
     for cell in &package.platforms {
-        if !matches!(&cell.decision, InventoryDecision::Eligible { .. }) {
+        if !matches!(&cell.decision, InventoryDecision::Eligible {}) {
             continue;
         }
         let metadata = derivations
@@ -515,7 +499,7 @@ fn index_derivations<'a>(
     for package in &package_inventory.packages {
         for cell in &package.platforms {
             let present = indexed.contains_key(&(cell.platform, package.name.as_str()));
-            if present != matches!(&cell.decision, InventoryDecision::Eligible { .. }) {
+            if present != matches!(&cell.decision, InventoryDecision::Eligible {}) {
                 bail!("derivation inventory does not match package eligibility");
             }
         }
@@ -525,7 +509,7 @@ fn index_derivations<'a>(
             .packages
             .iter()
             .flat_map(|package| &package.platforms)
-            .filter(|cell| matches!(&cell.decision, InventoryDecision::Eligible { .. }))
+            .filter(|cell| matches!(&cell.decision, InventoryDecision::Eligible {}))
             .count()
     {
         bail!("derivation inventory contains an unknown package");
@@ -533,36 +517,16 @@ fn index_derivations<'a>(
     Ok(indexed)
 }
 
-fn validate_decision(platform: Platform, decision: &InventoryDecision) -> Result<()> {
+fn validate_decision(decision: &InventoryDecision) -> Result<()> {
     match decision {
-        InventoryDecision::Eligible {
-            disposition,
-            wave,
-            blockers,
-        } => {
-            if !matches!(
-                disposition.as_str(),
-                "target" | "independent" | "linux-only" | "darwin-only"
-            ) {
-                bail!("eligible package has an invalid disposition");
-            }
-            if (disposition == "linux-only" && !platform.supports_images())
-                || (disposition == "darwin-only" && platform.supports_images())
-            {
-                bail!("eligible package disposition conflicts with its platform");
-            }
-            if wave.is_none_or(|wave| !(1..=5).contains(&wave)) {
-                bail!("eligible package requires a valid publication wave");
-            }
-            for blocker in blockers {
-                require_identifier(blocker, "package inventory blocker")?;
-            }
-            Ok(())
-        }
+        InventoryDecision::Eligible {} => Ok(()),
         InventoryDecision::NotApplicable { rule, reason } => {
             require_identifier(rule, "package eligibility rule")?;
-            if reason.trim().is_empty() || reason.len() > 1024 {
-                bail!("package inapplicability reason must contain 1 through 1024 bytes");
+            if reason.trim().is_empty()
+                || reason.len() > 1024
+                || reason.chars().any(char::is_control)
+            {
+                bail!("package inapplicability reason must contain printable public text");
             }
             Ok(())
         }
@@ -578,17 +542,24 @@ mod tests {
     fn decision(platform: Platform) -> InventoryPlatformCell {
         InventoryPlatformCell {
             platform,
-            decision: InventoryDecision::Eligible {
-                disposition: if platform.supports_images() {
-                    "linux-only"
-                } else {
-                    "target"
-                }
-                .to_owned(),
-                wave: Some(1),
-                blockers: Vec::new(),
-            },
+            decision: InventoryDecision::Eligible {},
         }
+    }
+
+    #[test]
+    fn inventory_accepts_target_policy_decision_shape() -> Result<()> {
+        let eligible = serde_json::from_value::<InventoryDecision>(serde_json::json!({
+            "state": "eligible"
+        }))?;
+        let not_applicable = serde_json::from_value::<InventoryDecision>(serde_json::json!({
+            "state": "not-applicable",
+            "rule": "recipe-policy/v1",
+            "reason": "The recipe constraints exclude the selected target"
+        }))?;
+
+        validate_decision(&eligible)?;
+        validate_decision(&not_applicable)?;
+        Ok(())
     }
 
     #[test]
@@ -666,7 +637,7 @@ mod tests {
             artifact.artifacts[0].id,
             "package/example/x86_64-linux/contract"
         );
-        assert_eq!(artifact.artifacts[0].output.as_deref(), Some("abilities"));
+        assert_eq!(artifact.artifacts[0].output.as_deref(), Some("contract"));
         assert_eq!(
             artifact.artifacts[0].store_path.as_deref(),
             Some("/nix/store/ffffffffffffffffffffffffffffffff-example-contract")
@@ -721,60 +692,13 @@ mod tests {
     }
 
     #[test]
-    fn inventory_retains_explicit_package_blockers() -> Result<()> {
-        let mut cell = decision(Platform::X86_64Linux);
-        cell.decision = InventoryDecision::Eligible {
-            disposition: "target".to_owned(),
-            wave: Some(1),
-            blockers: vec!["cross-build-not-qualified".to_owned()],
-        };
-        let inventory = PackageInventoryV1 {
-            schema_version: PACKAGE_INVENTORY_V1.to_owned(),
-            platforms: Platform::ALL.to_vec(),
-            packages: vec![InventoryPackage {
-                name: "example".to_owned(),
-                platforms: [
-                    cell,
-                    decision(Platform::Aarch64Linux),
-                    decision(Platform::X86_64Darwin),
-                    decision(Platform::Aarch64Darwin),
-                ]
-                .into(),
-            }],
-        };
-        let derivations = Platform::ALL
-            .into_iter()
-            .map(|platform| DerivationInventoryV1 {
-                schema_version: DERIVATION_INVENTORY_V1.to_owned(),
-                platform,
-                packages: vec![DerivationPackage {
-                    name: "example".to_owned(),
-                    source_store_paths: vec![SOURCE_PATH.to_owned()],
-                    publication: Some(PackagePublicationMetadata {
-                        version: "1.0.0".to_owned(),
-                        description: "Example package".to_owned(),
-                        homepage: None,
-                        license_expression: "Apache-2.0".to_owned(),
-                        maintainers: vec!["Example Maintainer".to_owned()],
-                    }),
-                    derivation: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"
-                        .to_owned(),
-                    outputs: vec![DerivationOutput {
-                        name: "out".to_owned(),
-                        derivation: None,
-                        store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
-                            .to_owned(),
-                    }],
-                    contract: None,
-                }],
-            })
-            .collect::<Vec<_>>();
-        let plan = inventory.package_plan(&derivations)?;
-        assert!(matches!(
-            plan[0].platforms[0].decision,
-            MatrixCell::Blocked { .. }
-        ));
-        Ok(())
+    fn inventory_rejects_policy_inputs_on_eligible_decisions() {
+        let decision = serde_json::from_value::<InventoryDecision>(serde_json::json!({
+            "state": "eligible",
+            "role": "public-package"
+        }));
+
+        assert!(decision.is_err());
     }
 
     #[test]
