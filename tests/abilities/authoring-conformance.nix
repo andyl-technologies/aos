@@ -916,6 +916,96 @@
       (packageModuleFor "beta")
     ];
   };
+  alphaCombinedProjection = lib.abilities.projectPackage {
+    packageName = "alpha";
+    version = "1";
+    evaluated = combinedPackageEvaluation.config.aos.abilities;
+  };
+  selectionPackageModuleFor = package: {
+    name = package;
+    module = {abilitySelection, ...}: {
+      options.selectionProbe.${package} = lib.mkOption {
+        type = lib.types.listOf lib.types.attrs;
+        default = [];
+      };
+      options.foreignSelectionProbe.${package} = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+      };
+      config = {
+        selectionProbe.${package} =
+          if abilitySelection == null
+          then []
+          else abilitySelection.bindingsForImplementation "shared";
+        foreignSelectionProbe.${package} =
+          if abilitySelection == null
+          then false
+          else
+            (builtins.tryEval (builtins.deepSeq
+              (abilitySelection.implementationFor (
+                if package == "alpha"
+                then "beta:shared"
+                else "alpha:shared"
+              ))
+              true))
+            .success;
+        aos.abilities = {
+          interfaces.shared = implementationInterface;
+          implementations.shared = implementation // {
+            compose = null;
+            transition = null;
+          };
+          requirementTemplates.shared = {
+            description = "Requires the package-local provenance fixture.";
+            interface = implementationInterface.name;
+            abi = implementationInterface.abi;
+            methods = [];
+            guarantees = [];
+          };
+          instances.provider = {
+            implementation = "shared";
+            configuration = true;
+          };
+          requests.shared = {
+            requirement = "shared";
+            consumer = "provider";
+            parameters = true;
+          };
+        };
+      };
+    };
+  };
+  packageSelectionEvaluation = lib.evalModules {
+    modules = [
+      lib.abilities.module
+      {
+        config.aos.abilities = {
+          environment = plainIdentity.environment;
+          bindings = {
+            alpha = {
+              request = "alpha:shared";
+              implementation = "alpha:shared";
+              providerInstance = "alpha:provider";
+              slot = "alpha";
+            };
+            beta = {
+              request = "beta:shared";
+              implementation = "beta:shared";
+              providerInstance = "beta:provider";
+              slot = "beta";
+            };
+          };
+        };
+      }
+    ];
+    enableAbilitySelection = true;
+    packageModules = [
+      (selectionPackageModuleFor "alpha")
+      (selectionPackageModuleFor "beta")
+    ];
+  };
+  alphaSelection = builtins.head packageSelectionEvaluation.config.selectionProbe.alpha;
+  betaSelection = builtins.head packageSelectionEvaluation.config.selectionProbe.beta;
   instanceIdentityEvaluation = lib.evalModules {
     inherit lib;
     modules = [
@@ -1059,7 +1149,23 @@ in
   assert builtins.stringLength derivedInstanceIdentity.key == 73;
   assert lib.abilities.types.localKey.check derivedInstanceIdentity.key;
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".package == "alpha";
+  assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".localKey == "test";
   assert combinedPackageEvaluation.config.aos.abilities.implementations."alpha:test".interface == "alpha:test";
+  assert (builtins.head alphaCombinedProjection.value.implementation.providers).name == "test";
+  assert !((builtins.head alphaCombinedProjection.value.implementation.providers) ? package);
+  assert !((builtins.head alphaCombinedProjection.value.implementation.providers) ? localKey);
+  assert builtins.length packageSelectionEvaluation.config.selectionProbe.alpha == 1;
+  assert builtins.length packageSelectionEvaluation.config.selectionProbe.beta == 1;
+  assert !packageSelectionEvaluation.config.foreignSelectionProbe.alpha;
+  assert !packageSelectionEvaluation.config.foreignSelectionProbe.beta;
+  assert alphaSelection.implementation.package == "alpha";
+  assert alphaSelection.implementation.localKey == "shared";
+  assert alphaSelection.binding.implementation == "alpha:shared";
+  assert alphaSelection.providerInstance.declaration == "alpha:provider";
+  assert betaSelection.implementation.package == "beta";
+  assert betaSelection.implementation.localKey == "shared";
+  assert betaSelection.binding.implementation == "beta:shared";
+  assert betaSelection.providerInstance.declaration == "beta:provider";
   assert rejectsImplementation (implementation // {artifact = {};});
   assert rejectsImplementation (implementation
     // {
