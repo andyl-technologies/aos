@@ -40,9 +40,9 @@ impl NixEvaluator for ScriptedEvaluator {
 
 fn fixed_point_inputs(seed_set: Vec<WorkingSetMember>) -> FixpointInputs {
     FixpointInputs {
-        host_nix: PathBuf::from("/host.nix"),
+        host_nix: super::EvaluatorInput::canonical(PathBuf::from("/host.nix")),
         runtime_modules: Vec::new(),
-        base_lib: PathBuf::from("/base-lib"),
+        base_lib: super::EvaluatorInput::canonical(PathBuf::from("/base-lib")),
         facts_json: None,
         seed_set,
     }
@@ -190,7 +190,13 @@ fn host_package_selection_rejects_a_mutable_input_path() {
         registry_snapshot: None,
     };
 
-    let error = super::load_host_selection(&cmd)
+    let prepared = super::PreparedEvaluatorInputs {
+        host_nix: super::EvaluatorInput::canonical(cmd.host_nix.clone()),
+        runtime_modules: Vec::new(),
+        base_lib: super::EvaluatorInput::canonical(cmd.base_lib.clone()),
+        facts_json: None,
+    };
+    let error = super::load_host_selection(&cmd, &prepared)
         .expect_err("pure package selection must reject a mutable host path");
     assert!(
         error.to_string().contains("must be pinned in /nix/store"),
@@ -390,6 +396,7 @@ fn retained_nar_hash_reads_the_exact_local_eval_store() {
             "store",
             "add-path",
         ])
+        .env_remove("LD_LIBRARY_PATH")
         .arg(source.path())
         .output()
         .expect("add retained input to local store");
@@ -416,6 +423,122 @@ fn retained_nar_hash_reads_the_exact_local_eval_store() {
 }
 
 #[test]
+fn host_selection_uses_canonical_identities_through_an_alternate_read_root() {
+    fn add_path(store_uri: &str, source: &Path) -> PathBuf {
+        let output = std::process::Command::new("nix")
+            .args([
+                "--extra-experimental-features",
+                "nix-command",
+                "--store",
+                store_uri,
+                "store",
+                "add-path",
+            ])
+            .env_remove("LD_LIBRARY_PATH")
+            .arg(source)
+            .output()
+            .expect("add evaluator input to local store");
+        assert!(
+            output.status.success(),
+            "adding evaluator input failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("UTF-8 store path")
+                .trim(),
+        )
+    }
+
+    let store_root = tempfile::tempdir().expect("temporary local store root");
+    let sources = tempfile::tempdir().expect("temporary evaluator sources");
+    let base_source = sources.path().join("base");
+    let host_source = sources.path().join("host");
+    std::fs::create_dir_all(&base_source).expect("base source directory");
+    std::fs::create_dir_all(&host_source).expect("host source directory");
+    std::fs::write(
+        base_source.join("default.nix"),
+        r#"{
+  evalHostSelection = { operatorModules, runtimeModules }:
+    let
+      merged = builtins.foldl' (result: module: result // module) { }
+        (operatorModules ++ runtimeModules);
+    in {
+      config.aos.apm.desiredPackages = merged.aos.apm.desiredPackages or [ ];
+    };
+}
+"#,
+    )
+    .expect("base evaluator source");
+    std::fs::write(
+        host_source.join("host.nix"),
+        "{ aos.apm.desiredPackages = [ \"example\" ]; }\n",
+    )
+    .expect("host evaluator source");
+
+    let store_uri = format!("local?root={}", store_root.path().display());
+    let base_identity = add_path(&store_uri, &base_source);
+    let host_root_identity = add_path(&store_uri, &host_source);
+    let host_identity = host_root_identity.join("host.nix");
+    assert!(
+        !base_identity.exists(),
+        "identity unexpectedly uses ambient store"
+    );
+    assert!(
+        !host_identity.exists(),
+        "identity unexpectedly uses ambient store"
+    );
+
+    let read_root = store_root.path().join("nix/store");
+    let selected_store = super::store_view::StoreViewLocator::new(
+        "/nix/store".into(),
+        read_root,
+        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-contract/contract.json".into(),
+    )
+    .expect("alternate selected store view");
+    let prepared = super::PreparedEvaluatorInputs {
+        host_nix: super::EvaluatorInput::in_store_view(host_identity.clone(), &selected_store)
+            .expect("selected host input"),
+        runtime_modules: Vec::new(),
+        base_lib: super::EvaluatorInput::in_store_view(base_identity.clone(), &selected_store)
+            .expect("selected base input"),
+        facts_json: None,
+    };
+    let eval_root = sources.path().join("eval");
+    let cmd = EvalCommand {
+        store_view: selected_store,
+        host_nix: prepared.host_nix.read_path.clone(),
+        runtime_modules: Vec::new(),
+        runtime_module_root: None,
+        expected_current_generation: None,
+        base_lib: base_identity,
+        facts_json: None,
+        desired: None,
+        module_abi: 1,
+        out: sources.path().join("manifest.json"),
+        eval_root,
+        verbose: 0,
+        trusted_config_keys_dirs: Vec::new(),
+        retained_host_inputs: None,
+        require_signed_host_nix: false,
+        image_default_host: false,
+        registry_snapshot: None,
+    };
+
+    let selection =
+        super::load_host_selection_in(&cmd, &prepared, Some(std::ffi::OsStr::new(&store_uri)))
+            .expect("evaluate selection through alternate local store");
+
+    assert_eq!(
+        selection
+            .iter()
+            .map(|member| member.package.as_str())
+            .collect::<Vec<_>>(),
+        ["example"]
+    );
+}
+
+#[test]
 fn retained_nar_hash_derives_the_exact_aos_root_store() {
     let root = tempfile::tempdir().expect("temporary AOS root");
     let source = tempfile::tempdir().expect("temporary retained input");
@@ -434,6 +557,7 @@ fn retained_nar_hash_derives_the_exact_aos_root_store() {
         .expect("AOS_ROOT selects a local store");
     let output = std::process::Command::new("nix")
         .args(["--extra-experimental-features", "nix-command"])
+        .env_remove("LD_LIBRARY_PATH")
         .arg("--store")
         .arg(&store_uri)
         .args(["store", "add-path"])
