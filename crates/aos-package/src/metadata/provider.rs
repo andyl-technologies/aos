@@ -1,4 +1,4 @@
-//! Ability handler for provisioning metadata and configuration evaluation.
+//! Generic authorization, plan, and configuration-evaluation ability handler.
 //!
 //! The handler keeps acquisition scratch private to one invocation. Exact host
 //! bytes and semantic early-network facts cross into later operations only
@@ -10,14 +10,14 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, MethodReference,
     ResourceReference,
 };
-use aos_net::{BootstrapLinkSelector, BootstrapNetwork};
+use aos_metadata::executable::ExecutableReference;
+use aos_metadata::{AcquiredMetadata, MetadataResult, Stash};
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
@@ -35,17 +35,13 @@ use aos_storage_provisioning::{
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
 
-use super::detect::{detect, needs_network, platform_capability};
-use super::mount::BlkidProbe;
 use super::provisioning::{
     AuthorizeOptions, EvalProvisioningOptions, ProvisioningTrust,
     evaluate_canonical_provisioning_plan, run_authorize,
 };
-use super::{FetchOptions, run_fetch};
 use crate::config_eval::provisioning_evaluator::{self, EvaluationParameters, MANIFEST_SLOT};
 
 const AUTHORIZATION_OBSERVATION: &str = "aos.metadata.provisioning-authorization-observation/v1";
-const DETECTION_OBSERVATION: &str = "aos.metadata.provisioning-platform-observation/v1";
 const PLAN_OBSERVATION: &str = "aos.metadata.provisioning-plan-observation/v1";
 const EVALUATION_OBSERVATION: &str = "aos.configuration.provisioning-evaluation-observation/v1";
 const PROVIDER_CONTEXT: &str = "aos.metadata.provisioning-provider-context/v1";
@@ -57,7 +53,6 @@ enum MetadataRole {
     Authorization,
     ConfigurationEvaluation,
     PlanObservation,
-    PlatformDetection,
 }
 
 impl MetadataRole {
@@ -70,9 +65,6 @@ impl MetadataRole {
                 Ok(Self::ConfigurationEvaluation)
             }
             ("aos.metadata.storage-provisioning-plan", "observe") => Ok(Self::PlanObservation),
-            ("aos.metadata.storage-provisioning-platform-detection", "detect") => {
-                Ok(Self::PlatformDetection)
-            }
             _ => bail!("interface method does not select a checked metadata handler role"),
         }
     }
@@ -82,7 +74,6 @@ impl MetadataRole {
             Self::Authorization => "authorize",
             Self::ConfigurationEvaluation => "evaluate",
             Self::PlanObservation => "observe",
-            Self::PlatformDetection => "detect",
         }
     }
 
@@ -91,7 +82,6 @@ impl MetadataRole {
             Self::Authorization => authorization_observation(None, "ready"),
             Self::ConfigurationEvaluation => evaluation_observation(None, "ready"),
             Self::PlanObservation => plan_observation(None, "ready"),
-            Self::PlatformDetection => detection_observation(None, "ready"),
         }
     }
 }
@@ -101,21 +91,7 @@ impl MetadataRole {
 struct AuthorizationParameters {
     request: ProvisioningIntent,
     configuration: AuthorizationConfiguration,
-    platform: DetectedPlatform,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DetectionParameters {
-    request: ProvisioningIntent,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct DetectedPlatform {
-    schema: String,
-    platform_id: String,
-    need_network: bool,
+    acquired_metadata: AcquiredMetadata,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,12 +128,7 @@ struct PlanParameters {
     request: ProvisioningIntent,
     authorized_input: AuthorizedProvisioningInput,
     marker: ProvisioningMarkerObservation,
-}
-
-#[derive(Debug)]
-struct AuthorizationOutputs {
-    authorized_input: AuthorizedProvisioningInput,
-    network_bootstrap: Option<AbilityValue>,
+    nix_instantiate: ExecutableReference,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -173,15 +144,6 @@ struct AuthorizationObservation {
     schema: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<CanonicalProvisioningSource>,
-    state: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(deny_unknown_fields)]
-struct DetectionObservation {
-    schema: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    platform_id: Option<String>,
     state: &'static str,
 }
 
@@ -337,36 +299,15 @@ async fn invoke(
     );
 
     match role {
-        MetadataRole::PlatformDetection => {
-            let parameters: DetectionParameters = decode(&invocation.request.inputs)?;
-            ensure!(
-                parameters.request == intent,
-                "detection request differs from the checked resource"
-            );
-            let platform = detect_platform()?;
-            let evidence = detection_observation(Some(platform.platform_id.clone()), "detected")?;
-            completed_result(
-                &invocation,
-                evidence,
-                method_outputs([
-                    (
-                        "need-network",
-                        ability_value(serde_json::to_value(platform.need_network)?)?,
-                    ),
-                    ("platform", ability_value(serde_json::to_value(platform)?)?),
-                ])?,
-            )
-        }
         MetadataRole::Authorization => {
             let parameters: AuthorizationParameters = decode(&invocation.request.inputs)?;
             ensure!(
                 parameters.request == intent,
                 "authorization request differs from the checked resource"
             );
-            let outputs = authorize(&parameters.configuration, &parameters.platform).await?;
-            let evidence =
-                authorization_observation(Some(outputs.authorized_input.source), "authorized")?;
-            let authorized_input = serde_json::to_value(&outputs.authorized_input)?;
+            let input = authorize(&parameters.configuration, &parameters.acquired_metadata)?;
+            let evidence = authorization_observation(Some(input.source), "authorized")?;
+            let authorized_input = serde_json::to_value(&input)?;
             let authorized_input_bytes =
                 aos_contract::canonical::canonical_json(&authorized_input)?;
             publish_blob_output(AUTHORIZED_INPUT_SLOT, &authorized_input_bytes)?;
@@ -385,10 +326,6 @@ async fn invoke(
                             slot: LocalKey::new(AUTHORIZED_INPUT_SLOT)?,
                         })?)?,
                     ),
-                    (
-                        "network-bootstrap",
-                        ability_value(serde_json::to_value(outputs.network_bootstrap)?)?,
-                    ),
                 ])?,
             )
         }
@@ -399,7 +336,7 @@ async fn invoke(
                 "plan request differs from the checked resource"
             );
             let source = parameters.authorized_input.source;
-            let nix_instantiate = required_tool("AOS_METADATA_NIX_INSTANTIATE")?;
+            let nix_instantiate = parameters.nix_instantiate.resolve()?;
             let plan = observe_plan(
                 &parameters.request,
                 &parameters.authorized_input,
@@ -436,203 +373,95 @@ async fn invoke(
     }
 }
 
-fn detect_platform() -> Result<DetectedPlatform> {
-    let scratch = Builder::new().prefix("aos-metadata-detection-").tempdir()?;
-    let media_mountpoint = scratch.path().join("media");
-    let environment = detect_environment(&media_mountpoint)?;
-    finish_config_drive(&environment, detected_platform(&environment))
-}
-
-async fn authorize(
+fn authorize(
     configuration: &AuthorizationConfiguration,
-    expected_platform: &DetectedPlatform,
-) -> Result<AuthorizationOutputs> {
+    acquired: &AcquiredMetadata,
+) -> Result<AuthorizedProvisioningInput> {
     validate_authorization_configuration(configuration)?;
-    validate_detected_platform(expected_platform)?;
+    validate_acquired_metadata(acquired)?;
     let scratch = Builder::new()
-        .prefix("aos-metadata-provisioning-")
+        .prefix("aos-metadata-authorization-")
         .tempdir()?;
     let stash_dir = scratch.path().join("stash");
-    let media_mountpoint = scratch.path().join("media");
-    let environment = detect_environment(&media_mountpoint)?;
-    let actual_platform = match detected_platform(&environment) {
-        Ok(platform) => platform,
-        Err(error) => return finish_config_drive(&environment, Err(error)),
-    };
-    let outcome: Result<AuthorizationOutputs> = async {
-        ensure!(
-            actual_platform == *expected_platform,
-            "metadata platform changed after the checked detection operation"
-        );
-        let stash = super::Stash::open(&stash_dir)?;
-        stash.write_platform_env(&environment)?;
-        run_fetch(&FetchOptions {
-            stash_dir: stash_dir.clone(),
-        })
-        .await?;
-        let (facts, network_bootstrap) = read_observed_instance_facts(&stash_dir)?;
-
-        let trusted_key_files = trusted_key_files(&configuration.trusted_config_keys)?;
-        let trusted_key_dir = scratch.path().join("trusted-config-keys");
-        materialize_trusted_keys(&trusted_key_files, &trusted_key_dir)?;
-        let trust = match configuration.trust_mode {
-            ProvisioningTrustMode::Platform => ProvisioningTrust::Platform,
-            ProvisioningTrustMode::Signed => ProvisioningTrust::Signed,
-        };
-        let result = run_authorize(&AuthorizeOptions {
-            stash_dir: stash_dir.clone(),
-            trust,
-            trusted_config_key_dirs: vec![trusted_key_dir],
-        })?;
-        let input = match result {
-            Some(result) => {
-                let host_module = fs::read_to_string(stash_dir.join("host.nix"))
-                    .context("reading exact authorized host module")?;
-                AuthorizedProvisioningInput {
-                    schema: "aos.metadata.authorized-provisioning-input/v1".into(),
-                    source: CanonicalProvisioningSource::Operator,
-                    host_module: Some(host_module),
-                    host_module_sha256: Some(format!("sha256:{}", result.host_nix_sha256)),
-                    authorization: ProvisioningAuthorization {
-                        trust_mode: configuration.trust_mode,
-                        platform_id: actual_platform.platform_id.clone(),
-                        signer: result.signer,
-                    },
-                    facts: facts.clone(),
-                    base_library: configuration.base_library.clone(),
-                }
-            }
-            None => AuthorizedProvisioningInput {
-                schema: "aos.metadata.authorized-provisioning-input/v1".into(),
-                source: CanonicalProvisioningSource::Fallback,
-                host_module: None,
-                host_module_sha256: None,
-                authorization: ProvisioningAuthorization {
-                    trust_mode: configuration.trust_mode,
-                    platform_id: actual_platform.platform_id.clone(),
-                    signer: None,
-                },
-                facts,
-                base_library: configuration.base_library.clone(),
-            },
-        };
-        validate_authorized_provisioning_input(&input)?;
-        Ok(AuthorizationOutputs {
-            authorized_input: input,
-            network_bootstrap,
-        })
+    let stash = Stash::open(&stash_dir)?;
+    if let Some(module) = &acquired.host_module {
+        stash.write_user_data(module.as_bytes(), acquired.host_module_signature.as_deref())?;
     }
-    .await;
-    finish_config_drive(&environment, outcome)
-}
+    let facts_hash = stash.write_facts(&acquired.facts)?;
+    stash.write_result(&MetadataResult {
+        platform_id: acquired.platform_id.clone(),
+        fetched_user_data: acquired.host_module.is_some(),
+        user_data_source: "typed-provider-output".into(),
+        user_data_sha256: acquired
+            .host_module
+            .as_ref()
+            .map(|module| aos_metadata::stash::sha256_hex(module.as_bytes())),
+        sig_present: acquired.host_module_signature.is_some(),
+        facts_hash,
+        timestamp: aos_metadata::now_rfc3339(),
+    })?;
 
-fn detect_environment(media_mountpoint: &Path) -> Result<super::stash::PlatformEnv> {
-    detect(
-        Path::new("/"),
-        &BlkidProbe::with_tools(
-            required_tool("AOS_METADATA_BLKID")?,
-            required_tool("AOS_METADATA_MOUNT")?,
-        ),
-        media_mountpoint,
-    )
-}
-
-fn detected_platform(environment: &super::stash::PlatformEnv) -> Result<DetectedPlatform> {
-    let platform = DetectedPlatform {
-        schema: "aos.metadata.provisioning-platform/v1".into(),
-        platform_id: environment.platform_id.clone(),
-        need_network: environment.need_network,
+    let trusted_key_files = trusted_key_files(&configuration.trusted_config_keys)?;
+    let trusted_key_dir = scratch.path().join("trusted-config-keys");
+    materialize_trusted_keys(&trusted_key_files, &trusted_key_dir)?;
+    let trust = match configuration.trust_mode {
+        ProvisioningTrustMode::Platform => ProvisioningTrust::Platform,
+        ProvisioningTrustMode::Signed => ProvisioningTrust::Signed,
     };
-    validate_detected_platform(&platform)?;
-    Ok(platform)
+    let result = run_authorize(&AuthorizeOptions {
+        stash_dir: stash_dir.clone(),
+        platform_id: acquired.platform_id.clone(),
+        trust,
+        trusted_config_key_dirs: vec![trusted_key_dir],
+    })?;
+    let facts = observed_instance_facts(serde_json::to_value(&acquired.facts)?)?;
+    let input = match result {
+        Some(result) => AuthorizedProvisioningInput {
+            schema: "aos.metadata.authorized-provisioning-input/v1".into(),
+            source: CanonicalProvisioningSource::Operator,
+            host_module: acquired.host_module.clone(),
+            host_module_sha256: Some(format!("sha256:{}", result.host_nix_sha256)),
+            authorization: ProvisioningAuthorization {
+                trust_mode: configuration.trust_mode,
+                platform_id: acquired.platform_id.clone(),
+                signer: result.signer,
+            },
+            facts,
+            base_library: configuration.base_library.clone(),
+        },
+        None => AuthorizedProvisioningInput {
+            schema: "aos.metadata.authorized-provisioning-input/v1".into(),
+            source: CanonicalProvisioningSource::Fallback,
+            host_module: None,
+            host_module_sha256: None,
+            authorization: ProvisioningAuthorization {
+                trust_mode: configuration.trust_mode,
+                platform_id: acquired.platform_id.clone(),
+                signer: None,
+            },
+            facts,
+            base_library: configuration.base_library.clone(),
+        },
+    };
+    validate_authorized_provisioning_input(&input)?;
+    Ok(input)
 }
 
-fn validate_detected_platform(platform: &DetectedPlatform) -> Result<()> {
+fn validate_acquired_metadata(acquired: &AcquiredMetadata) -> Result<()> {
     ensure!(
-        platform.schema == "aos.metadata.provisioning-platform/v1",
-        "unsupported metadata platform result"
+        acquired.schema == "aos.metadata.acquired-provisioning-input/v1",
+        "unsupported acquired metadata result"
+    );
+    aos_metadata::detect::PlatformId::parse(&acquired.platform_id)?;
+    ensure!(
+        acquired.host_module.is_some() || acquired.host_module_signature.is_none(),
+        "metadata signature has no corresponding host module"
     );
     ensure!(
-        platform_capability(&platform.platform_id).is_some(),
-        "unsupported metadata platform"
-    );
-    ensure!(
-        platform.need_network == needs_network(&platform.platform_id),
-        "metadata platform network requirement is inconsistent"
+        aos_metadata::canonicalize_host_facts(&acquired.facts)? == acquired.facts,
+        "acquired metadata facts are not canonical"
     );
     Ok(())
-}
-
-fn finish_config_drive<T>(
-    environment: &super::stash::PlatformEnv,
-    outcome: Result<T>,
-) -> Result<T> {
-    let cleanup = if let Some(directory) = &environment.metadata_dir {
-        let status = Command::new(required_tool("AOS_METADATA_UMOUNT")?)
-            .arg(directory)
-            .status()
-            .context("unmounting metadata config drive")?;
-        ensure!(status.success(), "metadata config-drive unmount failed");
-        Ok(())
-    } else {
-        Ok(())
-    };
-    match (outcome, cleanup) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(cleanup_error)) => Err(error.context(format!(
-            "config-drive cleanup also failed: {cleanup_error:#}"
-        ))),
-    }
-}
-
-fn read_observed_instance_facts(
-    stash_dir: &Path,
-) -> Result<(
-    aos_storage_provisioning::ObservedInstanceFacts,
-    Option<AbilityValue>,
-)> {
-    let bytes =
-        fs::read(stash_dir.join("facts.json")).context("reading normalized instance facts")?;
-    let facts: super::fetcher::Facts =
-        serde_json::from_slice(&bytes).context("decoding normalized instance facts")?;
-    let facts = super::facts_render::canonicalize_host_facts(&facts)?;
-    let network_bootstrap = facts
-        .network
-        .as_ref()
-        .filter(|network| network.is_seedable())
-        .map(network_bootstrap)
-        .transpose()?;
-    let observed = observed_instance_facts(serde_json::to_value(facts)?)?;
-
-    Ok((observed, network_bootstrap))
-}
-
-fn network_bootstrap(network: &super::fetcher::StaticNetwork) -> Result<AbilityValue> {
-    let selector = if let Some(mac) = network
-        .mac
-        .as_ref()
-        .filter(|mac| super::fetcher::is_canonical_mac(mac))
-    {
-        BootstrapLinkSelector::Mac(mac.clone())
-    } else if let Some(name) = network
-        .interface_name
-        .as_ref()
-        .filter(|name| super::fetcher::is_exact_interface_name(name))
-    {
-        BootstrapLinkSelector::Name(name.clone())
-    } else {
-        bail!("seedable metadata network has no exact link selector")
-    };
-
-    BootstrapNetwork {
-        selector,
-        addresses: network.addresses.clone(),
-        gateway: network.gateway.clone(),
-        dns: network.dns.clone(),
-    }
-    .into_ability_value()
 }
 
 fn observe_plan(
@@ -817,23 +646,6 @@ fn verify_base_library(identity: &BaseLibraryIdentity) -> Result<()> {
     Ok(())
 }
 
-fn required_tool(variable: &str) -> Result<PathBuf> {
-    let value = std::env::var_os(variable)
-        .with_context(|| format!("reading authenticated handler tool {variable}"))?;
-    let path = PathBuf::from(value);
-    ensure!(
-        path.is_absolute() && path.starts_with("/nix/store/"),
-        "authenticated handler tool {variable} is outside the immutable store"
-    );
-    let canonical = fs::canonicalize(&path)
-        .with_context(|| format!("resolving authenticated handler tool {variable}"))?;
-    ensure!(
-        canonical.is_file(),
-        "authenticated handler tool {variable} is not a file"
-    );
-    Ok(canonical)
-}
-
 fn validate_method(role: MetadataRole, method: &str) -> Result<()> {
     ensure!(
         method == role.method(),
@@ -864,14 +676,6 @@ fn authorization_observation(
     ability_value(serde_json::to_value(AuthorizationObservation {
         schema: AUTHORIZATION_OBSERVATION,
         source,
-        state,
-    })?)
-}
-
-fn detection_observation(platform_id: Option<String>, state: &'static str) -> Result<AbilityValue> {
-    ability_value(serde_json::to_value(DetectionObservation {
-        schema: DETECTION_OBSERVATION,
-        platform_id,
         state,
     })?)
 }
@@ -981,11 +785,6 @@ mod tests {
     fn authenticated_methods_select_closed_metadata_roles() {
         let cases = [
             (
-                "aos.metadata.storage-provisioning-platform-detection",
-                MetadataRole::PlatformDetection,
-                "detect",
-            ),
-            (
                 "aos.metadata.storage-provisioning-input-authorization",
                 MetadataRole::Authorization,
                 "authorize",
@@ -1010,29 +809,6 @@ mod tests {
         }
         assert!(
             MetadataRole::from_method(&method_reference("aos.metadata.unknown", "detect")).is_err()
-        );
-    }
-
-    #[test]
-    fn canonical_network_facts_become_one_semantic_bootstrap_value() {
-        let network = super::super::fetcher::StaticNetwork {
-            mac: Some("02:00:00:00:00:01".to_string()),
-            interface_name: Some("ens3".to_string()),
-            addresses: vec!["192.0.2.10/24".to_string()],
-            gateway: Some("192.0.2.1".to_string()),
-            dns: vec!["192.0.2.53".to_string()],
-        };
-
-        let value = network_bootstrap(&network).expect("semantic bootstrap");
-
-        assert_eq!(
-            BootstrapNetwork::from_validated(&value).expect("bootstrap projection"),
-            BootstrapNetwork {
-                selector: BootstrapLinkSelector::Mac("02:00:00:00:00:01".to_string()),
-                addresses: vec!["192.0.2.10/24".to_string()],
-                gateway: Some("192.0.2.1".to_string()),
-                dns: vec!["192.0.2.53".to_string()],
-            }
         );
     }
 
@@ -1063,24 +839,5 @@ mod tests {
             .expect_err("symbolic link is rejected");
 
         assert!(error.to_string().contains("not a regular file"));
-    }
-
-    #[test]
-    fn detected_platform_binds_network_requirement() {
-        let cloud = DetectedPlatform {
-            schema: "aos.metadata.provisioning-platform/v1".into(),
-            platform_id: "aws".into(),
-            need_network: true,
-        };
-        validate_detected_platform(&cloud).expect("cloud platform");
-
-        let inconsistent = DetectedPlatform {
-            need_network: false,
-            ..cloud
-        };
-        let error =
-            validate_detected_platform(&inconsistent).expect_err("network requirement differs");
-
-        assert!(error.to_string().contains("network requirement"));
     }
 }

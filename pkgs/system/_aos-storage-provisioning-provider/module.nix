@@ -136,6 +136,15 @@ in {
         strength = "required";
         fallback = null;
       };
+      requirements.acquire-metadata = {
+        alias = "acquire-metadata";
+        description = "Acquires typed metadata after the selected platform's readiness requirements are met.";
+        accepted_interfaces = [(interfaceSelector "aos.metadata.storage-provisioning-acquisition")];
+        methods = ["acquire"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
       requirements.observe-plan = {
         alias = "observe-plan";
         description = "Derives the canonical storage plan from the authenticated provisioning input.";

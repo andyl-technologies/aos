@@ -86,7 +86,6 @@
   # internal subprocesses always use the corresponding hermetic PATH.
   aosRuntimeTools = [bash git-minimal nix qemu-img zstd];
   aprRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img zstd];
-  metadataRuntimeTools = [bash nix util-linux];
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
   apmRuntimeTools =
     apmPortableRuntimeTools
@@ -256,7 +255,7 @@ in
 
     inherit version src;
 
-    outputs = ["out" "apm" "apr" "packageRuntime" "metadataRuntime" "testSupport"];
+    outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
 
     abilities = ./_abilities;
 
@@ -572,21 +571,6 @@ in
           install_cli aos "$out" ${lib.escapeShellArg (runtimeBinPath aosRuntimeTools)} 0
           install_cli apm "$apm" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
           install_cli apr "$apr" ${lib.escapeShellArg (runtimeBinPath aprRuntimeTools)} 0
-          mkdir -p "$metadataRuntime/libexec"
-          mv \
-            "$out/bin/aos-metadata-provisioning-provider" \
-            "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped"
-          cat > "$metadataRuntime/libexec/aos-metadata-provisioning-provider" <<'METADATA_PROVIDER'
-      #!${bash}/bin/bash
-      export PATH=${lib.escapeShellArg (runtimeBinPath metadataRuntimeTools)}
-      export AOS_METADATA_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
-      export AOS_METADATA_BLKID="${util-linux}/sbin/blkid"
-      export AOS_METADATA_MOUNT="${util-linux}/bin/mount"
-      export AOS_METADATA_UMOUNT="${util-linux}/bin/umount"
-      exec "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped" "$@"
-      METADATA_PROVIDER
-          chmod +x "$metadataRuntime/libexec/aos-metadata-provisioning-provider"
-
           # Give the shared binary the private entry-point name so
           # current_exe() resolves to the exact signed handler path. The public
           # and split-output private links preserve their own argv[0], which
@@ -662,7 +646,6 @@ in
         PATH=/unreachable "$apm/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
         PATH=/unreachable "$packageRuntime/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
         PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" __eval --help > /dev/null
-        test -x "$metadataRuntime/libexec/aos-metadata-provisioning-provider"
       ''}
 
           # This deterministic signer/fixture process exists only for the
@@ -679,8 +662,7 @@ in
           for binary in \
             "$out/bin/.aos-unwrapped" \
             "$apm/bin/.aos-package-runtime-unwrapped" \
-            "$apr/bin/.apr-unwrapped" \
-            "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped"; do
+            "$apr/bin/.apr-unwrapped"; do
             strip -s "$binary"
           done
 
@@ -691,8 +673,7 @@ in
           if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
             for binary in \
               "$apm/bin/.aos-package-runtime-unwrapped" \
-              "$apr/bin/.apr-unwrapped" \
-              "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped"; do
+              "$apr/bin/.apr-unwrapped"; do
               rpath=$(patchelf --print-rpath "$binary")
               rpath=$(printf '%s' "$rpath" | sed \
                 -e "s|$out/lib:||g" \

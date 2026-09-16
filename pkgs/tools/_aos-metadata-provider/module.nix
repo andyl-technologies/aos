@@ -2,22 +2,13 @@
 {
   config,
   lib,
-  packageName,
   ...
 }: let
   cfg = config.aos.metadata.storageProvisioning;
   abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
   networkBootstrap = lib.abilities.interfaces.networkConfiguration.interface.types.bootstrap;
-  runtimeArtifact = lib.abilities.packageOutput {output = "metadataRuntime";};
-  consumerInstance = "metadata-provisioning";
-  initrdStage =
-    config.aos.abilities.environment
-    != null
-    && config.aos.abilities.environment.stage == "initrd";
-  registrySnapshot =
-    config.aos.abilities.interfaces."${packageName}:synchronized-registry-snapshot".methods.observe.outputs.registry-snapshot.schema;
+  runtimeArtifact = lib.abilities.packageOutput {};
 
   optional = type: {
     type = abilityTypes.optional type;
@@ -151,14 +142,34 @@
       need_network = abilityTypes.boolean;
     };
   };
+  acquiredMetadata = abilityTypes.record {
+    fields = {
+      schema = abilityTypes.enum ["aos.metadata.acquired-provisioning-input/v1"];
+      platform_id = platformId;
+      host_module = optional boundedText;
+      host_module_signature = optional boundedText;
+      facts = instanceFactsValue;
+    };
+  };
+  nativeTools = {
+    blkid = abilityTypes.executableReference;
+    mount = abilityTypes.executableReference;
+    umount = abilityTypes.executableReference;
+  };
   detectionParameters = abilityTypes.record {
-    fields.request = storage.requestType;
+    fields = {request = storage.requestType;} // nativeTools;
+  };
+  acquisitionParameters = abilityTypes.record {
+    fields = {
+      request = storage.requestType;
+      platform = abilityTypes.deferredResult detectedPlatform;
+    } // nativeTools;
   };
   authorizationParameters = abilityTypes.record {
     fields = {
       request = storage.requestType;
       configuration = authorizationConfiguration;
-      platform = abilityTypes.deferredResult detectedPlatform;
+      acquired_metadata = abilityTypes.deferredResult acquiredMetadata;
     };
   };
   authorizedInput = abilityTypes.record {
@@ -189,43 +200,7 @@
       request = storage.requestType;
       authorized_input = abilityTypes.deferredResult authorizedInput;
       marker = abilityTypes.deferredResult lib.abilities.interfaces.blockStorage.types.provisioningMarkerObservation;
-    };
-  };
-  authorizedInputSource = abilityTypes.taggedUnion {
-    tag = "kind";
-    variants = {
-      direct-result = abilityTypes.record {
-        fields = {
-          kind = abilityTypes.enum ["direct-result"];
-          input = abilityTypes.deferredResult authorizedInput;
-        };
-      };
-      retained-artifact = abilityTypes.record {
-        fields = {
-          kind = abilityTypes.enum ["retained-artifact"];
-          artifact = abilityTypes.deferredResult abilityTypes.artifactReference;
-          content_sha256 = abilityTypes.deferredResult abilityTypes.digest;
-        };
-      };
-    };
-  };
-  evaluationParameters = abilityTypes.record {
-    fields = {
-      request = storage.requestType;
-      authorized_input = authorizedInputSource;
-      registry_snapshot = abilityTypes.deferredResult registrySnapshot;
-    };
-  };
-  evaluationResult = abilityTypes.record {
-    fields = {
-      schema = abilityTypes.enum ["aos.configuration.provisioning-evaluation-result/v1"];
-      controller = abilityTypes.resourceReference;
-      handoff = abilityTypes.resourceReference;
-      manifest_blob = abilityTypes.transactionBlobReference;
-      manifest_sha256 = abilityTypes.digest;
-      registry_snapshot_sha256 = abilityTypes.digest;
-      host_module_sha256 = optional abilityTypes.digest;
-      instance_facts_sha256 = abilityTypes.digest;
+      nix_instantiate = abilityTypes.executableReference;
     };
   };
   authorizationObservation = abilityTypes.record {
@@ -242,18 +217,18 @@
       state = abilityTypes.enum ["ready" "detected"];
     };
   };
+  acquisitionObservation = abilityTypes.record {
+    fields = {
+      schema = abilityTypes.enum ["aos.metadata.provisioning-acquisition-observation/v1"];
+      platform_id = optional platformId;
+      state = abilityTypes.enum ["ready" "acquired"];
+    };
+  };
   planObservation = abilityTypes.record {
     fields = {
       schema = abilityTypes.enum ["aos.metadata.provisioning-plan-observation/v1"];
       source = optional (abilityTypes.enum ["operator" "fallback"]);
       state = abilityTypes.enum ["ready" "planned"];
-    };
-  };
-  evaluationObservation = abilityTypes.record {
-    fields = {
-      schema = abilityTypes.enum ["aos.configuration.provisioning-evaluation-observation/v1"];
-      manifest_sha256 = optional abilityTypes.digest;
-      state = abilityTypes.enum ["ready" "evaluated"];
     };
   };
   output = schema: description: {
@@ -315,15 +290,36 @@
     aggregation = aggregation detectionAlias;
     guarantees = [];
   };
+  acquisitionAlias = "storage-provisioning-metadata-acquirer";
+  acquisitionMethod = method {
+    name = "acquire";
+    description = "Acquires untrusted metadata through the detected platform implementation.";
+    parameters = acquisitionParameters;
+    evidence = acquisitionObservation;
+    outputs = {
+      acquired-metadata = output acquiredMetadata "Returns exact untrusted input and normalized observational facts.";
+      network-bootstrap = output (abilityTypes.optional networkBootstrap) "Returns optional semantic early-network facts for the selected portable network provider.";
+    };
+  };
+  acquisitionDeclaration = lib.abilities.declareInterface {
+    name = "aos.metadata.storage-provisioning-acquisition";
+    description = "Acquires one typed metadata result without exposing provider-private scratch state.";
+    abi = 1;
+    requestType = storage.requestType;
+    methods.acquire = acquisitionMethod;
+    outputs = {};
+    inherit (storage.declaration) lifecycle;
+    aggregation = aggregation acquisitionAlias;
+    guarantees = [];
+  };
   authorizationAlias = "storage-provisioning-input-authorizer";
   authorizationMethod = method {
     name = "authorize";
-    description = "Acquires and authorizes the exact metadata input for one provisioning transaction.";
+    description = "Authorizes exact typed metadata input for one provisioning transaction.";
     parameters = authorizationParameters;
     evidence = authorizationObservation;
     outputs.authorized-provisioning-input = output authorizedInput "Returns the exact authenticated host module and base-library identity.";
     outputs.authorized-input-blob = output abilityTypes.transactionBlobReference "Carries the same canonical authorized input bytes into persistent artifact commitment.";
-    outputs.network-bootstrap = output (abilityTypes.optional networkBootstrap) "Returns optional semantic early-network facts for the selected portable network provider.";
   };
   authorizationDeclaration = lib.abilities.declareInterface {
     name = "aos.metadata.storage-provisioning-input-authorization";
@@ -355,29 +351,9 @@
     aggregation = aggregation observerAlias;
     guarantees = [];
   };
-  evaluatorAlias = "storage-provisioning-configuration-evaluator";
-  evaluatorMethod = method {
-    name = "evaluate";
-    description = "Evaluates authenticated provisioning input against one synchronized registry snapshot.";
-    parameters = evaluationParameters;
-    evidence = evaluationObservation;
-    outputs.configuration-result = output evaluationResult "Returns the graph-bound manifest blob identity and exact evaluation authorities.";
-  };
-  evaluatorDeclaration = lib.abilities.declareInterface {
-    name = "aos.configuration.storage-provisioning-evaluation";
-    description = "Evaluates one authorized provisioning input into a canonical configuration manifest blob.";
-    abi = 1;
-    requestType = storage.requestType;
-    methods.evaluate = evaluatorMethod;
-    outputs = {};
-    inherit (storage.declaration) lifecycle;
-    aggregation = aggregation evaluatorAlias;
-    guarantees = [];
-  };
-  handler = arguments: result: {
+  handler = entryPoint: arguments: result: {
     artifact = runtimeArtifact;
-    entryPoint = "libexec/aos-metadata-provisioning-provider";
-    inherit arguments result;
+    inherit entryPoint arguments result;
   };
 in {
   options.aos.metadata.storageProvisioning = {
@@ -388,22 +364,15 @@ in {
       readOnly = true;
       description = "Exact metadata authorization configuration derived once from the final system configuration.";
     };
-    request = lib.mkOption {
-      type = abilityTypes.optional storage.requestType;
-      default = null;
-      internal = true;
-      readOnly = true;
-      description = "Static first-boot provisioning intent admitted by the initrd ability graph.";
-    };
   };
 
   config.aos.abilities = lib.mkMerge [
     {
       interfaces = {
         ${detectionAlias} = detectionDeclaration;
+        ${acquisitionAlias} = acquisitionDeclaration;
         ${authorizationAlias} = authorizationDeclaration;
         ${observerAlias} = observerDeclaration;
-        ${evaluatorAlias} = evaluatorDeclaration;
       };
 
       implementations = {
@@ -415,7 +384,20 @@ in {
           );
           methods = ["detect"];
           guarantees = [];
-          handlerDescriptor = handler detectionParameters detectionObservation;
+          handlerDescriptor = handler "bin/aos-metadata-acquisition-provider" detectionParameters detectionObservation;
+          providerModule = null;
+          desiredType = null;
+          requiredFeatures = [];
+        };
+        ${acquisitionAlias} = {
+          description = "Acquires typed metadata through the package-owned platform runtime.";
+          artifact = runtimeArtifact;
+          interface = lib.abilities.interfaceIdentity (
+            lib.abilities.interfaceDocumentFromDeclaration acquisitionDeclaration
+          );
+          methods = ["acquire"];
+          guarantees = [];
+          handlerDescriptor = handler "bin/aos-metadata-acquisition-provider" acquisitionParameters acquisitionObservation;
           providerModule = null;
           desiredType = null;
           requiredFeatures = [];
@@ -428,7 +410,7 @@ in {
           );
           methods = ["authorize"];
           guarantees = [];
-          handlerDescriptor = handler authorizationParameters authorizationObservation;
+          handlerDescriptor = handler "bin/aos-metadata-policy-provider" authorizationParameters authorizationObservation;
           providerModule = null;
           desiredType = null;
           requiredFeatures = [];
@@ -441,20 +423,7 @@ in {
           );
           methods = ["observe"];
           guarantees = [];
-          handlerDescriptor = handler observerParameters planObservation;
-          providerModule = null;
-          desiredType = null;
-          requiredFeatures = [];
-        };
-        ${evaluatorAlias} = {
-          description = "Evaluates authorized provisioning input through the package-owned full configuration runtime.";
-          artifact = runtimeArtifact;
-          interface = lib.abilities.interfaceIdentity (
-            lib.abilities.interfaceDocumentFromDeclaration evaluatorDeclaration
-          );
-          methods = ["evaluate"];
-          guarantees = [];
-          handlerDescriptor = handler evaluationParameters evaluationObservation;
+          handlerDescriptor = handler "bin/aos-metadata-policy-provider" observerParameters planObservation;
           providerModule = null;
           desiredType = null;
           requiredFeatures = [];
@@ -463,20 +432,10 @@ in {
 
       instances = lib.mkIf (config.aos.abilities.environment != null) {
         ${detectionAlias}.implementation = detectionAlias;
+        ${acquisitionAlias}.implementation = acquisitionAlias;
         ${authorizationAlias}.implementation = authorizationAlias;
         ${observerAlias}.implementation = observerAlias;
-        ${evaluatorAlias}.implementation = evaluatorAlias;
       };
     }
-    (lib.mkIf (initrdStage && cfg.request != null) (lib.mkMerge [
-      (serviceManagement.forProducer {
-        inherit consumerInstance;
-        key = "provisioning";
-        interface = storage;
-        methods = ["commit" "observe"];
-        parameters = cfg.request;
-      })
-      {instances.${consumerInstance} = {};}
-    ]))
   ];
 }
