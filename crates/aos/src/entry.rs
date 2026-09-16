@@ -141,8 +141,6 @@ fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
         "recover-credential-transactions",
         "_test-systemd-client",
         "_test-reconcile-exposed-units",
-        "_test-verify-package-attestation",
-        "_test-produce-package-attestation-quote",
         "__verify-boot-commit",
         "_load-ebpf-lsm-policies",
         "__eval",

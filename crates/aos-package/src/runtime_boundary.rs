@@ -161,7 +161,6 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
             AttestCommand::Verify { system, .. } | AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Enroll { .. } => false,
         },
-        PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
         PackageCommand::Remove { .. }
         | PackageCommand::Autoremove
         | PackageCommand::Reinstall { .. }
@@ -177,7 +176,6 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::ActivateRestoreRoutedSources { .. }
         | PackageCommand::RecoverCredentialTransactions
         | PackageCommand::TestSystemdClient { .. }
-        | PackageCommand::TestProducePackageAttestationQuote { .. }
         | PackageCommand::AttestService
         | PackageCommand::LoadEbpfLsmPolicies { .. }
         | PackageCommand::Eval { .. }
@@ -216,7 +214,6 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Held { .. }
         | PackageCommand::Orphans { .. }
         | PackageCommand::Verify { .. }
-        | PackageCommand::TestVerifyPackageAttestation { .. }
         | PackageCommand::AbilityStageValidate { .. } => true,
         PackageCommand::Docs { command } => documentation_is_read_only(command),
         PackageCommand::Options { .. } | PackageCommand::Schema { .. } => true,
@@ -249,7 +246,6 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::ActivateRestoreRoutedSources { .. }
         | PackageCommand::RecoverCredentialTransactions
         | PackageCommand::TestSystemdClient { .. }
-        | PackageCommand::TestProducePackageAttestationQuote { .. }
         | PackageCommand::AttestService
         | PackageCommand::LoadEbpfLsmPolicies { .. }
         | PackageCommand::Eval { .. }
