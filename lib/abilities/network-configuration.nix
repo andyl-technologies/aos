@@ -248,7 +248,12 @@
       remove = effectsMethod "remove" "Removes the exact owned host network state." emptyInputType "exclusive-write" true;
     };
     inherit lifecycle;
-    aggregation = aggregation // {controllerGroup = effectsAlias;};
+    aggregation = aggregation // {
+      controllerGroup = effectsAlias;
+      # The owning controller and an authorized spanning transaction may both
+      # receive grants to the same persistent network resource.
+      rejectSlotCollisions = false;
+    };
     configurationType = null;
     guarantees = [];
   };
