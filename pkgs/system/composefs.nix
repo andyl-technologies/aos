@@ -46,7 +46,7 @@ in
       library="$out/lib/libcomposefs.so.1.4.0"
       test -f "$library"
       ${buildPackages.patchelf}/bin/patchelf --print-needed "$library" \
-        | grep -qx 'libcrypto.so.3'
+        | grep -Eq '^libcrypto\.so\.[0-9]+$'
       ${buildPackages.patchelf}/bin/patchelf \
         --add-rpath "${opensslLibraryPath}" "$library"
     '';
