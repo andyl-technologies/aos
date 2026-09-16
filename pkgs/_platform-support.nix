@@ -804,6 +804,7 @@ let
     "system/_aos-storage-provisioning-provider/module.nix" = "linux-only-config-source";
     "system/_aos-storage-provisioning-provider/provider.nix" = "linux-only-config-source";
     "system/_systemd-abilities/module.nix" = "target-independent-source";
+    "system/_systemd-abilities/package-attestation-quote.nix" = "linux-only-config-source";
     "system/_systemd-abilities/verity-root.nix" = "linux-only-config-source";
     "kubernetes/_cilium-abilities/module.nix" = "linux-only-config-source";
     "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";

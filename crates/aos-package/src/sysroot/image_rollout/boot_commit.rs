@@ -75,25 +75,6 @@ fn parse_command(arguments: &[String]) -> Result<BootCommand> {
     }
 }
 
-/// Verifies the exact successful provider transaction before boot commit.
-///
-/// # Errors
-///
-/// Returns an error when retained transaction evidence is invalid, incomplete,
-/// unsuccessful, or does not authorize the running image.
-pub(crate) fn verify_rollout_boot_commit(
-    generation: u32,
-    transaction: &TransactionId,
-    running: u32,
-) -> Result<()> {
-    verify_rollout_transaction(
-        generation,
-        transaction,
-        running,
-        &BootCommitPaths::default(),
-    )
-}
-
 fn commit(paths: &BootCommitPaths, require_attestation_quote: bool) -> Result<()> {
     let state_path = paths.image_profile.join(IMAGE_STATE_FILE);
     let mut images = read_json::<ImageGenerationState>(&state_path)?;

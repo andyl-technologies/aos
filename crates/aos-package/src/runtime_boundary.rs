@@ -154,8 +154,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         PackageCommand::Options { command } => options_require_host_runtime(command),
         PackageCommand::Schema { system, .. } => *system,
         PackageCommand::Attest { command } => match command {
-            AttestCommand::Quote { .. }
-            | AttestCommand::ReadUkiIdentitySection { .. } => true,
+            AttestCommand::Quote { .. } | AttestCommand::ReadUkiIdentitySection { .. } => true,
             AttestCommand::Verify { system, .. } | AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Enroll { .. } => false,
         },
@@ -169,8 +168,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::Verify { .. }
         | PackageCommand::Source { .. }
         | PackageCommand::Credential(_) => false,
-        PackageCommand::AttestService
-        | PackageCommand::Eval { .. }
+        PackageCommand::Eval { .. }
         | PackageCommand::EvalRetained { .. }
         | PackageCommand::EvalService { .. }
         | PackageCommand::Materialize { .. }
@@ -229,7 +227,6 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Unhold { .. }
         | PackageCommand::Clean { .. }
         | PackageCommand::Gc
-        | PackageCommand::AttestService
         | PackageCommand::Eval { .. }
         | PackageCommand::EvalRetained { .. }
         | PackageCommand::EvalService { .. }
