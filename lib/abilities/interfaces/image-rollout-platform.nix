@@ -60,11 +60,12 @@
     observationType,
     methods,
     controllerGroup,
+    outputs ? {},
   }: let
     declaration = declareInterface {
       inherit name description requestType methods lifecycle;
       abi = 1;
-      outputs = {};
+      inherit outputs;
       guarantees = [];
       aggregation = {
         scope = "provider-instance";
@@ -266,6 +267,95 @@
       controllerGroup = "image-rollout";
     };
 
+  healthObservation = let
+    name = "aos.image.health-observation";
+    observationType = types.record {
+      fields = {
+        schema = types.enum ["aos.ability.image-health-observation/v1"];
+        healthy = types.boolean;
+      };
+    };
+    observation =
+      output
+      "observation"
+      "transaction"
+      "Reports health for the exact authenticated candidate boot artifact."
+      observationType;
+    methods.observe =
+      method
+      "observe"
+      "Observes health through the selected image provider's authenticated boot-artifact contract."
+      "read"
+      ["observe-health"]
+      rolloutRequest
+      {inherit observation;};
+  in
+    interface {
+      alias = "image-health-observation";
+      inherit name observationType methods;
+      requestType = rolloutRequest;
+      description = "Observes candidate health without exposing a boot-artifact backend or executable path.";
+      controllerGroup = "image-rollout";
+    };
+
+  generationState = let
+    name = "aos.image.generation-state";
+    requestType = types.record {
+      fields.contract = types.artifactSelector;
+    };
+    observationType = types.record {
+      fields = {
+        schema = types.enum ["aos.ability.image-generation-state-observation/v1"];
+        state = types.enum ["absent" "reconciled" "unknown"];
+        generation = types.optional (types.integer {
+          minimum = 1;
+          maximum = 4294967295;
+        });
+        contract-digest = types.optional types.digest;
+      };
+    };
+    observation = phase:
+      output
+      phase
+      "persistent"
+      "Reports reconciliation of the authenticated image contract into generation state."
+      observationType;
+    method = methodName: description: access: phase: {
+      inherit description;
+      parameters = requestType;
+      targetResource = name;
+      permittedOperations = [methodName];
+      guarantees = [];
+      semantics = {
+        requiredTargetAccess = access;
+        stopsProvider = false;
+      };
+      outputs.observation = observation phase;
+      outcome = {
+        completionEvidence = observationType;
+        observationEvidence = observationType;
+        supportsRejectedBeforeEffect = true;
+        indeterminate = "reconcile";
+      };
+    };
+    methods = {
+      reconcile = method "reconcile" "Reconciles the authenticated running image into persistent generation state." "exclusive-write" "runtime";
+      observe = method "observe" "Observes generation state for the authenticated running image contract." "read" "observation";
+    };
+  in
+    interface {
+      alias = "image-generation-state";
+      inherit name requestType observationType methods;
+      description = "Reconciles provider-neutral image generations from an opaque selected boot-artifact contract.";
+      controllerGroup = "image-generation-state";
+      outputs.state-resource =
+        output
+        "planning"
+        "persistent"
+        "References persistent generation state for the selected boot-artifact contract."
+        types.resourceReference;
+    };
+
   hostRestart = let
     name = "aos.host.restart";
     requestType = types.record {
@@ -298,7 +388,7 @@
     inherit rolloutRequest;
 
     interfaces = {
-      inherit rollout artifactStorage selection success hostRestart;
+      inherit rollout artifactStorage selection success healthObservation generationState hostRestart;
     };
 
     declarations = {
@@ -306,6 +396,8 @@
       ${artifactStorage.alias} = artifactStorage.declaration;
       ${selection.alias} = selection.declaration;
       ${success.alias} = success.declaration;
+      ${healthObservation.alias} = healthObservation.declaration;
+      ${generationState.alias} = generationState.declaration;
       ${hostRestart.alias} = hostRestart.declaration;
     };
   };
