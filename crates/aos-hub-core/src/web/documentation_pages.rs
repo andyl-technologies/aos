@@ -385,9 +385,7 @@ fn guide_html(entry: &DocumentationTreeEntry, document: &PackageDocumentationPro
         escape(&entry.title),
         escape(&entry.summary)
     );
-    // The package card uses only the ordinary package metadata. The checked
-    // package projection owns option and ability details elsewhere in the view.
-    html.push_str(&document.document.render_html_fragment());
+    html.push_str(&document.render_overview_html_fragment());
     html.push_str("</article>");
     html
 }

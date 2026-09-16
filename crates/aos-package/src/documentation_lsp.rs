@@ -150,8 +150,8 @@ impl Server {
                                     "value": option_markdown(loaded, option)
                                 });
                                 item["data"] = json!({
-                                    "package": loaded.document.package.name,
-                                    "version": loaded.document.package.version,
+                                    "package": loaded.projection.document.package.name,
+                                    "version": loaded.projection.document.package.version,
                                     "packageDigest": package_digest(loaded)
                                 });
                                 item
@@ -249,7 +249,8 @@ impl Server {
     fn options(&self) -> impl Iterator<Item = (&LoadedDocumentation, &OptionDocument)> {
         self.documents.iter().flat_map(|loaded| {
             loaded
-                .ability_options
+                .projection
+                .options
                 .iter()
                 .map(move |option| (loaded, option))
         })
@@ -268,7 +269,7 @@ impl Server {
                 json!({
                     "label": option.display_path,
                     "kind": 10,
-                    "detail": format!("{} — {}", option.type_signature, loaded.document.package.name),
+                    "detail": format!("{} — {}", option.type_signature, loaded.projection.document.package.name),
                     "documentation": {
                         "kind": "markdown",
                         "value": option_markdown(loaded, option)
@@ -276,8 +277,8 @@ impl Server {
                     "filterText": option.display_path,
                     "insertText": option.display_path,
                     "data": {
-                        "package": loaded.document.package.name,
-                        "version": loaded.document.package.version,
+                        "package": loaded.projection.document.package.name,
+                        "version": loaded.projection.document.package.version,
                         "path": option.display_path
                     }
                 })
@@ -331,8 +332,8 @@ impl Server {
                         "start": { "line": line_number, "character": utf16_len(&line[..start]) },
                         "end": { "line": line_number, "character": utf16_len(&line[..start + option.display_path.len()]) }
                     },
-                    "target": format!("aos-doc://{}/{}#{}", loaded.document.package.name, loaded.document.package.version, option.display_path),
-                    "tooltip": format!("Open verified {} documentation", loaded.document.package.name)
+                    "target": format!("aos-doc://{}/{}#{}", loaded.projection.document.package.name, loaded.projection.document.package.version, option.display_path),
+                    "tooltip": format!("Open verified {} documentation", loaded.projection.document.package.name)
                 }));
             }
         }
@@ -442,10 +443,10 @@ impl Server {
                     "name": option.display_path,
                     "kind": 13,
                     "location": {
-                        "uri": format!("aos-doc://{}/{}", loaded.document.package.name, loaded.document.package.version),
+                        "uri": format!("aos-doc://{}/{}", loaded.projection.document.package.name, loaded.projection.document.package.version),
                         "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }
                     },
-                    "containerName": loaded.document.package.name
+                    "containerName": loaded.projection.document.package.name
                 })
             })
             .collect::<Vec<_>>();
@@ -465,13 +466,13 @@ impl Server {
         Value::Array(
             self.options()
                 .filter(|(loaded, _)| {
-                    package.is_none_or(|name| loaded.document.package.name == name)
+                    package.is_none_or(|name| loaded.projection.document.package.name == name)
                 })
                 .filter(|(_, option)| option.display_path.starts_with(prefix))
                 .map(|(loaded, option)| {
                     json!({
-                        "package": loaded.document.package.name,
-                        "version": loaded.document.package.version,
+                        "package": loaded.projection.document.package.name,
+                        "version": loaded.projection.document.package.version,
                         "path": option.display_path,
                         "type": option.type_signature,
                         "required": option.default.is_none(),
@@ -494,8 +495,8 @@ fn option_markdown(loaded: &LoadedDocumentation, option: &OptionDocument) -> Str
     );
     text.push_str(&format!(
         "\n\nPackage: {} {} · package contract {}",
-        markdown_code_span(&loaded.document.package.name),
-        markdown_code_span(&loaded.document.package.version),
+        markdown_code_span(&loaded.projection.document.package.name),
+        markdown_code_span(&loaded.projection.document.package.version),
         markdown_code_span(&package_digest(loaded))
     ));
     text
@@ -503,6 +504,7 @@ fn option_markdown(loaded: &LoadedDocumentation, option: &OptionDocument) -> Str
 
 fn package_digest(loaded: &LoadedDocumentation) -> String {
     loaded
+        .projection
         .ability_reference
         .as_ref()
         .map(|reference| reference.package_digest.to_string())
@@ -816,19 +818,15 @@ mod tests {
             requirements: Vec::new(),
             handlers: Vec::new(),
         };
-        let ability_options = reference.documented_options();
-
-        LoadedDocumentation {
-            document: document(),
-            ability_reference: Some(reference),
-            ability_options,
-        }
+        LoadedDocumentation::from_parts(document(), Some(reference))
+            .expect("checked documentation projection")
     }
 
     #[test]
     fn wildcard_options_complete_hover_and_diagnose_without_evaluating_nix() {
         let loaded = loaded_document();
         let expected_package_digest = loaded
+            .projection
             .ability_reference
             .as_ref()
             .unwrap()
@@ -931,8 +929,8 @@ mod tests {
     fn ability_candidates_preserve_ambiguity_escape_versions_and_bound_hints() {
         let first = loaded_document();
         let mut second = loaded_document();
-        second.document.package.name = "fixture-second".to_string();
-        let second_reference = second.ability_reference.as_mut().unwrap();
+        second.projection.document.package.name = "fixture-second".to_string();
+        let second_reference = second.projection.ability_reference.as_mut().unwrap();
         second_reference.package = LocalKey::new("fixture-second").unwrap();
         second_reference.version = "2`\n[link](https://example.invalid)".to_string();
         let server = Server {
@@ -967,7 +965,7 @@ mod tests {
     #[test]
     fn ability_editor_resolves_the_exact_authenticated_reference_and_virtual_document() {
         let loaded = loaded_document();
-        let expected_reference = loaded.ability_reference.clone().unwrap();
+        let expected_reference = loaded.projection.ability_reference.clone().unwrap();
         let documents = vec![loaded];
         let catalog = AbilityCatalog::new(&documents);
 
@@ -1003,7 +1001,12 @@ mod tests {
     #[test]
     fn ability_diagnostics_are_static_exact_and_offer_standard_workspace_edits() {
         let loaded = loaded_document();
-        let key = loaded.ability_reference.as_ref().unwrap().exports[0]
+        let key = loaded
+            .projection
+            .ability_reference
+            .as_ref()
+            .unwrap()
+            .exports[0]
             .interface
             .clone();
         let server = Server {
@@ -1076,7 +1079,12 @@ mod tests {
     fn contextual_ability_completion_uses_the_authenticated_request_schema() {
         let documents = vec![loaded_document()];
         let catalog = AbilityCatalog::new(&documents);
-        let key = documents[0].ability_reference.as_ref().unwrap().exports[0]
+        let key = documents[0]
+            .projection
+            .ability_reference
+            .as_ref()
+            .unwrap()
+            .exports[0]
             .interface
             .clone();
         let nested = format!(
@@ -1105,9 +1113,9 @@ mod tests {
         let input = aos_ability_inspect::ReferenceInspectionInput::decode(&fixture.input)?;
         let query = aos_ability_inspect::GraphQuery::decode(&fixture.query)?;
         let mut loaded = loaded_document();
-        loaded.document.package.name = input.reference().package.as_str().to_string();
-        loaded.document.package.version = input.reference().version.clone();
-        loaded.ability_reference = Some(input.reference().clone());
+        loaded.projection.document.package.name = input.reference().package.as_str().to_string();
+        loaded.projection.document.package.version = input.reference().version.clone();
+        loaded.projection.ability_reference = Some(input.reference().clone());
         let documents = vec![loaded];
         let catalog = AbilityCatalog::new(&documents);
 
@@ -1126,19 +1134,27 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let before = loaded_document();
         let mut after = before.clone();
-        after.document.package.summary =
+        after.projection.document.package.summary =
             "Clarifies usage without changing configuration meaning.".to_string();
 
         assert_ne!(
-            before.document.document_sha256().unwrap(),
-            after.document.document_sha256().unwrap()
+            before.projection.document.document_sha256().unwrap(),
+            after.projection.document.document_sha256().unwrap()
         );
         assert_eq!(
-            before.document.identity.semantic_schema_sha256,
-            after.document.computed_semantic_schema_sha256().unwrap()
+            before.projection.document.identity.semantic_schema_sha256,
+            after
+                .projection
+                .document
+                .computed_semantic_schema_sha256()
+                .unwrap()
         );
-        assert_eq!(before.ability_reference, after.ability_reference);
+        assert_eq!(
+            before.projection.ability_reference,
+            after.projection.ability_reference
+        );
         let reference = before
+            .projection
             .ability_reference
             .as_ref()
             .ok_or("test ability reference is absent")?;

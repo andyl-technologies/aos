@@ -28,6 +28,7 @@ pub use aos_ability_model::{
 mod ability_deployment;
 mod ability_nar;
 mod ability_reference;
+mod ability_render;
 mod nar;
 
 pub use ability_deployment::{
@@ -45,6 +46,21 @@ pub use ability_reference::{
     MAX_ABILITY_REFERENCE_BYTES,
 };
 pub use nar::decode_single_file_nar;
+
+/// Renders one checked package ability reference as a safe HTML fragment.
+///
+/// Hub and package documentation use this function so provided and consumed
+/// abilities have one presentation derived from the checked contract.
+#[must_use]
+pub fn render_package_ability_reference_html(reference: &PackageAbilityReference) -> String {
+    ability_render::html(reference)
+}
+
+/// Renders the shared empty package ability reference as a safe HTML fragment.
+#[must_use]
+pub fn render_absent_package_ability_reference_html() -> String {
+    ability_render::html_absent()
+}
 
 /// Returns the stable HTML anchor for a documentation search kind and key.
 ///
@@ -132,6 +148,10 @@ pub struct PackageDocumentation {
 
 /// Transient package documentation view derived from one metadata document and
 /// its checked signed package ability projection.
+///
+/// This is the shared frontend boundary. Options, provided abilities, and
+/// consumed abilities all come from `ability_reference`; renderers must not
+/// join or restate those declarations independently.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageDocumentationProjection {
     /// Retains the separately signed package metadata document.
@@ -722,6 +742,40 @@ impl PackageDocumentationProjection {
                 ],
             ));
         }
+
+        if let Some(reference) = &self.ability_reference {
+            for export in &reference.exports {
+                let interface = reference
+                    .interface_for_export(export)
+                    .map(|document| &document.interface);
+                let title = format!("Provided ability {}", export.name.as_str());
+                let summary = interface
+                    .map(|interface| interface.description.as_str())
+                    .unwrap_or("Checked package ability export");
+                rows.push(search_row(
+                    "capability",
+                    &format!("provided:{}", export.name.as_str()),
+                    &title,
+                    summary,
+                    [
+                        (export.name.as_str(), 100),
+                        (export.interface.name.as_str(), 80),
+                        (summary, 20),
+                    ],
+                ));
+            }
+
+            for requirement in &reference.requirements {
+                rows.push(requirement_search_row("package", requirement));
+            }
+            for export in &reference.exports {
+                let consumer = format!("export:{}", export.name.as_str());
+                for requirement in &export.requirements {
+                    rows.push(requirement_search_row(&consumer, requirement));
+                }
+            }
+        }
+
         rows
     }
 
@@ -798,7 +852,7 @@ impl PackageDocumentationProjection {
         })
     }
 
-    /// Renders package metadata and projected public options as plain text.
+    /// Renders package metadata, options, and declared abilities as plain text.
     #[must_use]
     pub fn render_plain(&self) -> String {
         let mut output = self.document.render_plain();
@@ -813,10 +867,14 @@ impl PackageDocumentationProjection {
                 ));
             }
         }
+        match &self.ability_reference {
+            Some(reference) => output.push_str(&ability_render::plain(reference)),
+            None => output.push_str(&ability_render::plain_absent()),
+        }
         output
     }
 
-    /// Renders package metadata and projected public options as safe HTML.
+    /// Renders package metadata, options, and declared abilities as safe HTML.
     #[must_use]
     pub fn render_html(&self) -> String {
         let mut output = String::from(
@@ -829,31 +887,51 @@ impl PackageDocumentationProjection {
         output
     }
 
-    /// Renders package metadata and projected public options as an embeddable fragment.
+    /// Renders package metadata, options, and declared abilities as an embeddable fragment.
     #[must_use]
     pub fn render_html_fragment(&self) -> String {
+        self.render_html_fragment_with_options(true)
+    }
+
+    /// Renders package metadata and declared abilities without expanding option rows.
+    ///
+    /// This view is used beside a separately paginated option tree. It still
+    /// reads the same checked projection and performs no frontend-owned join.
+    #[must_use]
+    pub fn render_overview_html_fragment(&self) -> String {
+        self.render_html_fragment_with_options(false)
+    }
+
+    fn render_html_fragment_with_options(&self, include_options: bool) -> String {
         let mut output = self.document.render_html_fragment();
         let closing = "</main>";
-        if !self.options.is_empty() && output.ends_with(closing) {
+        if output.ends_with(closing) {
             output.truncate(output.len() - closing.len());
-            output.push_str("<section id=\"options\"><h2>Options</h2><dl>");
-            for option in &self.options {
-                output.push_str("<dt id=\"");
-                output.push_str(&documentation_anchor("option", &option.display_path));
-                output.push_str("\"><code>");
-                escape_html_into(&option.display_path, &mut output);
-                output.push_str("</code></dt><dd><p><strong>");
-                escape_html_into(&option.type_signature, &mut output);
-                output.push_str("</strong></p>");
-                render_blocks_html(&option.description, &mut output);
-                output.push_str("</dd>");
+            if include_options && !self.options.is_empty() {
+                output.push_str("<section id=\"options\"><h2>Options</h2><dl>");
+                for option in &self.options {
+                    output.push_str("<dt id=\"");
+                    output.push_str(&documentation_anchor("option", &option.display_path));
+                    output.push_str("\"><code>");
+                    escape_html_into(&option.display_path, &mut output);
+                    output.push_str("</code></dt><dd><p><strong>");
+                    escape_html_into(&option.type_signature, &mut output);
+                    output.push_str("</strong></p>");
+                    render_blocks_html(&option.description, &mut output);
+                    output.push_str("</dd>");
+                }
+                output.push_str("</dl></section>");
             }
-            output.push_str("</dl></section></main>");
+            match &self.ability_reference {
+                Some(reference) => output.push_str(&ability_render::html(reference)),
+                None => output.push_str(&ability_render::html_absent()),
+            }
+            output.push_str("</main>");
         }
         output
     }
 
-    /// Renders package metadata and projected public options as safe roff.
+    /// Renders package metadata, options, and declared abilities as safe roff.
     #[must_use]
     pub fn render_roff(&self) -> String {
         let mut output = self.document.render_roff();
@@ -869,8 +947,37 @@ impl PackageDocumentationProjection {
                 output.push('\n');
             }
         }
+        match &self.ability_reference {
+            Some(reference) => output.push_str(&ability_render::roff(reference)),
+            None => output.push_str(&ability_render::roff_absent()),
+        }
         output
     }
+}
+
+fn requirement_search_row(
+    consumer: &str,
+    requirement: &aos_ability_model::RequirementDeclaration,
+) -> SearchDocument {
+    let title = format!("Consumed ability {}", requirement.alias.as_str());
+    let key = format!("consumed:{consumer}:{}", requirement.alias.as_str());
+    let accepted = requirement
+        .accepted_interfaces
+        .iter()
+        .map(|interface| interface.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    search_row(
+        "capability",
+        &key,
+        &title,
+        &requirement.description,
+        [
+            (requirement.alias.as_str(), 100),
+            (accepted.as_str(), 80),
+            (requirement.description.as_str(), 20),
+        ],
+    )
 }
 
 #[derive(Serialize)]
@@ -1375,7 +1482,10 @@ fn escape_roff_into(input: &str, output: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_ability_model::LocalKey;
+    use aos_ability_model::{
+        LocalKey, OptionSource, OptionVisibility, PackageOptionDeclaration, RequiredFeature,
+    };
+    use aos_contract::Sha256Digest;
 
     fn paragraph(text: &str) -> ProseBlock {
         ProseBlock::Paragraph {
@@ -1461,6 +1571,57 @@ mod tests {
             ability_reference: None,
             options: vec![option_fixture()],
         }
+    }
+
+    fn checked_reference_with_option() -> PackageAbilityReference {
+        PackageAbilityReference {
+            schema: ABILITY_REFERENCE_SCHEMA.to_string(),
+            required_features: vec![
+                RequiredFeature::new("abilities-v1").expect("valid required feature"),
+            ],
+            package: LocalKey::new("nginx").expect("valid package name"),
+            version: "1.30.4".to_string(),
+            manifest_sha256: Sha256Digest::of_bytes("manifest"),
+            package_digest: Sha256Digest::of_bytes("package"),
+            interfaces: BTreeMap::new(),
+            guarantees: BTreeMap::new(),
+            option_declarations: vec![PackageOptionDeclaration {
+                path: vec!["nginx".to_string(), "enable".to_string()],
+                type_signature: "bool".to_string(),
+                structured_type: OptionType::Bool,
+                description: "Enables nginx.".to_string(),
+                default: None,
+                example: None,
+                visibility: OptionVisibility::Public,
+                read_only: false,
+                contributable: false,
+                deprecated: None,
+                replacement: None,
+                source: OptionSource {
+                    path: aos_ability_model::RelativePath::new("module.nix")
+                        .expect("valid module path"),
+                },
+            }],
+            implementations: Vec::new(),
+            exports: Vec::new(),
+            requirements: Vec::new(),
+            handlers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn checked_contract_is_the_only_source_of_projected_option_rows() {
+        let reference = checked_reference_with_option();
+        let expected = reference.documented_options();
+        let projection = PackageDocumentationProjection::new(fixture(), Some(reference.clone()))
+            .expect("matching checked package projection");
+
+        assert_eq!(projection.options, expected);
+        assert_eq!(projection.ability_reference, Some(reference));
+
+        let mut foreign = checked_reference_with_option();
+        foreign.package = LocalKey::new("foreign").expect("valid foreign package name");
+        assert!(PackageDocumentationProjection::new(fixture(), Some(foreign)).is_err());
     }
 
     #[test]

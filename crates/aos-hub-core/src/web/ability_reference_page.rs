@@ -2,10 +2,6 @@
 
 use std::fmt::Write as _;
 
-use aos_ability_model::{
-    OptionVisibility, RequirementDeclaration, RequirementStrength, ValueSchema,
-};
-
 use super::console_render::urlencode;
 use super::render::{escape, hash_value};
 
@@ -53,22 +49,11 @@ pub fn section(
             html.push_str(
                 "<p class=\"warn\">An authenticated ability reference is unavailable for this release.</p>",
             );
-            html.push_str(
-                "<h3>Exposed abilities</h3><p class=\"warn\">Exposed ability declarations are unavailable.</p>",
-            );
-            html.push_str(
-                "<h3>Consumed abilities</h3><p class=\"warn\">Consumed ability declarations are unavailable.</p>",
-            );
         } else {
             html.push_str(
                 "<p class=\"dim\">No authenticated ability contract was published for this package in this release.</p>",
             );
-            html.push_str(
-                "<h3>Exposed abilities</h3><p class=\"dim\">This package declares no exposed abilities.</p>",
-            );
-            html.push_str(
-                "<h3>Consumed abilities</h3><p class=\"dim\">This package declares no consumed abilities.</p>",
-            );
+            html.push_str(&aos_doc_model::render_absent_package_ability_reference_html());
         }
         html.push_str("</section>");
         return html;
@@ -97,11 +82,9 @@ pub fn section(
     );
     let _ = write!(
         html,
-        "<dl class=\"meta\"><dt>Supported environment</dt><dd>{}</dd><dt>Release commit</dt><dd>{}</dd><dt>Manifest</dt><dd>{}</dd><dt>Package contract</dt><dd>{}</dd></dl>",
+        "<dl class=\"meta\"><dt>Supported environment</dt><dd>{}</dd><dt>Release commit</dt><dd>{}</dd></dl>",
         escape(&panel.platform),
         hash_value(&panel.indexed_commit),
-        hash_value(&reference.manifest_sha256.to_string()),
-        hash_value(&reference.package_digest.to_string()),
     );
     let _ = write!(
         html,
@@ -115,263 +98,9 @@ pub fn section(
 
     html.push_str(&checked_graph);
 
-    html.push_str("<h3>Package options</h3>");
-    if !reference
-        .option_declarations
-        .iter()
-        .any(|option| option.visibility == OptionVisibility::Public)
-    {
-        html.push_str("<p class=\"dim\">No package-owned configuration options are declared.</p>");
-    }
-    for option in reference
-        .option_declarations
-        .iter()
-        .filter(|option| option.visibility == OptionVisibility::Public)
-    {
-        let _ = write!(
-            html,
-            "<article class=\"ability-option\"><h4><code>{}</code></h4><p>{}</p><dl><dt>Portable type</dt><dd><code>{}</code></dd><dt>Source</dt><dd><code>{}</code></dd></dl></article>",
-            escape(&option.path.join(".")),
-            escape(&option.description),
-            escape(&scalar(&option.structured_type)),
-            escape(option.source.path.as_str()),
-        );
-    }
-
-    html.push_str("<h3>Package interfaces</h3>");
-    if reference.interfaces.is_empty() {
-        html.push_str("<p class=\"dim\">No package-owned interfaces are declared.</p>");
-    }
-    for (alias, document) in &reference.interfaces {
-        let interface = &document.interface;
-        let _ = write!(
-            html,
-            "<article class=\"ability-interface\"><h4><code>{}</code>: <code>{}</code> ABI {}</h4><p>{}</p>",
-            escape(alias.as_str()),
-            escape(interface.name.as_str()),
-            interface.abi,
-            escape(&interface.description),
-        );
-        if !interface.outputs.is_empty() {
-            html.push_str("<h5>Aggregate outputs</h5><ul>");
-            for (name, output) in &interface.outputs {
-                let _ = write!(
-                    html,
-                    "<li><code>{}</code> — {}</li>",
-                    escape(name.as_str()),
-                    escape(&output.description),
-                );
-            }
-            html.push_str("</ul>");
-        }
-        if !interface.methods.is_empty() {
-            html.push_str("<h5>Methods</h5><ul>");
-            for (name, method) in &interface.methods {
-                let _ = write!(
-                    html,
-                    "<li><code>{}</code> — {}",
-                    escape(name.as_str()),
-                    escape(&method.description),
-                );
-                for (output_name, output) in &method.outputs {
-                    let _ = write!(
-                        html,
-                        "; output <code>{}</code>: {}",
-                        escape(output_name.as_str()),
-                        escape(&output.description),
-                    );
-                }
-                html.push_str("</li>");
-            }
-            html.push_str("</ul>");
-        }
-        html.push_str("</article>");
-    }
-
-    html.push_str("<h3>Provider implementations</h3>");
-    if reference.implementations.is_empty() {
-        html.push_str("<p class=\"dim\">No provider implementations are declared.</p>");
-    }
-    for implementation in &reference.implementations {
-        let _ = write!(
-            html,
-            "<article class=\"ability-implementation\"><h4><code>{}</code></h4><p>{}</p><p>Implements <code>{}</code>.</p></article>",
-            escape(implementation.name.as_str()),
-            escape(&implementation.description),
-            escape(implementation.interface.name.as_str()),
-        );
-    }
-
-    html.push_str("<h3>Execution guarantees</h3>");
-    if reference.guarantees.is_empty() {
-        html.push_str("<p class=\"dim\">No package-owned execution guarantees are declared.</p>");
-    }
-    for (alias, guarantee) in &reference.guarantees {
-        let _ = write!(
-            html,
-            "<article class=\"ability-guarantee\"><h4><code>{}</code></h4><p>{}</p><p><code>{}</code> v{}: {}</p></article>",
-            escape(alias.as_str()),
-            escape(&guarantee.description),
-            escape(guarantee.name.as_str()),
-            guarantee.version,
-            escape(&guarantee.semantics),
-        );
-    }
-
-    html.push_str("<h3>Exposed abilities</h3>");
-    if reference.exports.is_empty() {
-        html.push_str("<p class=\"dim\">This package publishes no provider interfaces.</p>");
-    }
-    for export in &reference.exports {
-        let Ok(interface_document) = reference.interface_for_export(export) else {
-            html.push_str(
-                "<p class=\"warn\">The authenticated export has no retained interface document.</p>",
-            );
-            continue;
-        };
-        let interface = &interface_document.interface;
-        let anchor = format!("ability-export-{}", export.name.as_str());
-        let _ = write!(
-            html,
-            "<article class=\"ability-contract\"><h4 id=\"{}\">{}: {} <a href=\"#{}\">ABI {}</a></h4><p>{}</p><p class=\"dim\">Descriptor {} · implementation {}</p>",
-            escape(&anchor),
-            escape(export.name.as_str()),
-            escape(interface.name.as_str()),
-            escape(&anchor),
-            interface.abi,
-            escape(&interface.description),
-            hash_value(&export.interface.descriptor.to_string()),
-            hash_value(&export.implementation.to_string()),
-        );
-        html.push_str("<h5>Request or contribution schema</h5>");
-        schema(&mut html, &interface.request);
-        if let Some(configuration) = &interface.configuration {
-            html.push_str("<h5>Operator-owned provider instance configuration schema</h5>");
-            schema(&mut html, configuration);
-        } else {
-            html.push_str(
-                "<p class=\"dim\">No operator-owned provider instance configuration is declared.</p>",
-            );
-        }
-
-        if interface.outputs.is_empty() {
-            html.push_str("<p class=\"dim\">No aggregate outputs.</p>");
-        } else {
-            html.push_str("<h5>Outputs</h5><ul>");
-            for (name, output) in &interface.outputs {
-                let _ = write!(
-                    html,
-                    "<li><code>{}</code> — {} — {}, {}, {}</li>",
-                    escape(name.as_str()),
-                    escape(&output.description),
-                    scalar(&output.phase),
-                    scalar(&output.visibility),
-                    scalar(&output.lifetime),
-                );
-            }
-            html.push_str("</ul>");
-        }
-
-        if !interface.methods.is_empty() {
-            html.push_str("<h5>Methods</h5><ul>");
-            for (name, method) in &interface.methods {
-                let _ = write!(
-                    html,
-                    "<li><code>{}</code> — {} — {} targeting <code>{}</code>",
-                    escape(name.as_str()),
-                    escape(&method.description),
-                    scalar(&method.semantics),
-                    escape(method.target_resource.as_str()),
-                );
-                if !method.permitted_operations.is_empty() {
-                    let operations = method
-                        .permitted_operations
-                        .iter()
-                        .map(|operation| escape(operation.as_str()))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let _ = write!(html, " (operations: {operations})");
-                }
-                for (output_name, output) in &method.outputs {
-                    let _ = write!(
-                        html,
-                        " (output <code>{}</code>: {})",
-                        escape(output_name.as_str()),
-                        escape(&output.description),
-                    );
-                }
-                html.push_str("</li>");
-            }
-            html.push_str("</ul>");
-        }
-
-        let lifecycle = &interface.lifecycle;
-        html.push_str("<h5>Lifecycle</h5><ul>");
-        if let Some(method) = &lifecycle.persistent_delete_method {
-            let _ = write!(
-                html,
-                "<li>Persistent deletion method: <code>{}</code></li>",
-                escape(method.as_str())
-            );
-        } else {
-            html.push_str("<li>No persistent deletion method declared.</li>");
-        }
-        html.push_str("</ul>");
-
-        let aggregation = &interface.aggregation;
-        let _ = write!(
-            html,
-            "<h5>Contribution consumption</h5><p>Scoped per provider instance with key <code>{}</code> and controller group <code>{}</code>. Slot collisions are {}.</p>",
-            escape(aggregation.key.as_str()),
-            escape(aggregation.controller_group.as_str()),
-            if aggregation.reject_slot_collisions {
-                "rejected"
-            } else {
-                "allowed"
-            },
-        );
-        html.push_str("</article>");
-    }
-
-    html.push_str("<h3>Consumed abilities</h3>");
-    if reference.requirements.is_empty()
-        && reference
-            .exports
-            .iter()
-            .all(|export| export.requirements.is_empty())
-    {
-        html.push_str(
-            "<p class=\"dim\">This package declares no consumed ability requirements.</p>",
-        );
-    } else {
-        html.push_str("<ul class=\"ability-requirements\">");
-        for requirement in &reference.requirements {
-            requirement_item(&mut html, "package", requirement);
-        }
-        for export in &reference.exports {
-            let consumer = format!("export {}", export.name.as_str());
-            for requirement in &export.requirements {
-                requirement_item(&mut html, &consumer, requirement);
-            }
-        }
-        html.push_str("</ul>");
-    }
-
-    if !reference.handlers.is_empty() {
-        html.push_str("<h3>Structured effect handlers</h3>");
-        for handler in &reference.handlers {
-            let _ = write!(
-                html,
-                "<article class=\"ability-handler\"><h4>{}</h4><p>Authenticated entry point <code>{}</code></p><h5>Arguments</h5>",
-                escape(handler.name.as_str()),
-                escape(&handler.entry_point),
-            );
-            schema(&mut html, &handler.arguments);
-            html.push_str("<h5>Result</h5>");
-            schema(&mut html, &handler.result);
-            html.push_str("</article>");
-        }
-    }
+    html.push_str(&aos_doc_model::render_package_ability_reference_html(
+        reference,
+    ));
 
     if let Some(deployments) = deployments {
         html.push_str("<h3>Private deployment state</h3>");
@@ -389,52 +118,8 @@ pub fn section(
         }
     }
 
-    html.push_str(concat!(
-        "<p class=\"dim\">This is a signed package contract. Operator configuration sections ",
-        "show public schemas only, never deployed instance values. Live provider selection, ",
-        "assignment health, and observed runtime state belong to deployment views.</p></section>"
-    ));
+    html.push_str("</section>");
     html
-}
-
-fn requirement_item(html: &mut String, consumer: &str, requirement: &RequirementDeclaration) {
-    let strength = match requirement.strength {
-        RequirementStrength::Required => "required",
-        RequirementStrength::Advisory => "advisory",
-    };
-    let _ = write!(
-        html,
-        "<li><strong>{}</strong> — {} <span class=\"dim\">({strength}, consumed by <code>{}</code>)</span><ul>",
-        escape(requirement.alias.as_str()),
-        escape(&requirement.description),
-        escape(consumer),
-    );
-    for accepted in &requirement.accepted_interfaces {
-        let descriptor = accepted
-            .descriptor
-            .map(|digest| hash_value(&digest.to_string()))
-            .unwrap_or_else(|| "any compatible descriptor".to_string());
-        let _ = write!(
-            html,
-            "<li>{} ABI {} · {}</li>",
-            escape(accepted.name.as_str()),
-            accepted.abi,
-            descriptor,
-        );
-    }
-    if !requirement.methods.is_empty() {
-        let methods = requirement
-            .methods
-            .iter()
-            .map(|method| format!("<code>{}</code>", escape(method.as_str())))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let _ = write!(html, "<li>Methods: {methods}</li>");
-    }
-    if requirement.fallback.is_some() {
-        html.push_str("<li>Has an authenticated fallback output contract.</li>");
-    }
-    html.push_str("</ul></li>");
 }
 
 fn deployment_section(html: &mut String, panel: &PackageAbilityDeploymentPanel) {
@@ -514,12 +199,6 @@ fn observation_summary(observation: &aos_doc_model::AbilityDeploymentObservation
     )
 }
 
-fn schema(html: &mut String, value: &ValueSchema) {
-    let rendered = serde_json::to_string_pretty(value)
-        .unwrap_or_else(|_| "{\"kind\":\"unavailable\"}".to_string());
-    let _ = write!(html, "<pre>{}</pre>", escape(&rendered));
-}
-
 fn scalar(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value)
         .map(|encoded| encoded.trim_matches('"').to_string())
@@ -534,7 +213,7 @@ mod tests {
         AggregationContract, AggregationScope, ArtifactReference, EnvironmentId, ExecutionStage,
         InstanceId, InterfaceDescriptor, InterfaceDocument, InterfaceName, LifecycleSemantics,
         LocalKey, PlanId, ProviderImplementation, RequiredFeature, RequirementDeclaration,
-        RevisionId,
+        RequirementStrength, RevisionId, ValueSchema,
     };
     use aos_contract::Sha256Digest;
 
@@ -758,21 +437,20 @@ mod tests {
         let html = section("demo", Some(&panel()), false, None, false);
 
         assert!(html.contains("href=\"/demo/-/releases/1.2.3\""));
-        assert!(html.contains("server: aos.test.service"));
+        assert!(html.contains("Declared export <code>server</code>"));
+        assert!(html.contains("<code>aos.test.service</code> ABI 1"));
         assert!(html.contains("internal-interface"));
         assert!(html.contains("Describes an unexported package-owned interface."));
-        assert!(html.contains("href=\"#ability-export-server\">ABI 1</a>"));
         assert!(html.contains("Request or contribution schema"));
-        assert!(html.contains("Operator-owned provider instance configuration schema"));
+        assert!(html.contains("operator-owned provider instance configuration schema"));
         assert!(html.contains("&quot;max_length&quot;: 64"));
-        assert!(html.contains("Exposed abilities"));
+        assert!(html.contains("Provided abilities"));
         assert!(html.contains("Consumed abilities"));
         assert!(html.contains("<strong>network</strong>"));
         assert!(html.contains("<strong>service-runtime</strong>"));
         assert!(html.contains("consumed by <code>export server</code>"));
-        assert!(html.contains("signed package contract"));
         assert!(html.contains("public schemas only, never deployed instance values"));
-        assert!(html.contains("observed runtime state belong to deployment views"));
+        assert!(html.contains("or observed runtime state"));
         assert!(!html.contains("Private deployment state"));
         assert!(!html.contains("reporter-bearer:"));
     }
@@ -802,7 +480,7 @@ mod tests {
             )
         );
         assert!(!html.contains("future-reference-semantics-v1"));
-        assert!(!html.contains("Exposed abilities"));
+        assert!(!html.contains("Provided abilities"));
         assert!(!html.contains("Consumed abilities"));
         assert!(!html.contains("Private deployment state"));
         assert!(!html.contains("reporter-bearer:"));
@@ -812,10 +490,10 @@ mod tests {
     fn packages_without_ability_projections_still_document_both_ability_directions() {
         let html = section("demo", None, false, None, false);
 
-        assert!(html.contains("Exposed abilities"));
-        assert!(html.contains("This package declares no exposed abilities."));
+        assert!(html.contains("Provided abilities"));
+        assert!(html.contains("No provided abilities are declared."));
         assert!(html.contains("Consumed abilities"));
-        assert!(html.contains("This package declares no consumed abilities."));
+        assert!(html.contains("No consumed abilities are declared."));
     }
 
     #[test]

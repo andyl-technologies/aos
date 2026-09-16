@@ -42,7 +42,6 @@
 //! early with [`SeedOutcome::AlreadySeeded`] rather than duplicating rows, so
 //! `serve --dev --seed` is safe to leave on across restarts.
 
-mod documentation;
 mod publication;
 
 use std::net::SocketAddr;
@@ -883,13 +882,6 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
         .or_default()
         .push(("aos-system.toml".to_string(), system_oid));
     closure_entries.push(("aossystemhash".to_string(), put_blob("aossystemhash\n")?));
-
-    let documentation_package = documentation::write(root)?;
-    package_buckets
-        .entry('c')
-        .or_default()
-        .push(("config-demo.toml".into(), put_blob(&documentation_package)?));
-    closure_entries.push(("c".repeat(32), put_blob(&format!("{}\n", "c".repeat(32)))?));
 
     // Build the `packages/` tree of per-letter bucket subtrees.
     let mut packages_entries: Vec<(String, Oid)> = Vec::new();

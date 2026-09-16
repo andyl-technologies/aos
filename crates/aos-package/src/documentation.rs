@@ -6,8 +6,6 @@
 //! generated manpage as authority. Every canonical JSON payload is decoded
 //! through [`aos_doc_model`] before rendering or editor use.
 
-mod ability_render;
-
 use std::fs;
 use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
@@ -40,12 +38,8 @@ use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput
 /// One reverified canonical document and its signed installed locator.
 #[derive(Clone)]
 pub(crate) struct LoadedDocumentation {
-    /// Decoded canonical document.
-    pub document: PackageDocumentation,
-    /// Public declarations derived from this package's checked signed projection.
-    pub ability_reference: Option<PackageAbilityReference>,
-    /// Transient option rows derived from `ability_reference` at load time.
-    pub ability_options: Vec<OptionDocument>,
+    /// The one checked view shared by rendering, search, Hub, and editor paths.
+    pub(crate) projection: PackageDocumentationProjection,
 }
 
 /// One Hub document tied to the exact indexed registry commit that served it.
@@ -55,57 +49,25 @@ struct VerifiedRemoteDocumentation {
 }
 
 impl LoadedDocumentation {
-    fn from_parts(
+    pub(crate) fn from_parts(
         document: PackageDocumentation,
         ability_reference: Option<PackageAbilityReference>,
     ) -> Result<Self> {
-        let projection = PackageDocumentationProjection::new(document, ability_reference)?;
         Ok(Self {
-            document: projection.document,
-            ability_reference: projection.ability_reference,
-            ability_options: projection.options,
+            projection: PackageDocumentationProjection::new(document, ability_reference)?,
         })
     }
 
-    fn projection(&self) -> Result<PackageDocumentationProjection> {
-        PackageDocumentationProjection::new(self.document.clone(), self.ability_reference.clone())
-            .map_err(Into::into)
-    }
-
     fn render_plain(&self) -> Result<String> {
-        let mut output = self.projection()?.render_plain();
-        if let Some(reference) = &self.ability_reference {
-            output.push_str(&ability_render::plain(reference)?);
-        } else {
-            output.push_str(&ability_render::plain_absent());
-        }
-        Ok(output)
+        Ok(self.projection.render_plain())
     }
 
     fn render_html(&self) -> Result<String> {
-        let mut output = String::from(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>",
-        );
-        output.push_str(&html_escape(&self.document.package.name));
-        output.push_str(" documentation</title></head><body>");
-        output.push_str(&self.projection()?.render_html_fragment());
-        if let Some(reference) = &self.ability_reference {
-            output.push_str(&ability_render::html(reference)?);
-        } else {
-            output.push_str(&ability_render::html_absent());
-        }
-        output.push_str("</body></html>");
-        Ok(output)
+        Ok(self.projection.render_html())
     }
 
     fn render_roff(&self) -> Result<String> {
-        let mut output = self.projection()?.render_roff();
-        if let Some(reference) = &self.ability_reference {
-            output.push_str(&ability_render::roff(reference)?);
-        } else {
-            output.push_str(&ability_render::roff_absent());
-        }
-        Ok(output)
+        Ok(self.projection.render_roff())
     }
 }
 
@@ -206,13 +168,13 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
             let loaded = local_document(scope, package, None, None)?;
             let roff = loaded.render_roff()?;
             if *install {
-                let path = install_manpage(scope, &loaded.document, roff.as_bytes())?;
+                let path = install_manpage(scope, &loaded.projection.document, roff.as_bytes())?;
                 if *print_path || printer.mode() == OutputMode::Quiet {
                     println!("{}", path.display());
                 } else if printer.mode() == OutputMode::Json {
                     printer.json(&serde_json::json!({
-                        "package": loaded.document.package.name,
-                        "version": loaded.document.package.version,
+                        "package": loaded.projection.document.package.name,
+                        "version": loaded.projection.document.package.version,
                         "path": path,
                     }));
                 } else {
@@ -302,7 +264,8 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                     .await?;
                     matches.extend(
                         loaded
-                            .ability_options
+                            .projection
+                            .options
                             .into_iter()
                             .filter(|option| option.display_path == *path),
                     );
@@ -314,9 +277,9 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                     .filter(|loaded| {
                         package
                             .as_ref()
-                            .is_none_or(|name| loaded.document.package.name == *name)
+                            .is_none_or(|name| loaded.projection.document.package.name == *name)
                     })
-                    .flat_map(|loaded| loaded.ability_options)
+                    .flat_map(|loaded| loaded.projection.options)
                     .filter(|option| option.display_path == *path)
                     .collect()
             };
@@ -365,7 +328,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
         OptionsCommand::Complete { prefix, system } => {
             let mut paths = load_installed_documents(scope(*system))?
                 .into_iter()
-                .flat_map(|loaded| loaded.ability_options)
+                .flat_map(|loaded| loaded.projection.options)
                 .map(|option| option.display_path)
                 .filter(|path| path.starts_with(prefix))
                 .collect::<Vec<_>>();
@@ -408,7 +371,11 @@ pub async fn run_schema(
                     )
                     .await?
                 }
-                None => local_document(scope(system), package, version, platform)?.document,
+                None => {
+                    local_document(scope(system), package, version, platform)?
+                        .projection
+                        .document
+                }
             };
             write_bytes(&document.canonical_json()?, None)
         }
@@ -447,20 +414,20 @@ pub(crate) fn load_installed_documents(scope: ProfileScope) -> Result<Vec<Loaded
             continue;
         };
         let path = Path::new(&artifact.store_path);
-        let mut loaded = load_document_file(path, Some(&artifact), &apm.name)?;
-        if loaded.document.package.name != apm.name
-            || loaded.document.package.version != apm.version
+        let loaded = load_document_file(path, Some(&artifact), &apm.name)?;
+        if loaded.projection.document.package.name != apm.name
+            || loaded.projection.document.package.version != apm.version
         {
             bail!(
                 "installed documentation identity mismatch for '{}': expected {} {}, got {} {}",
                 apm.name,
                 apm.name,
                 apm.version,
-                loaded.document.package.name,
-                loaded.document.package.version
+                loaded.projection.document.package.name,
+                loaded.projection.document.package.version
             );
         }
-        loaded.ability_reference = apm
+        let ability_reference = apm
             .contract
             .as_ref()
             .map(|ability| {
@@ -468,15 +435,19 @@ pub(crate) fn load_installed_documents(scope: ProfileScope) -> Result<Vec<Loaded
             })
             .transpose()?;
         documents.push(LoadedDocumentation::from_parts(
-            loaded.document,
-            loaded.ability_reference,
+            loaded.projection.document,
+            ability_reference,
         )?);
     }
     documents.sort_by(|left, right| {
-        (&left.document.package.name, &left.document.package.version).cmp(&(
-            &right.document.package.name,
-            &right.document.package.version,
-        ))
+        (
+            &left.projection.document.package.name,
+            &left.projection.document.package.version,
+        )
+            .cmp(&(
+                &right.projection.document.package.name,
+                &right.projection.document.package.version,
+            ))
     });
     Ok(documents)
 }
@@ -567,9 +538,9 @@ fn local_document(
     load_installed_documents(scope)?
         .into_iter()
         .find(|loaded| {
-            loaded.document.package.name == package
-                && version.is_none_or(|value| loaded.document.package.version == value)
-                && platform.is_none_or(|value| loaded.document.package.platform == value)
+            loaded.projection.document.package.name == package
+                && version.is_none_or(|value| loaded.projection.document.package.version == value)
+                && platform.is_none_or(|value| loaded.projection.document.package.platform == value)
         })
         .with_context(|| {
             format!(
@@ -609,7 +580,7 @@ fn search_loaded_documents(
     let query_terms = tokenize(query);
     let mut results = Vec::new();
     for loaded in documents {
-        for row in loaded.projection()?.search_documents() {
+        for row in loaded.projection.search_documents() {
             if kind.is_some_and(|kind| row.kind != kind) {
                 continue;
             }
@@ -628,9 +599,9 @@ fn search_loaded_documents(
                 continue;
             }
             results.push(SearchResult {
-                package: loaded.document.package.name.clone(),
-                version: loaded.document.package.version.clone(),
-                platform: loaded.document.package.platform.clone(),
+                package: loaded.projection.document.package.name.clone(),
+                version: loaded.projection.document.package.version.clone(),
+                platform: loaded.projection.document.package.platform.clone(),
                 kind: row.kind,
                 key: row.key,
                 title: row.title,
@@ -1053,10 +1024,10 @@ fn local_http_response(documents: &[LoadedDocumentation], request: &[u8]) -> Vec
             "<!doctype html><meta charset=utf-8><title>Installed package documentation</title><main><h1>Installed package documentation</h1><ul>",
         );
         for loaded in documents {
-            let name = html_escape(&loaded.document.package.name);
+            let name = html_escape(&loaded.projection.document.package.name);
             body.push_str(&format!(
                 "<li><a href=\"/packages/{name}\">{name}</a> <code>{}</code></li>",
-                html_escape(&loaded.document.package.version)
+                html_escape(&loaded.projection.document.package.version)
             ));
         }
         body.push_str("</ul></main>");
@@ -1070,7 +1041,7 @@ fn local_http_response(documents: &[LoadedDocumentation], request: &[u8]) -> Vec
     };
     let Some(document) = documents
         .iter()
-        .find(|loaded| loaded.document.package.name == name)
+        .find(|loaded| loaded.projection.document.package.name == name)
     else {
         return http_response("404 Not Found", "text/plain", b"not found\n");
     };
@@ -1139,9 +1110,9 @@ fn run_cache(command: &DocumentationCacheCommand, printer: &Printer) -> Result<(
             .iter()
             .map(|loaded| {
                 serde_json::json!({
-                    "package": &loaded.document.package.name,
-                    "version": &loaded.document.package.version,
-                    "platform": &loaded.document.package.platform,
+                    "package": &loaded.projection.document.package.name,
+                    "version": &loaded.projection.document.package.version,
+                    "platform": &loaded.projection.document.package.platform,
                 })
             })
             .collect::<Vec<_>>();
@@ -1158,9 +1129,9 @@ fn run_cache(command: &DocumentationCacheCommand, printer: &Printer) -> Result<(
         for loaded in &documents {
             println!(
                 "document\t{}\t{}\t{}",
-                loaded.document.package.name,
-                loaded.document.package.version,
-                loaded.document.package.platform
+                loaded.projection.document.package.name,
+                loaded.projection.document.package.version,
+                loaded.projection.document.package.platform
             );
         }
         println!("generated manpages\t{}", generated.len());
@@ -1185,7 +1156,7 @@ fn rendered_bytes(loaded: &LoadedDocumentation, format: DocumentationOutput) -> 
         // Package documentation and ability declarations have independent
         // authenticated identities. Preserve the existing canonical document
         // schema rather than silently inventing an unversioned JSON envelope.
-        DocumentationOutput::Json => loaded.document.canonical_json()?,
+        DocumentationOutput::Json => loaded.projection.document.canonical_json()?,
         DocumentationOutput::Html => loaded.render_html()?.into_bytes(),
         DocumentationOutput::Man => loaded.render_roff()?.into_bytes(),
     };
@@ -1384,8 +1355,7 @@ mod tests {
         let reference = ability_reference();
         let loaded = LoadedDocumentation::from_parts(document, Some(reference)).unwrap();
         let row = loaded
-            .projection()
-            .unwrap()
+            .projection
             .search_documents()
             .into_iter()
             .find(|row| row.kind == "option")
@@ -1399,6 +1369,16 @@ mod tests {
         assert_eq!(browsed[0].kind, "package");
         assert_eq!(browsed[0].package, "nginx");
 
+        let capabilities =
+            search_loaded_documents(std::slice::from_ref(&loaded), "", Some("capability"), 25)
+                .expect("ability search uses the checked documentation projection");
+        let capability_keys = capabilities
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(capability_keys.contains("provided:server"));
+        assert!(capability_keys.contains("consumed:export:server:service-runtime"));
+
         let options = search_loaded_documents(&[loaded], "", Some("option"), 25)
             .expect("empty kind-filtered search browses that projection");
         assert_eq!(options.len(), 1);
@@ -1408,11 +1388,7 @@ mod tests {
     #[test]
     fn documentation_loopback_browser_is_content_bearing_and_bounded() {
         let reference = ability_reference();
-        let loaded = LoadedDocumentation {
-            document: fixture(),
-            ability_options: reference.documented_options(),
-            ability_reference: Some(reference),
-        };
+        let loaded = LoadedDocumentation::from_parts(fixture(), Some(reference)).unwrap();
         let index = local_http_response(
             std::slice::from_ref(&loaded),
             b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
@@ -1445,15 +1421,11 @@ mod tests {
     #[test]
     fn ordinary_renderers_show_only_the_static_public_declaration() {
         let reference = ability_reference();
-        let loaded = LoadedDocumentation {
-            document: fixture(),
-            ability_options: reference.documented_options(),
-            ability_reference: Some(reference),
-        };
+        let loaded = LoadedDocumentation::from_parts(fixture(), Some(reference)).unwrap();
 
         let plain = loaded.render_plain().unwrap();
         assert!(plain.contains("DECLARED ABILITIES"));
-        assert!(plain.contains("EXPOSED ABILITIES"));
+        assert!(plain.contains("PROVIDED ABILITIES"));
         assert!(plain.contains("CONSUMED ABILITIES"));
         assert!(plain.contains("declared export\tserver\taos.test.echo\tABI 1"));
         assert!(plain.contains("service-runtime\trequired\tconsumed by export server"));
@@ -1468,7 +1440,7 @@ mod tests {
 
         let html = loaded.render_html().unwrap();
         assert!(html.contains("Declared request or contribution schema"));
-        assert!(html.contains("Exposed abilities"));
+        assert!(html.contains("Provided abilities"));
         assert!(html.contains("Consumed abilities"));
         assert!(html.contains("consumed by <code>export server</code>"));
         assert!(html.contains("Declared operator-owned provider instance configuration schema"));
@@ -1482,7 +1454,11 @@ mod tests {
         assert!(!roff.contains("\n.handler"));
 
         let mut without_configuration = loaded.clone();
-        let reference = without_configuration.ability_reference.as_mut().unwrap();
+        let reference = without_configuration
+            .projection
+            .ability_reference
+            .as_mut()
+            .unwrap();
         let interface = reference.interfaces.values_mut().next().unwrap();
         interface.interface.configuration = None;
         let interface_key = interface.interface_key().unwrap();
@@ -1506,7 +1482,7 @@ mod tests {
         let canonical_document = rendered_bytes(&loaded, DocumentationOutput::Json).unwrap();
         assert_eq!(
             PackageDocumentation::from_canonical_json(&canonical_document).unwrap(),
-            loaded.document
+            loaded.projection.document
         );
         assert!(
             !String::from_utf8(canonical_document)
@@ -1517,22 +1493,18 @@ mod tests {
 
     #[test]
     fn packages_without_ability_projections_document_empty_ability_directions() {
-        let loaded = LoadedDocumentation {
-            document: fixture(),
-            ability_reference: None,
-            ability_options: Vec::new(),
-        };
+        let loaded = LoadedDocumentation::from_parts(fixture(), None).unwrap();
 
         let plain = loaded.render_plain().unwrap();
-        assert!(plain.contains("EXPOSED ABILITIES\nNo exposed abilities are declared."));
+        assert!(plain.contains("PROVIDED ABILITIES\nNo provided abilities are declared."));
         assert!(plain.contains("CONSUMED ABILITIES\nNo consumed abilities are declared."));
 
         let html = loaded.render_html().unwrap();
-        assert!(html.contains("<h3>Exposed abilities</h3>"));
+        assert!(html.contains("<h3>Provided abilities</h3>"));
         assert!(html.contains("<h3>Consumed abilities</h3>"));
 
         let roff = loaded.render_roff().unwrap();
-        assert!(roff.contains("EXPOSED ABILITIES"));
+        assert!(roff.contains("PROVIDED ABILITIES"));
         assert!(roff.contains("CONSUMED ABILITIES"));
     }
 
