@@ -427,7 +427,6 @@
   nativeAbilityScenarioIds = [
     "ability-crucible-baseline"
     "ability-native-adapter-matrix"
-    "ability-native-image-rollout"
     "ability-native-recovery"
   ];
   qualificationRequirementChecks = scenarioId:
@@ -520,13 +519,6 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-  nativeProviderStateRolloutCohorts = map (cellId:
-    import ./tests/fleet/_ability-provider-state-rollout-cohort.nix {
-      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
-      systems = discoverSystems;
-    })
-  nativeProviderStateCells.groups.rollout;
-
   nativeCancellationCells = import ./tests/fleet/_ability-cancellation-cells.nix {
     inherit lib;
     matrix = nativeAdapterMatrix;
@@ -566,32 +558,6 @@
     inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
-  nativeProviderNegativeRolloutMethods = lib.unique (
-    map (
-      cellId: builtins.elemAt (lib.splitString "/" cellId) 3
-    )
-    nativeProviderNegativeCells.groups.rollout
-  );
-  nativeProviderNegativeRollouts =
-    map (method: let
-      cellIds =
-        builtins.filter (
-          cellId:
-            builtins.elemAt (lib.splitString "/" cellId) 3 == method
-        )
-        nativeProviderNegativeCells.groups.rollout;
-      cohort = import ./tests/fleet/_ability-provider-negative-rollout-cohort.nix {
-        inherit lib mkSystem method pkgs cellIds nativeAdapterMatrix;
-        systems = discoverSystems;
-      };
-    in {
-      id = "provider-negative-rollout-${method}";
-      qualifiedCells = cellIds;
-      inherit (cohort) testScript;
-      inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-    })
-    nativeProviderNegativeRolloutMethods;
-
   nativeAdapterRoleScenarios = [
     "revoke-caller-before-acquisition"
     "revoke-caller-after-acquisition"
@@ -723,13 +689,6 @@
             inherit (nativeProviderStateReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
-        ++ lib.imap (index: cohort: predecessorMatrixCohort {
-          id = "provider-state-rollout-${builtins.toString index}";
-          qualifiedCells = [(builtins.elemAt nativeProviderStateCells.groups.rollout index)];
-          inherit (cohort) testScript;
-          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-        })
-        nativeProviderStateRolloutCohorts
         ++ [
           {
             id = "provider-state-foreground";
@@ -782,55 +741,11 @@
             inherit (nativeProviderNegativeSystemdManager) testScript;
             inherit (nativeProviderNegativeSystemdManager.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
-        ]
-        ++ map predecessorMatrixCohort nativeProviderNegativeRollouts;
+        ];
 
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
-    ability-native-image-rollout =
-      mkNativeAbilityScenario {
-        scenarioId = "ability-native-image-rollout";
-        source = ./tests/fleet/ability-native-image-rollout.nix;
-        cohorts = [
-          {
-            id = "healthy";
-            requiredInputs = ["predecessor-image"];
-            execution = {
-              bootInput = "predecessor-image";
-              fixtureRole = "healthy";
-              recordsGuestKernel = true;
-            };
-            report = {
-              kind = "release-transition";
-              evidenceVariable = "ROLLOUT_BRANCH_EVIDENCE";
-              expectedEvidence = {
-                branch = "healthy";
-                outcome = "candidate-healthy";
-                retired = true;
-              };
-            };
-          }
-          {
-            id = "fallback";
-            requiredInputs = ["predecessor-image"];
-            execution = {
-              bootInput = "predecessor-image";
-              fixtureRole = "fallback";
-              recordsGuestKernel = false;
-            };
-            report = {
-              kind = "release-transition";
-              evidenceVariable = "ROLLOUT_BRANCH_EVIDENCE";
-              expectedEvidence = {
-                branch = "fallback";
-                outcome = "predecessor-fallback";
-                retired = false;
-              };
-            };
-          }
-        ];
-      };
     ability-native-recovery =
       mkNativeAbilityScenario {
         scenarioId = "ability-native-recovery";
@@ -2080,7 +1995,6 @@ in {
     fleet = let
       base = discoverFleetTests // crucibleFleetChecks;
       runtimeConfigNames = [
-        "ability-native-image-rollout"
         "ability-native-power-loss"
         "apm-desired-sequencing"
         "apm-sysroot-lock"
