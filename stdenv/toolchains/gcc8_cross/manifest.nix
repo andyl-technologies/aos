@@ -134,8 +134,9 @@ in {
       #  define job_control 0\
       #endif' execute_cmd.c
     '';
+    # Bash's generated build helpers are not ordered for parallel consumers.
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars}
+      make -j1 ${autotoolsVars}
     '';
     installScript = ''
       make install ${autotoolsVars}

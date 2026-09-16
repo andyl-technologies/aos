@@ -458,8 +458,11 @@ in {
     configureFlags =
       tripletNoNls
       ++ ["--without-bash-malloc"];
+    # Bash 3.2 does not order its generated mksyntax and mkbuiltins helpers
+    # against recursive sub-makes, so a parallel build can execute either
+    # helper while another make invocation is still replacing it.
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      make -j1
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"

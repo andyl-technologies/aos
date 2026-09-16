@@ -98,7 +98,8 @@ in {
       "$AR" cr lib/auto/IO/Compress/Compress.a
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      # Perl's generated module graph is not safe under parallel extension builds.
+      make -j1
     '';
     installScript = ''
       make install ${autotoolsVars}
@@ -314,7 +315,7 @@ in {
     # This release does not declare the generated helper executables as
     # prerequisites of every consumer that invokes them.
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      make -j1
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"

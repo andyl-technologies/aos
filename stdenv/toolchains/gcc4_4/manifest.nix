@@ -164,7 +164,8 @@ in {
       sed -i "s|'/bin/pwd'|'${prev.coreutils}/bin/pwd', '/bin/pwd'|" lib/Cwd.pm
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      # Perl's generated module graph is not safe under parallel extension builds.
+      make -j1
     '';
     installScript = ''
       make install ${autotoolsVars} || true
@@ -390,7 +391,7 @@ in {
     # The generated builtins have an undeclared executable-permission
     # dependency in this release and race under a parallel first build.
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      make -j1
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"

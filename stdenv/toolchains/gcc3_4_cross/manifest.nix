@@ -110,8 +110,9 @@ in {
       ${fakeScript "makeinfo"}
       export PATH="$TMPDIR/fakebin:$PATH"
     '';
+    # Bash's generated build helpers are not ordered for parallel consumers.
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      make -j1
     '';
     postInstall = ''
       test -x "$out/bin/bash" || { echo "FATAL: bash not installed"; exit 1; }

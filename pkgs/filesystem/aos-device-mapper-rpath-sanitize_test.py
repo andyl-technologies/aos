@@ -17,9 +17,9 @@ module_spec.loader.exec_module(sanitizer)
 class RpathSanitizerTests(unittest.TestCase):
     def test_reviewed_inventory_is_exact(self) -> None:
         expected = {
-            f"{sanitizer.DUMMY_STORE_PREFIX}libselinux-3.10/lib",
-            f"{sanitizer.DUMMY_STORE_PREFIX}libsepol-3.10/lib",
-            f"{sanitizer.DUMMY_STORE_PREFIX}pcre2-10.47/lib",
+            f"{sanitizer.DUMMY_STORE_PREFIX}libselinux-3.11/lib",
+            f"{sanitizer.DUMMY_STORE_PREFIX}libsepol-3.11/lib",
+            f"{sanitizer.DUMMY_STORE_PREFIX}pcre2-10.48/lib",
         }
 
         self.assertEqual(sanitizer.REVIEWED_DUMMY_RPATHS, expected)
@@ -28,7 +28,7 @@ class RpathSanitizerTests(unittest.TestCase):
     def test_removes_reviewed_placeholders_and_preserves_order(self) -> None:
         real_a = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-a/lib"
         real_b = "/nix/store/11111111111111111111111111111111-b/lib"
-        dummy = f"{sanitizer.DUMMY_STORE_PREFIX}libselinux-3.10/lib"
+        dummy = f"{sanitizer.DUMMY_STORE_PREFIX}libselinux-3.11/lib"
 
         self.assertEqual(
             sanitizer.sanitize_rpath(f"{real_a}:{dummy}:{real_b}"),
@@ -47,14 +47,14 @@ class RpathSanitizerTests(unittest.TestCase):
             sanitizer.sanitize_rpath(unknown)
 
     def test_rejects_nearby_dependency_version(self) -> None:
-        future = f"{sanitizer.DUMMY_STORE_PREFIX}pcre2-10.48/lib"
+        future = f"{sanitizer.DUMMY_STORE_PREFIX}pcre2-10.49/lib"
 
         with self.assertRaises(SystemExit):
             sanitizer.sanitize_rpath(future)
 
     def test_rejects_stale_reviewed_inventory(self) -> None:
         incomplete = set(sanitizer.REVIEWED_DUMMY_RPATHS)
-        incomplete.remove(f"{sanitizer.DUMMY_STORE_PREFIX}libsepol-3.10/lib")
+        incomplete.remove(f"{sanitizer.DUMMY_STORE_PREFIX}libsepol-3.11/lib")
 
         with self.assertRaises(SystemExit):
             sanitizer.require_exact_review(incomplete)

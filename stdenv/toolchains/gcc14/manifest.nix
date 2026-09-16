@@ -89,7 +89,8 @@ in {
         -Ui_xlocale
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      # Perl's generated module graph is not safe under parallel extension builds.
+      make -j1
     '';
     installScript = ''
       make install ${autotoolsVars}
@@ -396,8 +397,9 @@ in {
         "--without-bash-malloc"
         "--disable-nls"
       ];
+    # Bash's generated build helpers are not ordered for parallel consumers.
     buildScript = ''
-      make -j"$NIX_BUILD_CORES" ${autotoolsVars}
+      make -j1 ${autotoolsVars}
     '';
     postInstall = ''
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"

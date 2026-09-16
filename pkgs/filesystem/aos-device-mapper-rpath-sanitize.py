@@ -11,9 +11,9 @@ import subprocess
 DUMMY_STORE_PREFIX = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-"
 REVIEWED_DUMMY_RPATHS = frozenset(
     {
-        f"{DUMMY_STORE_PREFIX}libselinux-3.10/lib",
-        f"{DUMMY_STORE_PREFIX}libsepol-3.10/lib",
-        f"{DUMMY_STORE_PREFIX}pcre2-10.47/lib",
+        f"{DUMMY_STORE_PREFIX}libselinux-3.11/lib",
+        f"{DUMMY_STORE_PREFIX}libsepol-3.11/lib",
+        f"{DUMMY_STORE_PREFIX}pcre2-10.48/lib",
     }
 )
 

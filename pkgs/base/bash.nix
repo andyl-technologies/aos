@@ -48,6 +48,8 @@ in
     ];
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake];
+    # Recursive consumers race the generated builtins on highly parallel hosts.
+    enableParallelBuilding = false;
     runtimeDeps =
       if stdenv.hostPlatform.isDarwin
       then [ncurses]

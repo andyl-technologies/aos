@@ -60,11 +60,6 @@ in
     src = upstream.components.main.sources.source;
     update = upstream.update;
 
-    # Linux 6.16 added open_tree_attr(2) after libseccomp 2.6.0 cut its
-    # syscall table at Linux 6.13. Keep the name resolver synchronized with
-    # the AOS 6.18 UAPI instead of relying on an unknown-syscall default.
-    patches = [./patches/libseccomp-0001-open-tree-attr.patch];
-
     buildDeps = [
       gnumake
       gperf
@@ -84,7 +79,8 @@ in
         name = "patch-source";
         script = ''
           # Updating syscalls.csv regenerates the perfect hash through this
-          # release script. AOS has no FHS /bin/bash.
+          # release script. AOS has no FHS /bin/bash. The resolver checks below
+          # keep the upstream open_tree_attr table entry fail-closed.
           sed -i "1s|^#!/bin/bash$|#!$CONFIG_SHELL|" src/arch-gperf-generate
         '';
       }
