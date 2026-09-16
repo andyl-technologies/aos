@@ -24,10 +24,14 @@ use aos_sandbox_linux::seqpacket::{
 
 use crate::kernel_plan::{NetworkKernelPlanError, NetworkKernelPlanV1};
 use crate::kernel_reader::{FixedBpfObservationReader, NetworkKernelReaderError};
+use crate::namespace_catalog::{
+    NetworkNamespaceObservedStateKindV1, NetworkNamespaceObservedStateV1,
+};
 use crate::namespace_observer::{
     NetworkKernelObservationReaders, NetworkNamespaceObserverError,
-    observe_stable_preparation_network_kernel,
+    observe_stable_destroyed_network_kernel, observe_stable_expected_network_kernel,
 };
+use crate::namespace_store::RetainedNetworkNamespace;
 use crate::nftables_reader::FixedNftablesObservationReader;
 use crate::rtnetlink_reader::FixedRtnetlinkObservationReader;
 use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
@@ -54,8 +58,8 @@ const READY_KIND: u8 = 1;
 const REQUEST_KIND: u8 = 2;
 const RESPONSE_KIND: u8 = 3;
 const READY_HEADER_BYTES: usize = 16;
-const REQUEST_HEADER_BYTES: usize = 136;
-const RESPONSE_BYTES: usize = 160;
+const REQUEST_HEADER_BYTES: usize = 184;
+const RESPONSE_BYTES: usize = 212;
 const MAXIMUM_CGROUP_BYTES: usize = 512;
 const MAXIMUM_REQUEST_BYTES: usize = REQUEST_HEADER_BYTES + 512 * 1024;
 const ACK_BYTES: usize = 10;
@@ -120,6 +124,7 @@ pub struct PreparedNetworkObservationV1 {
     kernel_plan_digest: ObjectDigest,
     kernel_boot_id: [u8; 16],
     namespace: NamespaceIdentity,
+    observed_state: NetworkNamespaceObservedStateV1,
     observation_digest: ObjectDigest,
 }
 
@@ -152,6 +157,12 @@ impl PreparedNetworkObservationV1 {
     #[must_use]
     pub const fn namespace(self) -> NamespaceIdentity {
         self.namespace
+    }
+
+    /// Returns the exact closed lifecycle state proved by the snapshots.
+    #[must_use]
+    pub const fn observed_state(self) -> NetworkNamespaceObservedStateV1 {
+        self.observed_state
     }
 
     /// Returns the digest of the two equal complete observations.
@@ -216,7 +227,94 @@ impl SystemdNetworkObservationExecutor {
             ));
         }
         self.host_namespace.validate_current_network()?;
-        let request = ObservationRequestV1::new(prepared, plan)?;
+        let request = ObservationRequestV1::new(
+            prepared.request_id(),
+            prepared.effect_digest(),
+            prepared.kernel_plan_digest(),
+            prepared.kernel_boot_id(),
+            prepared.namespace().identity(),
+            NetworkNamespaceObservedStateV1::default_drop(),
+            plan,
+        )?;
+        self.execute_observation(&request, prepared.namespace())
+    }
+
+    /// Observes one present lifecycle postcondition and proves worker exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for substituted execution identity or namespace
+    /// custody, malformed framing, an unequal or invalid snapshot, or
+    /// unproved whole-cgroup quiescence.
+    pub fn observe_lifecycle_once(
+        &mut self,
+        execution: crate::ExecutedNetworkLifecycleWorkerV1,
+        plan: &NetworkKernelPlanV1,
+        kernel_boot_id: [u8; 16],
+        expected_state: NetworkNamespaceObservedStateV1,
+        target: &RetainedNetworkNamespace,
+    ) -> Result<PreparedNetworkObservationV1, NetworkObservationWorkerError> {
+        if execution.target_namespace() != target.namespace().identity() {
+            return protocol("lifecycle execution target custody changed");
+        }
+        let request = ObservationRequestV1::new(
+            execution.request_id(),
+            execution.effect_digest(),
+            plan.digest(),
+            kernel_boot_id,
+            target.namespace().identity(),
+            expected_state,
+            plan,
+        )?;
+        self.execute_observation(&request, target.namespace())
+    }
+
+    /// Observes exact plan-owned kernel-object absence after Destroy execution.
+    ///
+    /// The retained target descriptor remains live for the complete read. This
+    /// proves kernel cleanup only; the broker must still remove and read back
+    /// the systemd descriptor-store pin before committing an Absent transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for substituted execution identity or namespace
+    /// custody, any remaining owned object, unstable snapshots, malformed
+    /// framing, or unproved whole-cgroup quiescence.
+    pub fn observe_destroyed_once(
+        &mut self,
+        execution: crate::ExecutedNetworkLifecycleWorkerV1,
+        plan: &NetworkKernelPlanV1,
+        target: &RetainedNetworkNamespace,
+    ) -> Result<PreparedNetworkObservationV1, NetworkObservationWorkerError> {
+        if execution.action() != crate::NetworkNamespaceLifecycleActionV1::Destroy
+            || execution.desired_state().kind() != NetworkNamespaceObservedStateKindV1::Absent
+            || execution.target_namespace() != target.namespace().identity()
+        {
+            return protocol("destroy observation custody is invalid");
+        }
+        let request = ObservationRequestV1::new(
+            execution.request_id(),
+            execution.effect_digest(),
+            plan.digest(),
+            execution.target_identity().kernel_boot_id(),
+            target.namespace().identity(),
+            NetworkNamespaceObservedStateV1::absent(),
+            plan,
+        )?;
+        self.execute_observation(&request, target.namespace())
+    }
+
+    fn execute_observation(
+        &mut self,
+        request: &ObservationRequestV1,
+        target_namespace: &NamespaceFd,
+    ) -> Result<PreparedNetworkObservationV1, NetworkObservationWorkerError> {
+        if self.fail_stopped {
+            return Err(NetworkObservationWorkerError::Protocol(
+                "Network observation executor is fail-stopped",
+            ));
+        }
+        self.host_namespace.validate_current_network()?;
         let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
         validate_systemd_manager_peer(socket.peer(), &self.systemd_manager_cgroup)?;
 
@@ -236,9 +334,9 @@ impl SystemdNetworkObservationExecutor {
 
         let exchange = exchange_observation(
             &mut socket,
-            &request,
+            request,
             self.host_namespace.as_fd(),
-            prepared.namespace().as_fd(),
+            target_namespace.as_fd(),
             ready.subject(),
             &worker_cgroup,
         );
@@ -303,22 +401,38 @@ pub fn run_inherited_network_observation_worker(
     host_namespace.enter(&worker)?;
     host_namespace.validate_current_network()?;
 
-    let stable = observe_stable_preparation_network_kernel(
-        readers.for_plan(&request.plan),
-        &request.plan,
-        &target_namespace,
-        request.kernel_plan_digest,
-        request.kernel_boot_id,
-        &host_namespace,
-        &worker,
-    )?;
+    let observation_digest =
+        if request.expected_state.kind() == NetworkNamespaceObservedStateKindV1::Absent {
+            observe_stable_destroyed_network_kernel(
+                readers.for_plan(&request.plan),
+                &request.plan,
+                &target_namespace,
+                request.kernel_plan_digest,
+                request.kernel_boot_id,
+                &host_namespace,
+                &worker,
+            )?
+        } else {
+            observe_stable_expected_network_kernel(
+                readers.for_plan(&request.plan),
+                &request.plan,
+                &target_namespace,
+                request.kernel_plan_digest,
+                request.kernel_boot_id,
+                request.expected_state,
+                &host_namespace,
+                &worker,
+            )?
+            .digest()
+        };
     let response = PreparedNetworkObservationV1 {
         request_id: request.request_id,
         effect_digest: request.effect_digest,
         kernel_plan_digest: request.kernel_plan_digest,
         kernel_boot_id: request.kernel_boot_id,
         namespace: request.namespace,
-        observation_digest: stable.digest(),
+        observed_state: request.expected_state,
+        observation_digest,
     };
     let deadline = deadline_after(TRANSFER_TIMEOUT)?;
     send_record_before(&mut socket, &encode_response(response), deadline)?;
@@ -428,20 +542,28 @@ struct ObservationRequestV1 {
     kernel_plan_digest: ObjectDigest,
     kernel_boot_id: [u8; 16],
     namespace: NamespaceIdentity,
+    expected_state: NetworkNamespaceObservedStateV1,
     plan: NetworkKernelPlanV1,
 }
 
 impl ObservationRequestV1 {
+    #[allow(clippy::too_many_arguments)]
     fn new(
-        prepared: &PreparedNetworkWorkerOutput,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        kernel_plan_digest: ObjectDigest,
+        kernel_boot_id: [u8; 16],
+        namespace: NamespaceIdentity,
+        expected_state: NetworkNamespaceObservedStateV1,
         plan: &NetworkKernelPlanV1,
     ) -> Result<Self, NetworkObservationWorkerError> {
         let request = Self {
-            request_id: prepared.request_id(),
-            effect_digest: prepared.effect_digest(),
-            kernel_plan_digest: prepared.kernel_plan_digest(),
-            kernel_boot_id: prepared.kernel_boot_id(),
-            namespace: prepared.namespace().identity(),
+            request_id,
+            effect_digest,
+            kernel_plan_digest,
+            kernel_boot_id,
+            namespace,
+            expected_state,
             plan: plan.clone(),
         };
         request.validate()?;
@@ -485,8 +607,16 @@ impl ObservationRequestV1 {
         bytes.extend_from_slice(&self.kernel_boot_id);
         bytes.extend_from_slice(&self.namespace.device.to_be_bytes());
         bytes.extend_from_slice(&self.namespace.inode.to_be_bytes());
+        bytes.push(observed_state_code(self.expected_state.kind()));
+        bytes.extend_from_slice(&[0; 3]);
+        let (lease_digest, lease_generation, lease_deadline) = self
+            .expected_state
+            .lease()
+            .unwrap_or((ObjectDigest::from_bytes([0; 32]), 0, 0));
+        bytes.extend_from_slice(lease_digest.as_bytes());
+        bytes.extend_from_slice(&lease_generation.to_be_bytes());
+        bytes.extend_from_slice(&lease_deadline.to_be_bytes());
         bytes.extend_from_slice(&plan_length.to_be_bytes());
-        bytes.extend_from_slice(&[0; 4]);
         bytes.extend_from_slice(self.plan.as_bytes());
         Ok(bytes)
     }
@@ -500,17 +630,23 @@ impl ObservationRequestV1 {
             || bytes[11] != 0
             || usize::try_from(u32::from_be_bytes(copy_array(&bytes[12..16])?)).ok()
                 != Some(bytes.len())
-            || bytes[132..136] != [0; 4]
+            || bytes[129..132] != [0; 3]
         {
             return protocol("observation request header is invalid");
         }
-        let plan_length = usize::try_from(u32::from_be_bytes(copy_array(&bytes[128..132])?))
+        let plan_length = usize::try_from(u32::from_be_bytes(copy_array(&bytes[180..184])?))
             .map_err(|_| {
                 NetworkObservationWorkerError::Protocol("kernel plan length is invalid")
             })?;
         if REQUEST_HEADER_BYTES.checked_add(plan_length) != Some(bytes.len()) {
             return protocol("observation request plan length differs");
         }
+        let expected_state = decode_observed_state(
+            bytes[128],
+            ObjectDigest::from_bytes(copy_array(&bytes[132..164])?),
+            u64::from_be_bytes(copy_array(&bytes[164..172])?),
+            u64::from_be_bytes(copy_array(&bytes[172..180])?),
+        )?;
         let request = Self {
             request_id: copy_array(&bytes[16..32])?,
             effect_digest: ObjectDigest::from_bytes(copy_array(&bytes[32..64])?),
@@ -520,6 +656,7 @@ impl ObservationRequestV1 {
                 device: u64::from_be_bytes(copy_array(&bytes[112..120])?),
                 inode: u64::from_be_bytes(copy_array(&bytes[120..128])?),
             },
+            expected_state,
             plan: NetworkKernelPlanV1::decode(&bytes[REQUEST_HEADER_BYTES..])?,
         };
         request.validate()?;
@@ -554,6 +691,7 @@ fn exchange_observation(
         || response.kernel_plan_digest != request.kernel_plan_digest
         || response.kernel_boot_id != request.kernel_boot_id
         || response.namespace != request.namespace
+        || response.observed_state != request.expected_state
     {
         return protocol("observation response differs from the request");
     }
@@ -573,7 +711,15 @@ fn encode_response(response: PreparedNetworkObservationV1) -> [u8; RESPONSE_BYTE
     bytes[96..112].copy_from_slice(&response.kernel_boot_id);
     bytes[112..120].copy_from_slice(&response.namespace.device.to_be_bytes());
     bytes[120..128].copy_from_slice(&response.namespace.inode.to_be_bytes());
-    bytes[128..160].copy_from_slice(response.observation_digest.as_bytes());
+    bytes[128] = observed_state_code(response.observed_state.kind());
+    let (lease_digest, lease_generation, lease_deadline) = response
+        .observed_state
+        .lease()
+        .unwrap_or((ObjectDigest::from_bytes([0; 32]), 0, 0));
+    bytes[132..164].copy_from_slice(lease_digest.as_bytes());
+    bytes[164..172].copy_from_slice(&lease_generation.to_be_bytes());
+    bytes[172..180].copy_from_slice(&lease_deadline.to_be_bytes());
+    bytes[180..212].copy_from_slice(response.observation_digest.as_bytes());
     bytes
 }
 
@@ -586,6 +732,7 @@ fn decode_response(
         || bytes[10] != RESPONSE_KIND
         || bytes[11] != 0
         || u32::from_be_bytes(copy_array(&bytes[12..16])?) != RESPONSE_BYTES as u32
+        || bytes[129..132] != [0; 3]
     {
         return protocol("observation response header is invalid");
     }
@@ -598,7 +745,13 @@ fn decode_response(
             device: u64::from_be_bytes(copy_array(&bytes[112..120])?),
             inode: u64::from_be_bytes(copy_array(&bytes[120..128])?),
         },
-        observation_digest: ObjectDigest::from_bytes(copy_array(&bytes[128..160])?),
+        observed_state: decode_observed_state(
+            bytes[128],
+            ObjectDigest::from_bytes(copy_array(&bytes[132..164])?),
+            u64::from_be_bytes(copy_array(&bytes[164..172])?),
+            u64::from_be_bytes(copy_array(&bytes[172..180])?),
+        )?,
+        observation_digest: ObjectDigest::from_bytes(copy_array(&bytes[180..212])?),
     };
     if response.request_id == [0; 16]
         || response.effect_digest.as_bytes() == &[0; 32]
@@ -707,6 +860,40 @@ fn validate_observer_cgroup(cgroup: &str) -> Result<(), NetworkObservationWorker
     validate_systemd_socket_instance_fields(instance)
         .map_err(|_| NetworkWorkerProcessError::PeerMismatch)?;
     Ok(())
+}
+
+const fn observed_state_code(kind: NetworkNamespaceObservedStateKindV1) -> u8 {
+    match kind {
+        NetworkNamespaceObservedStateKindV1::DefaultDrop => 1,
+        NetworkNamespaceObservedStateKindV1::Armed => 2,
+        NetworkNamespaceObservedStateKindV1::Fenced => 3,
+        NetworkNamespaceObservedStateKindV1::Absent => 4,
+    }
+}
+
+fn decode_observed_state(
+    kind: u8,
+    lease_digest: ObjectDigest,
+    lease_generation: u64,
+    lease_deadline: u64,
+) -> Result<NetworkNamespaceObservedStateV1, NetworkObservationWorkerError> {
+    let no_lease =
+        lease_digest.as_bytes() == &[0; 32] && lease_generation == 0 && lease_deadline == 0;
+    match kind {
+        1 if no_lease => Ok(NetworkNamespaceObservedStateV1::default_drop()),
+        2 => NetworkNamespaceObservedStateV1::armed(lease_digest, lease_generation, lease_deadline)
+            .map_err(|_| {
+                NetworkObservationWorkerError::Protocol("observed lease state is invalid")
+            }),
+        3 => {
+            NetworkNamespaceObservedStateV1::fenced(lease_digest, lease_generation, lease_deadline)
+                .map_err(|_| {
+                    NetworkObservationWorkerError::Protocol("observed lease state is invalid")
+                })
+        }
+        4 if no_lease => Ok(NetworkNamespaceObservedStateV1::absent()),
+        _ => protocol("observed lifecycle state is invalid"),
+    }
 }
 
 fn copy_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], NetworkObservationWorkerError> {

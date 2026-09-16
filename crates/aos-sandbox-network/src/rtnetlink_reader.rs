@@ -141,6 +141,33 @@ impl FixedRtnetlinkObservationReader {
         })
     }
 
+    /// Proves that the plan-derived host veth is absent from a complete dump.
+    ///
+    /// Isolated plans own no host link and therefore satisfy this condition
+    /// without querying a caller-selected name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkKernelReaderError`] when the fixed process or decoding
+    /// fails, or when the exact plan-derived link name remains present.
+    pub fn observe_host_veth_absent(
+        &self,
+        expectation: &NetworkKernelExpectationV1,
+    ) -> Result<(), NetworkKernelReaderError> {
+        let Some(veth) = expectation.veth() else {
+            return Ok(());
+        };
+        validate_interface_name(&veth.host_name)?;
+        let link_json = self.run(&["-j", "-details", "link", "show"], MAXIMUM_LINK_BYTES)?;
+        let links = decode_links(&link_json)?;
+        if links.iter().any(|link| link.name == veth.host_name) {
+            return Err(NetworkKernelReaderError::InvalidRtnetlink(
+                "plan-owned host veth is still present",
+            ));
+        }
+        Ok(())
+    }
+
     /// Reads every link, address, route table, and rule in the current namespace.
     ///
     /// The authenticated namespace worker must enter its retained namespace

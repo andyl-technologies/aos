@@ -299,6 +299,7 @@ pub fn finalize_observation_worker_preparation(
         || proof.kernel_plan_digest() != input.kernel_plan.digest()
         || proof.kernel_boot_id() != input.worker_output.kernel_boot_id()
         || proof.namespace() != namespace_identity
+        || proof.observed_state() != crate::NetworkNamespaceObservedStateV1::default_drop()
     {
         return Err(NetworkPreparationRuntimeError::ObservationProof);
     }

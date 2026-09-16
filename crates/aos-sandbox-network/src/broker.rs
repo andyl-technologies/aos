@@ -784,6 +784,11 @@ impl NetworkLifecycleAdmissionCoordinator {
             .map_err(|_| NetworkBrokerError::Authority)?;
         if kernel_plan.assignment() != assignment
             || !kernel_plan_matches_catalog(kernel_plan, resolution)
+            || (kernel_plan.observation_expectation().veth().is_none()
+                && matches!(
+                    semantics.operation(),
+                    NetworkOperation::ArmLease { .. } | NetworkOperation::RenewLease { .. }
+                ))
         {
             return Err(NetworkBrokerError::Request);
         }
@@ -906,6 +911,10 @@ impl NetworkLifecycleAdmissionCoordinator {
         &self,
     ) -> impl Iterator<Item = crate::NetworkLifecycleRecoveryEntryV1> + '_ {
         self.lifecycle_state.recovery_entries()
+    }
+
+    pub(crate) const fn authority(&self) -> &NetworkAuthorityV1 {
+        &self.authority
     }
 
     #[cfg(test)]

@@ -116,6 +116,38 @@ impl FixedBpfObservationReader {
         self.gate_object.validate_current()?;
         decode_bpf_observation(&stdout, self.gate_object.digest)
     }
+
+    /// Proves that the exact handle-derived BPF pin root is absent.
+    ///
+    /// The fixed helper resolves the protected bpffs parent without symlinks
+    /// and accepts only `ENOENT` for the canonical handle directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkKernelReaderError`] for a zero handle, changed helper,
+    /// unsafe path ancestry, a present pin root, or an inconclusive lookup.
+    pub fn observe_absent(&self, network_handle: [u8; 32]) -> Result<(), NetworkKernelReaderError> {
+        if network_handle == [0; 32] {
+            return Err(NetworkKernelReaderError::InvalidBpf(
+                "network handle is zero",
+            ));
+        }
+        self.gate_object.validate_current()?;
+
+        let pin_root = format!("{BPF_PIN_PREFIX}/{}", encode_hex(network_handle));
+        let output = self.helper.run(
+            &[OsString::from("--expect-absent"), OsString::from(pin_root)],
+            MAXIMUM_BPF_OBSERVATION_BYTES,
+        )?;
+        let stdout = successful_helper_stdout(output)?;
+        self.gate_object.validate_current()?;
+        if stdout != b"{\"absent\":true}\n" {
+            return Err(NetworkKernelReaderError::InvalidBpf(
+                "BPF absence response is noncanonical",
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn successful_helper_stdout(

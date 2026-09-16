@@ -106,12 +106,11 @@ static int open_directory_beneath(int parent_fd, const char *name)
   return syscall(SYS_openat2, parent_fd, name, &how, sizeof(how));
 }
 
-static int open_pin_root(const char *root, struct root_identity *identity)
+static int open_pin_parent(const char *root)
 {
   static const char *const fixed_segments[] = {
       "sys", "fs", "bpf", "aos", "sandbox-network",
   };
-  const char *handle = root + sizeof(PIN_PREFIX) - 1;
   struct root_identity ignored;
   int directory_fd = -1;
 
@@ -130,14 +129,6 @@ static int open_pin_root(const char *root, struct root_identity *identity)
         inspect_directory(directory_fd, false, &ignored) != 0)
       goto fail;
   }
-  {
-    int next_fd = open_directory_beneath(directory_fd, handle);
-
-    close(directory_fd);
-    directory_fd = next_fd;
-  }
-  if (directory_fd < 0 || inspect_directory(directory_fd, true, identity) != 0)
-    goto fail;
   return directory_fd;
 
 fail:
@@ -145,6 +136,57 @@ fail:
     close(directory_fd);
   perror("aos-sandbox-network-observer: open protected pin root");
   return -1;
+}
+
+static int open_pin_root(const char *root, struct root_identity *identity)
+{
+  const char *handle = root + sizeof(PIN_PREFIX) - 1;
+  int parent_fd = open_pin_parent(root);
+  int root_fd;
+
+  if (parent_fd < 0)
+    return -1;
+  root_fd = open_directory_beneath(parent_fd, handle);
+  close(parent_fd);
+  if (root_fd < 0 || inspect_directory(root_fd, true, identity) != 0) {
+    if (root_fd >= 0)
+      close(root_fd);
+    perror("aos-sandbox-network-observer: open protected pin root");
+    return -1;
+  }
+  return root_fd;
+}
+
+static int observe_absent(const char *root)
+{
+  const char *handle;
+  struct stat status;
+  int parent_fd = open_pin_parent(root);
+  int saved_errno;
+
+  if (parent_fd < 0)
+    return -1;
+  handle = root + sizeof(PIN_PREFIX) - 1;
+  if (fstatat(parent_fd, handle, &status, AT_SYMLINK_NOFOLLOW) == 0) {
+    fprintf(stderr,
+            "aos-sandbox-network-observer: BPF pin root is still present\n");
+    close(parent_fd);
+    return -1;
+  }
+  saved_errno = errno;
+  close(parent_fd);
+  if (saved_errno != ENOENT) {
+    errno = saved_errno;
+    perror("aos-sandbox-network-observer: inspect absent pin root");
+    return -1;
+  }
+  if (printf("{\"absent\":true}\n") < 0 || fflush(stdout) != 0 ||
+      ferror(stdout)) {
+    fprintf(stderr,
+            "aos-sandbox-network-observer: write absence observation failed\n");
+    return -1;
+  }
+  return 0;
 }
 
 static bool same_root(const struct root_identity *left,
@@ -500,9 +542,14 @@ out:
 
 int main(int argc, char **argv)
 {
-  if (argc != 2) {
-    fprintf(stderr, "usage: aos-sandbox-network-observer PIN_ROOT\n");
+  if (argc == 2)
+    return observe(argv[1]) == 0 ? 0 : 1;
+  if (argc == 3 && strcmp(argv[1], "--expect-absent") == 0)
+    return observe_absent(argv[2]) == 0 ? 0 : 1;
+
+  {
+    fprintf(stderr,
+            "usage: aos-sandbox-network-observer [--expect-absent] PIN_ROOT\n");
     return 2;
   }
-  return observe(argv[1]) == 0 ? 0 : 1;
 }

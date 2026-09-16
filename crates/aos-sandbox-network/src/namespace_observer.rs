@@ -12,10 +12,12 @@ use aos_sandbox_core::model::NetworkKind;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::netlink::network_namespace_id;
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, SingleThreadedProcess};
+use sha2::{Digest as _, Sha256};
 
 use crate::kernel_observation::{
     NetworkKernelExpectationV1, NetworkKernelObservationError, NetworkKernelObservationV1,
     ObservedLeaseDirectionV1, ObservedLeaseStateV1, ObservedLinkV1, valid_loopback,
+    validate_destroyed_namespace_inventory,
 };
 use crate::kernel_plan::NetworkKernelPlanV1;
 use crate::kernel_reader::{FixedBpfObservationReader, NetworkKernelReaderError};
@@ -364,14 +366,42 @@ pub(crate) fn observe_stable_preparation_network_kernel(
     initial_host_namespace: &NamespaceFd,
     worker: &SingleThreadedProcess,
 ) -> Result<StableNetworkKernelObservationV1, NetworkNamespaceObserverError> {
+    observe_stable_expected_network_kernel(
+        readers,
+        plan,
+        target_namespace,
+        prepared_plan_digest,
+        prepared_boot_id,
+        NetworkNamespaceObservedStateV1::default_drop(),
+        initial_host_namespace,
+        worker,
+    )
+}
+
+/// Observes a stable present-state lifecycle postcondition without a catalog.
+///
+/// The authenticated lifecycle dispatch supplies the expected closed state;
+/// the separate worker rebinds it to the exact plan, boot, and retained target
+/// descriptor before taking two complete observations.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn observe_stable_expected_network_kernel(
+    readers: NetworkKernelObservationReaders<'_>,
+    plan: &NetworkKernelPlanV1,
+    target_namespace: &NamespaceFd,
+    expected_plan_digest: ObjectDigest,
+    expected_boot_id: [u8; 16],
+    expected_state: NetworkNamespaceObservedStateV1,
+    initial_host_namespace: &NamespaceFd,
+    worker: &SingleThreadedProcess,
+) -> Result<StableNetworkKernelObservationV1, NetworkNamespaceObserverError> {
     worker.disable_core_dumps()?;
     let boot_id = KernelBootId::current()?.into_bytes();
     let expectation = plan.observation_expectation();
     initial_host_namespace.validate_current_network()?;
     validate_prepared_observation_authority(
         plan.digest(),
-        prepared_plan_digest,
-        prepared_boot_id,
+        expected_plan_digest,
+        expected_boot_id,
         target_namespace.identity(),
         boot_id,
         initial_host_namespace.identity(),
@@ -390,13 +420,12 @@ pub(crate) fn observe_stable_preparation_network_kernel(
         return Err(NetworkNamespaceObserverError::UnsupportedPlan);
     }
 
-    let expected_lifecycle =
-        expected_lifecycle(expectation, NetworkNamespaceObservedStateV1::default_drop())?;
+    let expected_lifecycle = expected_lifecycle(expectation, expected_state)?;
     let authority = ObservationAuthority {
         boot_id,
         host: initial_host_namespace,
         sandbox: target_namespace,
-        lifecycle: NetworkNamespaceObservedStateV1::default_drop(),
+        lifecycle: expected_state,
     };
     let first = observe_complete_once(
         readers.rtnetlink,
@@ -420,7 +449,7 @@ pub(crate) fn observe_stable_preparation_network_kernel(
     let digest = expectation.validate_stable(
         boot_id,
         (identity.device, identity.inode),
-        NetworkNamespaceObservedStateKindV1::DefaultDrop,
+        expected_state.kind(),
         &expected_lifecycle,
         &first,
         &second,
@@ -430,6 +459,99 @@ pub(crate) fn observe_stable_preparation_network_kernel(
         observation: first,
         digest,
     })
+}
+
+/// Observes two equal complete inventories after plan-owned kernel cleanup.
+///
+/// The retained target descriptor deliberately remains live while this proves
+/// loopback-only rtnetlink state, fixed nftables-table absence, host-veth
+/// absence, and handle-derived BPF-root absence. Broker-owned systemd pin
+/// removal happens only after this function returns.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn observe_stable_destroyed_network_kernel(
+    readers: NetworkKernelObservationReaders<'_>,
+    plan: &NetworkKernelPlanV1,
+    target_namespace: &NamespaceFd,
+    expected_plan_digest: ObjectDigest,
+    expected_boot_id: [u8; 16],
+    initial_host_namespace: &NamespaceFd,
+    worker: &SingleThreadedProcess,
+) -> Result<ObjectDigest, NetworkNamespaceObserverError> {
+    worker.disable_core_dumps()?;
+    let boot_id = KernelBootId::current()?.into_bytes();
+    let expectation = plan.observation_expectation();
+    initial_host_namespace.validate_current_network()?;
+    validate_prepared_observation_authority(
+        plan.digest(),
+        expected_plan_digest,
+        expected_boot_id,
+        target_namespace.identity(),
+        boot_id,
+        initial_host_namespace.identity(),
+    )?;
+    let valid_reader_shape = matches!(
+        (expectation.kind(), expectation.veth(), readers.bpf),
+        (NetworkKind::Isolated, None, None)
+            | (
+                NetworkKind::Project | NetworkKind::Outbound | NetworkKind::Published,
+                Some(_),
+                Some(_),
+            )
+    );
+    if !valid_reader_shape {
+        return Err(NetworkNamespaceObserverError::UnsupportedPlan);
+    }
+
+    let authority = ObservationAuthority {
+        boot_id,
+        host: initial_host_namespace,
+        sandbox: target_namespace,
+        lifecycle: NetworkNamespaceObservedStateV1::absent(),
+    };
+    let first = observe_destroyed_once(readers, expectation, authority, worker)?;
+    let second = observe_destroyed_once(readers, expectation, authority, worker)?;
+    if first != second {
+        return Err(NetworkNamespaceObserverError::Changed);
+    }
+
+    let identity = target_namespace.identity();
+    let mut digest = Sha256::new();
+    digest.update(b"aos.sandbox.network.destroyed-kernel-observation.v1\0");
+    digest.update(boot_id);
+    digest.update(identity.device.to_be_bytes());
+    digest.update(identity.inode.to_be_bytes());
+    digest.update(plan.digest().as_bytes());
+    digest.update(expectation.network_handle());
+    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
+}
+
+fn observe_destroyed_once(
+    readers: NetworkKernelObservationReaders<'_>,
+    expectation: &NetworkKernelExpectationV1,
+    authority: ObservationAuthority<'_>,
+    worker: &SingleThreadedProcess,
+) -> Result<RtnetlinkNamespaceInventoryV1, NetworkNamespaceObserverError> {
+    authority.validate_unchanged()?;
+    readers.rtnetlink.observe_host_veth_absent(expectation)?;
+    if let Some(bpf) = readers.bpf {
+        bpf.observe_absent(*expectation.network_handle())?;
+    }
+
+    authority.sandbox.enter(worker)?;
+    let sandbox_result = (|| {
+        authority.sandbox.validate_current_network()?;
+        let inventory = readers.rtnetlink.observe_sandbox()?;
+        validate_destroyed_namespace_inventory(&inventory)?;
+        readers.nftables.observe_table_absent()?;
+        Ok::<_, NetworkNamespaceObserverError>(inventory)
+    })();
+    let restored = authority
+        .host
+        .enter(worker)
+        .and_then(|()| authority.host.validate_current_network());
+    require_restored_host(restored.is_ok());
+    authority.validate_unchanged()?;
+    sandbox_result
 }
 
 pub(crate) fn validate_prepared_observation_authority(

@@ -40,8 +40,8 @@ use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, SingleThreadedProcess};
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_network::{
-    ActivatedNetworkDescriptors, AdmittedNetworkLifecycleWorkerV1,
-    AuthenticatedNetworkPreparationV1, FixedBpfObservationReader, FixedNftablesObservationReader,
+    ActivatedNetworkDescriptors, AuthenticatedNetworkPreparationV1,
+    ExecutedNetworkLifecycleWorkerV1, FixedBpfObservationReader, FixedNftablesObservationReader,
     FixedRtnetlinkObservationReader, NetworkAddressPoolV1, NetworkAdmissionOutcome,
     NetworkAllocationPolicyV1, NetworkIpAddressV1, NetworkIpPrefixV1,
     NetworkKernelObservationReaders, NetworkKernelPlanV1, NetworkLifecycleAdmissionCoordinator,
@@ -52,7 +52,7 @@ use aos_sandbox_network::{
     NetworkPreparationReservationV1, NetworkPrepareExecutionOutcomeV1,
     NetworkPrepareWorkerDispatchV1, NetworkStateStore, ObservedIpAddressV1,
     PreparedNetworkWorkerOutput, StableRtnetlinkNamespaceInventoryV1,
-    SystemdNetworkLifecycleAdmissionExecutor, VerifiedNetworkResultV1, adopt_systemd_activation,
+    SystemdNetworkLifecycleExecutor, VerifiedNetworkResultV1, adopt_systemd_activation,
     begin_network_preparation_once, finalize_executed_network_preparation,
     observe_stable_network_kernel, observe_stable_rtnetlink_namespace,
     publish_committed_network_preparation,
@@ -326,7 +326,7 @@ pub(crate) fn commit_worker_preparation(
     enforcement_loader: PathBuf,
     bpf_observer: PathBuf,
     gate_object: PathBuf,
-) -> Result<(ObjectDigest, AdmittedNetworkLifecycleWorkerV1)> {
+) -> Result<(ObjectDigest, ExecutedNetworkLifecycleWorkerV1)> {
     let rtnetlink =
         FixedRtnetlinkObservationReader::new(ip).context("retain worker rtnetlink observer")?;
     let nftables = FixedNftablesObservationReader::new(nft, enforcement_loader)
@@ -441,7 +441,7 @@ fn admit_lifecycle_worker(
     store_name: &NetworkNamespaceStoreName,
     lifecycle_worker_socket: PathBuf,
     cgroup_root: CgroupV2Root,
-) -> Result<AdmittedNetworkLifecycleWorkerV1> {
+) -> Result<ExecutedNetworkLifecycleWorkerV1> {
     let target = activation
         .namespaces
         .get(store_name)
@@ -492,11 +492,11 @@ fn admit_lifecycle_worker(
 
     let host = NamespaceFd::current_network().context("retain lifecycle broker host namespace")?;
     let mut executor =
-        SystemdNetworkLifecycleAdmissionExecutor::new(lifecycle_worker_socket, cgroup_root, host)
-            .context("construct lifecycle admission executor")?;
+        SystemdNetworkLifecycleExecutor::new(lifecycle_worker_socket, cgroup_root, host)
+            .context("construct lifecycle executor")?;
     let admitted = executor
-        .admit_once(&authority, &dispatch, target)
-        .context("complete lifecycle worker admission")?;
+        .execute_once(&authority, &dispatch, target)
+        .context("complete lifecycle worker execution")?;
     ensure!(
         admitted.request_id() == LIFECYCLE_REQUEST_ID
             && admitted.effect_digest() == effect_digest
@@ -504,9 +504,7 @@ fn admit_lifecycle_worker(
         "lifecycle worker acknowledgement changed its authenticated transcript"
     );
 
-    // Admission intentionally stops at Ambiguous. This qualification never
-    // authorizes execution, claims replay, mutates the namespace, or commits a
-    // lifecycle transition.
+    // Durable commit remains intentionally separate from worker execution.
     Ok(admitted)
 }
 

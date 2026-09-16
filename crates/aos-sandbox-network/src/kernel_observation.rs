@@ -21,6 +21,7 @@ use crate::policy::{
     NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1, NetworkPolicyProgramV1,
     NetworkPortRangeV1, NetworkTransportProtocolV1,
 };
+use crate::rtnetlink_reader::RtnetlinkNamespaceInventoryV1;
 
 const OBSERVATION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.kernel-observation.v1\0";
 // The sole v1 encoding commits IPv6 DAD suppression and the exact
@@ -818,6 +819,48 @@ pub(crate) fn valid_loopback(link: &ObservedLinkV1) -> bool {
         && link.ipv6_address_generation == ObservedIpv6AddressGenerationV1::Eui64
 }
 
+pub(crate) fn validate_destroyed_namespace_inventory(
+    inventory: &RtnetlinkNamespaceInventoryV1,
+) -> Result<(), NetworkKernelObservationError> {
+    let [loopback] = inventory.links.as_slice() else {
+        return Err(NetworkKernelObservationError::LinkMismatch);
+    };
+    if !valid_loopback(loopback) {
+        return Err(NetworkKernelObservationError::LinkMismatch);
+    }
+
+    let mut addresses = vec![
+        ObservedAddressV1 {
+            namespace: ObservedNetworkNamespaceV1::Sandbox,
+            ifindex: loopback.ifindex,
+            address: ObservedIpAddressV1::Ipv4([127, 0, 0, 1]),
+            prefix_length: 8,
+            ipv6_nodad: false,
+        },
+        ObservedAddressV1 {
+            namespace: ObservedNetworkNamespaceV1::Sandbox,
+            ifindex: loopback.ifindex,
+            address: ObservedIpAddressV1::Ipv6([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+            prefix_length: 128,
+            ipv6_nodad: false,
+        },
+    ];
+    addresses.sort_unstable();
+    if inventory.addresses != addresses {
+        return Err(NetworkKernelObservationError::AddressMismatch);
+    }
+    if !inventory.ipv6_neighbors.is_empty() {
+        return Err(NetworkKernelObservationError::NeighborMismatch);
+    }
+    if inventory.routes != baseline_loopback_routes(loopback.ifindex) {
+        return Err(NetworkKernelObservationError::RouteMismatch);
+    }
+    if inventory.policy_rules != baseline_policy_rules() {
+        return Err(NetworkKernelObservationError::PolicyRuleMismatch);
+    }
+    Ok(())
+}
+
 fn valid_veth(
     expected: &ExpectedVethV1,
     host: &ObservedLinkV1,
@@ -1083,6 +1126,10 @@ const fn host_prefix(address: ObservedIpAddressV1) -> ObservedIpPrefixV1 {
 }
 
 fn expected_policy_rules(_expected: &NetworkKernelExpectationV1) -> Vec<ObservedPolicyRuleV1> {
+    baseline_policy_rules()
+}
+
+fn baseline_policy_rules() -> Vec<ObservedPolicyRuleV1> {
     vec![
         ObservedPolicyRuleV1 {
             family: ObservedIpFamilyV1::Ipv4,

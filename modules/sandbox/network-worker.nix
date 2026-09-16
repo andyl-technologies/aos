@@ -9,16 +9,6 @@
   pinParent = "/sys/fs/bpf/aos/sandbox-network";
   mountBpffs = config.aos.config.artifacts.sandbox-network-mount-bpffs;
   preparePinRoot = config.aos.config.artifacts.sandbox-network-worker-ready;
-  lifecycleAdmissionPrefix = lib.concatStringsSep " " [
-    "${pkgs.aos-landlock}/bin/aos-landlock"
-    "--require-abi 4"
-    "--fs-read /proc/self/cgroup"
-    "--fs-read /proc/self/fd"
-    "--fs-read /proc/self/task"
-    "--fs-read /sys/fs/cgroup"
-    "--fs-ro /nix/store"
-    "--"
-  ];
 in {
   options.aos.sandbox.networkWorker = {
     enable = lib.mkEnableOption "the authenticated one-shot Network preparation worker";
@@ -169,8 +159,10 @@ in {
     };
 
     systemd.sockets.aos-sandbox-network-lifecycle-worker = {
-      description = "AOS admission-only Network lifecycle worker socket";
+      description = "AOS authenticated Network lifecycle effect worker socket";
       wantedBy = ["sockets.target"];
+      requires = ["aos-sandbox-network-worker-ready.service"];
+      after = ["aos-sandbox-network-worker-ready.service"];
       socketConfig = {
         ListenSequentialPacket = "/run/aos/sandbox-network-lifecycle-worker/control.sock";
         Accept = true;
@@ -203,6 +195,23 @@ in {
         MaxConnections = 1;
         SendBuffer = "1M";
         ReceiveBuffer = "1M";
+      };
+    };
+
+    systemd.sockets.aos-sandbox-network-pin-worker = {
+      description = "AOS Network namespace pin teardown worker socket";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-network-pin-worker/control.sock";
+        Accept = true;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0700";
+        RemoveOnStop = true;
+        MaxConnections = 1;
       };
     };
 
@@ -254,19 +263,29 @@ in {
       after = ["aos-bpffs-mount.service"];
     };
 
-    # This distinct entrypoint proves only process, framing, and target-FD
-    # admission. It deliberately receives no authority directory, replay state,
-    # helper path, capability, or namespace-entry permission.
+    # The lifecycle worker authenticates durable authority before entering the
+    # transferred target namespace and applying one exact, bounded transition.
     systemd.services."aos-sandbox-network-lifecycle-worker@" = {
-      description = "AOS admission-only Network lifecycle worker";
-      unitConfig.RequiresMountsFor = ["/sys/fs/cgroup"];
+      description = "AOS authenticated Network lifecycle effect worker";
+      requires = ["aos-sandbox-network-worker-ready.service"];
+      after = ["aos-sandbox-network-worker-ready.service"];
+      unitConfig.RequiresMountsFor = ["/sys/fs/cgroup" cfg.authorityDirectory];
       serviceConfig = {
         Type = "exec";
-        ExecStart = "${lifecycleAdmissionPrefix} ${cfg.package}/bin/aos-sandbox-network-lifecycle-worker";
+        ExecStart = ''
+          ${cfg.package}/bin/aos-sandbox-network-lifecycle-worker \
+            ${cfg.authorityDirectory} \
+            /var/lib/aos-sandbox-network-lifecycle-worker \
+            ${pkgs.iproute2}/sbin/ip \
+            ${pkgs.nftables}/bin/nft \
+            ${cfg.package}/bin/aos-sandbox-network-worker \
+            ${pkgs.aos-sandbox-network-lease-gate-loader}/bin/aos-sandbox-network-lease-gate-loader \
+            ${pkgs.aos-sandbox-network-lease-gate}/lib/bpf/aos-sandbox-network-lease-gate.bpf.o
+        '';
         StandardInput = "socket";
         StandardOutput = "socket";
         StandardError = "journal";
-        RuntimeMaxSec = "10s";
+        RuntimeMaxSec = "30s";
         TimeoutStopSec = "1s";
         KillMode = "control-group";
         KillSignal = "SIGKILL";
@@ -276,13 +295,23 @@ in {
         UMask = "0077";
         User = "root";
         Group = "root";
-        CapabilityBoundingSet = "";
-        AmbientCapabilities = "";
+        CapabilityBoundingSet = [
+          "CAP_BPF"
+          "CAP_NET_ADMIN"
+          "CAP_PERFMON"
+          "CAP_SYS_ADMIN"
+        ];
+        AmbientCapabilities = [
+          "CAP_BPF"
+          "CAP_NET_ADMIN"
+          "CAP_PERFMON"
+          "CAP_SYS_ADMIN"
+        ];
         DevicePolicy = "closed";
-        LimitNOFILE = 32;
+        LimitNOFILE = 128;
         LimitCORE = 0;
         LockPersonality = true;
-        MemoryMax = "64M";
+        MemoryMax = "256M";
         MemoryDenyWriteExecute = true;
         NoNewPrivileges = true;
         PrivateDevices = true;
@@ -297,41 +326,41 @@ in {
         ProtectKernelTunables = true;
         ProtectProc = "invisible";
         ProtectSystem = "strict";
-        # Direct masks provide readable deployment intent. The positive
-        # Landlock is the alias-resistant boundary for ordinary files. Its
-        # cross-domain ptrace rule separately denies another process's root,
-        # fd, and namespace views. The focused worker qualification must prove
-        # both properties on the deployed kernel.
-        InaccessiblePaths = [
-          "-${cfg.authorityDirectory}"
-          "-/etc/credstore"
-          "-/etc/credstore.encrypted"
-          "-/run/credentials"
-          "-/run/credstore"
-          "-/run/credstore.encrypted"
-          "-/run/systemd/credential.secret"
-          "-/var/lib/aos/sandbox-network"
-          "-/var/lib/aos-sandbox-network-worker"
+        ReadOnlyPaths = [
+          cfg.authorityDirectory
+          "-/proc/acpi"
+          "-/proc/apm"
+          "-/proc/asound"
+          "-/proc/bus"
+          "-/proc/fs"
+          "-/proc/irq"
+          "-/proc/latency_stats"
+          "-/proc/mtrr"
+          "-/proc/scsi"
+          "-/proc/sys"
+          "-/proc/sysrq-trigger"
+          "-/proc/timer_stats"
+          "/sys"
         ];
-        RestrictAddressFamilies = ["AF_UNIX"];
-        RestrictNamespaces = true;
+        ReadWritePaths = [pinParent];
+        RestrictAddressFamilies = ["AF_UNIX" "AF_NETLINK"];
+        RestrictNamespaces = ["net"];
         RestrictRealtime = true;
-        RestrictSUIDSGID = true;
+        RestrictSUIDSGID = false;
+        StateDirectory = "aos-sandbox-network-lifecycle-worker";
+        StateDirectoryMode = "0700";
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
         SystemCallFilter = [
           "@system-service"
-          "landlock_add_rule"
-          "landlock_create_ruleset"
-          "landlock_restrict_self"
-          "~bpf"
+          "bpf"
+          "setns"
           "~mount"
-          "~setns"
           "~umount2"
           "~unshare"
         ];
         SystemCallErrorNumber = "EPERM";
-        TasksMax = 8;
+        TasksMax = 16;
       };
     };
 
@@ -429,6 +458,50 @@ in {
       };
     };
 
+    # This worker must share PID 1's mount namespace so a successful unmount is
+    # visible to netd and later payload launches. It has no filesystem sandbox
+    # directives that would implicitly create a private mount namespace.
+    systemd.services."aos-sandbox-network-pin-worker@" = {
+      description = "AOS host-visible Network namespace pin teardown worker";
+      unitConfig.RequiresMountsFor = ["/sys/fs/cgroup" "/run/aos/sandbox-pins/netns"];
+      serviceConfig = {
+        Type = "exec";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-network-pin-worker";
+        StandardInput = "socket";
+        StandardOutput = "socket";
+        StandardError = "journal";
+        RuntimeMaxSec = "10s";
+        TimeoutStopSec = "1s";
+        KillMode = "control-group";
+        KillSignal = "SIGKILL";
+        FinalKillSignal = "SIGKILL";
+        SendSIGKILL = true;
+        Restart = "no";
+        UMask = "0077";
+        User = "root";
+        Group = "root";
+        CapabilityBoundingSet = ["CAP_SYS_ADMIN"];
+        AmbientCapabilities = ["CAP_SYS_ADMIN"];
+        DevicePolicy = "closed";
+        LimitNOFILE = 64;
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        MemoryMax = "64M";
+        NoNewPrivileges = true;
+        PrivateNetwork = true;
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        Slice = "aos-control.slice";
+        SystemCallArchitectures = ["native"];
+        SystemCallFilter = ["@system-service" "umount2"];
+        SystemCallErrorNumber = "EPERM";
+        TasksMax = 8;
+      };
+    };
+
     systemd.services."aos-sandbox-network-worker@" = {
       description = "AOS authenticated Network preparation effect worker";
       requires = ["aos-sandbox-network-worker-ready.service"];
@@ -481,41 +554,10 @@ in {
         MemoryMax = "256M";
         MemoryDenyWriteExecute = false;
         NoNewPrivileges = true;
-        PrivateDevices = true;
         PrivateNetwork = true;
-        PrivateTmp = true;
-        ProcSubset = "pid";
-        ProtectClock = true;
-        ProtectControlGroups = true;
-        ProtectHome = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectProc = "invisible";
-        ProtectSystem = "strict";
-        # ProtectKernelTunables also forces the entire bpffs API mount read-only.
-        # Spell out systemd 261.2's complete tunables protection set, then use
-        # its documented nested path exception for only this worker's pins.
-        InaccessiblePaths = [
-          "-/proc/kallsyms"
-          "-/proc/kcore"
-        ];
-        ReadOnlyPaths = [
-          cfg.authorityDirectory
-          "-/proc/acpi"
-          "-/proc/apm"
-          "-/proc/asound"
-          "-/proc/bus"
-          "-/proc/fs"
-          "-/proc/irq"
-          "-/proc/latency_stats"
-          "-/proc/mtrr"
-          "-/proc/scsi"
-          "-/proc/sys"
-          "-/proc/sysrq-trigger"
-          "-/proc/timer_stats"
-          "/sys"
-        ];
-        ReadWritePaths = [pinParent];
+        # This worker publishes the target namespace as a bind mount visible to
+        # the host. Filesystem-sandbox directives would create a private mount
+        # namespace and make an otherwise successful pin invisible to netd.
         RestrictAddressFamilies = ["AF_UNIX" "AF_NETLINK"];
         RestrictNamespaces = ["net"];
         RestrictRealtime = true;
@@ -525,12 +567,12 @@ in {
         SystemCallFilter = [
           "@system-service"
           "bpf"
+          "mount"
           "setns"
           "~@reboot"
           "~@swap"
           "~@module"
           "~@raw-io"
-          "~mount"
           "~umount2"
         ];
         SystemCallErrorNumber = "EPERM";

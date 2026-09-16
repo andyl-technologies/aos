@@ -36,10 +36,14 @@ use crate::kernel_observation::{
     NetworkKernelExpectationV1, ObservedIpAddressV1, ObservedIpPrefixV1,
 };
 use crate::kernel_reader::{NetworkKernelReaderError, PinnedArtifact};
+use crate::namespace_pin::{NetworkNamespacePinMutationError, publish_namespace_pin};
 use crate::policy::{
     NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1, NetworkTransportProtocolV1,
 };
-use crate::{NetworkActivationAuthorizationV1, NetworkMutationAuthorizationV1};
+use crate::{
+    NetworkActivationAuthorizationV1, NetworkLifecycleAuthorizedStepV1,
+    NetworkLifecycleExecutionStepV1, NetworkMutationAuthorizationV1,
+};
 
 const MAXIMUM_NFT_BATCH_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_ARGUMENTS: usize = 32;
@@ -74,6 +78,9 @@ pub enum NetworkKernelMutationError {
     /// Atomic nftables input exceeded its closed bound or could not be encoded.
     #[error("Network nftables mutation batch is invalid")]
     Nftables,
+    /// The canonical host-visible namespace pin could not be published.
+    #[error(transparent)]
+    NamespacePin(#[from] NetworkNamespacePinMutationError),
 }
 
 /// Retains all immutable production artifacts used for Network mutation.
@@ -208,6 +215,297 @@ impl FixedNetworkKernelMutator {
         self.validate_artifacts(expectation)
     }
 
+    /// Publishes the realized target through its fixed handle-derived pin.
+    ///
+    /// This must run in the initial host mount namespace after all planned
+    /// kernel objects exist and before the worker acknowledges success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for changed plan artifacts, namespace substitution,
+    /// an existing pin, failed bind publication, or identity mismatch.
+    pub fn publish_prepared_namespace(
+        &self,
+        authorization: &NetworkMutationAuthorizationV1,
+        target_namespace: &NamespaceFd,
+    ) -> Result<(), NetworkKernelMutationError> {
+        target_namespace.validate_current_network()?;
+        let expectation = authorization.kernel_plan().observation_expectation();
+        self.validate_artifacts(expectation)?;
+        publish_namespace_pin(*expectation.network_handle(), target_namespace)?;
+        self.validate_artifacts(expectation)
+    }
+
+    /// Executes one already freshness-gated existing-resource lifecycle step.
+    ///
+    /// The caller must acknowledge the step token only after this method
+    /// succeeds. Every namespace transition returns to the worker's private
+    /// bootstrap namespace; failure to restore that namespace aborts the
+    /// one-shot process because later authority checks would be ambiguous.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for namespace substitution, an unsupported plan/step
+    /// combination, changed fixed artifacts, or any failed kernel mutation.
+    pub fn execute_lifecycle_step(
+        &self,
+        authorization: &NetworkLifecycleAuthorizedStepV1<'_>,
+        target_namespace: &NamespaceFd,
+        host_namespace: &NamespaceFd,
+        bootstrap_namespace: &NamespaceFd,
+        worker: &SingleThreadedProcess,
+    ) -> Result<(), NetworkKernelMutationError> {
+        let expectation = authorization.kernel_plan().observation_expectation();
+        if target_namespace.identity().device != authorization.target_namespace().namespace_device()
+            || target_namespace.identity().inode
+                != authorization.target_namespace().namespace_inode()
+            || target_namespace.identity() == host_namespace.identity()
+            || bootstrap_namespace.identity() == target_namespace.identity()
+            || bootstrap_namespace.identity() == host_namespace.identity()
+        {
+            return Err(NetworkKernelMutationError::UnsupportedPlan);
+        }
+        bootstrap_namespace.validate_current_network()?;
+        self.validate_artifacts(expectation)?;
+
+        match authorization.step() {
+            NetworkLifecycleExecutionStepV1::EnsureLinksDown => self.set_link_pair_state(
+                expectation,
+                target_namespace,
+                host_namespace,
+                bootstrap_namespace,
+                worker,
+                false,
+            )?,
+            NetworkLifecycleExecutionStepV1::ArmLeaseGate
+            | NetworkLifecycleExecutionStepV1::ReplaceLeaseGateAtomically => {
+                self.set_lease_gate(expectation, authorization.desired_state())?
+            }
+            NetworkLifecycleExecutionStepV1::ConfigureExactAddressPairs => self
+                .replace_address_pairs(
+                    expectation,
+                    target_namespace,
+                    host_namespace,
+                    bootstrap_namespace,
+                    worker,
+                )?,
+            NetworkLifecycleExecutionStepV1::ConfigureExactRoutes => {
+                self.replace_routes(expectation, target_namespace, bootstrap_namespace, worker)?
+            }
+            NetworkLifecycleExecutionStepV1::ConfigureExactPermanentNeighbors => self
+                .replace_neighbors(
+                    expectation,
+                    target_namespace,
+                    host_namespace,
+                    bootstrap_namespace,
+                    worker,
+                )?,
+            NetworkLifecycleExecutionStepV1::VerifyExactPlanConfiguration => {
+                self.validate_artifacts(expectation)?
+            }
+            NetworkLifecycleExecutionStepV1::RaiseLinks => self.set_link_pair_state(
+                expectation,
+                target_namespace,
+                host_namespace,
+                bootstrap_namespace,
+                worker,
+                true,
+            )?,
+            NetworkLifecycleExecutionStepV1::LowerLinks => self.set_link_pair_state(
+                expectation,
+                target_namespace,
+                host_namespace,
+                bootstrap_namespace,
+                worker,
+                false,
+            )?,
+            NetworkLifecycleExecutionStepV1::DisarmLeaseGate => {
+                self.set_default_drop_gate(expectation)?
+            }
+            NetworkLifecycleExecutionStepV1::RemoveOwnedNetworkObjects => self
+                .remove_owned_network_objects(
+                    expectation,
+                    target_namespace,
+                    host_namespace,
+                    bootstrap_namespace,
+                    worker,
+                )?,
+            NetworkLifecycleExecutionStepV1::VerifyKernelOwnedObjectsAbsent => {
+                self.validate_artifacts(expectation)?
+            }
+        }
+
+        bootstrap_namespace.validate_current_network()?;
+        self.validate_artifacts(expectation)
+    }
+
+    fn set_link_pair_state(
+        &self,
+        expectation: &NetworkKernelExpectationV1,
+        target_namespace: &NamespaceFd,
+        host_namespace: &NamespaceFd,
+        bootstrap_namespace: &NamespaceFd,
+        worker: &SingleThreadedProcess,
+        raised: bool,
+    ) -> Result<(), NetworkKernelMutationError> {
+        let Some(veth) = expectation.veth() else {
+            return Ok(());
+        };
+        let state = if raised { "up" } else { "down" };
+        self.in_namespace(target_namespace, bootstrap_namespace, worker, || {
+            self.run_ip(&["link", "set", "dev", &veth.sandbox_name, state])
+        })?;
+        self.in_namespace(host_namespace, bootstrap_namespace, worker, || {
+            self.run_ip(&["link", "set", "dev", &veth.host_name, state])
+        })
+    }
+
+    fn set_lease_gate(
+        &self,
+        expectation: &NetworkKernelExpectationV1,
+        desired_state: crate::NetworkNamespaceObservedStateV1,
+    ) -> Result<(), NetworkKernelMutationError> {
+        let (lease_digest, generation, deadline) = desired_state
+            .lease()
+            .ok_or(NetworkKernelMutationError::UnsupportedPlan)?;
+        self.run_lease_gate(&[
+            "set-lease".into(),
+            encode_hex(expectation.network_handle()).into(),
+            expectation.assignment().epoch().get().to_string().into(),
+            encode_hex(expectation.assignment().digest().as_bytes()).into(),
+            generation.to_string().into(),
+            deadline.to_string().into(),
+            encode_hex(lease_digest.as_bytes()).into(),
+        ])
+    }
+
+    fn set_default_drop_gate(
+        &self,
+        expectation: &NetworkKernelExpectationV1,
+    ) -> Result<(), NetworkKernelMutationError> {
+        self.run_lease_gate(&[
+            "set-default-drop".into(),
+            encode_hex(expectation.network_handle()).into(),
+            expectation.assignment().epoch().get().to_string().into(),
+            encode_hex(expectation.assignment().digest().as_bytes()).into(),
+        ])
+    }
+
+    fn replace_address_pairs(
+        &self,
+        expectation: &NetworkKernelExpectationV1,
+        target_namespace: &NamespaceFd,
+        host_namespace: &NamespaceFd,
+        bootstrap_namespace: &NamespaceFd,
+        worker: &SingleThreadedProcess,
+    ) -> Result<(), NetworkKernelMutationError> {
+        let veth = expectation
+            .veth()
+            .ok_or(NetworkKernelMutationError::UnsupportedPlan)?;
+        self.in_namespace(target_namespace, bootstrap_namespace, worker, || {
+            for pair in expectation.address_pairs() {
+                self.replace_address(&veth.sandbox_name, pair.sandbox, pair.prefix_length)?;
+            }
+            Ok(())
+        })?;
+        self.in_namespace(host_namespace, bootstrap_namespace, worker, || {
+            for pair in expectation.address_pairs() {
+                self.replace_address(&veth.host_name, pair.host, pair.prefix_length)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn replace_routes(
+        &self,
+        expectation: &NetworkKernelExpectationV1,
+        target_namespace: &NamespaceFd,
+        bootstrap_namespace: &NamespaceFd,
+        worker: &SingleThreadedProcess,
+    ) -> Result<(), NetworkKernelMutationError> {
+        let veth = expectation
+            .veth()
+            .ok_or(NetworkKernelMutationError::UnsupportedPlan)?;
+        self.in_namespace(target_namespace, bootstrap_namespace, worker, || {
+            for route in expectation.routes() {
+                self.replace_route(&veth.sandbox_name, route.destination, route.gateway)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn replace_neighbors(
+        &self,
+        expectation: &NetworkKernelExpectationV1,
+        target_namespace: &NamespaceFd,
+        host_namespace: &NamespaceFd,
+        bootstrap_namespace: &NamespaceFd,
+        worker: &SingleThreadedProcess,
+    ) -> Result<(), NetworkKernelMutationError> {
+        let veth = expectation
+            .veth()
+            .ok_or(NetworkKernelMutationError::UnsupportedPlan)?;
+        self.in_namespace(target_namespace, bootstrap_namespace, worker, || {
+            for pair in expectation.address_pairs() {
+                if matches!(pair.sandbox, ObservedIpAddressV1::Ipv6(_)) {
+                    self.replace_ipv6_neighbor(&veth.sandbox_name, pair.host, veth.host_mac)?;
+                }
+            }
+            Ok(())
+        })?;
+        self.in_namespace(host_namespace, bootstrap_namespace, worker, || {
+            for pair in expectation.address_pairs() {
+                if matches!(pair.host, ObservedIpAddressV1::Ipv6(_)) {
+                    self.replace_ipv6_neighbor(&veth.host_name, pair.sandbox, veth.sandbox_mac)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn remove_owned_network_objects(
+        &self,
+        expectation: &NetworkKernelExpectationV1,
+        target_namespace: &NamespaceFd,
+        host_namespace: &NamespaceFd,
+        bootstrap_namespace: &NamespaceFd,
+        worker: &SingleThreadedProcess,
+    ) -> Result<(), NetworkKernelMutationError> {
+        self.in_namespace(target_namespace, bootstrap_namespace, worker, || {
+            self.run_nft_batch(&encode_nftables_delete()?)
+        })?;
+        let Some(veth) = expectation.veth() else {
+            return Ok(());
+        };
+        self.in_namespace(host_namespace, bootstrap_namespace, worker, || {
+            self.run_lease_gate(&[
+                "remove".into(),
+                encode_hex(expectation.network_handle()).into(),
+                expectation.assignment().epoch().get().to_string().into(),
+                encode_hex(expectation.assignment().digest().as_bytes()).into(),
+            ])?;
+            self.run_ip(&["link", "delete", "dev", &veth.host_name])
+        })
+    }
+
+    fn in_namespace<T>(
+        &self,
+        namespace: &NamespaceFd,
+        bootstrap_namespace: &NamespaceFd,
+        worker: &SingleThreadedProcess,
+        operation: impl FnOnce() -> Result<T, NetworkKernelMutationError>,
+    ) -> Result<T, NetworkKernelMutationError> {
+        namespace.enter(worker)?;
+        let result = operation();
+        let restored = bootstrap_namespace
+            .enter(worker)
+            .and_then(|()| bootstrap_namespace.validate_current_network());
+        if restored.is_err() {
+            std::process::abort();
+        }
+        result
+    }
+
     fn validate_artifacts(
         &self,
         expectation: &NetworkKernelExpectationV1,
@@ -340,6 +638,28 @@ impl FixedNetworkKernelMutator {
         self.run_ip_owned(&arguments)
     }
 
+    fn replace_address(
+        &self,
+        interface: &str,
+        address: ObservedIpAddressV1,
+        prefix_length: u8,
+    ) -> Result<(), NetworkKernelMutationError> {
+        let ipv6 = matches!(address, ObservedIpAddressV1::Ipv6(_));
+        let family = address_family_flag(address);
+        let address = format!("{}/{}", format_address(address), prefix_length);
+        let mut arguments = vec![
+            family.into(),
+            "address".into(),
+            "replace".into(),
+            address.into(),
+        ];
+        if ipv6 {
+            arguments.push("nodad".into());
+        }
+        arguments.extend(["dev".into(), interface.into()]);
+        self.run_ip_owned(&arguments)
+    }
+
     fn add_ipv6_neighbor(
         &self,
         interface: &str,
@@ -358,6 +678,29 @@ impl FixedNetworkKernelMutator {
             address.into(),
             "lladdr".into(),
             mac.into(),
+            "nud".into(),
+            "permanent".into(),
+            "dev".into(),
+            interface.into(),
+        ])
+    }
+
+    fn replace_ipv6_neighbor(
+        &self,
+        interface: &str,
+        address: ObservedIpAddressV1,
+        mac: [u8; 6],
+    ) -> Result<(), NetworkKernelMutationError> {
+        let ObservedIpAddressV1::Ipv6(_) = address else {
+            return Err(NetworkKernelMutationError::UnsupportedPlan);
+        };
+        self.run_ip_owned(&[
+            "-6".into(),
+            "neighbor".into(),
+            "replace".into(),
+            format_address(address).into(),
+            "lladdr".into(),
+            format_mac(mac).into(),
             "nud".into(),
             "permanent".into(),
             "dev".into(),
@@ -385,6 +728,30 @@ impl FixedNetworkKernelMutator {
             destination.into(),
             "via".into(),
             gateway.into(),
+            "dev".into(),
+            interface.into(),
+        ])
+    }
+
+    fn replace_route(
+        &self,
+        interface: &str,
+        destination: ObservedIpPrefixV1,
+        gateway: ObservedIpAddressV1,
+    ) -> Result<(), NetworkKernelMutationError> {
+        let family = address_family_flag(destination.address);
+        let destination = format!(
+            "{}/{}",
+            format_address(destination.address),
+            destination.prefix_length
+        );
+        self.run_ip_owned(&[
+            family.into(),
+            "route".into(),
+            "replace".into(),
+            destination.into(),
+            "via".into(),
+            format_address(gateway).into(),
             "dev".into(),
             interface.into(),
         ])
@@ -450,6 +817,10 @@ impl FixedNetworkKernelMutator {
 
     fn run_ip_owned(&self, arguments: &[OsString]) -> Result<(), NetworkKernelMutationError> {
         run_fixed_status(&self.ip, arguments, None, &[])
+    }
+
+    fn run_lease_gate(&self, arguments: &[OsString]) -> Result<(), NetworkKernelMutationError> {
+        run_fixed_status(&self.lease_gate_loader, arguments, None, &[])
     }
 }
 
@@ -546,6 +917,12 @@ fn encode_nftables_rules(
     }
 
     encode_nftables_commands(commands)
+}
+
+fn encode_nftables_delete() -> Result<Vec<u8>, NetworkKernelMutationError> {
+    encode_nftables_commands(vec![
+        json!({"delete":{"table":{"family":TABLE_FAMILY,"name":TABLE_NAME}}}),
+    ])
 }
 
 fn encode_nftables_commands(commands: Vec<Value>) -> Result<Vec<u8>, NetworkKernelMutationError> {

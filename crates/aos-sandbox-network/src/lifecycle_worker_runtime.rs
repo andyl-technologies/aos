@@ -1,10 +1,11 @@
-//! Systemd-activated admission boundary for existing Network resources.
+//! Systemd-activated effect boundary for existing Network resources.
 //!
 //! The broker authenticates the exact lifecycle dispatch before opening the
 //! worker exchange. A fresh private-Network worker then canonical-decodes those
-//! same bytes and correlates the sole transferred descriptor with the claimed
-//! target identity. The worker receives no authority or journal credential and
-//! performs no replay claim, namespace entry, or kernel mutation.
+//! same bytes, correlates the sole transferred descriptor with the claimed
+//! target identity, authenticates and replay-claims the dispatch, and consumes
+//! its ordered step tokens through the fixed kernel mutator. Protected broker
+//! journals remain unavailable to the worker.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -12,7 +13,8 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::{ObjectDigest, RawClockProvenance, RawPairedClockSample};
+use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };
@@ -26,6 +28,7 @@ use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::NetworkAuthorityV1;
+use crate::kernel_mutator::{FixedNetworkKernelMutator, NetworkKernelMutationError};
 use crate::lifecycle_worker_process::{
     NetworkLifecycleWorkerAdmittedV1, NetworkLifecycleWorkerBootstrapReadyV1,
     NetworkLifecycleWorkerChallengeV1, revalidate_lifecycle_worker_before_dispatch,
@@ -34,12 +37,16 @@ use crate::lifecycle_worker_process::{
 use crate::lifecycle_worker_protocol::{
     MAXIMUM_NETWORK_LIFECYCLE_WORKER_REQUEST_BYTES, NetworkLifecycleWorkerDispatchV1,
 };
+use crate::namespace_catalog::{
+    NetworkNamespaceIdentityV1, NetworkNamespaceLifecycleActionV1, NetworkNamespaceObservedStateV1,
+};
 use crate::namespace_store::RetainedNetworkNamespace;
 use crate::worker_process::{
     NetworkWorkerProcessError, validate_broker_peer, validate_broker_subject,
     validate_systemd_manager_peer,
 };
 use crate::worker_protocol::NetworkWorkerProtocolError;
+use crate::worker_replay::NetworkWorkerReplayLedger;
 
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const SYSTEMD_MANAGER_CGROUP: &str = "init.scope";
@@ -188,19 +195,45 @@ pub enum NetworkLifecycleWorkerRuntimeError {
     /// A local kernel I/O operation failed.
     #[error("Network lifecycle worker kernel I/O failed: {0}")]
     KernelIo(#[from] rustix::io::Errno),
+    /// A fixed lifecycle kernel mutation failed.
+    #[error(transparent)]
+    Mutation(#[from] NetworkKernelMutationError),
 }
 
-/// Correlates successful admission after the worker process wholly exits.
+/// Names the protected state and fixed artifacts of the lifecycle worker.
+#[derive(Clone, Debug)]
+pub struct NetworkLifecycleWorkerConfiguration {
+    /// Root-owned Network authority directory.
+    pub authority_directory: PathBuf,
+    /// Root-owned lifecycle replay-ledger directory.
+    pub replay_directory: PathBuf,
+    /// Fixed AOS-built `ip` executable.
+    pub ip: PathBuf,
+    /// Fixed AOS-built `nft` executable.
+    pub nft: PathBuf,
+    /// Reviewed enforcement artifact committed by the plan.
+    pub enforcement_artifact: PathBuf,
+    /// Fixed ownership-lease gate mutator.
+    pub lease_gate_loader: PathBuf,
+    /// Exact ownership-lease BPF object.
+    pub lease_gate_object: PathBuf,
+}
+
+/// Correlates one completed lifecycle execution after the worker wholly exits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AdmittedNetworkLifecycleWorkerV1 {
+pub struct ExecutedNetworkLifecycleWorkerV1 {
     request_id: [u8; 16],
     effect_digest: ObjectDigest,
     dispatch_digest: ObjectDigest,
     bootstrap_namespace: NamespaceIdentity,
     target_namespace: NamespaceIdentity,
+    target_identity: NetworkNamespaceIdentityV1,
+    action: NetworkNamespaceLifecycleActionV1,
+    desired_state: NetworkNamespaceObservedStateV1,
+    prior_resource_digest: ObjectDigest,
 }
 
-impl AdmittedNetworkLifecycleWorkerV1 {
+impl ExecutedNetworkLifecycleWorkerV1 {
     /// Returns the request identity carried by the broker-authenticated dispatch.
     #[must_use]
     pub const fn request_id(self) -> [u8; 16] {
@@ -230,10 +263,34 @@ impl AdmittedNetworkLifecycleWorkerV1 {
     pub const fn target_namespace(self) -> NamespaceIdentity {
         self.target_namespace
     }
+
+    /// Returns the durable target identity bound to the executed dispatch.
+    #[must_use]
+    pub const fn target_identity(self) -> NetworkNamespaceIdentityV1 {
+        self.target_identity
+    }
+
+    /// Returns the closed lifecycle action executed by the worker.
+    #[must_use]
+    pub const fn action(self) -> NetworkNamespaceLifecycleActionV1 {
+        self.action
+    }
+
+    /// Returns the exact post-effect state requested by durable authority.
+    #[must_use]
+    pub const fn desired_state(self) -> NetworkNamespaceObservedStateV1 {
+        self.desired_state
+    }
+
+    /// Returns the catalog resource digest that the transition must replace.
+    #[must_use]
+    pub const fn prior_resource_digest(self) -> ObjectDigest {
+        self.prior_resource_digest
+    }
 }
 
-/// Admits exact lifecycle bytes and one retained target through a fresh worker.
-pub struct SystemdNetworkLifecycleAdmissionExecutor {
+/// Executes exact lifecycle bytes against one retained target in a fresh worker.
+pub struct SystemdNetworkLifecycleExecutor {
     socket_path: PathBuf,
     systemd_manager_cgroup: RetainedCgroupAnchor,
     worker_parent_cgroup: RetainedCgroupAnchor,
@@ -241,7 +298,7 @@ pub struct SystemdNetworkLifecycleAdmissionExecutor {
     fail_stopped: bool,
 }
 
-impl SystemdNetworkLifecycleAdmissionExecutor {
+impl SystemdNetworkLifecycleExecutor {
     /// Retains the trusted host namespace and fixed manager cgroup roots.
     ///
     /// # Errors
@@ -268,11 +325,11 @@ impl SystemdNetworkLifecycleAdmissionExecutor {
         })
     }
 
-    /// Runs one admission-only exchange and proves whole-worker quiescence.
+    /// Executes one authenticated effect and proves whole-worker quiescence.
     ///
     /// The exact dispatch is authenticated against retained custody before the
-    /// challenge or descriptor is sent. Success proves process/transport
-    /// admission only; it does not authorize or report a lifecycle effect.
+    /// challenge or descriptor is sent. Success proves the worker consumed and
+    /// completed every freshness-gated step before acknowledging the effect.
     ///
     /// # Errors
     ///
@@ -280,12 +337,12 @@ impl SystemdNetworkLifecycleAdmissionExecutor {
     /// substitution, malformed framing, descriptor substitution, timeout, or
     /// unproved worker exit. Failure to prove cancellation permanently
     /// fail-stops this executor.
-    pub fn admit_once(
+    pub fn execute_once(
         &mut self,
         authority: &NetworkAuthorityV1,
         dispatch: &NetworkLifecycleWorkerDispatchV1,
         target: &RetainedNetworkNamespace,
-    ) -> Result<AdmittedNetworkLifecycleWorkerV1, NetworkLifecycleWorkerRuntimeError> {
+    ) -> Result<ExecutedNetworkLifecycleWorkerV1, NetworkLifecycleWorkerRuntimeError> {
         ensure_executor_available(self.fail_stopped)?;
         self.host_namespace.validate_current_network()?;
         let target_namespace = retype_network_namespace(target.as_fd())?;
@@ -316,6 +373,10 @@ impl SystemdNetworkLifecycleAdmissionExecutor {
             target_namespace: &target_namespace,
             dispatch_bytes: &dispatch_bytes,
             dispatch_digest,
+            target_identity: dispatch.target_identity(),
+            action: dispatch.lifecycle_action(),
+            desired_state: dispatch.desired_state(),
+            prior_resource_digest: dispatch.prior_resource_digest(),
             challenge,
         };
         execute_lifecycle_admission(&mut admission, &mut self.fail_stopped)
@@ -330,6 +391,10 @@ struct SystemdLifecycleAdmission<'a> {
     target_namespace: &'a NamespaceFd,
     dispatch_bytes: &'a [u8],
     dispatch_digest: ObjectDigest,
+    target_identity: NetworkNamespaceIdentityV1,
+    action: NetworkNamespaceLifecycleActionV1,
+    desired_state: NetworkNamespaceObservedStateV1,
+    prior_resource_digest: ObjectDigest,
     challenge: NetworkLifecycleWorkerChallengeV1,
 }
 
@@ -342,7 +407,7 @@ impl LifecycleAdmissionOperations for SystemdLifecycleAdmission<'_> {
         RetainedCgroupAnchor,
         NamespaceFd,
     );
-    type Admitted = AdmittedNetworkLifecycleWorkerV1;
+    type Admitted = ExecutedNetworkLifecycleWorkerV1;
 
     fn connect(&mut self) -> Result<Self::Connection, NetworkLifecycleWorkerRuntimeError> {
         DescriptorSubjectSocket::connect(self.socket_path).map_err(Into::into)
@@ -456,12 +521,16 @@ impl LifecycleAdmissionOperations for SystemdLifecycleAdmission<'_> {
             fail_stopped,
         )?;
 
-        Ok(AdmittedNetworkLifecycleWorkerV1 {
+        Ok(ExecutedNetworkLifecycleWorkerV1 {
             request_id: self.challenge.request_id(),
             effect_digest: self.challenge.effect_digest(),
             dispatch_digest: self.dispatch_digest,
             bootstrap_namespace: bootstrap_namespace.identity(),
             target_namespace: self.target_namespace.identity(),
+            target_identity: self.target_identity,
+            action: self.action,
+            desired_state: self.desired_state,
+            prior_resource_digest: self.prior_resource_digest,
         })
     }
 }
@@ -523,35 +592,52 @@ where
     operations.complete_after_retention(&mut connection, retained, fail_stopped)
 }
 
-/// Runs one inherited admission-only lifecycle worker.
+/// Runs one inherited lifecycle effect worker.
 ///
 /// PID 1 supplies the connected socket and creates the process in a fresh
-/// private Network namespace. The function first receives the broker's
-/// challenge, correlates one exact target descriptor, sends an unkeyed
-/// admission ACK, and returns immediately. It accepts no configuration or
-/// authority path.
+/// private Network namespace. The function authenticates and replay-claims the
+/// exact dispatch, derives the host namespace from the authenticated broker
+/// pidfd, executes every ordered step through fixed artifacts, sends a
+/// correlated completion record, and returns.
 ///
 /// # Errors
 ///
 /// Returns an error unless the process is single-threaded, both process user
 /// identities are root, the broker and every record subject remain exact, all
 /// records are canonical, the sole descriptor is a distinct Network namespace
-/// matching the claimed dispatch target, and the acknowledgement is
-/// transferred before exit.
-pub fn run_inherited_network_lifecycle_admission_worker()
--> Result<(), NetworkLifecycleWorkerRuntimeError> {
+/// matching the claimed dispatch target, protected replay and time authority
+/// remain fresh around every step, every fixed mutation succeeds, and the
+/// completion record is transferred before exit.
+pub fn run_inherited_network_lifecycle_worker(
+    configuration: NetworkLifecycleWorkerConfiguration,
+) -> Result<(), NetworkLifecycleWorkerRuntimeError> {
     let worker = SingleThreadedProcess::verify()?;
     worker.disable_core_dumps()?;
     validate_initial_descriptor_table()?;
     if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
         return Err(NetworkLifecycleWorkerRuntimeError::Authority);
     }
+    let authority =
+        NetworkAuthorityV1::from_protected_directory(&configuration.authority_directory)
+            .map_err(|_| NetworkLifecycleWorkerRuntimeError::Authority)?;
+    let mut replay = NetworkWorkerReplayLedger::open_root_owned(&configuration.replay_directory)?;
+    let mutator = FixedNetworkKernelMutator::new(
+        configuration.ip,
+        configuration.nft,
+        configuration.enforcement_artifact,
+        configuration.lease_gate_loader,
+        configuration.lease_gate_object,
+    )?;
     let cgroup_root = open_cgroup_root()?;
     let control_cgroup = cgroup_root.resolve(Path::new(CONTROL_SLICE_CGROUP))?;
     let bootstrap_namespace = NamespaceFd::current_network()?;
     let descriptor: OwnedFd = rustix::io::dup(std::io::stdin().as_fd())?;
     let mut socket = DescriptorSubjectSocket::from_owned(descriptor)?;
     validate_broker_peer(socket.peer(), &control_cgroup)?;
+    let host_namespace = socket.peer().pidfd().namespace(NamespaceKind::Network)?;
+    if host_namespace.identity() == bootstrap_namespace.identity() {
+        return Err(NetworkLifecycleWorkerRuntimeError::Authority);
+    }
 
     let challenge_record = receive_record_before(
         &mut socket,
@@ -591,6 +677,31 @@ pub fn run_inherited_network_lifecycle_admission_worker()
         return Err(NetworkLifecycleWorkerRuntimeError::Authority);
     }
     bootstrap_namespace.validate_current_network()?;
+    let current_fence = dispatch.claimed_current_fence().to_vec();
+    let authenticated = dispatch.authenticate(&authority)?;
+    let mut trusted_current_fence = || Ok(current_fence.clone());
+    let mut trusted_clock = protected_clock;
+    let mut execution = authenticated.authorize_execution(
+        &authority,
+        &mut replay,
+        &mut trusted_current_fence,
+        &mut trusted_clock,
+    )?;
+    while let Some(step) =
+        execution.authorize_next_step(&authority, &mut trusted_current_fence, &mut trusted_clock)?
+    {
+        mutator.execute_lifecycle_step(
+            &step,
+            &target_namespace,
+            &host_namespace,
+            &bootstrap_namespace,
+            &worker,
+        )?;
+        step.complete_success(&authority, &mut trusted_current_fence, &mut trusted_clock)?;
+    }
+    if !execution.is_complete() {
+        return Err(NetworkLifecycleWorkerRuntimeError::Authority);
+    }
 
     let admitted = NetworkLifecycleWorkerAdmittedV1::new(
         challenge,
@@ -1122,6 +1233,21 @@ fn boottime_now_nanoseconds() -> Result<u64, NetworkLifecycleWorkerRuntimeError>
         .ok_or(NetworkLifecycleWorkerRuntimeError::Protocol(
             "boottime overflowed",
         ))
+}
+
+fn protected_clock() -> Result<RawPairedClockSample, crate::NetworkAdmissionError> {
+    let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+    let provenance = RawClockProvenance::new_untrusted(*b"aos-kernel-clock")
+        .map_err(|_| crate::NetworkAdmissionError::FenceRejected)?;
+    RawPairedClockSample::new_untrusted(
+        provenance,
+        KernelBootId::current()
+            .map_err(|_| crate::NetworkAdmissionError::FenceRejected)?
+            .into_bytes(),
+        realtime.tv_sec,
+        boottime_now_nanoseconds().map_err(|_| crate::NetworkAdmissionError::FenceRejected)?,
+    )
+    .map_err(|_| crate::NetworkAdmissionError::FenceRejected)
 }
 
 fn current_cgroup() -> Result<String, NetworkLifecycleWorkerRuntimeError> {

@@ -228,6 +228,68 @@ impl FixedNftablesObservationReader {
 
         decode_nftables_observation(&stdout, self.enforcement_loader.digest(), sandbox_links)
     }
+
+    /// Proves that the fixed AOS policy table is absent from the namespace.
+    ///
+    /// This reads the complete table inventory instead of treating a failed
+    /// table-specific command as absence, so permission and transport failures
+    /// remain distinguishable from a verified cleanup result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkKernelReaderError`] if either retained artifact
+    /// changes, the fixed process fails, the complete JSON inventory is
+    /// malformed, or `inet aos_sandbox` remains present.
+    pub fn observe_table_absent(&self) -> Result<(), NetworkKernelReaderError> {
+        self.enforcement_loader.validate_current()?;
+        let arguments = ["--json", "--handle", "list", "tables"].map(OsString::from);
+        let output = self
+            .nft
+            .run(&arguments, MAXIMUM_NFTABLES_OBSERVATION_BYTES)?;
+        let stdout = successful_helper_stdout(output)?;
+        self.enforcement_loader.validate_current()?;
+        decode_table_absence(&stdout)
+    }
+}
+
+fn decode_table_absence(bytes: &[u8]) -> Result<(), NetworkKernelReaderError> {
+    if bytes.is_empty()
+        || bytes.len() > MAXIMUM_NFTABLES_OBSERVATION_BYTES
+        || !bytes.ends_with(b"\n")
+    {
+        return invalid("nft table inventory is empty, oversized, or unterminated");
+    }
+    let document = decode_strict_json(bytes, MAXIMUM_JSON_NODES)?;
+    let top = object(&document, "nft table inventory is not an object")?;
+    reject_unknown_fields(
+        top,
+        &["nftables"],
+        "nft table inventory has an unknown top-level field",
+    )?;
+    let elements = array(
+        required(top, "nftables", "nft table inventory omits its array")?,
+        "nft table inventory is not an array",
+    )?;
+    if elements.is_empty() || elements.len() > MAXIMUM_NFTABLES_OBJECTS {
+        return invalid("nft table inventory object count is outside the closed bound");
+    }
+    decode_metainfo(&elements[0])?;
+    for element in &elements[1..] {
+        let wrapper = object(element, "nft table inventory entry is not an object")?;
+        if wrapper.len() != 1 {
+            return invalid("nft table inventory entry is not singular");
+        }
+        let table = object(
+            required(wrapper, "table", "nft table inventory entry is not a table")?,
+            "nft table inventory table is not an object",
+        )?;
+        let family = text(table, "family")?;
+        let name = text(table, "name")?;
+        if family == TABLE_FAMILY && name == TABLE_NAME {
+            return invalid("fixed nftables policy table is still present");
+        }
+    }
+    Ok(())
 }
 
 /// Decodes one complete, newline-terminated fixed nftables JSON listing.

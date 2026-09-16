@@ -15,16 +15,20 @@ use crate::worker_runtime::open_cgroup_root;
 use crate::{
     ActivatedNetworkDescriptors, DurableNetworkPhase, NetworkAuthorityConfigError,
     NetworkAuthorityV1, NetworkLifecycleAdmissionCoordinator, NetworkLifecycleStateError,
-    NetworkLifecycleStateStore, NetworkNamespaceCatalogError, NetworkNamespaceCatalogV1,
-    NetworkNamespaceCustodyRequirementV1, NetworkNamespaceStoreError,
-    NetworkObservationWorkerError, NetworkPolicyCatalogV1, NetworkPreparationCatalogError,
-    NetworkPreparationCatalogV1, NetworkStateError, NetworkStateStore, NetworkWorkerRuntimeError,
-    ProductionNetworkBrokerCompositionV1, SystemdNetworkNamespaceStore,
+    NetworkLifecycleStateStore, NetworkLifecycleWorkerRuntimeError, NetworkNamespaceCatalogError,
+    NetworkNamespaceCatalogV1, NetworkNamespaceCustodyRequirementV1,
+    NetworkNamespacePinWorkerError, NetworkNamespaceStoreError, NetworkObservationWorkerError,
+    NetworkPolicyCatalogV1, NetworkPreparationCatalogError, NetworkPreparationCatalogV1,
+    NetworkStateError, NetworkStateStore, NetworkWorkerRuntimeError,
+    ProductionNetworkBrokerCompositionV1, SystemdNetworkLifecycleExecutor,
+    SystemdNetworkNamespacePinExecutor, SystemdNetworkNamespaceStore,
     SystemdNetworkObservationExecutor, SystemdNetworkPrepareExecutor, validate_activation_replay,
 };
 
 const PREPARATION_WORKER_SOCKET: &str = "/run/aos/sandbox-network-worker/control.sock";
 const OBSERVATION_WORKER_SOCKET: &str = "/run/aos/sandbox-network-observation-worker/control.sock";
+const LIFECYCLE_WORKER_SOCKET: &str = "/run/aos/sandbox-network-lifecycle-worker/control.sock";
+const PIN_WORKER_SOCKET: &str = "/run/aos/sandbox-network-pin-worker/control.sock";
 
 /// Reports failure while opening the protected Network session runtime.
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +60,12 @@ pub enum NetworkBrokerSessionRuntimeErrorV1 {
     /// The postcondition observer could not be constructed.
     #[error("network observation worker failed: {0}")]
     ObservationWorker(#[from] NetworkObservationWorkerError),
+    /// The lifecycle effect executor could not be constructed.
+    #[error("network lifecycle worker failed: {0}")]
+    LifecycleWorker(#[from] NetworkLifecycleWorkerRuntimeError),
+    /// The namespace-pin teardown executor could not be constructed.
+    #[error("network namespace pin worker failed: {0}")]
+    PinWorker(#[from] NetworkNamespacePinWorkerError),
     /// A retained namespace descriptor could not be duplicated safely.
     #[error("network namespace descriptor duplication failed: {0}")]
     Descriptor(#[from] std::io::Error),
@@ -69,10 +79,12 @@ pub struct NetworkBrokerSessionRuntimeV1 {
     coordinator: NetworkLifecycleAdmissionCoordinator,
     preparations: NetworkPreparationCatalogV1,
     namespaces: NetworkNamespaceCatalogV1,
-    _activation: ActivatedNetworkDescriptors,
+    activation: ActivatedNetworkDescriptors,
     namespace_store: SystemdNetworkNamespaceStore,
     prepare_executor: SystemdNetworkPrepareExecutor,
     observation_executor: SystemdNetworkObservationExecutor,
+    lifecycle_executor: SystemdNetworkLifecycleExecutor,
+    pin_executor: SystemdNetworkNamespacePinExecutor,
 }
 
 impl NetworkBrokerSessionRuntimeV1 {
@@ -116,7 +128,16 @@ impl NetworkBrokerSessionRuntimeV1 {
         let observation_executor = SystemdNetworkObservationExecutor::new(
             PathBuf::from(OBSERVATION_WORKER_SOCKET),
             open_cgroup_root()?,
+            duplicate_network_namespace(&host_namespace)?,
+        )?;
+        let lifecycle_executor = SystemdNetworkLifecycleExecutor::new(
+            PathBuf::from(LIFECYCLE_WORKER_SOCKET),
+            open_cgroup_root()?,
             host_namespace,
+        )?;
+        let pin_executor = SystemdNetworkNamespacePinExecutor::new(
+            PathBuf::from(PIN_WORKER_SOCKET),
+            open_cgroup_root()?,
         )?;
         let coordinator =
             NetworkLifecycleAdmissionCoordinator::new(authority, creation_state, lifecycle_state);
@@ -125,10 +146,12 @@ impl NetworkBrokerSessionRuntimeV1 {
             coordinator,
             preparations,
             namespaces,
-            _activation: activation,
+            activation,
             namespace_store,
             prepare_executor,
             observation_executor,
+            lifecycle_executor,
+            pin_executor,
         })
     }
 
@@ -142,18 +165,23 @@ impl NetworkBrokerSessionRuntimeV1 {
             coordinator,
             preparations,
             namespaces,
-            _activation: _,
+            activation,
             namespace_store,
             prepare_executor,
             observation_executor,
+            lifecycle_executor,
+            pin_executor,
         } = self;
         ProductionNetworkBrokerCompositionV1::new(
             coordinator,
             preparations,
             namespaces,
+            activation,
             namespace_store,
             prepare_executor,
             observation_executor,
+            lifecycle_executor,
+            pin_executor,
         )
     }
 }

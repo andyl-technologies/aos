@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-/* Installs one exact, initially disarmed sandbox Network lease gate. */
+/* Installs and updates one exact sandbox Network ownership-lease gate. */
 
 #define _GNU_SOURCE
 
@@ -60,12 +60,20 @@ union netlink_response_buffer {
   unsigned char bytes[8192];
 };
 
+static int verify_pin_inventory(const char *root);
+
 static void usage(void)
 {
   fprintf(stderr,
           "usage: aos-sandbox-network-lease-gate-loader install-disarmed "
           "HOST_IF PEER_IF /proc/self/fd/3 EPOCH ALLOCATION HANDLE_HEX "
-          "ASSIGNMENT_HEX GATE_OBJECT_HEX GATE_OBJECT\n");
+          "ASSIGNMENT_HEX GATE_OBJECT_HEX GATE_OBJECT\n"
+          "       aos-sandbox-network-lease-gate-loader set-lease "
+          "HANDLE_HEX EPOCH ASSIGNMENT_HEX GENERATION DEADLINE LEASE_HEX\n"
+          "       aos-sandbox-network-lease-gate-loader set-default-drop "
+          "HANDLE_HEX EPOCH ASSIGNMENT_HEX\n"
+          "       aos-sandbox-network-lease-gate-loader remove "
+          "HANDLE_HEX EPOCH ASSIGNMENT_HEX\n");
 }
 
 static int hexadecimal_nibble(char value)
@@ -542,6 +550,56 @@ static int prepare_pin_root(const char *handle, struct installation *install)
   return 0;
 }
 
+static int open_pin_root(const char *handle, struct installation *install)
+{
+  struct stat parent;
+  struct stat root;
+  struct statfs filesystem;
+  int binding_length;
+  int state_length;
+  int ingress_length;
+  int egress_length;
+  int length;
+
+  memset(install, 0, sizeof(*install));
+  if (lstat(PIN_PARENT, &parent) != 0 || !S_ISDIR(parent.st_mode) ||
+      parent.st_uid != 0 || parent.st_gid != 0 ||
+      (parent.st_mode & (S_IWGRP | S_IWOTH)) != 0 ||
+      statfs(PIN_PARENT, &filesystem) != 0 || filesystem.f_type != BPF_FS_MAGIC)
+    return -1;
+  length = snprintf(install->root, sizeof(install->root), "%s/%s", PIN_PARENT,
+                    handle);
+  if (length < 0 || (size_t)length >= sizeof(install->root) ||
+      lstat(install->root, &root) != 0 || !S_ISDIR(root.st_mode) ||
+      root.st_uid != 0 || root.st_gid != 0 ||
+      (root.st_mode & 0777) != 0700 || root.st_dev != parent.st_dev) {
+    fprintf(stderr,
+            "aos-sandbox-network-lease-gate-loader: unsafe existing pin graph\n");
+    return -1;
+  }
+  binding_length = snprintf(install->binding_pin, sizeof(install->binding_pin),
+                            "%s/binding", install->root);
+  state_length = snprintf(install->state_pin, sizeof(install->state_pin),
+                          "%s/lease_state", install->root);
+  ingress_length = snprintf(install->ingress_pin, sizeof(install->ingress_pin),
+                            "%s/ingress_link", install->root);
+  egress_length = snprintf(install->egress_pin, sizeof(install->egress_pin),
+                           "%s/egress_link", install->root);
+  if (binding_length < 0 ||
+      (size_t)binding_length >= sizeof(install->binding_pin) ||
+      state_length < 0 || (size_t)state_length >= sizeof(install->state_pin) ||
+      ingress_length < 0 ||
+      (size_t)ingress_length >= sizeof(install->ingress_pin) ||
+      egress_length < 0 ||
+      (size_t)egress_length >= sizeof(install->egress_pin) ||
+      verify_pin_inventory(install->root) != 0) {
+    fprintf(stderr,
+            "aos-sandbox-network-lease-gate-loader: invalid existing pin graph\n");
+    return -1;
+  }
+  return 0;
+}
+
 static int validate_map(int fd, enum bpf_map_type type, __u32 value_size,
                         const char *name)
 {
@@ -678,6 +736,231 @@ static int verify_pin_inventory(const char *root)
   return 0;
 }
 
+struct opened_gate {
+  struct installation paths;
+  struct aos_network_lease_binding_v1 binding;
+  struct aos_network_lease_state_v1 state;
+  int binding_fd;
+  int state_fd;
+  int ingress_fd;
+  int egress_fd;
+};
+
+static void close_opened_gate(struct opened_gate *gate)
+{
+  if (gate->egress_fd >= 0)
+    close(gate->egress_fd);
+  if (gate->ingress_fd >= 0)
+    close(gate->ingress_fd);
+  if (gate->state_fd >= 0)
+    close(gate->state_fd);
+  if (gate->binding_fd >= 0)
+    close(gate->binding_fd);
+  gate->binding_fd = -1;
+  gate->state_fd = -1;
+  gate->ingress_fd = -1;
+  gate->egress_fd = -1;
+}
+
+static bool direction_equal(
+    const struct aos_network_direction_lease_v1 *left,
+    const struct aos_network_direction_lease_v1 *right)
+{
+  return left->assignment_epoch == right->assignment_epoch &&
+         left->lease_generation == right->lease_generation &&
+         left->deadline_boottime_nanoseconds ==
+             right->deadline_boottime_nanoseconds &&
+         left->format_version == right->format_version &&
+         left->armed == right->armed &&
+         memcmp(&left->assignment_digest, &right->assignment_digest,
+                sizeof(left->assignment_digest)) == 0 &&
+         memcmp(&left->lease_digest, &right->lease_digest,
+                sizeof(left->lease_digest)) == 0;
+}
+
+static bool direction_valid(
+    const struct aos_network_direction_lease_v1 *direction,
+    const struct aos_network_lease_binding_v1 *binding)
+{
+  bool lease_present = direction->lease_generation != 0 &&
+                       direction->deadline_boottime_nanoseconds != 0 &&
+                       digest_present(&direction->lease_digest);
+  bool lease_absent = direction->lease_generation == 0 &&
+                      direction->deadline_boottime_nanoseconds == 0 &&
+                      !digest_present(&direction->lease_digest);
+
+  return direction->format_version == AOS_NETWORK_LEASE_GATE_FORMAT_VERSION &&
+         direction->armed <= 1 &&
+         direction->assignment_epoch == binding->assignment_epoch &&
+         memcmp(&direction->assignment_digest, &binding->assignment_digest,
+                sizeof(direction->assignment_digest)) == 0 &&
+         ((direction->armed == 1 && lease_present) ||
+          (direction->armed == 0 && (lease_present || lease_absent)));
+}
+
+static int validate_pinned_attachment(int fd, __u32 ifindex,
+                                      enum bpf_attach_type type,
+                                      __u32 program_id)
+{
+  LIBBPF_OPTS(bpf_prog_query_opts, query);
+  struct bpf_link_info info;
+  __u32 programs[2] = {0};
+  __u32 links[2] = {0};
+  __u32 size = sizeof(info);
+
+  memset(&info, 0, sizeof(info));
+  if (bpf_obj_get_info_by_fd(fd, &info, &size) != 0 || info.id == 0 ||
+      info.type != BPF_LINK_TYPE_TCX || info.prog_id != program_id ||
+      info.tcx.ifindex != ifindex || info.tcx.attach_type != (__u32)type)
+    return -1;
+  query.count = 2;
+  query.prog_ids = programs;
+  query.link_ids = links;
+  if (bpf_prog_query_opts((int)ifindex, type, &query) != 0 ||
+      query.count != 1 || programs[0] != program_id || links[0] != info.id)
+    return -1;
+  return 0;
+}
+
+static int open_existing_gate(
+    const char *handle_text, __u64 assignment_epoch,
+    const struct aos_network_digest_v1 *expected_handle,
+    const struct aos_network_digest_v1 *expected_assignment,
+    struct opened_gate *gate)
+{
+  struct aos_network_boot_id_v1 boot_id;
+  __u32 key = AOS_NETWORK_LEASE_GATE_BINDING_KEY;
+
+  memset(gate, 0, sizeof(*gate));
+  gate->binding_fd = -1;
+  gate->state_fd = -1;
+  gate->ingress_fd = -1;
+  gate->egress_fd = -1;
+  if (open_pin_root(handle_text, &gate->paths) != 0)
+    goto invalid;
+  gate->binding_fd = bpf_obj_get(gate->paths.binding_pin);
+  gate->state_fd = bpf_obj_get(gate->paths.state_pin);
+  gate->ingress_fd = bpf_obj_get(gate->paths.ingress_pin);
+  gate->egress_fd = bpf_obj_get(gate->paths.egress_pin);
+  if (gate->binding_fd < 0 || gate->state_fd < 0 || gate->ingress_fd < 0 ||
+      gate->egress_fd < 0 ||
+      validate_map(gate->binding_fd, BPF_MAP_TYPE_ARRAY,
+                   sizeof(gate->binding), "binding") != 0 ||
+      validate_map(gate->state_fd, BPF_MAP_TYPE_HASH, sizeof(gate->state),
+                   "lease_state") != 0 ||
+      bpf_map_lookup_elem(gate->binding_fd, &key, &gate->binding) != 0 ||
+      bpf_map_lookup_elem(gate->state_fd, &key, &gate->state) != 0 ||
+      parse_boot_id(&boot_id) != 0)
+    goto invalid;
+  if (gate->binding.format_version != AOS_NETWORK_LEASE_GATE_FORMAT_VERSION ||
+      gate->binding.provenance_version !=
+          AOS_NETWORK_LEASE_GATE_PROVENANCE_VERSION ||
+      gate->binding.reserved != 0 || gate->binding.provenance_reserved != 0 ||
+      gate->binding.assignment_epoch != assignment_epoch ||
+      gate->binding.allocation_generation == 0 ||
+      gate->binding.namespace_device == 0 || gate->binding.namespace_inode == 0 ||
+      gate->binding.host_ifindex == 0 || gate->binding.peer_ifindex == 0 ||
+      gate->binding.ingress_program_id == 0 ||
+      gate->binding.egress_program_id == 0 ||
+      gate->binding.ingress_program_id == gate->binding.egress_program_id ||
+      memcmp(&gate->binding.network_handle, expected_handle,
+             sizeof(*expected_handle)) != 0 ||
+      memcmp(&gate->binding.assignment_digest, expected_assignment,
+             sizeof(*expected_assignment)) != 0 ||
+      !digest_present(&gate->binding.gate_object_digest) ||
+      memcmp(&gate->binding.kernel_boot_id, &boot_id, sizeof(boot_id)) != 0 ||
+      gate->state.format_version != AOS_NETWORK_LEASE_GATE_FORMAT_VERSION ||
+      gate->state.reserved != 0 ||
+      !direction_equal(&gate->state.ingress, &gate->state.egress) ||
+      !direction_valid(&gate->state.ingress, &gate->binding) ||
+      validate_pinned_attachment(gate->ingress_fd,
+                                 gate->binding.host_ifindex, BPF_TCX_INGRESS,
+                                 gate->binding.ingress_program_id) != 0 ||
+      validate_pinned_attachment(gate->egress_fd,
+                                 gate->binding.host_ifindex, BPF_TCX_EGRESS,
+                                 gate->binding.egress_program_id) != 0)
+    goto invalid;
+  return 0;
+
+invalid:
+  fprintf(stderr,
+          "aos-sandbox-network-lease-gate-loader: existing gate mismatch\n");
+  close_opened_gate(gate);
+  return -1;
+}
+
+static int replace_gate_state(
+    struct opened_gate *gate,
+    const struct aos_network_lease_state_v1 *replacement)
+{
+  struct aos_network_lease_state_v1 observed;
+  __u32 key = AOS_NETWORK_LEASE_GATE_STATE_KEY;
+
+  if (bpf_map_update_elem(gate->state_fd, &key, replacement, BPF_EXIST) != 0 ||
+      bpf_map_lookup_elem(gate->state_fd, &key, &observed) != 0 ||
+      memcmp(&observed, replacement, sizeof(observed)) != 0) {
+    perror("aos-sandbox-network-lease-gate-loader: replace lease state");
+    return -1;
+  }
+  return 0;
+}
+
+static int set_gate_lease(struct opened_gate *gate, __u64 generation,
+                          __u64 deadline,
+                          const struct aos_network_digest_v1 *lease_digest)
+{
+  struct aos_network_lease_state_v1 replacement;
+
+  if (generation <= gate->state.ingress.lease_generation || deadline == 0 ||
+      !digest_present(lease_digest))
+    return -1;
+  memset(&replacement, 0, sizeof(replacement));
+  replacement.format_version = AOS_NETWORK_LEASE_GATE_FORMAT_VERSION;
+  initialize_direction(&replacement.ingress, &gate->binding);
+  replacement.ingress.armed = 1;
+  replacement.ingress.lease_generation = generation;
+  replacement.ingress.deadline_boottime_nanoseconds = deadline;
+  replacement.ingress.lease_digest = *lease_digest;
+  replacement.egress = replacement.ingress;
+  return replace_gate_state(gate, &replacement);
+}
+
+static int set_gate_default_drop(struct opened_gate *gate)
+{
+  struct aos_network_lease_state_v1 replacement;
+
+  memset(&replacement, 0, sizeof(replacement));
+  replacement.format_version = AOS_NETWORK_LEASE_GATE_FORMAT_VERSION;
+  initialize_direction(&replacement.ingress, &gate->binding);
+  replacement.egress = replacement.ingress;
+  return replace_gate_state(gate, &replacement);
+}
+
+static int remove_gate(struct opened_gate *gate)
+{
+  __u32 host_ifindex = gate->binding.host_ifindex;
+
+  if (unlink(gate->paths.egress_pin) != 0 ||
+      unlink(gate->paths.ingress_pin) != 0)
+    return -1;
+  close(gate->egress_fd);
+  close(gate->ingress_fd);
+  gate->egress_fd = -1;
+  gate->ingress_fd = -1;
+  if (require_empty_chain(host_ifindex, BPF_TCX_INGRESS) != 0 ||
+      require_empty_chain(host_ifindex, BPF_TCX_EGRESS) != 0 ||
+      unlink(gate->paths.state_pin) != 0 ||
+      unlink(gate->paths.binding_pin) != 0)
+    return -1;
+  close(gate->state_fd);
+  close(gate->binding_fd);
+  gate->state_fd = -1;
+  gate->binding_fd = -1;
+  if (rmdir(gate->paths.root) != 0)
+    return -1;
+  return 0;
+}
+
 static void cleanup_installation(const struct installation *install)
 {
   if (!install->root_created)
@@ -798,14 +1081,45 @@ int main(int argc, char **argv)
   struct aos_network_digest_v1 handle;
   struct aos_network_digest_v1 assignment;
   struct aos_network_digest_v1 gate_object;
+  struct aos_network_digest_v1 lease_digest = {{0}};
   struct installation install;
+  struct opened_gate gate;
   __u64 epoch;
   __u64 allocation;
+  __u64 generation = 0;
+  __u64 deadline = 0;
+  int result;
 
   if (getuid() != 0 || geteuid() != 0) {
     fprintf(stderr,
             "aos-sandbox-network-lease-gate-loader: root identity required\n");
     return 1;
+  }
+  if ((argc == 5 &&
+       (strcmp(argv[1], "set-default-drop") == 0 ||
+        strcmp(argv[1], "remove") == 0)) ||
+      (argc == 8 && strcmp(argv[1], "set-lease") == 0)) {
+    if (parse_digest(argv[2], "network handle", &handle) != 0 ||
+        parse_u64(argv[3], "assignment epoch", &epoch) != 0 ||
+        parse_digest(argv[4], "assignment digest", &assignment) != 0 ||
+        !digest_present(&handle) || !digest_present(&assignment))
+      return 2;
+    if (argc == 8 &&
+        (parse_u64(argv[5], "lease generation", &generation) != 0 ||
+         parse_u64(argv[6], "lease deadline", &deadline) != 0 ||
+         parse_digest(argv[7], "lease digest", &lease_digest) != 0 ||
+         !digest_present(&lease_digest)))
+      return 2;
+    if (open_existing_gate(argv[2], epoch, &handle, &assignment, &gate) != 0)
+      return 1;
+    if (strcmp(argv[1], "set-lease") == 0)
+      result = set_gate_lease(&gate, generation, deadline, &lease_digest);
+    else if (strcmp(argv[1], "set-default-drop") == 0)
+      result = set_gate_default_drop(&gate);
+    else
+      result = remove_gate(&gate);
+    close_opened_gate(&gate);
+    return result == 0 ? 0 : 1;
   }
   if (argc != 11 || strcmp(argv[1], "install-disarmed") != 0 ||
       strcmp(argv[4], "/proc/self/fd/3") != 0 ||

@@ -142,6 +142,22 @@ impl NetworkLifecycleWorkerDispatchV1 {
         &self.kernel_plan
     }
 
+    pub(crate) const fn lifecycle_action(&self) -> NetworkNamespaceLifecycleActionV1 {
+        self.context.action
+    }
+
+    pub(crate) const fn desired_state(&self) -> NetworkNamespaceObservedStateV1 {
+        self.context.desired_state
+    }
+
+    pub(crate) const fn prior_resource_digest(&self) -> ObjectDigest {
+        self.context.authority.resource_digest
+    }
+
+    pub(crate) const fn target_identity(&self) -> NetworkNamespaceIdentityV1 {
+        self.context.authority.identity
+    }
+
     /// Returns the sealed fence this untrusted record claims was current.
     ///
     /// A caller must obtain the latest fence independently from protected

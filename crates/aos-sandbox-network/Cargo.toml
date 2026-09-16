@@ -22,7 +22,7 @@ aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
 base64.workspace = true
 buffa.workspace = true
-rustix = { workspace = true, features = ["event", "fs", "process", "rand", "time"] }
+rustix = { workspace = true, features = ["event", "fs", "mount", "process", "rand", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

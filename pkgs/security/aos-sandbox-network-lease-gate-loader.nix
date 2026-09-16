@@ -1,4 +1,4 @@
-##! aos-sandbox-network-lease-gate-loader — fixed disarmed TCX gate installer
+##! aos-sandbox-network-lease-gate-loader — fixed TCX lease-gate owner
 {
   lib,
   mkDerivation,
@@ -93,7 +93,7 @@ in
     };
 
     meta = {
-      description = "Fixed disarmed TCX lease-gate installer for sandbox networking";
+      description = "Fixed TCX ownership-lease gate installer and lifecycle mutator";
       license = "Apache-2.0";
     };
   }

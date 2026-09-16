@@ -63,6 +63,8 @@ pub use namespace_inspector::{
     PROTECTED_STORE_EXT4_CASES, run_namespace_inspector_protected_store_ext4_fixture,
 };
 pub mod namespace_observer;
+mod namespace_pin;
+mod namespace_pin_worker_runtime;
 pub mod namespace_store;
 pub mod nftables_reader;
 mod observation_worker_runtime;
@@ -138,8 +140,9 @@ pub use lifecycle_worker_protocol::{
     NetworkLifecycleWorkerRoleV1,
 };
 pub use lifecycle_worker_runtime::{
-    AdmittedNetworkLifecycleWorkerV1, NetworkLifecycleWorkerRuntimeError,
-    SystemdNetworkLifecycleAdmissionExecutor, run_inherited_network_lifecycle_admission_worker,
+    ExecutedNetworkLifecycleWorkerV1, NetworkLifecycleWorkerConfiguration,
+    NetworkLifecycleWorkerRuntimeError, SystemdNetworkLifecycleExecutor,
+    run_inherited_network_lifecycle_worker,
 };
 pub use namespace_catalog::{
     NetworkNamespaceCatalogError, NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogV1,
@@ -155,6 +158,11 @@ pub use namespace_observer::{
     observe_stable_network_kernel, observe_stable_prepared_network_kernel,
     observe_stable_recovered_network_kernel, observe_stable_rtnetlink_namespace,
     observe_stable_rtnetlink_pair,
+};
+pub use namespace_pin::NetworkNamespacePinMutationError;
+pub use namespace_pin_worker_runtime::{
+    NetworkNamespacePinWorkerError, SystemdNetworkNamespacePinExecutor,
+    run_inherited_network_namespace_pin_worker,
 };
 pub use namespace_store::{
     ActivatedNetworkDescriptors, MAXIMUM_RETAINED_NETWORK_NAMESPACES,

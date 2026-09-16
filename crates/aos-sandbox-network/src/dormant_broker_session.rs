@@ -15,11 +15,17 @@ use sha2::{Digest as _, Sha256};
 
 use crate::authorization::decode_assignment;
 use crate::{
-    AuthenticatedNetworkPreparationV1, NetworkAdmissionError, NetworkAdmissionOutcome,
+    ActivatedNetworkDescriptors, AuthenticatedNetworkPreparationV1,
+    CommittedNetworkLifecycleResultV1, NetworkAdmissionError, NetworkAdmissionOutcome,
     NetworkBrokerError, NetworkKernelPlanV1, NetworkLifecycleAdmissionCoordinator,
-    NetworkLifecycleAdmissionOutcome, NetworkNamespaceCatalogV1, NetworkObservationWorkerError,
-    NetworkPreparationCatalogV1, NetworkPreparationFinalizationInput,
-    NetworkPreparationRuntimeError, NetworkPrepareExecutionOutcomeV1, NetworkWorkerRuntimeError,
+    NetworkLifecycleAdmissionOutcome, NetworkLifecycleWorkerRuntimeError,
+    NetworkNamespaceCatalogV1, NetworkNamespaceLifecycleActionV1,
+    NetworkNamespaceLifecycleObservationV1, NetworkNamespaceLifecycleTransitionV1,
+    NetworkNamespacePinWorkerError, NetworkNamespaceStoreError, NetworkNamespaceStoreName,
+    NetworkNamespaceStoreOutcome, NetworkObservationWorkerError, NetworkPreparationCatalogV1,
+    NetworkPreparationFinalizationInput, NetworkPreparationRuntimeError,
+    NetworkPrepareExecutionOutcomeV1, NetworkWorkerRuntimeError, PreparedNetworkObservationV1,
+    SystemdNetworkLifecycleExecutor, SystemdNetworkNamespacePinExecutor,
     SystemdNetworkNamespaceStore, SystemdNetworkObservationExecutor, SystemdNetworkPrepareExecutor,
     begin_network_preparation_once, finalize_observation_worker_preparation,
 };
@@ -46,6 +52,15 @@ pub enum DormantNetworkBrokerCallErrorV1 {
     /// The separate read-only observation worker failed or could not be quiesced.
     #[error("authenticated Network observation worker failed: {0}")]
     ObservationWorker(#[from] NetworkObservationWorkerError),
+    /// The privileged lifecycle worker failed or could not be quiesced.
+    #[error("authenticated Network lifecycle worker failed: {0}")]
+    LifecycleWorker(#[from] NetworkLifecycleWorkerRuntimeError),
+    /// Live namespace descriptor custody could not be updated exactly.
+    #[error("authenticated Network namespace custody failed: {0}")]
+    NamespaceStore(#[from] NetworkNamespaceStoreError),
+    /// Host-visible namespace-pin teardown failed or could not be quiesced.
+    #[error("authenticated Network namespace pin teardown failed: {0}")]
+    PinWorker(#[from] NetworkNamespacePinWorkerError),
 }
 
 /// Classifies the real Network coordinator entered by the dormant callsite.
@@ -226,9 +241,12 @@ pub struct ProductionNetworkBrokerCompositionV1<'a> {
     coordinator: &'a mut NetworkLifecycleAdmissionCoordinator,
     preparations: &'a NetworkPreparationCatalogV1,
     namespaces: &'a mut NetworkNamespaceCatalogV1,
+    activation: &'a mut ActivatedNetworkDescriptors,
     namespace_store: &'a SystemdNetworkNamespaceStore,
     prepare_executor: &'a mut SystemdNetworkPrepareExecutor,
     observation_executor: &'a mut SystemdNetworkObservationExecutor,
+    lifecycle_executor: &'a mut SystemdNetworkLifecycleExecutor,
+    pin_executor: &'a mut SystemdNetworkNamespacePinExecutor,
     last_boottime_nanoseconds: Option<u64>,
 }
 
@@ -239,17 +257,23 @@ impl<'a> ProductionNetworkBrokerCompositionV1<'a> {
         coordinator: &'a mut NetworkLifecycleAdmissionCoordinator,
         preparations: &'a NetworkPreparationCatalogV1,
         namespaces: &'a mut NetworkNamespaceCatalogV1,
+        activation: &'a mut ActivatedNetworkDescriptors,
         namespace_store: &'a SystemdNetworkNamespaceStore,
         prepare_executor: &'a mut SystemdNetworkPrepareExecutor,
         observation_executor: &'a mut SystemdNetworkObservationExecutor,
+        lifecycle_executor: &'a mut SystemdNetworkLifecycleExecutor,
+        pin_executor: &'a mut SystemdNetworkNamespacePinExecutor,
     ) -> Self {
         Self {
             coordinator,
             preparations,
             namespaces,
+            activation,
             namespace_store,
             prepare_executor,
             observation_executor,
+            lifecycle_executor,
+            pin_executor,
             last_boottime_nanoseconds: None,
         }
     }
@@ -283,10 +307,6 @@ impl DormantNetworkBrokerCallsiteV1 for ProductionNetworkBrokerCompositionV1<'_>
             protected_boot_id,
             &mut self.last_boottime_nanoseconds,
         )?;
-        if !matches!(semantics.operation(), NetworkOperation::Prepare { .. }) {
-            return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
-        }
-
         let assignment = decode_assignment(request_body)
             .map_err(|_| DormantNetworkBrokerCallErrorV1::StaleKernel)?;
         let (preparation, kernel_plan) = self.coordinator.resolve_session_request_preparation(
@@ -294,77 +314,211 @@ impl DormantNetworkBrokerCallsiteV1 for ProductionNetworkBrokerCompositionV1<'_>
             assignment,
             None,
         )?;
-        let admission = self.coordinator.admit_apply_intent(
-            request_body,
-            artifacts,
-            &preparation,
-            protocol_version,
-            peer,
-            policy,
-            &current_clock,
-        )?;
-        let result = match admission {
-            NetworkAdmissionOutcome::Replay(committed) => committed,
-            NetworkAdmissionOutcome::Prepared { effect_digest } => {
-                let mut trusted_clock = || {
-                    protected_paired_clock_sample()
-                        .map_err(|_| NetworkAdmissionError::FenceRejected)
-                };
-                let execution = begin_network_preparation_once(
-                    self.coordinator,
-                    request_id,
-                    effect_digest,
+        match semantics.operation() {
+            NetworkOperation::Prepare { .. } => {
+                let admission = self.coordinator.admit_apply_intent(
                     request_body,
-                    kernel_plan.clone(),
-                    &mut trusted_clock,
+                    artifacts,
+                    &preparation,
+                    protocol_version,
+                    peer,
+                    policy,
+                    &current_clock,
                 )?;
-                let NetworkPrepareExecutionOutcomeV1::Dispatch(dispatch) = execution else {
-                    return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+                let result = match admission {
+                    NetworkAdmissionOutcome::Replay(committed) => committed,
+                    NetworkAdmissionOutcome::Prepared { effect_digest } => {
+                        let mut trusted_clock = || {
+                            protected_paired_clock_sample()
+                                .map_err(|_| NetworkAdmissionError::FenceRejected)
+                        };
+                        let execution = begin_network_preparation_once(
+                            self.coordinator,
+                            request_id,
+                            effect_digest,
+                            request_body,
+                            kernel_plan.clone(),
+                            &mut trusted_clock,
+                        )?;
+                        let NetworkPrepareExecutionOutcomeV1::Dispatch(dispatch) = execution else {
+                            return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+                        };
+                        let worker_output = self.prepare_executor.execute_once(
+                            &dispatch,
+                            self.coordinator,
+                            self.namespace_store,
+                        )?;
+                        let proof = self
+                            .observation_executor
+                            .observe_once(&worker_output, &kernel_plan)?;
+                        self.activation.retain_runtime_namespace(
+                            *preparation.resolution().reserved_network_handle(),
+                            worker_output.namespace(),
+                        )?;
+                        let input = NetworkPreparationFinalizationInput::new(
+                            request_body,
+                            preparation.resolution(),
+                            &kernel_plan,
+                            &worker_output,
+                        );
+                        finalize_observation_worker_preparation(
+                            self.coordinator,
+                            self.preparations,
+                            self.namespaces,
+                            input,
+                            proof,
+                        )?
+                        .result()
+                    }
+                    NetworkAdmissionOutcome::ObserveOnly { .. }
+                    | NetworkAdmissionOutcome::Aborted { .. } => {
+                        return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+                    }
                 };
-                let worker_output = self.prepare_executor.execute_once(
-                    &dispatch,
-                    self.coordinator,
-                    self.namespace_store,
-                )?;
-                let proof = self
-                    .observation_executor
-                    .observe_once(&worker_output, &kernel_plan)?;
-                let input = NetworkPreparationFinalizationInput::new(
-                    request_body,
-                    preparation.resolution(),
-                    &kernel_plan,
-                    &worker_output,
+                let admission = DormantNetworkBrokerAdmissionV1::Preparation(
+                    NetworkAdmissionOutcome::Replay(result),
                 );
-                finalize_observation_worker_preparation(
-                    self.coordinator,
-                    self.preparations,
-                    self.namespaces,
-                    input,
-                    proof,
-                )?
-                .result()
-            }
-            NetworkAdmissionOutcome::ObserveOnly { .. }
-            | NetworkAdmissionOutcome::Aborted { .. } => {
-                return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
-            }
-        };
-        let admission =
-            DormantNetworkBrokerAdmissionV1::Preparation(NetworkAdmissionOutcome::Replay(result));
-        let response_body = NetworkResult {
-            network_handle: result.network_handle().to_vec(),
-            state: NetworkState::NETWORK_STATE_DEFAULT_DROP.into(),
-            ..Default::default()
-        }
-        .encode_to_vec();
-        let commitment = network_observation_commitment(request_id, request_body_digest, admission);
+                let response_body = NetworkResult {
+                    network_handle: result.network_handle().to_vec(),
+                    state: NetworkState::NETWORK_STATE_DEFAULT_DROP.into(),
+                    ..Default::default()
+                }
+                .encode_to_vec();
+                let commitment =
+                    network_observation_commitment(request_id, request_body_digest, admission);
 
-        Ok(DormantNetworkBrokerObservationV1 {
-            request_id,
-            admission,
-            commitment,
-            response_body: Some(response_body),
-        })
+                Ok(DormantNetworkBrokerObservationV1 {
+                    request_id,
+                    admission,
+                    commitment,
+                    response_body: Some(response_body),
+                })
+            }
+            NetworkOperation::ArmLease { network_handle, .. }
+            | NetworkOperation::RenewLease { network_handle, .. }
+            | NetworkOperation::Disarm { network_handle }
+            | NetworkOperation::Destroy { network_handle } => {
+                let admission = self.coordinator.admit_lifecycle_intent(
+                    request_body,
+                    artifacts,
+                    &preparation,
+                    &kernel_plan,
+                    self.namespaces,
+                    protocol_version,
+                    peer,
+                    policy,
+                    &current_clock,
+                )?;
+                let (result, released_identity) = match admission {
+                    NetworkLifecycleAdmissionOutcome::Replay(committed) => (committed, None),
+                    NetworkLifecycleAdmissionOutcome::Prepared { effect_digest } => {
+                        let permit = self
+                            .coordinator
+                            .mark_effect_ambiguous(request_id, effect_digest)?;
+                        let dispatch = self.coordinator.issue_lifecycle_worker_dispatch(
+                            permit,
+                            request_body,
+                            preparation.clone(),
+                            kernel_plan.clone(),
+                        )?;
+                        let target = self
+                            .activation
+                            .namespace_for_handle(*network_handle)
+                            .ok_or(DormantNetworkBrokerCallErrorV1::StaleKernel)?;
+                        let execution = self.lifecycle_executor.execute_once(
+                            self.coordinator.authority(),
+                            &dispatch,
+                            target,
+                        )?;
+                        let target_namespace_identity = target.identity();
+                        let (proof, observation_digest) =
+                            if execution.action() == NetworkNamespaceLifecycleActionV1::Destroy {
+                                let proof = self.observation_executor.observe_destroyed_once(
+                                    execution,
+                                    &kernel_plan,
+                                    target,
+                                )?;
+                                let pin_removal_digest = self.pin_executor.remove_once(
+                                    execution.request_id(),
+                                    execution.effect_digest(),
+                                    execution.target_identity().network_handle(),
+                                    target_namespace_identity,
+                                )?;
+                                let store_name = NetworkNamespaceStoreName::from_network_handle(
+                                    execution.target_identity().network_handle(),
+                                )?;
+                                if self.namespace_store.remove(&store_name)?
+                                    != NetworkNamespaceStoreOutcome::Removed
+                                    || self
+                                        .namespace_store
+                                        .retained_identity(&store_name)?
+                                        .is_some()
+                                {
+                                    return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+                                }
+                                let observation_digest = destroyed_custody_observation_digest(
+                                    execution,
+                                    proof,
+                                    pin_removal_digest,
+                                )?;
+                                (proof, observation_digest)
+                            } else {
+                                let proof = self.observation_executor.observe_lifecycle_once(
+                                    execution,
+                                    &kernel_plan,
+                                    execution.target_identity().kernel_boot_id(),
+                                    execution.desired_state(),
+                                    target,
+                                )?;
+                                (proof, proof.observation_digest())
+                            };
+                        let observation = NetworkNamespaceLifecycleObservationV1::new(
+                            execution.request_id(),
+                            execution.prior_resource_digest(),
+                            execution.target_identity(),
+                            proof.observed_state(),
+                            observation_digest,
+                        )
+                        .map_err(NetworkBrokerError::from)?;
+                        let transition = lifecycle_transition(
+                            execution.action(),
+                            execution.desired_state(),
+                            observation,
+                        )?;
+                        let committed = self.coordinator.commit_verified_transition(
+                            execution.request_id(),
+                            execution.effect_digest(),
+                            transition,
+                            self.namespaces,
+                        )?;
+                        let released_identity = (execution.action()
+                            == NetworkNamespaceLifecycleActionV1::Destroy)
+                            .then_some(target_namespace_identity);
+                        (committed, released_identity)
+                    }
+                    NetworkLifecycleAdmissionOutcome::ObserveOnly { .. } => {
+                        return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+                    }
+                };
+                if let Some(identity) = released_identity {
+                    self.activation
+                        .release_runtime_namespace(*network_handle, identity)?;
+                }
+                let admission = DormantNetworkBrokerAdmissionV1::Lifecycle(
+                    NetworkLifecycleAdmissionOutcome::Replay(result),
+                );
+                let response_body = lifecycle_response(semantics.operation(), result)?;
+                let commitment =
+                    network_observation_commitment(request_id, request_body_digest, admission);
+
+                Ok(DormantNetworkBrokerObservationV1 {
+                    request_id,
+                    admission,
+                    commitment,
+                    response_body: Some(response_body),
+                })
+            }
+        }
     }
 }
 
@@ -561,6 +715,129 @@ fn protected_paired_clock_sample() -> Result<RawPairedClockSample, DormantNetwor
         boottime_nanoseconds,
     )
     .map_err(|_| DormantNetworkBrokerCallErrorV1::StaleKernel)
+}
+
+fn lifecycle_transition(
+    action: NetworkNamespaceLifecycleActionV1,
+    desired_state: crate::NetworkNamespaceObservedStateV1,
+    observation: NetworkNamespaceLifecycleObservationV1,
+) -> Result<NetworkNamespaceLifecycleTransitionV1, DormantNetworkBrokerCallErrorV1> {
+    let transition = match action {
+        NetworkNamespaceLifecycleActionV1::Arm => {
+            let (lease_digest, generation, deadline) = desired_state
+                .lease()
+                .ok_or(DormantNetworkBrokerCallErrorV1::StaleKernel)?;
+            NetworkNamespaceLifecycleTransitionV1::arm(
+                observation,
+                lease_digest,
+                generation,
+                deadline,
+            )
+        }
+        NetworkNamespaceLifecycleActionV1::Renew => {
+            let (lease_digest, generation, deadline) = desired_state
+                .lease()
+                .ok_or(DormantNetworkBrokerCallErrorV1::StaleKernel)?;
+            NetworkNamespaceLifecycleTransitionV1::renew(
+                observation,
+                lease_digest,
+                generation,
+                deadline,
+            )
+        }
+        NetworkNamespaceLifecycleActionV1::Disarm => {
+            NetworkNamespaceLifecycleTransitionV1::disarm(observation)
+        }
+        NetworkNamespaceLifecycleActionV1::Destroy => {
+            NetworkNamespaceLifecycleTransitionV1::destroy(observation)
+        }
+        NetworkNamespaceLifecycleActionV1::Fence => {
+            return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+        }
+    };
+    transition
+        .map_err(NetworkBrokerError::from)
+        .map_err(Into::into)
+}
+
+fn destroyed_custody_observation_digest(
+    execution: crate::ExecutedNetworkLifecycleWorkerV1,
+    proof: PreparedNetworkObservationV1,
+    pin_removal_digest: ObjectDigest,
+) -> Result<ObjectDigest, DormantNetworkBrokerCallErrorV1> {
+    if execution.action() != NetworkNamespaceLifecycleActionV1::Destroy
+        || execution.desired_state().kind() != crate::NetworkNamespaceObservedStateKindV1::Absent
+        || proof.request_id() != execution.request_id()
+        || proof.effect_digest() != execution.effect_digest()
+        || proof.kernel_boot_id() != execution.target_identity().kernel_boot_id()
+        || proof.namespace() != execution.target_namespace()
+        || proof.observed_state().kind() != crate::NetworkNamespaceObservedStateKindV1::Absent
+        || pin_removal_digest.as_bytes() == &[0; 32]
+    {
+        return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+    }
+
+    let target = execution.target_identity();
+    let namespace = execution.target_namespace();
+    let mut digest = Sha256::new();
+    digest.update(b"aos.sandbox.network.destroyed-custody-observation.v1\0");
+    digest.update(execution.request_id());
+    digest.update(execution.effect_digest().as_bytes());
+    digest.update(proof.kernel_plan_digest().as_bytes());
+    digest.update(target.network_handle());
+    digest.update(target.kernel_boot_id());
+    digest.update(namespace.device.to_be_bytes());
+    digest.update(namespace.inode.to_be_bytes());
+    digest.update(proof.observation_digest().as_bytes());
+    digest.update(pin_removal_digest.as_bytes());
+    digest.update(b"systemd-descriptor-store-absent\0");
+    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
+}
+
+fn lifecycle_response(
+    operation: &NetworkOperation,
+    result: CommittedNetworkLifecycleResultV1,
+) -> Result<Vec<u8>, DormantNetworkBrokerCallErrorV1> {
+    let (expected_action, state, lease_generation) = match operation {
+        NetworkOperation::ArmLease {
+            lease_generation, ..
+        } => (
+            NetworkNamespaceLifecycleActionV1::Arm,
+            NetworkState::NETWORK_STATE_ARMED,
+            *lease_generation,
+        ),
+        NetworkOperation::RenewLease {
+            lease_generation, ..
+        } => (
+            NetworkNamespaceLifecycleActionV1::Renew,
+            NetworkState::NETWORK_STATE_ARMED,
+            *lease_generation,
+        ),
+        NetworkOperation::Disarm { .. } => (
+            NetworkNamespaceLifecycleActionV1::Disarm,
+            NetworkState::NETWORK_STATE_DEFAULT_DROP,
+            0,
+        ),
+        NetworkOperation::Destroy { .. } => (
+            NetworkNamespaceLifecycleActionV1::Destroy,
+            NetworkState::NETWORK_STATE_ABSENT,
+            0,
+        ),
+        NetworkOperation::Prepare { .. } => {
+            return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+        }
+    };
+    if result.action() != expected_action {
+        return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+    }
+
+    Ok(NetworkResult {
+        network_handle: result.network_handle().to_vec(),
+        state: state.into(),
+        lease_generation,
+        ..Default::default()
+    }
+    .encode_to_vec())
 }
 
 fn network_observation_commitment(

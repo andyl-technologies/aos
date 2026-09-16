@@ -510,6 +510,7 @@ pub fn run_inherited_network_prepare_worker(
         &host_namespace,
         &worker,
     )?;
+    mutator.publish_prepared_namespace(&authorization, &target_namespace)?;
 
     let result = NetworkWorkerResultV1::new(
         authorization.request_id(),

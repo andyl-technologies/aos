@@ -268,6 +268,61 @@ impl ActivatedNetworkDescriptors {
         self.namespaces.get(&name)
     }
 
+    pub(crate) fn retain_runtime_namespace(
+        &mut self,
+        network_handle: [u8; 32],
+        namespace: &NamespaceFd,
+    ) -> Result<(), NetworkNamespaceStoreError> {
+        let name = NetworkNamespaceStoreName::from_network_handle(network_handle)?;
+        let identity = namespace.identity();
+        if let Some(existing) = self.namespaces.get(&name) {
+            return if existing.identity() == identity {
+                Ok(())
+            } else {
+                Err(NetworkNamespaceStoreError::ReplayConflict)
+            };
+        }
+        if self.namespaces.len() >= self.maximum_entries
+            || identity == self.host_network_identity
+            || self
+                .namespaces
+                .values()
+                .any(|retained| retained.identity() == identity)
+        {
+            return Err(NetworkNamespaceStoreError::ReplayConflict);
+        }
+
+        let descriptor = namespace
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|_| invalid_activation("could not duplicate retained namespace"))?;
+        let namespace = NamespaceFd::from_owned(descriptor, NamespaceKind::Network)
+            .map_err(|_| invalid_activation("duplicated descriptor is not a Network namespace"))?;
+        if namespace.identity() != identity {
+            return Err(NetworkNamespaceStoreError::ReplayConflict);
+        }
+        self.namespaces
+            .insert(name.clone(), RetainedNetworkNamespace { name, namespace });
+        Ok(())
+    }
+
+    pub(crate) fn release_runtime_namespace(
+        &mut self,
+        network_handle: [u8; 32],
+        expected_identity: NamespaceIdentity,
+    ) -> Result<(), NetworkNamespaceStoreError> {
+        let name = NetworkNamespaceStoreName::from_network_handle(network_handle)?;
+        let retained = self
+            .namespaces
+            .get(&name)
+            .ok_or(NetworkNamespaceStoreError::ReplayConflict)?;
+        if retained.identity() != expected_identity {
+            return Err(NetworkNamespaceStoreError::ReplayConflict);
+        }
+        self.namespaces.remove(&name);
+        Ok(())
+    }
+
     pub(super) fn identities(&self) -> BTreeMap<NetworkNamespaceStoreName, NamespaceIdentity> {
         self.namespaces
             .iter()

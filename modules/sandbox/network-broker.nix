@@ -45,6 +45,12 @@
       authorityCredentialFields);
   protectedRoots = config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
   protectedRootsUnit = "aos-sandbox-network-roots.service";
+  workerSockets = [
+    "aos-sandbox-network-worker.socket"
+    "aos-sandbox-network-lifecycle-worker.socket"
+    "aos-sandbox-network-observation-worker.socket"
+    "aos-sandbox-network-pin-worker.socket"
+  ];
   runtimeRootsExecutable = "${pkgs.aos-selinux-runtime-roots}/bin/aos-selinux-runtime-roots";
   runtimeRootsCommand = "/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots ${runtimeRootsExecutable} --root / --prepare-sandbox-network-roots";
 in {
@@ -86,6 +92,10 @@ in {
         {
           assertion = config.aos.services.dbus.enable;
           message = "aos.sandbox.networkBroker requires aos.services.dbus for bounded systemd FD-store readback";
+        }
+        {
+          assertion = config.aos.sandbox.networkWorker.enable;
+          message = "aos.sandbox.networkBroker requires aos.sandbox.networkWorker for preparation, lifecycle, observation, and pin-teardown execution";
         }
         {
           assertion = !anyAuthorityCredential || completeAuthorityCredentials;
@@ -152,9 +162,11 @@ in {
       description = "AOS authenticated sandbox Network inventory broker";
       requires =
         ["aos-netd.socket" "dbus.socket"]
+        ++ workerSockets
         ++ lib.optional protectedRoots protectedRootsUnit;
       after =
         ["aos-netd.socket" "dbus.socket" "local-fs.target"]
+        ++ workerSockets
         ++ lib.optional protectedRoots protectedRootsUnit;
       unitConfig = {
         StartLimitIntervalSec = 60;
