@@ -927,7 +927,8 @@ fn replay_candidate_ability_plan(
     let catalog = crate::package_contract::VerifiedPackagePlanningCatalog::from_resolved_contracts(
         documents,
     )?;
-    let mut evaluator = native_activation::production_evaluator()?;
+    let mut evaluator =
+        native_activation::production_evaluator_for_store_view(&manifest.inputs.store_view)?;
     ability_activation::specialize_planning(&inputs, &catalog, &mut evaluator)
 }
 
