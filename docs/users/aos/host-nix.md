@@ -361,17 +361,20 @@ manifest, EROFS lower, input GC roots, and activation record survive reboot.
 
 ## Diagnose the boot stages
 
-The relevant initrd units, in order, are:
+The initrd executes one checked ability stage:
 
 ```text
-aos-provisioning-state
-aos-metadata-detect
-aos-metadata-network       cloud transports only
-aos-metadata-fetch
-aos-metadata-authorize
-aos-provisioning-eval
-aos-repart
+aos-ability-initrd-controller
+  -> detect platform
+  -> acquire and authorize metadata
+  -> evaluate and observe the storage plan
+  -> commit storage effects
+  -> complete the initrd substrate and switch root
 ```
+
+The indented steps are typed package-provider operations from the resolved
+stage, not independently managed systemd units. Their exact interfaces,
+requirements, and outputs come from the selected packages' ability contracts.
 
 Stage 2 then runs:
 
@@ -389,11 +392,7 @@ Inspect the current boot with:
 
 ```sh
 journalctl -b \
-  -u aos-metadata-detect.service \
-  -u aos-metadata-fetch.service \
-  -u aos-metadata-authorize.service \
-  -u aos-provisioning-eval.service \
-  -u aos-repart.service \
+  -u aos-ability-initrd-controller.service \
   -u aos-eval.service \
   -u aos-graph-compile.service \
   -u aos-activate.service

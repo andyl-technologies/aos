@@ -80,9 +80,9 @@ sandboxing, slices) is image-baked and measured.
 failure-isolated); `┄▶` = `After=` only.
 
 ```text
-[initrd]  aos-metadata-detect ═▶ aos-metadata-fetch ═▶ aos-metadata-authorize
-          ═▶ aos-storage-plan-render ═▶ systemd-repart ═▶ aos-var-crypt/mount-var
-          ═▶ nix-overlay-setup ═▶ aos-seed-profiles (gen-0) ═▶ etc-overlay-setup ═▶ switch_root
+[initrd]  aos-ability-initrd-controller executes the checked resolved stage:
+          metadata detection/acquisition/authorization ═▶ storage-plan evaluation
+          ═▶ storage effects ═▶ persistent-substrate preparation ═▶ switch_root
 
 [stage 2] networkd/resolved (gen-0 /etc) ┄▶ network-online.target
    │
@@ -118,6 +118,10 @@ failure-isolated); `┄▶` = `After=` only.
    ▼   with After=firewall.service rendered from the manifest)
  multi-user.target
 ```
+
+The initrd steps are typed operations dispatched to the selected package-owned
+providers. They are not separately authored service units; the resolved stage
+is the single source for their interfaces, bindings, order, and outputs.
 
 The pipeline has three zones: a **failure-isolated, retryable pre-commit wing**
 (parallel fetch + per-package render), the **single atomic commit**

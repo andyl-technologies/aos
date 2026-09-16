@@ -178,21 +178,12 @@ service failure.
 
 ## Recover from a failed first boot
 
-Inspect the provisioning chain:
+Inspect the checked initrd stage controller. Its journal records the exact
+package-owned operation and selected provider that failed:
 
 ```sh
-systemctl status \
-  aos-metadata-detect.service \
-  aos-metadata-fetch.service \
-  aos-metadata-authorize.service \
-  aos-provisioning-eval.service \
-  aos-repart.service
-journalctl -b \
-  -u aos-metadata-detect.service \
-  -u aos-metadata-fetch.service \
-  -u aos-metadata-authorize.service \
-  -u aos-provisioning-eval.service \
-  -u aos-repart.service
+systemctl status aos-ability-initrd-controller.service
+journalctl -b -u aos-ability-initrd-controller.service
 ```
 
 Verify the metadata label and payload, trust mode, detached signature, target
