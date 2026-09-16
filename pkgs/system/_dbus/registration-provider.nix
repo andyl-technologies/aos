@@ -11,6 +11,13 @@
   controllerIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
   );
+  controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
+  realizationSchema = let
+    values = controller.desiredType._abilitySchema.fields.schema.values or [];
+  in
+    if builtins.length values == 1
+    then builtins.head values
+    else throw "the D-Bus registration controller declaration must own one realization schema";
   emptyResult = {
     requests = {};
     outputs = {};
@@ -187,7 +194,7 @@
           configuration-resource = configurationChild.outputs.configuration-resource.value;
         })
         requests;
-    realizations.system-bus.schema = "aos.dbus.system-registration-realization/v1";
+    realizations.system-bus.schema = realizationSchema;
   };
 in {
   config.aos.abilities.implementations = {

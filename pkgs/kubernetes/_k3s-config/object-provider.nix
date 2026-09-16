@@ -12,6 +12,12 @@
     lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
   );
   controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
+  realizationSchema = let
+    values = controller.desiredType._abilitySchema.fields.schema.values or [];
+  in
+    if builtins.length values == 1
+    then builtins.head values
+    else throw "the K3s object controller declaration must own one realization schema";
   effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
   emptyResult = {
     requests = {};
@@ -130,7 +136,7 @@
       requests = builtins.mapAttrs effectRequest resources;
       outputs = {};
       realizations.objects = {
-        schema = "aos.kubernetes.object-set-realization/v1";
+        schema = realizationSchema;
         kubeconfig = "/etc/rancher/k3s/k3s.yaml";
       };
     };
