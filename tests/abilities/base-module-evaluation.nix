@@ -34,10 +34,6 @@ lib.evalModules {
             type = lib.types.attrsOf lib.types.anything;
             default = {};
           };
-          systemd.services = lib.mkOption {
-            type = lib.types.attrsOf lib.types.anything;
-            default = {};
-          };
           aos.boot.storage.backend = lib.mkOption {
             type = lib.types.str;
             default = "gpt-partitions";
@@ -77,6 +73,12 @@ lib.evalModules {
           stage = "host";
         };
       }
+      (lib.optionalAttrs (!(builtins.any (package: package.pname == "systemd") packages)) {
+        options.systemd.services = lib.mkOption {
+          type = lib.types.attrsOf lib.types.anything;
+          default = {};
+        };
+      })
     ]
     ++ extraModules;
   packageModules = builtins.map lib.abilities.authenticatedPackageModuleRecordFor packages;

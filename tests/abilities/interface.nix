@@ -9,10 +9,11 @@
     description = "Reports readiness for the requested revision.";
   };
 
-  interface = abilities.define {
-    interface = "aos.test.echo";
+  interface = abilities.declareInterface {
+    name = "aos.test.echo";
     abi = 1;
-    requestSchema = types.record {
+    description = "Ability interface aos.test.echo.";
+    requestType = types.record {
       fields = {
         enabled = types.boolean;
         label = types.string {
@@ -22,6 +23,7 @@
       };
       optional = ["label"];
     };
+    configurationType = null;
     outputs = {
       endpoint = {
         description = "Identifies the endpoint resource produced by the test interface.";
@@ -73,27 +75,7 @@
       mergeContract = null;
       controllerGroup = "echo";
     };
-    requires = {};
-    ownsResourceKinds = ["aos.resource.service"];
-    handler = "echo-handler";
-    provide = {instance, ...}: {
-      requests = {};
-      outputs.endpoint = abilities.resourceReference {
-        interface = {
-          name = "aos.test.echo";
-          abi = 1;
-          descriptor = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
-        };
-        resource = {
-          provider = instance.id;
-          key = "endpoint";
-        };
-        operations = ["observe"];
-        lifetime = "instance";
-      };
-      resources = [];
-      conditionalRequirements = [];
-    };
+    requiredFeatures = ["abilities-v1"];
   };
 in
-  abilities.interfaceDocument ["abilities-v1"] interface
+  abilities.interfaceDocumentFromDeclaration interface

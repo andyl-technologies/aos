@@ -77,19 +77,7 @@
         resources;
     };
 
-  emptyTransition = {
-    schema = "aos.ability.transition-fragment/v1";
-    operations = [];
-    decisions = [];
-    merges = [];
-    edges = [];
-    exports = [];
-    imports = [];
-    links = [];
-    handoffs = [];
-    provider_readiness = [];
-    obligations = [];
-  };
+  emptyTransition = lib.abilities.transitionFragment {};
   revisionFor = context: change: let
     revisions =
       if change.desired != null

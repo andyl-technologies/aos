@@ -195,7 +195,6 @@
       inherit qualification;
       inherit packagePlatform;
       inherit mkArtifactConsumptionAudit;
-      effects = abilities.effects;
       literalExpression = text: {
         _type = "literalExpression";
         inherit text;

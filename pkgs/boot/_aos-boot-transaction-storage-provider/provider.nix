@@ -174,19 +174,10 @@
         compensate = null;
       };
     };
-  in {
-    schema = "aos.ability.transition-fragment/v1";
-    operations = builtins.map operation changed;
-    decisions = [];
-    merges = [];
-    edges = [];
-    exports = [];
-    imports = [];
-    links = [];
-    handoffs = [];
-    provider_readiness = [];
-    obligations = [];
-  };
+  in
+    lib.abilities.transitionFragment {
+      operations = builtins.map operation changed;
+    };
 in {
   config.aos.abilities.implementations.${alias} = {
     inherit provide compose transition;

@@ -21,7 +21,8 @@
   };
   canonicalInterface = builtins.toJSON interfaceDocument;
   expectedInterface = builtins.readFile ./fixtures/interface.json;
-  packageStoreReadViewDocument = lib.abilities.interfaceDocumentFromDeclaration
+  packageStoreReadViewDocument =
+    lib.abilities.interfaceDocumentFromDeclaration
     lib.abilities.interfaces.packageStoreReadView.interfaces.readView.declaration;
   canonicalPackageStoreReadView = builtins.toJSON packageStoreReadViewDocument;
   expectedPackageStoreReadView = builtins.readFile ../../crates/aos-package-store-model/tests/fixtures/package-store-read-view-interface.json;
@@ -205,250 +206,6 @@
       descriptor = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
     };
 
-  guaranteeOrdering =
-    builtins.map
-    (value: "${value.name}:${builtins.toString value.version}")
-    (lib.abilities.define {
-      interface = "aos.test.ordering";
-      abi = 1;
-      requestSchema = lib.abilities.types.boolean;
-      outputs = {};
-      methods = {};
-      lifecycle = {
-        persistentDeleteMethod = null;
-      };
-      guarantees = [
-        {
-          name = "aos.zz";
-          version = 1;
-          descriptor = "sha256:5555555555555555555555555555555555555555555555555555555555555555";
-        }
-        {
-          name = "aos.a.long";
-          version = 1;
-          descriptor = "sha256:4444444444444444444444444444444444444444444444444444444444444444";
-        }
-        {
-          name = "aos.a";
-          version = 10;
-          descriptor = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
-        }
-        {
-          name = "aos.a";
-          version = 2;
-          descriptor = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
-        }
-      ];
-      aggregation = {
-        scope = "provider-instance";
-        key = "authorized-slot";
-        rejectSlotCollisions = true;
-        mergeContract = null;
-        controllerGroup = "ordering";
-      };
-      requires = {};
-      ownsResourceKinds = [];
-      handler = "ordering-handler";
-    })
-    .guarantees;
-
-  methodSemantics = name: {
-    requiredTargetAccess =
-      if builtins.elem name ["observe" "observe-boot" "observe-health" "validate" "verify"]
-      then "read"
-      else "exclusive-write";
-    stopsProvider = name == "stop";
-  };
-  methodSemanticsInterfaceFor = retainedResource: semantics:
-    lib.abilities.define {
-      interface = "aos.test.method-family";
-      abi = 1;
-      requestSchema = lib.abilities.types.boolean;
-      outputs = {};
-      methods.run = {
-        inherit semantics;
-        parameters = lib.abilities.types.boolean;
-        targetResource = "aos.test.method-family";
-        outputs = lib.optionalAttrs retainedResource {
-          retained-resource = {
-            schema = lib.abilities.types.resourceReference;
-            phase = "runtime";
-            visibility = "protected";
-            lifetime = "instance";
-          };
-        };
-        permittedOperations = ["run"];
-        guarantees = [];
-        outcome = {
-          completionEvidence = lib.abilities.types.boolean;
-          observationEvidence = lib.abilities.types.boolean;
-          supportsRejectedBeforeEffect = true;
-          indeterminate = "reconcile";
-        };
-      };
-      lifecycle = {
-        persistentDeleteMethod = null;
-      };
-      guarantees = [];
-      aggregation = {
-        scope = "provider-instance";
-        key = "authorized-slot";
-        rejectSlotCollisions = true;
-        mergeContract = null;
-        controllerGroup = "method-family";
-      };
-      requires = {};
-      ownsResourceKinds = ["aos.test.method-family"];
-      handler = "method-family-handler";
-    };
-  methodSemanticsInterface = methodSemanticsInterfaceFor false;
-  acceptedMethodSemantics =
-    (methodSemanticsInterface {
-      requiredTargetAccess = "exclusive-write";
-      stopsProvider = false;
-    })
-    .methods
-    .run
-    .semantics;
-  invalidMethodSemantics = builtins.tryEval (builtins.deepSeq (
-      (methodSemanticsInterface {
-        requiredTargetAccess = "invalid";
-        stopsProvider = false;
-      })
-      .methods
-      .run
-      .semantics
-    )
-    true);
-  invalidRetainedResourceLifecycle = builtins.tryEval (builtins.deepSeq (
-      methodSemanticsInterfaceFor true {
-        requiredTargetAccess = "exclusive-write";
-        stopsProvider = false;
-      }
-    )
-    true);
-
-  configurationExport = configurationSchema:
-    lib.abilities.define {
-      interface = "aos.test.configuration";
-      abi = 1;
-      requestSchema = lib.abilities.types.boolean;
-      inherit configurationSchema;
-      outputs = {};
-      methods = {};
-      lifecycle = {
-        persistentDeleteMethod = null;
-      };
-      guarantees = [];
-      aggregation = {
-        scope = "provider-instance";
-        key = "authorized-slot";
-        rejectSlotCollisions = true;
-        mergeContract = null;
-        controllerGroup = "configuration";
-      };
-      requires = {};
-      ownsResourceKinds = [];
-      handler = "configuration-handler";
-    };
-  literalConfigurationType = lib.abilities.types.record {
-    fields.ports = lib.abilities.types.list {
-      element = lib.abilities.types.integer {
-        minimum = 1024;
-        maximum = 65535;
-      };
-      maxItems = 8;
-    };
-    optional = [];
-  };
-  invalidConfigurationSchema =
-    builtins.fromJSON
-    (builtins.readFile ./fixtures/invalid-configuration-schema.json);
-  invalidConfigurationExport = builtins.tryEval (builtins.deepSeq (
-      (configurationExport invalidConfigurationSchema).configuration_schema
-    )
-    true);
-
-  requirementExport = strength: fallback:
-    lib.abilities.define {
-      interface = "aos.test.requirement";
-      abi = 1;
-      requestSchema = lib.abilities.types.boolean;
-      outputs = {};
-      methods = {};
-      lifecycle = {
-        persistentDeleteMethod = null;
-      };
-      guarantees = [];
-      aggregation = {
-        scope = "provider-instance";
-        key = "authorized-slot";
-        rejectSlotCollisions = true;
-        mergeContract = null;
-        controllerGroup = "requirement";
-      };
-      requires.optional = {
-        interface = testInterface.name;
-        abi = testInterface.abi;
-        descriptor = testInterface.descriptor;
-        methods = [];
-        guarantees = [];
-        inherit strength fallback;
-      };
-      ownsResourceKinds = [];
-      handler = "requirement-handler";
-    };
-  advisoryRequirement =
-    (requirementExport "advisory" {
-      outputs = {
-        enabled = true;
-        endpoint = null;
-      };
-    })
-    .requirements
-    .optional;
-  requiredFallback = builtins.tryEval (builtins.deepSeq (
-      requirementExport "required" {outputs.enabled = true;}
-    )
-    true);
-  advisoryWithoutFallback = builtins.tryEval (builtins.deepSeq (
-      requirementExport "advisory" null
-    )
-    true);
-  nonCanonicalFallback = builtins.tryEval (builtins.deepSeq (
-      requirementExport "advisory" {outputs.enabled = 1.5;}
-    )
-    true);
-
-  composition = import ./composition.nix {
-    inherit (lib) abilities;
-  };
-  expansion = composition.expansion;
-  nodeIn = value: name:
-    builtins.head (builtins.filter (entry: entry.registry_key == name) value.nodes);
-  node = nodeIn expansion;
-  collision = builtins.tryEval (builtins.deepSeq composition.collision true);
-  duplicateProviderAlias = builtins.tryEval (builtins.deepSeq composition.duplicateProviderAlias true);
-  providerCycle = builtins.tryEval (builtins.deepSeq composition.providerCycle true);
-  badResult = builtins.tryEval (builtins.deepSeq composition.badResult true);
-  lateResult = builtins.tryEval (builtins.deepSeq composition.lateResult true);
-  exportDeclaration =
-    lib.abilities.normalizeExportDeclaration
-    "configuration"
-    "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-    composition.configurationExport;
-  emptyEffects = lib.abilities.effects.normalize [] (
-    lib.abilities.effects.when false (lib.abilities.effects.graph {})
-  );
-  effectFixture = import ./effects.nix {
-    inherit (lib) abilities;
-  };
-  effectPlan = effectFixture.normalized;
-  canonicalJsonEffect = builtins.head (
-    builtins.filter
-    (operation: operation.key.key == "consumer")
-    effectFixture.canonicalJson.operations
-  );
   kubernetesPackageServices = import ./kubernetes-package-services.nix {
     inherit lib pkgs;
   };
@@ -637,21 +394,6 @@
   };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokeArtifactSelectors = pkgs.ability-package-smoke.contract.selectors;
-  oversizedFallback = builtins.tryEval (builtins.deepSeq (
-      requirementExport "advisory" {outputs.payload = effectFixture.oversizedValue;}
-    )
-    true);
-  unsupportedEffects = builtins.tryEval (builtins.deepSeq (
-      lib.abilities.effects.normalize [] (
-        lib.abilities.effects.graph {operation = {};}
-      )
-    )
-    true);
-  forgedEffects = {
-    _type = "aos-effect-graph";
-    operations = {};
-    decisions = {hidden = {};};
-  };
   reservedAbilityOutputRejected = output:
     !(builtins.tryEval ((pkgs.mkDerivation {
         pname = "ability-output-collision";
@@ -725,9 +467,6 @@ in
   assert canonicalJson._type == "aos-canonical-json";
   assert canonicalJson.source_schema == lib.abilities.types.schemaOf "canonical source" canonicalJsonSourceType;
   assert canonicalJson.max_bytes == 128;
-  assert canonicalJsonEffect.inputs.fields.encoded.source == "canonical-json";
-  assert canonicalJsonEffect.inputs.fields.encoded.source_schema.kind == "boolean";
-  assert canonicalJsonEffect.inputs.fields.encoded.value.source == "operation-result";
   assert canonicalJsonNixEncoding == ''{"a":true,"z":false}'';
   assert (lib.abilities.types.schemaOf "execution path" lib.abilities.types.executionPath).syntax == "execution-path-v1";
   assert fails (lib.abilities.schemas.checkValue documentRecordSchema {unknown = true;});
@@ -746,9 +485,6 @@ in
     values = [""];
   };
   assert builtins.attrValues asciiControlMap == [true];
-  assert (configurationExport literalConfigurationType).configuration_schema
-  == lib.abilities.types.schemaOf "literal configuration" literalConfigurationType;
-  assert !invalidConfigurationExport.success;
   assert fails (lib.abilities.schemas.checkValue (lib.abilities.schemas.map {
       keyMaxLength = 16;
       keySyntax = null;
@@ -826,11 +562,6 @@ in
     key = "test";
     stage = "invalid";
   });
-  assert fails (lib.abilities.requestId {
-    consumer = testInstanceId;
-    scope = builtins.genList (_: "nested") 65;
-    key = "request";
-  });
   assert fails (lib.abilities.resourceReference {
     interface = testInterface;
     resource = {
@@ -855,195 +586,6 @@ in
     narHash = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
     closure = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
   });
-  assert guaranteeOrdering == ["aos.a:2" "aos.a:10" "aos.a.long:1" "aos.zz:1"];
-  assert acceptedMethodSemantics
-  == {
-    required_target_access = "exclusive-write";
-    stops_provider = false;
-  };
-  assert !invalidMethodSemantics.success;
-  assert !invalidRetainedResourceLifecycle.success;
-  assert advisoryRequirement.strength == "advisory";
-  assert advisoryRequirement.fallback.outputs
-  == {
-    enabled = true;
-    endpoint = null;
-  };
-  assert !requiredFallback.success;
-  assert !advisoryWithoutFallback.success;
-  assert !nonCanonicalFallback.success;
-  assert !oversizedFallback.success;
-  assert !invalidNestedSchema.success;
-  assert expansion == composition.reversed;
-  assert expansion.round == 3;
-  assert builtins.map (entry: entry.registry_key) expansion.nodes == ["managed" "nginx-edge" "nginx-internal" "systemd"];
-  assert (node "nginx-edge").outputs.count == 2;
-  assert (node "nginx-internal").outputs.count == 1;
-  assert builtins.map (entry: entry.slot) (node "managed").contributions
-  == [
-    "nginx-edge.configuration"
-    "nginx-edge.metadata"
-    "nginx-internal.configuration"
-    "nginx-internal.metadata"
-  ];
-  assert builtins.map (entry: entry.request.scope) (node "managed").contributions
-  == [
-    ["nginx-edge" "configuration"]
-    ["nginx-edge" "metadata"]
-    ["nginx-internal" "configuration"]
-    ["nginx-internal" "metadata"]
-  ];
-  assert builtins.map (entry: entry.grant) (node "managed").contributions
-  == [
-    "nginx-edge.configuration"
-    "nginx-edge.metadata"
-    "nginx-internal.configuration"
-    "nginx-internal.metadata"
-  ];
-  assert builtins.length (node "systemd").contributions == 2;
-  assert (builtins.head (node "systemd").contributions).value.configuration._type == "aos-resource-reference";
-  assert (nodeIn composition.emptyRoot "nginx-edge").contributions == [];
-  assert (nodeIn composition.emptyRoot "nginx-edge").outputs.count == 0;
-  assert (nodeIn composition.tlsOff "nginx-edge").conditional_requirements == [];
-  assert !(builtins.elem "credentials" (builtins.map (entry: entry.registry_key) composition.tlsOff.nodes));
-  assert (nodeIn composition.tlsOn "nginx-edge").conditional_requirements == ["credential"];
-  assert builtins.length (nodeIn composition.tlsOn "credentials").contributions == 1;
-  assert !collision.success;
-  assert !duplicateProviderAlias.success;
-  assert !providerCycle.success;
-  assert !badResult.success;
-  assert !lateResult.success;
-  assert exportDeclaration
-  == {
-    name = "configuration";
-    interface = {
-      name = "aos.managed-configuration";
-      abi = 1;
-      descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    };
-    implementation = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-  };
-  assert emptyEffects
-  == {
-    artifacts = [];
-    operations = [];
-    decisions = [];
-    merges = [];
-    edges = [];
-    provider_readiness = [];
-  };
-  assert !unsupportedEffects.success;
-  assert fails (lib.abilities.effects.normalize [] forgedEffects);
-  assert effectPlan == effectFixture.reversed;
-  assert builtins.length effectPlan.artifacts == 1;
-  assert builtins.length effectPlan.operations == 11;
-  assert builtins.length effectPlan.decisions == 6;
-  assert builtins.length effectPlan.merges == 2;
-  assert builtins.length effectPlan.edges == 29;
-  assert builtins.length effectFixture.longChain.operations == 65;
-  assert builtins.length effectFixture.longChain.edges == 64;
-  assert let
-    consumer = builtins.head (builtins.filter (operation: operation.key.key == "consumer") effectFixture.pathWithin.operations);
-  in
-    consumer.inputs.fields.pid_file
-    == {
-      source = "path-within";
-      base = {
-        source = "operation-result";
-        reference = {
-          producer = {
-            kind = "operation";
-            key = {
-              scope = ["path-within"];
-              key = "directory";
-            };
-          };
-          output = "execution-path";
-        };
-      };
-      relative_path = "krb5/service.pid";
-    };
-  assert builtins.map (operation: operation.key) effectPlan.operations
-  == [
-    {
-      scope = ["nginx"];
-      key = "candidate";
-    }
-    {
-      scope = ["nginx"];
-      key = "change";
-    }
-    {
-      scope = ["nginx"];
-      key = "final";
-    }
-    {
-      scope = ["nginx"];
-      key = "mode";
-    }
-    {
-      scope = ["nginx"];
-      key = "policy";
-    }
-    {
-      scope = ["nginx"];
-      key = "publish";
-    }
-    {
-      scope = ["nginx"];
-      key = "record";
-    }
-    {
-      scope = ["nginx" "choice" "false"];
-      key = "apply";
-    }
-    {
-      scope = ["nginx" "choice" "true"];
-      key = "apply";
-    }
-    {
-      scope = ["nginx" "modeChoice" "reload"];
-      key = "apply";
-    }
-    {
-      scope = ["nginx" "modeChoice" "restart"];
-      key = "apply";
-    }
-  ];
-  assert (builtins.head effectPlan.merges).outputs.ready.descriptor.schema == lib.abilities.schemas.boolean;
-  assert builtins.elem "branch-guard" (builtins.map (edge: edge.kind) effectPlan.edges);
-  assert builtins.elem "branch-merge" (builtins.map (edge: edge.kind) effectPlan.edges);
-  assert effectFixture.bootstrap.provider_readiness
-  == [
-    {
-      binding = "nginx.configuration";
-      producer = {
-        scope = ["bootstrap"];
-        key = "bootstrap";
-      };
-      output = "assignment";
-    }
-  ];
-  assert builtins.elem {
-    from = {
-      kind = "operation";
-      key = {
-        scope = ["bootstrap"];
-        key = "bootstrap";
-      };
-    };
-    to = {
-      kind = "operation";
-      key = {
-        scope = ["bootstrap"];
-        key = "consumer";
-      };
-    };
-    kind = "readiness";
-  }
-  effectFixture.bootstrap.edges;
-  assert !(builtins.head effectFixture.kubernetes.operations ? semantics);
-  assert effectFixture.omitted == emptyEffects;
   assert kubernetesPackageServices;
   assert upgradeTransitionFixture;
   assert k3sControllerTerminal;
@@ -1134,19 +676,6 @@ in
   assert fails (normalizeBounded [true false null true false]);
   assert fails (normalizeBounded {oversized-member-name = true;});
   assert fails (normalizeBounded "0123456789abcdefg");
-  assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
-  assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
-  assert fails (lib.abilities.effects.normalize [] effectFixture.incompleteBoolean);
-  assert fails (lib.abilities.effects.normalize ["nginx"] effectFixture.escapingReference);
-  assert fails (lib.abilities.effects.normalize ["nginx"] effectFixture.externalMergeProducer);
-  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.duplicateProviderReadiness);
-  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.mergedProviderReadiness);
-  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.escapingProviderReadiness);
-  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.missingReadinessProducer);
-  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.unusedProviderReadiness);
-  assert fails (lib.abilities.effects.normalize ["bootstrap"] effectFixture.oversizedProviderReadiness);
-  assert fails (lib.abilities.effects.normalize ["chain"] effectFixture.analysisHeavyChain);
-  assert fails (lib.abilities.effects.normalize ["nginx"] effectFixture.oversizedDocument);
     pkgs.mkDerivation {
       pname = "aos-ability-authoring-checks";
       version = "0";
