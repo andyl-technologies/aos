@@ -23,7 +23,6 @@
     request = "${package}:${name}";
     inherit output;
   };
-  repartScript = builtins.readFile ../../pkgs/system/_aos-storage-provisioning-provider/aos-repart.sh;
   etcOverlayScript = builtins.readFile ../../pkgs/boot/_aos-boot-preparations/etc-overlay-setup.sh;
   abiOverrideSystem = mkSystem [
     ../../systems/server.nix
@@ -249,16 +248,10 @@
     else "not-present";
   rfcLifecycleRecurrence =
     builtins.seq
-    (
-      if !(initrdRequest "aos-storage-provisioning-provider" "aos-repart-lifecycle").enabled
-      then throw "aos-repart.service must remain enabled on every GPT-backed boot"
-      else "ok"
-    )
+    (assertOptionalRecurringLifecycleUnit "systemd-tmpfiles-setup")
     (builtins.seq
-      (assertOptionalRecurringLifecycleUnit "systemd-tmpfiles-setup")
-      (builtins.seq
-        (assertOptionalRecurringLifecycleUnit "systemd-tmpfiles-setup-dev")
-        (assertOptionalRecurringLifecycleUnit "systemd-sysusers")));
+      (assertOptionalRecurringLifecycleUnit "systemd-tmpfiles-setup-dev")
+      (assertOptionalRecurringLifecycleUnit "systemd-sysusers"));
 
   # Provisioning and configuration are structural, not optional paths. Their
   # former enable switches must stay deleted and
@@ -484,8 +477,8 @@
     then throw "the stock system must emit aos-metadata-network-seed.service"
     else if !(builtins.hasAttr "aos-provisioning-eval" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-provisioning-eval.service"
-    else if !(builtins.hasAttr "aos-storage-provisioning-provider:aos-repart-lifecycle" initrdAbilityRequests)
-    then throw "the stock system must request the package-owned aos-repart lifecycle"
+    else if builtins.hasAttr "aos-storage-provisioning-provider:aos-repart-lifecycle" initrdAbilityRequests
+    then throw "the stock system must not retain a second repart service execution path"
     else if !(builtins.hasAttr "aos-provisioning-persist" system.config.systemd.services)
     then throw "the stock system must persist provisioning audit evidence"
     else if !(builtins.hasAttr "aos-host-config-restore" system.config.systemd.services)
@@ -537,35 +530,10 @@
         system.config.systemd.services."aos-host-config-cache".after)
     then throw "host input may only be cached after successful full evaluation"
     else if
-      !(containsStr
-        "pending provisioning marker found; refusing automatic replay"
-        repartScript)
-    then throw "aos-repart.service must fail closed on a pending marker"
-    else if
-      !(containsStr
-        "--dry-run=yes"
-        repartScript)
-    then throw "committed storage must be compared without mutation"
-    else if
-      !(containsStr
-        "storage-coherence"
-        repartScript)
-    then throw "committed storage comparison must publish an observable result"
-    else if
-      !(builtins.elem
-        {package = "dosfstools";}
-        (initrdRequest "aos-storage-provisioning-provider" "aos-repart-environment").search_path)
-    then throw "every admitted vfat format must have its AOS-built initrd tool"
-    else if
       !(builtins.elem
         "initrd-root-fs.target"
         system.config.boot.initrd.systemd.services.aos-metadata-authorize.requiredBy)
     then throw "initrd-root-fs.target must require provisioning authorization"
-    else if
-      !(builtins.elem
-        (initrdOutput "aos-storage-provisioning-provider" "initrd-root-filesystems" "readiness-resource")
-        (initrdRequest "aos-storage-provisioning-provider" "aos-repart-dependencies").required_by)
-    then throw "initrd-root-fs.target must require repartitioning"
     else if
       !(builtins.elem
         (initrdOutput "aos-boot-preparations" "initrd-filesystems" "readiness-resource")
@@ -582,16 +550,6 @@
       "local-fs.target"
       system.config.systemd.services.cryptswap.after
     then throw "encrypted swap must not close the mount/swap/local-fs ordering cycle"
-    else if
-      !(builtins.elem
-        (initrdOutput "aos-storage-provisioning-provider" "provisioning-plan" "readiness-resource")
-        (initrdRequest "aos-storage-provisioning-provider" "aos-repart-dependencies").requires)
-    then throw "aos-repart.service must require restricted provisioning evaluation"
-    else if
-      !(builtins.elem
-        (initrdOutput "aos-storage-provisioning-provider" "provisioning-plan" "readiness-resource")
-        (initrdRequest "aos-storage-provisioning-provider" "aos-repart-dependencies").after)
-    then throw "aos-repart.service must run after restricted provisioning evaluation"
     else "ok";
 
   # The edge release artifact is an authenticated capability

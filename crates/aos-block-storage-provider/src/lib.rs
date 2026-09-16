@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod boot_transaction_storage;
 pub mod cryptsetup;
 pub mod engine;
 pub mod process;

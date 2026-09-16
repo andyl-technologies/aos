@@ -7,14 +7,7 @@
   mkCargoDummySource,
   aosWorkspaceSource,
   aosWorkspaceVendor,
-  bash,
-  coreutils,
-  dosfstools,
-  e2fsprogs,
-  jq,
   patchelf,
-  systemd,
-  util-linux,
 }: let
   version = "0.1.0";
   src = aosWorkspaceSource;
@@ -54,7 +47,7 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider --bin aos-storage-provisioning-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider --bin aos-storage-provisioning-provider --bin aos-boot-transaction-storage-provider"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider -p aos-storage-provisioning"
     ];
     preBuild = staticBuildSetup;
@@ -71,36 +64,26 @@ in
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-block-storage-provider --bin aos-storage-provisioning-provider";
+    cargoFlags = "-p aos-block-storage-provider --bin aos-storage-provisioning-provider --bin aos-boot-transaction-storage-provider";
     cargoTestFlags = "-p aos-block-storage-provider -p aos-storage-provisioning";
     doCheck = true;
     buildDeps = [patchelf];
-    runtimeDeps = [
-      bash
-      coreutils
-      dosfstools
-      e2fsprogs
-      jq
-      systemd
-      util-linux
-    ];
+    runtimeDeps = [];
 
     abilities = ./_aos-storage-provisioning-provider/module.nix;
     preBuild = staticBuildSetup;
 
     preInstall = ''
       cp "target/$CARGO_BUILD_TARGET/release/aos-storage-provisioning-provider" target/release/
+      cp "target/$CARGO_BUILD_TARGET/release/aos-boot-transaction-storage-provider" target/release/
     '';
 
     postInstall = ''
       mkdir -p "$out/share/aos/providers"
-      sed 's|@bash@|${bash}|g' \
-        ${./_aos-storage-provisioning-provider/aos-repart.sh} \
-        > "$out/bin/aos-repart"
-      chmod 0555 "$out/bin/aos-repart"
       cp ${./_aos-storage-provisioning-provider/provider.nix} \
         "$out/share/aos/providers/storage-provisioning.nix"
       test -x "$out/bin/aos-storage-provisioning-provider"
+      test -x "$out/bin/aos-boot-transaction-storage-provider"
       if patchelf --print-interpreter "$out/bin/aos-storage-provisioning-provider" \
           > "$TMPDIR/provider.interpreter" 2>/dev/null; then
         printf '%s unexpectedly has ELF interpreter: ' aos-storage-provisioning-provider

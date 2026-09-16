@@ -398,11 +398,12 @@ fn validate_method(action: &str, method: &str, semantics: &MethodSemantics) -> R
 }
 
 fn require_prerequisites(value: &AbilityValue, resources: &[ResourceContext]) -> Result<()> {
-    let prerequisites = value
-        .as_json()
-        .get("prerequisites")
-        .and_then(serde_json::Value::as_array)
-        .context("block-storage request has no prerequisite list")?;
+    let prerequisites = match value.as_json().get("prerequisites") {
+        None => return Ok(()),
+        Some(value) => value
+            .as_array()
+            .context("block-storage prerequisite list is not an array")?,
+    };
     for prerequisite in prerequisites {
         let reference: ResourceReference = serde_json::from_value(prerequisite.clone())?;
         exact_context(resources, &reference)?;

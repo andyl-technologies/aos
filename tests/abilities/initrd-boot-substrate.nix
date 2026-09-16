@@ -1,4 +1,4 @@
-##! Package-owned initrd boot-substrate and repart lifecycle declarations.
+##! Package-owned initrd boot-substrate and checked provisioning declarations.
 {
   lib,
   pkgs,
@@ -19,7 +19,6 @@
           stage = "initrd";
         };
         aos.boot.substrateServices.enable = true;
-        aos.storage.provisioningService.enable = true;
       }
     ];
     packageModules = [
@@ -29,6 +28,7 @@
     ];
   };
   requests = evaluated.config.aos.abilities.requests;
+  implementations = evaluated.config.aos.abilities.implementations;
   request = package: name: requests."${package}:${name}".parameters;
   output = package: name: outputName: {
     _type = "aos-request-output-reference";
@@ -47,7 +47,8 @@
       "aos-machine-id"
     ];
   mountVar = request "aos-boot-preparations" "mount-var-dependencies";
-  repart = request "aos-storage-provisioning-provider" "aos-repart-dependencies";
+  provisioningEffects =
+    implementations."aos-storage-provisioning-provider:storage-provisioning-effects";
 in
   assert lifecycleNames
   == [
@@ -65,11 +66,7 @@ in
   mountVar.requires;
   assert mountVar.required_by
   == [(output "aos-boot-preparations" "initrd-filesystems" "readiness-resource")];
-  assert builtins.elem
-  (output "aos-storage-provisioning-provider" "provisioning-plan" "readiness-resource")
-  repart.requires;
-  assert builtins.elem
-  (output "aos-storage-provisioning-provider" "root-a-device" "readiness-resource")
-  repart.requires;
-  assert repart.required_by
-  == [(output "aos-storage-provisioning-provider" "initrd-root-filesystems" "readiness-resource")]; true
+  assert provisioningEffects.handlerDescriptor.entryPoint
+  == "bin/aos-storage-provisioning-provider";
+  assert !(builtins.hasAttr "aos-storage-provisioning-provider:aos-repart-lifecycle" requests);
+  assert !(builtins.pathExists ../../pkgs/system/_aos-storage-provisioning-provider/aos-repart.sh); true

@@ -1,9 +1,5 @@
 ##! systemd-repart implementation of the portable storage-provisioning resource.
-{
-  config,
-  lib,
-  ...
-}: let
+{lib, ...}: let
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
   networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
   provisioningPlan = lib.abilities.interfaces.blockStorage.types.provisioningPlan;
