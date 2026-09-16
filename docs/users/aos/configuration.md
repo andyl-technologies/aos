@@ -238,7 +238,7 @@ machine-readable fields:
 apm --json switch --dry-run
 ```
 
-Apply a reviewed configuration with the same evaluator and graph compiler:
+Apply a reviewed configuration with the same evaluator and checked activation:
 
 ```sh
 apm switch --from ./host.nix

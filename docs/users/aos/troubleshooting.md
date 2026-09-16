@@ -96,9 +96,9 @@ The journal's
 conflict, provider, ABI, fetch, resource-limit, and convergence failures.
 
 If the activation record is `degraded`, inspect its dropped packages and
-failed units. Re-running the same transaction retries it; the graph compiler
-does not treat degraded or stale evidence as complete. If no new current
-pointer was committed, the previous configuration remains live.
+failed units. Re-running the same transaction retries it; checked activation
+does not treat degraded or stale evidence as complete. If no new current pointer
+was committed, the previous configuration remains live.
 
 Storage is the exception: it is projected and committed in the initrd before
 the full manifest exists. See the [`host.nix` guide](host-nix.md) for the exact

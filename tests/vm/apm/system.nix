@@ -5,8 +5,8 @@
 # containment tracking.
 #
 # These tests run apm in a headless Firecracker microVM with mock toplevels.
-# The toplevels are real Nix derivations containing activation scripts, etc/
-# directories, and systemd unit stubs. The install workflow publishes a real
+# The toplevels are real Nix derivations containing etc/ directories and
+# systemd unit stubs. The install workflow publishes a real
 # sysroot registry entry through APR and downloads it through a generated cache;
 # the rollback/diff tests still seed focused generation state directly.
 #

@@ -628,7 +628,7 @@ pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
 /// produced unless the fixpoint converges and the manifest is validated.
 pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalCommandReport> {
     // A failed re-evaluation must never leave an older manifest looking like
-    // fresh output to ConditionPathExists or the graph compiler.
+    // fresh output to ConditionPathExists or checked activation preflight.
     remove_if_present(&cmd.out)?;
     let graph_out = cmd.out.with_file_name("graph.json");
     remove_if_present(&graph_out)?;

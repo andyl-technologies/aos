@@ -238,9 +238,9 @@ successful default.
 
 ## Interpret configuration activation results
 
-The activation script publishes a transaction-bound record after the pointer
-and `/etc` swap. Its `activation_exit` field has this meaning; the outer `apm`
-command can still report a generic failure from graph orchestration:
+Checked activation publishes a transaction-bound record after the pointer and
+`/etc` swap. Its `activation_exit` field has this meaning; the outer `apm`
+command can still report a generic failure from provider orchestration:
 
 | `activation_exit` | State after the command | Operator action |
 | --- | --- | --- |
