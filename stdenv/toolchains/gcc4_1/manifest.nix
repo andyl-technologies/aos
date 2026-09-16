@@ -222,7 +222,9 @@ in {
       sed -i "s|'/bin/pwd'|'${prev.coreutils}/bin/pwd', '/bin/pwd'|" lib/Cwd.pm
     '';
     buildScript = ''
-      make -j"$NIX_BUILD_CORES"
+      # Perl 5.10's generated module graph permits concurrent configpm jobs
+      # to replace Config.pm while XS modules are loading it.
+      make -j1
     '';
     installScript = ''
       make install.perl ${autotoolsVars}
