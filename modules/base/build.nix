@@ -320,20 +320,6 @@ in {
         '';
       };
 
-      ## The `${toplevel}/activate <gen>` script.
-      activateScript = lib.mkOption {
-        type = lib.types.package;
-        description = ''
-          A single executable bash script, shipped as
-          `''${toplevel}/activate`. Invoked by apm during install /
-          upgrade / rollback as `activate <gen-number>`: it rebuilds
-          this generation's `/etc` composefs overlay on the live
-          system, runs daemon reconciliation, and swaps the new `/etc`
-          in atomically. Built from `modules/base/activate.sh.in` with
-          its `@tool@` placeholders substituted for store paths.
-        '';
-      };
-
       ## The kernel derivation providing bzImage.
       kernel = lib.mkOption {
         type = lib.types.package;
@@ -510,9 +496,6 @@ in {
               #   etc-metadata.erofs, etc-basedir/, etc-dump,
               #   systemd-units/, os-release,
               #   meta/{package-name,version}, kernel, initrd.
-              # `activate` is the live install/upgrade/rollback driver
-              # (`activate <gen>`); apm invokes it after swinging the
-              # `current → gen-N` profile pointer.
               script = ''
                 mkdir -p $out/meta $out/nix-support
 
@@ -524,7 +507,6 @@ in {
                 ln -sfn ${config.environment.etc."os-release".source} $out/os-release
                 ln -sfn ${config.system.build.kernel} $out/kernel
                 ln -sfn ${config.system.build.initrd} $out/initrd
-                ln -sfn ${config.system.build.activateScript} $out/activate
                 ln -sfn ${config.aos.config.evalAtBoot.baseLib} $out/base-lib
                 ${lib.optionalString (config.aos.apm.drainScript != null) ''
                   ln -sfn ${config.aos.apm.drainScript} $out/drain
@@ -578,38 +560,6 @@ in {
           };
         })
       );
-
-    # Substitute the `@tool@` placeholders in activate.sh.in for store
-    # paths. AOS's stdenv has no `substituteAll`, so this uses the
-    # `pkgs.runCommand` + `pkgs.sed` idiom. The body is kept in a
-    # committed `.sh.in` file (not an inline Nix string) so the script's
-    # shell `${N}` / `${prev_gen:-}` expansions don't collide with Nix's
-    # own `${…}` interpolation. `@apm@` resolves to the private package-runtime
-    # output; this does not create a cycle since it does not depend on the
-    # toplevel.
-    # The activate script is an image-fixed artifact (it just
-    # substitutes pkgs store paths into activate.sh.in). Reference the resolved
-    # artifact; register the source guarded on frozenArtifacts so the stage-2
-    # frozen pkgs (no `runCommand`) never evaluates it.
-    system.build.activateScript = config.aos.config.artifacts.aos-activate;
-    aos.config._artifactSources.aos-activate =
-      if config.aos.config.frozenArtifacts ? "aos-activate"
-      then null
-      else
-        pkgs.runCommand "aos-activate" {} ''
-          # AOS stdenv pre-creates $out as a directory; this output is a
-          # single executable file, so drop the dir and write to $out.
-          rmdir "$out"
-          ${pkgs.sed}/bin/sed \
-            -e "s|@bash@|${pkgs.bash}|g" \
-            -e "s|@coreutils@|${pkgs.coreutils}|g" \
-            -e "s|@util-linux@|${pkgs.util-linux}|g" \
-            -e "s|@erofs-utils@|${pkgs.erofs-utils}|g" \
-            -e "s|@apm@|${pkgs.aos.packageRuntime}|g" \
-            -e "s|@systemd@|${pkgs.systemd}|g" \
-            ${./activate.sh.in} > "$out"
-          chmod +x "$out"
-        '';
 
     # --- aos.config-manifest/v1 (pure data) ----------------------------
     #
