@@ -190,8 +190,14 @@
               and .mediaType == ${builtins.toJSON common.manifestMediaType}
               and (.digest | test("^sha256:[0-9a-f]{64}$"))
               and (.size | type == "number" and . >= 0 and floor == .)
-              and (.platform.os == "linux")
-              and (.platform.architecture == "amd64" or .platform.architecture == "arm64")
+              and (.platform | type == "object")
+              and (.platform | keys | all(. == "architecture" or . == "os" or . == "variant"))
+              and (.platform.os | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))
+              and (.platform.architecture | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))
+              and (
+                (.platform | has("variant") | not)
+                or (.platform.variant | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))
+              )
             ' "$image_path/manifest-descriptor.json" >/dev/null
 
             manifest_digest=$(jq -r .digest "$image_path/manifest-descriptor.json")

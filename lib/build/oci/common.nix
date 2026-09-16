@@ -152,17 +152,30 @@
     then fail "a metadata file or symlink is the parent of another entry"
     else entries;
 
+  validatePlatformComponent = context: value:
+    if
+      builtins.isString value
+      && builtins.match "^[A-Za-z0-9][A-Za-z0-9._-]*$" value != null
+    then value
+    else fail "${context} must be a non-empty OCI platform component";
   validatePlatform = platform: let
-    os = platform.os or "linux";
-    architecture = platform.architecture or (fail "platform.architecture is required");
-    variant = platform.variant or null;
+    keys =
+      if builtins.isAttrs platform
+      then builtins.attrNames platform
+      else [];
+    unknownKeys = builtins.filter (key: !(builtins.elem key ["architecture" "os" "variant"])) keys;
+    os = validatePlatformComponent "platform.os" (platform.os or null);
+    architecture = validatePlatformComponent "platform.architecture" (platform.architecture or null);
+    authoredVariant = platform.variant or null;
+    variant =
+      if authoredVariant == null
+      then null
+      else validatePlatformComponent "platform.variant" authoredVariant;
   in
-    if os != "linux"
-    then fail "only linux OCI platforms are supported"
-    else if !(builtins.elem architecture ["amd64" "arm64"])
-    then fail "unsupported OCI architecture ${builtins.toJSON architecture}"
-    else if variant != null && !(builtins.isString variant && builtins.match "^[A-Za-z0-9._-]+$" variant != null)
-    then fail "platform.variant is invalid"
+    if !builtins.isAttrs platform
+    then fail "platform must be an attribute set"
+    else if unknownKeys != []
+    then fail "platform has unknown fields ${builtins.toJSON unknownKeys}"
     else {inherit os architecture variant;};
 
   # `jq -cS` writes one trailing newline.  OCI digests cover exact JSON bytes,

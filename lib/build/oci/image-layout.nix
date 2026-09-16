@@ -19,7 +19,6 @@
   layers,
   runtimeAudit,
   abilityContract,
-  platform,
   config ? {},
   annotations ? {},
   indexAnnotations ? {},
@@ -27,7 +26,7 @@
   created ? common.normalizedTimestamp,
   pname ? "aos-oci-image",
 }: let
-  checkedPlatform = common.validatePlatform platform;
+  checkedPlatform = common.validatePlatform checkedAbilityContract.checkedPlatform;
   entrypoint = common.validateStringList "config.entrypoint" (config.entrypoint or []);
   cmd = common.validateStringList "config.cmd" (config.cmd or []);
   environment = config.env or {};
@@ -134,6 +133,7 @@
       builtins.isAttrs abilityContract
       && (abilityContract._type or null) == "aos-oci-static-ability-contract"
       && builtins.isAttrs (abilityContract.artifact or null)
+      && builtins.isAttrs (abilityContract.checkedPlatform or null)
     then abilityContract
     else common.fail "abilityContract must be produced by mkStaticAbilityContract";
   validated =
@@ -145,8 +145,6 @@
     then common.fail "config.entrypoint[0] must not be empty"
     else if authoredAbilityAnnotations != []
     then common.fail "static ability contract annotations are builder-owned"
-    else if checkedAbilityContract.checkedPlatform != checkedPlatform
-    then common.fail "abilityContract platform must exactly match the image platform"
     else builtins.deepSeq [checkedPlatform checkedLayers checkedRuntimeAudit checkedAbilityContract envList checkedPorts checkedAnnotations checkedIndexAnnotations labels] true;
 
   imageSpec = {
