@@ -481,12 +481,10 @@
     then throw "the stock system must restore its last fully evaluated host input"
     else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
     then throw "the stock system must cache fully evaluated host input"
-    else if
-      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
       ? ConditionPathExists
     then throw "metadata acquisition must run on provisioned boots"
-    else if
-      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
     else if
@@ -831,68 +829,6 @@
     then throw "modules/base/nsswitch.nix generated an unexpected hosts lookup order"
     else "ok";
 
-  # --- aos.apm.installAtBoot --------------------------------------------
-  # Host-authored package intent bakes into the image /etc:
-  # desired.toml plus registry config / trust anchors, as `environment.etc`.
-  installAtBootSystem = mkSystem [
-    ../../systems/server.nix
-    {
-      aos.apm.registries.example = {
-        url = "https://registry.example/aos";
-        trustKeys = [anchorKey];
-      };
-      aos.apm.installAtBoot = {
-        enable = true;
-        packages = ["web" "worker"];
-        config.web.env.TOKEN = "<tag>|{x}";
-      };
-    }
-  ];
-  installAtBootEtc = installAtBootSystem.config.aos.apm.installAtBoot.etc;
-  findEtcEntry = path:
-    if installAtBootEtc ? ${path}
-    then installAtBootEtc.${path}
-    else throw "aos.apm.installAtBoot did not bake /etc/${path}";
-  installAtBootDesired = findEtcEntry "aos/packages.d/desired.toml";
-  installAtBootRegistry = findEtcEntry "apm/registries.d/example.toml";
-  installAtBootTrustedKeys = findEtcEntry "apm/trusted-keys.d/example.pub";
-  apmInstallAtBootEtc = let
-    desiredText = installAtBootDesired.text;
-    registryText = installAtBootRegistry.text;
-    trustedKeysText = installAtBootTrustedKeys.text;
-  in
-    if installAtBootDesired.mode != "0600"
-    then throw "aos.apm.installAtBoot desired.toml must be mode 0600"
-    else if !(containsStr ''packages = ["web", "worker"]'' desiredText)
-    then throw "aos.apm.installAtBoot desired.toml is missing the package list: ${desiredText}"
-    else if !(containsStr "[config.web.env]" desiredText)
-    then throw "aos.apm.installAtBoot desired.toml is missing the config table: ${desiredText}"
-    else if !(containsStr ''TOKEN = "<tag>|{x}"'' desiredText)
-    then throw "aos.apm.installAtBoot desired.toml is missing the config value: ${desiredText}"
-    else if containsStr "[credentials" desiredText
-    then throw "aos.apm.installAtBoot desired.toml must not carry credential declarations: ${desiredText}"
-    else if !(containsStr ''name = "example"'' registryText)
-    then throw "aos.apm.installAtBoot registry file is missing the registry name: ${registryText}"
-    else if !(containsStr "example:Ed25519:QUJDREVGR0g=" trustedKeysText)
-    then throw "aos.apm.installAtBoot trusted keys file is missing the trust anchor: ${trustedKeysText}"
-    else builtins.seq installAtBootSystem.config.system.build.toplevel.name "ok";
-
-  invalidInstallAtBootConfigSystem = mkSystem [
-    ../../systems/server.nix
-    {
-      aos.apm.installAtBoot = {
-        enable = true;
-        config."bad/name".env.TOKEN = "abc";
-      };
-    }
-  ];
-  apmInstallAtBootRejectsInvalidConfigPackage = let
-    forced = builtins.tryEval (invalidInstallAtBootConfigSystem.config.system.build.toplevel.outPath);
-  in
-    if forced.success
-    then throw "aos.apm.installAtBoot.config must reject invalid package names"
-    else "ok";
-
   invalidRegistryNameSystem = mkSystem [
     ../../systems/server.nix
     {
@@ -1034,7 +970,7 @@ in
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
         echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
-        echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid registry (${apmRegistriesRejectsInvalidName})"
+        echo "apm registries: invalid registry name (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"

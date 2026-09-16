@@ -904,10 +904,9 @@ in {
         packages = [];
         packageOutputs = {};
         graph.edges = {};
-        # Package-profile configuration is an ordinary input to this module
-        # fixed point. The evaluator publishes the resulting manifest once;
-        # it does not overlay this value after evaluation.
-        config = config.aos.apm.installAtBoot.config;
+        # The evaluator publishes configuration from the single module fixed
+        # point. The image manifest does not carry a parallel package profile.
+        config = {};
         credentials = {};
         inherit ownership;
       });

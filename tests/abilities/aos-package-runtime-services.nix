@@ -3,10 +3,7 @@
   lib,
   pkgs,
 }: let
-  evaluate = {
-    enabled,
-    stage ? "host",
-  }:
+  evaluate = {stage ? "host"}:
     lib.evalModules {
       inherit lib;
       modules =
@@ -18,13 +15,6 @@
             key = "aos-package-runtime";
             inherit stage;
           };
-          aos.packageRuntime.packageProfile = {
-            enable = enabled;
-            desiredText = ''
-              packages = ["nginx"]
-            '';
-          };
-          aos.packageRuntime.packageAttestationQuote.packageProfileEnabled = enabled;
         }
       ])
         ++ builtins.map lib.authenticatedModule (([
@@ -36,62 +26,29 @@
       ]));
 
     };
-  disabled = evaluate {enabled = false;};
-  enabled = evaluate {enabled = true;};
+  host = evaluate {};
   initrd = evaluate {
-    enabled = true;
     stage = "initrd";
   };
-  disabledRequests = disabled.config.aos.abilities.requests;
-  requests = enabled.config.aos.abilities.requests;
+  requests = host.config.aos.abilities.requests;
   resultOf = request: output: {
     _type = "aos-request-output-reference";
     inherit request output;
   };
-  profileLifecycle = requests."aos:package-profile-convergence-lifecycle".parameters;
   quoteLifecycle = requests."aos:aos-attest-lifecycle".parameters;
   credentialRecoveryLifecycle = requests."aos:aos-credential-recovery-lifecycle".parameters;
-  snapshotImplementation = enabled.config.aos.abilities.implementations."aos:synchronized-registry-snapshot";
+  snapshotImplementation = host.config.aos.abilities.implementations."aos:synchronized-registry-snapshot";
 in
-  assert !(disabledRequests ? "aos:package-profile-specification");
-  assert disabledRequests ? "aos:package-profile-convergence-lifecycle";
-  assert disabledRequests ? "aos:aos-attest-lifecycle";
-  assert disabledRequests ? "aos:aos-credential-recovery-lifecycle";
+  assert !(requests ? "aos:package-profile-specification");
+  assert !(requests ? "aos:package-profile-convergence-lifecycle");
+  assert requests ? "aos:aos-attest-lifecycle";
+  assert requests ? "aos:aos-credential-recovery-lifecycle";
   assert initrd.config.aos.abilities.requests == {};
-  assert enabled.config.aos.abilities.instances."aos:synchronized-registry-snapshot".implementation
+  assert host.config.aos.abilities.instances."aos:synchronized-registry-snapshot".implementation
   == "aos:synchronized-registry-snapshot";
   assert !(initrd.config.aos.abilities.instances ? "aos:synchronized-registry-snapshot");
   assert snapshotImplementation.providerModule == null;
   assert snapshotImplementation.handlerDescriptor.entryPoint == "libexec/aos-registry-snapshot-provider";
-  assert requests."aos:package-profile-specification".parameters.source.content
-  == ''
-    packages = ["nginx"]
-  '';
-  assert profileLifecycle.start
-  == [
-    {
-      executable = {
-        artifact = lib.abilities.packageOutput {
-          package = "aos";
-          output = "apm";
-        };
-        entry_point = "bin/apm";
-        arguments = [
-          "install"
-          "--system"
-          "--from"
-          (resultOf "aos:package-profile-specification" "planned-path")
-          "--yes"
-        ];
-      };
-      ignore_failure = false;
-    }
-  ];
-  assert requests."aos:package-profile-convergence-dependencies".parameters.prerequisites
-  == [
-    (resultOf "aos:configuration-evaluation-lifecycle" "service-resource")
-    (resultOf "aos:package-profile-specification" "retained-resource")
-  ];
   assert quoteLifecycle.start
   == [
     {
@@ -107,7 +64,7 @@ in
     }
   ];
   assert requests."aos:aos-attest-dependencies".parameters.prerequisites
-  == [(resultOf "aos:package-profile-convergence-lifecycle" "service-resource")];
+  == [];
   assert credentialRecoveryLifecycle.start
   == [
     {
@@ -140,4 +97,4 @@ in
     required_mounts = [];
     implicit_dependencies = false;
   };
-  assert !(enabled.config ? systemd); true
+  assert !(host.config ? systemd); true

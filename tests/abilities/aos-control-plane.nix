@@ -51,10 +51,7 @@
         };
       };
     };
-  owners = [
-    (ownerService "configuration-evaluation")
-    (ownerService "package-profile-convergence")
-  ];
+  owners = [(ownerService "configuration-evaluation")];
   ownerContributions = builtins.map serviceManagement.splitContribution owners;
   aosModule = {
     imports = [

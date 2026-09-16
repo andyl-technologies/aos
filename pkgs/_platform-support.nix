@@ -891,7 +891,6 @@ let
     "tools/aos/_abilities/credential-recovery.nix" = "linux-only-config-source";
     "tools/aos/_abilities/ebpf-lsm-policy-loader.nix" = "linux-only-config-source";
     "tools/aos/_abilities/package-attestation-quote.nix" = "linux-only-config-source";
-    "tools/aos/_abilities/package-profile-convergence.nix" = "linux-only-config-source";
     "tools/aos/_abilities/module.nix" = "linux-only-config-source";
     "tools/aos/_abilities/release-coordinator/module.nix" = "linux-only-config-source";
     "tools/aos-hub/_aos-hub/module.nix" = "linux-only-config-source";

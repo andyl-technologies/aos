@@ -881,9 +881,6 @@
       else acc
   ) {} (builtins.attrNames pkgs);
 
-  apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
-    inherit pkgs mkSystem testing;
-  };
   selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
     inherit pkgs lib mkSystem testing;
   };
@@ -1991,7 +1988,6 @@ in {
     systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
     selinux-base = selinuxBaseCheck;
-    apm-install-at-boot = apmInstallAtBootCheck;
     lint = import ./tests/packages/lint.nix {inherit pkgs lib;};
     # Module-level VM checks (from server system, for backwards compat)
     vm =
@@ -2000,7 +1996,6 @@ in {
         apm = apmTests;
         hub-native-operations = hubNativeOperationsTest;
         hub-settings = hubSettingsTest;
-        apm-install-at-boot = apmInstallAtBootCheck;
         selinux-base = selinuxBaseCheck;
       };
     integration = packageChecks // stdenvChecks;

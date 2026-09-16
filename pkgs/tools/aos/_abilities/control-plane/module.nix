@@ -10,10 +10,19 @@
   cfg = config.aos.config.unitGraph;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceInterfaces = serviceManagement.interfaces;
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "control-plane";
   runtimeArtifact = lib.abilities.packageOutput {output = "packageRuntime";};
+
+  runtimeEntryPopulation = serviceManagement.forProducer {
+    inherit consumerInstance;
+    key = "activation-runtime-entry-population";
+    interface = serviceInterfaces.runtimeEntryPopulation;
+    parameters.scope = "runtime-entries";
+  };
+  runtimeEntriesReady = resultOf "activation-runtime-entry-population" "lifecycle-resource";
 
   command = artifact: entryPoint: arguments: {
     executable = {
@@ -203,7 +212,7 @@
     dependencies = defaultDependencies // {
       after = [(resultOf "aos-graph-compile-lifecycle" "service-resource")];
       prerequisites = [
-        (resultOf "package-profile-convergence-lifecycle" "service-resource")
+        runtimeEntriesReady
         (resultOf "aos-graph-compile-lifecycle" "service-resource")
       ];
     };
@@ -224,7 +233,7 @@
     };
   };
 
-  fragments = [configGroup graphCompile activate];
+  fragments = [configGroup runtimeEntryPopulation graphCompile activate];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.aos.config.unitGraph = {

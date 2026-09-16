@@ -4,14 +4,12 @@
   lib,
   ...
 }: let
-  cfg = config.aos.packageRuntime.packageAttestationQuote;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
-  resultOf = lib.abilities.resultOf;
   serviceName = "aos-attest";
-  packageProfile = resultOf "package-profile-convergence-lifecycle" "service-resource";
   hostStage =
-    config.aos.abilities.environment != null
+    config.aos.abilities.environment
+    != null
     && config.aos.abilities.environment.stage == "host";
   command = {
     executable = {
@@ -45,7 +43,7 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        prerequisites = lib.optional cfg.packageProfileEnabled packageProfile;
+        prerequisites = [];
         after = [];
         before = [];
         requires = [];
@@ -123,13 +121,6 @@
   };
   contribution = serviceManagement.splitContribution service;
 in {
-  options.aos.packageRuntime.packageAttestationQuote.packageProfileEnabled = lib.mkOption {
-    type = lib.abilities.types.boolean;
-    default = false;
-    internal = true;
-    description = "Whether quote production waits for package-profile convergence.";
-  };
-
   config.aos.abilities = lib.mkMerge [
     contribution.declarations
     (lib.mkIf hostStage (
