@@ -161,9 +161,16 @@ in {
       aos.boot.storage.resolvedDevices = resolvedDevices;
       aos.filesystems.espDevice = lib.mkDefault (builtins.head cfg.espDevices);
       environment.systemPackages = [pkgs.aos-boot-storage];
-      aos.boot.initrd.extraPackages = [pkgs.aos-boot-storage];
+      aos.boot.initrd.extraPackages = [
+        pkgs.aos-boot-storage
+        pkgs.aos-boot-transaction-storage-provider
+      ];
       aos.abilities.stages.initrd = {
-        packages = [pkgs.aos-boot-storage pkgs.systemd];
+        packages = [
+          pkgs.aos-boot-storage
+          pkgs.aos-boot-transaction-storage-provider
+          pkgs.systemd
+        ];
         intent = [
           {aos.boot.storageServices.espDevices = cfg.espDevices;}
         ];

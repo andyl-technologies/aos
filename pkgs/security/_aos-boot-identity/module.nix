@@ -22,7 +22,6 @@
       interface = interfaces.systemMilestoneReadiness;
       parameters = {inherit milestone;};
     };
-  partitionLayout = systemMilestone "partition-layout" "partition-layout-ready";
   deviceSettle = systemMilestone "device-settle" "device-settle";
   initrdFilesystems = systemMilestone "initrd-filesystems" "initrd-filesystems";
   integrityFailure = systemMilestone "integrity-failure" "boot-integrity-failure";
@@ -115,7 +114,7 @@
     dependencies =
       emptyDependencies
       // {
-        after = [(readiness "partition-layout") (readiness "device-settle")];
+        after = [(readiness "device-settle")];
         before = [(serviceResource "aos-boot-identity-guard")];
       };
     logging = true;
@@ -187,7 +186,6 @@
     };
   };
   fragments = [
-    partitionLayout
     deviceSettle
     initrdFilesystems
     integrityFailure

@@ -31,7 +31,7 @@
     };
   bootIdentity = systemMilestone "boot-identity" "boot-identity-validated";
   deviceEvents = systemMilestone "device-events" "device-settle";
-  partitionLayout = systemMilestone "partition-layout" "partition-layout-ready";
+  initrdStageExecution = systemMilestone "initrd-stage" "initrd-stage-executed";
   initrdFilesystems = systemMilestone "initrd-filesystems" "initrd-filesystems";
   persistentState = systemMilestone "persistent-state" "var";
   integrityFailure = systemMilestone "integrity-failure" "boot-integrity-failure";
@@ -66,7 +66,7 @@
         prerequisites = [];
         after = [
           (resultOf "boot-identity" "readiness-resource")
-          (resultOf "partition-layout" "readiness-resource")
+          (resultOf "initrd-stage" "readiness-resource")
           (resultOf "device-events" "readiness-resource")
         ];
         before = [
@@ -104,7 +104,7 @@
   fragments = [
     bootIdentity
     deviceEvents
-    partitionLayout
+    initrdStageExecution
     initrdFilesystems
     persistentState
     integrityFailure

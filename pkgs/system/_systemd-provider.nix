@@ -373,7 +373,7 @@
         boot-identity-validated = "aos-boot-identity-guard.service";
         boot-storage-unlocked = "aos-zfs-unlock.service";
         boot-integrity-failure = "aos-boot-identity-failure.target";
-        partition-layout-ready = "aos-repart.service";
+        initrd-stage-executed = "aos-ability-initrd-controller.service";
         root-a-device = "dev-disk-by\\x2dpartlabel-root\\x2da.device";
         storage-provisioning-state-ready = "aos-provisioning-state.service";
         storage-provisioning-plan-ready = "aos-provisioning-eval.service";
@@ -539,7 +539,8 @@
       lib.abilities.interfaceIdentity (
         lib.abilities.interfaceDocumentFromDeclaration (semanticInterface candidate)
       )
-      == reference.interface) named;
+      == reference.interface)
+    named;
   in
     if builtins.length matches != 1
     then throw "systemd dependency must name exactly one declared interface"

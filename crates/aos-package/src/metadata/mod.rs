@@ -3,14 +3,14 @@
 //! Initrd phases own cross-cloud acquisition and the narrow first-boot trust
 //! boundary. Fetch stores exact bytes. Authorization applies the measured
 //! `platform` or `signed` policy and is the only phase allowed to produce exact
-//! `host.nix`. Restricted evaluation then projects one-time provisioning and
-//! renders transient repart definitions. Full evaluation remains in stage 2.
+//! `host.nix`. Restricted evaluation then projects and validates one-time
+//! provisioning. The selected storage provider alone renders backend inputs.
 //!
 //! ```text
 //! aos metadata detect   # DMI/SMBIOS/ISO → /run/aos-metadata/platform.env
 //! aos metadata fetch    # platform → exact user-data + facts
 //! aos metadata authorize # trust policy → exact host.nix
-//! aos metadata eval-provisioning # restricted projection → repart.d
+//! aos metadata eval-provisioning # restricted projection → typed validation
 //! ```
 //!
 //! # Module map
@@ -29,8 +29,8 @@
 //! - [`facts_render`] — `facts.json` → `host-facts.nix`.
 //! - [`stash`] — the `/run/aos-metadata` stash format.
 //! - [`provisioning`] — whole-input authorization and host extraction.
-//! - [`repart`] — typed storage validation and transient repart rendering.
-//! - [`state`] — durable provisioning evidence and last-known-good input.
+//! - [`repart`] — shared typed storage validation.
+//! - [`state`] — last-known-good authenticated host input.
 //!
 //! # Testability
 //!
@@ -74,7 +74,6 @@ pub use provisioning::{
     AuthorizeOptions, EvalProvisioningOptions, ProvisioningSource, ProvisioningTrust,
 };
 pub use stash::{MetadataResult, PlatformEnv, Stash};
-pub use state::{PersistProvisioningOptions, ProvisioningAudit};
 
 use aos_net::transfer::{TransferEngine, TransferEngineConfig};
 
@@ -93,7 +92,7 @@ pub enum MetadataCommand {
         #[arg(long = "trusted-config-keys-dir")]
         trusted_config_keys_dir: Vec<PathBuf>,
     },
-    /// Evaluate the closed aos.provisioning projection and render storage
+    /// Evaluate and validate the closed aos.provisioning projection
     EvalProvisioning {
         /// ABI-pinned base module library embedded in the image
         #[arg(long)]
@@ -113,18 +112,6 @@ pub enum MetadataCommand {
     },
     /// Verify that stage 2 sees the exact host input accepted in initrd
     VerifyBinding,
-    /// Persist validated provisioning evidence and manual repart definitions
-    PersistProvisioning {
-        /// Durable state directory on `/var`
-        #[arg(long, default_value = "/var/lib/aos-provisioning")]
-        state_dir: PathBuf,
-        /// ABI of the base module library that evaluated the storage plan
-        #[arg(long)]
-        module_abi: u32,
-        /// Version of the image whose initrd evaluated the storage plan
-        #[arg(long)]
-        image_version: String,
-    },
     /// Cache an authorized host input after full stage-2 evaluation succeeds
     CacheRuntime {
         /// Durable state directory on `/var`
@@ -179,19 +166,6 @@ pub async fn run_command(command: &MetadataCommand) -> Result<()> {
         }),
         MetadataCommand::VerifyBinding => {
             verify_binding_main(std::path::Path::new(stash::DEFAULT_STASH_DIR))
-        }
-        MetadataCommand::PersistProvisioning {
-            state_dir,
-            module_abi,
-            image_version,
-        } => {
-            state::persist_provisioning_state(&PersistProvisioningOptions {
-                stash_dir: PathBuf::from(stash::DEFAULT_STASH_DIR),
-                state_dir: state_dir.clone(),
-                module_abi: *module_abi,
-                image_version: image_version.clone(),
-            })?;
-            Ok(())
         }
         MetadataCommand::CacheRuntime { state_dir } => {
             state::cache_runtime_input(std::path::Path::new(stash::DEFAULT_STASH_DIR), state_dir)?;
@@ -376,12 +350,12 @@ pub async fn authorize_main(opts: &AuthorizeOptions) -> Result<()> {
     Ok(())
 }
 
-/// Runs the restricted initrd provisioning projection and renderer.
+/// Runs the restricted initrd provisioning projection and validation.
 ///
 /// # Errors
 ///
-/// Returns an error when Nix evaluation, strict validation, or rendering
-/// fails. The caller must treat this as fatal before disk mutation.
+/// Returns an error when Nix evaluation or strict validation fails. The caller
+/// must treat this as fatal before the checked storage provider is invoked.
 pub fn eval_provisioning_main(opts: &EvalProvisioningOptions) -> Result<()> {
     provisioning::run_eval_provisioning(opts)?;
     Ok(())

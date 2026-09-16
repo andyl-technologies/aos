@@ -19,10 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config_trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload};
 
-use super::repart::{
-    FALLBACK_LABEL, OPERATOR_LABEL, PENDING_LABEL, ProvisioningPlan, normalize_marker_uuid,
-    render_provisioning_plan,
-};
+use super::repart::{FALLBACK_LABEL, OPERATOR_LABEL, ProvisioningPlan, normalize_marker_uuid};
 use super::stash::{Stash, sha256_hex};
 
 /// Raw user-data filename written by the fetch phase.
@@ -242,7 +239,7 @@ fn authorize_inner(stash: &Stash, opts: &AuthorizeOptions) -> Result<Option<Prov
     Ok(Some(result))
 }
 
-/// Evaluates and renders the closed `aos.provisioning` projection.
+/// Evaluates and validates the closed `aos.provisioning` projection.
 ///
 /// When no `host.nix` was delivered, the same evaluator supplies the schema
 /// defaults. The command enables restricted evaluation and disables
@@ -252,29 +249,9 @@ fn authorize_inner(stash: &Stash, opts: &AuthorizeOptions) -> Result<Option<Prov
 /// # Errors
 ///
 /// Returns an error when the restricted evaluator fails, emits malformed JSON,
-/// or the strict Rust validation or renderer rejects the projection.
-pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<ProvisioningPlan> {
-    let EvaluatedProvisioning {
-        mut plan,
-        source,
-        marker_uuid,
-    } = evaluate_provisioning(opts)?;
-    let marker_label = opts
-        .committed_source
-        .map_or(PENDING_LABEL, ProvisioningSource::committed_label);
-    render_provisioning_plan(
-        &opts.stash_dir,
-        &mut plan,
-        opts.measured_boot,
-        marker_label,
-        &marker_uuid,
-    )?;
-    std::fs::write(
-        opts.stash_dir.join("provisioning-source"),
-        format!("{}\n", source.as_str()),
-    )
-    .context("writing provisioning source")?;
-    Ok(plan)
+/// or strict semantic validation rejects the projection.
+pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<CanonicalProvisioningPlan> {
+    evaluate_canonical_provisioning_plan(opts)
 }
 
 /// Evaluates one authenticated provisioning intent into the canonical ability plan.

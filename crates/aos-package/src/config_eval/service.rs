@@ -104,15 +104,6 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
 
 fn prepare_provisioning_input(command: &ServiceCommand) -> Result<()> {
     let stash = Path::new(crate::metadata::stash::DEFAULT_STASH_DIR);
-    crate::metadata::state::persist_provisioning_state(
-        &crate::metadata::PersistProvisioningOptions {
-            stash_dir: stash.to_path_buf(),
-            state_dir: command.provisioning_state.clone(),
-            module_abi: command.module_abi,
-            image_version: command.image_version.clone(),
-        },
-    )?;
-
     if !command.host_nix.is_file() {
         crate::metadata::state::restore_runtime_input(stash, &command.provisioning_state)
             .context("restoring the last authenticated host input")?;

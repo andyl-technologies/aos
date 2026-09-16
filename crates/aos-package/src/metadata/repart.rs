@@ -1,3 +1,3 @@
-//! Shared typed storage-provisioning model and systemd-repart renderer.
+//! Shared typed storage-provisioning model.
 
 pub use aos_storage_provisioning::*;

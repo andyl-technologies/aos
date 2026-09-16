@@ -23,7 +23,7 @@
     };
   bootIdentity = systemMilestone "boot-identity" "boot-identity-validated";
   deviceEvents = systemMilestone "device-events" "device-settle";
-  partitionLayout = systemMilestone "partition-layout" "partition-layout-ready";
+  initrdStageExecution = systemMilestone "initrd-stage" "initrd-stage-executed";
   initrdFilesystems = systemMilestone "initrd-filesystems" "initrd-filesystems";
   persistentState = systemMilestone "persistent-state" "var";
   verityRoot = systemMilestone "verity-root" "verity-root-verified";
@@ -74,7 +74,7 @@
         after =
           [
             (resultOf "boot-identity" "readiness-resource")
-            (resultOf "partition-layout" "readiness-resource")
+            (resultOf "initrd-stage" "readiness-resource")
             (resultOf "device-events" "readiness-resource")
           ]
           ++ lib.optional cfg.requireVerity verityReadiness;
@@ -121,7 +121,7 @@
   fragments = [
     bootIdentity
     deviceEvents
-    partitionLayout
+    initrdStageExecution
     initrdFilesystems
     persistentState
     verityRoot

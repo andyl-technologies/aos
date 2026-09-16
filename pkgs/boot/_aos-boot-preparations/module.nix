@@ -56,7 +56,7 @@
   initrdFilesystems = systemMilestone "initrd-filesystems" "initrd-filesystems";
   initrdRootFilesystems = systemMilestone "initrd-root-filesystems" "initrd-root-filesystems";
   deviceSettle = systemMilestone "device-settle" "device-settle";
-  partitionLayout = systemMilestone "partition-layout" "partition-layout-ready";
+  initrdStageExecution = systemMilestone "initrd-stage" "initrd-stage-executed";
   bootIdentity = systemMilestone "boot-identity" "boot-identity-validated";
   bootStorageUnlocked = systemMilestone "boot-storage-unlocked" "boot-storage-unlocked";
   switchRootReadiness = resultOf "switch-root" "readiness-resource";
@@ -68,7 +68,7 @@
   initrdFilesystemsReadiness = resultOf "initrd-filesystems" "readiness-resource";
   initrdRootFilesystemsReadiness = resultOf "initrd-root-filesystems" "readiness-resource";
   deviceSettleReadiness = resultOf "device-settle" "readiness-resource";
-  partitionLayoutReadiness = resultOf "partition-layout" "readiness-resource";
+  initrdStageReadiness = resultOf "initrd-stage" "readiness-resource";
   bootIdentityReadiness = resultOf "boot-identity" "readiness-resource";
   bootStorageUnlockedReadiness = resultOf "boot-storage-unlocked" "readiness-resource";
   service = {
@@ -276,7 +276,7 @@
   mountVarPrerequisite =
     if cfg.zfsEnabled
     then bootStorageUnlockedReadiness
-    else partitionLayoutReadiness;
+    else initrdStageReadiness;
   mountVar = substrateService {
     key = "mount-var";
     description = "Mount /var Partition";
@@ -454,7 +454,7 @@
     initrdFilesystems
     initrdRootFilesystems
     deviceSettle
-    partitionLayout
+    initrdStageExecution
     bootIdentity
     bootStorageUnlocked
     mountVar

@@ -1219,7 +1219,7 @@
       "boot-identity-validated"
       "boot-storage-unlocked"
       "boot-integrity-failure"
-      "partition-layout-ready"
+      "initrd-stage-executed"
       "root-a-device"
       "storage-provisioning-state-ready"
       "storage-provisioning-plan-ready"
