@@ -712,7 +712,7 @@ in rec {
       merge = loc: defs: let
         value = type.merge loc defs;
       in
-        if check value
+        if type.check value && check value
         then value
         else throw "The option '${showLoc loc}' does not satisfy its additional type constraint.";
     };
