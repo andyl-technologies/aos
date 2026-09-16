@@ -12,8 +12,8 @@
     extraFixtureModules = [observerModule];
   };
   image = imageLifecycle.abilityRolloutFixture;
-  rollout = import ./_image-rollout-runtime-reference.nix {
-    inherit lib pkgs;
+  rollout = import ./_image-rollout-production.nix {
+    inherit pkgs cellId nativeAdapterMatrix;
     guestTools = true;
   };
   matrix = nativeAdapterMatrix;
