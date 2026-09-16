@@ -22,6 +22,7 @@ in
     inherit lib pkgs;
     modules = [
       lib.abilities.module
+      ../../modules/_package-contributions.nix
       module
       {
         options = {

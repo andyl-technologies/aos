@@ -43,6 +43,8 @@
     ]
     ++ hardwareAutoloadedInitrdModules;
 in {
+  imports = [./_kernel-parameter-contributions.nix];
+
   options.aos.boot = {
     ## Kernel command line parameters.
     ##

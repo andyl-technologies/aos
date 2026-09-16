@@ -310,7 +310,10 @@
       then null
       else
         lib.evalModules {
-          modules = [lib.abilities.module];
+          modules = [
+            lib.abilities.module
+            ../modules/_package-contributions.nix
+          ];
           packageModules = [
             {
               name = packageName;

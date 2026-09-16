@@ -69,6 +69,8 @@
     };
   });
 in {
+  imports = [./_runtime-check-contributions.nix];
+
   options.system.checks = lib.mkOption {
     type = lib.types.attrsOf checkSpecType;
     default = {};
