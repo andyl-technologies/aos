@@ -204,69 +204,33 @@
       inherit pkgs lib operatorModules runtimeModules packageModules;
       specialArgs = moduleSpecialArgs;
     };
-    selectedAbilityPackages = let
-      selectedByPath = builtins.listToAttrs (
-        builtins.map (package: {
-          name = builtins.unsafeDiscardStringContext (builtins.toString package);
-          value = package;
-        })
-        (builtins.filter
-          (package:
-            builtins.isAttrs package
-            && package ? abilities
-            && package ? contract
-            && package ? module
-            && (
-              if package.contract.value.package_module != null
-              then true
-              else
-                throw
-                "selected package '${package.pname or package.name or "<unnamed>"}' has no package module locator"
-            ))
-          selectionEvaluation.config.environment.systemPackages)
-      );
-    in
-      builtins.attrValues selectedByPath;
-    callerPackageNames = builtins.map (record: record.name) packageModules;
-    nativeAbilityPackageModules =
-      builtins.map (package: {
-        name = package.pname or package.name;
-        version = package.version or "0";
-        module = package.module + "/module.nix";
-        outputs = {
-          self = builtins.toString package;
-          dependencies = {};
-        };
-      }) (builtins.filter
-        (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
-        selectedAbilityPackages);
-    finalPackageModules = packageModules ++ nativeAbilityPackageModules;
-    initrdAbilityPackageNames = builtins.map
-      (package: package.pname or package.name)
-      selectionEvaluation.config.aos.abilities.stages.initrd.packages;
-    initrdPackageModules = builtins.filter
-      (record: builtins.elem record.name initrdAbilityPackageNames)
-      finalPackageModules;
-    initrdAbilityEvaluation = lib.evalModules {
-      modules =
-        [
-          lib.abilities.module
-          {
-            aos.abilities.environment = {
-              authority = "system-image";
-              key = systemName;
-              stage = "initrd";
-            };
-          }
-        ]
-        ++ builtins.map
-        (intent: {config = intent;})
-        selectionEvaluation.config.aos.abilities.stages.initrd.intent
-        ++ selectionEvaluation.config.aos.abilities.stages.initrd.modules;
-      inherit pkgs lib operatorModules runtimeModules;
-      packageModules = initrdPackageModules;
-      specialArgs = moduleSpecialArgs;
+    abilityEvaluation = import ./lib/build/complete-ability-evaluation.nix {
+      inherit
+        lib
+        pkgs
+        modules
+        moduleList
+        baseLibProbe
+        selectionEvaluation
+        packageModules
+        operatorModules
+        runtimeModules
+        moduleSpecialArgs
+        systemName
+        ;
     };
+    inherit (abilityEvaluation)
+      finalPackageModules
+      hostPackageEvaluation
+      hostAbilityBindings
+      hostProviderModules
+      hostEnvironment
+      initrdPackageModules
+      initrdProviderModules
+      initrdAbilityBindings
+      initrdEnvironment
+      initrdAbilityEvaluation
+      ;
     # Determine the resolved image ABI from the complete caller module list.
     # The base library bundles only source-backed system modules, so without
     # carrying this value explicitly an inline image override would leave the
@@ -277,12 +241,34 @@
       .aos
       .system
       .moduleAbi;
+    initrdStaticAbilityContract = initrdAbilityEvaluation.config.system.build.staticAbilityContract;
+    initrdStaticContractPath = "${initrdStaticAbilityContract}/contract.json";
+    initrdStaticContract = let
+      storeViewLib = import ./lib/build/store-view.nix {inherit lib;};
+      storeView = {
+        schema = "aos.package-store.read-view-locator/v1";
+        identity_root = builtins.storeDir;
+        read_root = builtins.storeDir;
+        static_contract = initrdStaticContractPath;
+      };
+    in
+      storeViewLib.staticContractFor storeView initrdStaticContractPath;
     baseLib = (mkBaseLibFor effectivePkgs) {
       baseModules = modules;
       inherit systemModules systemName moduleAbi;
+      hostPackageModules = finalPackageModules;
+      inherit hostProviderModules hostAbilityBindings;
+      hostAbilityEnvironment = hostEnvironment;
+      inherit
+        initrdPackageModules
+        initrdProviderModules
+        initrdAbilityBindings
+        ;
+      initrdAbilityEnvironment = initrdEnvironment;
+      inherit initrdStaticAbilityContract;
     };
-  in
-    lib.evalModules {
+  in let
+    finalHostEvaluation = lib.evalModules {
       modules =
         modules
         ++ moduleList
@@ -292,17 +278,22 @@
               inherit baseLib;
               baseLibAbiHash = baseLib.passthru.abiHash;
             };
-            aos.abilities.environment = {
-              authority = "system-image";
-              key = systemName;
-              stage = "host";
-            };
+            aos.abilities.environment = hostEnvironment;
           }
         ];
       inherit pkgs lib operatorModules runtimeModules;
       packageModules = finalPackageModules;
-      specialArgs = moduleSpecialArgs // {inherit initrdAbilityEvaluation;};
+      selectedProviderModules = hostProviderModules;
+      enableAbilitySelection = true;
+      specialArgs = moduleSpecialArgs // {inherit initrdAbilityEvaluation initrdStaticContract;};
     };
+  in
+    builtins.seq
+    (lib.abilities.checkedProviderModuleEvaluation {
+      before = hostPackageEvaluation.config.aos.abilities;
+      after = finalHostEvaluation.config.aos.abilities;
+    })
+    finalHostEvaluation;
 
   # Auto-discover system definitions from ./systems/*.nix
   discoverSystems = let
