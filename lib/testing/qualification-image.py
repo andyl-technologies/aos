@@ -97,9 +97,11 @@ MAX_RECOVERY_EXECUTABLE_BYTES = 128 * 1024 * 1024
 # slowly than wall time when image qualifications share the build host. Keep
 # native KVM deadlines tight while allowing the emulated guest to finish the
 # same boot and reboot sequence.
-BOOT_READY_TIMEOUT = 1800 if PLATFORM == "aarch64-linux" else 600
-REBOOT_TIMEOUT = 1800 if PLATFORM == "aarch64-linux" else 720
-REBOOT_READY_TIMEOUT = 1200 if PLATFORM == "aarch64-linux" else 420
+# TCG needs nearly 30 minutes to provision the ARM ZFS fixture before stage 2.
+# Leave enough margin for SSH activation and for the same image to restart.
+BOOT_READY_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 600
+REBOOT_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 720
+REBOOT_READY_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 420
 
 
 def canonical(value: Any) -> bytes:
