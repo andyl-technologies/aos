@@ -24,8 +24,6 @@ use serde_json::json;
 
 use crate::process::{CommandRunner, ProcessCommandRunner};
 
-const REALIZATION_SCHEMA: &str = "aos.boot.preparation-realization/v1";
-const OBSERVATION_SCHEMA: &str = "aos.ability.boot-preparation-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.boot.preparation-context/v1";
 const MARKER_SCHEMA: &str = "aos.boot.preparation-marker/v1";
 const MARKER_ROOT: &str = "/run/aos/boot-preparations";
@@ -93,19 +91,21 @@ impl BootPreparationProvider {
         validate_method(request.method.method.as_str(), &request.semantics)?;
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
+        let observation_schema = request
+            .contract
+            .observation_discriminator()
+            .context("selected boot-preparation method has no exact observation discriminator")?;
 
         let desired: PreparationRequest = decode_value(&request.resource_spec.value)?;
         validate_request(&desired)?;
         validate_prerequisites(&desired.prerequisites, &request.resources)?;
-        let realization: PreparationRealization = decode_value(&request.resource_spec.realization)?;
-        ensure!(
-            realization.schema == REALIZATION_SCHEMA,
-            "unsupported boot preparation realization"
-        );
+        let _realization: PreparationRealization =
+            decode_value(&request.resource_spec.realization)?;
         let executable = Executable::from_reference(desired.execution.clone());
         executable.validate(self.validate_executable_file)?;
 
         let observation = self.observe(
+            observation_schema,
             &request.resource_spec.value,
             &request.target,
             request.resource_spec.revision,
@@ -147,6 +147,10 @@ impl BootPreparationProvider {
             invocation.request.method.method.as_str(),
             &invocation.request.semantics,
         )?;
+        let observation_schema = invocation
+            .contract
+            .observation_discriminator()
+            .context("selected boot-preparation method has no exact observation discriminator")?;
 
         let request = &invocation.request;
         validate_resource_contexts(&request.resources)?;
@@ -174,11 +178,7 @@ impl BootPreparationProvider {
         let desired: PreparationRequest = decode_value(&bound.resource_spec.value)?;
         validate_request(&desired)?;
         validate_prerequisites(&desired.prerequisites, &request.resources)?;
-        let realization: PreparationRealization = decode_value(&bound.resource_spec.realization)?;
-        ensure!(
-            realization.schema == REALIZATION_SCHEMA,
-            "unsupported boot preparation realization"
-        );
+        let _realization: PreparationRealization = decode_value(&bound.resource_spec.realization)?;
         let executable = Executable::from_reference(desired.execution.clone());
         executable.validate(self.validate_executable_file)?;
         let context: ProviderContext = decode_value(&bound.provider_context)?;
@@ -192,6 +192,7 @@ impl BootPreparationProvider {
         );
 
         let before = self.observe(
+            observation_schema,
             &bound.resource_spec.value,
             &request.target,
             bound.resource_spec.revision,
@@ -217,6 +218,7 @@ impl BootPreparationProvider {
                         .run(&executable, invocation.control.attempt_remaining_millis)?;
                     self.record_completion(&request.target, bound.resource_spec.revision)?;
                     let evidence = self.observe(
+                        observation_schema,
                         &bound.resource_spec.value,
                         &request.target,
                         bound.resource_spec.revision,
@@ -291,6 +293,7 @@ impl BootPreparationProvider {
 
     fn observe(
         &self,
+        observation_schema: &str,
         expected: &AbilityValue,
         target: &ResourceReference,
         revision: RevisionId,
@@ -306,7 +309,7 @@ impl BootPreparationProvider {
             MarkerRead::Valid(_) => PreparationState::Failed,
         };
         ability_value(json!({
-            "schema": OBSERVATION_SCHEMA,
+            "schema": observation_schema,
             "expected": expected.as_json(),
             "state": state,
         }))
@@ -389,7 +392,8 @@ struct PreparationRequest {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PreparationRealization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -677,10 +681,10 @@ mod tests {
             .record_completion(&target, first)
             .expect("record completion");
         let completed = provider
-            .observe(&expected, &target, first)
+            .observe("aos.test.boot-observation/v1", &expected, &target, first)
             .expect("observe completion");
         let drifted = provider
-            .observe(&expected, &target, second)
+            .observe("aos.test.boot-observation/v1", &expected, &target, second)
             .expect("observe other revision");
 
         assert_eq!(

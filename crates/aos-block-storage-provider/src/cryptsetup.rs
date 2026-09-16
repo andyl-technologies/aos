@@ -13,8 +13,6 @@ use crate::engine::{Backend, BackendObservation, ability_value};
 use crate::process::{Executable, ExecutableReference};
 use crate::state;
 
-const REALIZATION_SCHEMA: &str = "aos.storage.encrypted-block-mapping-realization/v1";
-const OBSERVATION_SCHEMA: &str = "aos.ability.encrypted-block-mapping-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.cryptsetup.encrypted-block-mapping-context/v1";
 const MARKER_SCHEMA: &str = "aos.cryptsetup.encrypted-block-mapping-state/v1";
 const STATE_ROOT: &str = "/run/aos/encrypted-block-mappings";
@@ -40,7 +38,8 @@ enum KeySource {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Realization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     cryptsetup: ExecutableReference,
 }
 
@@ -93,10 +92,6 @@ impl Backend for CryptsetupBackend {
     ) -> Result<AbilityValue> {
         validate_desired(&decode(desired)?)?;
         let realization: Realization = decode(realization)?;
-        ensure!(
-            realization.schema == REALIZATION_SCHEMA,
-            "unsupported encrypted mapping realization"
-        );
         let context = Context {
             schema: CONTEXT_SCHEMA.into(),
             cryptsetup: realization.cryptsetup.resolve()?,
@@ -106,6 +101,7 @@ impl Backend for CryptsetupBackend {
 
     fn observe(
         &self,
+        observation_schema: &str,
         desired: &AbilityValue,
         _realization: &AbilityValue,
         target: &ResourceReference,
@@ -135,7 +131,7 @@ impl Backend for CryptsetupBackend {
             source.as_deref(),
         );
         let evidence = ability_value(json!({
-            "schema": OBSERVATION_SCHEMA,
+            "schema": observation_schema,
             "expected": desired.as_json(),
             "realized": ready.then_some(mapped.clone()),
             "state": state,

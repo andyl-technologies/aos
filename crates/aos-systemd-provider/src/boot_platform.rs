@@ -30,10 +30,6 @@ const BLESS_BOOT: &str = "/run/current-system/sw/lib/systemd/systemd-bless-boot"
 const SYSTEMCTL: &str = "/run/current-system/sw/bin/systemctl";
 const RETENTION_ROOT: &str = "EFI/.aos-rollout-retention";
 
-const STORAGE_SCHEMA: &str = "aos.ability.boot-artifact-storage-observation/v1";
-const SELECTION_SCHEMA: &str = "aos.ability.boot-selection-observation/v1";
-const SUCCESS_SCHEMA: &str = "aos.ability.boot-success-observation/v1";
-const RESTART_SCHEMA: &str = "aos.ability.host-restart-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.systemd.image-rollout-platform-context/v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -104,30 +100,30 @@ struct ProviderContext {
 }
 
 #[derive(Debug, Serialize)]
-struct StorageObservation {
-    schema: &'static str,
+struct StorageObservation<'a> {
+    schema: &'a str,
     state: &'static str,
     #[serde(rename = "payload-digest")]
     payload_digest: Option<Sha256Digest>,
 }
 
 #[derive(Debug, Serialize)]
-struct SelectionObservation {
-    schema: &'static str,
+struct SelectionObservation<'a> {
+    schema: &'a str,
     state: &'static str,
     entry: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct SuccessObservation {
-    schema: &'static str,
+struct SuccessObservation<'a> {
+    schema: &'a str,
     state: &'static str,
     entry: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct RestartObservation {
-    schema: &'static str,
+struct RestartObservation<'a> {
+    schema: &'a str,
     state: &'static str,
 }
 
@@ -151,10 +147,14 @@ pub(crate) fn admit(role: BootPlatformRole, request: AdmissionRequest) -> Result
     validate_admission_resource(&request)?;
     validate_resource_contexts(&request.resources)?;
     require_method(role, &request.method, &request.semantics)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator()
+        .context("selected boot-platform method has no exact observation discriminator")?;
 
     let rollout: RolloutRequest = decode_value(&request.resource_spec.value)?;
     validate_rollout(&rollout)?;
-    let observation = observe_role(role, &rollout, None)?;
+    let observation = observe_role(role, observation_schema, &rollout, None)?;
     let supported_purposes = SupportedPurposes::from_ordered(vec![
         InvocationPurpose::Effect,
         InvocationPurpose::Reconcile,
@@ -196,6 +196,10 @@ pub(crate) fn invoke(role: BootPlatformRole, invocation: Invocation) -> Result<I
         &invocation.request.method,
         &invocation.request.semantics,
     )?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator()
+        .context("selected boot-platform method has no exact observation discriminator")?;
 
     let target = target_context(&invocation)?;
     let bound = validate_resource_context(target)?;
@@ -210,8 +214,19 @@ pub(crate) fn invoke(role: BootPlatformRole, invocation: Invocation) -> Result<I
     let method = invocation.method.method.as_str();
     let selected_entry = validate_inputs(role, method, &rollout, &invocation.request.inputs)?;
     let observation = match invocation.purpose {
-        InvocationPurpose::Effect => apply(role, method, &rollout, selected_entry.as_deref())?,
-        InvocationPurpose::Reconcile => observe_role(role, &rollout, selected_entry.as_deref())?,
+        InvocationPurpose::Effect => apply(
+            role,
+            observation_schema,
+            method,
+            &rollout,
+            selected_entry.as_deref(),
+        )?,
+        InvocationPurpose::Reconcile => observe_role(
+            role,
+            observation_schema,
+            &rollout,
+            selected_entry.as_deref(),
+        )?,
         _ => bail!("boot platform role does not advertise this invocation purpose"),
     };
     let mut outputs = BTreeMap::from([(LocalKey::new("observation")?, observation.clone())]);
@@ -275,6 +290,7 @@ fn validate_inputs(
 
 fn apply(
     role: BootPlatformRole,
+    observation_schema: &str,
     method: &str,
     rollout: &RolloutRequest,
     entry: Option<&str>,
@@ -282,7 +298,7 @@ fn apply(
     match (role, method) {
         (BootPlatformRole::ArtifactStorage, "retain") => {
             with_writable_boot(|| retain_payloads(rollout))?;
-            storage_observation(rollout)
+            storage_observation(observation_schema, rollout)
         }
         (BootPlatformRole::ArtifactStorage, "release") => {
             ensure!(
@@ -290,11 +306,13 @@ fn apply(
                 "boot payload retention lease has not expired"
             );
             with_writable_boot(|| release_payloads(rollout))?;
-            storage_observation(rollout)
+            storage_observation(observation_schema, rollout)
         }
-        (BootPlatformRole::ArtifactStorage, "observe") => storage_observation(rollout),
+        (BootPlatformRole::ArtifactStorage, "observe") => {
+            storage_observation(observation_schema, rollout)
+        }
         (BootPlatformRole::Selection, "resolve" | "observe") => {
-            selection_observation(rollout, entry)
+            selection_observation(observation_schema, rollout, entry)
         }
         (BootPlatformRole::Selection, "select") => {
             let entry = entry.context("boot selection has no resolved entry")?;
@@ -309,7 +327,7 @@ fn apply(
                     "selecting the next boot entry",
                 )
             })?;
-            selection_observation(rollout, Some(entry))
+            selection_observation(observation_schema, rollout, Some(entry))
         }
         (BootPlatformRole::Selection, "clear") => {
             let entry = entry.context("boot selection clear has no exact entry")?;
@@ -318,7 +336,7 @@ fn apply(
                 current.as_deref() != Some(entry),
                 "refusing to clear the active default without a replacement"
             );
-            selection_observation(rollout, None)
+            selection_observation(observation_schema, rollout, None)
         }
         (BootPlatformRole::Success, "mark") => {
             let stable = running_entry(rollout)?;
@@ -334,9 +352,9 @@ fn apply(
                     "publishing the stable boot default",
                 )
             })?;
-            success_observation(rollout)
+            success_observation(observation_schema, rollout)
         }
-        (BootPlatformRole::Success, "observe") => success_observation(rollout),
+        (BootPlatformRole::Success, "observe") => success_observation(observation_schema, rollout),
         (BootPlatformRole::HostRestart, "request") => {
             run(
                 SYSTEMCTL,
@@ -344,12 +362,12 @@ fn apply(
                 "requesting a host restart",
             )?;
             value(&RestartObservation {
-                schema: RESTART_SCHEMA,
+                schema: observation_schema,
                 state: "accepted",
             })
         }
         (BootPlatformRole::HostRestart, "observe") => value(&RestartObservation {
-            schema: RESTART_SCHEMA,
+            schema: observation_schema,
             state: "unknown",
         }),
         _ => bail!("unsupported boot platform method"),
@@ -358,21 +376,22 @@ fn apply(
 
 fn observe_role(
     role: BootPlatformRole,
+    observation_schema: &str,
     rollout: &RolloutRequest,
     entry: Option<&str>,
 ) -> Result<AbilityValue> {
     match role {
-        BootPlatformRole::ArtifactStorage => storage_observation(rollout),
-        BootPlatformRole::Selection => selection_observation(rollout, entry),
-        BootPlatformRole::Success => success_observation(rollout),
+        BootPlatformRole::ArtifactStorage => storage_observation(observation_schema, rollout),
+        BootPlatformRole::Selection => selection_observation(observation_schema, rollout, entry),
+        BootPlatformRole::Success => success_observation(observation_schema, rollout),
         BootPlatformRole::HostRestart => value(&RestartObservation {
-            schema: RESTART_SCHEMA,
+            schema: observation_schema,
             state: "not-requested",
         }),
     }
 }
 
-fn storage_observation(rollout: &RolloutRequest) -> Result<AbilityValue> {
+fn storage_observation(observation_schema: &str, rollout: &RolloutRequest) -> Result<AbilityValue> {
     let manifest = retention_directory(rollout)?.join("manifest.json");
     match fs::read(&manifest) {
         Ok(bytes) => {
@@ -380,13 +399,13 @@ fn storage_observation(rollout: &RolloutRequest) -> Result<AbilityValue> {
                 .with_context(|| format!("decoding {}", manifest.display()))?;
             validate_retention(rollout, &manifest, &retained)?;
             value(&StorageObservation {
-                schema: STORAGE_SCHEMA,
+                schema: observation_schema,
                 state: "retained",
                 payload_digest: Some(Sha256Digest::of_bytes(&bytes)),
             })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => value(&StorageObservation {
-            schema: STORAGE_SCHEMA,
+            schema: observation_schema,
             state: "absent",
             payload_digest: None,
         }),
@@ -394,12 +413,16 @@ fn storage_observation(rollout: &RolloutRequest) -> Result<AbilityValue> {
     }
 }
 
-fn selection_observation(rollout: &RolloutRequest, expected: Option<&str>) -> Result<AbilityValue> {
+fn selection_observation(
+    observation_schema: &str,
+    rollout: &RolloutRequest,
+    expected: Option<&str>,
+) -> Result<AbilityValue> {
     let selected = selected_entry()?;
     let candidate = resolve_candidate_entry(rollout)?;
     let requested = expected.unwrap_or(&candidate);
     value(&SelectionObservation {
-        schema: SELECTION_SCHEMA,
+        schema: observation_schema,
         state: if selected.as_deref() == Some(requested) {
             "selected"
         } else {
@@ -409,11 +432,11 @@ fn selection_observation(rollout: &RolloutRequest, expected: Option<&str>) -> Re
     })
 }
 
-fn success_observation(rollout: &RolloutRequest) -> Result<AbilityValue> {
+fn success_observation(observation_schema: &str, rollout: &RolloutRequest) -> Result<AbilityValue> {
     let running = running_entry(rollout)?;
     let selected = selected_entry()?;
     value(&SuccessObservation {
-        schema: SUCCESS_SCHEMA,
+        schema: observation_schema,
         state: if selected.as_deref() == Some(running.as_str()) {
             "marked"
         } else {

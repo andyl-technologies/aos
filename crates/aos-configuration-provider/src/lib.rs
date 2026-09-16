@@ -32,9 +32,7 @@ use thiserror::Error;
 
 use crate::structured::{DocumentNode, StructuredFormat, encode_structured_document};
 
-const OBSERVATION_SCHEMA: &str = "aos.ability.configuration-materialization-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.configuration.materializer-context/v1";
-const REALIZATION_SCHEMA: &str = "aos.configuration.materializer-realization/v1";
 const MARKER_SCHEMA: &str = "aos.configuration.materializer-state/v1";
 const MATERIALIZER_VERSION: &str = "aos-configuration-provider/1";
 const CONFIGURATION_ROOT: &str = "/run/aos/configurations";
@@ -118,7 +116,8 @@ enum InterpolatedFragment {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigurationRealization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     path: String,
 }
 
@@ -384,6 +383,12 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, ConfigurationProv
     validate_admission_resource(&request).map_err(|error| invalid(error.to_string()))?;
     validate_method(request.method.method.as_str(), &request.semantics)?;
     validate_resource_contexts(&request.resources).map_err(|error| invalid(error.to_string()))?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator()
+        .ok_or_else(|| {
+            invalid("selected configuration method has no exact observation discriminator")
+        })?;
 
     let desired: ConfigurationRequest = decode_value(&request.resource_spec.value)?;
     let realization: ConfigurationRealization = decode_value(&request.resource_spec.realization)?;
@@ -417,13 +422,14 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, ConfigurationProv
             disposition: AdmissionDisposition::Rejected,
             revision: AdmissionRevision::Unknown,
             incarnation: None,
-            observation: observation(&desired, None, "unknown")?,
+            observation: observation(observation_schema, &desired, None, "unknown")?,
             native_context: ability_value(serde_json::json!({"rejected": true}))?,
             supported_purposes: SupportedPurposes::from_ordered(Vec::new())
                 .ok_or_else(|| invalid("empty configuration purpose set is not canonical"))?,
         });
     }
     let observation = observation(
+        observation_schema,
         &desired,
         present.then(|| realization.path.clone()),
         if present { "materialized" } else { "absent" },
@@ -658,8 +664,7 @@ fn validate_realization(
     realization: &ConfigurationRealization,
 ) -> Result<(), ConfigurationProviderError> {
     let path = Path::new(&realization.path);
-    if realization.schema != REALIZATION_SCHEMA
-        || path.parent() != Some(Path::new(CONFIGURATION_ROOT))
+    if path.parent() != Some(Path::new(CONFIGURATION_ROOT))
         || path.file_name().is_none()
         || path
             .components()
@@ -1089,12 +1094,13 @@ fn resolve_uid(owner: &str) -> Result<rustix::process::Uid, ConfigurationProvide
 }
 
 fn observation(
+    observation_schema: &str,
     expected: &ConfigurationRequest,
     materialized: Option<String>,
     state: &str,
 ) -> Result<AbilityValue, ConfigurationProviderError> {
     let mut value = serde_json::json!({
-        "schema": OBSERVATION_SCHEMA,
+        "schema": observation_schema,
         "expected": expected,
         "state": state,
     });
@@ -1114,6 +1120,12 @@ fn result(
     disposition: InvocationDisposition,
     include_outputs: bool,
 ) -> Result<InvocationResult, ConfigurationProviderError> {
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator()
+        .ok_or_else(|| {
+            invalid("selected configuration method has no exact observation discriminator")
+        })?;
     let path = path.map(path_text).transpose()?;
     let state = if path.is_some() {
         "materialized"
@@ -1137,7 +1149,7 @@ fn result(
     Ok(InvocationResult {
         schema: RESULT_SCHEMA.into(),
         disposition,
-        evidence: observation(desired, path, state)?,
+        evidence: observation(observation_schema, desired, path, state)?,
         outputs,
         native_context_digest: invocation.request.native_context_digest,
     })
@@ -1284,7 +1296,7 @@ mod tests {
                 "lifetime": reference.lifetime,
                 "value": inputs,
                 "realization": {
-                    "schema": REALIZATION_SCHEMA,
+                    "schema": "validated-by-runtime",
                     "path": path,
                 },
                 "revision": revision,
@@ -1303,7 +1315,7 @@ mod tests {
             reference,
             revision,
             observation: ability_value(serde_json::json!({
-                "schema": OBSERVATION_SCHEMA,
+                "schema": "aos.test.configuration-observation/v1",
                 "expected": inputs,
                 "materialized": path,
                 "state": "materialized",
