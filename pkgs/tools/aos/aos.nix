@@ -666,14 +666,6 @@ in
         ln -s ${nftables}/bin/nft "$packageRuntime/libexec/aos-nft"
         ln -s ${util-linux}/bin/setpriv "$packageRuntime/libexec/aos-setpriv"
         ln -s ${socat}/bin/socat "$packageRuntime/libexec/aos-socat"
-        for handler in \
-          aos-credential-delivery-handler \
-          aos-network-endpoint-handler \
-          aos-host-storage-handler \
-          aos-host-network-policy-handler \
-          aos-postgresql-handler; do
-          ln -s ../bin/.aos-package-runtime-unwrapped "$packageRuntime/libexec/$handler"
-        done
       ''}
 
           grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/bin/aos-package-runtime"
