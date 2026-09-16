@@ -19,6 +19,10 @@ impl Drop for RestoredDescriptorFlags<'_> {
 
 fn run_worker() -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_aos-sandbox-network-lifecycle-worker"))
+        // Startup validates the inherited descriptor table before it opens any
+        // of these fixed artifacts. Supplying the complete argument shape lets
+        // this process-level test reach that boundary as an unprivileged user.
+        .args(std::iter::repeat_n("/dev/null", 7))
         .stdin(Stdio::null())
         .output()
 }

@@ -24,9 +24,6 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), NetworkLifecycleWorkerRuntimeError> {
-    if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
-        return Err(NetworkLifecycleWorkerRuntimeError::Authority);
-    }
     let mut arguments = env::args_os();
     drop(arguments.next());
     let configuration = NetworkLifecycleWorkerConfiguration {
