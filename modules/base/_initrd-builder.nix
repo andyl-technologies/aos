@@ -44,8 +44,8 @@
 ##!                  in recovery-enabled normal initrds.
 ##!   abilityActivationSelection — closed required/none selection whose static
 ##!                  contract digest is added while assembling the archive.
-##!   abilityResolutionInput — authenticated desired-state and operator policy
-##!                  documents used by the checked build-stage planner.
+##!   abilitySelectionIntent — explicit bindings projected from the final
+##!                  initrd module fixed point.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
@@ -62,7 +62,7 @@
   renderedNetworks,
   handoff,
   abilityActivationSelection,
-  abilityResolutionInput ? null,
+  abilitySelectionIntent,
   abilityEnvironment,
   abilityIntent ? {},
   baseLib,
@@ -143,6 +143,24 @@
   };
   initrdStaticAbilityContract = initrdStaticAbilityContractBuild.artifact;
 
+  initrdSelectionIntent = builtins.toFile
+    "aos-initrd-static-selection-intent.json"
+    (builtins.unsafeDiscardStringContext (builtins.toJSON abilitySelectionIntent));
+  initrdAbilityAuthority =
+    import ../../lib/build/ability-stage-authority.nix {
+      inherit lib;
+      inherit (buildPkgs) mkDerivation;
+      packageRuntime = buildPkgs.aos.packageRuntime;
+    } {
+      pname = "aos-initrd";
+      stage = abilityEnvironment.stage;
+      authority = abilityEnvironment.authority;
+      key = abilityEnvironment.key;
+      platform = bootPlatform;
+      selectionIntent = initrdSelectionIntent;
+      packageContracts = initrdStaticAbilityContractBuild.retainedPackageContractArtifacts;
+    };
+
   initrdIntentModuleRoot = buildPkgs.writeTextFile {
     name = "aos-initrd-ability-intent";
     destination = "/module.nix";
@@ -152,28 +170,21 @@
       }
     '';
   };
-  initrdAbilityStage =
-    if abilityResolutionInput == null
-    then null
-    else
-      import ../../lib/build/ability-stage.nix {
-        inherit lib;
-        inherit (buildPkgs) mkDerivation;
-        packageRuntime = buildPkgs.aos.packageRuntime;
-      } {
-        pname = "aos-initrd";
-        stage = abilityEnvironment.stage;
-        authority = abilityEnvironment.authority;
-        key = abilityEnvironment.key;
-        inherit baseLib;
-        intentModule = "${initrdIntentModuleRoot}/module.nix";
-        inherit (abilityResolutionInput) desiredInput authenticatedPolicySet;
-        packageContracts = initrdStaticAbilityContractBuild.retainedPackageContractArtifacts;
-      };
-  resolvedAbilityStage =
-    if initrdAbilityStage == null
-    then null
-    else initrdAbilityStage.resolvedStage;
+  initrdAbilityStage = import ../../lib/build/ability-stage.nix {
+    inherit lib;
+    inherit (buildPkgs) mkDerivation;
+    packageRuntime = buildPkgs.aos.packageRuntime;
+  } {
+    pname = "aos-initrd";
+    stage = abilityEnvironment.stage;
+    authority = abilityEnvironment.authority;
+    key = abilityEnvironment.key;
+    inherit baseLib;
+    intentModule = "${initrdIntentModuleRoot}/module.nix";
+    inherit (initrdAbilityAuthority) desiredInput authenticatedPolicySet;
+    packageContracts = initrdStaticAbilityContractBuild.retainedPackageContractArtifacts;
+  };
+  resolvedAbilityStage = initrdAbilityStage.resolvedStage;
 
   dependencyRoots =
     [
@@ -527,7 +538,7 @@
       findutils
       gawk
       jq
-    ] ++ lib.optional (resolvedAbilityStage != null) resolvedAbilityStage;
+    ] ++ [resolvedAbilityStage];
     abilityActivationSelectionJson = builtins.toJSON abilityActivationSelection;
 
     # `exportReferencesGraph` writes one file per package/name pair
@@ -685,10 +696,8 @@
             root/lib/aos/initrd/static-ability-contract.json
           chmod 0444 root/lib/aos/initrd/static-ability-contract.json
 
-          ${lib.optionalString (resolvedAbilityStage != null) ''
-            cp ${resolvedAbilityStage} root/lib/aos/initrd/resolved-ability-stage.json
-            chmod 0444 root/lib/aos/initrd/resolved-ability-stage.json
-          ''}
+          cp ${resolvedAbilityStage} root/lib/aos/initrd/resolved-ability-stage.json
+          chmod 0444 root/lib/aos/initrd/resolved-ability-stage.json
 
           static_contract_hex=$(sha256sum \
             root/lib/aos/initrd/static-ability-contract.json | cut -d ' ' -f 1)
@@ -1087,10 +1096,11 @@
     passthru = {
       staticAbilityContract = initrdStaticAbilityContract;
       inherit resolvedAbilityStage;
-      planningSnapshot =
-        if initrdAbilityStage == null
-        then null
-        else initrdAbilityStage.planningSnapshot;
+      resolutionInput = {
+        inherit (initrdAbilityAuthority) desiredInput authenticatedPolicySet;
+      };
+      abilityAuthorityDocuments = initrdAbilityAuthority.authorityDocuments;
+      planningSnapshot = initrdAbilityStage.planningSnapshot;
     };
 
     meta = {

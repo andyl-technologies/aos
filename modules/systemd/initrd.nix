@@ -345,7 +345,7 @@ in {
       renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);
       handoff = config.system.build.bootSubstrateContract;
       abilityActivationSelection = config.system.build.initrdAbilityActivationSelection;
-      abilityResolutionInput = config.aos.abilities.stages.initrd.resolutionInput;
+      abilitySelectionIntent = config.system.build.initrdAbilityGraph.staticSelectionIntent;
       abilityEnvironment = config.system.build.initrdAbilityGraph.environment;
       abilityIntent = config.aos.abilities.stages.initrd.intent;
       baseLib = config.aos.config.evalAtBoot.baseLib;
@@ -361,5 +361,8 @@ in {
 
     system.build.initrdStaticAbilityContract =
       config.system.build.initrd.staticAbilityContract;
+
+    aos.abilities.stages.initrd.resolutionInput =
+      config.system.build.initrd.resolutionInput;
   };
 }

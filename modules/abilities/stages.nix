@@ -62,9 +62,9 @@ in {
         default = null;
         internal = true;
         description = ''
-          Existing authenticated desired-state and operator policy documents
-          from which the build-stage planner retains the checked initrd
-          PlanningSnapshot. This option defines no provider policy vocabulary.
+          Canonical desired-state and authenticated policy documents projected
+          from the final explicit initrd composition and its exact retained
+          package contracts. This option defines no separate provider catalog.
         '';
       };
     };
