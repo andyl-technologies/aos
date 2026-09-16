@@ -218,6 +218,11 @@
       (output: builtins.elem output reservedAbilityOutputs)
       existingOutputs;
     authoredAbilities = args.abilities or null;
+    authoredPlatformSupport = args.platformSupport or null;
+    packagePlatformSupport =
+      if authoredPlatformSupport == null
+      then null
+      else lib.packagePlatform.normalize "package '${packageName}' platformSupport" authoredPlatformSupport;
     authoredQualification = args.qualification or null;
     authoredPackageProbe =
       if authoredQualification == null
@@ -452,7 +457,7 @@
     lowerArgs =
       # Package integration modules are evaluated by this wrapper and never
       # become low-level derivation attributes.
-      (builtins.removeAttrs args ["abilities" "qualification"])
+      (builtins.removeAttrs args ["abilities" "platformSupport" "qualification"])
       // {
         meta =
           (args.meta or {})
@@ -492,6 +497,16 @@
           # module output. The static ability view contains semantic data only.
           module = abilityModuleArtifact.module;
         };
+    platformAttrs = lib.optionalAttrs (packagePlatformSupport != null) {
+      platformSupport = packagePlatformSupport;
+      meta =
+        (drv.meta or {})
+        // {
+          aos =
+            (drv.meta.aos or {})
+            // {platformSupport = packagePlatformSupport;};
+        };
+    };
     secondaryOutputAttrs = builtins.listToAttrs (
       builtins.map (outputName: {
         name = outputName;
@@ -501,10 +516,11 @@
             pname = args.pname or packageName;
             meta = drv.meta or {};
           }
-          // lib.optionalAttrs (args ? version) {inherit (args) version;};
+          // lib.optionalAttrs (args ? version) {inherit (args) version;}
+          // platformAttrs;
       }) (builtins.filter (outputName: outputName != drv.outputName) drv.outputs)
     );
-    result = drv // secondaryOutputAttrs // abilityAttrs;
+    result = drv // secondaryOutputAttrs // abilityAttrs // platformAttrs;
   in
     addBuilderOverrides mkDerivation args result;
 

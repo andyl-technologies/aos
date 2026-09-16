@@ -160,6 +160,10 @@
       };
     };
   qualification = import ./qualification.nix {inherit abilities;};
+  packagePlatform = import ./package-platform.nix {
+    inherit lists;
+    platform = platformMod;
+  };
   mkArtifactConsumptionAudit = args:
     import ./build/artifact-consumption-audit.nix (
       args
@@ -189,6 +193,7 @@
       inherit types system;
       inherit abilities;
       inherit qualification;
+      inherit packagePlatform;
       inherit mkArtifactConsumptionAudit;
       effects = abilities.effects;
       literalExpression = text: {
