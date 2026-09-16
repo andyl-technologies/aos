@@ -455,9 +455,8 @@ be provisioned before a campaign. All source regression groups are exposed at
 `checks.qualification.<requirement-id>` and `checks.qualification.all`.
 
 The RFC-0022 native ability gates are `ability-native-activation`,
-`ability-native-image-rollout`, `ability-native-kubernetes`,
-`ability-native-recovery`, and `ability-native-adapter-matrix`. They use release
-scope so each staging case
+`ability-native-kubernetes`, `ability-native-recovery`, and
+`ability-native-adapter-matrix`. They use release scope so each staging case
 binds the complete finalized non-control artifact set, including the exact
 package, provider, handler, and image records carried by the release. A change
 to the case subjects, qualification policy, executor, or environment
@@ -567,9 +566,8 @@ pause each selected real operation after durable intent, change
 authority in the provider's live substrate, and require rejection before the
 external effect. Each provider-authored `RequiredSuccess` successor remains
 unexecuted, and independent resource observations prove the foreign target,
-successor, and any behavioral witness remain unchanged. The one-machine rollout
-cohort separately proves production map rejection for a forged logical resource
-and same-machine dependency blocking. These cohorts exclude the managed
+successor, and any behavioral witness remain unchanged. These cohorts exclude
+the managed
 configuration `publish` foreign-resource cell and service-management `reload`
 dependency cell already owned by the primary cohort.
 
@@ -586,28 +584,26 @@ the production checked-plan transfer inspector before any provider effect. The
 inspector derives its rejection from the authenticated request, binding, target
 lifetime, owner implementation, and state-format declaration.
 
-Every PostgreSQL state-family cell run through its persistent state-format
-contract and real cluster operations. The nine image-rollout methods bind the
-machine's execution journal, retained EFI payloads, and authenticated image
-identities to the versioned A/B rollout state format. Their compatible flights
-replace the terminal provider incarnation, transfer the sole ledger claim,
-recover the exact method, and settle its required-success successor while the
-retained boot state stays live. The remaining inapplicable `adopt-compatible-state`
-cells are exactly the reference, Kubernetes, systemd, and foreground methods
-whose process, manager-session, temporary-credential, API-transaction, or
-host-configuration resources have instance lifetime.
+Every PostgreSQL state-family cell runs through its persistent state-format
+contract and real cluster operations. Image rollout has no provider-state
+transfer contract. Its nine methods instead use the package-owned production
+observer and the rollout durability family. The generated cells cover
+interruption after acquisition, durable intent, and durable outcome; a lost
+external result; and cancellation. The production image rollback regression
+also retains the healthy, fallback, rollback, and image-retention paths.
 
 The generated matrix specification records those exact cell IDs and reasons as
 inapplicable. Nix policy, the production evidence builder, and the Rust release
 verifier independently derive the ordered partition from each adapter's
 surface-bound provider contract, then reject missing, overlapping, reordered,
 or reason-mutated exclusions. Their corresponding
-unsupported-transfer cells remain mandatory and prove rejection before effects.
+unsupported-transfer cells remain mandatory for adapters that declare the
+provider-state family and prove rejection before effects.
 The production transfer inspector verifies nonpersistent routes against the
 exact checked plan, while persistent providers reject an incompatible
 authenticated format before changing the owner ledger or live state. The
-PostgreSQL and image-rollout package contract checks bind their declared formats
-to the same surface descriptors. A product-contract change must
+PostgreSQL package contract checks bind its declared format to the same surface
+descriptors. A product-contract change must
 remove the affected exclusions and add exact cell-bound production evidence in
 the same release.
 
@@ -619,9 +615,9 @@ any other postcondition or cell in the matrix.
 
 The established scenario `regressions` fields point to
 `checks.fleet.runtime-module-composition`,
-`checks.fleet.ability-native-image-rollout`,
 `checks.fleet.k3s-control-plane-worker`,
-`checks.fleet.ability-native-power-loss`. Those derivations establish
+`checks.fleet.ability-native-power-loss`, and
+`checks.fleet.system-image-rollback`. Those derivations establish
 source-candidate regression coverage. They do not satisfy the staging cases:
 release admission still requires fresh executor observations for the exact
 frozen release subjects and acceptance checks. The x86 fleet topology also

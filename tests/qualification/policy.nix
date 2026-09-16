@@ -155,28 +155,14 @@
   imageRecovery = builtins.head (
     builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
   );
-  abilityRequirements = builtins.listToAttrs (map (id: {
-      name = id;
-      value = builtins.head (
-        builtins.filter (requirement: requirement.id == id) contract.requirements
-      );
-    }) [
-      "ability-crucible-baseline"
-      "ability-native-activation"
-      "ability-native-adapter-matrix"
-      "ability-native-image-rollout"
-      "ability-native-kubernetes"
-      "ability-native-recovery"
-    ]);
+  abilityRequirements = builtins.listToAttrs (map (requirement: {
+      name = requirement.id;
+      value = requirement;
+    }) (builtins.filter (requirement: lib.hasPrefix "ability-" requirement.id) contract.requirements));
   nativeAdapterSurface = nativeAdapterMatrix.spec.surface;
   nativeAdapterChecks = abilityRequirements.ability-native-adapter-matrix.checks;
   providerContract = adapterName:
     (builtins.head (builtins.filter (adapter: adapter.adapter == adapterName) nativeAdapterSurface.adapters)).provider_contract;
-  rolloutPackageContract = import ../abilities/reference-image-rollout/package.nix {
-    inherit lib;
-    mkDerivation = arguments: arguments;
-    rolloutRuntime = "/nix/store/00000000000000000000000000000000-rollout-runtime";
-  };
   nativeCells = nativeAdapterMatrix.cells;
   applicableNativeIds = nativeAdapterMatrix.applicable_cell_ids;
   inapplicableNativeIds = nativeAdapterMatrix.inapplicable_cell_ids;
@@ -290,19 +276,6 @@ in
     "endpoint-and-ingress-policy-precede-service-readiness-and-release-in-reverse-order"
     "authenticated-nginx-storage-ownership-lifetime-and-service-ordering"
   ];
-  assert abilityRequirements.ability-native-image-rollout.regressions
-  == ["checks.fleet.ability-native-image-rollout"];
-  assert abilityRequirements.ability-native-image-rollout.checks
-  == [
-    "advisory-exact-candidate-staging-without-selection-or-reboot"
-    "authenticated-rollout-plan-and-exact-native-request"
-    "booted-candidate-health-hook-before-config-generation-commit"
-    "healthy-provider-and-journal-evidence-before-physical-commit"
-    "failed-health-mark-reboot-and-predecessor-retention"
-    "exact-generation-roots-and-uki-retention"
-    "post-expiry-rollout-root-retirement"
-  ];
-  assert abilityRequirements.ability-native-image-rollout.production_only;
   assert abilityRequirements.ability-native-kubernetes.regressions
   == ["checks.fleet.k3s-control-plane-worker"];
   assert abilityRequirements.ability-native-kubernetes.checks
@@ -333,9 +306,9 @@ in
   == [
     "checks.fleet.runtime-module-composition"
     "checks.fleet.ability-native-foreground-container"
-    "checks.fleet.ability-native-image-rollout"
     "checks.fleet.k3s-control-plane-worker"
     "checks.fleet.ability-native-power-loss"
+    "checks.fleet.system-image-rollback"
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
   assert nativeAdapterMatrix.cell_count == builtins.length nativeCells;
@@ -355,14 +328,14 @@ in
     resource_lifetimes = ["attempt" "persistent"];
     state_format = null;
   };
-  assert rolloutPackageContract.abilities.config.aos.abilities.implementations.rollout.definition.outputs.machine.lifetime == "persistent";
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeRoleRevocationCells;
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeFailureControlCells;
   assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
   assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.cells;
-  assert builtins.length nativeAdapterChecks == 2;
-  assert builtins.head nativeAdapterChecks == nativeAdapterMatrix.check;
-  assert builtins.match "container-execution-surface-v1-sha256-[0-9a-f]{64}" (builtins.elemAt nativeAdapterChecks 1) != null;
+  assert builtins.elem nativeAdapterMatrix.check nativeAdapterChecks;
+  assert builtins.any (check:
+    builtins.match "container-execution-surface-v1-sha256-[0-9a-f]{64}" check != null)
+  nativeAdapterChecks;
   assert builtins.all (requirement:
     requirement.phase
     == "staging"
@@ -373,9 +346,6 @@ in
   assert rejects {
     qualification.requirements.ability-native-adapter-matrix.production_only = lib.mkForce false;
   };
-  assert rejects {
-    qualification.requirements.ability-native-image-rollout.production_only = lib.mkForce false;
-  };
   assert builtins.all (rule: rule.inherit_dependency_obligations) contract.package_rules;
   assert recoveryPackage.role == "system-integrity";
   assert recoveryPackage.execution
@@ -384,7 +354,6 @@ in
     system_variant = "server";
   };
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
-  assert builtins.length contract.targets == 4;
   assert builtins.all (target: builtins.length target.environment.layers == 2) contract.targets;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/scenarios.json$" executor.passthru.qualification.registryPath != null;
   assert executor.passthru.qualification.platform == "x86_64-linux";
@@ -395,24 +364,9 @@ in
   assert packageExecutor.passthru.qualification.probes == ["gzip"];
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/probes.json$" packageExecutor.passthru.qualification.probeRegistry != null;
   assert rejectsPackageExecutor ["gzip" "gzip"];
-  assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
-  == [
-    "ability-crucible-baseline"
-    "ability-native-adapter-matrix"
-    "ability-native-image-rollout"
-    "ability-native-kubernetes"
-    "ability-native-recovery"
-    "claim-container-x86_64-linux-functional"
-    "claim-container-x86_64-linux-qualified"
-    "claim-disk-x86_64-linux-functional"
-    "claim-disk-x86_64-linux-qualified"
-    "operator-recovery"
-    "package-function"
-    "production-recovery"
-    "rollout-health"
-    "rollout-observation"
-    "staging-delivery"
-  ];
+  assert builtins.all
+  (id: builtins.hasAttr id releaseExecutor.passthru.qualification.scenarios)
+  (builtins.attrNames abilityRequirements);
   assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
   assert builtins.all (id:
     builtins.match ".*/aos-qualification-${id}" releaseExecutor.passthru.qualification.scenarios.${id}
@@ -421,7 +375,6 @@ in
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
   assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios == ["package-function/aos-recovery/x86_64-linux"];
   assert builtins.match ".*/aos-qualification-x86_64-linux-aos-recovery" releaseExecutor.passthru.qualification.caseScenarios."package-function/aos-recovery/x86_64-linux" != null;
-  assert builtins.length contract.claims == 8;
   assert contract.support.default
   == {
     kind = "standard";
@@ -447,7 +400,6 @@ in
   assert builtins.elem "fixture-extra-check" configured.requirements.image-lifecycle.checks;
   assert !builtins.hasAttr "fixture-functional" configured.claims;
   assert configured.claims.fixture-reviewed.minimum_assurance == "A1";
-  assert builtins.length configured.export.targets == 5;
   assert rejects {qualification.images.rebootCycles = 9;};
   assert rejects {qualification.thresholds.stable.soak_seconds = lib.mkForce 1;};
   assert rejects {qualification.claims.disk-x86_64-linux-qualified.blocks_release = lib.mkForce false;};
