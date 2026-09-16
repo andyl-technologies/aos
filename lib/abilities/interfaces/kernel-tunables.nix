@@ -5,7 +5,6 @@
   interfaceDocumentFromDeclaration,
   interfaceIdentity,
 }: let
-
   alias = "kernel-tunables";
   interfaceName = "aos.kernel.tunables";
   tunableValue = types.string {
@@ -105,10 +104,15 @@
   };
   document = interfaceDocumentFromDeclaration declaration;
   identity = interfaceIdentity document;
-in {
-  interface = {
-    inherit alias declaration document identity requestType observationType realizationType;
-    methods = builtins.attrNames methods;
+  readView = {
+    interface = {
+      inherit alias declaration document identity requestType observationType realizationType;
+      methods = builtins.attrNames methods;
+    };
+    declarations.${alias} = declaration;
   };
-  declarations.${alias} = declaration;
+in {
+  name = "kernelTunables";
+  inherit readView;
+  module.config.aos.abilities.interfaces = readView.declarations;
 }
