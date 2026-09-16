@@ -19,9 +19,8 @@
 //! - [`aws`] — AWS IMDSv2; [`cloud`] — the other native cloud fetchers.
 //! - [`staticnet`] — DHCP-less network parsing + networkd render.
 //! - [`facts_render`] — `facts.json` → `host-facts.nix`.
-//! - [`policy`] — whole-input authorization and provisioning-plan projection.
-//! - [`provisioning`] — exact host-input authorization, complete initrd
-//!   configuration evaluation, and storage-plan projection.
+//! - [`policy`] — whole-input authorization and typed handoff to configuration
+//!   evaluation.
 //! - [`trust`] — configuration signature authentication.
 //!
 //! # Testability
@@ -42,7 +41,6 @@ pub mod mount;
 pub mod offline;
 pub mod policy;
 pub mod provider;
-pub mod provisioning;
 pub mod staticnet;
 pub mod trust;
 mod yaml;

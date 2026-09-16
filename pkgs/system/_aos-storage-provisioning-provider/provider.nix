@@ -99,7 +99,10 @@
     "acquire-metadata-${key}" = childRequest "acquire-metadata" key resource.value;
     "authorize-input-${key}" = childRequest "authorize-input" key resource.value;
     "observe-marker-${key}" = childRequest "observe-marker" key resource.value;
-    "observe-plan-${key}" = childRequest "observe-plan" key resource.value;
+    "evaluate-configuration-${key}" = childRequest "evaluate-configuration" key resource.value;
+    "package-store-read-view-${key}" = childRequest "package-store-read-view" key {
+      scope = "boot-image";
+    };
     "network-readiness-${key}" = childRequest "network-readiness" key {
       scope = "configured-connectivity";
       address_families = ["ipv4" "ipv6"];
@@ -116,13 +119,14 @@
     // {
       requests = builtins.foldl' (requests: key: requests // childRequests key resources.${key}) {} (builtins.attrNames resources);
       realizations =
-        builtins.mapAttrs (_: _: {
+        builtins.mapAttrs (key: _: {
           schema = "aos.storage.provisioning-realization/v1";
           systemd_repart = executable "systemd" "bin/systemd-repart";
           blkid = executable "util-linux" "sbin/blkid";
           lsblk = executable "util-linux" "bin/lsblk";
           sfdisk = executable "util-linux" "sbin/sfdisk";
           udevadm = executable "systemd" "bin/udevadm";
+          store_view = lib.abilities.resultOf "package-store-read-view-${key}" "locator";
         })
         resources;
     };
@@ -315,7 +319,7 @@
       acquisitionMergeKey = "acquired-metadata-${resourceKey}";
       authorizationKey = "authorize-${resourceKey}";
       markerKey = "observe-marker-${resourceKey}";
-      planKey = "observe-plan-${resourceKey}";
+      evaluationKey = "evaluate-configuration-${resourceKey}";
       networkApplyKey = "apply-network-bootstrap-${resourceKey}";
       commitKey = "commit-${resourceKey}";
       authorizedInputCommitKey = "commit-authorized-input-${resourceKey}";
@@ -323,7 +327,7 @@
       acquisitionBinding = selectedBinding change "acquire-metadata" "acquire" "exclusive-write";
       authorizationBinding = selectedBinding change "authorize-input" "authorize" "exclusive-write";
       markerBinding = selectedBinding change "observe-marker" "observe" "read";
-      planBinding = selectedBinding change "observe-plan" "observe" "exclusive-write";
+      evaluationBinding = selectedBinding change "evaluate-configuration" "evaluate" "exclusive-write";
       effectBinding = selectedBinding change "" "commit" "exclusive-write";
       networkEntry = selectedExternalBinding change "network-readiness" "observe" "read";
       networkBinding = networkEntry.binding;
@@ -476,19 +480,22 @@
         access = "read";
         controller = controllerIdentity;
       };
-      planOperation = operation {
-        key = planKey;
-        binding = planBinding;
-        method = "observe";
+      evaluationOperation = operation {
+        key = evaluationKey;
+        binding = evaluationBinding;
+        method = "evaluate";
         phase = "preparing";
         inputPhase = "runtime";
         targetInterface = interface.identity;
         targetResource = resource;
         targetLifetime = "transaction";
         inputs = metadataInputs {
-          authorized_input = result "operation" authorizationKey "authorized-provisioning-input";
+          authorized_input = object {
+            kind = literal "direct-result";
+            input = result "operation" authorizationKey "authorized-provisioning-input";
+          };
           marker = result "operation" markerKey "marker";
-          nix_instantiate = literal (executable "nix" "bin/nix-instantiate");
+          store_view = literal desired.realization.store_view;
         };
         access = "exclusive-write";
         controller = controllerIdentity;
@@ -515,7 +522,7 @@
         targetInterface = interface.identity;
         targetResource = resource;
         targetLifetime = "transaction";
-        inputs = metadataInputs {plan = result "operation" planKey "provisioning-plan";};
+        inputs = metadataInputs {plan = result "operation" evaluationKey "provisioning-plan";};
         access = "exclusive-write";
         controller = controllerIdentity;
       };
@@ -543,7 +550,7 @@
         (acquire onlineAcquisitionKey "online")
         authorizationOperation
         markerOperation
-        planOperation
+        evaluationOperation
         networkApplyOperation
         authorizedInputCommitOperation
         commitOperation
@@ -606,11 +613,11 @@
         (edge "operation" offlineAcquisitionKey "merge" acquisitionMergeKey "branch-merge")
         (edge "operation" onlineAcquisitionKey "merge" acquisitionMergeKey "branch-merge")
         (edge "merge" acquisitionMergeKey "operation" authorizationKey "data")
-        (edge "operation" authorizationKey "operation" planKey "data")
-        (edge "operation" markerKey "operation" planKey "data")
+        (edge "operation" authorizationKey "operation" evaluationKey "data")
+        (edge "operation" markerKey "operation" evaluationKey "data")
         (edge "operation" authorizationKey "operation" authorizedInputCommitKey "data")
         (edge "operation" authorizedInputCommitKey "operation" commitKey "readiness")
-        (edge "operation" planKey "operation" commitKey "data")
+        (edge "operation" evaluationKey "operation" commitKey "data")
       ]
       ++ bootstrapEdges;
     };

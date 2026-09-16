@@ -3,6 +3,7 @@
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
   contentObject = lib.abilities.interfaces.contentAddressedArtifacts;
   networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
+  packageStoreReadView = lib.abilities.interfaces.packageStoreReadView.interfaces.readView;
   provisioningPlan = lib.abilities.interfaces.blockStorage.types.provisioningPlan;
   artifact = lib.abilities.packageOutput {};
   interfaceSelector = name: {
@@ -94,6 +95,7 @@
       lsblk = lib.abilities.types.executableReference;
       sfdisk = lib.abilities.types.executableReference;
       udevadm = lib.abilities.types.executableReference;
+      store_view = packageStoreReadView.locatorType;
     };
   };
 in {
@@ -145,11 +147,11 @@ in {
         strength = "required";
         fallback = null;
       };
-      requirements.observe-plan = {
-        alias = "observe-plan";
-        description = "Derives the canonical storage plan from the authenticated provisioning input.";
-        accepted_interfaces = [(interfaceSelector "aos.metadata.storage-provisioning-plan")];
-        methods = ["observe"];
+      requirements.evaluate-configuration = {
+        alias = "evaluate-configuration";
+        description = "Evaluates authorized input through the complete initrd configuration fixed point.";
+        accepted_interfaces = [(interfaceSelector "aos.configuration.storage-provisioning-evaluation")];
+        methods = ["evaluate"];
         guarantees = [];
         strength = "required";
         fallback = null;
@@ -195,6 +197,15 @@ in {
         description = "Commits and observes the authorized provisioning input through the selected portable content-object terminal.";
         accepted_interfaces = [contentObject.operationInterface.identity];
         methods = ["commit" "observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+      requirements.package-store-read-view = {
+        alias = "package-store-read-view";
+        description = "Selects the immutable package-store view and static contract for complete initrd evaluation.";
+        accepted_interfaces = [packageStoreReadView.identity];
+        methods = ["observe"];
         guarantees = [];
         strength = "required";
         fallback = null;

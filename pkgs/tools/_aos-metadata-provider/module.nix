@@ -7,6 +7,7 @@
   cfg = config.aos.metadata.storageProvisioning;
   abilityTypes = lib.abilities.types;
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
+  configurationInput = lib.abilities.interfaces.configurationInput.types;
   networkBootstrap = lib.abilities.interfaces.networkConfiguration.interface.types.bootstrap;
   runtimeArtifact = lib.abilities.packageOutput {};
 
@@ -14,11 +15,7 @@
     type = abilityTypes.optional type;
     optional = true;
   };
-  boundedText = abilityTypes.string {
-    # Leave room for the envelope and evidence below the handler result bound.
-    maxLength = 131072;
-    syntax = null;
-  };
+  inherit (configurationInput) boundedText baseLibraryIdentity instanceFactsValue observedInstanceFacts authorizedInput;
   trustedKeyFile = abilityTypes.taggedUnion {
     tag = "kind";
     variants = {
@@ -35,76 +32,6 @@
           content_sha256 = abilityTypes.digest;
         };
       };
-    };
-  };
-  baseLibraryIdentity = abilityTypes.record {
-    fields = {
-      store_path = abilityTypes.executionPath;
-      abi_hash = abilityTypes.digest;
-    };
-  };
-  factText = maxLength:
-    abilityTypes.string {
-      inherit maxLength;
-      syntax = null;
-    };
-  staticNetworkFacts = abilityTypes.record {
-    fields = {
-      mac = abilityTypes.optional (factText 32);
-      interface_name = abilityTypes.optional (factText 64);
-      addresses = abilityTypes.list {
-        element = factText 128;
-        maxItems = 64;
-        unique = true;
-        canonicalOrder = true;
-      };
-      gateway = abilityTypes.optional (factText 128);
-      dns = abilityTypes.list {
-        element = factText 128;
-        maxItems = 32;
-        unique = true;
-        canonicalOrder = true;
-      };
-    };
-  };
-  instanceFactsValue = abilityTypes.record {
-    fields = {
-      hostname = abilityTypes.optional (factText 253);
-      ssh_authorized_keys = abilityTypes.list {
-        element = factText 16384;
-        maxItems = 64;
-        unique = true;
-        canonicalOrder = true;
-      };
-      instance_id = abilityTypes.optional (factText 1024);
-      region = abilityTypes.optional (factText 256);
-      availability_zone = abilityTypes.optional (factText 256);
-      mac_to_iface = abilityTypes.list {
-        element = abilityTypes.record {
-          fields = {
-            mac = factText 32;
-            iface = factText 64;
-          };
-        };
-        maxItems = 64;
-        unique = true;
-        canonicalOrder = true;
-      };
-      disk_ids = abilityTypes.list {
-        element = factText 512;
-        maxItems = 256;
-        unique = true;
-        canonicalOrder = true;
-      };
-      network = abilityTypes.optional staticNetworkFacts;
-    };
-  };
-  observedInstanceFacts = abilityTypes.record {
-    fields = {
-      schema = abilityTypes.enum ["aos.metadata.observed-instance-facts/v1"];
-      trust = abilityTypes.enum ["unauthenticated-observational"];
-      value = instanceFactsValue;
-      sha256 = abilityTypes.digest;
     };
   };
   authorizationConfiguration = abilityTypes.record {
@@ -172,37 +99,6 @@
       acquired_metadata = abilityTypes.deferredResult acquiredMetadata;
     };
   };
-  authorizedInput = abilityTypes.record {
-    fields = {
-      schema = abilityTypes.enum ["aos.metadata.authorized-provisioning-input/v1"];
-      source = abilityTypes.enum ["operator" "fallback"];
-      host_module = optional boundedText;
-      host_module_sha256 = optional abilityTypes.digest;
-      authorization = abilityTypes.record {
-        fields = {
-          trust_mode = abilityTypes.enum ["platform" "signed"];
-          platform_id = abilityTypes.string {
-            maxLength = 128;
-            syntax = "local-key-v1";
-          };
-          signer = optional (abilityTypes.string {
-            maxLength = 512;
-            syntax = null;
-          });
-        };
-      };
-      facts = observedInstanceFacts;
-      base_library = baseLibraryIdentity;
-    };
-  };
-  observerParameters = abilityTypes.record {
-    fields = {
-      request = storage.requestType;
-      authorized_input = abilityTypes.deferredResult authorizedInput;
-      marker = abilityTypes.deferredResult lib.abilities.interfaces.blockStorage.types.provisioningMarkerObservation;
-      nix_instantiate = abilityTypes.executableReference;
-    };
-  };
   authorizationObservation = abilityTypes.record {
     fields = {
       schema = abilityTypes.enum ["aos.metadata.provisioning-authorization-observation/v1"];
@@ -222,13 +118,6 @@
       schema = abilityTypes.enum ["aos.metadata.provisioning-acquisition-observation/v1"];
       platform_id = optional platformId;
       state = abilityTypes.enum ["ready" "acquired"];
-    };
-  };
-  planObservation = abilityTypes.record {
-    fields = {
-      schema = abilityTypes.enum ["aos.metadata.provisioning-plan-observation/v1"];
-      source = optional (abilityTypes.enum ["operator" "fallback"]);
-      state = abilityTypes.enum ["ready" "planned"];
     };
   };
   output = schema: description: {
@@ -332,25 +221,6 @@
     aggregation = aggregation authorizationAlias;
     guarantees = [];
   };
-  observerAlias = "storage-provisioning-plan-observer";
-  observerMethod = method {
-    name = "observe";
-    description = "Evaluates one authenticated metadata input into its canonical storage plan.";
-    parameters = observerParameters;
-    evidence = planObservation;
-    outputs.provisioning-plan = output lib.abilities.interfaces.blockStorage.types.provisioningPlan "Returns the exact canonical plan consumed by the provisioning terminal.";
-  };
-  observerDeclaration = lib.abilities.declareInterface {
-    name = "aos.metadata.storage-provisioning-plan";
-    description = "Evaluates authenticated metadata into a canonical storage plan.";
-    abi = 1;
-    requestType = storage.requestType;
-    methods.observe = observerMethod;
-    outputs = {};
-    inherit (storage.declaration) lifecycle;
-    aggregation = aggregation observerAlias;
-    guarantees = [];
-  };
   handler = entryPoint: arguments: result: {
     artifact = runtimeArtifact;
     inherit entryPoint arguments result;
@@ -372,7 +242,6 @@ in {
         ${detectionAlias} = detectionDeclaration;
         ${acquisitionAlias} = acquisitionDeclaration;
         ${authorizationAlias} = authorizationDeclaration;
-        ${observerAlias} = observerDeclaration;
       };
 
       implementations = {
@@ -415,26 +284,12 @@ in {
           desiredType = null;
           requiredFeatures = [];
         };
-        ${observerAlias} = {
-          description = "Evaluates authenticated metadata through the package-owned metadata runtime.";
-          artifact = runtimeArtifact;
-          interface = lib.abilities.interfaceIdentity (
-            lib.abilities.interfaceDocumentFromDeclaration observerDeclaration
-          );
-          methods = ["observe"];
-          guarantees = [];
-          handlerDescriptor = handler "bin/aos-metadata-policy-provider" observerParameters planObservation;
-          providerModule = null;
-          desiredType = null;
-          requiredFeatures = [];
-        };
       };
 
       instances = lib.mkIf (config.aos.abilities.environment != null) {
         ${detectionAlias}.implementation = detectionAlias;
         ${acquisitionAlias}.implementation = acquisitionAlias;
         ${authorizationAlias}.implementation = authorizationAlias;
-        ${observerAlias}.implementation = observerAlias;
       };
     }
   ];
