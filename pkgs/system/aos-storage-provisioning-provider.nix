@@ -47,7 +47,7 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider --bin aos-storage-provisioning-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider --bin aos-storage-provisioning-provider --bin aos-storage-provisioning-marker-observer"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider -p aos-storage-provisioning"
     ];
     preBuild = staticBuildSetup;
@@ -70,7 +70,7 @@ in
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-block-storage-provider --bin aos-storage-provisioning-provider";
+    cargoFlags = "-p aos-block-storage-provider --bin aos-storage-provisioning-provider --bin aos-storage-provisioning-marker-observer";
     cargoTestFlags = "-p aos-block-storage-provider -p aos-storage-provisioning";
     doCheck = true;
     buildDeps = [patchelf];
@@ -81,6 +81,7 @@ in
 
     preInstall = ''
       cp "target/$CARGO_BUILD_TARGET/release/aos-storage-provisioning-provider" target/release/
+      cp "target/$CARGO_BUILD_TARGET/release/aos-storage-provisioning-marker-observer" target/release/
     '';
 
     postInstall = ''
@@ -88,10 +89,17 @@ in
       cp ${./_aos-storage-provisioning-provider/provider.nix} \
         "$out/share/aos/providers/storage-provisioning.nix"
       test -x "$out/bin/aos-storage-provisioning-provider"
+      test -x "$out/bin/aos-storage-provisioning-marker-observer"
       if patchelf --print-interpreter "$out/bin/aos-storage-provisioning-provider" \
           > "$TMPDIR/provider.interpreter" 2>/dev/null; then
         printf '%s unexpectedly has ELF interpreter: ' aos-storage-provisioning-provider
         cat "$TMPDIR/provider.interpreter"
+        exit 1
+      fi
+      if patchelf --print-interpreter "$out/bin/aos-storage-provisioning-marker-observer" \
+          > "$TMPDIR/marker-observer.interpreter" 2>/dev/null; then
+        printf '%s unexpectedly has ELF interpreter: ' aos-storage-provisioning-marker-observer
+        cat "$TMPDIR/marker-observer.interpreter"
         exit 1
       fi
     '';

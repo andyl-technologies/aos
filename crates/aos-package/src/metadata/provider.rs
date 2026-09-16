@@ -29,8 +29,8 @@ use aos_provider_protocol::{
 use aos_storage_provisioning::{
     AuthorizedProvisioningInput, BaseLibraryIdentity, CanonicalProvisioningPlan,
     CanonicalProvisioningSource, ProvisioningAuthorization, ProvisioningIntent,
-    ProvisioningTrustMode, observed_instance_facts, validate_authorized_provisioning_input,
-    validate_provisioning_intent,
+    ProvisioningMarkerObservation, ProvisioningTrustMode, observed_instance_facts,
+    validate_authorized_provisioning_input, validate_provisioning_intent,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
@@ -38,7 +38,7 @@ use tempfile::Builder;
 use super::detect::{detect, needs_network, platform_capability};
 use super::mount::BlkidProbe;
 use super::provisioning::{
-    AuthorizeOptions, EvalProvisioningOptions, ProvisioningSource, ProvisioningTrust,
+    AuthorizeOptions, EvalProvisioningOptions, ProvisioningTrust,
     evaluate_canonical_provisioning_plan, run_authorize,
 };
 use super::{FetchOptions, run_fetch};
@@ -151,6 +151,7 @@ struct ArtifactPathReference {
 struct PlanParameters {
     request: ProvisioningIntent,
     authorized_input: AuthorizedProvisioningInput,
+    marker: ProvisioningMarkerObservation,
 }
 
 #[derive(Debug)]
@@ -398,12 +399,11 @@ async fn invoke(
                 "plan request differs from the checked resource"
             );
             let source = parameters.authorized_input.source;
-            let lsblk = required_tool("AOS_METADATA_LSBLK")?;
             let nix_instantiate = required_tool("AOS_METADATA_NIX_INSTANTIATE")?;
             let plan = observe_plan(
                 &parameters.request,
                 &parameters.authorized_input,
-                &lsblk,
+                &parameters.marker,
                 &nix_instantiate,
             )?;
             completed_result(
@@ -638,7 +638,7 @@ fn network_bootstrap(network: &super::fetcher::StaticNetwork) -> Result<AbilityV
 fn observe_plan(
     request: &ProvisioningIntent,
     input: &AuthorizedProvisioningInput,
-    lsblk: &Path,
+    marker: &ProvisioningMarkerObservation,
     nix_instantiate: &Path,
 ) -> Result<CanonicalProvisioningPlan> {
     validate_authorized_provisioning_input(input)?;
@@ -649,14 +649,12 @@ fn observe_plan(
     if let Some(module) = &input.host_module {
         fs::write(stash_dir.join("host.nix"), module)?;
     }
-    let (committed_source, marker_uuid) = observed_marker(lsblk)?;
     evaluate_canonical_provisioning_plan(&EvalProvisioningOptions {
         stash_dir,
         base_lib: PathBuf::from(&input.base_library.store_path),
         eval_root: scratch.path().join("eval"),
         measured_boot: request.measured_boot,
-        committed_source,
-        marker_uuid,
+        marker: marker.clone(),
         nix_instantiate: nix_instantiate.to_path_buf(),
     })
 }
@@ -834,42 +832,6 @@ fn required_tool(variable: &str) -> Result<PathBuf> {
         "authenticated handler tool {variable} is not a file"
     );
     Ok(canonical)
-}
-
-fn observed_marker(lsblk: &Path) -> Result<(Option<ProvisioningSource>, Option<String>)> {
-    let markers = [
-        ("aos-provenance-operator-v1", ProvisioningSource::Operator),
-        ("aos-provenance-fallback-v1", ProvisioningSource::Fallback),
-    ]
-    .into_iter()
-    .filter(|(label, _)| Path::new("/dev/disk/by-partlabel").join(label).exists())
-    .collect::<Vec<_>>();
-    ensure!(
-        markers.len() <= 1,
-        "several durable provisioning markers exist"
-    );
-    if Path::new("/dev/disk/by-partlabel/aos-provisioning-pending-v1").exists() {
-        bail!("pending provisioning marker requires explicit recovery");
-    }
-    let Some((label, source)) = markers.first().copied() else {
-        return Ok((None, None));
-    };
-    let path = Path::new("/dev/disk/by-partlabel").join(label);
-    let output = Command::new(lsblk)
-        .args(["-ndo", "PARTUUID"])
-        .arg(path)
-        .output()
-        .context("observing durable provisioning marker UUID")?;
-    ensure!(
-        output.status.success(),
-        "lsblk could not observe the provisioning marker UUID"
-    );
-    let uuid = String::from_utf8(output.stdout)?.trim().to_string();
-    ensure!(
-        !uuid.is_empty(),
-        "durable provisioning marker has no PARTUUID"
-    );
-    Ok((Some(source), Some(uuid)))
 }
 
 fn validate_method(role: MetadataRole, method: &str) -> Result<()> {

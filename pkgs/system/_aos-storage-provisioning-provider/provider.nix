@@ -97,6 +97,7 @@
     "${key}" = childRequest "effects" key resource.value;
     "detect-platform-${key}" = childRequest "detect-platform" key resource.value;
     "authorize-input-${key}" = childRequest "authorize-input" key resource.value;
+    "observe-marker-${key}" = childRequest "observe-marker" key resource.value;
     "observe-plan-${key}" = childRequest "observe-plan" key resource.value;
     "network-readiness-${key}" = childRequest "network-readiness" key {
       scope = "configured-connectivity";
@@ -311,12 +312,14 @@
       offlineAuthorizationKey = "authorize-offline-${resourceKey}";
       onlineAuthorizationKey = "authorize-online-${resourceKey}";
       authorizationMergeKey = "authorized-input-${resourceKey}";
+      markerKey = "observe-marker-${resourceKey}";
       planKey = "observe-plan-${resourceKey}";
       networkApplyKey = "apply-network-bootstrap-${resourceKey}";
       commitKey = "commit-${resourceKey}";
       authorizedInputCommitKey = "commit-authorized-input-${resourceKey}";
       detectBinding = selectedBinding change "detect-platform" "detect" "read";
       authorizationBinding = selectedBinding change "authorize-input" "authorize" "exclusive-write";
+      markerBinding = selectedBinding change "observe-marker" "observe" "read";
       planBinding = selectedBinding change "observe-plan" "observe" "exclusive-write";
       effectBinding = selectedBinding change "" "commit" "exclusive-write";
       networkEntry = selectedExternalBinding change "network-readiness" "observe" "read";
@@ -386,6 +389,9 @@
         configuration = literal config.aos.metadata.storageProvisioning.authorizationConfiguration;
         platform = result "operation" detectKey "platform";
       };
+      markerInputs = metadataInputs {
+        lsblk = literal (executable "util-linux" "bin/lsblk");
+      };
       detectOperation = operation {
         key = detectKey;
         binding = detectBinding;
@@ -431,6 +437,19 @@
           access = "exclusive-write";
           controller = controllerIdentity;
         };
+      markerOperation = operation {
+        key = markerKey;
+        binding = markerBinding;
+        method = "observe";
+        phase = "preparing";
+        inputPhase = "runtime";
+        targetInterface = markerBinding.interface;
+        targetResource = resource;
+        targetLifetime = "transaction";
+        inputs = markerInputs;
+        access = "read";
+        controller = controllerIdentity;
+      };
       planOperation = operation {
         key = planKey;
         binding = planBinding;
@@ -442,6 +461,7 @@
         targetLifetime = "transaction";
         inputs = metadataInputs {
           authorized_input = result "merge" authorizationMergeKey "authorized-provisioning-input";
+          marker = result "operation" markerKey "marker";
         };
         access = "exclusive-write";
         controller = controllerIdentity;
@@ -494,6 +514,7 @@
         networkOperation
         (authorize offlineAuthorizationKey "offline")
         (authorize onlineAuthorizationKey "online")
+        markerOperation
         planOperation
         networkApplyOperation
         authorizedInputCommitOperation
@@ -564,6 +585,7 @@
         (edge "operation" offlineAuthorizationKey "merge" authorizationMergeKey "branch-merge")
         (edge "operation" onlineAuthorizationKey "merge" authorizationMergeKey "branch-merge")
         (edge "merge" authorizationMergeKey "operation" planKey "data")
+        (edge "operation" markerKey "operation" planKey "data")
         (edge "merge" authorizationMergeKey "operation" authorizedInputCommitKey "data")
         (edge "operation" authorizedInputCommitKey "operation" commitKey "readiness")
         (edge "operation" planKey "operation" commitKey "data")

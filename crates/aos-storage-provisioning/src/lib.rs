@@ -365,6 +365,68 @@ pub enum CanonicalProvisioningSource {
     Fallback,
 }
 
+/// Reports the storage provider's exact observation of the durable GPT marker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisioningMarkerObservation {
+    /// Must equal `aos.storage.provisioning-marker-observation/v1`.
+    pub schema: String,
+    /// Classifies the complete marker set observed on the root disk.
+    pub state: ProvisioningMarkerState,
+    /// Identifies the committed provenance arm when exactly one marker exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CanonicalProvisioningSource>,
+    /// Carries the canonical PARTUUID when exactly one committed marker exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_uuid: Option<String>,
+}
+
+/// Classifies the durable provisioning marker set on the selected root disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProvisioningMarkerState {
+    /// No provisioning marker is present.
+    Absent,
+    /// A transaction began but did not atomically publish its committed label.
+    Pending,
+    /// Exactly one committed marker with a canonical PARTUUID is present.
+    Completed,
+    /// The marker set cannot identify one authoritative committed state.
+    Indeterminate,
+}
+
+/// Validates one typed GPT marker observation.
+///
+/// # Errors
+///
+/// Returns an error when the schema, state-dependent fields, or committed
+/// marker UUID is inconsistent.
+pub fn validate_provisioning_marker_observation(
+    observation: &ProvisioningMarkerObservation,
+) -> Result<()> {
+    if observation.schema != "aos.storage.provisioning-marker-observation/v1" {
+        bail!("unsupported provisioning marker observation schema");
+    }
+
+    match (
+        observation.state,
+        observation.source,
+        observation.marker_uuid.as_deref(),
+    ) {
+        (ProvisioningMarkerState::Completed, Some(_), Some(marker_uuid)) => {
+            if normalize_marker_uuid(marker_uuid)? != marker_uuid {
+                bail!("provisioning marker UUID is not canonical lower-case");
+            }
+        }
+        (ProvisioningMarkerState::Completed, _, _) => {
+            bail!("completed provisioning marker observation is incomplete");
+        }
+        (_, None, None) => {}
+        _ => bail!("non-completed provisioning marker carries committed fields"),
+    }
+    Ok(())
+}
+
 /// Canonical target and settings for one partition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -858,5 +920,34 @@ mod tests {
                 .to_string()
                 .contains("must identify its matching signer")
         );
+    }
+
+    #[test]
+    fn completed_marker_requires_exact_source_and_uuid() {
+        let observation = ProvisioningMarkerObservation {
+            schema: "aos.storage.provisioning-marker-observation/v1".into(),
+            state: ProvisioningMarkerState::Completed,
+            source: Some(CanonicalProvisioningSource::Operator),
+            marker_uuid: Some("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee".into()),
+        };
+
+        validate_provisioning_marker_observation(&observation)
+            .expect("complete marker observation");
+
+        let mut incomplete = observation;
+        incomplete.marker_uuid = None;
+        assert!(validate_provisioning_marker_observation(&incomplete).is_err());
+    }
+
+    #[test]
+    fn non_completed_marker_cannot_claim_committed_fields() {
+        let observation = ProvisioningMarkerObservation {
+            schema: "aos.storage.provisioning-marker-observation/v1".into(),
+            state: ProvisioningMarkerState::Pending,
+            source: Some(CanonicalProvisioningSource::Fallback),
+            marker_uuid: None,
+        };
+
+        assert!(validate_provisioning_marker_observation(&observation).is_err());
     }
 }

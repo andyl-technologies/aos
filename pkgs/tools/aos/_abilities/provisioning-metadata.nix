@@ -188,6 +188,7 @@
     fields = {
       request = storage.requestType;
       authorized_input = abilityTypes.deferredResult authorizedInput;
+      marker = abilityTypes.deferredResult lib.abilities.interfaces.blockStorage.types.provisioningMarkerObservation;
     };
   };
   authorizedInputSource = abilityTypes.taggedUnion {

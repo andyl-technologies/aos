@@ -406,6 +406,20 @@
       };
     };
   };
+  provisioningMarkerObservation = types.record {
+    fields = {
+      schema = types.enum ["aos.storage.provisioning-marker-observation/v1"];
+      state = types.enum ["absent" "pending" "completed" "indeterminate"];
+      source = {
+        type = types.optional (types.enum ["operator" "fallback"]);
+        optional = true;
+      };
+      marker_uuid = {
+        type = types.optional uuid;
+        optional = true;
+      };
+    };
+  };
   provisioningRequest = types.record {
     fields = {
       name = types.localKey;
@@ -472,7 +486,7 @@
   };
 in {
   types = {
-    inherit poolName datasetName datasetProperties storageDevice providerIdentifier provisioningPlan;
+    inherit poolName datasetName datasetProperties storageDevice providerIdentifier provisioningPlan provisioningMarkerObservation;
   };
   interfaces = {
     inherit encryptedMapping storageFormat pool dataset provisioning;

@@ -57,9 +57,7 @@ pub use facts_render::render_host_facts_nix;
 pub use fetcher::{Facts, PlatformFetcher, StaticNetwork, UserData};
 pub use http::{EngineHttp, MetadataHttp};
 pub use mount::{BlkidProbe, ConfigDriveProbe};
-pub use provisioning::{
-    AuthorizeOptions, EvalProvisioningOptions, ProvisioningSource, ProvisioningTrust,
-};
+pub use provisioning::{AuthorizeOptions, EvalProvisioningOptions, ProvisioningTrust};
 pub use stash::{MetadataResult, PlatformEnv, Stash};
 
 use aos_net::transfer::{TransferEngine, TransferEngineConfig};

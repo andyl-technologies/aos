@@ -42,5 +42,9 @@ name = "aos-storage-provisioning-provider"
 path = "src/bin/storage_provisioning.rs"
 
 [[bin]]
+name = "aos-storage-provisioning-marker-observer"
+path = "src/bin/storage_provisioning_marker.rs"
+
+[[bin]]
 name = "aos-boot-transaction-storage-provider"
 path = "src/bin/boot_transaction_storage.rs"

@@ -34,6 +34,58 @@
   terminalIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration terminalDeclaration
   );
+  markerAlias = "storage-provisioning-marker-observer";
+  markerObservation = lib.abilities.interfaces.blockStorage.types.provisioningMarkerObservation;
+  markerEvidence = lib.abilities.types.record {
+    fields = {
+      schema = lib.abilities.types.enum ["aos.storage.provisioning-marker-evidence/v1"];
+      state = lib.abilities.types.enum ["ready" "observed"];
+    };
+  };
+  markerParameters = lib.abilities.types.record {
+    fields = {
+      request = storage.requestType;
+      lsblk = lib.abilities.types.executableReference;
+    };
+  };
+  markerMethod = {
+    description = "Observes the durable GPT provisioning marker on the selected root disk.";
+    parameters = markerParameters;
+    semantics = {
+      requiredTargetAccess = "read";
+      stopsProvider = false;
+    };
+    targetResource = storage.identity.name;
+    permittedOperations = ["observe"];
+    guarantees = [];
+    outcome = {
+      completionEvidence = markerEvidence;
+      observationEvidence = markerEvidence;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+    outputs.marker = {
+      schema = markerObservation;
+      description = "Returns the unique typed marker state observed by the storage provider.";
+      phase = "runtime";
+      lifetime = "transaction";
+      visibility = "protected";
+    };
+  };
+  markerDeclaration = lib.abilities.declareInterface {
+    name = "aos.storage.provisioning-marker-observation";
+    description = "Observes durable provisioning state without exposing block-device tools to metadata providers.";
+    abi = 1;
+    requestType = storage.requestType;
+    methods.observe = markerMethod;
+    outputs = {};
+    inherit (storage.declaration) lifecycle;
+    aggregation = storage.declaration.aggregation // {controllerGroup = markerAlias;};
+    guarantees = [];
+  };
+  markerIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration markerDeclaration
+  );
   terminalRealization = lib.abilities.types.record {
     fields = {
       schema = lib.abilities.types.enum ["aos.storage.provisioning-realization/v1"];
@@ -46,7 +98,10 @@
   };
 in {
   config.aos.abilities = {
-    interfaces.${terminalAlias} = terminalDeclaration;
+    interfaces = {
+      ${terminalAlias} = terminalDeclaration;
+      ${markerAlias} = markerDeclaration;
+    };
 
     implementations.storage-provisioning = {
       description = "Composes portable storage-provisioning resources into checked repart effects.";
@@ -85,6 +140,15 @@ in {
         alias = "observe-plan";
         description = "Derives the canonical storage plan from the authenticated provisioning input.";
         accepted_interfaces = [(interfaceSelector "aos.metadata.storage-provisioning-plan")];
+        methods = ["observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+      requirements.observe-marker = {
+        alias = "observe-marker";
+        description = "Observes the storage provider's durable GPT provisioning marker.";
+        accepted_interfaces = [markerIdentity];
         methods = ["observe"];
         guarantees = [];
         strength = "required";
@@ -145,6 +209,23 @@ in {
         entryPoint = "bin/aos-storage-provisioning-provider";
         arguments = terminalParameters;
         result = storage.observationType;
+      };
+      providerModule = null;
+      desiredType = null;
+      requiredFeatures = [];
+    };
+
+    implementations.${markerAlias} = {
+      description = "Observes the durable GPT provisioning marker through the package-owned storage runtime.";
+      inherit artifact;
+      interface = markerIdentity;
+      methods = ["observe"];
+      guarantees = [];
+      handlerDescriptor = {
+        inherit artifact;
+        entryPoint = "bin/aos-storage-provisioning-marker-observer";
+        arguments = markerParameters;
+        result = markerEvidence;
       };
       providerModule = null;
       desiredType = null;
