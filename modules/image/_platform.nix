@@ -1,11 +1,122 @@
 ##! Exact package-selected immutable image builder projection.
-{lib, ...}: let
+{
+  config,
+  lib,
+  ...
+}: let
   consumer = "image:builder";
   builderInterface = lib.abilities.interfaces.imageBuilder.interfaces.builder;
   artifactFilenameType = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._+-]*";
   pathSegments = path: lib.splitString "/" path;
   safeRelativePath = path:
     builtins.all (segment: segment != "." && segment != "..") (pathSegments path);
+  strictSubmodule = options:
+    lib.types.submodule {
+      inherit options;
+      config._module.strict = true;
+    };
+  packageIdentityType = strictSubmodule {
+    name = lib.mkOption {
+      type = lib.types.nonEmptyStr;
+      description = "Authenticated package name.";
+    };
+    version = lib.mkOption {
+      type = lib.types.nonEmptyStr;
+      description = "Authenticated package version.";
+    };
+  };
+  kernelIdentityType = strictSubmodule {
+    binding = lib.mkOption {
+      type = lib.types.nonEmptyStr;
+      description = "Checked binding that selected the kernel provider.";
+    };
+    implementation = lib.mkOption {
+      type = lib.types.nonEmptyStr;
+      description = "Qualified selected kernel implementation.";
+    };
+    package = lib.mkOption {
+      type = packageIdentityType;
+      description = "Authenticated package identity owning the kernel implementation.";
+    };
+    providerInstance = lib.mkOption {
+      type = lib.abilities.types.instanceId;
+      description = "Canonical selected kernel provider instance.";
+    };
+  };
+  imageIdentityType = lib.types.addCheck (strictSubmodule {
+      schema = lib.mkOption {
+        type = lib.types.enum ["aos.image.identity/v1"];
+        description = "Immutable image identity schema.";
+      };
+      builder = lib.mkOption {
+        type = strictSubmodule {
+          artifact = lib.mkOption {
+            type = lib.abilities.types.artifactReference;
+            description = "Authenticated selected image-builder package.";
+          };
+          name = lib.mkOption {
+            type = lib.types.nonEmptyStr;
+            description = "Selected image-builder name.";
+          };
+        };
+        description = "Authenticated image-builder identity.";
+      };
+      target = lib.mkOption {
+        type = strictSubmodule {
+          cpu = lib.mkOption {
+            type = lib.types.nonEmptyStr;
+            description = "Target processor architecture.";
+          };
+          system = lib.mkOption {
+            type = lib.types.nonEmptyStr;
+            description = "Canonical Nix target system.";
+          };
+        };
+        description = "Target platform identity.";
+      };
+      release = lib.mkOption {
+        type = strictSubmodule {
+          name = lib.mkOption {
+            type = lib.types.nonEmptyStr;
+            description = "System release name.";
+          };
+          version = lib.mkOption {
+            type = lib.types.nonEmptyStr;
+            description = "System release version.";
+          };
+          "state-version" = lib.mkOption {
+            type = lib.types.nonEmptyStr;
+            description = "Persistent state migration version.";
+          };
+          "module-abi" = lib.mkOption {
+            type = lib.types.addCheck lib.types.int (value: value > 0);
+            description = "Shared module schema ABI.";
+          };
+          "config-input-abi" = lib.mkOption {
+            type = lib.types.addCheck lib.types.int (value: value > 0);
+            description = "Persistent evaluator input ABI.";
+          };
+        };
+        description = "Immutable release identity.";
+      };
+      kernel = lib.mkOption {
+        type = kernelIdentityType;
+        description = "Authenticated selected kernel identity.";
+      };
+      boot = lib.mkOption {
+        type = strictSubmodule {
+          "normal-artifact-path" = lib.mkOption {
+            type = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._+/-]*";
+            description = "Firmware-relative path of the normal boot artifact.";
+          };
+        };
+        description = "Selected boot artifact identity.";
+      };
+    })
+    (value:
+      value.target.system == lib.system
+      && value.target.cpu == lib.platform.constraints.cpu
+      && safeRelativePath value.boot."normal-artifact-path");
   selectedBuilderType = lib.types.addCheck (lib.types.submodule {
     config._module.strict = true;
 
@@ -34,10 +145,17 @@
         type = lib.types.pathInStore;
         description = "Authenticated package output that owns the selected image builder.";
       };
+      identity = lib.mkOption {
+        type = imageIdentityType;
+        description = "Pure image identity projected by the selected builder.";
+      };
     };
   }) (value:
     value.artifact.store_path == builtins.toString value.package
-    && safeRelativePath value.normalArtifactPath);
+    && safeRelativePath value.normalArtifactPath
+    && value.identity.builder.artifact == value.artifact
+    && value.identity.builder.name == value.name
+    && value.identity.boot."normal-artifact-path" == value.normalArtifactPath);
   nullableArtifact = lib.types.nullOr lib.types.package;
   imagePlanType = lib.types.addCheck (lib.types.submodule {
     config._module.strict = true;
@@ -130,17 +248,28 @@ in {
     description = "Typed immutable image plan produced by the selected package.";
   };
 
-  config.aos.abilities = {
-    instances.${consumer} = {};
-    requirementTemplates.${consumer} = {
-      description = "Requires one package-owned immutable image builder.";
-      interface = builderInterface.identity.name;
-      inherit (builderInterface.identity) abi descriptor;
-    };
-    requests.${consumer} = {
-      requirement = consumer;
-      inherit consumer;
-      parameters = true;
+  options.aos.image.identity = lib.mkOption {
+    type = lib.types.nullOr (lib.types.uniq imageIdentityType);
+    default = null;
+    readOnly = true;
+    internal = true;
+    description = "Acyclic identity projected by the selected image platform.";
+  };
+
+  config = {
+    aos.image.identity = lib.mkIf (config.aos.image.platform != null) config.aos.image.platform.identity;
+    aos.abilities = {
+      instances.${consumer} = {};
+      requirementTemplates.${consumer} = {
+        description = "Requires one package-owned immutable image builder.";
+        interface = builderInterface.identity.name;
+        inherit (builderInterface.identity) abi descriptor;
+      };
+      requests.${consumer} = {
+        requirement = consumer;
+        inherit consumer;
+        parameters = true;
+      };
     };
   };
 }
