@@ -5,18 +5,22 @@
 ##! inside the backend package.
 {
   config,
-  checkedPackageProjections ? [],
   lib,
   pkgs,
   systemName,
   ...
 }: let
-  cfg = config.aos.containers or null;
-  enabled = cfg != null && cfg.enable;
-  backend =
-    if enabled
-    then cfg.backend
-    else null;
+  cfg = config.aos.containers or {
+    enable = false;
+    default = null;
+    definitions = {};
+  };
+  enabled = cfg.enable;
+  defaultContainerName =
+    if !enabled || cfg.default == null
+    then null
+    else builtins.unsafeDiscardStringContext cfg.default;
+  backend = config.aos.artifacts.backend;
   targetPlatform = {
     os = pkgs.stdenv.hostPlatform.constraints.os;
     cpu = pkgs.stdenv.hostPlatform.constraints.cpu;
@@ -74,7 +78,6 @@
             runtimeClosureAudit
             ;
           buildPackages = pkgs.buildPackages;
-          packageProjections = checkedPackageProjections;
           definitionAttribute = "systems.${systemName}.build.containers.${name}";
         })
       cfg.definitions;
@@ -108,15 +111,15 @@ in {
         message = "system variant names with containers must be canonical Nix attribute identifiers";
       }
       {
-        assertion = cfg.default == null || builtins.hasAttr cfg.default cfg.definitions;
+        assertion = defaultContainerName == null || builtins.hasAttr defaultContainerName cfg.definitions;
         message = "aos.containers.default must name an enabled container definition";
       }
     ];
 
     system.build.containers = builtContainers;
     system.build.defaultContainer =
-      if cfg.default == null
+      if defaultContainerName == null
       then null
-      else builtContainers.${cfg.default};
+      else builtContainers.${defaultContainerName};
   };
 }

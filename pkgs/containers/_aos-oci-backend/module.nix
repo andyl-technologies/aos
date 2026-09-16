@@ -6,15 +6,6 @@
   packageArtifactFor,
   ...
 }: let
-  raw = {
-    name = "package artifact backend";
-    description = "package-owned artifact backend implementation";
-    check = _: true;
-    merge = location: definitions:
-      if builtins.length definitions == 1
-      then (builtins.head definitions).value
-      else throw "The option '${builtins.concatStringsSep "." location}' requires exactly one selected artifact backend.";
-  };
   schema = import ./container/schema.nix;
   backendInterface = lib.abilities.declareInterface {
     name = "aos.artifacts.backend";
@@ -148,13 +139,6 @@
   };
 in {
   options = {
-    aos.artifacts.backend = lib.mkOption {
-      type = raw;
-      readOnly = true;
-      internal = true;
-      description = "Selected package-owned static-contract builder.";
-    };
-
     aos.containers = {
       enable = lib.mkOption {
         type = lib.types.bool;

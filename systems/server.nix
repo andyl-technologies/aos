@@ -10,6 +10,8 @@
   pkgs,
   ...
 }: {
+  imports = [./_artifact-backend.nix];
+
   # Image capability: immutable root with writable state provisioned on /var.
   aos.filesystems.zfs.enable = lib.mkDefault false;
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
