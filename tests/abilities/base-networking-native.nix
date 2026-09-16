@@ -66,23 +66,7 @@ in
       };
     }
   ];
-  assert withStaticFacts.config.aos.abilities.requests."system:host-network".parameters.links
-  == [
-    {
-      kind = "ethernet";
-      name = "provisioning-bootstrap";
-      selector = {
-        kind = "mac";
-        value = "02:00:00:00:00:01";
-      };
-      addressing = {
-        dhcp = false;
-        addresses = ["192.0.2.10/24"];
-        gateway = "192.0.2.1";
-        dns = ["192.0.2.53"];
-      };
-    }
-  ];
+  assert withStaticFacts.config.aos.abilities.requests."system:host-network".parameters == network;
   assert !(withStaticFacts.config.aos.abilities.requests."system:host-network".parameters ? bootstrap);
   assert config.systemd.services == {};
   assert !(config.environment.etc ? "systemd/network/80-dhcp.network");
