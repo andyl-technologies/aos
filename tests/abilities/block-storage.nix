@@ -17,10 +17,12 @@
     inherit lib;
     package = pkgs.systemd;
     implementation = "network-configuration";
-    artifactLocators.${builtins.toJSON {
-      package = systemdSelector.package;
-      output = systemdSelector.output;
-    }} = {
+    artifactLocators.${
+      builtins.toJSON {
+        package = systemdSelector.package;
+        output = systemdSelector.output;
+      }
+    } = {
       path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd";
       artifactReference = {
         content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -214,17 +216,19 @@
               }: {
                 requests = {};
                 resourceFragments = {};
-                outputs = builtins.mapAttrs (_: _: {
-                  readiness-resource = {
-                    interface = network.identity;
-                    resource = {
-                      provider = instance.id;
-                      key = "network-online";
+                outputs =
+                  builtins.mapAttrs (_: _: {
+                    readiness-resource = {
+                      interface = network.identity;
+                      resource = {
+                        provider = instance.id;
+                        key = "network-online";
+                      };
+                      operations = ["observe"];
+                      lifetime = "instance";
                     };
-                    operations = ["observe"];
-                    lifetime = "instance";
-                  };
-                }) requests;
+                  })
+                  requests;
               };
             };
             instances.manager.implementation = "network-readiness";
@@ -490,7 +494,8 @@
   imageNetworkApply = operationByKey imageTransition "apply-network-bootstrap-${provisioning.resource.key}";
   operatorNetworkApply = operationByKey operatorTransition "apply-network-bootstrap-${provisioning.resource.key}";
   bootstrapEdge = edge:
-    edge.from.kind == "merge"
+    edge.from.kind
+    == "merge"
     && edge.from.key.key == "authorized-input-${provisioning.resource.key}"
     && edge.to.kind == "operation"
     && edge.to.key.key == "apply-network-bootstrap-${provisioning.resource.key}"
@@ -511,7 +516,8 @@ in
   assert abilities.compositionRequests.${provisioningEffects}.parameters == provisioning.value;
   assert abilities.compositionRequests.${provisioningNetworkEffects}.parameters == {};
   assert hostNetwork.value.authority == "image";
-  assert imageNetworkApply.inputs.fields.bootstrap == {
+  assert imageNetworkApply.inputs.fields.bootstrap
+  == {
     source = "operation-result";
     reference = {
       producer = {
@@ -525,7 +531,8 @@ in
     };
   };
   assert builtins.length (builtins.filter bootstrapEdge imageTransition.edges) == 1;
-  assert operatorNetworkApply.inputs.fields.bootstrap == {
+  assert operatorNetworkApply.inputs.fields.bootstrap
+  == {
     source = "literal";
     value = null;
   };
@@ -548,10 +555,10 @@ in
   assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning".handlerDescriptor == null;
   assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning-effects".providerModule == null;
   assert abilities.implementations."aos:storage-provisioning-platform-detector".handlerDescriptor.entryPoint
-  == "libexec/aos-storage-provisioning-platform-detector";
+  == "libexec/aos-metadata-provisioning-provider";
   assert abilities.implementations."aos:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
-  == "libexec/aos-storage-provisioning-input-authorizer";
+  == "libexec/aos-metadata-provisioning-provider";
   assert abilities.implementations."aos:storage-provisioning-plan-observer".handlerDescriptor.entryPoint
-  == "libexec/aos-storage-provisioning-plan-observer";
+  == "libexec/aos-metadata-provisioning-provider";
   assert abilities.implementations."aos:storage-provisioning-configuration-evaluator".handlerDescriptor.entryPoint
-  == "libexec/aos-storage-provisioning-configuration-evaluator"; true
+  == "libexec/aos-metadata-provisioning-provider"; true

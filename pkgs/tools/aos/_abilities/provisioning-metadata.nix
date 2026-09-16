@@ -366,9 +366,9 @@
     aggregation = aggregation evaluatorAlias;
     guarantees = [];
   };
-  handler = role: arguments: result: {
+  handler = arguments: result: {
     artifact = runtimeArtifact;
-    entryPoint = "libexec/aos-${role}";
+    entryPoint = "libexec/aos-metadata-provisioning-provider";
     inherit arguments result;
   };
 in {
@@ -397,7 +397,7 @@ in {
         );
         methods = ["detect"];
         guarantees = [];
-        handlerDescriptor = handler detectionAlias detectionParameters detectionObservation;
+        handlerDescriptor = handler detectionParameters detectionObservation;
         providerModule = null;
         desiredType = null;
         requiredFeatures = [];
@@ -410,7 +410,7 @@ in {
         );
         methods = ["authorize"];
         guarantees = [];
-        handlerDescriptor = handler authorizationAlias authorizationParameters authorizationObservation;
+        handlerDescriptor = handler authorizationParameters authorizationObservation;
         providerModule = null;
         desiredType = null;
         requiredFeatures = [];
@@ -423,7 +423,7 @@ in {
         );
         methods = ["observe"];
         guarantees = [];
-        handlerDescriptor = handler observerAlias observerParameters planObservation;
+        handlerDescriptor = handler observerParameters planObservation;
         providerModule = null;
         desiredType = null;
         requiredFeatures = [];
@@ -436,7 +436,7 @@ in {
         );
         methods = ["evaluate"];
         guarantees = [];
-        handlerDescriptor = handler evaluatorAlias evaluationParameters evaluationObservation;
+        handlerDescriptor = handler evaluationParameters evaluationObservation;
         providerModule = null;
         desiredType = null;
         requiredFeatures = [];

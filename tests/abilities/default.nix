@@ -511,6 +511,9 @@
   blockStorage = import ./block-storage.nix {
     inherit lib pkgs;
   };
+  provisioningMetadataServices = import ./provisioning-metadata-services.nix {
+    inherit lib pkgs;
+  };
   baseFilesystemsNative = import ./base-filesystems-native.nix {
     inherit lib pkgs;
   };
@@ -1072,6 +1075,7 @@ in
   assert networkPolicyCore;
   assert kernelTunables;
   assert blockStorage;
+  assert provisioningMetadataServices;
   assert baseFilesystemsNative;
   assert packageQualification;
   assert lib.abilities.interfaceSelectorMatches descriptorAgnosticSelector testInterface;

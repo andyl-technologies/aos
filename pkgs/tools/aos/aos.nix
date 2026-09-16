@@ -602,7 +602,7 @@ in
           mv \
             "$out/bin/aos-metadata-provisioning-provider" \
             "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped"
-          cat > "$metadataRuntime/libexec/.aos-metadata-provider" <<'METADATA_PROVIDER'
+          cat > "$metadataRuntime/libexec/aos-metadata-provisioning-provider" <<'METADATA_PROVIDER'
       #!${bash}/bin/bash
       export PATH=${lib.escapeShellArg (runtimeBinPath metadataRuntimeTools)}
       export AOS_METADATA_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
@@ -610,17 +610,14 @@ in
       export AOS_METADATA_MOUNT="${util-linux}/bin/mount"
       export AOS_METADATA_UMOUNT="${util-linux}/bin/umount"
       export AOS_METADATA_LSBLK="${util-linux}/bin/lsblk"
-      exec -a "$0" "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped" "$@"
+      exec "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped" "$@"
       METADATA_PROVIDER
-          chmod +x "$metadataRuntime/libexec/.aos-metadata-provider"
-          for role in \
-            storage-provisioning-platform-detector \
-            storage-provisioning-input-authorizer \
-            storage-provisioning-plan-observer \
-            storage-provisioning-configuration-evaluator
-          do
-            ln -s .aos-metadata-provider "$metadataRuntime/libexec/aos-$role"
-          done
+          chmod +x "$metadataRuntime/libexec/aos-metadata-provisioning-provider"
+          substitute \
+            ${./_abilities/aos-metadata-initrd-service.sh.in} \
+            "$metadataRuntime/libexec/aos-metadata-initrd-service" \
+            --replace-fail @bash@ ${bash}
+          chmod +x "$metadataRuntime/libexec/aos-metadata-initrd-service"
 
           # Give the shared binary the private entry-point name so
           # current_exe() resolves to the exact signed handler path. The public
@@ -644,28 +641,28 @@ in
             .aos-package-runtime-unwrapped
 
           ${lib.optionalString (!isDarwinCross) ''
-        mkdir -p "$packageRuntime/libexec"
-        mv "$out/bin/aos-configuration-provider" "$packageRuntime/libexec/"
-        mv "$out/bin/aos-configuration-observer" "$packageRuntime/libexec/"
-        mv \
-          "$out/bin/aos-image-rollout-boot" \
-          "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped"
-        cat > "$packageRuntime/libexec/aos-image-rollout-boot" <<ROLLOUT_BOOT
-      #!${bash}/bin/bash
-      export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
-      exec "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped" "\$@"
-      ROLLOUT_BOOT
-        chmod +x "$packageRuntime/libexec/aos-image-rollout-boot"
-        mv "$out/bin/aos-registry-snapshot-provider" "$packageRuntime/libexec/"
-        mv "$out/bin/aos-image-rollout-observer" "$packageRuntime/libexec/"
-        mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/libexec/"
-        mkdir -p "$packageRuntime/share/aos/providers"
-        cp ${./_abilities/configuration-provider/provider.nix} \
-          "$packageRuntime/share/aos/providers/configuration-materialization.nix"
-        ln -s ${coreutils}/bin/env "$packageRuntime/libexec/aos-env"
-        ln -s ${nftables}/bin/nft "$packageRuntime/libexec/aos-nft"
-        ln -s ${util-linux}/bin/setpriv "$packageRuntime/libexec/aos-setpriv"
-        ln -s ${socat}/bin/socat "$packageRuntime/libexec/aos-socat"
+          mkdir -p "$packageRuntime/libexec"
+          mv "$out/bin/aos-configuration-provider" "$packageRuntime/libexec/"
+          mv "$out/bin/aos-configuration-observer" "$packageRuntime/libexec/"
+          mv \
+            "$out/bin/aos-image-rollout-boot" \
+            "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped"
+          cat > "$packageRuntime/libexec/aos-image-rollout-boot" <<ROLLOUT_BOOT
+        #!${bash}/bin/bash
+        export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
+        exec "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped" "\$@"
+        ROLLOUT_BOOT
+          chmod +x "$packageRuntime/libexec/aos-image-rollout-boot"
+          mv "$out/bin/aos-registry-snapshot-provider" "$packageRuntime/libexec/"
+          mv "$out/bin/aos-image-rollout-observer" "$packageRuntime/libexec/"
+          mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/libexec/"
+          mkdir -p "$packageRuntime/share/aos/providers"
+          cp ${./_abilities/configuration-provider/provider.nix} \
+            "$packageRuntime/share/aos/providers/configuration-materialization.nix"
+          ln -s ${coreutils}/bin/env "$packageRuntime/libexec/aos-env"
+          ln -s ${nftables}/bin/nft "$packageRuntime/libexec/aos-nft"
+          ln -s ${util-linux}/bin/setpriv "$packageRuntime/libexec/aos-setpriv"
+          ln -s ${socat}/bin/socat "$packageRuntime/libexec/aos-socat"
       ''}
 
           grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/bin/aos-package-runtime"
@@ -698,15 +695,8 @@ in
         PATH=/unreachable "$packageRuntime/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
         PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" __eval --help > /dev/null
         PATH=/unreachable "$metadataRuntime/bin/aos-metadata-runtime" --help > /dev/null
-        for role in \
-          storage-provisioning-platform-detector \
-          storage-provisioning-input-authorizer \
-          storage-provisioning-plan-observer \
-          storage-provisioning-configuration-evaluator
-        do
-          test -x "$metadataRuntime/libexec/aos-$role"
-        done
-        test ! -e "$metadataRuntime/libexec/aos-metadata-provisioning-provider"
+        test -x "$metadataRuntime/libexec/aos-metadata-provisioning-provider"
+        test -x "$metadataRuntime/libexec/aos-metadata-initrd-service"
       ''}
 
           # This deterministic signer/fixture process exists only for the
