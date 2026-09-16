@@ -10,16 +10,20 @@
   optionDeclarations ? [],
   packageProbe ? null,
 }: let
-  packagePrefix = "${packageName}:";
-  localName = name:
-    if lib.hasPrefix packagePrefix name
-    then builtins.substring (builtins.stringLength packagePrefix) (-1) name
-    else name;
+  ownedNames = values:
+    builtins.attrNames (lib.filterAttrs (_: value:
+      (value.package or null) == packageName
+      && value.localKey != null)
+    values);
+  declarationAliasFor = collection: name: let
+    declaration = evaluated.${collection}.${name};
+  in
+    if declaration.package == packageName && declaration.localKey != null
+    then declaration.localKey
+    else throw "Package '${packageName}' cannot project foreign ${collection} declaration '${name}'.";
   selector = value: builtins.removeAttrs value ["_type"];
   defaultArtifact = abilities.packageOutput {};
-  packageOwnedNames = values:
-    builtins.filter (name: lib.hasPrefix packagePrefix name) (builtins.attrNames values);
-  implementationNames = packageOwnedNames evaluated.implementations;
+  implementationNames = ownedNames evaluated.implementations;
   structuredEffects = builtins.any (name: let
     implementation = evaluated.implementations.${name};
   in
@@ -34,12 +38,13 @@
     if !builtins.isString reference
     then throw "Ability guarantee references must be exact declaration aliases."
     else if builtins.hasAttr reference evaluated.guarantees
-    then abilities.guaranteeIdentity evaluated.guarantees.${reference}
+    then abilities.guaranteeIdentity (builtins.removeAttrs evaluated.guarantees.${reference} ["package" "localKey"])
     else throw "Ability guarantee reference '${reference}' has no exact package declaration.";
   semanticRequirement = requirement:
-    requirement // {guarantees = map guaranteeFor requirement.guarantees;};
+    builtins.removeAttrs requirement ["package" "localKey"]
+    // {guarantees = map guaranteeFor requirement.guarantees;};
   semanticInterface = interface:
-    interface
+    builtins.removeAttrs interface ["package" "localKey"]
     // {
       guarantees = map guaranteeFor interface.guarantees;
       methods = builtins.mapAttrs (_: method:
@@ -67,7 +72,7 @@
   evaluated.interfaces;
   ownedInterfaceDocuments =
     lib.filterAttrs (
-      name: _: lib.hasPrefix packagePrefix name
+      name: _: evaluated.interfaces.${name}.package == packageName
     )
     interfaceDocuments;
   interfaceFor = implementation:
@@ -87,15 +92,15 @@
     map (name: implementation.requirements.${name})
     (builtins.attrNames implementation.requirements);
   packageRequirements = abilities.normalizeRequirements (builtins.listToAttrs (map (name: {
-      name = localName name;
+      name = declarationAliasFor "requirementTemplates" name;
       value = semanticRequirement evaluated.requirementTemplates.${name};
     })
-    (packageOwnedNames evaluated.requirementTemplates)));
+    (ownedNames evaluated.requirementTemplates)));
   guarantees = builtins.listToAttrs (map (name: {
-      name = localName name;
-      value = evaluated.guarantees.${name};
+      name = declarationAliasFor "guarantees" name;
+      value = builtins.removeAttrs evaluated.guarantees.${name} ["package" "localKey"];
     })
-    (packageOwnedNames evaluated.guarantees));
+    (ownedNames evaluated.guarantees));
   implementationArtifact = implementation:
     selector (
       if implementation.artifact == null
@@ -131,7 +136,7 @@
     terminal = implementation.handlerDescriptor != null;
   in
     {
-      name = localName name;
+      name = implementation.localKey;
       inherit (implementation) description;
       inherit (implementation) guarantees;
       inherit artifact interface;
@@ -146,7 +151,7 @@
       provider_module = moduleLocator implementation;
     }
     // lib.optionalAttrs terminal {
-      handler = localName name;
+      handler = implementation.localKey;
     }
     // lib.optionalAttrs (implementation.state_format != null) {
       state_format = {
@@ -173,7 +178,7 @@
     handler = implementation.handlerDescriptor;
   in
     lib.optional (handler != null) {
-      name = localName name;
+      name = implementation.localKey;
       value = {
         artifact = selector handler.artifact;
         entry_point = handler.entryPoint;
@@ -205,10 +210,11 @@
       ++ lib.optionals (projectedPackageProbe != null) projectedPackageProbe.selectors
     );
   implementationQualification = builtins.listToAttrs (lib.concatMap (name: let
-      qualification = semanticImplementations.${name}.qualification;
+      implementation = semanticImplementations.${name};
+      qualification = implementation.qualification;
     in
       lib.optional (qualification != null) {
-        name = localName name;
+        name = implementation.localKey;
         value = {
           inherit (qualification) adapter scope;
           observation_kind = qualification.observationKind;
@@ -221,7 +227,7 @@
     document = interfaceDocuments.${name};
     identity = abilities.interfaceIdentity document;
   in {
-    name = localName name;
+    name = declarationAliasFor "interfaces" name;
     descriptor = identity.descriptor;
     value = document;
   }) (builtins.attrNames ownedInterfaceDocuments);
@@ -229,7 +235,7 @@
     document = interfaceFor semanticImplementations.${name};
     identity = abilities.interfaceIdentity document;
   in {
-    name = localName name;
+    name = semanticImplementations.${name}.localKey;
     descriptor = identity.descriptor;
     value = document;
   }) implementationNames;
@@ -296,9 +302,9 @@
       map (name: let
         implementation = semanticImplementations.${name};
       in {
-        name = localName name;
+        name = implementation.localKey;
         interface = interfaceIdentityFor implementation;
-        implementation = localName name;
+        implementation = implementation.localKey;
       })
       implementationNames;
     interface_documents =

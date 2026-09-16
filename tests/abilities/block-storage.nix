@@ -18,20 +18,12 @@
     inherit lib;
     package = pkgs.systemd;
     implementation = "network-configuration";
-    artifactLocators.${
+    dependencies.${
       builtins.toJSON {
         package = systemdSelector.package;
         output = systemdSelector.output;
       }
-    } = {
-      path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd";
-      artifactReference = {
-        content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd";
-        nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-      };
-    };
+    } = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd";
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   storageInterfaces = lib.abilities.interfaces.blockStorage.interfaces;

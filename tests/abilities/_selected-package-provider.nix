@@ -3,7 +3,7 @@
   lib,
   package,
   implementation,
-  artifactLocators ? {},
+  dependencies ? {},
 }: let
   provider =
     lib.findFirst
@@ -22,12 +22,11 @@
   root = builtins.toString selectedOutput;
 in {
   name = package.pname;
-  packageVersion = package.version;
+  version = package.version;
   configRoot = root;
   module = "${root}/${locator.path}";
   outputs = {
     self = root;
-    dependencies = {};
+    inherit dependencies;
   };
-  inherit artifactLocators;
 }

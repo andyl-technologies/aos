@@ -400,51 +400,6 @@
     };
   };
 
-  namespaceOf = consumerInstance: let
-    matched = builtins.match "([^:]+):[^:]+" consumerInstance;
-  in
-    if matched == null
-    then null
-    else builtins.head matched;
-  qualify = namespace: name:
-    if namespace == null || builtins.match "[^:]+:[^:]+" name != null
-    then name
-    else "${namespace}:${name}";
-  qualifyResults = namespace: value:
-    if namespace == null
-    then value
-    else if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
-    then value // {request = qualify namespace value.request;}
-    else if builtins.isAttrs value
-    then builtins.mapAttrs (_: qualifyResults namespace) value
-    else if builtins.isList value
-    then builtins.map (qualifyResults namespace) value
-    else value;
-  qualifyForConsumer = consumerInstance: contribution: let
-    namespace = namespaceOf consumerInstance;
-  in
-    if namespace == null
-    then contribution
-    else {
-      requirementTemplates = builtins.listToAttrs (builtins.map (name: {
-          name = qualify namespace name;
-          value = contribution.requirementTemplates.${name};
-        })
-        (builtins.attrNames contribution.requirementTemplates));
-      requests = builtins.listToAttrs (builtins.map (name: {
-          name = qualify namespace name;
-          value = let
-            request = contribution.requests.${name};
-          in
-            request
-            // {
-              requirement = qualify namespace request.requirement;
-              parameters = qualifyResults namespace request.parameters;
-            };
-        })
-        (builtins.attrNames contribution.requests));
-    };
-
   requestParameters = declaration: feature: let
     featureValue =
       if feature == "template_definition"
@@ -749,7 +704,7 @@
     then throw "service '${checked.service}' has duplicate external feature keys"
     else if !uniqueBy "value" (builtins.map (value: {inherit value;}) requirementAliases)
     then throw "service '${checked.service}' has duplicate external feature requirements"
-    else qualifyForConsumer consumerInstance contribution;
+    else contribution;
 
   ## Derives a concrete instance from one checked static template declaration.
   instanceOf = {
@@ -827,7 +782,7 @@
       };
     };
   in
-    qualifyForConsumer consumerInstance contribution;
+    contribution;
 
   forProducers = {
     consumerInstance,
@@ -874,7 +829,7 @@
           producers);
       };
   in
-    qualifyForConsumer consumerInstance contribution;
+    contribution;
 
   forProducer = args:
     forProducers (

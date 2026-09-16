@@ -2,7 +2,7 @@
 {
   config,
   lib,
-  packageName,
+  abilitySelection,
   ...
 }: let
   storage = lib.abilities.interfaces.blockStorage.interfaces;
@@ -11,11 +11,6 @@
   cfg = config.aos.filesystems.zfs;
   consumerInstance = "zfs-storage";
   resultOf = lib.abilities.resultOf;
-  qualifiedResultOf = request: output: {
-    _type = "aos-request-output-reference";
-    request = "${packageName}:${request}";
-    inherit output;
-  };
   abilityTypes = lib.abilities.types;
 
   size = abilityTypes.refined {
@@ -280,12 +275,12 @@
         properties = propertiesOf attributes;
         prerequisites = [(resultOf "pool" "readiness-resource")];
       };
-      readiness = qualifiedResultOf key "readiness-resource";
+      readiness = abilitySelection.resultOfRequest key "readiness-resource";
     })
     configuredDatasets;
   datasets = builtins.map (entry: entry.fragment) datasetEntries;
   readinessResources =
-    [(qualifiedResultOf "pool" "readiness-resource")]
+    [(abilitySelection.resultOfRequest "pool" "readiness-resource")]
     ++ builtins.map (entry: entry.readiness) datasetEntries;
   largeRecordDatasets = builtins.filter (
     name: !(builtins.elem cfg.datasets.${name}.recordSize safeRecordSizes)

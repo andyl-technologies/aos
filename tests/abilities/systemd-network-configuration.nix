@@ -14,13 +14,10 @@
     inherit lib;
     package = pkgs.systemd;
     implementation = "network-configuration";
-    artifactLocators.${builtins.toJSON {
+    dependencies.${builtins.toJSON {
       package = systemdSelector.package;
       output = systemdSelector.output;
-    }} = {
-      path = artifactReference.store_path;
-      inherit artifactReference;
-    };
+    }} = artifactReference.store_path;
   };
   consumerFor = resolverEnabled: {lib, ...}: {
     config.aos.abilities = lib.mkMerge [

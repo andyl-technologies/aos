@@ -809,24 +809,27 @@
             foreignPackageRoots);
 
       abilitySelectionFor = package: packageConfig: let
-        implementationFor = localKey: let
+        declarationFor = collection: kind: localKey: let
           matches = attrsets.filterAttrs
-            (_: implementation:
-              implementation.package == package
-              && implementation.localKey == localKey)
-            packageConfig.aos.abilities.implementations;
+            (_: declaration:
+              declaration.package == package
+              && declaration.localKey == localKey)
+            packageConfig.aos.abilities.${collection};
           declarations = builtins.attrNames matches;
         in
           if builtins.length declarations != 1
           then
             throw
-            "evalModules: package '${package}' local implementation '${localKey}' does not identify exactly one authenticated declaration"
+            "evalModules: package '${package}' local ${kind} '${localKey}' does not identify exactly one authenticated declaration"
           else let
             declaration = builtins.head declarations;
           in {
             inherit declaration localKey package;
             value = matches.${declaration};
           };
+        interfaceFor = declarationFor "interfaces" "interface";
+        requestFor = declarationFor "requests" "request";
+        implementationFor = declarationFor "implementations" "implementation";
         bindingsForImplementation = localKey: let
           implementation = implementationFor localKey;
           bindingNames = builtins.filter
@@ -850,7 +853,15 @@
           })
           bindingNames;
       in {
-        inherit implementationFor bindingsForImplementation;
+        inherit interfaceFor requestFor implementationFor bindingsForImplementation;
+        resultOfRequest = localKey: output: {
+          _type = "aos-request-output-reference";
+          # Package-local output references participate in the definition of
+          # the request graph itself, so constructing one must not force the
+          # completed request set and create a module fixed-point cycle.
+          request = "${package}:${localKey}";
+          inherit output;
+        };
         isImplementationSelected = localKey:
           bindingsForImplementation localKey != [];
       };
@@ -921,8 +932,8 @@
                             else null;
                         }
                         // (
-                          if packageIdentity ? artifactLocatorFor
-                          then {inherit (packageIdentity) artifactLocatorFor;}
+                          if packageIdentity ? packageArtifactFor
+                          then {inherit (packageIdentity) packageArtifactFor;}
                           else {}
                         )
                     );
@@ -995,33 +1006,25 @@
         && !builtins.any (component: component == "." || component == "..") components
         && builtins.pathExists module;
 
-      validArtifactReference = reference:
-        builtins.isAttrs reference
-        && builtins.attrNames reference == ["closure" "content" "nar_hash" "store_path"]
-        && builtins.all builtins.isString (builtins.attrValues reference)
-        && strings.hasPrefix "/nix/store/" reference.store_path;
-      validArtifactLocators = locators:
-        builtins.isAttrs locators
-        && builtins.all
-        (locator:
-          builtins.isAttrs locator
-          && builtins.attrNames locator == ["artifactReference" "path"]
-          && validArtifactReference locator.artifactReference
-          && builtins.isString locator.path
-          && strings.hasPrefix "/nix/store/" locator.path)
-        (builtins.attrValues locators);
-      artifactLocatorFor = package: locators: selector: let
+      packageArtifactFor = package: outputs: selector: let
         checked =
           if
             !builtins.isAttrs selector
             || builtins.attrNames selector != ["_type" "output" "package"]
             || (selector._type or null) != "aos-package-output-selector"
-          then throw "evalModules: package '${package}' requested an invalid artifact selector"
+          then throw "evalModules: package '${package}' requested an invalid package-output selector"
           else builtins.removeAttrs selector ["_type"];
         key = builtins.toJSON checked;
+        selectsOwnDefault =
+          builtins.elem checked.package ["self" package]
+          && checked.output == "out";
       in
-        locators.${key}
-        or (throw "evalModules: package '${package}' requested an artifact selector outside its authenticated view");
+        outputs.dependencies.${key}
+        or (
+          if selectsOwnDefault
+          then outputs.self
+          else throw "evalModules: package '${package}' requested an artifact outside its authenticated dependency view"
+        );
 
       validatedPackageModules = builtins.map (record: let
         keys =
@@ -1045,9 +1048,14 @@
         else if
           configRoot
           != null
-          && (!builtins.isPath configRoot
-            || !builtins.isPath record.module
-            || builtins.toString record.module != "${builtins.toString configRoot}/module.nix")
+          && (!validStoreRoot configRoot
+            || !validStoreModule configRoot record.module
+            || (
+              record ? outputs
+              && !builtins.elem
+              (builtins.toString configRoot)
+              ([record.outputs.self] ++ builtins.attrValues record.outputs.dependencies)
+            ))
         then throw "evalModules: package '${record.name}' module is not module.nix beneath its authenticated configRoot"
         else if record ? outputs && !validPackageOutputs record.outputs
         then throw "evalModules: package '${record.name}' has invalid resolver-supplied outputs"
@@ -1073,8 +1081,8 @@
       in
         if
           !builtins.isAttrs record
-          || keys != ["artifactLocators" "configRoot" "module" "name" "outputs" "packageVersion"]
-        then throw "evalModules: selectedProviderModules entries must contain exactly artifactLocators/configRoot/module/name/outputs/packageVersion"
+          || keys != ["configRoot" "module" "name" "outputs" "version"]
+        then throw "evalModules: selectedProviderModules entries must contain one authenticated module record"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
         then throw "evalModules: invalid resolver-supplied provider package provenance name"
         else if !validPackageOutputs record.outputs
@@ -1084,10 +1092,8 @@
           || !builtins.elem root authenticatedRoots
           || !validStoreModule configRoot record.module
         then throw "evalModules: selected provider module for '${record.name}' escapes or is absent from its authenticated root"
-        else if !builtins.isString record.packageVersion || record.packageVersion == ""
+        else if !builtins.isString record.version || record.version == ""
         then throw "evalModules: selected provider module for '${record.name}' has an invalid resolver-supplied version"
-        else if !validArtifactLocators record.artifactLocators
-        then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied artifact locators"
         else record)
       selectedProviderModules;
 
@@ -1101,7 +1107,11 @@
           allOptionDecls));
 
       evaluatedPackageModules = builtins.concatLists (builtins.map (record:
-        collectModules "package:${record.name}" record.configRoot record.outputs {inherit (record) name version;} true [record.module])
+        collectModules "package:${record.name}" record.configRoot record.outputs {
+          inherit (record) name version;
+          packageArtifactFor = packageArtifactFor record.name record.outputs;
+        }
+        true [record.module])
       validatedPackageModules);
 
       evaluatedProviderModules = builtins.concatLists (builtins.map (record:
@@ -1110,9 +1120,8 @@
         record.configRoot
         record.outputs
         {
-          inherit (record) name;
-          version = record.packageVersion;
-          artifactLocatorFor = artifactLocatorFor record.name record.artifactLocators;
+          inherit (record) name version;
+          packageArtifactFor = packageArtifactFor record.name record.outputs;
         }
         true
         [record.module])
