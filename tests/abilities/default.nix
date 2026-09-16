@@ -560,6 +560,9 @@
   systemdServiceRealization = import ./systemd-service-realization.nix {
     inherit pkgs lib;
   };
+  systemdQualificationChecks = import ./systemd-qualification-checks.nix {
+    inherit lib;
+  };
   utilLinuxGetty = import ./util-linux-getty.nix {
     inherit pkgs lib mkSystem;
   };
@@ -1050,6 +1053,7 @@ in
   assert compositionDriver;
   assert systemdPackagedUnit;
   assert systemdServiceRealization;
+  assert systemdQualificationChecks;
   assert utilLinuxGetty;
   assert systemdDirectoryPreparation;
   assert systemdIdentityRealization;
