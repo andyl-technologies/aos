@@ -884,14 +884,14 @@ mod tests {
             HandlerRole::from_handler(Some(
                 &LocalKey::new("systemd-credential-delivery").expect("handler key"),
             ))
-                .expect("credential-delivery role parses"),
+            .expect("credential-delivery role parses"),
             HandlerRole::Credential(CredentialRole::Delivery)
         );
         assert_eq!(
             HandlerRole::from_handler(Some(
                 &LocalKey::new("systemd-named-credential-resolution").expect("handler key"),
             ))
-                .expect("named-credential role parses"),
+            .expect("named-credential role parses"),
             HandlerRole::Credential(CredentialRole::NamedResolution)
         );
         assert_eq!(

@@ -33,10 +33,6 @@ use crate::{decode_value, target_context, value};
 const NAMED_CONTEXT_SCHEMA: &str = "aos.systemd.named-credential-context/v1";
 const DELIVERY_CONTEXT_SCHEMA: &str = "aos.systemd.credential-delivery-context/v1";
 const RECEIPT_SCHEMA: &str = "aos.systemd.credential-delivery-state/v1";
-const NAMED_OBSERVATION_SCHEMA: &str = "aos.ability.named-credential-observation/v1";
-const DELIVERY_OBSERVATION_SCHEMA: &str = "aos.ability.credential-delivery-observation/v1";
-const NAMED_INTERFACE: &str = "aos.credential.named-resolution";
-const DELIVERY_INTERFACE: &str = "aos.credential.delivery";
 const VIEW_ROOT: &str = "/run/aos/credential-views";
 const SYSTEM_CREDENTIAL_ROOT: &str = "/run/credentials/@system";
 const ENCRYPTED_CREDENTIAL_ROOTS: &[&str] = &[
@@ -125,13 +121,19 @@ pub(crate) fn admit(role: CredentialRole, request: AdmissionRequest) -> Result<A
     validate_admission_resource(&request)?;
     validate_resource_contexts(&request.resources)?;
     require_method(role, &request.method, &request.semantics)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator()
+        .context("selected credential method has no exact observation discriminator")?;
     if !request.resource_spec.realization.as_json().is_null() {
         bail!("credential request unexpectedly carries a desired realization");
     }
 
     let (observation, native_context, present) = match role {
-        CredentialRole::NamedResolution => admit_named(&request, Path::new("/"))?,
-        CredentialRole::Delivery => admit_delivery(&request, Path::new("/"))?,
+        CredentialRole::NamedResolution => {
+            admit_named(observation_schema, &request, Path::new("/"))?
+        }
+        CredentialRole::Delivery => admit_delivery(observation_schema, &request, Path::new("/"))?,
     };
 
     Ok(AdmissionResult {
@@ -173,6 +175,11 @@ pub(crate) fn invoke(role: CredentialRole, invocation: Invocation) -> Result<Inv
         bail!("credential invocation resource-set digest does not match");
     }
     validate_resource_contexts(&invocation.request.resources)?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator()
+        .context("selected credential method has no exact observation discriminator")?
+        .to_owned();
 
     let bound = validate_resource_context(target_context(&invocation)?)?;
     if invocation.request.inputs != bound.resource_spec.value {
@@ -183,12 +190,17 @@ pub(crate) fn invoke(role: CredentialRole, invocation: Invocation) -> Result<Inv
     }
 
     match role {
-        CredentialRole::NamedResolution => invoke_named(invocation, &bound, Path::new("/")),
-        CredentialRole::Delivery => invoke_delivery(invocation, &bound, Path::new("/")),
+        CredentialRole::NamedResolution => {
+            invoke_named(&observation_schema, invocation, &bound, Path::new("/"))
+        }
+        CredentialRole::Delivery => {
+            invoke_delivery(&observation_schema, invocation, &bound, Path::new("/"))
+        }
     }
 }
 
 fn admit_named(
+    observation_schema: &str,
     request: &AdmissionRequest,
     root: &Path,
 ) -> Result<(AbilityValue, AbilityValue, bool)> {
@@ -196,7 +208,7 @@ fn admit_named(
     require_system_scope(&desired)?;
     let present = named_credential_available(root, &desired.name)?;
     let realized = present.then(|| request.target.clone());
-    let observation = named_observation(&desired, realized.as_ref(), present)?;
+    let observation = named_observation(observation_schema, &desired, realized.as_ref(), present)?;
     let context = value(&NamedCredentialContext {
         schema: NAMED_CONTEXT_SCHEMA.to_string(),
         name: desired.name.clone(),
@@ -206,6 +218,7 @@ fn admit_named(
 }
 
 fn invoke_named(
+    observation_schema: &str,
     invocation: Invocation,
     bound: &aos_provider_protocol::BoundNativeContext,
     root: &Path,
@@ -228,7 +241,7 @@ fn invoke_named(
 
     let present = named_credential_available(root, &desired.name)?;
     let realized = present.then(|| invocation.request.target.clone());
-    let evidence = named_observation(&desired, realized.as_ref(), present)?;
+    let evidence = named_observation(observation_schema, &desired, realized.as_ref(), present)?;
     let mut outputs = empty_outputs();
     outputs.insert(LocalKey::new("observation")?, evidence.clone());
 
@@ -242,6 +255,7 @@ fn invoke_named(
 }
 
 fn admit_delivery(
+    observation_schema: &str,
     request: &AdmissionRequest,
     root: &Path,
 ) -> Result<(AbilityValue, AbilityValue, bool)> {
@@ -258,7 +272,7 @@ fn admit_delivery(
         &paths,
         removing,
     )?;
-    let observation = delivery_observation(&desired, &inspection)?;
+    let observation = delivery_observation(observation_schema, &desired, &inspection)?;
     let context = value(&CredentialDeliveryContext {
         schema: DELIVERY_CONTEXT_SCHEMA.to_string(),
         path: path_text(&paths.credential)?,
@@ -268,6 +282,7 @@ fn admit_delivery(
 }
 
 fn invoke_delivery(
+    observation_schema: &str,
     invocation: Invocation,
     bound: &aos_provider_protocol::BoundNativeContext,
     root: &Path,
@@ -313,7 +328,7 @@ fn invoke_delivery(
         &paths,
         removing,
     )?;
-    let evidence = delivery_observation(&desired, &inspection)?;
+    let evidence = delivery_observation(observation_schema, &desired, &inspection)?;
     let mut outputs = empty_outputs();
     if inspection.complete {
         outputs.insert(LocalKey::new("observation")?, evidence.clone());
@@ -354,9 +369,6 @@ fn source_context<'a>(
         bail!("credential delivery lacks one exact checked source context");
     };
     let bound = validate_resource_context(context)?;
-    if reference.interface.name.as_str() != NAMED_INTERFACE {
-        bail!("credential delivery source is not a named credential resource");
-    }
     let named: NamedCredential = decode_value(&bound.resource_spec.value)?;
     require_system_scope(&named)?;
     let native: NamedCredentialContext = decode_value(&bound.provider_context)?;
@@ -455,12 +467,13 @@ fn receipt(
 }
 
 fn named_observation(
+    observation_schema: &str,
     desired: &NamedCredential,
     realized: Option<&ResourceReference>,
     present: bool,
 ) -> Result<AbilityValue> {
     value(&serde_json::json!({
-        "schema": NAMED_OBSERVATION_SCHEMA,
+        "schema": observation_schema,
         "expected": desired,
         "realized": realized,
         "state": if present { "ready" } else { "absent" },
@@ -468,11 +481,12 @@ fn named_observation(
 }
 
 fn delivery_observation(
+    observation_schema: &str,
     desired: &CredentialDelivery,
     inspection: &DeliveryInspection,
 ) -> Result<AbilityValue> {
     value(&serde_json::json!({
-        "schema": DELIVERY_OBSERVATION_SCHEMA,
+        "schema": observation_schema,
         "expected": desired,
         "realized": inspection.path,
         "state": if inspection.complete { "ready" } else { "absent" },
@@ -556,13 +570,6 @@ fn require_method(
     method: &MethodReference,
     semantics: &MethodSemantics,
 ) -> Result<()> {
-    let expected_interface = match role {
-        CredentialRole::NamedResolution => NAMED_INTERFACE,
-        CredentialRole::Delivery => DELIVERY_INTERFACE,
-    };
-    if method.interface.name.as_str() != expected_interface {
-        bail!("credential handler invocation selects the wrong interface");
-    }
     let expected = match (role, method.method.as_str()) {
         (CredentialRole::NamedResolution, "observe") | (CredentialRole::Delivery, "observe") => {
             MethodSemantics::ordinary(AccessMode::Read)
@@ -728,6 +735,9 @@ mod tests {
     use aos_ability_model::{
         EnvironmentId, ExecutionStage, InstanceId, InterfaceKey, InterfaceName,
     };
+
+    const NAMED_INTERFACE: &str = "aos.credential.named-resolution";
+    const NAMED_OBSERVATION_SCHEMA: &str = "aos.ability.named-credential-observation/v1";
 
     fn resource(key: &str) -> ResourceId {
         ResourceId {
