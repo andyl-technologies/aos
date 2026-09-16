@@ -251,7 +251,8 @@ the disk. Converted limits follow the measured target payloads:
 
 | Converted maximum (MiB) | x86_64 | AArch64 |
 | --- | ---: | ---: |
-| Server, edge and server-2 | 768 | 800 |
+| Server and edge | 768 | 801 |
+| Server-2 | 768 | 832 |
 | Diagnostic server-test | 832 | 864 |
 | Secure Boot and recovery fixtures | 896 | 1024 |
 
