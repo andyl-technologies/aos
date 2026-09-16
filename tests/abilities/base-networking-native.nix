@@ -28,30 +28,14 @@
     ];
   };
   requests = config.aos.abilities.requests;
-  networkd = requests."system:networkd".parameters;
-  resolved = requests."system:resolved".parameters;
   network = requests."system:host-network".parameters;
 in
   assert builtins.attrNames requests
   == [
     "system:host-network"
     "system:network-tunables"
-    "system:networkd"
-    "system:resolved"
   ];
   assert requests."system:network-tunables".parameters.values == {"kernel.hostname" = "aos";};
-  assert networkd.source
-  == {
-    artifact = lib.abilities.packageOutput {package = "systemd";};
-    unit_file = "lib/systemd/system/systemd-networkd.service";
-    unit_name = "systemd-networkd.service";
-  };
-  assert resolved.source
-  == {
-    artifact = lib.abilities.packageOutput {package = "systemd";};
-    unit_file = "lib/systemd/system/systemd-resolved.service";
-    unit_name = "systemd-resolved.service";
-  };
   assert network.authority == "image";
   assert network.links
   == [

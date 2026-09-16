@@ -22,7 +22,7 @@
       inherit artifactReference;
     };
   };
-  consumer = {lib, ...}: {
+  consumerFor = resolverEnabled: {lib, ...}: {
     config.aos.abilities = lib.mkMerge [
       {instances.application = {};}
       (lib.abilities.interfaces.serviceManagement.forProducer {
@@ -49,7 +49,7 @@
             }
           ];
           resolver = {
-            enabled = true;
+            enabled = resolverEnabled;
             nameservers = ["192.0.2.53"];
             search = ["example.test"];
             dnssec = "yes";
@@ -59,13 +59,14 @@
       })
     ];
   };
+  consumer = consumerFor true;
   baseBindings."test:network" = {
     request = "consumer:network";
     implementation = "systemd:network-configuration";
     providerInstance = "systemd:manager";
     slot = "host";
   };
-  evaluate = bindings:
+  evaluateFor = consumerModule: bindings:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -91,7 +92,7 @@
         }
         {
           name = "consumer";
-          module = consumer;
+          module = consumerModule;
         }
       ];
       selectedProviderModules = [selectedSystemdProvider];
@@ -103,22 +104,29 @@
         };
       };
     };
+  evaluate = evaluateFor consumer;
   pending = evaluate baseBindings;
-  child = builtins.head (builtins.attrValues pending.config.aos.abilities.compositionPendingRequests);
-  resolved = evaluate (baseBindings
-    // {
-      "test:network-effects" = {
-        request = child.request;
-        implementation = "systemd:network-configuration-effects";
-        providerInstance = "systemd:manager";
-        slot = child.slot;
-      };
-    });
-  abilities = resolved.config.aos.abilities;
-  resource = builtins.head (builtins.attrValues abilities.desiredResources);
+  pendingChildren = builtins.attrValues pending.config.aos.abilities.compositionPendingRequests;
+  childrenFor = requirement:
+    builtins.filter (child: child.requirement == requirement) pendingChildren;
+  networkEffectsChild = builtins.head (childrenFor "network-configuration-effects");
+  networkServiceChildren = childrenFor "network-service-unit";
+  disabledResolverPending = evaluateFor (consumerFor false) baseBindings;
+  disabledResolverServiceChildren = builtins.filter
+    (child: child.requirement == "network-service-unit")
+    (builtins.attrValues disabledResolverPending.config.aos.abilities.compositionPendingRequests);
+  abilities = pending.config.aos.abilities;
   networkInterface = lib.abilities.interfaces.networkConfiguration.interface;
   effectsInterface = networkInterface.effects;
   emptyInput = lib.abilities.types.record {fields = {};};
+  resource = {
+    resource = {
+      provider = "systemd:manager";
+      key = "host";
+    };
+    kind = networkInterface.identity.name;
+    lifetime = "persistent";
+  };
   transition = abilities.implementations."systemd:network-configuration".transition;
   transitionOperation = kind: let
     method =
@@ -174,15 +182,29 @@
     builtins.head fragment.operations;
   applyOperation = transitionOperation "create";
   removeOperation = transitionOperation "remove";
+  networkdChild = builtins.head (builtins.filter (child: child.slot == "systemd-networkd") networkServiceChildren);
+  resolvedChild = builtins.head (builtins.filter (child: child.slot == "systemd-resolved") networkServiceChildren);
 in
-  assert child.requirement == "network-configuration-effects";
-  assert child.declaration.parameters == {};
+  assert networkEffectsChild.requirement == "network-configuration-effects";
+  assert networkEffectsChild.declaration.parameters == {};
+  assert builtins.length networkServiceChildren == 2;
+  assert builtins.length disabledResolverServiceChildren == 1;
+  assert (builtins.head disabledResolverServiceChildren).slot == "systemd-networkd";
+  assert networkdChild.declaration.parameters.source
+  == {
+    artifact = lib.abilities.packageOutput {};
+    unit_file = "lib/systemd/system/systemd-networkd.service";
+    unit_name = "systemd-networkd.service";
+  };
+  assert resolvedChild.declaration.parameters.source
+  == {
+    artifact = lib.abilities.packageOutput {};
+    unit_file = "lib/systemd/system/systemd-resolved.service";
+    unit_name = "systemd-resolved.service";
+  };
+  assert builtins.all (child: child.declaration.parameters.activation == "enabled") networkServiceChildren;
   assert effectsInterface.identity.name == "aos.network.configuration-effects";
-  assert abilities.compositionPendingRequests == {};
-  assert resource.kind == "aos.network.configuration";
-  assert !(resource.value ? bootstrap);
-  assert resource.lifetime == "persistent";
-  assert resource.realization.systemd.store_path == artifactReference.store_path;
+  assert builtins.length pendingChildren == 3;
   assert builtins.isFunction abilities.implementations."systemd:network-configuration".transition;
   assert abilities.implementations."systemd:network-configuration".handlerDescriptor == null;
   assert abilities.implementations."systemd:network-configuration-effects".providerModule == null;
@@ -207,4 +229,4 @@ in
   assert applyOperation.target.interface == networkInterface.identity;
   assert applyOperation.inputs.value == {bootstrap = null;};
   assert removeOperation.method == "remove";
-  assert builtins.length resolved.config.systemd.providerNetworkConfigurationArtifacts == 1; true
+  assert pending.config.systemd.providerNetworkConfigurationArtifacts == []; true
