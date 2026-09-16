@@ -264,6 +264,8 @@
     )
     cfg.services;
 in {
+  imports = [./_pam-contributions.nix];
+
   options.aos.pam = {
     enable = lib.mkOption {
       type = lib.types.bool;

@@ -52,6 +52,8 @@
   makeBinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
   makeSbinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/sbin") pkgsList);
 in {
+  imports = [./_filesystem-tree-contributions.nix];
+
   options = {
     ## Assertions checked during system build. If any assertion is
     ## false, evaluating `system.build.toplevel` throws with every

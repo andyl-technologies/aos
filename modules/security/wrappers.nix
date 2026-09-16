@@ -62,6 +62,8 @@
       ++ builtins.map wrapperRequest names;
   };
 in {
+  imports = [./_wrapper-contributions.nix];
+
   options.aos.security.wrappers = lib.mkOption {
     type = lib.types.attrsOf (lib.types.submodule {
       options = {

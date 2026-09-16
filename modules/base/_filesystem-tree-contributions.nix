@@ -1,0 +1,20 @@
+##! Package-authored immutable filesystem-tree contributions.
+{lib, ...}: let
+  types = lib.abilities.types;
+  filesystemTree = types.record {
+    fields = {
+      target = types.relativePath;
+      source = types.artifactPathReference;
+    };
+  };
+in {
+  options.aos.contributions.filesystemTrees = lib.mkOption {
+    type = types.list {
+      element = filesystemTree;
+      maxItems = 4096;
+    };
+    default = [];
+    contributable = true;
+    description = "Package-owned immutable directory trees materialized beneath /etc.";
+  };
+}
