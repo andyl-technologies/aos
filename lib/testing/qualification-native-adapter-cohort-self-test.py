@@ -138,7 +138,7 @@ def specification(matrix_cell: dict[str, Any]) -> dict[str, Any]:
         "cells": [matrix_cell],
         "applicability": {
             "schema": "aos.qualification.native-adapter-matrix-applicability/v1",
-            "required_production_vm_cells": 1,
+            "applicable_cell_ids": [matrix_cell["id"]],
             "inapplicable_cells": [],
         },
     }
@@ -299,7 +299,7 @@ def main() -> None:
     mutations.append((spec, forged_route, "accepted a forged package route"))
 
     wrong_applicability = copy.deepcopy(spec)
-    wrong_applicability["applicability"]["required_production_vm_cells"] = 0
+    wrong_applicability["applicability"]["applicable_cell_ids"] = []
     mutations.append(
         (wrong_applicability, arguments, "accepted incorrect applicability")
     )

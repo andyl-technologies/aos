@@ -163,9 +163,9 @@
   nativeAdapterChecks = abilityRequirements.ability-native-adapter-matrix.checks;
   providerContract = adapterName:
     (builtins.head (builtins.filter (adapter: adapter.adapter == adapterName) nativeAdapterSurface.adapters)).provider_contract;
-  nativeCells = nativeAdapterMatrix.cells;
-  applicableNativeIds = nativeAdapterMatrix.applicable_cell_ids;
-  inapplicableNativeIds = nativeAdapterMatrix.inapplicable_cell_ids;
+  nativeCells = nativeAdapterMatrix.spec.cells;
+  applicableNativeIds = nativeAdapterMatrix.spec.applicability.applicable_cell_ids;
+  inapplicableNativeIds = map (entry: entry.cell_id) nativeAdapterMatrix.spec.applicability.inapplicable_cells;
   partitionedNativeIds = builtins.sort builtins.lessThan (applicableNativeIds ++ inapplicableNativeIds);
   nativeRoleRevocationCells = builtins.filter (cell:
     builtins.match "revoke-(caller|provider|enforcement|assignment)-(before-acquisition|after-acquisition|before-external-effect)"
@@ -311,15 +311,13 @@ in
     "checks.fleet.system-image-rollback"
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
-  assert nativeAdapterMatrix.cell_count == builtins.length nativeCells;
-  assert nativeAdapterMatrix.required_production_vm_cells == builtins.length applicableNativeIds;
   assert builtins.length applicableNativeIds
   == builtins.length (lib.unique applicableNativeIds);
   assert builtins.length inapplicableNativeIds
   == builtins.length (lib.unique inapplicableNativeIds);
   assert builtins.all (id: !builtins.elem id inapplicableNativeIds) applicableNativeIds;
   assert partitionedNativeIds == map (cell: cell.id) nativeCells;
-  assert nativeAdapterMatrix.spec.applicability == nativeAdapterMatrix.applicability;
+  assert abilityRequirements.ability-native-adapter-matrix.matrix_spec == nativeAdapterMatrix.spec;
   assert (providerContract "image-rollout")
   == {
     lifecycle = {
@@ -330,8 +328,7 @@ in
   };
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeRoleRevocationCells;
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeFailureControlCells;
-  assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
-  assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.cells;
+  assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.spec.cells;
   assert builtins.elem nativeAdapterMatrix.check nativeAdapterChecks;
   assert builtins.any (check:
     builtins.match "container-execution-surface-v1-sha256-[0-9a-f]{64}" check != null)

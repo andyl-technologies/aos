@@ -27,7 +27,7 @@
     })
     selectedPackageEntries));
   authorityInterfaceRoots = map (package: package.contract.document) selectedPackages;
-  authorityMatrix = import ../../qualification/modules/_generated-provider-subjects.nix {
+  authorityMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {
     inherit lib;
     packages = selectedPackages;
     regressions = [
@@ -64,7 +64,7 @@
   authorityMatrixSpec = pkgs.writeTextFile {
     name = "aos-authority-revocation-matrix-spec";
     destination = "/matrix-spec.json";
-    text = builtins.toJSON authorityMatrix.spec;
+    text = authorityMatrix.canonical_json;
   };
 
   observerFixture = import ./_ability-execution-observer.nix {

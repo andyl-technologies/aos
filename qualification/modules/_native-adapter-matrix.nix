@@ -6,7 +6,7 @@
   regressions,
 }: let
   expectedPolicyScenarioKeys = ["additional_postconditions" "applicability" "boundary" "candidate" "disposition" "failure" "family" "id" "postcondition_groups" "predecessor"];
-  expectedScenarioPolicyKeys = ["invalidation_dimensions" "matrix_schema" "postcondition_groups" "postcondition_kinds" "scenarios" "subject_schema"];
+  expectedScenarioPolicyKeys = ["invalidation_dimensions" "matrix_schema" "postcondition_groups" "postcondition_kinds" "scenarios"];
   token = value:
     builtins.isString value
     && builtins.stringLength value > 0
@@ -61,32 +61,12 @@
     interface = identity;
     guarantees = builtins.sort builtins.lessThan (map (guarantee: guarantee.name) entry.implementation.guarantees);
   }) selectedImplementations;
-  packageDependencies = package:
-    [package]
-    ++ (package.buildDeps or [])
-    ++ (package.runtimeDeps or [])
-    ++ (package.propagatedDeps or []);
-  resolveOutput = owner: selector: let
-    matches = lib.unique (builtins.filter (candidate:
-      builtins.isAttrs candidate
-      && (candidate.pname or null) == selector.package)
-    (packageDependencies owner));
-    selected =
-      if selector.package == "self"
-      then owner
-      else if builtins.length matches == 1
-      then builtins.head matches
-      else throw "native qualification artifact '${selector.package}' is absent or ambiguous for '${owner.pname}'";
-    outputs = selected.outputs or ["out"];
-  in
-    if !(builtins.elem selector.output outputs)
-    then throw "native qualification artifact '${selector.package}' lacks output '${selector.output}'"
-    else if selector.output == "out"
-    then selected.out or selected
-    else builtins.getAttr selector.output selected;
   resolvedArtifact = owner: selector: {
     inherit selector;
-    path = builtins.toString (resolveOutput owner selector);
+    path = builtins.toString (lib.abilities.authenticatedPackageOutputFor {
+      package = owner;
+      inherit selector;
+    });
   };
   projectedHandler = owner: handler: {
     artifact = resolvedArtifact owner handler.artifact;
@@ -140,7 +120,6 @@
   derivedSurface = {
     schema = "aos.qualification.native-adapter-surface/v1";
     matrix_schema = scenarioPolicy.matrix_schema;
-    subject_schema = scenarioPolicy.subject_schema;
     adapters =
       builtins.sort
       (left: right: builtins.lessThan left.adapter right.adapter)
@@ -148,30 +127,14 @@
     families = scenarioFamilies;
     invalidation_dimensions = scenarioPolicy.invalidation_dimensions;
     scenarios = map scenarioFor scenarioPolicy.scenarios;
-    limits = {
-      max_adapters = builtins.length selectedImplementations;
-      max_methods = builtins.length (builtins.concatMap (entry:
-        builtins.attrNames entry.interface.interface.methods)
-      selectedImplementations);
-      max_scenarios = builtins.length scenarioPolicy.scenarios;
-    };
   };
   selectedSurface = derivedSurface;
-  surfaceDigest = builtins.hashString "sha256" (builtins.toJSON selectedSurface);
   adapterMethods = builtins.concatMap (adapter:
     map (method: {
       inherit adapter method;
     })
     adapter.methods)
   selectedSurface.adapters;
-  canonicalSubject = {
-    schema = "aos.qualification.native-adapter-subject/v1";
-    matrix_schema = "aos.qualification.native-adapter-matrix/v1";
-    surface_digest = "sha256:${surfaceDigest}";
-    adapter_count = builtins.length selectedSurface.adapters;
-    method_count = builtins.length adapterMethods;
-    scenario_count = builtins.length selectedSurface.scenarios;
-  };
   cellFor = pair: scenario: {
     id = "${pair.adapter.adapter}/${pair.adapter.interface_name}/abi-${toString pair.adapter.interface_abi}/${pair.method.method}/${scenario.id}";
     matrix_schema = selectedSurface.matrix_schema;
@@ -236,20 +199,17 @@
   applicableCellIds = map (cell: cell.id) applicableCells;
   canonicalApplicability = {
     schema = "aos.qualification.native-adapter-matrix-applicability/v1";
-    required_production_vm_cells = builtins.length applicableCells;
+    applicable_cell_ids = applicableCellIds;
     inapplicable_cells = inapplicableCells;
   };
   selectedApplicability = canonicalApplicability;
-  applicabilityDigest = builtins.hashString "sha256" (builtins.toJSON canonicalApplicability);
   selectedCells = expectedCells;
   matrixSpec = {
     schema = "aos.qualification.native-adapter-matrix-spec/v1";
     surface = selectedSurface;
-    subject = canonicalSubject;
     cells = selectedCells;
     applicability = selectedApplicability;
   };
-  matrixDigest = builtins.hashString "sha256" (builtins.toJSON matrixSpec);
   selectedIds = map (cell: cell.id or "") selectedCells;
   validDisposition = disposition:
     builtins.isAttrs disposition
@@ -263,7 +223,7 @@
         && token disposition.unsupported
         && disposition.supported != disposition.unsupported)
     );
-  check = "native-adapter-matrix-v1-sha256-${matrixDigest}";
+  check = "native-adapter-matrix";
 in
   assert packages != [];
   assert builtins.attrNames scenarioPolicy == expectedScenarioPolicyKeys;
@@ -298,19 +258,8 @@ in
   assert builtins.sort builtins.lessThan (applicableCellIds ++ inapplicableCellIds)
   == map (cell: cell.id) expectedCells;
   assert unique (applicableCellIds ++ inapplicableCellIds); {
-    schema = selectedSurface.matrix_schema;
-    subject = canonicalSubject;
     spec = matrixSpec;
-    matrix_digest = "sha256:${matrixDigest}";
-    cells = selectedCells;
-    cell_count = builtins.length selectedCells;
-    required_production_vm_cells = builtins.length applicableCells;
-    applicable_cells = applicableCells;
-    applicable_cell_ids = applicableCellIds;
-    inapplicable_cells = inapplicableCells;
-    inapplicable_cell_ids = inapplicableCellIds;
-    applicability = canonicalApplicability;
-    applicability_digest = "sha256:${applicabilityDigest}";
+    canonical_json = builtins.toJSON matrixSpec;
     container_execution_declarations = containerExecutionDeclarations;
     inherit check;
     requirement = {
@@ -319,6 +268,7 @@ in
       method = "automated";
       production_only = true;
       checks = [check];
+      matrix_spec = matrixSpec;
       inherit regressions;
       invalidated_by = scenarioPolicy.invalidation_dimensions;
     };

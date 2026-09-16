@@ -593,16 +593,9 @@ class Scenario:
         ):
             raise RuntimeError("ability case differs from the implemented native scenario")
         if self.matrix_spec is not None:
-            matrix_checks = [
-                check
-                for check in EXPECTED_CHECKS
-                if check.startswith("native-adapter-matrix-v1-sha256-")
-            ]
             if (
-                len(matrix_checks) != 1
-                or matrix_checks[0]
-                != "native-adapter-matrix-v1-sha256-"
-                + raw_digest(self.matrix_spec).removeprefix("sha256:")
+                EXPECTED_CHECKS.count("native-adapter-matrix") != 1
+                or self.case.get("matrix_spec") != self.matrix_spec
             ):
                 raise RuntimeError("matrix specification differs from the exact case")
         if requires_predecessor:
@@ -2024,7 +2017,7 @@ class Scenario:
             "checks": {
                 check: {"passed": True, "detail": check_detail(check)}
                 for check in self.case["checks"]
-                if not check.startswith("native-adapter-matrix-v1-sha256-")
+                if check != "native-adapter-matrix"
             },
             "operations": {
                 "matrix_cells_reported": len(cells),
@@ -2033,7 +2026,6 @@ class Scenario:
             "environment": environment,
             "native_adapter_matrix": {
                 "schema_version": "aos.release.native-adapter-matrix-observation/v1",
-                "spec": self.matrix_spec,
                 "spec_digest": spec_digest,
                 "environment": environment,
                 "cells": cells,
@@ -2264,7 +2256,7 @@ class Scenario:
 
 
 def check_detail(check):
-    if check.startswith("native-adapter-matrix-v1-sha256-"):
+    if check == "native-adapter-matrix":
         return (
             "The package-derived native-adapter matrix bound every applicable "
             "durability and authority cell plus every exact provider-contract "

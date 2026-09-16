@@ -13,7 +13,7 @@
       name = entry.cell_id;
       value = entry.reason;
     })
-    matrix.inapplicable_cells
+    matrix.applicability.inapplicable_cells
   );
   compatibleCellId = cell: "${cell.adapter}/${cell.interface.name}/abi-${toString cell.interface.abi}/${cell.method}/adopt-compatible-state";
   hasUnsupportedTransfer = cell: builtins.hasAttr (compatibleCellId cell) inapplicableById;
@@ -55,10 +55,10 @@
     )
     matrix.cells;
   instanceLifetimeBlocked = map (entry: entry.cell_id) (
-    builtins.filter (entry: entry.reason == "non-persistent-lifetime") matrix.inapplicable_cells
+    builtins.filter (entry: entry.reason == "non-persistent-lifetime") matrix.applicability.inapplicable_cells
   );
   missingStateFormatBlocked = map (entry: entry.cell_id) (
-    builtins.filter (entry: entry.reason == "missing-authenticated-state-format") matrix.inapplicable_cells
+    builtins.filter (entry: entry.reason == "missing-authenticated-state-format") matrix.applicability.inapplicable_cells
   );
 in
   assert builtins.length all == builtins.length (lib.unique all);
@@ -66,9 +66,9 @@ in
   == builtins.sort builtins.lessThan (map (cell: cell.id) selected);
   assert builtins.sort builtins.lessThan (compatible ++ retained ++ unsupported)
   == builtins.sort builtins.lessThan all;
-  assert map (cell: cell.id) blockedCompatible == matrix.inapplicable_cell_ids;
+  assert map (cell: cell.id) blockedCompatible == map (entry: entry.cell_id) matrix.applicability.inapplicable_cells;
   assert builtins.sort builtins.lessThan (instanceLifetimeBlocked ++ missingStateFormatBlocked)
-  == builtins.sort builtins.lessThan matrix.inapplicable_cell_ids;
+  == builtins.sort builtins.lessThan (map (entry: entry.cell_id) matrix.applicability.inapplicable_cells);
   assert builtins.all (cell:
     !lib.hasSuffix "/reject-unsupported-transfer" cell.id
     || builtins.elem "dependent-effects-not-executed" cell.postconditions)

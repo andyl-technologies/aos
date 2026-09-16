@@ -146,13 +146,13 @@ in {
       }
       {
         assertion =
-          nativeAdapterMatrix.cell_count
-          == builtins.length nativeAdapterMatrix.cells
-          && nativeAdapterMatrix.required_production_vm_cells
-          == builtins.length nativeAdapterMatrix.applicable_cells
-          && nativeAdapterMatrix.cell_count
-          == nativeAdapterMatrix.required_production_vm_cells
-          + builtins.length nativeAdapterMatrix.inapplicable_cells;
+          cfg.requirements.ability-native-adapter-matrix.matrix_spec
+          == nativeAdapterMatrix.spec
+          && builtins.sort builtins.lessThan (
+            nativeAdapterMatrix.spec.applicability.applicable_cell_ids
+            ++ map (cell: cell.cell_id) nativeAdapterMatrix.spec.applicability.inapplicable_cells
+          )
+          == map (cell: cell.id) nativeAdapterMatrix.spec.cells;
         message = "The native adapter matrix must partition every package-derived surface cell through fail-closed production applicability.";
       }
       {

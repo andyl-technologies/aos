@@ -9,7 +9,11 @@
     if nativeAdapterMatrix == null && cellId == null
     then null
     else let
-      matches = builtins.filter (cell: cell.id == cellId) nativeAdapterMatrix.applicable_cells;
+      matches = builtins.filter (
+        cell:
+          cell.id == cellId
+          && builtins.elem cell.id nativeAdapterMatrix.spec.applicability.applicable_cell_ids
+      ) nativeAdapterMatrix.spec.cells;
     in
       assert nativeAdapterMatrix != null && cellId != null;
       assert builtins.length matches == 1;

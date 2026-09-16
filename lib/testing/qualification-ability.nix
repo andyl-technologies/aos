@@ -13,6 +13,7 @@
   candidateRuntimeCompanions,
   stagingHubUrl ? null,
   matrixSpec ? null,
+  matrixSpecJson ? null,
   matrixQualifiedCells ? [],
   matrixAdditionalCohorts ? [],
   cohorts ? [
@@ -42,7 +43,7 @@
       pkgs.writeTextFile {
         name = "${name}-native-adapter-matrix";
         destination = "/matrix-spec.json";
-        text = builtins.toJSON matrixSpec;
+        text = matrixSpecJson;
       };
   matrixSpecPath =
     if matrixSpecRoot == null
@@ -444,6 +445,7 @@ in
     "ability-native-recovery"
   ];
   assert (matrixSpec != null) == (scenarioId == "ability-native-adapter-matrix");
+  assert (matrixSpecJson != null) == (matrixSpec != null);
   assert qualificationCohorts != [];
   assert builtins.all (cohort:
     builtins.sort builtins.lessThan (builtins.attrNames cohort)
@@ -481,7 +483,6 @@ in
   assert matrixQualifiedCells == lib.concatMap (cohort: cohort.qualifiedCells) matrixCohortInputs;
   assert builtins.length matrixQualifiedCells == builtins.length (lib.unique matrixQualifiedCells);
   assert builtins.sort builtins.lessThan matrixQualifiedCells == matrixApplicableCellIds;
-  assert matrixSpec == null || matrixSpec.applicability.required_production_vm_cells == builtins.length matrixQualifiedCells;
   assert builtins.length matrixCohortInputs == builtins.length (lib.unique (map (cohort: cohort.id) matrixCohortInputs));
   assert builtins.all (cohort:
     cohort.id

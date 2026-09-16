@@ -42,7 +42,7 @@
   nativeAdapterMatrixArtifact = pkgs.writeTextFile {
     name = "aos-qualification-native-adapter-matrix";
     destination = "/matrix-spec.json";
-    text = builtins.toJSON nativeAdapterMatrix.spec;
+    text = nativeAdapterMatrix.canonical_json;
   };
 in
   assert builtins.elem "checks.fleet.measured-boot" imageRecovery.regressions;

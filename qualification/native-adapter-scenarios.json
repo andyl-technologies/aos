@@ -743,6 +743,5 @@
       ],
       "predecessor": "same"
     }
-  ],
-  "subject_schema": "aos.qualification.native-adapter-subject/v1"
+  ]
 }
