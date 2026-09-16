@@ -423,7 +423,17 @@
     if cfg.topology == "standby"
     then "replication-passfile"
     else "bootstrap-superuser-password";
-  initializationCredentialPath = credentialPath initializationCredential;
+  initializationCredentialMatches = builtins.filter
+    (credential: credential.name == initializationCredential)
+    configuredCredentials;
+  initializationCredentialReference =
+    if initializationCredentialMatches == []
+    then null
+    else (builtins.head initializationCredentialMatches).reference;
+  initializationCredentialPath =
+    if initializationCredentialReference == null
+    then ""
+    else credentialPath initializationCredential;
   prepareArguments = [
     "prepare"
     statePlannedPath
@@ -496,14 +506,12 @@
         signal_scope = "none";
         timeout_millis = 90000;
       };
-      credentials.views = [
-        {
-          name = initializationCredential;
-          encrypted = (builtins.head (builtins.filter (credential: credential.name == initializationCredential) configuredCredentials)).reference.encrypted;
-          reference = initializationCredentialPath;
-          optional = false;
-        }
-      ];
+      credentials.views = lib.optional (initializationCredentialReference != null) {
+        name = initializationCredential;
+        encrypted = initializationCredentialReference.encrypted;
+        reference = initializationCredentialPath;
+        optional = false;
+      };
       configuration.views = [
         {
           name = "server";
