@@ -6,24 +6,9 @@
   guestTools ? false,
   effectQualification ? false,
   providerStateQualification ? false,
-  transitionTransform ? transition: transition,
 }: let
-  qualificationObserver = import ./_native-adapter-observer.nix {inherit pkgs;};
   packageSet = import ../abilities/reference-nginx/package.nix {
-    inherit lib;
     inherit (pkgs) mkDerivation;
-    credentialRuntime = pkgs.aos.packageRuntime;
-    managedConfigurationRuntime = pkgs.aos.packageRuntime;
-    nginxRuntime = pkgs.nginx;
-    serviceRuntime = pkgs.aos.packageRuntime;
-    inherit qualificationObserver;
-    inherit effectQualification providerStateQualification transitionTransform;
-  };
-  systemdManagerPackage = import ../abilities/reference-systemd-manager/package.nix {
-    inherit lib;
-    inherit (pkgs) mkDerivation;
-    packageRuntime = pkgs.aos.packageRuntime;
-    inherit qualificationObserver;
   };
 
   orderedPackages = [
@@ -32,24 +17,24 @@
       package = packageSet.consumer;
     }
     {
-      name = "ability-reference-nginx";
-      package = packageSet.nginx;
+      name = "ability-reference-nginx-backend-consumer";
+      package = packageSet.backend-consumer;
     }
     {
-      name = "ability-reference-managed-configuration";
-      package = packageSet.managed-configuration;
+      name = "ability-reference-http-backend-registry";
+      package = packageSet.backend-registry;
     }
     {
-      name = "ability-reference-credential";
-      package = packageSet.credential;
+      name = pkgs.nginx.pname;
+      package = pkgs.nginx;
     }
     {
-      name = "ability-reference-service";
-      package = packageSet.service;
+      name = pkgs.aos.pname;
+      package = pkgs.aos;
     }
     {
-      name = "ability-reference-systemd-manager";
-      package = systemdManagerPackage;
+      name = pkgs.systemd.pname;
+      package = pkgs.systemd;
     }
   ];
 
@@ -198,11 +183,9 @@
       abilities = entry.package.contract.document;
       originalRuntime = pkgs.aos.packageRuntime;
     }) [
-      "ability-reference-nginx"
-      "ability-reference-managed-configuration"
-      "ability-reference-credential"
-      "ability-reference-service"
-      "ability-reference-systemd-manager"
+      pkgs.nginx.pname
+      pkgs.aos.pname
+      pkgs.systemd.pname
     ];
 in {
   inherit
