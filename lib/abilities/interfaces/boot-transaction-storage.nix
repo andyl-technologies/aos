@@ -97,7 +97,12 @@
     identity = interfaceIdentity document;
     methods = builtins.attrNames declaration.methods;
   };
+  readView = {
+    interfaces = {inherit view;};
+    declarations.${view.alias} = view.declaration;
+  };
 in {
-  interfaces = {inherit view;};
-  declarations.${view.alias} = view.declaration;
+  name = "bootTransactionStorage";
+  inherit readView;
+  module.config.aos.abilities.interfaces = readView.declarations;
 }

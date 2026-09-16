@@ -111,22 +111,27 @@
     guarantees = [];
   };
   operationDocument = interfaceDocumentFromDeclaration operationDeclaration;
-in {
-  alias = "content-addressed-object";
-  name = declaration.name;
-  inherit declaration document requestType methodParameters observationType realizationType;
-  identity = interfaceIdentity document;
-  methods = builtins.attrNames methods;
-  operationInterface = {
-    alias = operationAlias;
-    name = operationDeclaration.name;
-    declaration = operationDeclaration;
-    document = operationDocument;
-    identity = interfaceIdentity operationDocument;
+  readView = {
+    alias = "content-addressed-object";
+    name = declaration.name;
+    inherit declaration document requestType methodParameters observationType realizationType;
+    identity = interfaceIdentity document;
     methods = builtins.attrNames methods;
+    operationInterface = {
+      alias = operationAlias;
+      name = operationDeclaration.name;
+      declaration = operationDeclaration;
+      document = operationDocument;
+      identity = interfaceIdentity operationDocument;
+      methods = builtins.attrNames methods;
+    };
+    declarations = {
+      content-addressed-object = declaration;
+      ${operationAlias} = operationDeclaration;
+    };
   };
-  declarations = {
-    content-addressed-object = declaration;
-    ${operationAlias} = operationDeclaration;
-  };
+in {
+  name = "contentAddressedArtifacts";
+  inherit readView;
+  module.config.aos.abilities.interfaces = readView.declarations;
 }

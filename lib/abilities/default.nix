@@ -26,6 +26,15 @@
     abilities,
   }:
     import ./package-projection.nix {inherit lib abilities;};
+  interfaceRegistry = import ./interfaces {
+    inherit
+      declareInterface
+      descriptorFor
+      interfaceDocumentFromDeclaration
+      interfaceIdentity
+      ;
+    types = abilityTypes;
+  };
   inherit
     (packageOutputSelectors)
     canonicalizePackageOutputSelectors
@@ -1690,48 +1699,7 @@ in rec {
     transitionFragment
     ;
   types = abilityTypes;
-  interfaces = rec {
-    serviceManagement = import ./service-management.nix {
-      inherit declareInterface descriptorFor interfaceDocumentFromDeclaration interfaceIdentity;
-      types = abilityTypes;
-    };
-    networkPolicy = import ./network-policy.nix {
-      inherit declareInterface descriptorFor interfaceDocumentFromDeclaration interfaceIdentity;
-      types = abilityTypes;
-    };
-    bootPreparation = import ./boot-preparation.nix {
-      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
-      types = abilityTypes;
-    };
-    imageRolloutPlatform = import ./image-rollout-platform.nix {
-      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
-      types = abilityTypes;
-    };
-    bootTransactionStorage = import ./boot-transaction-storage.nix {
-      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
-      types = abilityTypes;
-    };
-    packageStoreReadView = import ./package-store-read-view.nix {
-      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
-      types = abilityTypes;
-    };
-    kernelTunables = import ./kernel-tunables.nix {
-      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
-      types = abilityTypes;
-    };
-    networkConfiguration = import ./network-configuration.nix {
-      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
-      types = abilityTypes;
-    };
-    blockStorage = import ./block-storage.nix {
-      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
-      types = abilityTypes;
-    };
-    contentAddressedArtifacts = import ./content-addressed-artifacts.nix {
-      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
-      types = abilityTypes;
-    };
-  };
+  interfaces = interfaceRegistry.readView;
   module = {config, ...}:
     import ./module.nix {
       inherit
@@ -1748,18 +1716,7 @@ in rec {
         normalizePackageOutputSelectors
         resourceRevision
         ;
-      coreGuarantees = interfaces.serviceManagement.guaranteeDeclarations;
-      coreInterfaces =
-        interfaces.serviceManagement.moduleDeclarations
-        // interfaces.networkPolicy.declarations
-        // interfaces.bootPreparation.declarations
-        // interfaces.imageRolloutPlatform.declarations
-        // interfaces.bootTransactionStorage.declarations
-        // interfaces.packageStoreReadView.declarations
-        // interfaces.kernelTunables.declarations
-        // interfaces.networkConfiguration.declarations
-        // interfaces.blockStorage.declarations
-        // interfaces.contentAddressedArtifacts.declarations;
+      coreInterfaceModule = interfaceRegistry.module;
       moduleTypes = moduleOptionTypes;
     };
 

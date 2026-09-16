@@ -17,8 +17,7 @@
   interfaceIdentity,
   normalizeSemanticValue,
   resourceRevision,
-  coreGuarantees,
-  coreInterfaces,
+  coreInterfaceModule,
   normalizePackageOutputSelectors,
 }: let
   strictSubmodule = options: let
@@ -172,7 +171,7 @@
           interface =
             if builtins.isString value.interface
             then
-              if declarationKeyType.check value.interface || builtins.hasAttr value.interface coreInterfaces
+              if declarationKeyType.check value.interface || builtins.hasAttr value.interface config.aos.abilities.interfaces
               then value.interface
               else qualify package value.interface
             else value.interface;
@@ -1469,7 +1468,7 @@
     };
   };
 in {
-  imports = [./composition-driver.nix];
+  imports = [./composition-driver.nix coreInterfaceModule];
 
   options.aos.abilities = {
     environment = mkOption {
@@ -1621,9 +1620,5 @@ in {
 
   config._module.args.abilityIdentityKeyFor = identityKeyFor;
 
-  config.aos.abilities = {
-    guarantees = coreGuarantees;
-    interfaces = coreInterfaces;
-    instanceIdentities = projectedInstanceIdentities;
-  };
+  config.aos.abilities.instanceIdentities = projectedInstanceIdentities;
 }

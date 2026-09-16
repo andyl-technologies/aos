@@ -40,9 +40,9 @@
     variants =
       exactSelectorVariants
       // {
-      ethernet = types.record {
-        fields.kind = types.enum ["ethernet"];
-      };
+        ethernet = types.record {
+          fields.kind = types.enum ["ethernet"];
+        };
       };
   };
   addresses = types.list {
@@ -231,7 +231,11 @@
     targetResource = interfaceName;
     outputs.observation =
       output
-      (if name == "observe" then "observation" else "runtime")
+      (
+        if name == "observe"
+        then "observation"
+        else "runtime"
+      )
       "attempt"
       "Reports the exact terminal network-configuration state."
       observationType;
@@ -256,39 +260,46 @@
       remove = effectsMethod "remove" "Removes the exact owned host network state." emptyInputType "exclusive-write" true;
     };
     inherit lifecycle;
-    aggregation = aggregation // {
-      controllerGroup = effectsAlias;
-      # The owning controller and an authorized spanning transaction may both
-      # receive grants to the same persistent network resource.
-      rejectSlotCollisions = false;
-    };
+    aggregation =
+      aggregation
+      // {
+        controllerGroup = effectsAlias;
+        # The owning controller and an authorized spanning transaction may both
+        # receive grants to the same persistent network resource.
+        rejectSlotCollisions = false;
+      };
     configurationType = null;
     guarantees = [];
   };
   effectsDocument = interfaceDocumentFromDeclaration effectsDeclaration;
   effectsIdentity = interfaceIdentity effectsDocument;
+  readView = {
+    interface = {
+      inherit alias declaration document identity observationType;
+      requestType = policyType;
+      types = {
+        policy = policyType;
+        inherit bootstrap;
+        applyInput = applyInputType;
+      };
+      methods = builtins.attrNames methods;
+      effects = {
+        alias = effectsAlias;
+        declaration = effectsDeclaration;
+        document = effectsDocument;
+        identity = effectsIdentity;
+        methods = builtins.attrNames effectsDeclaration.methods;
+        requestType = applyInputType;
+        inherit observationType;
+      };
+    };
+    declarations = {
+      ${alias} = declaration;
+      ${effectsAlias} = effectsDeclaration;
+    };
+  };
 in {
-  interface = {
-    inherit alias declaration document identity observationType;
-    requestType = policyType;
-    types = {
-      policy = policyType;
-      inherit bootstrap;
-      applyInput = applyInputType;
-    };
-    methods = builtins.attrNames methods;
-    effects = {
-      alias = effectsAlias;
-      declaration = effectsDeclaration;
-      document = effectsDocument;
-      identity = effectsIdentity;
-      methods = builtins.attrNames effectsDeclaration.methods;
-      requestType = applyInputType;
-      inherit observationType;
-    };
-  };
-  declarations = {
-    ${alias} = declaration;
-    ${effectsAlias} = effectsDeclaration;
-  };
+  name = "networkConfiguration";
+  inherit readView;
+  module.config.aos.abilities.interfaces = readView.declarations;
 }

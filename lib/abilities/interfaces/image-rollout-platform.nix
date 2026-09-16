@@ -128,7 +128,12 @@
           {rollout-state = rolloutOutput rolloutObservation;}
           // builtins.listToAttrs (
             if name == "observe-health"
-            then [{name = "healthy"; value = rolloutOutput types.boolean;}]
+            then [
+              {
+                name = "healthy";
+                value = rolloutOutput types.boolean;
+              }
+            ]
             else []
           );
         permittedOperations = [name];
@@ -289,18 +294,23 @@
       description = "Requests and observes host restart without exposing an init-system backend.";
       controllerGroup = "image-rollout";
     };
+  readView = {
+    inherit rolloutRequest;
+
+    interfaces = {
+      inherit rollout artifactStorage selection success hostRestart;
+    };
+
+    declarations = {
+      ${rollout.alias} = rollout.declaration;
+      ${artifactStorage.alias} = artifactStorage.declaration;
+      ${selection.alias} = selection.declaration;
+      ${success.alias} = success.declaration;
+      ${hostRestart.alias} = hostRestart.declaration;
+    };
+  };
 in {
-  inherit rolloutRequest;
-
-  interfaces = {
-    inherit rollout artifactStorage selection success hostRestart;
-  };
-
-  declarations = {
-    ${rollout.alias} = rollout.declaration;
-    ${artifactStorage.alias} = artifactStorage.declaration;
-    ${selection.alias} = selection.declaration;
-    ${success.alias} = success.declaration;
-    ${hostRestart.alias} = hostRestart.declaration;
-  };
+  name = "imageRolloutPlatform";
+  inherit readView;
+  module.config.aos.abilities.interfaces = readView.declarations;
 }

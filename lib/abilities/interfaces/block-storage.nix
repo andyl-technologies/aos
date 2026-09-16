@@ -484,18 +484,23 @@
     requestType = provisioningRequest;
     observationType = provisioningObservation;
   };
+  readView = {
+    types = {
+      inherit poolName datasetName datasetProperties storageDevice providerIdentifier provisioningPlan provisioningMarkerObservation;
+    };
+    interfaces = {
+      inherit encryptedMapping storageFormat pool dataset provisioning;
+    };
+    declarations = {
+      ${encryptedMapping.alias} = encryptedMapping.declaration;
+      ${storageFormat.alias} = storageFormat.declaration;
+      ${pool.alias} = pool.declaration;
+      ${dataset.alias} = dataset.declaration;
+      ${provisioning.alias} = provisioning.declaration;
+    };
+  };
 in {
-  types = {
-    inherit poolName datasetName datasetProperties storageDevice providerIdentifier provisioningPlan provisioningMarkerObservation;
-  };
-  interfaces = {
-    inherit encryptedMapping storageFormat pool dataset provisioning;
-  };
-  declarations = {
-    ${encryptedMapping.alias} = encryptedMapping.declaration;
-    ${storageFormat.alias} = storageFormat.declaration;
-    ${pool.alias} = pool.declaration;
-    ${dataset.alias} = dataset.declaration;
-    ${provisioning.alias} = provisioning.declaration;
-  };
+  name = "blockStorage";
+  inherit readView;
+  module.config.aos.abilities.interfaces = readView.declarations;
 }

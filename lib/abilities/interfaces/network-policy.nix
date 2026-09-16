@@ -194,19 +194,24 @@
     ingress = interface ingressAlias ingressDeclaration;
     forwarding = interface forwardingAlias forwardingDeclaration;
   };
-in {
-  inherit
-    types
-    interfaces
-    aggregateRequest
-    baseRequest
-    ingressRequest
-    forwardingRequest
-    observationType
-    realizationType
-    ;
-  declarations = builtins.listToAttrs (builtins.map (value: {
+  readView = {
+    inherit
+      types
+      interfaces
+      aggregateRequest
+      baseRequest
+      ingressRequest
+      forwardingRequest
+      observationType
+      realizationType
+      ;
+    declarations = builtins.listToAttrs (builtins.map (value: {
       name = value.alias;
       value = value.declaration;
     }) (builtins.attrValues interfaces));
+  };
+in {
+  name = "networkPolicy";
+  inherit readView;
+  module.config.aos.abilities.interfaces = readView.declarations;
 }
