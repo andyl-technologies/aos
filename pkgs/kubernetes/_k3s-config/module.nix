@@ -88,6 +88,8 @@
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   objectArtifact = lib.abilities.packageOutput {};
+  providerArtifact = lib.abilities.packageOutput {output = "module";};
+  handlerEntryPoint = "libexec/aos-kubernetes-provider";
   interfaceContract = alias: let
     declaration = config.aos.abilities.interfaces."${packageName}:${alias}";
   in {
@@ -138,8 +140,8 @@
         "Invokes the K3s-owned terminal Kubernetes object handler."
         objectEffects;
       providerModule = {
-        artifact = objectArtifact;
-        path = "share/${packageName}/object-provider.nix";
+        artifact = providerArtifact;
+        path = "object-provider.nix";
       };
       desiredType = objectRealizationType;
       requiredFeatures = [];
@@ -151,8 +153,8 @@
       methods = objectContributionContract.methods;
       guarantees = [];
       providerModule = {
-        artifact = objectArtifact;
-        path = "share/${packageName}/object-provider.nix";
+        artifact = providerArtifact;
+        path = "object-provider.nix";
       };
       desiredType = null;
       requiredFeatures = [];
@@ -165,7 +167,7 @@
       guarantees = [];
       handlerDescriptor = {
         artifact = objectArtifact;
-        entryPoint = "libexec/aos-kubernetes-object-effects";
+        entryPoint = handlerEntryPoint;
         arguments = objectControllerContract.requestType;
         result = objectControllerContract.observationType;
       };
@@ -185,8 +187,8 @@
         "Invokes the K3s-owned terminal configuration handler."
         configurationEffects;
       providerModule = {
-        artifact = objectArtifact;
-        path = "share/${packageName}/configuration-provider.nix";
+        artifact = providerArtifact;
+        path = "configuration-provider.nix";
       };
       desiredType = configurationRealizationType;
       requiredFeatures = [];
@@ -198,8 +200,8 @@
       methods = configurationContributionContract.methods;
       guarantees = [];
       providerModule = {
-        artifact = objectArtifact;
-        path = "share/${packageName}/configuration-provider.nix";
+        artifact = providerArtifact;
+        path = "configuration-provider.nix";
       };
       desiredType = null;
       requiredFeatures = [];
@@ -212,7 +214,7 @@
       guarantees = [];
       handlerDescriptor = {
         artifact = objectArtifact;
-        entryPoint = "libexec/aos-k3s-configuration-effects";
+        entryPoint = handlerEntryPoint;
         arguments = configurationControllerContract.requestType;
         result = configurationControllerContract.observationType;
       };

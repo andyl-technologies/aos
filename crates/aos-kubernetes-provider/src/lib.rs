@@ -9,7 +9,6 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -17,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, AccessMode, IncarnationId, LocalKey, MethodSemantics,
-    ResourceReference,
+    ABILITY_LIMITS_V1, AbilityValue, AccessMode, IncarnationId, LocalKey, MethodReference,
+    MethodSemantics, ResourceReference,
 };
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
@@ -42,6 +41,8 @@ const OWNER_ANNOTATION: &str = "aos.andyl.com/object-set-owner";
 const REVISION_ANNOTATION: &str = "aos.andyl.com/object-revision";
 const STATE_ROOT: &str = "/var/lib/aos/ability-runtime/kubernetes-object-set";
 const MAX_KUBECONFIG_BYTES: u64 = 1024 * 1024;
+const CONFIGURATION_INTERFACE: &str = "aos.k3s.configuration-effects";
+const OBJECT_SET_INTERFACE: &str = "aos.k3s.kubernetes-object-effects";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HandlerRole {
@@ -50,23 +51,12 @@ enum HandlerRole {
 }
 
 impl HandlerRole {
-    fn from_process() -> Result<Self, KubernetesProviderError> {
-        let executable = std::env::args_os()
-            .next()
-            .ok_or_else(|| invalid("provider process has no executable name"))?;
-        Self::from_entry_point(&executable)
-    }
-
-    fn from_entry_point(executable: &OsStr) -> Result<Self, KubernetesProviderError> {
-        let name = Path::new(executable)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| invalid("provider executable name is not valid UTF-8"))?;
-        match name {
-            "aos-k3s-configuration-effects" => Ok(Self::Configuration),
-            "aos-kubernetes-object-effects" => Ok(Self::ObjectSet),
+    fn from_method(method: &MethodReference) -> Result<Self, KubernetesProviderError> {
+        match method.interface.name.as_str() {
+            CONFIGURATION_INTERFACE => Ok(Self::Configuration),
+            OBJECT_SET_INTERFACE => Ok(Self::ObjectSet),
             _ => Err(invalid(
-                "provider entry point does not select a checked role",
+                "selected interface does not belong to the Kubernetes provider",
             )),
         }
     }
@@ -210,7 +200,6 @@ struct ObjectObservation {
 /// Returns an error when the command ABI, checked resource context, Kubernetes
 /// response, or provider receipt is invalid.
 pub fn run_from_process() -> Result<(), KubernetesProviderError> {
-    let role = HandlerRole::from_process()?;
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     if arguments.len() != 2 || arguments[0] != HANDLER_ABI_ARGUMENT {
         return Err(invalid("expected --aos-primitive-v1 and one purpose"));
@@ -227,10 +216,10 @@ pub fn run_from_process() -> Result<(), KubernetesProviderError> {
     }
 
     let output = match arguments[1].as_str() {
-        "admit" => serde_json::to_vec(&admit(role, serde_json::from_slice(&input)?)?)?,
+        "admit" => serde_json::to_vec(&admit(serde_json::from_slice(&input)?)?)?,
         "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
             let invocation = serde_json::from_slice(&input)?;
-            serde_json::to_vec(&invoke(role, invocation, &arguments[1])?)?
+            serde_json::to_vec(&invoke(invocation, &arguments[1])?)?
         }
         _ => return Err(invalid("unsupported provider purpose")),
     };
@@ -238,15 +227,13 @@ pub fn run_from_process() -> Result<(), KubernetesProviderError> {
     Ok(())
 }
 
-fn admit(
-    role: HandlerRole,
-    request: AdmissionRequest,
-) -> Result<AdmissionResult, KubernetesProviderError> {
+fn admit(request: AdmissionRequest) -> Result<AdmissionResult, KubernetesProviderError> {
     if request.schema != ADMISSION_REQUEST_SCHEMA {
         return Err(invalid("admission schema differs from the selected ABI"));
     }
     validate_admission_resource(&request).map_err(|error| invalid(error.to_string()))?;
     validate_contexts(&request.resources)?;
+    let role = HandlerRole::from_method(&request.method)?;
     if role == HandlerRole::Configuration {
         return configuration::admit(request);
     }
@@ -292,7 +279,6 @@ fn admit(
 }
 
 fn invoke(
-    role: HandlerRole,
     invocation: Invocation,
     selected_purpose: &str,
 ) -> Result<InvocationResult, KubernetesProviderError> {
@@ -311,6 +297,7 @@ fn invoke(
             "invocation differs from its selected durable operation",
         ));
     }
+    let role = HandlerRole::from_method(&invocation.method)?;
     validate_contexts(&invocation.request.resources)?;
     if resource_set_digest(&invocation.request.resources)
         .map_err(|error| invalid(error.to_string()))?
@@ -1385,6 +1372,18 @@ pub(crate) fn invalid(message: impl Into<String>) -> KubernetesProviderError {
 mod tests {
     use super::*;
 
+    fn method(interface: &str) -> MethodReference {
+        serde_json::from_value(serde_json::json!({
+            "interface": {
+                "name": interface,
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "method": "observe"
+        }))
+        .expect("method fixture is valid")
+    }
+
     fn object() -> KubernetesObject {
         KubernetesObject {
             key: "gateway".into(),
@@ -1403,16 +1402,17 @@ mod tests {
         assert!(validate_method("apply", &apply).is_ok());
         assert!(validate_method("unknown", &apply).is_err());
         assert_eq!(
-            HandlerRole::from_entry_point(OsStr::new("aos-kubernetes-object-effects"))
-                .expect("object role parses"),
+            HandlerRole::from_method(&method(OBJECT_SET_INTERFACE))
+                .expect("object interface selects its role"),
             HandlerRole::ObjectSet,
         );
         assert_eq!(
-            HandlerRole::from_entry_point(OsStr::new("aos-k3s-configuration-effects"))
-                .expect("configuration role parses"),
+            HandlerRole::from_method(&method(CONFIGURATION_INTERFACE))
+                .expect("configuration interface selects its role"),
             HandlerRole::Configuration,
         );
-        assert!(HandlerRole::from_entry_point(OsStr::new("aos-kubernetes-provider")).is_err());
+        assert!(HandlerRole::from_method(&method("aos.kubernetes.objects")).is_err());
+        assert!(HandlerRole::from_method(&method("aos.example.unowned-effects")).is_err());
     }
 
     #[test]

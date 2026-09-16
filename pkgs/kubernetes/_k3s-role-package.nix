@@ -53,7 +53,7 @@ mkDerivation {
     primary = {
       input = "The installed ${pname} role entry points.";
       operation = "Verify the role launcher and K3s payload are executable.";
-      expected = "Both package-owned entry points are executable files.";
+      expected = "All package-owned entry points are executable files.";
       files = { };
       steps = [
         {
@@ -62,7 +62,11 @@ mkDerivation {
             "-c"
             ''
               import os
-              paths = ["@out@/bin/k3s-role-start", "@out@/libexec/k3s"]
+              paths = [
+                  "@out@/bin/k3s-role-start",
+                  "@out@/libexec/k3s",
+                  "@out@/libexec/aos-kubernetes-provider",
+              ]
               assert all(os.path.isfile(path) and os.access(path, os.X_OK) for path in paths)
               print("${pname} executables passed")
             ''
@@ -116,14 +120,8 @@ mkDerivation {
         mkdir -p "$out/bin" "$out/libexec" "$out/share/${pname}"
         ln -s ${launcher}/bin/k3s-${pname}-start "$out/bin/k3s-role-start"
         ln -s ${k3s}/bin/k3s "$out/libexec/k3s"
-        ln -s ${aos-kubernetes-provider}/bin/aos-kubernetes-provider \
-          "$out/libexec/aos-kubernetes-object-effects"
-        ln -s ${aos-kubernetes-provider}/bin/aos-kubernetes-provider \
-          "$out/libexec/aos-k3s-configuration-effects"
-        cp ${./_k3s-config/object-provider.nix} \
-          "$out/share/${pname}/object-provider.nix"
-        cp ${./_k3s-config/configuration-provider.nix} \
-          "$out/share/${pname}/configuration-provider.nix"
+        install -m 555 ${aos-kubernetes-provider}/bin/aos-kubernetes-provider \
+          "$out/libexec/aos-kubernetes-provider"
         printf '%s\n' ${lib.escapeShellArg pname} > "$out/share/${pname}/payload.txt"
       '';
     }
