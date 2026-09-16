@@ -7,7 +7,7 @@
 ##! in the unallocated space after root-a.
 ##!
 ##! Build strategy (no losetup/mount — fully sandbox-compatible):
-##!   1. lib/build/rootfs.nix builds root.img (erofs or ext4, root-owned)
+##!   1. The selected provider builds root.img (erofs or ext4, root-owned)
 ##!   2. Copy the selected boot platform's firmware-facing tree
 ##!   4. mkfs.vfat + mcopy → creates FAT32 ESP image
 ##!   5. sfdisk + dd → assembles partitions into final GPT image
@@ -24,6 +24,7 @@
   lib,
   system,
   name,
+  kernel,
   runtimeClosureAudit,
   bootArtifacts,
   rawDiskFilename,
@@ -146,12 +147,10 @@
             cp ${bootArtifacts.recoveryOsReleaseA}/os-release "$out/inputs/recovery-os-release-a"
             cp ${bootArtifacts.recoveryOsReleaseB}/os-release "$out/inputs/recovery-os-release-b"
           ''}
-          kernel=$(find ${system.config.system.build.kernel}/boot -maxdepth 1 -type f -name 'vmlinuz-*' -print)
-          [ "$(printf '%s\n' "$kernel" | wc -l)" -eq 1 ]
-          cp "$kernel" "$out/inputs/vmlinuz"
+          cp ${kernel.configuration.bootImage} "$out/inputs/vmlinuz"
           # Qualification records the resolved build result, including defaults
           # selected by olddefconfig, rather than the requested option fragment.
-          cp ${system.config.system.build.kernel}/boot/config-${system.config.system.build.kernel.version} "$out/inputs/kernel.config"
+          cp ${kernel.package}/boot/config-${kernel.configuration.release} "$out/inputs/kernel.config"
           cp ${bootArtifacts.bootManagerExecutable} "$out/inputs/systemd-boot.efi"
           cp ${bootArtifacts.ukiStubExecutable} "$out/inputs/uki-stub.efi"
           cp ${ukiOsRelease}/os-release "$out/inputs/os-release"
@@ -190,7 +189,7 @@
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg targetPlatform.system} \
             --arg variant ${lib.escapeShellArg name} \
-            --arg kernelRelease ${lib.escapeShellArg system.config.system.build.kernel.version} \
+            --arg kernelRelease ${lib.escapeShellArg kernel.configuration.release} \
             --arg kernelParams ${lib.escapeShellArg kernelParams} \
             --arg kernelParamsB ${lib.escapeShellArg kernelParamsB} \
             --arg recoveryCmdline ${lib.escapeShellArg recoveryCmdline} \

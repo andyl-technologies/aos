@@ -1,13 +1,16 @@
-##! modules/image/_rootfs.nix -- Generic immutable image root filesystem
+##! Selected platform immutable root filesystem policy.
 ##!
-##! Builds the operating-system root independently of the selected boot
-##! platform. Boot providers consume this artifact when they assemble their
-##! kernel, initrd, and firmware-facing artifacts.
+##! Owns the AOS root layout, trusted image inputs, and concrete filesystem
+##! policy used by this image provider.
 {
   pkgs,
   lib,
   system,
   name,
+  kernel,
+  managerConfiguration,
+  managerRootfsPlan,
+  closureInfoFor,
 }: let
   config = system.config;
   sb = config.aos.boot.secureBoot;
@@ -58,8 +61,8 @@
       }
     else null;
 
-  rootfs = import ../../lib/build/rootfs.nix ({
-      inherit pkgs lib system;
+  rootfs = import ./_rootfs-builder.nix ({
+      inherit pkgs lib system kernel managerConfiguration managerRootfsPlan closureInfoFor;
       pname = "aos-image-${name}-rootfs";
       label = "aos-root";
       fsType = config.aos.filesystems.rootFsType;

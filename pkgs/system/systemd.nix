@@ -40,6 +40,7 @@
   dosfstools,
   e2fsprogs,
   erofs-utils,
+  fakeroot,
   findutils,
   gcc-libs,
   gptfdisk,
@@ -72,6 +73,7 @@
     dosfstools
     e2fsprogs
     erofs-utils
+    fakeroot
     findutils
     gcc-libs
     gawk
