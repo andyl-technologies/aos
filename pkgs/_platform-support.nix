@@ -457,6 +457,7 @@ let
     "aos-boot-identity"
     "aos-boot-preparations"
     "aos-boot-storage"
+    "aos-boot-transaction-storage-provider"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
     "aos-filesystem-provider"

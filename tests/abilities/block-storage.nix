@@ -532,8 +532,9 @@ in
   assert builtins.length (builtins.filter bootstrapEdge operatorTransition.edges) == 0;
   assert provisioning.realization.systemd_repart.entry_point == "bin/systemd-repart";
   assert provisioning.realization.sfdisk.entry_point == "sbin/sfdisk";
-  assert !storageTypes.stableDevice.check "/dev/sda";
-  assert !storageTypes.partitionType.check "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+  assert storageTypes.storageDevice.check "/dev/sda";
+  assert storageTypes.providerIdentifier.check "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+  assert !storageTypes.providerIdentifier.check "provider/value";
   assert abilities.implementations."aos-cryptsetup-provider:encrypted-block-mapping".handlerDescriptor == null;
   assert builtins.isFunction abilities.implementations."aos-cryptsetup-provider:encrypted-block-mapping".transition;
   assert abilities.implementations."aos-cryptsetup-provider:encrypted-block-mapping-effects".providerModule == null;

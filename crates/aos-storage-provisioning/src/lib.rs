@@ -2,27 +2,19 @@
 //! `aos.provisioning.storage` projection.
 //!
 //! Nix supplies defaults and merges operator definitions. Rust treats the
-//! resulting JSON as an untrusted data contract: unknown fields, unsafe device
-//! paths, protected partition types, malformed sizes and ambiguous growth all
-//! fail before `systemd-repart` is allowed to mutate a disk.
+//! resulting JSON as an untrusted data contract: unknown fields, malformed
+//! paths and identifiers, invalid sizes, and ambiguous growth all fail before
+//! the selected storage provider may mutate a disk.
 
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path};
 
 use anyhow::{Context, Result, bail};
 use aos_ability_model::ResourceReference;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-/// Temporary GPT marker created in the same repart transaction as storage.
-pub const PENDING_LABEL: &str = "aos-provisioning-pending-v1";
-/// Durable marker for a plan derived from operator `host.nix`.
-pub const OPERATOR_LABEL: &str = "aos-provenance-operator-v1";
-/// Durable marker for the image's provisioning defaults.
-pub const FALLBACK_LABEL: &str = "aos-provenance-fallback-v1";
-/// Type GUID reserved exclusively for the one-time provisioning marker.
-pub const SENTINEL_TYPE_GUID: &str = "163bea60-58c7-46e7-b69a-6846a5a688af";
 
 /// Carries the fixed-point storage policy into one runtime provisioning transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,7 +314,7 @@ pub struct StoragePlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PartitionSpec {
-    /// Stable `/dev/disk/by-id/...` target, or `null` for the root disk.
+    /// Provider-selected absolute device target, or `null` for the root disk.
     pub device: Option<String>,
     /// GPT partition label.
     pub label: String,
@@ -409,9 +401,9 @@ pub struct CanonicalPartitionSpec {
 pub enum CanonicalPartitionTarget {
     /// Uses the disk containing the active root partition.
     RootDisk,
-    /// Uses one stable explicit device path.
+    /// Uses one provider-selected explicit device path.
     Device {
-        /// Stable `/dev/disk/by-id/...` path.
+        /// Absolute normalized path interpreted by the selected provider.
         path: String,
     },
 }
@@ -481,9 +473,8 @@ pub fn canonicalize_provisioning_plan(
 /// # Errors
 ///
 /// Returns an error for an unsupported schema, invalid or duplicated labels,
-/// unstable device paths, protected types, malformed sizes or UUIDs, unsafe
-/// formatting, multiple grow partitions per device, or a missing root-disk
-/// `var` partition.
+/// malformed paths, identifiers, sizes or UUIDs, multiple grow partitions per
+/// device, or a missing root-disk `var` partition.
 pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) -> Result<()> {
     if plan.schema != "aos.provisioning-plan/v1" {
         bail!("unsupported provisioning plan schema '{}'", plan.schema);
@@ -498,31 +489,15 @@ pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) 
     for (name, partition) in &plan.storage.partitions {
         validate_label(name, "logical partition name")?;
         validate_label(&partition.label, "GPT partition label")?;
-        if matches!(
-            partition.label.as_str(),
-            "root-a"
-                | "root-b"
-                | "root-a-hash"
-                | "root-b-hash"
-                | "esp"
-                | "ESP"
-                | PENDING_LABEL
-                | OPERATOR_LABEL
-                | FALLBACK_LABEL
-        ) {
-            bail!(
-                "partition label '{}' is reserved or protected",
-                partition.label
-            );
-        }
         if !labels.insert(partition.label.as_str()) {
             bail!("duplicate GPT partition label '{}'", partition.label);
         }
         let device = partition.device.as_deref().unwrap_or("root");
-        if device != "root" && !device.starts_with("/dev/disk/by-id/") {
-            bail!("partition '{name}' device must be null or /dev/disk/by-id/...");
+        if device != "root" {
+            validate_execution_path(device)
+                .with_context(|| format!("partition '{name}' device"))?;
         }
-        validate_partition_type(&partition.partition_type)?;
+        validate_provider_identifier(&partition.partition_type, "partition type")?;
         validate_size(&partition.size_min, "sizeMin", name)?;
         if let Some(max) = partition.size_max.as_deref() {
             validate_size(max, "sizeMax", name)?;
@@ -539,14 +514,9 @@ pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) 
         if partition.grow && !grow_devices.insert(device) {
             bail!("device '{device}' has more than one grow partition");
         }
-        if (partition.partition_type == "swap") != (partition.format.as_deref() == Some("swap")) {
-            bail!("partition '{name}' must use type = \"swap\" exactly when format = \"swap\"");
-        }
-        if !matches!(
-            partition.format.as_deref(),
-            None | Some("ext4" | "vfat" | "swap")
-        ) {
-            bail!("partition '{name}' uses an unsupported format");
+        if let Some(format) = partition.format.as_deref() {
+            validate_provider_identifier(format, "storage format")
+                .with_context(|| format!("partition '{name}' format"))?;
         }
         if partition.label == "var" && partition.device.is_none() {
             root_var = true;
@@ -647,37 +617,28 @@ fn validate_local_key(value: &str, kind: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_partition_type(value: &str) -> Result<()> {
-    if matches!(value, "linux-generic" | "swap") {
-        return Ok(());
-    }
-    let lower = value.to_ascii_lowercase();
-    if lower == SENTINEL_TYPE_GUID
-        || matches!(
-            lower.as_str(),
-            "root"
-                | "root-a"
-                | "root-b"
-                | "root-verity"
-                | "root-verity-sig"
-                | "var"
-                | "esp"
-                | "xbootldr"
-                | "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-                | "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
-                | "b921b045-1df0-41c3-af44-4c6f280d3fae"
-                | "44479540-f297-41b2-9af7-d131d5f0458a"
-                | "72ec70a6-cf74-40e6-bd49-4bda08e8f224"
-                | "2c7357ed-ebd2-46d9-aec1-23d437ec2bf5"
-                | "df3300ce-d69f-4c92-978c-9bfb0f38d820"
-                | "d13c5d3b-b5d1-422a-b29f-9454fdc89d76"
-                | "b6ed5582-440b-4209-b8da-5ff7c419ea3d"
-                | "41092b05-9fc8-4523-994f-2def0408b176"
-        )
+fn validate_execution_path(value: &str) -> Result<()> {
+    let path = Path::new(value);
+    if !path.is_absolute()
+        || !path
+            .components()
+            .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
     {
-        bail!("partition type '{value}' is reserved or protected");
+        bail!("'{value}' must be an absolute normalized path");
     }
-    validate_uuid(value).context("raw partition type GUID")
+    Ok(())
+}
+
+fn validate_provider_identifier(value: &str, kind: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 64
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'+' | b'-')
+        })
+    {
+        bail!("{kind} '{value}' must be 1-64 portable identifier characters");
+    }
+    Ok(())
 }
 
 fn validate_size(value: &str, field: &str, name: &str) -> Result<()> {

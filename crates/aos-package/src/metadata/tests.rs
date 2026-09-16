@@ -1032,28 +1032,14 @@ fn signed_host_verifies_exact_input_and_rejects_tampering() {
 }
 
 #[test]
-fn storage_projection_rejects_unsafe_device_and_protected_type() {
+fn storage_projection_rejects_malformed_paths_and_identifiers() {
     use super::repart::ProvisioningPlan;
 
     let unsafe_plans = [
-        r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":"/dev/vdb","label":"var","type":"linux-generic","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1}}}}"#,
-        r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":null,"label":"var","type":"root-a","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1}}}}"#,
+        r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":"dev/vdb","label":"var","type":"linux-generic","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1}}}}"#,
+        r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":null,"label":"var","type":"invalid/type","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1}}}}"#,
     ];
     for input in unsafe_plans {
-        let plan: ProvisioningPlan = serde_json::from_str(input).unwrap();
-        assert!(super::repart::validate_provisioning_plan(&plan, false).is_err());
-    }
-}
-
-#[test]
-fn storage_projection_enforces_swap_pairing() {
-    use super::repart::ProvisioningPlan;
-
-    let invalid_plans = [
-        r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":null,"label":"var","type":"linux-generic","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1},"bad":{"device":null,"label":"bad","type":"linux-generic","sizeMin":"1G","sizeMax":"1G","weight":1000,"format":"swap","uuid":null,"grow":false,"growFs":true,"priority":2}}}}"#,
-        r#"{"schema":"aos.provisioning-plan/v1","storage":{"partitions":{"var":{"device":null,"label":"var","type":"linux-generic","sizeMin":"4G","sizeMax":null,"weight":1000,"format":null,"uuid":null,"grow":true,"growFs":true,"priority":1},"bad":{"device":null,"label":"bad","type":"swap","sizeMin":"1G","sizeMax":"1G","weight":1000,"format":"ext4","uuid":null,"grow":false,"growFs":true,"priority":2}}}}"#,
-    ];
-    for input in invalid_plans {
         let plan: ProvisioningPlan = serde_json::from_str(input).unwrap();
         assert!(super::repart::validate_provisioning_plan(&plan, false).is_err());
     }

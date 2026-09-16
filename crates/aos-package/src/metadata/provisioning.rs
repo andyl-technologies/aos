@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config_trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload};
 
-use super::repart::{FALLBACK_LABEL, OPERATOR_LABEL, ProvisioningPlan, normalize_marker_uuid};
+use super::repart::{ProvisioningPlan, normalize_marker_uuid};
 use super::stash::{Stash, sha256_hex};
 
 /// Raw user-data filename written by the fetch phase.
@@ -150,14 +150,6 @@ impl ProvisioningSource {
         match self {
             Self::Operator => "operator",
             Self::Fallback => "fallback",
-        }
-    }
-
-    /// Returns the durable GPT label for this source.
-    pub fn committed_label(self) -> &'static str {
-        match self {
-            Self::Operator => OPERATOR_LABEL,
-            Self::Fallback => FALLBACK_LABEL,
         }
     }
 }
