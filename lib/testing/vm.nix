@@ -340,6 +340,8 @@
 
     rootfs = mkRootfs {
       inherit pkgs lib system;
+      managerConfiguration = system.config.system.build.managerConfiguration;
+      managerRootfsPlan = system.config.aos.manager.selected.configuration.rootfs;
       pname = "vm-disk-${name}-rootfs";
       label = "aos-root";
       # Leave the image at its initial over-provisioned size — tests

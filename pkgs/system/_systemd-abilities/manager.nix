@@ -107,6 +107,17 @@
         executableScripts = config.system.build.systemdJobScriptOwners;
         filesystemEntries = config.system.build.systemdEtcEntryOwners;
       };
+      rootfs = {
+        closureRoots = [systemdPackage];
+        initExecutable = "${systemdPackage}/lib/systemd/systemd";
+        trees = [
+          {
+            collision = "reject";
+            destination = "/usr/lib/systemd/system-preset";
+            source = "systemd-presets";
+          }
+        ];
+      };
     };
   };
   manager =

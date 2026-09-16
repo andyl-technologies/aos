@@ -38,6 +38,8 @@
 ##!                          during VM execution.
 ##!   extraClosures        — derivations whose full closures land in
 ##!                          /nix/store. toplevel + kernel are always added.
+##!   managerConfiguration — the selected manager's single realized output.
+##!   managerRootfsPlan    — typed package-owned init, closure, and tree plan.
 ##!   symlinkFarmPkgs      — derivations whose bin/sbin/libexec entries get
 ##!                          symlinked into /usr/bin, /usr/sbin, /usr/libexec.
 ##!                          Later entries never overwrite earlier ones.
@@ -59,6 +61,8 @@
   headroomMiB ? 64,
   minSizeMiB ? 512,
   extraClosures ? [],
+  managerConfiguration ? null,
+  managerRootfsPlan ? null,
   symlinkFarmPkgs ? [],
   postPopulate ? "",
   # Root filesystem type for the produced image. "ext4" (default) builds a
@@ -88,6 +92,14 @@
 }: let
   toplevel = system.config.system.build.toplevel;
   kernel = system.config.system.build.kernel;
+  checkedManagerRootfsPlan =
+    if (managerConfiguration == null) != (managerRootfsPlan == null)
+    then throw "rootfs: managerConfiguration and managerRootfsPlan must be supplied together"
+    else managerRootfsPlan;
+  managerClosureRoots =
+    if checkedManagerRootfsPlan == null
+    then []
+    else checkedManagerRootfsPlan.closureRoots;
 
   # Deterministic dm-verity salt + superblock UUID, derived from the image
   # identity so the hash tree — and therefore the root hash baked into the
@@ -101,8 +113,8 @@
   veritySalt = builtins.substring 0 64 (builtins.hashString "sha256" "aos-rootfs:salt:${pname}:${label}");
   signVerity = verity && secureBootKey != null;
 
-  # Full set of closures to merge. toplevel carries stage-2 systemd's
-  # closure; kernel carries /lib/modules targets. Callers add more when
+  # Full set of closures to merge. The toplevel carries the selected host
+  # configuration; the kernel carries /lib/modules targets. Callers add more when
   # the running rootfs references store paths the closure reachability
   # scanner wouldn't otherwise catch (e.g. the VM agent shell script
   # referencing `/nix/store/...-socat-*` verbatim).
@@ -111,7 +123,7 @@
   # duplicate the payload and can pull kernel SDKs into the immutable image.
   # Callers compose capability roots with harness roots; both may retain the
   # same output. Form their union before the strict reference-graph boundary.
-  allClosures = lib.unique (map builtins.toString ([toplevel kernel] ++ extraClosures));
+  allClosures = lib.unique (map builtins.toString ([toplevel kernel] ++ managerClosureRoots ++ extraClosures));
 
   regInfo = import ./closure-info.nix {inherit pkgs lib;} {
     rootPaths = allClosures;
@@ -148,6 +160,40 @@
       fi
     '')
     symlinkFarmPkgs;
+  managerInitScript = lib.optionalString (checkedManagerRootfsPlan != null) ''
+    ln -sfn ${lib.escapeShellArg (builtins.toString checkedManagerRootfsPlan.initExecutable)} rootfs/usr/bin/init
+  '';
+  managerTreeScript =
+    lib.concatMapStringsSep "\n" (tree: let
+      source = lib.escapeShellArg "${builtins.toString managerConfiguration}/${tree.source}";
+      sourceLabel = lib.escapeShellArg tree.source;
+      destination = lib.escapeShellArg "rootfs${tree.destination}";
+      destinationLabel = lib.escapeShellArg tree.destination;
+      prepareDestination =
+        if tree.collision == "replace"
+        then ''
+          rm -rf ${destination}
+          mkdir -p ${destination}
+        ''
+        else ''
+          mkdir -p ${destination}
+          if find ${destination} -mindepth 1 -print -quit | grep -q .; then
+            echo 'rootfs-builder: manager tree destination is not empty:' ${destinationLabel} >&2
+            exit 1
+          fi
+        '';
+    in ''
+      if [ ! -d ${source} ]; then
+        echo 'rootfs-builder: manager tree source is not a directory:' ${sourceLabel} >&2
+        exit 1
+      fi
+      ${prepareDestination}
+      cp -a ${source}/. ${destination}/
+    '') (
+      if checkedManagerRootfsPlan == null
+      then []
+      else checkedManagerRootfsPlan.trees
+    );
 in
   pkgs.mkDerivation ({
       inherit pname;
@@ -178,8 +224,6 @@ in
       TOPLEVEL = toString toplevel;
       KERNEL = toString kernel;
       REGINFO = toString regInfo;
-      SYSTEMD_PRESETS = toString system.config.system.build.systemdSystemPresets;
-      SYSTEMD = toString pkgs.systemd;
       COREUTILS = toString pkgs.coreutils;
       # `$BASH` is a bash built-in pointing at the bash executable
       # currently running the script — setting it as a derivation env
@@ -200,9 +244,8 @@ in
               echo "==> Populating rootfs ($(wc -l < store-paths) store paths)"
 
               # ── 1. Directory skeleton (merged-usr) ──────────────────────────
-              # Full /usr merge AND /usr/sbin → /usr/bin merge. systemd's
-              # unmerged-bin taint fires when /usr/sbin isn't a symlink
-              # into /usr/bin (see src/core/taint.c's test_usr_unmerged).
+              # Full /usr merge, including the conventional /usr/sbin →
+              # /usr/bin compatibility link expected by the selected manager.
               #
               # The image's Nix closure lives at /nix.lower/store; /nix is an
               # empty mountpoint where nix-overlay-setup.service stacks an
@@ -214,7 +257,6 @@ in
               mkdir -p rootfs/nix.lower/store
               mkdir -p rootfs/nix
               mkdir -p rootfs/usr/bin rootfs/usr/lib
-              mkdir -p rootfs/usr/lib/systemd/system-preset
               ln -sfn bin rootfs/usr/sbin
               ln -sfn usr/bin rootfs/bin
               ln -sfn usr/bin rootfs/sbin
@@ -232,10 +274,9 @@ in
               mkdir -p rootfs/run/etc
               # /boot + /var are mountpoints that modules/base/filesystems.nix
               # writes into /etc/fstab (ESP → /boot, var partition → /var).
-              # systemd-fstab-generator synthesises boot.mount / var.mount
-              # from those entries; if the mountpoint directory doesn't
-              # exist, the mount fails at stage-2 boot. /var was already
-              # above — /boot would otherwise be missing in production.
+              # The selected mount realization requires each declared
+              # mountpoint to exist before stage-2 boot. /var was already above;
+              # /boot would otherwise be missing in production.
               mkdir -p rootfs/boot
               mkdir -m 0700 rootfs/root
               # Root-owned APM authoring config lives on the read-only rootfs,
@@ -267,7 +308,7 @@ in
               # vendor directory. The Nix store keeps each package isolated,
               # but udev does not discover rule directories through PATH.
               # In particular, device-mapper's rules publish /dev/mapper/*
-              # nodes to systemd after dm-verity and dm-crypt activation.
+              # nodes after dm-verity and dm-crypt activation.
               mkdir -p rootfs/usr/lib/udev/rules.d
               for rules_dir in rootfs/nix.lower/store/*/lib/udev/rules.d; do
                 [ -d "$rules_dir" ] || continue
@@ -283,9 +324,8 @@ in
                 done
               done
 
-              # ── 3. PID 1 and compat symlinks ────────────────────────────────
-              # /sbin/init (via merged-usr: /sbin → usr/bin) → systemd.
-              ln -sfn "$SYSTEMD/lib/systemd/systemd" rootfs/usr/bin/init
+              # ── 3. Selected init and compat symlinks ────────────────────────
+              ${managerInitScript}
               ln -sfn "$AOS_BASH/bin/bash" rootfs/usr/bin/bash
               ln -sfn "$AOS_BASH/bin/sh" rootfs/usr/bin/sh
               ln -sfn "$COREUTILS/bin/env" rootfs/usr/bin/env
@@ -324,8 +364,8 @@ in
               # compat symlink. Many daemons still reference /var/run paths.
               ln -sfn /run rootfs/var/run
 
-              # ── 6. Systemd preset policy ────────────────────────────────────
-              cp -a "$SYSTEMD_PRESETS"/. rootfs/usr/lib/systemd/system-preset/
+              # ── 6. Selected-manager filesystem trees ───────────────────────
+              ${managerTreeScript}
 
               # ── 7. /run/current-system → toplevel ───────────────────────────
               # Keep the on-disk tree correct for image inspection and boot
