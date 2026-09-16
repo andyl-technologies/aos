@@ -146,9 +146,9 @@ in
       pkgs,
       mkSystem,
     }: let
-      qualifiedResultOf = request: output: {
-        _type = "aos-request-output-reference";
-        inherit request output;
+      expectedRequestOutput = localKey: output: {
+        package = self.pname;
+        inherit localKey output;
       };
       evaluate = conntrackdConfig:
         mkSystem {
@@ -176,7 +176,7 @@ in
       };
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
-      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "conntrack-tools:" name);
+      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
       requests = evaluated.config.aos.abilities.requests;
       disabledAbilities = disabled.config.aos.abilities;
       disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
@@ -209,10 +209,16 @@ in
         == "conntrack-tools:persistent-storage-allocation"
         && lifecycle.configuration_change_action == "restart"
         && identity.file_creation_mask == "0027"
-        && builtins.map (mount: mount.source) storageMounts
+        && builtins.map
+        (mount:
+          lib.abilities.requestOutputIdentity {
+            inherit requests;
+            reference = mount.source;
+          })
+        storageMounts
         == [
-          (qualifiedResultOf "conntrack-tools:runtime-storage" "planned-path")
-          (qualifiedResultOf "conntrack-tools:log-storage" "planned-path")
+          (expectedRequestOutput "runtime-storage" "planned-path")
+          (expectedRequestOutput "log-storage" "planned-path")
         ];
     in {
       config =

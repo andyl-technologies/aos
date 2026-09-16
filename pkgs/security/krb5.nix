@@ -411,9 +411,9 @@ in
       mkSystem,
       ...
     }: let
-      qualifiedResultOf = request: output: {
-        _type = "aos-request-output-reference";
-        inherit request output;
+      expectedRequestOutput = localKey: output: {
+        package = self.pname;
+        inherit localKey output;
       };
       evaluate = krb5Config:
         mkSystem {
@@ -443,7 +443,7 @@ in
       detachedAdministration = evaluate {enableAdminServer = true;};
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
-      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "krb5:" name);
+      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
       enabledAbilityConfig = enabled.config.aos.abilities;
       administrationAbilityConfig = withAdministration.config.aos.abilities;
       disabledAbilityConfig = disabled.config.aos.abilities;
@@ -486,8 +486,11 @@ in
           name = "krb5-master";
           scope = "system";
         }
-        && passwordDelivery.source
-        == qualifiedResultOf "krb5:master-password-source" "credential-resource"
+        && lib.abilities.requestOutputIdentity {
+          inherit requests;
+          reference = passwordDelivery.source;
+        }
+        == expectedRequestOutput "master-password-source" "credential-resource"
         && passwordDelivery.name == "master-password"
         && clientSource.kind == "inline-text"
         && lib.hasInfix "default_realm = EXAMPLE.TEST" clientSource.content
@@ -497,19 +500,42 @@ in
         && !(lib.hasInfix "/var/lib/" (builtins.toJSON kdcSource))
         && !(lib.hasInfix "/var/log/" (builtins.toJSON kdcSource))
         && !(lib.hasInfix "krb5-master" (builtins.toJSON kdcSource))
-        && passwordDelivery.source.request == "krb5:master-password-source"
-        && kdcDependencies.after
-        == [(qualifiedResultOf "krb5:initialize-lifecycle" "service-resource")]
-        && kdcDependencies.requires
-        == [(qualifiedResultOf "krb5:initialize-lifecycle" "service-resource")]
-        && kdcDependencies.prerequisites
-        == [(qualifiedResultOf "krb5:kdc-ingress" "readiness-resource")]
-        && administrationDependencies.after
-        == [(qualifiedResultOf "krb5:initialize-lifecycle" "service-resource")]
-        && administrationDependencies.requires
-        == [(qualifiedResultOf "krb5:initialize-lifecycle" "service-resource")]
-        && administrationDependencies.prerequisites
-        == [(qualifiedResultOf "krb5:administration-ingress" "readiness-resource")]
+        && builtins.map
+        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
+        kdcDependencies.after
+        == [(expectedRequestOutput "initialize-lifecycle" "service-resource")]
+        && builtins.map
+        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
+        kdcDependencies.requires
+        == [(expectedRequestOutput "initialize-lifecycle" "service-resource")]
+        && builtins.map
+        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
+        kdcDependencies.prerequisites
+        == [(expectedRequestOutput "kdc-ingress" "readiness-resource")]
+        && builtins.map
+        (reference:
+          lib.abilities.requestOutputIdentity {
+            requests = administrationRequests;
+            inherit reference;
+          })
+        administrationDependencies.after
+        == [(expectedRequestOutput "initialize-lifecycle" "service-resource")]
+        && builtins.map
+        (reference:
+          lib.abilities.requestOutputIdentity {
+            requests = administrationRequests;
+            inherit reference;
+          })
+        administrationDependencies.requires
+        == [(expectedRequestOutput "initialize-lifecycle" "service-resource")]
+        && builtins.map
+        (reference:
+          lib.abilities.requestOutputIdentity {
+            requests = administrationRequests;
+            inherit reference;
+          })
+        administrationDependencies.prerequisites
+        == [(expectedRequestOutput "administration-ingress" "readiness-resource")]
         && kdcIngress.endpoints
         == [
           {

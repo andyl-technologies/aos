@@ -811,7 +811,7 @@ in
       disabled = evaluate {};
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
-      ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "mariadb:" name);
+      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
       invalidTls = evaluate {
         enable = true;
         tls = {
@@ -843,14 +843,31 @@ in
       mainDependencies = enabledAbilityConfig.requests."mariadb:main-dependencies".parameters;
       mainStorage = enabledAbilityConfig.requests."mariadb:main-storage".parameters;
       servicePrincipal = enabledAbilityConfig.requests."mariadb:service-principal".parameters;
-      configurationPathOutput = request:
-        (builtins.head (builtins.filter
+      expectedRequestOutput = localKey: output: {
+        package = self.pname;
+        inherit localKey output;
+      };
+      configurationPathIdentity = localKey: let
+        expectedIdentity = expectedRequestOutput localKey "planned-path";
+        executionPathIdentities = builtins.map
           (fragment:
-            fragment.kind
-            == "execution-path"
-            && (fragment.value.request or null) == request)
-          serverSource.fragments))
-        .value.output;
+            lib.abilities.requestOutputIdentity {
+              requests = enabledAbilityConfig.requests;
+              reference = fragment.value;
+            })
+          (builtins.filter
+            (fragment: fragment.kind == "execution-path")
+            serverSource.fragments);
+        matches = builtins.filter
+          (identity: identity == expectedIdentity)
+          executionPathIdentities;
+        matchCount = builtins.length matches;
+      in
+        if matchCount == 1
+        then builtins.head matches
+        else
+          throw
+          "MariaDB ability contract fixture expected exactly one '${localKey}' planned execution path, found ${builtins.toString matchCount}.";
       lifecycleConfig = pkgs.writeTextFile {
         name = "mariadb-lifecycle-config";
         destination = "/my.cnf";
@@ -911,13 +928,35 @@ in
         && !(lib.hasInfix "MARIADB_CONFIG_GENERATION" (builtins.toJSON enabledAbilityConfig.requests))
         && mainLifecycle.restart == "on-failure"
         && mainLifecycle.configuration_change_action == "restart"
-        && servicePrincipal.home_directory.output == "planned-path"
-        && builtins.all (mount: mount.source.output == "planned-path") mainStorage.mounts
-        && configurationPathOutput "mariadb:state-storage" == "planned-path"
-        && configurationPathOutput "mariadb:runtime-storage" == "planned-path"
-        && configurationPathOutput "mariadb:log-storage" == "planned-path"
+        && lib.abilities.requestOutputIdentity {
+          requests = enabledAbilityConfig.requests;
+          reference = servicePrincipal.home_directory;
+        }
+        == expectedRequestOutput "state-storage" "planned-path"
+        && builtins.map
+        (mount:
+          lib.abilities.requestOutputIdentity {
+            requests = enabledAbilityConfig.requests;
+            reference = mount.source;
+          })
+        mainStorage.mounts
+        == [
+          (expectedRequestOutput "state-storage" "planned-path")
+          (expectedRequestOutput "runtime-storage" "planned-path")
+          (expectedRequestOutput "log-storage" "planned-path")
+        ]
+        && configurationPathIdentity "state-storage"
+        == expectedRequestOutput "state-storage" "planned-path"
+        && configurationPathIdentity "runtime-storage"
+        == expectedRequestOutput "runtime-storage" "planned-path"
+        && configurationPathIdentity "log-storage"
+        == expectedRequestOutput "log-storage" "planned-path"
         && (builtins.elemAt mainLifecycle.start 0).executable.entry_point == "bin/mariadb-control"
-        && (builtins.elemAt mainDependencies.after 0).request == "mariadb:initialize-lifecycle"
+        && lib.abilities.requestOutputIdentity {
+          requests = enabledAbilityConfig.requests;
+          reference = builtins.elemAt mainDependencies.after 0;
+        }
+        == expectedRequestOutput "initialize-lifecycle" "service-resource"
         && !(enabledAbilityConfig.requests."mariadb:service-group".parameters ? requested_id)
         && !(enabledAbilityConfig.requests."mariadb:service-principal".parameters ? requested_id);
     in {
