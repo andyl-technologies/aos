@@ -5,7 +5,6 @@
 //! reauthenticates the exact image pair against `ImageGenerationState`, then
 //! uses the existing transition-intent and rollout record for selection.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read as _, Write as _};
@@ -16,7 +15,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
 use crate::types::{ImageGeneration, ImageGenerationState, ImageRolloutStatus};
 
@@ -29,19 +27,6 @@ use crate::sysroot::{
 
 const EXECUTION_SCHEMA: &str = "aos.ability.native-ab-image-rollout-state/v1";
 const EXECUTION_DIRECTORY: &str = "ability-rollouts";
-const UKI_RETENTION_DIRECTORY: &str = "EFI/.aos-rollout-retention";
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct UkiRetentionManifest {
-    schema: String,
-    candidate: String,
-    candidate_entry: String,
-    candidate_sha256: String,
-    predecessor: String,
-    predecessor_entry: String,
-    predecessor_sha256: String,
-}
 
 /// Describes durable progress through the native A/B provider backend.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -116,15 +101,13 @@ pub(crate) enum PhysicalRolloutObservation {
 #[derive(Clone, Debug)]
 pub(crate) struct NativeAbRolloutBackend {
     image_profile: PathBuf,
-    boot_root: PathBuf,
 }
 
 impl NativeAbRolloutBackend {
-    /// Constructs a backend over one image profile and mounted ESP.
-    pub(crate) fn new(image_profile: impl Into<PathBuf>, boot_root: impl Into<PathBuf>) -> Self {
+    /// Constructs a backend over one image profile.
+    pub(crate) fn new(image_profile: impl Into<PathBuf>) -> Self {
         Self {
             image_profile: image_profile.into(),
-            boot_root: boot_root.into(),
         }
     }
 
@@ -189,8 +172,8 @@ impl NativeAbRolloutBackend {
     ///
     /// # Errors
     ///
-    /// Returns an error when image identity is stale or retention roots, UKI
-    /// copies, their manifest, or provider state cannot be written durably.
+    /// Returns an error when image identity is stale or retention roots and
+    /// provider state cannot be written durably.
     pub(crate) fn retain(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
         let images = self.authenticate_pair(request)?;
         let predecessor = unique_image(&images, &request.predecessor, "predecessor")?;
@@ -223,25 +206,6 @@ impl NativeAbRolloutBackend {
             &directory.join("candidate-executor"),
             &request.candidate.executor,
         )?;
-        let uki_directory = self.retained_uki_directory(request)?;
-        ensure_private_directory(&self.boot_root.join(UKI_RETENTION_DIRECTORY))?;
-        ensure_private_directory(&uki_directory)?;
-        cleanup_stale_temporaries(&uki_directory, is_retention_temporary)?;
-        let (predecessor_entry, predecessor_sha256) =
-            self.retain_uki(&uki_directory, "predecessor", predecessor)?;
-        let (candidate_entry, candidate_sha256) =
-            self.retain_uki(&uki_directory, "candidate", candidate)?;
-        let manifest = UkiRetentionManifest {
-            schema: EXECUTION_SCHEMA.to_string(),
-            candidate: candidate.uki_path.clone(),
-            candidate_entry,
-            candidate_sha256,
-            predecessor: predecessor.uki_path.clone(),
-            predecessor_entry,
-            predecessor_sha256,
-        };
-        publish_manifest(&uki_directory.join("manifest.json"), &manifest)?;
-
         let state = AbilityRolloutState {
             schema: EXECUTION_SCHEMA.to_string(),
             request: request.clone(),
@@ -279,17 +243,13 @@ impl NativeAbRolloutBackend {
         Ok(state)
     }
 
-    /// Runs the supplied production drain and records success durably.
+    /// Records that checked orchestration has completed candidate preparation.
     ///
     /// # Errors
     ///
     /// Returns an error when preparation has not completed, identity changed,
-    /// the drain fails, or the drained phase cannot be persisted.
-    pub(crate) fn drain(
-        &self,
-        request: &AbRolloutRequest,
-        drain: impl FnOnce() -> Result<()>,
-    ) -> Result<AbilityRolloutState> {
+    /// or the drained phase cannot be persisted.
+    pub(crate) fn drain(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
         let mut state = self.require_state(request)?;
         if state.phase == AbilityRolloutPhase::Drained {
             return Ok(state);
@@ -299,7 +259,6 @@ impl NativeAbRolloutBackend {
             "drain is out of order"
         );
         self.authenticate_pair(request)?;
-        drain().context("draining workloads for A/B rollout")?;
         state.phase = AbilityRolloutPhase::Drained;
         self.write_state(&state)?;
         Ok(state)
@@ -315,7 +274,6 @@ impl NativeAbRolloutBackend {
         &self,
         request: &AbRolloutRequest,
         entry_id: &str,
-        select: impl FnOnce(&str) -> Result<()>,
     ) -> Result<AbilityRolloutState> {
         let mut execution = self.require_state(request)?;
         if execution.phase == AbilityRolloutPhase::Selected {
@@ -339,9 +297,6 @@ impl NativeAbRolloutBackend {
             entry_id,
             Some(rollout),
         )?;
-        let stable_entry_id = crate::sysroot::stable_uki_entry_id(entry_id)?;
-        select(&stable_entry_id).context("selecting the counted A/B candidate")?;
-
         execution.phase = AbilityRolloutPhase::Selected;
         self.write_state(&execution)?;
         Ok(execution)
@@ -438,18 +393,6 @@ impl NativeAbRolloutBackend {
             "rollout has not reached a physically finalized outcome"
         );
         Ok(observation)
-    }
-
-    /// Resolves the candidate's exact installed systemd-boot entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when candidate identity or its installed UKI is absent
-    /// or ambiguous.
-    pub(crate) fn candidate_entry_id(&self, request: &AbRolloutRequest) -> Result<String> {
-        let images = self.authenticate_pair(request)?;
-        let candidate = unique_image(&images, &request.candidate, "candidate")?;
-        crate::sysroot::resolve_installed_uki_entry(&self.boot_root, &candidate.uki_path)
     }
 
     /// Verifies provider evidence required before physical boot finalization.
@@ -883,23 +826,6 @@ impl NativeAbRolloutBackend {
                 remove_file_durable(&directory.join(format!("{identity}-{suffix}")))?;
             }
         }
-        let uki_directory = self.retained_uki_directory(request)?;
-        for name in ["candidate.efi", "predecessor.efi", "manifest.json"] {
-            remove_file_durable(&uki_directory.join(name))?;
-        }
-        match fs::remove_dir(&uki_directory) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("removing retired UKI lease {}", uki_directory.display())
-                });
-            }
-        }
-        let uki_parent = uki_directory
-            .parent()
-            .context("UKI retention lease has no parent")?;
-        sync_directory(uki_parent)?;
         state.phase = AbilityRolloutPhase::Retired;
         self.write_state(&state)?;
         Ok(state)
@@ -972,7 +898,6 @@ impl NativeAbRolloutBackend {
         ] {
             require_exact_root(&directory.join(name), target)?;
         }
-        authenticate_uki_retention_directory(&self.retained_uki_directory(request)?)?;
         Ok(())
     }
 
@@ -998,11 +923,6 @@ impl NativeAbRolloutBackend {
         request: &AbRolloutRequest,
         images: &ImageGenerationState,
     ) -> Result<()> {
-        ensure!(
-            fs::symlink_metadata(self.retained_uki_directory(request)?)
-                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
-            "retired UKI lease is still present"
-        );
         let running = images
             .running_generation()
             .context("image state has no running generation")?;
@@ -1058,14 +978,6 @@ impl NativeAbRolloutBackend {
             .join(digest.to_string().replace(':', "-")))
     }
 
-    pub(crate) fn retained_uki_directory(&self, request: &AbRolloutRequest) -> Result<PathBuf> {
-        let digest = Sha256Digest::of_canonical(EXECUTION_SCHEMA, request)?;
-        Ok(self
-            .boot_root
-            .join(UKI_RETENTION_DIRECTORY)
-            .join(digest.to_string().replace(':', "-")))
-    }
-
     fn require_state(&self, request: &AbRolloutRequest) -> Result<AbilityRolloutState> {
         let path = self.execution_directory(request)?.join("state.json");
         let state: AbilityRolloutState = serde_json::from_slice(
@@ -1090,209 +1002,6 @@ impl NativeAbRolloutBackend {
             true,
         )
     }
-
-    fn retain_uki(
-        &self,
-        directory: &Path,
-        label: &str,
-        generation: &ImageGeneration,
-    ) -> Result<(String, String)> {
-        let entry =
-            crate::sysroot::resolve_installed_uki_entry(&self.boot_root, &generation.uki_path)?;
-        let source = self.boot_root.join("EFI/Linux").join(&entry);
-        let source_digest = file_sha256_regular(&source)?;
-        let destination = directory.join(format!("{label}.efi"));
-        match fs::symlink_metadata(&destination) {
-            Ok(metadata) => {
-                ensure!(
-                    metadata.file_type().is_file()
-                        && file_sha256_regular(&destination)? == source_digest,
-                    "retained {label} UKI differs from installed image"
-                );
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                publish_regular_copy(&source, &destination, source_digest)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        Ok((entry, Sha256Digest::from_bytes(source_digest).to_string()))
-    }
-}
-
-/// Returns stable UKI entry identities protected by installed provider leases.
-///
-/// # Errors
-///
-/// Returns an error when the retention directory cannot be read or any lease
-/// directory or manifest is malformed, missing, or uses an unsupported schema.
-pub(crate) fn retained_uki_entry_ids(boot_root: &Path) -> Result<BTreeSet<String>> {
-    let root = boot_root.join(UKI_RETENTION_DIRECTORY);
-    let mut retained = BTreeSet::new();
-    match fs::symlink_metadata(&root) {
-        Ok(metadata) => ensure!(
-            metadata.is_dir()
-                && !metadata.file_type().is_symlink()
-                && metadata.permissions().mode() & 0o777 == 0o700,
-            "invalid UKI retention root"
-        ),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(retained),
-        Err(error) => return Err(error.into()),
-    }
-    let entries = fs::read_dir(&root)?;
-    for entry in entries {
-        let entry = entry?;
-        let metadata = entry.file_type()?;
-        ensure!(
-            metadata.is_dir() && !metadata.is_symlink(),
-            "invalid UKI retention lease directory"
-        );
-        retained.extend(authenticate_uki_retention_directory(&entry.path())?);
-    }
-    Ok(retained)
-}
-
-fn authenticate_uki_retention_directory(directory: &Path) -> Result<BTreeSet<String>> {
-    let metadata = fs::symlink_metadata(directory)?;
-    ensure!(
-        metadata.is_dir()
-            && !metadata.file_type().is_symlink()
-            && metadata.permissions().mode() & 0o777 == 0o700,
-        "UKI retention lease is not a root-private directory"
-    );
-    let manifest_path = directory.join("manifest.json");
-    let manifest: UkiRetentionManifest =
-        serde_json::from_slice(&read_regular_bounded(&manifest_path, 16 * 1024)?)?;
-    ensure!(
-        manifest.schema == EXECUTION_SCHEMA,
-        "invalid UKI retention manifest schema"
-    );
-    let entries = fs::read_dir(directory)?
-        .map(|entry| {
-            entry?
-                .file_name()
-                .into_string()
-                .map_err(|_| std::io::Error::other("retention entry name is not UTF-8"))
-        })
-        .collect::<std::io::Result<BTreeSet<_>>>()?;
-    ensure!(
-        entries
-            == BTreeSet::from([
-                "candidate.efi".to_string(),
-                "manifest.json".to_string(),
-                "predecessor.efi".to_string(),
-            ]),
-        "UKI retention lease contains unexpected entries"
-    );
-
-    let mut retained = BTreeSet::new();
-    for (label, identity, entry, expected_digest) in [
-        (
-            "candidate",
-            &manifest.candidate,
-            &manifest.candidate_entry,
-            &manifest.candidate_sha256,
-        ),
-        (
-            "predecessor",
-            &manifest.predecessor,
-            &manifest.predecessor_entry,
-            &manifest.predecessor_sha256,
-        ),
-    ] {
-        let identity_entry = Path::new(identity)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("retained UKI identity has no UTF-8 entry id")?;
-        let stable_identity = crate::sysroot::stable_uki_entry_id(identity_entry)?;
-        let stable_entry = crate::sysroot::stable_uki_entry_id(entry)?;
-        ensure!(
-            stable_identity == stable_entry,
-            "retained {label} UKI entry differs from its authenticated identity"
-        );
-        let expected_digest = Sha256Digest::parse(expected_digest)
-            .with_context(|| format!("decoding retained {label} UKI digest"))?;
-        ensure!(
-            Sha256Digest::from_bytes(file_sha256_regular(
-                &directory.join(format!("{label}.efi")),
-            )?) == expected_digest,
-            "retained {label} UKI copy differs from its manifest"
-        );
-        retained.insert(stable_entry);
-    }
-    Ok(retained)
-}
-
-fn publish_manifest(path: &Path, manifest: &UkiRetentionManifest) -> Result<()> {
-    let encoded = serde_json::to_vec_pretty(manifest)?;
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            ensure!(
-                metadata.file_type().is_file() && read_regular_bounded(path, 16 * 1024)? == encoded,
-                "retention manifest differs from the authenticated lease"
-            );
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            write_atomic_regular(path, &encoded, false)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn publish_regular_copy(source: &Path, destination: &Path, expected: [u8; 32]) -> Result<()> {
-    let temporary = destination.with_extension(format!("efi.new-{}", std::process::id()));
-    let mut source = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(source)?;
-    ensure!(
-        source.metadata()?.is_file(),
-        "retained UKI source is not regular"
-    );
-    remove_stale_regular_temporary(&temporary)?;
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&temporary)?;
-    let copied = (|| -> Result<()> {
-        std::io::copy(&mut source, &mut output)?;
-        output.flush()?;
-        output.sync_all()?;
-        Ok(())
-    })();
-    if let Err(error) = copied {
-        drop(output);
-        let _ = remove_file_durable(&temporary);
-        return Err(error);
-    }
-    drop(output);
-    let copied_digest = file_sha256_regular(&temporary);
-    if !matches!(copied_digest, Ok(actual) if actual == expected) {
-        let _ = remove_file_durable(&temporary);
-        bail!("retained UKI copy changed during publication");
-    }
-    let published = rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        &temporary,
-        rustix::fs::CWD,
-        destination,
-        rustix::fs::RenameFlags::NOREPLACE,
-    );
-    if let Err(error) = published {
-        let _ = fs::remove_file(&temporary);
-        return Err(error).with_context(|| {
-            format!(
-                "publishing retained UKI {} without replacement",
-                destination.display()
-            )
-        });
-    }
-    if let Some(parent) = destination.parent() {
-        sync_directory(parent)?;
-    }
-    Ok(())
 }
 
 fn write_atomic_regular(path: &Path, contents: &[u8], replace: bool) -> Result<()> {
@@ -1376,12 +1085,6 @@ fn is_execution_temporary(name: &str) -> bool {
     numeric_suffix(name, ".state.json.tmp.")
 }
 
-fn is_retention_temporary(name: &str) -> bool {
-    numeric_suffix(name, "candidate.efi.new-")
-        || numeric_suffix(name, "predecessor.efi.new-")
-        || numeric_suffix(name, ".manifest.json.tmp.")
-}
-
 fn numeric_suffix(name: &str, prefix: &str) -> bool {
     name.strip_prefix(prefix).is_some_and(|suffix| {
         !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
@@ -1405,27 +1108,6 @@ fn read_regular_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
         "rollout lease file changed while reading"
     );
     Ok(bytes)
-}
-
-fn file_sha256_regular(path: &Path) -> Result<[u8; 32]> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)?;
-    ensure!(
-        file.metadata()?.is_file(),
-        "rollout artifact is not a regular file"
-    );
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(digest.finalize().into())
 }
 
 fn unique_image<'a>(
@@ -1590,15 +1272,6 @@ mod tests {
                 generations: vec![predecessor.clone(), candidate.clone()],
             };
             fs::create_dir_all(tmp.path()).unwrap();
-            let boot_root = tmp.path().join("boot");
-            fs::create_dir_all(boot_root.join("EFI/Linux")).unwrap();
-            for generation in [&predecessor, &candidate] {
-                fs::write(
-                    boot_root.join(&generation.uki_path),
-                    format!("uki-{}", generation.number),
-                )
-                .unwrap();
-            }
             fs::write(
                 tmp.path().join(crate::sysroot::IMAGE_STATE_FILE),
                 serde_json::to_vec_pretty(&state).unwrap(),
@@ -1627,7 +1300,7 @@ mod tests {
             let image_profile = tmp.path().to_path_buf();
             Self {
                 _tmp: tmp,
-                backend: NativeAbRolloutBackend::new(image_profile, boot_root),
+                backend: NativeAbRolloutBackend::new(image_profile),
                 request,
             }
         }
@@ -1654,10 +1327,10 @@ mod tests {
     ) -> AbilityRolloutState {
         fixture.backend.retain(&fixture.request).unwrap();
         fixture.backend.prepare(&fixture.request).unwrap();
-        fixture.backend.drain(&fixture.request, || Ok(())).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
         fixture
             .backend
-            .select(&fixture.request, "aos-2+3.efi", |_| Ok(()))
+            .select(&fixture.request, "aos-2+3.efi")
             .unwrap();
 
         let mut images = fixture.images();
@@ -1732,52 +1405,9 @@ mod tests {
                 install_exact_root(&directory.join(name), target).unwrap();
             }
         }
-        if publications <= 4 {
-            return;
+        if publications > 4 {
+            fixture.backend.retain(&fixture.request).unwrap();
         }
-
-        let images = fixture.images();
-        let predecessor =
-            unique_image(&images, &fixture.request.predecessor, "predecessor").unwrap();
-        let candidate = unique_image(&images, &fixture.request.candidate, "candidate").unwrap();
-        let uki_directory = fixture
-            .backend
-            .retained_uki_directory(&fixture.request)
-            .unwrap();
-        ensure_private_directory(uki_directory.parent().expect("UKI lease has a parent")).unwrap();
-        ensure_private_directory(&uki_directory).unwrap();
-        let (predecessor_entry, predecessor_sha256) = fixture
-            .backend
-            .retain_uki(&uki_directory, "predecessor", predecessor)
-            .unwrap();
-        if publications == 5 {
-            return;
-        }
-        let (candidate_entry, candidate_sha256) = fixture
-            .backend
-            .retain_uki(&uki_directory, "candidate", candidate)
-            .unwrap();
-        if publications == 6 {
-            return;
-        }
-        publish_manifest(
-            &uki_directory.join("manifest.json"),
-            &UkiRetentionManifest {
-                schema: EXECUTION_SCHEMA.to_string(),
-                candidate: candidate.uki_path.clone(),
-                candidate_entry,
-                candidate_sha256,
-                predecessor: predecessor.uki_path.clone(),
-                predecessor_entry,
-                predecessor_sha256,
-            },
-        )
-        .unwrap();
-        if publications == 7 {
-            return;
-        }
-
-        fixture.backend.retain(&fixture.request).unwrap();
     }
 
     #[test]
@@ -1786,13 +1416,10 @@ mod tests {
         assert!(fixture.backend.prepare(&fixture.request).is_err());
         fixture.backend.retain(&fixture.request).unwrap();
         fixture.backend.prepare(&fixture.request).unwrap();
-        fixture.backend.drain(&fixture.request, || Ok(())).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
         fixture
             .backend
-            .select(&fixture.request, "aos-2+3.efi", |entry| {
-                assert_eq!(entry, "aos-2.efi");
-                Ok(())
-            })
+            .select(&fixture.request, "aos-2+3.efi")
             .unwrap();
 
         let images = fixture.images();
@@ -1806,7 +1433,7 @@ mod tests {
 
     #[test]
     fn retention_retry_completes_after_every_durable_publication_prefix() {
-        for publications in 0..=8 {
+        for publications in 0..=5 {
             let fixture = Fixture::new();
             publish_retention_prefix(&fixture, publications);
 
@@ -1816,10 +1443,6 @@ mod tests {
                 .backend
                 .observe_operation(&fixture.request, "retain")
                 .unwrap();
-            assert_eq!(
-                retained_uki_entry_ids(&fixture.backend.boot_root).unwrap(),
-                BTreeSet::from(["aos-1.efi".to_string(), "aos-2.efi".to_string()])
-            );
         }
     }
 
@@ -1828,10 +1451,10 @@ mod tests {
         let fixture = Fixture::new();
         fixture.backend.retain(&fixture.request).unwrap();
         fixture.backend.prepare(&fixture.request).unwrap();
-        fixture.backend.drain(&fixture.request, || Ok(())).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
         fixture
             .backend
-            .select(&fixture.request, "aos-2+3.efi", |_| Ok(()))
+            .select(&fixture.request, "aos-2+3.efi")
             .unwrap();
         let mut images = fixture.images();
         images.running = 2;
@@ -1900,10 +1523,10 @@ mod tests {
         let fixture = Fixture::new();
         fixture.backend.retain(&fixture.request).unwrap();
         fixture.backend.prepare(&fixture.request).unwrap();
-        fixture.backend.drain(&fixture.request, || Ok(())).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
         fixture
             .backend
-            .select(&fixture.request, "aos-2+3.efi", |_| Ok(()))
+            .select(&fixture.request, "aos-2+3.efi")
             .unwrap();
 
         let mut images = fixture.images();
@@ -1986,10 +1609,10 @@ mod tests {
         let fixture = Fixture::new();
         fixture.backend.retain(&fixture.request).unwrap();
         fixture.backend.prepare(&fixture.request).unwrap();
-        fixture.backend.drain(&fixture.request, || Ok(())).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
         fixture
             .backend
-            .select(&fixture.request, "aos-2+3.efi", |_| Ok(()))
+            .select(&fixture.request, "aos-2+3.efi")
             .unwrap();
 
         let mut images = fixture.images();
@@ -2109,157 +1732,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_uki_scan_rejects_missing_tampered_and_symlinked_copies() {
-        let missing = Fixture::new();
-        missing.backend.retain(&missing.request).unwrap();
-        let missing_lease = missing
-            .backend
-            .retained_uki_directory(&missing.request)
-            .unwrap();
-        fs::remove_file(missing_lease.join("candidate.efi")).unwrap();
-        assert!(retained_uki_entry_ids(&missing.backend.boot_root).is_err());
-
-        let tampered = Fixture::new();
-        tampered.backend.retain(&tampered.request).unwrap();
-        let tampered_lease = tampered
-            .backend
-            .retained_uki_directory(&tampered.request)
-            .unwrap();
-        fs::write(tampered_lease.join("predecessor.efi"), "tampered").unwrap();
-        assert!(retained_uki_entry_ids(&tampered.backend.boot_root).is_err());
-
-        let linked = Fixture::new();
-        linked.backend.retain(&linked.request).unwrap();
-        let linked_lease = linked
-            .backend
-            .retained_uki_directory(&linked.request)
-            .unwrap();
-        fs::remove_file(linked_lease.join("candidate.efi")).unwrap();
-        symlink(
-            linked.backend.boot_root.join("EFI/Linux/aos-2+3.efi"),
-            linked_lease.join("candidate.efi"),
-        )
-        .unwrap();
-        assert!(retained_uki_entry_ids(&linked.backend.boot_root).is_err());
-    }
-
-    #[test]
-    fn retained_uki_publication_rejects_a_preexisting_symlink() {
-        let fixture = Fixture::new();
-        let lease = fixture
-            .backend
-            .retained_uki_directory(&fixture.request)
-            .unwrap();
-        ensure_private_directory(lease.parent().expect("retention directory has a parent"))
-            .unwrap();
-        ensure_private_directory(&lease).unwrap();
-        symlink(
-            fixture.backend.boot_root.join("EFI/Linux/aos-2+3.efi"),
-            lease.join("candidate.efi"),
-        )
-        .unwrap();
-
-        assert!(fixture.backend.retain(&fixture.request).is_err());
-        assert!(
-            fs::symlink_metadata(lease.join("candidate.efi"))
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-    }
-
-    #[test]
-    fn retained_uki_scan_rejects_nonprivate_root_and_lease_directories() {
-        let root_fixture = Fixture::new();
-        root_fixture.backend.retain(&root_fixture.request).unwrap();
-        let root = root_fixture.backend.boot_root.join(UKI_RETENTION_DIRECTORY);
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(retained_uki_entry_ids(&root_fixture.backend.boot_root).is_err());
-
-        let lease_fixture = Fixture::new();
-        lease_fixture
-            .backend
-            .retain(&lease_fixture.request)
-            .unwrap();
-        let lease = lease_fixture
-            .backend
-            .retained_uki_directory(&lease_fixture.request)
-            .unwrap();
-        fs::set_permissions(&lease, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(retained_uki_entry_ids(&lease_fixture.backend.boot_root).is_err());
-    }
-
-    #[test]
-    fn retention_retry_cleans_regular_temporaries_and_rejects_foreign_entries() {
-        let retry = Fixture::new();
-        let execution = retry.backend.execution_directory(&retry.request).unwrap();
-        ensure_private_directory(
-            execution
-                .parent()
-                .expect("execution directory has a parent"),
-        )
-        .unwrap();
-        ensure_private_directory(&execution).unwrap();
-        fs::write(execution.join(".state.json.tmp.999"), "partial").unwrap();
-        let lease = retry
-            .backend
-            .retained_uki_directory(&retry.request)
-            .unwrap();
-        ensure_private_directory(lease.parent().expect("lease has a parent")).unwrap();
-        ensure_private_directory(&lease).unwrap();
-        fs::write(lease.join("candidate.efi.new-999"), "partial").unwrap();
-        fs::write(lease.join(".manifest.json.tmp.999"), "partial").unwrap();
-
-        retry.backend.retain(&retry.request).unwrap();
-        assert!(!execution.join(".state.json.tmp.999").exists());
-        assert!(!lease.join("candidate.efi.new-999").exists());
-        assert!(!lease.join(".manifest.json.tmp.999").exists());
-
-        fs::write(lease.join("foreign"), "unexpected").unwrap();
-        assert!(retained_uki_entry_ids(&retry.backend.boot_root).is_err());
-
-        let linked = Fixture::new();
-        let linked_lease = linked
-            .backend
-            .retained_uki_directory(&linked.request)
-            .unwrap();
-        ensure_private_directory(linked_lease.parent().expect("lease has a parent")).unwrap();
-        ensure_private_directory(&linked_lease).unwrap();
-        symlink(
-            linked.backend.boot_root.join("EFI/Linux/aos-2+3.efi"),
-            linked_lease.join("candidate.efi.new-999"),
-        )
-        .unwrap();
-        assert!(linked.backend.retain(&linked.request).is_err());
-        assert!(
-            fs::symlink_metadata(linked_lease.join("candidate.efi.new-999"))
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-    }
-
-    #[test]
-    fn terminal_hold_recovery_rejects_missing_or_tampered_retention() {
-        let missing = Fixture::new();
-        complete_terminal_rollout(&missing, 2, ImageRolloutStatus::Succeeded);
-        let missing_copy = missing
-            .backend
-            .retained_uki_directory(&missing.request)
-            .unwrap()
-            .join("candidate.efi");
-        fs::remove_file(missing_copy).unwrap();
-        let restarted = NativeAbRolloutBackend::new(
-            missing.backend.image_profile.clone(),
-            missing.backend.boot_root.clone(),
-        );
-        assert!(restarted.hold(&missing.request).is_err());
-        assert!(
-            restarted
-                .observe_operation(&missing.request, "hold")
-                .is_err()
-        );
-
+    fn terminal_hold_recovery_rejects_tampered_retention_roots() {
         let tampered = Fixture::new();
         complete_terminal_rollout(&tampered, 1, ImageRolloutStatus::HealthFailed);
         let root = tampered
@@ -2269,10 +1742,7 @@ mod tests {
             .join("predecessor-toplevel");
         fs::remove_file(&root).unwrap();
         symlink(&tampered.request.candidate.toplevel, &root).unwrap();
-        let restarted = NativeAbRolloutBackend::new(
-            tampered.backend.image_profile.clone(),
-            tampered.backend.boot_root.clone(),
-        );
+        let restarted = NativeAbRolloutBackend::new(tampered.backend.image_profile.clone());
         assert!(restarted.withdraw(&tampered.request).is_err());
         assert!(
             restarted
@@ -2309,7 +1779,7 @@ mod tests {
     }
 
     #[test]
-    fn retirement_removes_the_uki_lease_without_hiding_the_active_entry() {
+    fn retirement_removes_rollout_roots_without_hiding_the_active_generation() {
         let fixture = Fixture::new();
         let terminal = complete_terminal_rollout(&fixture, 2, ImageRolloutStatus::Succeeded);
         assert_eq!(
@@ -2318,24 +1788,11 @@ mod tests {
         );
 
         fixture.backend.retire(&fixture.request, 2_000).unwrap();
-        fs::remove_file(fixture.backend.boot_root.join("EFI/Linux/aos-1+3.efi")).unwrap();
         fixture
             .backend
             .preflight_operation(&fixture.request, "retire", 2_000)
             .unwrap();
 
-        assert!(
-            retained_uki_entry_ids(&fixture.backend.boot_root)
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            fixture
-                .backend
-                .boot_root
-                .join("EFI/Linux/aos-2+3.efi")
-                .is_file()
-        );
         let execution = fixture
             .backend
             .execution_directory(&fixture.request)
@@ -2361,10 +1818,7 @@ mod tests {
             Path::new(&fixture.request.candidate.toplevel)
         );
 
-        let restarted = NativeAbRolloutBackend::new(
-            fixture.backend.image_profile.clone(),
-            fixture.backend.boot_root.clone(),
-        );
+        let restarted = NativeAbRolloutBackend::new(fixture.backend.image_profile.clone());
         let recovered = restarted
             .observe_operation(&fixture.request, "retire")
             .unwrap();
@@ -2387,12 +1841,6 @@ mod tests {
             .execution_directory(&fixture.request)
             .unwrap();
         remove_file_durable(&execution.join("candidate-toplevel")).unwrap();
-        let uki_lease = fixture
-            .backend
-            .retained_uki_directory(&fixture.request)
-            .unwrap();
-        remove_file_durable(&uki_lease.join("candidate.efi")).unwrap();
-
         let retired = fixture.backend.retire(&fixture.request, 2_000).unwrap();
         assert_eq!(retired.phase, AbilityRolloutPhase::Retired);
         fixture
@@ -2411,10 +1859,7 @@ mod tests {
         );
 
         fixture.backend.retire(&fixture.request, 2_000).unwrap();
-        let restarted = NativeAbRolloutBackend::new(
-            fixture.backend.image_profile.clone(),
-            fixture.backend.boot_root.clone(),
-        );
+        let restarted = NativeAbRolloutBackend::new(fixture.backend.image_profile.clone());
         let recovered = restarted
             .observe_operation(&fixture.request, "retire")
             .unwrap();

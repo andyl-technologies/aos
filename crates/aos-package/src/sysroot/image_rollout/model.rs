@@ -34,3 +34,17 @@ pub(crate) struct AbRolloutRequest {
     /// Gives the restart-stable deadline through which both images remain retained.
     pub(crate) retention_expires_at_millis: u64,
 }
+
+/// Carries one rollout-state operation plus checked lower-provider evidence.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AbRolloutTerminalRequest {
+    /// Retains the exact provider-neutral rollout request.
+    pub(crate) rollout: AbRolloutRequest,
+    /// Supplies a boot entry resolved by the selected boot-selection provider.
+    #[serde(default)]
+    pub(crate) entry: Option<String>,
+    /// Retains the typed result returned by the selected boot-storage provider.
+    #[serde(default)]
+    pub(crate) platform: Option<serde_json::Value>,
+}

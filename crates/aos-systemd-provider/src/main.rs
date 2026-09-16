@@ -5,9 +5,11 @@
 //! checked realizations, materializes their authenticated bytes, and drives a
 //! pinned systemd manager over D-Bus.
 
+mod boot_platform;
 mod identity;
 mod manager_watchdog;
 mod materialize;
+mod measurement_index;
 mod model;
 mod native_resource;
 mod network_configuration;
@@ -52,6 +54,7 @@ const ETC_ROOT: &str = "/etc";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HandlerRole {
+    BootPlatform(boot_platform::BootPlatformRole),
     DevicePresence,
     Identity(identity::IdentityRole),
     ManagerWatchdog,
@@ -72,6 +75,13 @@ impl HandlerRole {
         }
 
         match method.interface.name.as_str() {
+            "aos.boot.artifact-storage" => Ok(Self::BootPlatform(
+                boot_platform::BootPlatformRole::ArtifactStorage,
+            )),
+            "aos.boot.selection" => Ok(Self::BootPlatform(
+                boot_platform::BootPlatformRole::Selection,
+            )),
+            "aos.boot.success" => Ok(Self::BootPlatform(boot_platform::BootPlatformRole::Success)),
             "aos.systemd.activation-group-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::ActivationGroup,
             )),
@@ -80,6 +90,9 @@ impl HandlerRole {
             "aos.systemd.group-membership-effects" => {
                 Ok(Self::Identity(identity::IdentityRole::GroupMembership))
             }
+            "aos.host.restart" => Ok(Self::BootPlatform(
+                boot_platform::BootPlatformRole::HostRestart,
+            )),
             "aos.systemd.manager-watchdog-effects" => Ok(Self::ManagerWatchdog),
             "aos.systemd.mount-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::Mount,
@@ -126,6 +139,18 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let arguments = std::env::args_os().collect::<Vec<_>>();
+    if arguments.len() >= 2 && arguments[1] == "measurement-index" {
+        let arguments = arguments[2..]
+            .iter()
+            .map(|argument| {
+                argument
+                    .to_str()
+                    .map(ToOwned::to_owned)
+                    .context("measurement-index argument is not valid UTF-8")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return measurement_index::run(&arguments);
+    }
     if arguments.len() == 1 {
         return qualification_observer::run().await;
     }
@@ -172,6 +197,7 @@ async fn run() -> Result<()> {
 
 async fn admit(role: HandlerRole, request: AdmissionRequest) -> Result<AdmissionResult> {
     match role {
+        HandlerRole::BootPlatform(role) => boot_platform::admit(role, request),
         HandlerRole::DevicePresence => native_resource::admit_device_role(request).await,
         HandlerRole::Identity(role) => identity::admit(role, request).await,
         HandlerRole::ManagerWatchdog => manager_watchdog::admit(request).await,
@@ -243,6 +269,7 @@ async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResul
 
 async fn invoke(role: HandlerRole, invocation: Invocation) -> Result<InvocationResult> {
     match role {
+        HandlerRole::BootPlatform(role) => boot_platform::invoke(role, invocation),
         HandlerRole::DevicePresence => native_resource::invoke_device_role(invocation).await,
         HandlerRole::Identity(role) => identity::invoke(role, invocation).await,
         HandlerRole::ManagerWatchdog => manager_watchdog::invoke(invocation).await,

@@ -1651,6 +1651,10 @@ in rec {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
     };
+    imageRolloutPlatform = import ./image-rollout-platform.nix {
+      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
+      types = abilityTypes;
+    };
     kernelTunables = import ./kernel-tunables.nix {
       inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
@@ -1688,6 +1692,7 @@ in rec {
         interfaces.serviceManagement.moduleDeclarations
         // interfaces.networkPolicy.declarations
         // interfaces.bootPreparation.declarations
+        // interfaces.imageRolloutPlatform.declarations
         // interfaces.kernelTunables.declarations
         // interfaces.networkConfiguration.declarations
         // interfaces.blockStorage.declarations

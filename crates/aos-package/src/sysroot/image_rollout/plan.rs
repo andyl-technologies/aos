@@ -20,7 +20,8 @@ const ROLLOUT_HANDLER_ENTRY_POINT: &str = "libexec/aos-image-rollout-provider";
 ///
 /// Returns an error unless exactly one checked binding selects the authenticated
 /// package handler, every operation for its resource uses that binding, and all
-/// of those operations carry the same literal request.
+/// of those operations carry the same literal rollout value. Typed lower
+/// provider results may occupy sibling fields in the terminal input object.
 pub(crate) fn authenticate_single_image_rollout_fragment(
     plan: &CheckedEffectPlan,
 ) -> Result<AbRolloutRequest> {
@@ -66,9 +67,7 @@ pub(crate) fn authenticate_single_image_rollout_fragment(
 
     let mut request = None;
     for operation in rollout_operations {
-        let ValueExpression::Literal { value } = &operation.inputs else {
-            anyhow::bail!("rollout handler request is not an exact literal")
-        };
+        let value = rollout_input(&operation.inputs)?;
         let operation_request = decode_request(value)?;
         if let Some(expected) = &request {
             ensure!(
@@ -81,6 +80,19 @@ pub(crate) fn authenticate_single_image_rollout_fragment(
     }
 
     request.context("retained transaction contains no rollout handler request")
+}
+
+fn rollout_input(inputs: &ValueExpression) -> Result<&AbilityValue> {
+    let ValueExpression::Object { fields } = inputs else {
+        anyhow::bail!("rollout handler input is not a closed terminal request")
+    };
+    let ValueExpression::Literal { value } = fields
+        .get("rollout")
+        .context("rollout handler input has no exact rollout value")?
+    else {
+        anyhow::bail!("rollout handler rollout value is not an exact literal")
+    };
+    Ok(value)
 }
 
 fn operation_uses_rollout_handler(

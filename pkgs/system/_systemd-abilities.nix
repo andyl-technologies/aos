@@ -29,6 +29,116 @@
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceInterfaces = serviceManagement.interfaces;
+  serviceTypes = serviceManagement.types;
+  imageRolloutPlatform = lib.abilities.interfaces.imageRolloutPlatform.interfaces;
+  resultOf = lib.abilities.resultOf;
+  hostPlatformAvailable =
+    config == null
+    || config.aos.abilities.environment == null
+    || config.aos.abilities.environment.stage == "host";
+  imagePlatformImplementation = interface: {
+    description = "Executes ${interface.name} through the selected systemd boot platform.";
+    interface = interface.identity;
+    artifact = handlerArtifact;
+    inherit (interface) methods;
+    guarantees = [];
+    handlerDescriptor = {
+      artifact = handlerArtifact;
+      entryPoint = handlerEntryPoint;
+      arguments = interface.requestType;
+      result = interface.observationType;
+    };
+    desiredType = null;
+    requiredFeatures = [];
+  };
+  imagePlatformImplementations = {
+    boot-artifact-storage = imagePlatformImplementation imageRolloutPlatform.artifactStorage;
+    boot-selection = imagePlatformImplementation imageRolloutPlatform.selection;
+    boot-success = imagePlatformImplementation imageRolloutPlatform.success;
+    host-restart = imagePlatformImplementation imageRolloutPlatform.hostRestart;
+  };
+  measurementEnabled =
+    config != null
+    && hostPlatformAvailable
+    && (config.aos.packageRuntime.configurationEvaluation.measuredBoot or false);
+  imageMeasurementService = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "image-measurement-index";
+    declaration = {
+      service = "image-measurement-index";
+      enabled = true;
+      lifecycle = {
+        description = "Import authenticated boot artifact PCR 11 measurement metadata";
+        execution_model = "oneshot";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [
+          {
+            executable = {
+              artifact = handlerArtifact;
+              entry_point = handlerEntryPoint;
+              arguments = [
+                "measurement-index"
+                "--pcr-public-key"
+                (config.aos.packageRuntime.configurationEvaluation.pcrPublicKey or null)
+              ];
+            };
+            ignore_failure = false;
+          }
+        ];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "never";
+        restart_delay_millis = 0;
+        configuration_change_action = "restart";
+        remain_after_exit = true;
+        start_timeout_millis = 300000;
+        stop_timeout_millis = 90000;
+      };
+      dependencies = {
+        prerequisites = [];
+        after = [
+          (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "service-resource")
+          (resultOf "aos:local-filesystems" "readiness-resource")
+          (resultOf "aos:runtime-entry-population" "lifecycle-resource")
+        ];
+        before = [
+          (resultOf "aos:configuration-evaluation-lifecycle" "service-resource")
+          (resultOf "aos:multi-user" "readiness-resource")
+        ];
+        requires = [
+          (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "service-resource")
+          (resultOf "aos:local-filesystems" "readiness-resource")
+          (resultOf "aos:runtime-entry-population" "lifecycle-resource")
+        ];
+        wants = [];
+        requisite = [];
+        conflicts = [];
+        binds_to = [];
+        part_of = [];
+        upholds = [];
+        required_by = [];
+        wanted_by = [(resultOf "aos:multi-user" "readiness-resource")];
+        required_mounts = [];
+        implicit_dependencies = false;
+      };
+      manager_identity = {
+        name = "aos-image-measurement-index";
+        aliases = [];
+      };
+      readiness = {
+        mechanism = "successful-exit";
+        signal_scope = "none";
+        timeout_millis = 300000;
+      };
+      environment = {
+        variables = {};
+        search_path = [(lib.abilities.packageOutput {package = "openssl";})];
+      };
+    };
+  };
   dbusRegistrationInterface = {
     name = "aos.dbus.system-registration-contribution";
     abi = 1;
@@ -1270,9 +1380,15 @@ in {
   };
 
   config.aos.abilities = {
-    instances = lib.mkIf dbusRegistrationAvailable {
-      manager = {};
-    };
+    instances = lib.mkMerge [
+      (lib.mkIf dbusRegistrationAvailable {manager = {};})
+      (lib.mkIf hostPlatformAvailable {
+        boot-artifact-storage.implementation = "boot-artifact-storage";
+        boot-selection.implementation = "boot-selection";
+        boot-success.implementation = "boot-success";
+        host-restart.implementation = "host-restart";
+      })
+    ];
 
     interfaces = {
       systemd-packaged-unit = packagedUnitDeclaration;
@@ -1304,6 +1420,7 @@ in {
       // nativeControllerImplementations
       // nativeTerminalImplementations
       // devicePresenceImplementation
+      // imagePlatformImplementations
       // {
         systemd-manager-watchdog = {
           description = "Controls systemd manager watchdog configuration through a pure package-owned controller.";
@@ -1410,39 +1527,45 @@ in {
         };
       };
 
-    requirementTemplates = lib.mkIf dbusRegistrationAvailable {
-      dbus-system-registration = {
-        description = "Contributes systemd's system-bus activation and policy artifacts.";
-        interface = dbusRegistrationInterface.name;
-        inherit (dbusRegistrationInterface) abi descriptor;
-        methods = ["observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-    };
-
-    requests = lib.mkIf dbusRegistrationAvailable {
-      dbus-system-registration = {
-        requirement = "dbus-system-registration";
-        consumer = "manager";
-        scope = ["system-bus"];
-        parameters = {
-          name = "systemd";
-          activation_directories = [
-            {
-              inherit artifact;
-              path = "share/dbus-1/system-services";
-            }
-          ];
-          policy_directories = [
-            {
-              inherit artifact;
-              path = "share/dbus-1/system.d";
-            }
-          ];
+    requirementTemplates = lib.mkMerge [
+      (lib.mkIf dbusRegistrationAvailable {
+        dbus-system-registration = {
+          description = "Contributes systemd's system-bus activation and policy artifacts.";
+          interface = dbusRegistrationInterface.name;
+          inherit (dbusRegistrationInterface) abi descriptor;
+          methods = ["observe"];
+          guarantees = [];
+          strength = "required";
+          fallback = null;
         };
-      };
-    };
+      })
+      (lib.mkIf measurementEnabled imageMeasurementService.requirementTemplates)
+    ];
+
+    requests = lib.mkMerge [
+      (lib.mkIf dbusRegistrationAvailable {
+        dbus-system-registration = {
+          requirement = "dbus-system-registration";
+          consumer = "manager";
+          scope = ["system-bus"];
+          parameters = {
+            name = "systemd";
+            activation_directories = [
+              {
+                inherit artifact;
+                path = "share/dbus-1/system-services";
+              }
+            ];
+            policy_directories = [
+              {
+                inherit artifact;
+                path = "share/dbus-1/system.d";
+              }
+            ];
+          };
+        };
+      })
+      (lib.mkIf measurementEnabled imageMeasurementService.requests)
+    ];
   };
 }

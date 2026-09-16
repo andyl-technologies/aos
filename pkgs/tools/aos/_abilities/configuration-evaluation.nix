@@ -281,19 +281,6 @@
   activation = resultOf "aos-activate-lifecycle" "service-resource";
   configurationReady = resultOf "aos-config" "activation-resource";
   multiUserReadiness = resultOf "multi-user" "readiness-resource";
-  runtimeEntriesReady = resultOf "runtime-entry-population" "lifecycle-resource";
-  evaluationReady = resultOf "configuration-evaluation-lifecycle" "service-resource";
-  fallback = oneshot {
-    serviceName = "image-rollout-fallback";
-    managerName = "aos-image-rollout-fallback";
-    description = "Continue counted-boot fallback after qualified rollout failure";
-    command = packageRuntimeCommand ["fallback"];
-    serviceDependencies = dependencies {
-      after = [(resultOf "image-boot-commit-lifecycle" "service-resource")];
-    };
-    enabled = false;
-    searchPath = [(lib.abilities.packageOutput {package = "systemd";})];
-  };
   bootCommit = oneshot {
     serviceName = "image-boot-commit";
     managerName = "aos-image-boot-commit";
@@ -323,32 +310,6 @@
         negated = false;
       }
     ];
-    failurePolicy = {
-      handlers = [(resultOf "image-rollout-fallback-lifecycle" "service-resource")];
-      dispatch = "replace-active-goal";
-    };
-    searchPath = builtins.map lib.abilities.packageOutput [
-      {package = "aos-boot-storage";}
-      {package = "systemd";}
-      {package = "util-linux";}
-    ];
-  };
-  imageMeasurement = oneshot {
-    serviceName = "image-measurement-index";
-    managerName = "aos-image-measurement-index";
-    description = "Import authenticated UKI PCR 11 measurement metadata";
-    command = packageRuntimeCommand (
-      ["measurement-index"]
-      ++ lib.optionals (cfg.pcrPublicKey != null) ["--pcr-public-key" cfg.pcrPublicKey]
-    );
-    serviceDependencies = dependencies {
-      after = [mountEsp (resultOf "local-filesystems" "readiness-resource") runtimeEntriesReady];
-      before = [evaluationReady multiUserReadiness];
-      requires = [mountEsp (resultOf "local-filesystems" "readiness-resource") runtimeEntriesReady];
-      wantedBy = [multiUserReadiness];
-    };
-    enabled = true;
-    searchPath = [(lib.abilities.packageOutput {package = "openssl";})];
   };
   service = serviceManagement.forService {
     inherit serviceTypes consumerInstance;
@@ -543,10 +504,9 @@
     multiUser
     registrySynchronization
     service
-    fallback
     bootCommit
   ];
-  measurementFragments = [runtimeEntryPopulation imageMeasurement];
+  measurementFragments = [runtimeEntryPopulation];
   declaredFragments = coreFragments ++ measurementFragments;
   configuredFragments =
     coreFragments
