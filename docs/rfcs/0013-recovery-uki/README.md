@@ -226,8 +226,8 @@ Separate recovery UKIs provide stronger and simpler invariants:
 - recovery is never counted;
 - each A/B overwrite has an independent retained recovery copy;
 - recovery carries no normal `.pcrsig` by construction;
-- its initrd can omit normal unlock/provisioning units rather than relying only
-  on target ordering; and
+- its initrd can omit the normal unlock services and resolved provisioning
+  ability stage rather than relying only on target ordering; and
 - firmware rejection of a tampered recovery artifact can be tested directly.
 
 The storage cost is accepted. Correctness takes precedence, and the ESP is
