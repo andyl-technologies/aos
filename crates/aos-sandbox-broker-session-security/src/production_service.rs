@@ -135,12 +135,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
     pub fn serve_production_network_request(
         self,
         network: &mut dyn aos_sandbox_network::DormantNetworkBrokerCallsiteV1,
-        catalog: &aos_sandbox_network::NetworkNamespaceCatalogV1,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerServiceErrorV1> {
         let (session, event) = self.receive_production_request(deadline_boottime_nanoseconds)?;
         session
-            .complete_network_request_event(event, network, catalog, deadline_boottime_nanoseconds)
+            .complete_network_request_event(event, network, deadline_boottime_nanoseconds)
             .map_err(Into::into)
     }
 

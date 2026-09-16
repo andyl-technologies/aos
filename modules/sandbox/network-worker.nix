@@ -185,6 +185,27 @@ in {
       };
     };
 
+    systemd.sockets.aos-sandbox-network-observation-worker = {
+      description = "AOS read-only Network postcondition worker socket";
+      wantedBy = ["sockets.target"];
+      requires = ["aos-sandbox-network-worker-ready.service"];
+      after = ["aos-sandbox-network-worker-ready.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-network-observation-worker/control.sock";
+        Accept = true;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0700";
+        RemoveOnStop = true;
+        MaxConnections = 1;
+        SendBuffer = "1M";
+        ReceiveBuffer = "1M";
+      };
+    };
+
     systemd.services.aos-sandbox-network-worker-ready = {
       description = "Prepare the protected sandbox Network bpffs root";
       requires = ["aos-bpffs-mount.service"];
@@ -311,6 +332,100 @@ in {
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 8;
+      };
+    };
+
+    systemd.services."aos-sandbox-network-observation-worker@" = {
+      description = "AOS read-only Network postcondition worker";
+      requires = ["aos-sandbox-network-worker-ready.service"];
+      after = ["aos-sandbox-network-worker-ready.service"];
+      unitConfig.RequiresMountsFor = ["/sys/fs/cgroup" "/sys/fs/bpf"];
+      serviceConfig = {
+        Type = "exec";
+        ExecStart = ''
+          ${cfg.package}/bin/aos-sandbox-network-observation-worker \
+            ${pkgs.iproute2}/sbin/ip \
+            ${pkgs.nftables}/bin/nft \
+            ${cfg.package}/bin/aos-sandbox-network-worker \
+            ${pkgs.aos-sandbox-network-observer}/bin/aos-sandbox-network-observer \
+            ${pkgs.aos-sandbox-network-lease-gate}/lib/bpf/aos-sandbox-network-lease-gate.bpf.o
+        '';
+        StandardInput = "socket";
+        StandardOutput = "socket";
+        StandardError = "journal";
+        RuntimeMaxSec = "15s";
+        TimeoutStopSec = "1s";
+        KillMode = "control-group";
+        KillSignal = "SIGKILL";
+        FinalKillSignal = "SIGKILL";
+        SendSIGKILL = true;
+        Restart = "no";
+        UMask = "0077";
+        User = "root";
+        Group = "root";
+        CapabilityBoundingSet = [
+          "CAP_BPF"
+          "CAP_NET_ADMIN"
+          "CAP_PERFMON"
+          "CAP_SYS_ADMIN"
+        ];
+        AmbientCapabilities = [
+          "CAP_BPF"
+          "CAP_NET_ADMIN"
+          "CAP_PERFMON"
+          "CAP_SYS_ADMIN"
+        ];
+        DevicePolicy = "closed";
+        LimitNOFILE = 128;
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryMax = "256M";
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateNetwork = true;
+        PrivateTmp = true;
+        ProcSubset = "pid";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        ReadOnlyPaths = ["/nix/store" "/sys/fs/bpf"];
+        InaccessiblePaths = [
+          "-${cfg.authorityDirectory}"
+          "-/etc/credstore"
+          "-/etc/credstore.encrypted"
+          "-/run/credentials"
+          "-/run/credstore"
+          "-/run/credstore.encrypted"
+          "-/run/systemd/credential.secret"
+          "-/var/lib/aos/sandbox-network"
+          "-/var/lib/aos-sandbox-network-worker"
+        ];
+        RestrictAddressFamilies = ["AF_UNIX" "AF_NETLINK"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        Slice = "aos-control.slice";
+        SystemCallArchitectures = ["native"];
+        SystemCallFilter = [
+          "@system-service"
+          "bpf"
+          "setns"
+          "~@mount"
+          "~@reboot"
+          "~@swap"
+          "~@module"
+          "~@raw-io"
+          "~umount2"
+          "~unshare"
+        ];
+        SystemCallErrorNumber = "EPERM";
+        TasksMax = 16;
       };
     };
 

@@ -181,7 +181,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self,
         event: ProductionBrokerRequestEventV1,
         network: &mut dyn aos_sandbox_network::DormantNetworkBrokerCallsiteV1,
-        catalog: &aos_sandbox_network::NetworkNamespaceCatalogV1,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
         match event {
@@ -189,7 +188,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .dispatch_network_request_to_completion(
                     request,
                     network,
-                    catalog,
                     deadline_boottime_nanoseconds,
                 ),
             ProductionBrokerRequestEventV1::InFlightReplay(replay) => {
@@ -199,7 +197,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 self.dispatch_network_request_to_completion(
                     request,
                     network,
-                    catalog,
                     deadline_boottime_nanoseconds,
                 )
             }
@@ -380,10 +377,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
         mut self,
         request: DormantReceivedBrokerRequestV1,
         network: &mut dyn aos_sandbox_network::DormantNetworkBrokerCallsiteV1,
-        catalog: &aos_sandbox_network::NetworkNamespaceCatalogV1,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
-        let dispatched = self.dispatch_network_request_and_commit(request, network, catalog);
+        let dispatched = self.dispatch_network_request_and_commit(request, network);
         self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
     }
 
@@ -639,7 +635,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
         &mut self,
         request: DormantReceivedBrokerRequestV1,
         network: &mut dyn aos_sandbox_network::DormantNetworkBrokerCallsiteV1,
-        catalog: &aos_sandbox_network::NetworkNamespaceCatalogV1,
     ) -> Result<
         ProtectedBrokerOutcomeCommitResultV1,
         DormantBrokerExecutionFailureV1<ProductionNetworkBrokerDispatchErrorV1>,
@@ -657,7 +652,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             }
             BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
             | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => self
-                .execute_network_inventory_and_commit(request, catalog)
+                .execute_network_inventory_and_commit(request, network.namespace_catalog())
                 .map_err(|failure| map_execution_failure(failure, Into::into)),
             _ => Err(before_effect_currentness(request)),
         }

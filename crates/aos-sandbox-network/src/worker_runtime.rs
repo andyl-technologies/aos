@@ -745,7 +745,7 @@ fn u32_length(value: usize) -> Result<u32, NetworkWorkerRuntimeError> {
         .map_err(|_| NetworkWorkerRuntimeError::Protocol("Network worker frame field is too large"))
 }
 
-fn send_record_before(
+pub(crate) fn send_record_before(
     socket: &mut DescriptorSubjectSocket,
     payload: &[u8],
     deadline: u64,
@@ -753,7 +753,7 @@ fn send_record_before(
     send_record_inner(socket, payload, &[], deadline)
 }
 
-fn send_record_with_descriptors_before(
+pub(crate) fn send_record_with_descriptors_before(
     socket: &mut DescriptorSubjectSocket,
     payload: &[u8],
     descriptors: &[BorrowedFd<'_>],
@@ -786,7 +786,7 @@ fn send_record_inner(
     }
 }
 
-fn receive_record_before(
+pub(crate) fn receive_record_before(
     socket: &mut DescriptorSubjectSocket,
     maximum: usize,
     descriptors: usize,
@@ -808,7 +808,7 @@ fn receive_record_before(
     }
 }
 
-fn quiesce_worker(
+pub(crate) fn quiesce_worker(
     subject: &KernelAuthorizedRecordSubject,
     cgroup: &RetainedCgroupAnchor,
     population: &CgroupPopulationMonitor,
@@ -825,7 +825,7 @@ fn quiesce_worker(
     wait_for_quiescence(subject, population, QUIESCENCE_TIMEOUT)
 }
 
-fn wait_for_quiescence(
+pub(crate) fn wait_for_quiescence(
     subject: &KernelAuthorizedRecordSubject,
     population: &CgroupPopulationMonitor,
     timeout: Duration,
@@ -882,7 +882,7 @@ fn wait_before(
     }
 }
 
-fn deadline_after(duration: Duration) -> Result<u64, NetworkWorkerRuntimeError> {
+pub(crate) fn deadline_after(duration: Duration) -> Result<u64, NetworkWorkerRuntimeError> {
     boottime_now_nanoseconds()?
         .checked_add(duration.as_nanos() as u64)
         .ok_or(NetworkWorkerRuntimeError::Protocol(
@@ -930,7 +930,7 @@ fn protected_clock() -> Result<RawPairedClockSample, NetworkAdmissionError> {
     .map_err(|_| NetworkAdmissionError::FenceRejected)
 }
 
-fn current_cgroup() -> Result<String, NetworkWorkerRuntimeError> {
+pub(crate) fn current_cgroup() -> Result<String, NetworkWorkerRuntimeError> {
     let mut bytes = Vec::new();
     File::open("/proc/self/cgroup")?
         .take((MAXIMUM_CGROUP_BYTES + 1) as u64)
@@ -950,7 +950,7 @@ fn current_cgroup() -> Result<String, NetworkWorkerRuntimeError> {
         ))
 }
 
-fn open_cgroup_root() -> Result<CgroupV2Root, NetworkWorkerRuntimeError> {
+pub(crate) fn open_cgroup_root() -> Result<CgroupV2Root, NetworkWorkerRuntimeError> {
     let descriptor = rustix::fs::open(
         CGROUP_ROOT,
         rustix::fs::OFlags::PATH
@@ -962,7 +962,7 @@ fn open_cgroup_root() -> Result<CgroupV2Root, NetworkWorkerRuntimeError> {
     CgroupV2Root::from_owned(descriptor).map_err(Into::into)
 }
 
-fn normalized_absolute_path(path: &Path) -> bool {
+pub(crate) fn normalized_absolute_path(path: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt as _;
 
     let bytes = path.as_os_str().as_bytes();

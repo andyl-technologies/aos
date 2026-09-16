@@ -355,7 +355,7 @@ pub fn observe_stable_recovered_network_kernel(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn observe_stable_preparation_network_kernel(
+pub(crate) fn observe_stable_preparation_network_kernel(
     readers: NetworkKernelObservationReaders<'_>,
     plan: &NetworkKernelPlanV1,
     target_namespace: &NamespaceFd,

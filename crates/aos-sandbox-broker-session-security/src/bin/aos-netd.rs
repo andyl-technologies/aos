@@ -99,9 +99,9 @@ fn run() -> Result<(), NetworkDaemonErrorV1> {
             Err(error) => return Err(error.into()),
         };
         let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
-        let (mut callsite, catalog) = network.callsite_and_catalog();
+        let mut callsite = network.callsite();
         if let Err(error) =
-            session.serve_production_network_request(&mut callsite, catalog, request_deadline)
+            session.serve_production_network_request(&mut callsite, request_deadline)
         {
             // Request completion consumes session custody even on failure.
             // Reconnect and exact replay are the only continuation mechanism.

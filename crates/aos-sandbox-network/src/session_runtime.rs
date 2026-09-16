@@ -6,18 +6,25 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::path::PathBuf;
 
 use aos_sandbox_linux::boot::KernelBootId;
-use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity};
+use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 
+use crate::worker_runtime::open_cgroup_root;
 use crate::{
-    ActivatedNetworkDescriptors, DormantResolvedNetworkBrokerCompositionV1, DurableNetworkPhase,
-    NetworkAuthorityConfigError, NetworkAuthorityV1, NetworkLifecycleAdmissionCoordinator,
-    NetworkLifecycleStateError, NetworkLifecycleStateStore, NetworkNamespaceCatalogError,
-    NetworkNamespaceCatalogV1, NetworkNamespaceCustodyRequirementV1, NetworkNamespaceStoreError,
-    NetworkPolicyCatalogV1, NetworkPreparationCatalogError, NetworkPreparationCatalogV1,
-    NetworkStateError, NetworkStateStore, SystemdNetworkNamespaceStore, validate_activation_replay,
+    ActivatedNetworkDescriptors, DurableNetworkPhase, NetworkAuthorityConfigError,
+    NetworkAuthorityV1, NetworkLifecycleAdmissionCoordinator, NetworkLifecycleStateError,
+    NetworkLifecycleStateStore, NetworkNamespaceCatalogError, NetworkNamespaceCatalogV1,
+    NetworkNamespaceCustodyRequirementV1, NetworkNamespaceStoreError,
+    NetworkObservationWorkerError, NetworkPolicyCatalogV1, NetworkPreparationCatalogError,
+    NetworkPreparationCatalogV1, NetworkStateError, NetworkStateStore, NetworkWorkerRuntimeError,
+    ProductionNetworkBrokerCompositionV1, SystemdNetworkNamespaceStore,
+    SystemdNetworkObservationExecutor, SystemdNetworkPrepareExecutor, validate_activation_replay,
 };
+
+const PREPARATION_WORKER_SOCKET: &str = "/run/aos/sandbox-network-worker/control.sock";
+const OBSERVATION_WORKER_SOCKET: &str = "/run/aos/sandbox-network-observation-worker/control.sock";
 
 /// Reports failure while opening the protected Network session runtime.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +50,18 @@ pub enum NetworkBrokerSessionRuntimeErrorV1 {
     /// The current Linux boot identity could not be read.
     #[error("network boot identity is unavailable")]
     BootIdentity,
+    /// The preparation effect executor could not be constructed.
+    #[error("network preparation worker failed: {0}")]
+    PreparationWorker(#[from] NetworkWorkerRuntimeError),
+    /// The postcondition observer could not be constructed.
+    #[error("network observation worker failed: {0}")]
+    ObservationWorker(#[from] NetworkObservationWorkerError),
+    /// A retained namespace descriptor could not be duplicated safely.
+    #[error("network namespace descriptor duplication failed: {0}")]
+    Descriptor(#[from] std::io::Error),
+    /// A retained namespace descriptor failed kernel revalidation.
+    #[error("network namespace descriptor validation failed: {0}")]
+    Linux(#[from] aos_sandbox_linux::Error),
 }
 
 /// Owns protected state needed to serve authenticated Network requests.
@@ -51,8 +70,9 @@ pub struct NetworkBrokerSessionRuntimeV1 {
     preparations: NetworkPreparationCatalogV1,
     namespaces: NetworkNamespaceCatalogV1,
     _activation: ActivatedNetworkDescriptors,
-    _namespace_store: SystemdNetworkNamespaceStore,
-    _host_namespace: NamespaceFd,
+    namespace_store: SystemdNetworkNamespaceStore,
+    prepare_executor: SystemdNetworkPrepareExecutor,
+    observation_executor: SystemdNetworkObservationExecutor,
 }
 
 impl NetworkBrokerSessionRuntimeV1 {
@@ -88,6 +108,16 @@ impl NetworkBrokerSessionRuntimeV1 {
         let requirements = restart_custody_requirements(&creation_state, &namespaces)?;
         validate_activation_replay(&activation, &requirements)?;
         let namespace_store = SystemdNetworkNamespaceStore::from_environment(&activation)?;
+        let prepare_executor = SystemdNetworkPrepareExecutor::new(
+            PathBuf::from(PREPARATION_WORKER_SOCKET),
+            open_cgroup_root()?,
+            duplicate_network_namespace(&host_namespace)?,
+        )?;
+        let observation_executor = SystemdNetworkObservationExecutor::new(
+            PathBuf::from(OBSERVATION_WORKER_SOCKET),
+            open_cgroup_root()?,
+            host_namespace,
+        )?;
         let coordinator =
             NetworkLifecycleAdmissionCoordinator::new(authority, creation_state, lifecycle_state);
 
@@ -96,8 +126,9 @@ impl NetworkBrokerSessionRuntimeV1 {
             preparations,
             namespaces,
             _activation: activation,
-            _namespace_store: namespace_store,
-            _host_namespace: host_namespace,
+            namespace_store,
+            prepare_executor,
+            observation_executor,
         })
     }
 
@@ -106,25 +137,32 @@ impl NetworkBrokerSessionRuntimeV1 {
     /// The returned objects share one lifetime so the service cannot retain a
     /// callsite after its namespace inventory or protected journals are closed.
     #[must_use]
-    pub fn callsite_and_catalog(
-        &mut self,
-    ) -> (
-        DormantResolvedNetworkBrokerCompositionV1<'_>,
-        &NetworkNamespaceCatalogV1,
-    ) {
+    pub fn callsite(&mut self) -> ProductionNetworkBrokerCompositionV1<'_> {
         let Self {
             coordinator,
             preparations,
             namespaces,
             _activation: _,
-            _namespace_store: _,
-            _host_namespace: _,
+            namespace_store,
+            prepare_executor,
+            observation_executor,
         } = self;
-        let callsite =
-            DormantResolvedNetworkBrokerCompositionV1::new(coordinator, preparations, namespaces);
-
-        (callsite, namespaces)
+        ProductionNetworkBrokerCompositionV1::new(
+            coordinator,
+            preparations,
+            namespaces,
+            namespace_store,
+            prepare_executor,
+            observation_executor,
+        )
     }
+}
+
+fn duplicate_network_namespace(
+    namespace: &NamespaceFd,
+) -> Result<NamespaceFd, NetworkBrokerSessionRuntimeErrorV1> {
+    let descriptor = namespace.as_fd().try_clone_to_owned()?;
+    NamespaceFd::from_owned(descriptor, NamespaceKind::Network).map_err(Into::into)
 }
 
 fn restart_custody_requirements(

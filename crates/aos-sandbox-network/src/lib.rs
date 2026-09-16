@@ -65,6 +65,7 @@ pub use namespace_inspector::{
 pub mod namespace_observer;
 pub mod namespace_store;
 pub mod nftables_reader;
+mod observation_worker_runtime;
 pub mod policy;
 pub mod preparation_catalog;
 pub mod preparation_runtime;
@@ -103,6 +104,7 @@ pub use dormant_broker_session::{
     DormantNetworkBrokerAdmissionV1, DormantNetworkBrokerCallErrorV1,
     DormantNetworkBrokerCallsiteV1, DormantNetworkBrokerCompositionV1,
     DormantNetworkBrokerObservationV1, DormantResolvedNetworkBrokerCompositionV1,
+    ProductionNetworkBrokerCompositionV1,
 };
 pub use kernel_observation::{
     ExpectedAddressPairV1, ExpectedRouteV1, ExpectedVethV1, NetworkKernelExpectationV1,
@@ -162,6 +164,11 @@ pub use namespace_store::{
     validate_activation_replay,
 };
 pub use nftables_reader::{FixedNftablesObservationReader, decode_nftables_observation};
+pub use observation_worker_runtime::{
+    NetworkObservationWorkerConfiguration, NetworkObservationWorkerError,
+    PreparedNetworkObservationV1, SystemdNetworkObservationExecutor,
+    run_inherited_network_observation_worker,
+};
 pub use policy::{
     NetworkEndpointPolicyV1, NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1,
     NetworkPolicyProgramError, NetworkPolicyProgramV1, NetworkPortRangeV1,
@@ -173,9 +180,10 @@ pub use preparation_catalog::{
     NetworkPreparationReservationV1,
 };
 pub use preparation_runtime::{
-    FinalizedNetworkPreparationV1, NetworkPreparationFinalizationInput,
-    NetworkPreparationRecoveryInput, NetworkPreparationRuntimeError,
-    begin_network_preparation_once, finalize_executed_network_preparation,
+    FinalizedNetworkPreparationCommitV1, FinalizedNetworkPreparationV1,
+    NetworkPreparationFinalizationInput, NetworkPreparationRecoveryInput,
+    NetworkPreparationRuntimeError, begin_network_preparation_once,
+    finalize_executed_network_preparation, finalize_observation_worker_preparation,
     finalize_recovered_ambiguous_network_preparation, publish_committed_network_preparation,
 };
 pub use protected_policy::{NETWORK_POLICY_CATALOG_FILE_NAME, ProtectedNetworkPolicyErrorV1};

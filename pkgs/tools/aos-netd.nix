@@ -45,6 +45,7 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-lifecycle-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-namespace-inspector"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-worker"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-observation-worker"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network"
     ];
     buildDeps = [buildProtobuf];
@@ -60,6 +61,7 @@ in
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-lifecycle-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-namespace-inspector"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-worker"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-network --bin aos-sandbox-network-observation-worker"
     ];
     cargoTestFlags = "-p aos-sandbox-network";
     cargoNextest = true;
@@ -72,6 +74,7 @@ in
       test -x "$out/bin/aos-sandbox-network-lifecycle-worker"
       test -x "$out/bin/aos-sandbox-network-namespace-inspector"
       test -x "$out/bin/aos-sandbox-network-worker"
+      test -x "$out/bin/aos-sandbox-network-observation-worker"
     '';
 
     passthru = {

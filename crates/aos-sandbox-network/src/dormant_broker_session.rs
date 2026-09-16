@@ -15,9 +15,13 @@ use sha2::{Digest as _, Sha256};
 
 use crate::authorization::decode_assignment;
 use crate::{
-    AuthenticatedNetworkPreparationV1, NetworkAdmissionOutcome, NetworkBrokerError,
-    NetworkKernelPlanV1, NetworkLifecycleAdmissionCoordinator, NetworkLifecycleAdmissionOutcome,
-    NetworkNamespaceCatalogV1, NetworkPreparationCatalogV1,
+    AuthenticatedNetworkPreparationV1, NetworkAdmissionError, NetworkAdmissionOutcome,
+    NetworkBrokerError, NetworkKernelPlanV1, NetworkLifecycleAdmissionCoordinator,
+    NetworkLifecycleAdmissionOutcome, NetworkNamespaceCatalogV1, NetworkObservationWorkerError,
+    NetworkPreparationCatalogV1, NetworkPreparationFinalizationInput,
+    NetworkPreparationRuntimeError, NetworkPrepareExecutionOutcomeV1, NetworkWorkerRuntimeError,
+    SystemdNetworkNamespaceStore, SystemdNetworkObservationExecutor, SystemdNetworkPrepareExecutor,
+    begin_network_preparation_once, finalize_observation_worker_preparation,
 };
 
 mod sealed {
@@ -33,6 +37,15 @@ pub enum DormantNetworkBrokerCallErrorV1 {
     /// The existing Network admission path rejected the exact request.
     #[error("authenticated Network Apply failed: {0}")]
     Broker(#[from] NetworkBrokerError),
+    /// Preparation dispatch or durable finalization failed.
+    #[error("authenticated Network preparation failed: {0}")]
+    Preparation(#[from] NetworkPreparationRuntimeError),
+    /// The privileged preparation worker failed or could not be quiesced.
+    #[error("authenticated Network preparation worker failed: {0}")]
+    Worker(#[from] NetworkWorkerRuntimeError),
+    /// The separate read-only observation worker failed or could not be quiesced.
+    #[error("authenticated Network observation worker failed: {0}")]
+    ObservationWorker(#[from] NetworkObservationWorkerError),
 }
 
 /// Classifies the real Network coordinator entered by the dormant callsite.
@@ -49,6 +62,7 @@ pub struct DormantNetworkBrokerObservationV1 {
     request_id: [u8; 16],
     admission: DormantNetworkBrokerAdmissionV1,
     commitment: ObjectDigest,
+    response_body: Option<Vec<u8>>,
 }
 
 impl DormantNetworkBrokerObservationV1 {
@@ -59,6 +73,9 @@ impl DormantNetworkBrokerObservationV1 {
     /// Returns an error while Network admission has not produced a committed
     /// physical namespace observation; pending admission never becomes success.
     pub fn response(&self) -> Result<Vec<u8>, DormantNetworkBrokerCallErrorV1> {
+        if let Some(response) = &self.response_body {
+            return Ok(response.clone());
+        }
         let DormantNetworkBrokerAdmissionV1::Preparation(NetworkAdmissionOutcome::Replay(
             committed,
         )) = self.admission
@@ -95,6 +112,9 @@ impl DormantNetworkBrokerObservationV1 {
 /// Defines the closed Network call surface accepted by session security.
 #[doc(hidden)]
 pub trait DormantNetworkBrokerCallsiteV1: sealed::Sealed {
+    /// Borrows the authoritative inventory owned by this exact callsite.
+    fn namespace_catalog(&self) -> &NetworkNamespaceCatalogV1;
+
     /// Admits one exact authenticated Network Apply operation.
     ///
     /// # Errors
@@ -145,6 +165,10 @@ impl<'a> DormantNetworkBrokerCompositionV1<'a> {
 impl sealed::Sealed for DormantNetworkBrokerCompositionV1<'_> {}
 
 impl DormantNetworkBrokerCallsiteV1 for DormantNetworkBrokerCompositionV1<'_> {
+    fn namespace_catalog(&self) -> &NetworkNamespaceCatalogV1 {
+        self.namespaces
+    }
+
     fn consume_authenticated_apply(
         &mut self,
         request_body: &[u8],
@@ -197,6 +221,153 @@ pub struct DormantResolvedNetworkBrokerCompositionV1<'a> {
     last_boottime_nanoseconds: Option<u64>,
 }
 
+/// Executes authenticated Network preparation through separated systemd workers.
+pub struct ProductionNetworkBrokerCompositionV1<'a> {
+    coordinator: &'a mut NetworkLifecycleAdmissionCoordinator,
+    preparations: &'a NetworkPreparationCatalogV1,
+    namespaces: &'a mut NetworkNamespaceCatalogV1,
+    namespace_store: &'a SystemdNetworkNamespaceStore,
+    prepare_executor: &'a mut SystemdNetworkPrepareExecutor,
+    observation_executor: &'a mut SystemdNetworkObservationExecutor,
+    last_boottime_nanoseconds: Option<u64>,
+}
+
+impl<'a> ProductionNetworkBrokerCompositionV1<'a> {
+    /// Binds every durable catalog and fixed worker owner for one request cycle.
+    #[must_use]
+    pub const fn new(
+        coordinator: &'a mut NetworkLifecycleAdmissionCoordinator,
+        preparations: &'a NetworkPreparationCatalogV1,
+        namespaces: &'a mut NetworkNamespaceCatalogV1,
+        namespace_store: &'a SystemdNetworkNamespaceStore,
+        prepare_executor: &'a mut SystemdNetworkPrepareExecutor,
+        observation_executor: &'a mut SystemdNetworkObservationExecutor,
+    ) -> Self {
+        Self {
+            coordinator,
+            preparations,
+            namespaces,
+            namespace_store,
+            prepare_executor,
+            observation_executor,
+            last_boottime_nanoseconds: None,
+        }
+    }
+}
+
+impl sealed::Sealed for ProductionNetworkBrokerCompositionV1<'_> {}
+
+impl DormantNetworkBrokerCallsiteV1 for ProductionNetworkBrokerCompositionV1<'_> {
+    fn namespace_catalog(&self) -> &NetworkNamespaceCatalogV1 {
+        self.namespaces
+    }
+
+    fn consume_authenticated_apply(
+        &mut self,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        request_body_digest: ObjectDigest,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+    ) -> Result<DormantNetworkBrokerObservationV1, DormantNetworkBrokerCallErrorV1> {
+        let (semantics, current_clock) = validate_authenticated_request(
+            request_body,
+            request_id,
+            request_body_digest,
+            peer,
+            policy,
+            protocol_version,
+            protected_boot_id,
+            &mut self.last_boottime_nanoseconds,
+        )?;
+        if !matches!(semantics.operation(), NetworkOperation::Prepare { .. }) {
+            return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+        }
+
+        let assignment = decode_assignment(request_body)
+            .map_err(|_| DormantNetworkBrokerCallErrorV1::StaleKernel)?;
+        let (preparation, kernel_plan) = self.coordinator.resolve_session_request_preparation(
+            self.preparations,
+            assignment,
+            None,
+        )?;
+        let admission = self.coordinator.admit_apply_intent(
+            request_body,
+            artifacts,
+            &preparation,
+            protocol_version,
+            peer,
+            policy,
+            &current_clock,
+        )?;
+        let result = match admission {
+            NetworkAdmissionOutcome::Replay(committed) => committed,
+            NetworkAdmissionOutcome::Prepared { effect_digest } => {
+                let mut trusted_clock = || {
+                    protected_paired_clock_sample()
+                        .map_err(|_| NetworkAdmissionError::FenceRejected)
+                };
+                let execution = begin_network_preparation_once(
+                    self.coordinator,
+                    request_id,
+                    effect_digest,
+                    request_body,
+                    kernel_plan.clone(),
+                    &mut trusted_clock,
+                )?;
+                let NetworkPrepareExecutionOutcomeV1::Dispatch(dispatch) = execution else {
+                    return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+                };
+                let worker_output = self.prepare_executor.execute_once(
+                    &dispatch,
+                    self.coordinator,
+                    self.namespace_store,
+                )?;
+                let proof = self
+                    .observation_executor
+                    .observe_once(&worker_output, &kernel_plan)?;
+                let input = NetworkPreparationFinalizationInput::new(
+                    request_body,
+                    preparation.resolution(),
+                    &kernel_plan,
+                    &worker_output,
+                );
+                finalize_observation_worker_preparation(
+                    self.coordinator,
+                    self.preparations,
+                    self.namespaces,
+                    input,
+                    proof,
+                )?
+                .result()
+            }
+            NetworkAdmissionOutcome::ObserveOnly { .. }
+            | NetworkAdmissionOutcome::Aborted { .. } => {
+                return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+            }
+        };
+        let admission =
+            DormantNetworkBrokerAdmissionV1::Preparation(NetworkAdmissionOutcome::Replay(result));
+        let response_body = NetworkResult {
+            network_handle: result.network_handle().to_vec(),
+            state: NetworkState::NETWORK_STATE_DEFAULT_DROP.into(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let commitment = network_observation_commitment(request_id, request_body_digest, admission);
+
+        Ok(DormantNetworkBrokerObservationV1 {
+            request_id,
+            admission,
+            commitment,
+            response_body: Some(response_body),
+        })
+    }
+}
+
 impl<'a> DormantResolvedNetworkBrokerCompositionV1<'a> {
     /// Constructs the multi-assignment Network broker-session callsite.
     #[must_use]
@@ -217,6 +388,10 @@ impl<'a> DormantResolvedNetworkBrokerCompositionV1<'a> {
 impl sealed::Sealed for DormantResolvedNetworkBrokerCompositionV1<'_> {}
 
 impl DormantNetworkBrokerCallsiteV1 for DormantResolvedNetworkBrokerCompositionV1<'_> {
+    fn namespace_catalog(&self) -> &NetworkNamespaceCatalogV1 {
+        self.namespaces
+    }
+
     fn consume_authenticated_apply(
         &mut self,
         request_body: &[u8],
@@ -359,6 +534,7 @@ fn admit_authenticated_request(
         request_id,
         admission,
         commitment,
+        response_body: None,
     })
 }
 

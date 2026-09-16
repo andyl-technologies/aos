@@ -15,6 +15,7 @@ use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
 use aos_sandbox_linux::pidfd::{NamespaceFd, SingleThreadedProcess};
 use sha2::{Digest as _, Sha256};
 
+use crate::PreparedNetworkObservationV1;
 use crate::authorization::NetworkAdmissionError;
 use crate::broker::{
     NetworkBrokerError, NetworkLifecycleAdmissionCoordinator, NetworkPrepareExecutionOutcomeV1,
@@ -50,6 +51,9 @@ pub enum NetworkPreparationRuntimeError {
     /// Fixed-pin validation or namespace catalog publication failed.
     #[error(transparent)]
     NamespaceCatalog(#[from] NetworkNamespaceCatalogError),
+    /// The observation worker proof did not match the retained preparation.
+    #[error("Network observation worker proof did not match durable preparation custody")]
+    ObservationProof,
 }
 
 /// Carries the exact inputs needed to finalize one quiescent preparation worker.
@@ -131,6 +135,34 @@ pub struct FinalizedNetworkPreparationV1 {
     observation_digest: ObjectDigest,
     result: CommittedNetworkResultV1,
     publication: NetworkNamespaceCatalogOutcomeV1,
+}
+
+/// Reports durable commit and publication from a separated observation worker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinalizedNetworkPreparationCommitV1 {
+    observation_digest: ObjectDigest,
+    result: CommittedNetworkResultV1,
+    publication: NetworkNamespaceCatalogOutcomeV1,
+}
+
+impl FinalizedNetworkPreparationCommitV1 {
+    /// Returns the stable complete-observation commitment.
+    #[must_use]
+    pub const fn observation_digest(self) -> ObjectDigest {
+        self.observation_digest
+    }
+
+    /// Returns the exact durable creation result.
+    #[must_use]
+    pub const fn result(self) -> CommittedNetworkResultV1 {
+        self.result
+    }
+
+    /// Returns whether catalog publication was new or an exact replay.
+    #[must_use]
+    pub const fn publication(self) -> NetworkNamespaceCatalogOutcomeV1 {
+        self.publication
+    }
 }
 
 impl FinalizedNetworkPreparationV1 {
@@ -238,6 +270,61 @@ pub fn finalize_executed_network_preparation(
             initial_host_namespace,
             observer,
         )
+    })
+}
+
+/// Commits and publishes one capability-separated observation-worker proof.
+///
+/// The proof is constructible only after the fixed observer authenticates the
+/// broker, retypes both namespace descriptors, validates the canonical plan,
+/// obtains two equal complete snapshots, and wholly exits its systemd cgroup.
+/// This function rebinds every durable and physical field before committing.
+///
+/// # Errors
+///
+/// Returns [`NetworkPreparationRuntimeError::ObservationProof`] when any proof
+/// field differs from the quiescent effect-worker output or canonical plan, and
+/// otherwise propagates durable commit or fixed-pin publication failures.
+pub fn finalize_observation_worker_preparation(
+    coordinator: &mut NetworkLifecycleAdmissionCoordinator,
+    preparations: &NetworkPreparationCatalogV1,
+    namespaces: &mut NetworkNamespaceCatalogV1,
+    input: NetworkPreparationFinalizationInput<'_>,
+    proof: PreparedNetworkObservationV1,
+) -> Result<FinalizedNetworkPreparationCommitV1, NetworkPreparationRuntimeError> {
+    let namespace_identity = input.worker_output.namespace().identity();
+    if proof.request_id() != input.worker_output.request_id()
+        || proof.effect_digest() != input.worker_output.effect_digest()
+        || proof.kernel_plan_digest() != input.worker_output.kernel_plan_digest()
+        || proof.kernel_plan_digest() != input.kernel_plan.digest()
+        || proof.kernel_boot_id() != input.worker_output.kernel_boot_id()
+        || proof.namespace() != namespace_identity
+    {
+        return Err(NetworkPreparationRuntimeError::ObservationProof);
+    }
+
+    let verified = VerifiedNetworkResultV1::verify_preparation(
+        proof.request_id(),
+        ObjectDigest::from_bytes(Sha256::digest(input.request_body).into()),
+        input.resolution,
+        proof.kernel_boot_id(),
+        namespace_identity.device,
+        namespace_identity.inode,
+        proof.kernel_plan_digest(),
+        proof.observation_digest(),
+    )?;
+    let result = coordinator.commit_verified_preparation(
+        proof.request_id(),
+        proof.effect_digest(),
+        verified,
+    )?;
+    let publication =
+        publish_committed_network_preparation(coordinator, preparations, namespaces, result)?;
+
+    Ok(FinalizedNetworkPreparationCommitV1 {
+        observation_digest: proof.observation_digest(),
+        result,
+        publication,
     })
 }
 
