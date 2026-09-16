@@ -59,4 +59,4 @@ in
   assert serviceTerminal.qualification.adapter == "service-management";
   assert serviceTerminal.qualification.observationKind == "systemd";
   assert serviceTerminal.qualification.scope == "host-manager";
-  assert serviceTerminal.qualification.observer.entryPoint == "bin/aos-systemd-service-effects-observer"; true
+  assert serviceTerminal.qualification.observer.entryPoint == "bin/aos-systemd-provider"; true

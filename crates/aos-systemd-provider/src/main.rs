@@ -20,14 +20,14 @@ mod static_assemble;
 mod static_render;
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, AccessMode, LocalKey, MethodSemantics, ResourceReference,
+    ABILITY_LIMITS_V1, AbilityValue, AccessMode, LocalKey, MethodReference, MethodSemantics,
+    ResourceReference,
 };
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
@@ -63,53 +63,55 @@ enum HandlerRole {
 }
 
 impl HandlerRole {
-    fn from_entry_point(argument_zero: &OsStr) -> Result<Self> {
-        let name = Path::new(argument_zero)
-            .file_name()
-            .and_then(OsStr::to_str)
-            .ok_or_else(|| anyhow::anyhow!("handler entry point is not valid UTF-8"))?;
+    // The runtime authenticates the complete InterfaceKey against the selected
+    // package contract before launching this executable. This dispatch maps
+    // that checked interface to package-internal implementation code.
+    fn from_method(method: &MethodReference) -> Result<Self> {
+        if method.interface.abi.get() != 1 {
+            bail!("method interface selects an unsupported systemd handler ABI");
+        }
 
-        match name {
-            "aos-systemd-activation-group-effects" => Ok(Self::NativeResource(
+        match method.interface.name.as_str() {
+            "aos.systemd.activation-group-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::ActivationGroup,
             )),
-            "aos-systemd-device-presence" => Ok(Self::DevicePresence),
-            "aos-systemd-group-effects" => Ok(Self::Identity(identity::IdentityRole::Group)),
-            "aos-systemd-group-membership-effects" => {
+            "aos.device.presence" => Ok(Self::DevicePresence),
+            "aos.systemd.group-effects" => Ok(Self::Identity(identity::IdentityRole::Group)),
+            "aos.systemd.group-membership-effects" => {
                 Ok(Self::Identity(identity::IdentityRole::GroupMembership))
             }
-            "aos-systemd-manager-watchdog-effects" => Ok(Self::ManagerWatchdog),
-            "aos-systemd-mount-effects" => Ok(Self::NativeResource(
+            "aos.systemd.manager-watchdog-effects" => Ok(Self::ManagerWatchdog),
+            "aos.systemd.mount-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::Mount,
             )),
-            "aos-systemd-packaged-unit-effects" => Ok(Self::PackagedUnit),
-            "aos-systemd-principal-effects" => {
+            "aos.systemd.packaged-unit-effects" => Ok(Self::PackagedUnit),
+            "aos.systemd.principal-effects" => {
                 Ok(Self::Identity(identity::IdentityRole::Principal))
             }
-            "aos-systemd-scheduled-activation-effects" => Ok(Self::NativeResource(
+            "aos.systemd.scheduled-activation-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::ScheduledActivation,
             )),
-            "aos-systemd-service-effects" => Ok(Self::Service),
-            "aos-systemd-swap-effects" => Ok(Self::NativeResource(
+            "aos.systemd.service-effects" => Ok(Self::Service),
+            "aos.systemd.swap-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::Swap,
             )),
-            "aos-systemd-network-configuration-effects" => Ok(Self::NetworkConfiguration),
-            "aos-systemd-network-readiness-effects" => {
+            "aos.network.configuration-effects" => Ok(Self::NetworkConfiguration),
+            "aos.systemd.network-readiness-effects" => {
                 Ok(Self::Readiness(readiness::ReadinessRole::Network))
             }
-            "aos-systemd-filesystem-readiness-effects" => {
+            "aos.systemd.filesystem-readiness-effects" => {
                 Ok(Self::Readiness(readiness::ReadinessRole::Filesystem))
             }
-            "aos-systemd-activation-milestone-effects" => Ok(Self::Readiness(
+            "aos.systemd.activation-milestone-effects" => Ok(Self::Readiness(
                 readiness::ReadinessRole::ActivationMilestone,
             )),
-            "aos-systemd-runtime-entry-population-effects" => Ok(Self::Readiness(
+            "aos.systemd.runtime-entry-population-effects" => Ok(Self::Readiness(
                 readiness::ReadinessRole::RuntimeEntryPopulation,
             )),
-            "aos-systemd-system-milestone-readiness-effects" => {
+            "aos.systemd.system-milestone-readiness-effects" => {
                 Ok(Self::Readiness(readiness::ReadinessRole::SystemMilestone))
             }
-            _ => bail!("entry point does not select a checked systemd handler role"),
+            _ => bail!("method interface does not select a checked systemd handler role"),
         }
     }
 }
@@ -124,10 +126,7 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let arguments = std::env::args_os().collect::<Vec<_>>();
-    if arguments.len() == 1
-        && Path::new(&arguments[0]).file_name()
-            == Some(OsStr::new("aos-systemd-service-effects-observer"))
-    {
+    if arguments.len() == 1 {
         return qualification_observer::run().await;
     }
     if arguments.len() == 2 && arguments[1] == "render" {
@@ -139,11 +138,11 @@ async fn run() -> Result<()> {
     if arguments.len() != 3 || arguments[1] != HANDLER_ABI_ARGUMENT {
         bail!("expected --aos-primitive-v1 and one invocation purpose");
     }
-    let role = HandlerRole::from_entry_point(&arguments[0])?;
     let bytes = read_input()?;
     match arguments[2].to_str() {
         Some("admit") => {
             let request: AdmissionRequest = decode_canonical(&bytes)?;
+            let role = HandlerRole::from_method(&request.method)?;
             let timeout = deadline(request.control.attempt_remaining_millis);
             let result = tokio::time::timeout(timeout, admit(role, request))
                 .await
@@ -152,6 +151,7 @@ async fn run() -> Result<()> {
         }
         Some(purpose) => {
             let request: Invocation = decode_canonical(&bytes)?;
+            let role = HandlerRole::from_method(&request.method)?;
             if serde_json::to_value(request.purpose)? != serde_json::Value::String(purpose.into()) {
                 bail!("argv purpose does not match the invocation envelope");
             }
@@ -753,8 +753,6 @@ fn deadline(milliseconds: u64) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
-
     use aos_ability_model::{
         AbilityValue, AccessMode, MethodReference, MethodSemantics, ResourceReference, RevisionId,
     };
@@ -769,16 +767,24 @@ mod tests {
     use crate::native_resource::NativeResourceRole;
     use crate::readiness::ReadinessRole;
 
-    fn method(name: &str) -> MethodReference {
+    fn method_for_abi(interface: &str, abi: u32, name: &str) -> MethodReference {
         serde_json::from_value(serde_json::json!({
             "interface": {
-                "name": "aos.systemd.packaged-unit-effects",
-                "abi": 1,
+                "name": interface,
+                "abi": abi,
                 "descriptor": Sha256Digest::from_bytes([1; 32]).to_string(),
             },
             "method": name,
         }))
         .expect("method fixture is valid")
+    }
+
+    fn method_for(interface: &str, name: &str) -> MethodReference {
+        method_for_abi(interface, 1, name)
+    }
+
+    fn method(name: &str) -> MethodReference {
+        method_for("aos.systemd.packaged-unit-effects", name)
     }
 
     #[test]
@@ -808,34 +814,46 @@ mod tests {
     }
 
     #[test]
-    fn entry_points_select_closed_semantic_roles() {
+    fn authenticated_interfaces_select_closed_semantic_roles() {
         assert_eq!(
-            HandlerRole::from_entry_point(OsStr::new("aos-systemd-activation-group-effects"))
-                .expect("activation-group role parses"),
+            HandlerRole::from_method(&method_for(
+                "aos.systemd.activation-group-effects",
+                "create",
+            ))
+            .expect("activation-group role parses"),
             HandlerRole::NativeResource(NativeResourceRole::ActivationGroup)
         );
         assert_eq!(
-            HandlerRole::from_entry_point(OsStr::new(
-                "/nix/store/provider/bin/aos-systemd-group-effects"
-            ))
-            .expect("group role parses"),
+            HandlerRole::from_method(&method_for("aos.systemd.group-effects", "create"))
+                .expect("group role parses"),
             HandlerRole::Identity(IdentityRole::Group)
         );
         assert_eq!(
-            HandlerRole::from_entry_point(OsStr::new("aos-systemd-mount-effects"))
+            HandlerRole::from_method(&method_for("aos.systemd.mount-effects", "create"))
                 .expect("mount role parses"),
             HandlerRole::NativeResource(NativeResourceRole::Mount)
         );
         assert_eq!(
-            HandlerRole::from_entry_point(OsStr::new(
-                "aos-systemd-system-milestone-readiness-effects",
+            HandlerRole::from_method(&method_for(
+                "aos.systemd.system-milestone-readiness-effects",
+                "observe",
             ))
             .expect("milestone role parses"),
             HandlerRole::Readiness(ReadinessRole::SystemMilestone)
         );
         assert!(
-            HandlerRole::from_entry_point(OsStr::new("aos-systemd-provider")).is_err(),
-            "the generic binary cannot select a runtime handler role",
+            HandlerRole::from_method(&method_for("aos.example.unknown-effects", "observe"))
+                .is_err(),
+            "an unknown authenticated interface cannot select a runtime handler role",
+        );
+        assert!(
+            HandlerRole::from_method(&method_for_abi(
+                "aos.systemd.packaged-unit-effects",
+                2,
+                "observe",
+            ))
+            .is_err(),
+            "a known interface name with another ABI cannot select a runtime handler role",
         );
     }
 

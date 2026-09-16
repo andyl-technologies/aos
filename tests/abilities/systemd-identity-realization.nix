@@ -105,4 +105,4 @@ in
   assert controller.handlerDescriptor == null;
   assert builtins.isFunction controller.transition;
   assert terminal.providerModule == null;
-  assert terminal.handlerDescriptor.entryPoint == "bin/aos-systemd-group-effects"; true
+  assert terminal.handlerDescriptor.entryPoint == "bin/aos-systemd-provider"; true
