@@ -69,36 +69,33 @@ catalog.
     "semantic_schema_sha256": "sha256:...",
     "runtime_nar_hash": "sha256:...",
     "source_nar_hash": "sha256:..."
-  },
-  "options": [
-    {
-      "path": ["nginx", "virtualHosts", "<name>", "listenPort"],
-      "display_path": "nginx.virtualHosts.<name>.listenPort",
-      "type": { "kind": "port" },
-      "type_signature": "unsigned 16-bit TCP port",
-      "description": "Port on which this virtual host listens.",
-      "default": { "kind": "literal", "value": 80 },
-      "example": { "kind": "literal", "value": 8080 },
-      "visibility": "public",
-      "owner": { "package": "nginx", "root": "nginx", "interface_abi": 1 },
-      "contributable": true,
-      "source": { "path": "module.nix" }
-    }
-  ],
-  "abilities": {
-    "interfaces": {
-      "service": {
-        "description": "Runs one supervised service.",
-        "methods": {},
-        "outputs": {}
-      }
-    },
-    "implementations": {},
-    "requirements": {},
-    "guarantees": {}
   }
 }
 ```
+
+Options and abilities are deliberately absent. They remain in the separately
+authenticated `PackageAbilityReference`. Tooling receives a checked canonical
+projection with this outer shape:
+
+```json
+{
+  "schema": "aos.package-tooling-response/v1",
+  "identity": {
+    "documentation_sha256": "sha256:...",
+    "semantic_schema_sha256": "sha256:...",
+    "ability_manifest_sha256": "sha256:...",
+    "ability_package_digest": "sha256:..."
+  },
+  "documentation": { "schema": "aos.package-documentation/v1" },
+  "ability_reference": { "schema": "aos.package-ability-reference/v1" },
+  "options": [],
+  "methods": []
+}
+```
+
+The complete source objects occupy the abbreviated fields above. The validator
+recomputes the identity block, option rows, and exported method rows from those
+objects and rejects a response containing independently authored schema data.
 
 ## Structured prose
 
@@ -147,7 +144,7 @@ There is no second `declares` inventory or documentation type mirror.
 
 ## Option fields
 
-Each option records:
+Each option row mechanically derived into the tooling response records:
 
 - exact path segments and derived display path;
 - structured type and stable type signature;
@@ -171,10 +168,10 @@ never forced merely to improve documentation.
 
 ## Ownership and contribution
 
-The document explains authenticated configuration authority without becoming
-that authority. Each option belongs to the package whose authenticated module
-declares it and retains the exact evaluated declaration's contribution flag and
-source provenance.
+The tooling response explains authenticated configuration authority without
+becoming that authority. Each option belongs to the package whose authenticated
+module declares it and retains the exact evaluated declaration's contribution
+flag and source provenance.
 
 Publication derives these fields from the signed package fixed-point projection
 and rejects any disagreement. A contributor cannot claim documentation
@@ -182,10 +179,11 @@ ownership or mark a forbidden path contributable through prose.
 
 ## Abilities and deployment observations
 
-Package reference documentation carries package-owned interfaces,
-implementations, requirements, and guarantees from the same checked package
-contract. Interface prose is keyed once by package-local alias and contains
-exact method and output descriptions. Implementations and requirements carry
+`PackageAbilityReference` carries package-owned interfaces, implementations,
+requirements, and guarantees from the checked package contract. The tooling
+response retains that exact reference and derives one method row for each
+exported interface method, including its exact `InterfaceKey` and complete
+provider-neutral `MethodDescriptor`. Implementations and requirements carry
 their own authored descriptions. Guarantee documentation carries the authored
 name, version, semantics, and description; executable identity derives from
 name, version, and semantics only.
@@ -200,9 +198,10 @@ the deployment view omits the missing realization details.
 
 ## Package sections and source identity
 
-Packages without public options still publish package metadata, ability
-declarations, and integrity identity. Any explanatory package prose is authored
-once through the ordinary package module fixed point.
+Packages without public options still publish package metadata and integrity
+identity. Their checked ability reference remains separate, and their tooling
+response may contain empty derived option and method lists. Any explanatory
+package prose is authored once through the ordinary package module fixed point.
 
 Source locators are repository-relative paths plus optional stable attribute
 locations. Absolute authoring-worktree paths are forbidden. Hub may link them to

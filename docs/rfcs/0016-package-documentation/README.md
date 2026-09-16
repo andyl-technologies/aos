@@ -57,9 +57,10 @@ identity.
 5. **Installed-package docs are offline and generation-correct.** APM profiles
    retain the exact documentation store object selected with the package, so
    upgrade and rollback switch code and documentation together.
-6. **All user interfaces share one semantic model.** Web, API, CLI, man-page
-   rendering, completion, and LSP behavior may format differently but must not
-   invent different option types, defaults, visibility, or ownership rules.
+6. **All schema-aware interfaces share one checked tooling response.** Hub,
+   `apm schema`, and LSP bind the canonical documentation object to the checked
+   ability reference and derive option and method schemas from that reference.
+   The standalone registry Web surface remains a narrower distribution listing.
 7. **Handwritten package references are transitional.** They are removed only
    after the checked package projection reaches acceptance parity. Unique
    conceptual and operational prose remains in ordinary package declarations
