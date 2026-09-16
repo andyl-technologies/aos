@@ -176,8 +176,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::AbilityActivate { .. }
         | PackageCommand::Switch { .. }
         | PackageCommand::Config { .. }
-        | PackageCommand::AbilityPlanBuildStage { .. }
-        | PackageCommand::AbilityBuildStage { .. }
+        | PackageCommand::AbilityMaterializeSourceStage { .. }
         | PackageCommand::AbilityStageRun { .. }
         | PackageCommand::AbilityStageValidate { .. }
         | PackageCommand::AbilityStageReceive { .. } => true,
@@ -232,8 +231,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::AbilityActivationPreflight { .. }
         | PackageCommand::AbilityActivate { .. }
         | PackageCommand::Switch { .. }
-        | PackageCommand::AbilityPlanBuildStage { .. }
-        | PackageCommand::AbilityBuildStage { .. }
+        | PackageCommand::AbilityMaterializeSourceStage { .. }
         | PackageCommand::AbilityStageRun { .. }
         | PackageCommand::AbilityStageReceive { .. } => false,
     }

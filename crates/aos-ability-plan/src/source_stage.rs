@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, BindingPlanDocument, DesiredStateDocument, EffectPlanDocument,
     EnvironmentDocument, EnvironmentId, InstanceId, InterfaceDocument, LocalKey, PackageDocument,
-    PlanId, RequestId, RequirementDeclaration, ResourceLifetime, ResourceRevision, ScopePath,
-    ValuePhase, VersionedDocument,
+    PlanId, RequestId, RequirementDeclaration, ResourceLifetime, ResourceReference,
+    ResourceRevision, ScopePath, ValuePhase, VersionedDocument,
 };
 use aos_ability_validate::{
     BindingValidationInputs, CheckedEffectPlan, ValidationContext,
@@ -69,7 +69,19 @@ pub struct SourceStageFixedPoint {
     pub resolved_resources: BTreeMap<String, SourceStageResolvedResource>,
     /// Selects the protected package-provided execution observation channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution_observer: Option<AbilityValue>,
+    pub execution_observer: Option<SourceStageExecutionObserver>,
+}
+
+/// Selects one protected execution-boundary observer from the fixed point.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceStageExecutionObserver {
+    /// Names the exact fixed-point request that published the observer outputs.
+    pub request: String,
+    /// Carries the protected retained observer resource.
+    pub resource: ResourceReference,
+    /// Carries the resolved canonical Unix socket path.
+    pub socket: String,
 }
 
 /// Retains one standard module-system instance declaration.

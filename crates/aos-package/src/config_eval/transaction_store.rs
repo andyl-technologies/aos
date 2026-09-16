@@ -24,7 +24,7 @@ use aos_ability_model::{
     AbilityValue, ArtifactReference, ExecutionStage, RequiredFeature, ScopedOperationKey,
     TransactionId,
 };
-use aos_ability_plan::TransitionReconciliation;
+use aos_ability_plan::{SourceStageBundle, TransitionReconciliation};
 use aos_ability_runtime::adapter::{
     CancellationToken, MonotonicClock, PlanRetentionReceipt, RootRetentionReceipt, TrustedAdapter,
     TrustedPlanStore, TrustedResourceCatalog, TrustedRootStore,
@@ -186,10 +186,16 @@ where
 /// Persists ability recovery state inside one retained config generation.
 struct GenerationTransactionStore<Verifier> {
     generation: PathBuf,
-    pending_bundle: Option<ReloadablePlanBundle>,
+    pending_bundle: Option<RetainedPlanAuthority>,
     supported_features: BTreeSet<RequiredFeature>,
     verifier: Verifier,
     switch_lock: Arc<SwitchLockGuard>,
+}
+
+#[derive(Clone)]
+enum RetainedPlanAuthority {
+    Policy(ReloadablePlanBundle),
+    Source(SourceStageBundle),
 }
 
 /// Owns one native execution transaction and the global switch lock that guards it.
@@ -647,6 +653,48 @@ impl<'plan> AbilityTransactionSession<'plan> {
         )
     }
 
+    /// Opens a source-composed stage transaction beneath a durable image root.
+    ///
+    /// The retained authority is the source bundle emitted by the completed
+    /// module fixed point. Recovery validates that same bundle directly and
+    /// never reconstructs a policy-backed planning snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stage directory or lock is unsafe, package
+    /// artifacts differ, source authority cannot be retained, or recovery fails.
+    pub(crate) fn open_source_stage(
+        plan: &'plan CheckedEffectPlan,
+        transaction: TransactionId,
+        limits: JournalLimits,
+        stage_directory: impl Into<PathBuf>,
+        supported_features: BTreeSet<RequiredFeature>,
+        bundle: SourceStageBundle,
+        packages: VerifiedPackageContractSet,
+    ) -> Result<Self, GenerationTransactionStoreError> {
+        let generation = stage_directory.into();
+        create_private_directory(&generation)?;
+        let journal = generation
+            .join(TRANSACTION_ROOT)
+            .join(transaction.0.as_str())
+            .join(EXECUTION_JOURNAL_FILE);
+        let switch_lock = generation.join("execution.lock");
+        let paths = SessionPaths {
+            generation,
+            journal,
+            switch_lock,
+        };
+        Self::open_at_with_authority(
+            plan,
+            transaction,
+            limits,
+            supported_features,
+            RetainedPlanAuthority::Source(bundle),
+            packages,
+            paths,
+        )
+    }
+
     /// Opens or recovers a transaction while the caller retains the switch lock.
     ///
     /// This entry point lets configuration activation hold one uninterrupted
@@ -718,6 +766,26 @@ impl<'plan> AbilityTransactionSession<'plan> {
         packages: VerifiedPackageContractSet,
         paths: SessionPaths,
     ) -> Result<Self, GenerationTransactionStoreError> {
+        Self::open_at_with_authority(
+            plan,
+            transaction,
+            limits,
+            supported_features,
+            RetainedPlanAuthority::Policy(bundle),
+            packages,
+            paths,
+        )
+    }
+
+    fn open_at_with_authority(
+        plan: &'plan CheckedEffectPlan,
+        transaction: TransactionId,
+        limits: JournalLimits,
+        supported_features: BTreeSet<RequiredFeature>,
+        bundle: RetainedPlanAuthority,
+        packages: VerifiedPackageContractSet,
+        paths: SessionPaths,
+    ) -> Result<Self, GenerationTransactionStoreError> {
         let SessionPaths {
             generation,
             journal,
@@ -738,7 +806,7 @@ impl<'plan> AbilityTransactionSession<'plan> {
             authenticated: packages,
             platform: plan.binding_plan().environment().platform.clone(),
         };
-        let mut store = GenerationTransactionStore::with_bundle_at(
+        let mut store = GenerationTransactionStore::with_authority_at(
             &generation,
             bundle,
             supported_features,
@@ -1291,11 +1359,27 @@ impl<Verifier> GenerationTransactionStore<Verifier> {
         verifier: Verifier,
         switch_lock: impl AsRef<Path>,
     ) -> Result<Self, GenerationTransactionStoreError> {
+        Self::with_authority_at(
+            generation,
+            RetainedPlanAuthority::Policy(bundle),
+            supported_features,
+            verifier,
+            switch_lock,
+        )
+    }
+
+    fn with_authority_at(
+        generation: impl Into<PathBuf>,
+        bundle: RetainedPlanAuthority,
+        supported_features: BTreeSet<RequiredFeature>,
+        verifier: Verifier,
+        switch_lock: impl AsRef<Path>,
+    ) -> Result<Self, GenerationTransactionStoreError> {
         let switch_lock = Arc::new(
             acquire_switch_lock_pub(switch_lock.as_ref())
                 .map_err(GenerationTransactionStoreError::SwitchLock)?,
         );
-        Ok(Self::with_bundle_and_lock(
+        Ok(Self::with_authority_and_lock(
             generation,
             bundle,
             supported_features,
@@ -1307,6 +1391,22 @@ impl<Verifier> GenerationTransactionStore<Verifier> {
     fn with_bundle_and_lock(
         generation: impl Into<PathBuf>,
         bundle: ReloadablePlanBundle,
+        supported_features: BTreeSet<RequiredFeature>,
+        verifier: Verifier,
+        switch_lock: Arc<SwitchLockGuard>,
+    ) -> Self {
+        Self::with_authority_and_lock(
+            generation,
+            RetainedPlanAuthority::Policy(bundle),
+            supported_features,
+            verifier,
+            switch_lock,
+        )
+    }
+
+    fn with_authority_and_lock(
+        generation: impl Into<PathBuf>,
+        bundle: RetainedPlanAuthority,
         supported_features: BTreeSet<RequiredFeature>,
         verifier: Verifier,
         switch_lock: Arc<SwitchLockGuard>,
@@ -1368,37 +1468,63 @@ impl<Verifier> GenerationTransactionStore<Verifier> {
         &self,
         transaction: &TransactionId,
         plan: &CheckedEffectPlan,
-    ) -> Result<(ReloadablePlanBundle, Vec<u8>, Sha256Digest), GenerationTransactionStoreError>
-    {
+    ) -> Result<(Vec<u8>, Sha256Digest), GenerationTransactionStoreError> {
         let path = self.bundle_path(transaction);
-        let bundle = if path.is_file() {
-            ReloadablePlanBundle::decode(&read_file(&path)?)
-                .map_err(GenerationTransactionStoreError::Bundle)?
+        let pending = self.pending_bundle.as_ref().ok_or_else(|| {
+            GenerationTransactionStoreError::Conflict(format!(
+                "transaction {:?} has no retained plan authority",
+                transaction
+            ))
+        })?;
+        let bytes = if path.is_file() {
+            read_file(&path)?
         } else {
-            self.pending_bundle.clone().ok_or_else(|| {
-                GenerationTransactionStoreError::Conflict(format!(
-                    "transaction {:?} has no retained plan bundle",
-                    transaction
-                ))
-            })?
+            match pending {
+                RetainedPlanAuthority::Policy(bundle) => bundle
+                    .canonical_bytes()
+                    .map_err(GenerationTransactionStoreError::Bundle)?,
+                RetainedPlanAuthority::Source(bundle) => {
+                    bundle.canonical_bytes().map_err(|error| {
+                        GenerationTransactionStoreError::Conflict(format!(
+                            "source stage authority cannot be encoded: {error}"
+                        ))
+                    })?
+                }
+            }
         };
-        let revalidated = bundle
-            .clone()
-            .revalidate(self.supported_features.clone())
-            .map_err(GenerationTransactionStoreError::Bundle)?;
+        let (revalidated, digest) = match pending {
+            RetainedPlanAuthority::Policy(_) => {
+                let bundle = ReloadablePlanBundle::decode(&bytes)
+                    .map_err(GenerationTransactionStoreError::Bundle)?;
+                let checked = bundle
+                    .clone()
+                    .revalidate(self.supported_features.clone())
+                    .map_err(GenerationTransactionStoreError::Bundle)?;
+                let digest = bundle
+                    .digest()
+                    .map_err(GenerationTransactionStoreError::Bundle)?;
+                (checked, digest)
+            }
+            RetainedPlanAuthority::Source(_) => {
+                let checked = SourceStageBundle::decode(&bytes)
+                    .and_then(|bundle| bundle.check(None))
+                    .map_err(|error| {
+                        GenerationTransactionStoreError::Conflict(format!(
+                            "source stage authority is invalid: {error}"
+                        ))
+                    })?;
+                let digest = checked.digest();
+                let plan = checked.plan().clone();
+                (plan, digest)
+            }
+        };
         if !checked_plans_match(&revalidated, plan) {
             return Err(GenerationTransactionStoreError::Conflict(format!(
-                "transaction {:?} plan bundle does not reconstruct the supplied checked plan",
+                "transaction {:?} plan authority does not reconstruct the supplied checked plan",
                 transaction
             )));
         }
-        let bytes = bundle
-            .canonical_bytes()
-            .map_err(GenerationTransactionStoreError::Bundle)?;
-        let digest = bundle
-            .digest()
-            .map_err(GenerationTransactionStoreError::Bundle)?;
-        Ok((bundle, bytes, digest))
+        Ok((bytes, digest))
     }
 }
 
@@ -1424,7 +1550,7 @@ where
         transaction: &TransactionId,
         plan: &CheckedEffectPlan,
     ) -> Result<PlanRetentionReceipt, Self::Error> {
-        let (_, bytes, bundle_digest) = self.retained_bundle(transaction, plan)?;
+        let (bytes, bundle_digest) = self.retained_bundle(transaction, plan)?;
         self.prepare_transaction_dir(transaction)?;
         let path = self.bundle_path(transaction);
         publish_named_immutable(&path, &bytes)?;

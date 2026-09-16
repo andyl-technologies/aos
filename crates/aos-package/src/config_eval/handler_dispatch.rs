@@ -25,6 +25,7 @@ use aos_ability_validate::CheckedEffectPlan;
 use super::ability_activation::SpecializedAbilityActivation;
 use super::ability_policy::{
     CurrentResourceObservation, CurrentResourceState, PublishingNativeAdmissionPolicy,
+    SourceStageAdmissionPolicy,
 };
 use super::ability_policy_authority::{
     OperatorPolicyAuthorityRecord, OperatorPolicyAuthorityStore,
@@ -140,7 +141,7 @@ impl<'a> HandlerDispatcher<'a> {
     pub(crate) fn run_static_to_terminal<Observer>(
         &self,
         session: &mut AbilityTransactionSession<'a>,
-        mut current_policy: PublishingNativeAdmissionPolicy,
+        mut current_policy: SourceStageAdmissionPolicy,
         cancellation: &CancellationToken,
         observer: &mut Observer,
     ) -> Result<TerminalResult>
@@ -272,6 +273,18 @@ impl PublishingAdmissionPolicy for PublishingNativeAdmissionPolicy {
     ) -> Result<()> {
         PublishingNativeAdmissionPolicy::publish_authority(self, plan, assignments, resources)
             .map(|_| ())
+            .map_err(anyhow::Error::new)
+    }
+}
+
+impl PublishingAdmissionPolicy for SourceStageAdmissionPolicy {
+    fn publish_authority(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: Vec<CurrentResourceObservation>,
+    ) -> Result<()> {
+        self.publish_observations(plan, assignments, resources)
             .map_err(anyhow::Error::new)
     }
 }

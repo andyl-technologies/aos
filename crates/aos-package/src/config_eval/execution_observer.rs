@@ -55,9 +55,10 @@ impl AbilityExecutionBoundaryObserver {
     ///
     /// Returns an error when the selected socket violates the protected path
     /// contract, cannot connect, or has a non-root peer.
-    pub(super) fn load(
-        input: Option<&super::ability_rounds::AbilityExecutionObserverProjection>,
-    ) -> Result<Self> {
+    pub(super) fn load<Input>(input: Option<&Input>) -> Result<Self>
+    where
+        Input: ExecutionObserverInput,
+    {
         let Some(input) = input else {
             return Ok(Self::Disabled);
         };
@@ -65,7 +66,7 @@ impl AbilityExecutionBoundaryObserver {
             rustix::process::geteuid().as_raw() == 0,
             "native execution observation requires UID 0"
         );
-        Self::load_socket(Path::new(&input.socket), 0, 0)
+        Self::load_socket(Path::new(input.socket()), 0, 0)
     }
 
     fn load_socket(socket: &Path, trusted_owner: u32, peer_owner: u32) -> Result<Self> {
@@ -84,6 +85,22 @@ impl AbilityExecutionBoundaryObserver {
         validate_peer(&stream, peer_owner)?;
 
         Ok(Self::Socket(SocketBoundaryObserver { stream }))
+    }
+}
+
+pub(super) trait ExecutionObserverInput {
+    fn socket(&self) -> &str;
+}
+
+impl ExecutionObserverInput for aos_ability_plan::SourceStageExecutionObserver {
+    fn socket(&self) -> &str {
+        &self.socket
+    }
+}
+
+impl ExecutionObserverInput for super::ability_rounds::AbilityExecutionObserverProjection {
+    fn socket(&self) -> &str {
+        &self.socket
     }
 }
 
