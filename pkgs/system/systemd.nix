@@ -14,6 +14,7 @@
   xz,
   lz4,
   zstd,
+  zfs,
   openssl,
   perl,
   meson,
@@ -90,6 +91,7 @@
     xz
     lz4
     zstd
+    zfs
     openssl
     libcap
     libxcrypt
