@@ -19,6 +19,12 @@
       inherit maxLength;
       syntax = null;
     };
+  capabilityName = types.refined {
+    name = "Linux capability name";
+    description = "An uppercase Linux capability token beginning with CAP_.";
+    type = boundedString 128;
+    predicate = value: builtins.match "CAP_[A-Z0-9_]+" value != null;
+  };
   serviceFields = {
     service = localKey;
     enabled = types.boolean;
@@ -89,7 +95,7 @@
     };
 
   capabilityNames = types.list {
-    element = types.capabilityName;
+    element = capabilityName;
     maxItems = 256;
   };
   capabilityBounds = types.taggedUnion {
@@ -110,7 +116,7 @@
     capabilities = types.list {
       element = types.record {
         fields = {
-          capability = types.capabilityName;
+          capability = capabilityName;
           available = types.boolean;
         };
       };
