@@ -860,7 +860,15 @@ in {
       emptyHostPath = pathString emptyHost;
       defaultFacts = builtins.toJSON (config.host.facts or {});
       defaultFactsFile = builtins.toFile "aos-default-instance-facts.json" defaultFacts;
-      abilityActivationInput = config.aos.abilities.activationInput;
+      baseAbilityActivationInput = config.aos.abilities.activationInput;
+      abilityActivationInput =
+        if baseAbilityActivationInput == null
+        then null
+        else
+          baseAbilityActivationInput
+          // {
+            execution_observer = config.aos.abilities.resolvedExecutionObserver;
+          };
       ownership = {
         etc = etcOwnership;
         jobScripts = jobScriptOwnership;

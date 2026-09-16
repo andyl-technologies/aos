@@ -193,7 +193,7 @@ pub struct VerifiedAbilityActivationInputs {
     policy_set: AuthenticatedPolicySetDocument,
     policy_sidecar: PinnedAbilitySidecar,
     packages: Vec<VerifiedPackageIdentity>,
-    fixed_point: Option<super::ability_rounds::AbilityFixedPointProjection>,
+    execution_observer: Option<aos_ability_plan::SourceStageExecutionObserver>,
 }
 
 /// Identifies one package from its already verified manifest contract.
@@ -305,23 +305,6 @@ impl SpecializedAbilityActivation {
 }
 
 impl VerifiedAbilityActivationInputs {
-    /// Loads the authenticated planning sidecars before manifest package enrichment.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when operator authority rejects the policy sidecar or
-    /// either bounded canonical planning document is invalid.
-    pub(crate) fn load_for_planning(
-        activation: &AbilityActivationInput,
-        operator_authority: &OperatorPolicyAuthorityStore,
-    ) -> Result<Self> {
-        activation.validate_descriptor()?;
-        operator_authority
-            .authorize(&activation.authenticated_policy_set)
-            .context("authenticating native policy set through operator authority")?;
-        Self::load_activation(activation, Vec::new())
-    }
-
     /// Loads and authenticates the structured activation inputs from a manifest.
     ///
     /// The manifest must carry the current activation descriptor. Both
@@ -369,10 +352,12 @@ impl VerifiedAbilityActivationInputs {
         &self.policy_sidecar
     }
 
-    /// Returns the final module fixed point retained by a generation manifest.
+    /// Returns the execution observer selected by the final module fixed point.
     #[must_use]
-    pub const fn fixed_point(&self) -> Option<&super::ability_rounds::AbilityFixedPointProjection> {
-        self.fixed_point.as_ref()
+    pub const fn execution_observer(
+        &self,
+    ) -> Option<&aos_ability_plan::SourceStageExecutionObserver> {
+        self.execution_observer.as_ref()
     }
 
     fn load_activation(
@@ -398,7 +383,7 @@ impl VerifiedAbilityActivationInputs {
             policy_set,
             policy_sidecar: activation.authenticated_policy_set.clone(),
             packages,
-            fixed_point: activation.fixed_point.clone(),
+            execution_observer: activation.execution_observer.clone(),
         })
     }
 }
@@ -779,12 +764,6 @@ pub(crate) fn specialize_planning(
             },
         )
         .map_err(anyhow::Error::new)?;
-    if let Some(fixed_point) = inputs.fixed_point.as_ref() {
-        fixed_point
-            .validate_replayed_planning(&verified)
-            .map_err(anyhow::Error::new)
-            .context("authenticating retained final fixed point")?;
-    }
     Ok(verified)
 }
 

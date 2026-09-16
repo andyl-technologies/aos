@@ -15,9 +15,6 @@
 //!     ~ aos/packages/web/config.env   (changed)
 //!     + nftables/forward.conf         (new; provider: firewall)
 //!     - aos/packages/legacy/config.toml (package 'legacy' removed)
-//!   ability resources
-//!     ~ web-runtime
-//!     + tracing-runtime
 //!   packages to fetch (closure delta)
 //!     + /nix/store/...-otel-collector-0.9
 //! ```
@@ -39,15 +36,6 @@ pub struct EtcChange {
     /// The `/etc`-relative key.
     pub path: String,
     /// What happened to it.
-    pub kind: ChangeKind,
-}
-
-/// A single checked ability-resource change in the diff.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceChange {
-    /// The exact key in the retained fixed-point resource map.
-    pub resource: String,
-    /// Whether the unit was added, removed, or changed.
     pub kind: ChangeKind,
 }
 
@@ -78,8 +66,6 @@ impl ChangeKind {
 pub struct ManifestDiff {
     /// `/etc` entry changes, sorted by path.
     pub etc: Vec<EtcChange>,
-    /// Checked ability-resource changes, sorted by fixed-point key.
-    pub resources: Vec<ResourceChange>,
     /// Store paths the candidate pins that the base did not (closure delta).
     pub fetch_plan: Vec<String>,
 }
@@ -87,7 +73,7 @@ pub struct ManifestDiff {
 impl ManifestDiff {
     /// Whether the diff is empty (the candidate is structurally identical).
     pub fn is_empty(&self) -> bool {
-        self.etc.is_empty() && self.resources.is_empty() && self.fetch_plan.is_empty()
+        self.etc.is_empty() && self.fetch_plan.is_empty()
     }
 
     /// Render the human-readable diff (operability.md format).
@@ -101,18 +87,6 @@ impl ManifestDiff {
                 out.push_str(&format!("    {} {}\n", change.kind.sigil(), change.path));
             }
         }
-        out.push_str("\n  ability resources\n");
-        if self.resources.is_empty() {
-            out.push_str("    (no changes)\n");
-        } else {
-            for change in &self.resources {
-                out.push_str(&format!(
-                    "    {} {}\n",
-                    change.kind.sigil(),
-                    change.resource
-                ));
-            }
-        }
         out.push_str("\n  packages to fetch (closure delta)\n");
         if self.fetch_plan.is_empty() {
             out.push_str("    (none)\n");
@@ -122,30 +96,21 @@ impl ManifestDiff {
             }
         }
         out.push_str(&format!(
-            "\n{} etc change(s), {} resource change(s), {} path(s) to fetch.\n",
+            "\n{} etc change(s), {} path(s) to fetch.\n",
             self.etc.len(),
-            self.resources.len(),
             self.fetch_plan.len()
         ));
         out
     }
 
-    /// Render the `--json` envelope (`etc_diff`, `resource_changes`,
-    /// `fetch_plan`, `resolution_trace`). `resolution_trace` is supplied by the
+    /// Render the `--json` envelope (`etc_diff`, `fetch_plan`, and
+    /// `resolution_trace`). `resolution_trace` is supplied by the
     /// caller (it comes from the fixpoint outcome, not the diff).
     pub fn to_json(&self, resolution_trace: &[String]) -> Value {
         json!({
             "etc_diff": self.etc.iter().map(|c| json!({
                 "path": c.path,
                 "kind": match c.kind {
-                    ChangeKind::Added => "added",
-                    ChangeKind::Removed => "removed",
-                    ChangeKind::Changed => "changed",
-                },
-            })).collect::<Vec<_>>(),
-            "resource_changes": self.resources.iter().map(|resource| json!({
-                "resource": resource.resource,
-                "kind": match resource.kind {
                     ChangeKind::Added => "added",
                     ChangeKind::Removed => "removed",
                     ChangeKind::Changed => "changed",
@@ -161,13 +126,11 @@ impl ManifestDiff {
 /// (operability.md §Dry-run). Pure over the two `Value`s.
 ///
 /// `etc` is keyed by `/etc`-relative path; a value difference is
-/// [`ChangeKind::Changed`]. `resources` compares the exact resolved-resource
-/// map retained by the checked native fixed point. `fetch_plan` is the
-/// candidate `storePaths` set minus the base's closure.
+/// [`ChangeKind::Changed`]. `fetch_plan` is the candidate `storePaths` set
+/// minus the base's closure.
 pub fn diff_manifests(base: &Value, candidate: &Value) -> ManifestDiff {
     ManifestDiff {
         etc: diff_etc(base, candidate),
-        resources: diff_resources(base, candidate),
         fetch_plan: fetch_delta(base, candidate),
     }
 }
@@ -200,51 +163,6 @@ fn diff_etc(base: &Value, candidate: &Value) -> Vec<EtcChange> {
     }
     changes.sort_by(|a, b| a.path.cmp(&b.path));
     changes
-}
-
-/// Diffs the exact checked resource maps retained by native activation.
-fn diff_resources(base: &Value, candidate: &Value) -> Vec<ResourceChange> {
-    let base_resources = resolved_resources(base);
-    let candidate_resources = resolved_resources(candidate);
-    let mut changes = Vec::new();
-    for (resource, candidate_value) in &candidate_resources {
-        match base_resources.get(resource) {
-            None => changes.push(ResourceChange {
-                resource: resource.clone(),
-                kind: ChangeKind::Added,
-            }),
-            Some(base_value) if *base_value != *candidate_value => {
-                changes.push(ResourceChange {
-                    resource: resource.clone(),
-                    kind: ChangeKind::Changed,
-                });
-            }
-            Some(_) => {}
-        }
-    }
-    for resource in base_resources.keys() {
-        if !candidate_resources.contains_key(resource) {
-            changes.push(ResourceChange {
-                resource: resource.clone(),
-                kind: ChangeKind::Removed,
-            });
-        }
-    }
-    changes.sort_by(|left, right| left.resource.cmp(&right.resource));
-    changes
-}
-
-fn resolved_resources(manifest: &Value) -> BTreeMap<String, &Value> {
-    manifest
-        .pointer("/inputs/ability_activation/fixed_point/resolvedResources")
-        .and_then(Value::as_object)
-        .map(|resources| {
-            resources
-                .iter()
-                .map(|(key, value)| (key.clone(), value))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// The candidate `storePaths` set minus the base's (the closure delta).
@@ -431,16 +349,6 @@ mod tests {
                 "aos/packages/web/config.env": {"kind": "text", "text": "PORT=8080\n", "mode": "0644"},
                 "aos/packages/legacy/config.toml": {"kind": "text", "text": "x=1\n", "mode": "0644"},
             },
-            "inputs": {
-                "ability_activation": {
-                    "fixed_point": {
-                        "resolvedResources": {
-                            "retired-runtime": {"revision": "sha256:retired"},
-                            "web-runtime": {"revision": "sha256:one"}
-                        }
-                    }
-                }
-            },
             "storePaths": [
                 "/nix/store/aaa-web-1.0",
                 "/nix/store/bbb-curl-8.12",
@@ -454,16 +362,6 @@ mod tests {
             "etc": {
                 "aos/packages/web/config.env": {"kind": "text", "text": "PORT=9090\n", "mode": "0644"},
                 "nftables/forward.conf": {"kind": "text", "text": "policy accept\n", "mode": "0644"},
-            },
-            "inputs": {
-                "ability_activation": {
-                    "fixed_point": {
-                        "resolvedResources": {
-                            "tracing-runtime": {"revision": "sha256:tracing"},
-                            "web-runtime": {"revision": "sha256:two"}
-                        }
-                    }
-                }
             },
             "storePaths": [
                 "/nix/store/aaa-web-1.0",
@@ -484,20 +382,6 @@ mod tests {
             by_path["aos/packages/legacy/config.toml"],
             ChangeKind::Removed
         );
-    }
-
-    #[test]
-    fn resource_changes_cover_add_remove_and_revision_change() {
-        let diff = diff_manifests(&base(), &candidate());
-        let by_resource: BTreeMap<&str, ChangeKind> = diff
-            .resources
-            .iter()
-            .map(|change| (change.resource.as_str(), change.kind))
-            .collect();
-
-        assert_eq!(by_resource["web-runtime"], ChangeKind::Changed);
-        assert_eq!(by_resource["tracing-runtime"], ChangeKind::Added);
-        assert_eq!(by_resource["retired-runtime"], ChangeKind::Removed);
     }
 
     #[test]
@@ -522,7 +406,6 @@ mod tests {
         let trace = vec!["firewall.forwardPolicy = accept (web -> firewall)".to_string()];
         let v = diff.to_json(&trace);
         assert!(v.get("etc_diff").is_some());
-        assert!(v.get("resource_changes").is_some());
         assert!(v.get("fetch_plan").is_some());
         assert_eq!(v["resolution_trace"][0], trace[0]);
     }

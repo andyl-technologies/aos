@@ -79,65 +79,8 @@ let
     (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-evaluation-inputs.json));
   storeViewLib = import ./lib/build/store-view.nix {inherit lib;};
 
-  projectAbilityRound = evaluated: manifest: let
-    abilities = evaluated.config.aos.abilities;
-    bindingNamesForRequest = requestName:
-      builtins.filter
-      (name: abilities.bindings.${name}.request == requestName)
-      (builtins.attrNames abilities.bindings);
-    unresolvedAuthoredRequests = lib.filterAttrs
-      (name: _: bindingNamesForRequest name == [])
-      abilities.requests;
-    pendingAuthoredRequests = builtins.mapAttrs
-      (name: request: {
-        origin = "authored";
-        request = name;
-        identity = {
-          consumer = abilities.instanceIdentities.${request.consumer};
-          inherit (request) scope;
-          key = request.localKey;
-        };
-        declaration = request;
-      })
-      unresolvedAuthoredRequests;
-    pendingProviderRequests = builtins.mapAttrs
-      (_: request:
-        request
-        // {
-          origin = "provider";
-          identity = {
-            consumer = abilities.instanceIdentities.${request.providerInstance};
-            inherit (request.declaration) scope;
-            key = request.localRequestKey;
-          };
-        })
-      abilities.compositionPendingRequests;
-    pendingRequests = pendingAuthoredRequests // pendingProviderRequests;
-  in
-    if pendingRequests == {}
-    then {
-      status = "complete";
-      inherit manifest;
-      fixedPoint = {
-        inherit (abilities) bindings resolvedResources;
-        executionObserver = abilities.resolvedExecutionObserver;
-      };
-    }
-    else {
-      status = "pending";
-      pending = {
-        requests = pendingRequests;
-        requirements = abilities.compositionRequirements;
-        providerInstances = builtins.mapAttrs
-          (name: instance: {
-            inherit (instance) implementation;
-            identity = abilities.instanceIdentities.${name};
-          })
-          abilities.instances;
-      };
-    };
 in rec {
-  inherit lib imageManifest projectAbilityRound;
+  inherit lib imageManifest;
   inherit (storeViewLib) readPathFor;
 
   ## Merge an evaluated runtime candidate with the immutable image baseline.

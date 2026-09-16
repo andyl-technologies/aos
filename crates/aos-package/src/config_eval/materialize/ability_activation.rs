@@ -29,9 +29,9 @@ pub struct AbilityActivationInput {
     pub desired_state: PinnedAbilitySidecar,
     /// Independently authenticated planning-policy provenance.
     pub authenticated_policy_set: PinnedAbilitySidecar,
-    /// Retains exact bindings, resources, and observer inputs from the final module fixed point.
+    /// Selects the protected execution observer from the final module fixed point.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fixed_point: Option<crate::config_eval::ability_rounds::AbilityFixedPointProjection>,
+    pub execution_observer: Option<aos_ability_plan::SourceStageExecutionObserver>,
 }
 
 impl AbilityActivationInput {
@@ -65,13 +65,6 @@ impl AbilityActivationInput {
         self.desired_state.validate("desired state")?;
         self.authenticated_policy_set
             .validate("authenticated policy set")?;
-        if let Some(fixed_point) = &self.fixed_point {
-            fixed_point
-                .validate()
-                .map_err(anyhow::Error::new)
-                .context("validating retained ability fixed point")?;
-        }
-
         Ok(())
     }
 
@@ -87,13 +80,6 @@ impl AbilityActivationInput {
         store_view: &super::super::store_view::StoreViewLocator,
     ) -> Result<()> {
         self.validate_descriptor()?;
-        self.fixed_point
-            .as_ref()
-            .context("native ability activation has no retained final fixed point")?
-            .validate_checked_planning()
-            .map_err(anyhow::Error::new)
-            .context("validating retained checked binding authority")?;
-
         for (name, package) in package_outputs {
             let Some(contract) = package.contract.as_ref() else {
                 continue;

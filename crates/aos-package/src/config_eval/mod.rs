@@ -33,7 +33,6 @@ pub mod ability;
 pub mod ability_activation;
 pub mod ability_policy;
 pub mod ability_policy_authority;
-pub mod ability_rounds;
 pub mod bound_handler;
 mod bound_handler_store;
 pub mod source_stage;
@@ -203,8 +202,6 @@ pub struct IterRecord {
 pub struct FixpointOutcome {
     /// The JSON manifest text the final eval produced.
     pub manifest: String,
-    /// Exact activation authority emitted by the final ability fixed point.
-    pub ability_fixed_point: ability_rounds::AbilityFixedPointProjection,
     /// The converged working set (seed plus every fetched provider).
     pub working_set: Vec<WorkingSetMember>,
     /// The causal chain of provider additions.
@@ -437,7 +434,6 @@ pub fn run_fixpoint<E: NixEvaluator>(
     match class {
         EvalClass::Manifest(manifest) => Ok(FixpointOutcome {
             manifest,
-            ability_fixed_point: ability_rounds::AbilityFixedPointProjection::default(),
             working_set,
             trace: Vec::new(),
             iterations: 0,
@@ -784,34 +780,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             facts_json: prepared.facts_json.clone().filter(|path| path.is_file()),
             seed_set,
         };
-        let mut candidate = run_fixpoint(&inputs, &evaluator).map_err(eval_command_failure)?;
-        let planning = replay_candidate_ability_plan(&candidate)
-            .context("replaying authenticated ability plan for the module fixed point")?;
-        let ability_evaluator = stock::StockAbilityRoundEvaluator::new(
-            &evaluator,
-            EvalAttempt {
-                host_nix: &inputs.host_nix,
-                runtime_modules: &inputs.runtime_modules,
-                base_lib: &inputs.base_lib,
-                facts_json: inputs.facts_json.as_deref(),
-                working_set: &candidate.working_set,
-                iteration: candidate.iterations,
-            },
-        );
-        let ability_resolver =
-            stock::StockAbilityRoundResolver::new(&candidate.working_set, &planning);
-        let mut ability = ability_rounds::resolve_ability_rounds(
-            &ability_evaluator,
-            &ability_resolver,
-            aos_ability_model::ABILITY_LIMITS_V1.max_resolver_rounds,
-        )
-        .context("resolving the final ability module fixed point")?;
-        ability
-            .fixed_point
-            .bind_checked_planning(&planning, &ability.selections)
-            .context("binding final module selections to the authenticated ability plan")?;
-        candidate.manifest = ability.manifest;
-        candidate.ability_fixed_point = ability.fixed_point;
+        let candidate = run_fixpoint(&inputs, &evaluator).map_err(eval_command_failure)?;
         let selected: Vec<String> = candidate
             .working_set
             .iter()
@@ -897,41 +866,6 @@ fn validate_registry_authority(
         "immutable package authority differs from the synchronized snapshot"
     );
     Ok(())
-}
-
-fn replay_candidate_ability_plan(
-    candidate: &FixpointOutcome,
-) -> Result<aos_ability_plan::VerifiedPlanningSnapshot> {
-    let manifest: materialize::ConfigManifest =
-        serde_json::from_str(&candidate.manifest).context("decoding candidate config manifest")?;
-    let activation = manifest
-        .inputs
-        .ability_activation
-        .as_ref()
-        .context("configuration evaluation requires authenticated ability activation inputs")?;
-
-    let operator_authority = ability_policy_authority::OperatorPolicyAuthorityStore::open()
-        .context("opening operator ability-policy authority")?;
-    let inputs = ability_activation::VerifiedAbilityActivationInputs::load_for_planning(
-        activation,
-        &operator_authority,
-    )?;
-    let documents = candidate
-        .working_set
-        .iter()
-        .filter_map(|member| {
-            member
-                .contract
-                .as_ref()
-                .map(|contract| (contract.document.clone(), contract.interfaces.clone()))
-        })
-        .collect::<Vec<_>>();
-    let catalog = crate::package_contract::VerifiedPackagePlanningCatalog::from_resolved_contracts(
-        documents,
-    )?;
-    let mut evaluator =
-        native_activation::production_evaluator_for_store_view(&manifest.inputs.store_view)?;
-    ability_activation::specialize_planning(&inputs, &catalog, &mut evaluator)
 }
 
 /// Renders one provider-discovery step for the dry-run JSON contract.
@@ -1163,12 +1097,8 @@ fn enrich_manifest(
         .and_then(|inputs| inputs.remove("ability_activation"));
 
     enrich_runtime_projection(object, runtime)?;
-    let ability_activation = enrich_ability_activation(
-        ability_activation,
-        runtime,
-        &outcome.ability_fixed_point,
-        &cmd.store_view,
-    )?;
+    let ability_activation =
+        enrich_ability_activation(ability_activation, runtime, &cmd.store_view)?;
     if let Some(activation) = &ability_activation {
         retain_ability_sidecar_roots(object, activation)?;
     }
@@ -1334,7 +1264,6 @@ fn enrich_manifest(
 fn enrich_ability_activation(
     input: Option<serde_json::Value>,
     runtime: &runtime::RuntimeResolution,
-    fixed_point: &ability_rounds::AbilityFixedPointProjection,
     store_view: &store_view::StoreViewLocator,
 ) -> Result<Option<serde_json::Value>> {
     let requires_effect_activation =
@@ -1371,10 +1300,6 @@ fn enrich_ability_activation(
     object.insert(
         "schema".to_string(),
         serde_json::Value::String(materialize::AbilityActivationInput::SCHEMA.to_string()),
-    );
-    object.insert(
-        "fixed_point".to_string(),
-        serde_json::to_value(fixed_point).context("serializing final ability fixed point")?,
     );
     Ok(Some(input))
 }

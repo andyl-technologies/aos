@@ -2230,14 +2230,7 @@ mod tests {
             ],
             desired_state: sidecar("desired-state"),
             authenticated_policy_set: sidecar("policy-set"),
-            fixed_point: Some(
-                crate::config_eval::ability_rounds::AbilityFixedPointProjection {
-                    binding_plan: Some(aos_ability_model::PlanId(
-                        aos_contract::Sha256Digest::of_bytes("empty-test-binding-plan"),
-                    )),
-                    ..Default::default()
-                },
-            ),
+            execution_observer: None,
         });
 
         manifest.validate().unwrap();
@@ -2279,7 +2272,7 @@ mod tests {
             ],
             desired_state: sidecar("desired-state"),
             authenticated_policy_set: sidecar("policy-set"),
-            fixed_point: None,
+            execution_observer: None,
         });
         let mut encoded = serde_json::to_value(manifest).unwrap();
         encoded["inputs"]["ability_activation"]["packages"] = serde_json::json!([]);
