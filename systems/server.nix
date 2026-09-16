@@ -23,10 +23,10 @@
     maxVerityMiB = 16;
     maxInitrdMiB = 132;
     maxDownloadMiB = 768;
-    # The AArch64 kernel leaves converted VHD objects above the raw limit.
+    # VHD block allocation adds a small fixed overhead above 800 MiB on AArch64.
     maxConvertedDownloadMiB =
       lib.mkIf
-      (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") (lib.mkDefault 800);
+      (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") (lib.mkDefault 801);
   };
 
   # The service modules retain backwards-compatible enabled defaults. Keep
