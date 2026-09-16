@@ -753,6 +753,7 @@ fn node_kind(node: &NodeKey) -> &'static str {
     match node {
         NodeKey::Interface(_) => "Interface",
         NodeKey::InterfaceSelector(_) => "Interface selector",
+        NodeKey::Implementation(_) => "Implementation",
         NodeKey::Package(_) => "Package",
         NodeKey::Request(_) => "Request",
         NodeKey::Binding(_) => "Binding",
@@ -856,6 +857,13 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
+
+    #[test]
+    fn implementation_nodes_have_an_operator_label() {
+        let node = NodeKey::Implementation(Sha256Digest::of_bytes("implementation"));
+
+        assert_eq!(node_kind(&node), "Implementation");
+    }
 
     #[test]
     fn successful_fixture_switches_projection_and_expands_then_collapses_boundary()
