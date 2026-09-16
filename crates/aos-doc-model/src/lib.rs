@@ -42,9 +42,8 @@ pub use ability_nar::{
     MAX_PACKAGE_ABILITY_NAR_BYTES, PackageAbilityDocuments, decode_package_ability_nar,
 };
 pub use ability_reference::{
-    ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1, ABILITY_REFERENCE_SCHEMA, AbilityExportReference,
-    AbilityHandlerReference, MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference,
-    ability_reference_supported_features,
+    ABILITY_REFERENCE_SCHEMA, AbilityExportReference, AbilityHandlerReference,
+    MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference, ability_reference_supported_features,
 };
 pub use nar::decode_single_file_nar;
 
@@ -802,9 +801,9 @@ impl PackageDocumentationProjection {
             for requirement in &reference.requirements {
                 rows.push(requirement_search_row("package", requirement));
             }
-            for export in &reference.exports {
-                let consumer = format!("export:{}", export.name.as_str());
-                for requirement in &export.requirements {
+            for implementation in &reference.implementations {
+                let consumer = format!("implementation:{}", implementation.name.as_str());
+                for requirement in &implementation.requirements {
                     rows.push(requirement_search_row(&consumer, requirement));
                 }
             }

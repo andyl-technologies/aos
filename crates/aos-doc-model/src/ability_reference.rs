@@ -24,9 +24,6 @@ use crate::{
 /// Exact schema discriminator for generated package ability reference data.
 pub const ABILITY_REFERENCE_SCHEMA: &str = "aos.package-ability-reference/v1";
 
-/// Required feature identifying per-export provider requirements in references.
-pub const ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1: &str =
-    "ability-reference-provider-requirements-v1";
 /// Maximum canonical reference size admitted by version 1.
 pub const MAX_ABILITY_REFERENCE_BYTES: usize = 4 * 1024 * 1024;
 
@@ -40,11 +37,7 @@ pub const MAX_ABILITY_REFERENCE_BYTES: usize = 4 * 1024 * 1024;
 /// Returns an error if the package reader or reference-specific feature set
 /// cannot be constructed.
 pub fn ability_reference_supported_features() -> Result<BTreeSet<RequiredFeature>> {
-    let mut supported = package_source_supported_features().map_err(invalid_model)?;
-    supported.insert(
-        RequiredFeature::new(ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1).map_err(invalid_model)?,
-    );
-    Ok(supported)
+    package_source_supported_features().map_err(invalid_model)
 }
 
 /// One public export and the exact interface identity it implements.
@@ -57,9 +50,6 @@ pub struct AbilityExportReference {
     pub interface: InterfaceKey,
     /// Identifies the separately authenticated provider implementation.
     pub implementation: Sha256Digest,
-    /// Lists abilities consumed by this export's provider implementation.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub requirements: Vec<RequirementDeclaration>,
 }
 
 /// One public operation-handler schema without its executable artifact path.
@@ -127,9 +117,6 @@ impl PackageAbilityReference {
         let manifest = encode_canonical(package).map_err(invalid_model)?;
         let manifest_sha256 = Sha256Digest::of_bytes(&manifest);
         let package_digest = package.content_digest().map_err(invalid_model)?;
-        let provider_requirements_feature =
-            RequiredFeature::new(ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
-                .map_err(invalid_model)?;
         let interfaces = package
             .interfaces
             .iter()
@@ -175,7 +162,7 @@ impl PackageAbilityReference {
                     }
                 }
             }
-            let provider = matching_provider.ok_or_else(|| {
+            matching_provider.ok_or_else(|| {
                 invalid(format!(
                     "export '{}' has no exact provider implementation",
                     export.name.as_str()
@@ -186,7 +173,6 @@ impl PackageAbilityReference {
                 name: export.name.clone(),
                 interface: export.interface.clone(),
                 implementation: export.implementation,
-                requirements: provider.requirements.clone(),
             });
         }
 
@@ -196,15 +182,9 @@ impl PackageAbilityReference {
             .iter()
             .map(|(name, handler)| handler_reference(name, handler))
             .collect();
-        let mut required_features = package.required_features.clone();
-        if !required_features.contains(&provider_requirements_feature) {
-            required_features.push(provider_requirements_feature);
-        }
-        required_features.sort();
-
         let reference = Self {
             schema: ABILITY_REFERENCE_SCHEMA.to_string(),
-            required_features,
+            required_features: package.required_features.clone(),
             package: package.package.name.clone(),
             version: package.package.version.clone(),
             manifest_sha256,
@@ -240,6 +220,35 @@ impl PackageAbilityReference {
                     export.name.as_str()
                 ))
             })
+    }
+
+    /// Resolves the exact provider implementation selected by an export.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the export's interface and implementation identity
+    /// do not select exactly one retained implementation.
+    pub fn implementation_for_export(
+        &self,
+        export: &AbilityExportReference,
+    ) -> Result<&ProviderImplementation> {
+        let mut matches = self.implementations.iter().filter(|implementation| {
+            implementation.interface == export.interface
+                && implementation.descriptor_digest().ok() == Some(export.implementation)
+        });
+        let implementation = matches.next().ok_or_else(|| {
+            invalid(format!(
+                "export '{}' has no retained provider implementation",
+                export.name.as_str()
+            ))
+        })?;
+        if matches.next().is_some() {
+            return Err(invalid(format!(
+                "export '{}' repeats its retained provider implementation",
+                export.name.as_str()
+            )));
+        }
+        Ok(implementation)
     }
 
     /// Derives transient option documents from the checked signed declarations.
@@ -397,6 +406,11 @@ impl PackageAbilityReference {
         let mut implementation_identities = BTreeSet::new();
         for implementation in &self.implementations {
             let descriptor = implementation.descriptor_digest().map_err(invalid_model)?;
+            if !interface_identities.contains_key(&implementation.interface) {
+                return Err(invalid(
+                    "ability implementation references an interface outside the package declarations",
+                ));
+            }
             if !implementation_names.insert(implementation.name.clone()) {
                 return Err(invalid("ability reference repeats an implementation name"));
             }
@@ -425,22 +439,6 @@ impl PackageAbilityReference {
                     "ability reference exports are not in canonical order",
                 ));
             }
-            if export.requirements.len() > max_items {
-                return Err(invalid(
-                    "ability export requirements exceed their collection limit",
-                ));
-            }
-            let mut previous_requirement = None;
-            for requirement in &export.requirements {
-                if previous_requirement
-                    .is_some_and(|previous: &LocalKey| previous >= &requirement.alias)
-                {
-                    return Err(invalid(
-                        "ability export requirements are not in canonical order",
-                    ));
-                }
-                previous_requirement = Some(&requirement.alias);
-            }
             if !interface_identities.contains_key(&export.interface) {
                 return Err(invalid(
                     "ability export references an interface outside the package declarations",
@@ -454,19 +452,6 @@ impl PackageAbilityReference {
                 ));
             }
             previous_export = Some(&export.name);
-        }
-        if self
-            .exports
-            .iter()
-            .any(|export| !export.requirements.is_empty())
-            && !self
-                .required_features
-                .iter()
-                .any(|feature| feature.as_str() == ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
-        {
-            return Err(invalid(
-                "ability export requirements require provider-requirement reference semantics",
-            ));
         }
         let mut previous_handler = None;
         for handler in &self.handlers {
@@ -672,7 +657,6 @@ mod tests {
             name: LocalKey::new("echo").expect("valid export name"),
             interface: interface_key,
             implementation: implementation_key,
-            requirements: Vec::new(),
         });
         let bytes = reference.canonical_json().expect("encode reference");
 
@@ -680,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_requirements_round_trip_with_explicit_reader_semantics() {
+    fn provider_requirements_are_resolved_from_the_exact_implementation() {
         let supported = ability_reference_supported_features().expect("reader features");
         let interface = decode_canonical::<InterfaceDocument>(
             include_bytes!("../../../tests/abilities/fixtures/interface.json"),
@@ -699,11 +683,6 @@ mod tests {
             fallback: None,
         };
         let mut reference = reference();
-        reference.required_features.push(
-            RequiredFeature::new(ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
-                .expect("provider requirements feature"),
-        );
-        reference.required_features.sort();
         reference
             .interfaces
             .insert(LocalKey::new("echo").expect("interface alias"), interface);
@@ -716,17 +695,18 @@ mod tests {
             name: LocalKey::new("echo").expect("export name"),
             interface: interface_key,
             implementation: implementation_key,
-            requirements: vec![requirement],
         });
 
         let bytes = reference.canonical_json().expect("encode reference");
         let decoded = PackageAbilityReference::from_canonical_json(&bytes, &supported)
             .expect("decode provider requirements");
         assert_eq!(decoded, reference);
-
-        reference
-            .required_features
-            .retain(|feature| feature.as_str() != ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1);
-        assert!(reference.canonical_json().is_err());
+        assert_eq!(
+            decoded
+                .implementation_for_export(&decoded.exports[0])
+                .expect("export implementation")
+                .requirements,
+            vec![requirement]
+        );
     }
 }

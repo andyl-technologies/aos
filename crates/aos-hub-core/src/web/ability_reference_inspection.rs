@@ -2,10 +2,10 @@
 
 use std::fmt::Write as _;
 
-use anyhow::{ensure, Context as _, Result};
-use aos_ability_inspect::{
-    GraphQuery, NodeKey, ReferenceGraphSlice, ReferenceInspectionInput, ReferenceInspectionView,
-};
+use anyhow::{Context as _, Result, ensure};
+#[cfg(test)]
+use aos_ability_inspect::{GraphQuery, ReferenceGraphSlice};
+use aos_ability_inspect::{ReferenceInspectionInput, ReferenceInspectionView};
 
 use super::ability_reference_page::PackageAbilityReferencePanel;
 use super::render::escape;
@@ -20,10 +20,15 @@ use super::render::escape;
 ///
 /// Returns an error if locator identity or canonical bytes differ from the
 /// decoded reference, or if inspection checking or querying fails.
+#[cfg(test)]
 pub(super) fn checked_slice(
     panel: &PackageAbilityReferencePanel,
     query: &GraphQuery,
 ) -> Result<ReferenceGraphSlice> {
+    checked_view(panel)?.query(query).map_err(Into::into)
+}
+
+fn checked_view(panel: &PackageAbilityReferencePanel) -> Result<ReferenceInspectionView> {
     let reference_bytes = panel
         .reference
         .canonical_json()
@@ -42,26 +47,12 @@ pub(super) fn checked_slice(
     let input = ReferenceInspectionInput::new(panel.reference.clone())?;
     let digest = aos_contract::Sha256Digest::of_bytes(&input.canonical_bytes()?);
     let checked = input.check(Some(digest))?;
-    let view = ReferenceInspectionView::from_checked(&checked)?;
-    view.query(query).map_err(Into::into)
+    ReferenceInspectionView::from_checked(&checked).map_err(Into::into)
 }
 
 /// Renders the canonical shared graph summary used as the page's primary map.
 pub(super) fn section(panel: &PackageAbilityReferencePanel) -> Result<String> {
-    let root = NodeKey::Package(panel.reference.manifest_sha256);
-    let max_nodes = 1usize
-        .saturating_add(panel.reference.exports.len())
-        .saturating_add(
-            panel
-                .reference
-                .requirements
-                .iter()
-                .map(|requirement| requirement.accepted_interfaces.len())
-                .sum::<usize>(),
-        )
-        .min(aos_ability_inspect::INSPECTION_QUERY_MAX_NODES);
-    let query = GraphQuery::new([root], 1, max_nodes.max(1));
-    let slice = checked_slice(panel, &query)?;
+    let slice = checked_view(panel)?.complete_slice()?;
 
     let mut html = String::from(
         "<h3>Checked public contract graph</h3><p class=\"dim\">This bounded graph uses the same typed identities and relationship meanings as <code>aos ability inspect</code> and editor tooling.</p>",
@@ -119,6 +110,7 @@ fn canonical_text(value: &impl serde::Serialize) -> Result<String> {
 fn node_kind(node: &aos_ability_inspect::InspectionNode) -> &'static str {
     match node {
         aos_ability_inspect::InspectionNode::Package { .. } => "package",
+        aos_ability_inspect::InspectionNode::Implementation { .. } => "implementation",
         aos_ability_inspect::InspectionNode::Interface { .. } => "interface",
         aos_ability_inspect::InspectionNode::InterfaceReference { .. } => "interface reference",
         _ => "deployment-only node",

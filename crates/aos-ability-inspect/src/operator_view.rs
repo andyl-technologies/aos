@@ -1243,6 +1243,7 @@ fn node_environment(node: &InspectionNode) -> Option<EnvironmentId> {
         InspectionNode::Interface { .. }
         | InspectionNode::InterfaceReference { .. }
         | InspectionNode::Package { .. }
+        | InspectionNode::Implementation { .. }
         | InspectionNode::Operation { .. }
         | InspectionNode::Decision { .. }
         | InspectionNode::Merge { .. }
@@ -1255,6 +1256,7 @@ fn plan_state(node: &InspectionNode) -> OperatorNodeState {
         InspectionNode::Interface { .. }
         | InspectionNode::InterfaceReference { .. }
         | InspectionNode::Package { .. }
+        | InspectionNode::Implementation { .. }
         | InspectionNode::Request { .. } => OperatorNodeState::Declared,
         InspectionNode::Provider { availability, .. } => match availability {
             crate::view::ProviderAvailability::Declared => OperatorNodeState::Declared,

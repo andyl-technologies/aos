@@ -286,7 +286,7 @@ mod tests {
             InterfaceName::new("aos.test.internal").expect("interface name");
         unexported_interface.interface.description =
             "Describes an unexported package-owned interface.".to_string();
-        let export_requirement = RequirementDeclaration {
+        let implementation_requirement = RequirementDeclaration {
             description: "Describes this consumed ability.".to_string(),
             alias: key("service-runtime"),
             accepted_interfaces: vec![interface_key.clone().into()],
@@ -306,7 +306,7 @@ mod tests {
                 nar_hash: Sha256Digest::of_bytes(b"provider-nar"),
                 closure: Sha256Digest::of_bytes(b"provider-closure"),
             },
-            requirements: vec![export_requirement.clone()],
+            requirements: vec![implementation_requirement],
             desired_schema: None,
             provider_module: None,
             handler: None,
@@ -318,11 +318,7 @@ mod tests {
             .expect("implementation identity");
         let reference = aos_doc_model::PackageAbilityReference {
             schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.into(),
-            required_features: vec![
-                RequiredFeature::new("abilities-v1").expect("feature"),
-                RequiredFeature::new(aos_doc_model::ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
-                    .expect("provider requirements feature"),
-            ],
+            required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
             package: key("demo"),
             version: "1.2.3".into(),
             manifest_sha256: Sha256Digest::of_bytes(b"manifest"),
@@ -338,7 +334,6 @@ mod tests {
                 name: key("server"),
                 interface: interface_key.clone(),
                 implementation: implementation_key,
-                requirements: vec![export_requirement],
             }],
             requirements: vec![RequirementDeclaration {
                 description: "Describes this consumed ability.".to_string(),
@@ -448,7 +443,7 @@ mod tests {
         assert!(html.contains("Consumed abilities"));
         assert!(html.contains("<strong>network</strong>"));
         assert!(html.contains("<strong>service-runtime</strong>"));
-        assert!(html.contains("consumed by <code>export server</code>"));
+        assert!(html.contains("consumed by <code>implementation server</code>"));
         assert!(html.contains("public schemas only, never deployed instance values"));
         assert!(html.contains("or observed runtime state"));
         assert!(!html.contains("Private deployment state"));
@@ -459,8 +454,7 @@ mod tests {
     fn shared_inspector_rejection_hides_contract_and_deployment_projections() {
         let mut reference = panel();
         reference.reference.required_features = vec![
-            RequiredFeature::new(aos_doc_model::ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
-                .expect("provider requirements feature"),
+            RequiredFeature::new("abilities-v1").expect("abilities feature"),
             RequiredFeature::new("future-reference-semantics-v1").expect("future feature"),
         ];
         reference.locator.canonical_json = reference
@@ -515,8 +509,6 @@ mod tests {
             .expect("implementation identity");
         panel.reference.exports[0].interface = interface_key.clone();
         panel.reference.exports[0].implementation = implementation_key;
-        panel.reference.exports[0].requirements[0].accepted_interfaces =
-            vec![interface_key.clone().into()];
         panel.reference.requirements[0].accepted_interfaces = vec![interface_key.into()];
         panel.locator.canonical_json = panel
             .reference
