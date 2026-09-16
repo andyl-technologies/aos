@@ -5,7 +5,6 @@
   lib,
   options,
   packageName,
-  pkgs,
   ...
 }: let
   # This digest only stabilizes human-readable derivation names. The complete
@@ -1119,44 +1118,34 @@
       resource: qualificationChecks.unitIdentitiesFor resource != []
     )
     selectedServiceResources;
-  staticArtifactFor = resource: let
+  staticPlanFor = resource: let
     realization = builtins.toJSON resource.realization;
-    rendered =
-      pkgs.runCommand (derivationDisplayName "systemd-ability" realization) {
-        inherit realization;
-        passAsFile = ["realization"];
-      } ''
-        ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider render
-      '';
-  in
-    rendered;
-  staticNativeArtifactFor = resource: let
+  in {
+    name = derivationDisplayName "systemd-ability" realization;
+    input = realization;
+  };
+  staticNativePlanFor = resource: let
     input = builtins.toJSON {
       schema = "aos.systemd.native-resource-static-input/v1";
       inherit (resource) kind;
       desired = resource.value;
       inherit (resource) realization;
     };
-    rendered =
-      pkgs.runCommand (derivationDisplayName "systemd-native-resource" input) {
-        realization = input;
-        passAsFile = ["realization"];
-      } ''
-        ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider render
-      '';
-  in
-    rendered;
-  staticArtifacts =
+  in {
+    name = derivationDisplayName "systemd-native-resource" input;
+    inherit input;
+  };
+  staticPlans =
     if config.aos.abilities.compositionPendingRequests != {}
     then []
     else
-      builtins.map staticArtifactFor (selectedResources ++ selectedServiceResources)
-      ++ builtins.map staticNativeArtifactFor selectedNativeResources;
-  managerWatchdogArtifacts =
+      builtins.map staticPlanFor (selectedResources ++ selectedServiceResources)
+      ++ builtins.map staticNativePlanFor selectedNativeResources;
+  managerWatchdogPlans =
     if config.aos.abilities.compositionPendingRequests != {}
     then []
-    else builtins.map staticArtifactFor selectedManagerWatchdogResources;
-  networkConfigurationArtifacts =
+    else builtins.map staticPlanFor selectedManagerWatchdogResources;
+  networkConfigurationPlans =
     if config.aos.abilities.compositionPendingRequests != {}
     then []
     else
@@ -1166,16 +1155,10 @@
           desired = resource.value;
           inherit (resource) realization;
         };
-        rendered =
-          pkgs.runCommand (derivationDisplayName "systemd-network-configuration" input) {
-            realization = input;
-            passAsFile = ["realization"];
-          } ''
-            ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider render
-          '';
       in {
-        root = rendered;
-        resolver_enabled = resource.value.resolver.enabled;
+        name = derivationDisplayName "systemd-network-configuration" input;
+        inherit input;
+        resolverEnabled = resource.value.resolver.enabled;
       })
       selectedNetworkConfigurationResources;
   serviceProviderImplementations = builtins.listToAttrs (builtins.map (featureName: let
@@ -1245,9 +1228,9 @@ in {
       };
     };
 
-  config.systemd.providerUnitArtifacts = staticArtifacts;
-  config.systemd.providerManagerConfigurationArtifacts = managerWatchdogArtifacts;
-  config.systemd.providerNetworkConfigurationArtifacts = networkConfigurationArtifacts;
+  config.systemd.providerUnitPlans = staticPlans;
+  config.systemd.providerManagerConfigurationPlans = managerWatchdogPlans;
+  config.systemd.providerNetworkConfigurationPlans = networkConfigurationPlans;
   config.aos.contributions.runtimeChecks =
     lib.mkIf (
       lib.hasAttrByPath ["aos" "contributions" "runtimeChecks"] options

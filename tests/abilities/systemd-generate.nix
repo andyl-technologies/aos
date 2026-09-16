@@ -20,6 +20,21 @@
   lib,
 }: let
   systemdModule = import ./_systemd-platform-module.nix;
+  unselectedSystemdModule = args:
+    import ../../pkgs/system/_systemd-abilities/platform/system.nix (
+      args
+      // {
+        abilitySelection = null;
+        packageArtifactFor = selector: let
+          packageName =
+            if selector.package == "self"
+            then "systemd"
+            else selector.package;
+          package = pkgs.${packageName};
+        in
+          package.${selector.output} or package;
+      }
+    );
   systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
 
   # Minimal module set: just system.nix plus a synthetic config module
@@ -100,6 +115,10 @@
     modules = [systemdModule syntheticConfig];
     inherit pkgs lib;
   };
+  unselectedResult = lib.evalModules {
+    modules = [unselectedSystemdModule];
+    inherit pkgs lib;
+  };
 
   rawTypedCrossOwnerRejected =
     !(builtins.tryEval (
@@ -176,6 +195,12 @@
     builtins.match ".*${lib.escapeRegex needle}.*" haystack != null;
 
   evalChecks = [
+    {
+      cond =
+        unselectedResult.config.system.build.systemdUnitBodies == {}
+        && unselectedResult.config.systemd.units == {};
+      msg = "systemd-generate: unselected systemd manager emitted platform configuration";
+    }
     {
       cond = !lib.isDerivation pureUnits;
       msg = "systemd-generate: generateUnits output must be a pure attrset";

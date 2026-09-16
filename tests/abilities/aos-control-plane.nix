@@ -193,4 +193,4 @@ in
   assert abilities.compositionPendingRequests == {};
   assert builtins.length resources > 0;
   assert builtins.all (unit: builtins.elem unit realizedUnitNames) expectedControlPlaneUnits;
-  assert builtins.length complete.config.systemd.providerUnitArtifacts > 0; true
+  assert builtins.length complete.config.systemd.providerUnitPlans > 0; true

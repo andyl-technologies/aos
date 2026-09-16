@@ -323,7 +323,7 @@ in
   assert !missingUnitIdentity.success;
   assert !mismatchedAuthority.success;
   assert !missingReadAuthority.success;
-  assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 1;
+  assert builtins.length evaluation.config.systemd.providerUnitPlans == 1;
   assert !(desired.realization ? revision_receipt);
   assert successStatus.template == "0 2";
   assert searchPath.template != "";

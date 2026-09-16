@@ -266,4 +266,4 @@ in
   assert abilities.implementations."systemd:systemd-named-credential-resolution".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
   assert abilities.implementations."systemd:systemd-credential-delivery".handlerDescriptor.entryPoint == "bin/aos-systemd-provider";
   assert declaredHandlerEntryPoints == ["bin/aos-systemd-provider"];
-  assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 4; true
+  assert builtins.length evaluation.config.systemd.providerUnitPlans == 4; true
