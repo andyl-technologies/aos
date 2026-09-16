@@ -324,18 +324,14 @@ audit protocol.
 
 ## Inspect the accepted input and result
 
-The transient boot state is under `/run/aos-metadata`:
+The selected storage provider keeps its private transient artifacts under
+`/run/aos/storage-provisioning`:
 
 ```sh
-cat /run/aos-metadata/platform.env
-cat /run/aos-metadata/provisioning-plan.json
-find /run/aos-metadata/repart.d -maxdepth 3 -type f -print
-
-if test -r /run/aos-metadata/storage-coherence; then
-  cat /run/aos-metadata/storage-coherence
-else
-  echo "storage coherence was not evaluated this boot"
-fi
+systemctl status aos-ability-initrd-controller.service
+journalctl -b -u aos-ability-initrd-controller.service
+cat /run/aos/storage-provisioning/provisioning-plan.json
+find /run/aos/storage-provisioning/repart.d -maxdepth 3 -type f -print
 ```
 
 The durable record is under `/var/lib/aos-provisioning`:
@@ -343,9 +339,6 @@ The durable record is under `/var/lib/aos-provisioning`:
 ```sh
 cat /var/lib/aos-provisioning/audit.json
 cat /var/lib/aos-provisioning/initial-plan.json
-cmp \
-  /var/lib/aos-provisioning/current/host.nix \
-  /run/aos-metadata/host.nix
 ```
 
 The stage-2 source result and activation evidence are:
