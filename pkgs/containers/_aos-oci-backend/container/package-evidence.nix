@@ -142,23 +142,7 @@
   sourcePaths =
     uniqueByPath (builtins.concatMap (entry: entry.sourceValues) entries);
 
-  uniqueByPath = values: let
-    step = state: value: let
-      path = discard value;
-    in
-      if builtins.elem path state.seen
-      then state
-      else {
-        seen = state.seen ++ [path];
-        result = state.result ++ [value];
-      };
-  in
-    (builtins.foldl' step {
-        seen = [];
-        result = [];
-      }
-      values)
-    .result;
+  uniqueByPath = lib.uniqueBy discard;
 
   catalog = map (entry: builtins.removeAttrs entry ["sourceValues"]) entries;
 in {

@@ -169,6 +169,27 @@ rec {
   in
     go [] list;
 
+  ## Remove duplicate elements by a derived key, preserving first occurrence order.
+  ## # Type
+  ## `(a -> b) -> [a] -> [a]`
+  uniqueBy = keyFn: list: let
+    step = state: value: let
+      key = keyFn value;
+    in
+      if elem key state.seen
+      then state
+      else {
+        seen = state.seen ++ [key];
+        values = state.values ++ [value];
+      };
+  in
+    (foldl' step {
+        seen = [];
+        values = [];
+      }
+      list)
+    .values;
+
   ## # Partitioning
 
   ## Split a list into two based on a predicate.

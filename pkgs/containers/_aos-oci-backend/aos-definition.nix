@@ -18,7 +18,7 @@
   # explicitly; the server golden profile is not the authority for the base
   # image's documented command surface.
   cliRoots = [pkgs.aos pkgs.aos.apm pkgs.aos.apr];
-  packageRoots = lib.unique (goldenRoots ++ cliRoots);
+  packageRoots = lib.uniqueBy builtins.toString (goldenRoots ++ cliRoots);
 in {
   config = {
     name = "aos";

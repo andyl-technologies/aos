@@ -26,6 +26,10 @@
       pkgs.coreutils
       pkgs.ability-package-smoke
     ];
+    aos.boot.initrd.nonPackageRuntimeArtifacts = [
+      (builtins.toString pkgs.coreutils)
+      (builtins.toString pkgs.coreutils)
+    ];
     environment.systemPackages = [pkgs.ability-package-smoke];
   };
   system = mkSystem {
@@ -42,6 +46,23 @@
   hostAbilities = system.config.system.build.staticAbilityContract;
   assembly = system.config.system.build.unsignedImageAssembly;
   baseLib = system.config.aos.config.evalAtBoot.baseLib;
+  initrdPackageRootPaths = builtins.map builtins.toString system.config.aos.boot.initrd.packageRoots;
+  initrdRuntimeRoots = system.config.aos.boot.initrd.runtimeRoots;
+  baseLibProbe = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
+  invalidPackageRootEvaluation = builtins.tryEval (builtins.deepSeq
+    ((mkSystem {
+        modules = [
+          ../../systems/server.nix
+          {aos.boot.initrd.packageRoots = [baseLibProbe];}
+        ];
+        systemName = "invalid-initrd-package-root";
+      })
+      .config
+      .aos
+      .boot
+      .initrd
+      .packageRoots)
+    true);
   frozenHostAbilities = baseLib.passthru.frozenArtifacts."host-static-ability-contract";
   moduleAbi = system.config.aos.system.moduleAbi;
   emptyHostSource = pkgs.runCommand "source" {} ''
@@ -58,6 +79,11 @@
   securityDisabledHostServices = securityDisabledSystem.config.systemd.services;
 in
   assert assembly != null;
+  assert !invalidPackageRootEvaluation.success;
+  assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) initrdPackageRootPaths) == 1;
+  assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) initrdRuntimeRoots) == 1;
+  assert !(builtins.elem baseLibProbe initrdPackageRootPaths);
+  assert builtins.elem (builtins.toString baseLib) initrdRuntimeRoots;
   assert securityDisabledInitrdServices ? aos-ability-initrd-controller;
   assert securityDisabledInitrdServices ? aos-ability-initrd-handoff-barrier;
   assert securityDisabledInitrdServices.aos-ability-initrd-controller.requiredBy

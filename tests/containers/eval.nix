@@ -149,7 +149,7 @@ in
   assert server.config.system.build.defaultContainer.coordination.definitionAttribute
   == "systems.container-eval.build.containers.aos";
   assert map builtins.toString aos.packageRoots
-  == map builtins.toString (lib.unique (goldenRoots ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr]));
+  == map builtins.toString (lib.uniqueBy builtins.toString (goldenRoots ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr]));
   assert aos.packageManagement
   == {
     enable = true;

@@ -42,6 +42,7 @@
       "qemu_fw_cfg"
     ]
     ++ hardwareAutoloadedInitrdModules;
+  uniqueStoreRoots = lib.uniqueBy (root: builtins.toString root);
 in {
   imports = [./_kernel-parameter-contributions.nix];
 
@@ -165,21 +166,42 @@ in {
         '';
       };
 
-      ## Complete package-root set whose runtime closures are copied into the
-      ## initrd's /nix/store and whose authenticated modules participate in
-      ## the initrd ability fixed point. The selected initrd manager supplies
-      ## the base roots; features append their pre-switch-root dependencies.
+      ## Complete package-root set whose authenticated modules participate in
+      ## the initrd ability fixed point and static contract. The selected
+      ## initrd manager supplies the base roots; features append their
+      ## pre-switch-root package dependencies.
       packageRoots = lib.mkOption {
         type = lib.types.listOf lib.types.package;
         default = [];
-        apply = lib.unique;
+        apply = uniqueStoreRoots;
         internal = true;
         contributable = true;
         description = ''
-          Exact packages whose closures and authenticated declarations form
-          the initrd. Anything an initrd unit references by store path must be
-          reachable through this list; package selection and archive assembly
-          consume this same value.
+          Exact derivations whose authenticated declarations form the initrd
+          static contract. Non-package paths belong in
+          `aos.boot.initrd.nonPackageRuntimeArtifacts`.
+        '';
+      };
+
+      nonPackageRuntimeArtifacts = lib.mkOption {
+        type = lib.types.listOf lib.types.pathInStore;
+        default = [];
+        apply = uniqueStoreRoots;
+        internal = true;
+        description = ''
+          Exact non-package store artifacts required before switch-root. These
+          paths are copied into the initrd but do not author package
+          declarations in its static ability contract.
+        '';
+      };
+
+      runtimeRoots = lib.mkOption {
+        type = lib.types.listOf lib.types.pathInStore;
+        readOnly = true;
+        internal = true;
+        description = ''
+          Canonical store-path union copied into the initrd. It is derived from
+          package roots and explicitly authored non-package runtime artifacts.
         '';
       };
     };
@@ -189,6 +211,10 @@ in {
     # Base initrd module manifest (see `baseInitrdModules` above). Contributed
     # as a def with `mkBefore` so feature modules append after it.
     aos.boot.initrd.modules = lib.mkBefore baseInitrdModules;
+    aos.boot.initrd.runtimeRoots = lib.unique (builtins.map builtins.toString (
+      config.aos.boot.initrd.packageRoots
+      ++ config.aos.boot.initrd.nonPackageRuntimeArtifacts
+    ));
 
     # Base kernel command line — always present.
     aos.boot.kernelParams = [

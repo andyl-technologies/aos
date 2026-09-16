@@ -154,7 +154,7 @@
     kernelModulePackages = config.aos.boot.initrd.modulePackages;
     firmwarePackages = config.aos.boot.initrd.firmwarePackages;
     loadModules = config.aos.boot.initrd.loadModules;
-    initrdPackages = config.aos.boot.initrd.packageRoots;
+    initrdRuntimeRoots = config.aos.boot.initrd.runtimeRoots;
     renderedUnits = plan.renderedUnits;
     renderedNetworks = plan.renderedNetworks;
     initrdStaticContract = checkedStaticContract;

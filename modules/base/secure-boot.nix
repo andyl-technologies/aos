@@ -529,7 +529,9 @@ in {
       ];
 
       # Ship the PCR public key into the initrd for first-boot sealing.
-      aos.boot.initrd.packageRoots = [pcrKeyForInitrd];
+      aos.boot.initrd.nonPackageRuntimeArtifacts = [
+        (builtins.toString pcrKeyForInitrd)
+      ];
       environment.etc."aos/pcr-sign.pem".source = "${pcrKeyForInitrd}/pcr.pem";
     })
 
