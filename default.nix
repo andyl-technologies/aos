@@ -241,7 +241,7 @@
       .aos
       .system
       .moduleAbi;
-    initrdStaticAbilityContract = initrdAbilityEvaluation.config.system.build.staticAbilityContract;
+    initrdStaticAbilityContract = hostPackageEvaluation.config.system.build.initrdStaticAbilityContract;
     initrdStaticContractPath = "${initrdStaticAbilityContract}/contract.json";
     initrdStaticContract = let
       storeViewLib = import ./lib/build/store-view.nix {inherit lib;};

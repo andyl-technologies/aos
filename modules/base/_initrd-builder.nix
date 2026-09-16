@@ -51,6 +51,7 @@
   loadModules,
   initrdUnits,
   initrdPackages,
+  initrdStaticAbilityContractBuild,
   initrdNetworkDir ? null,
   renderedUnits,
   renderedNetworks,
@@ -64,23 +65,6 @@
   keepBinutils ? false,
 }: let
   buildPkgs = pkgs.buildPackages;
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (buildPkgs) mkDerivation coreutils findutils gzip jq tar;
-    abilityContractValidator = buildPkgs.aos-ability-contract-validator;
-  };
-  bootPlatform =
-    if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
-    then {
-      os = "linux";
-      architecture = "amd64";
-    }
-    else if pkgs.stdenv.hostPlatform.system == "aarch64-linux"
-    then {
-      os = "linux";
-      architecture = "arm64";
-    }
-    else throw "initrd static ability contracts require a supported Linux image platform";
   inherit
     (pkgs)
     bash
@@ -101,19 +85,6 @@
     zstd
     ;
   uniqueInitrdPackages = lib.unique initrdPackages;
-  initrdStaticAbilityContractBuild = oci.mkStaticAbilityContract {
-    pname = "aos-initrd-static-abilities";
-    artifactClass = "bootable";
-    executionStage = "initrd";
-    platform = bootPlatform;
-    targetPlatform = {
-      system = pkgs.stdenv.hostPlatform.constraints.os;
-      architecture = pkgs.stdenv.hostPlatform.constraints.cpu;
-    };
-    packageRoots = uniqueInitrdPackages;
-    packageRegistry = pkgs;
-    runtimeRoots = uniqueInitrdPackages;
-  };
   initrdStaticAbilityContract = initrdStaticAbilityContractBuild.artifact;
 
   initrdIntentModuleRoot = buildPkgs.writeTextFile {
