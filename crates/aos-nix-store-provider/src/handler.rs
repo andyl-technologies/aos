@@ -1,7 +1,6 @@
 //! Command dispatch and local Nix store database realization.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt as _;
@@ -10,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    AbilityValue, AccessMode, ArtifactReference, LocalKey, MethodSemantics, ResourceReference,
-    RevisionId,
+    AbilityValue, AccessMode, ArtifactReference, LocalKey, MethodReference, MethodSemantics,
+    ResourceReference, RevisionId,
 };
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
@@ -35,33 +34,21 @@ const PROVIDER_CONTEXT_SCHEMA: &str = "aos.nix.store-database-context/v1";
 const DATABASE_PATH: &str = "/nix/var/nix/db/db.sqlite";
 const MAX_REGISTRATION_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_REGISTRATION_RECORDS: usize = 1_000_000;
+const DATABASE_INTERFACE: &str = "aos.nix.store-database-effects";
+const CONTENT_OBJECT_INTERFACE: &str = "aos.artifact.content-addressed-object-operations";
 
-/// Selects one package-declared Nix store handler role.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NixStoreRole {
-    /// Converges and observes the local Nix store database.
+enum NixStoreRole {
     Database,
-    /// Commits, observes, and removes persistent content-addressed objects.
     ContentAddressedObject,
 }
 
 impl NixStoreRole {
-    /// Resolves a closed role from a package-installed handler entry point.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the executable name is not one of the entry
-    /// points published by the Nix store provider package.
-    pub fn from_entry_point(entry_point: &OsStr) -> Result<Self> {
-        let name = Path::new(entry_point)
-            .file_name()
-            .and_then(OsStr::to_str)
-            .context("Nix store handler entry point is not valid UTF-8")?;
-
-        match name {
-            "aos-nix-store-database-effects" => Ok(Self::Database),
-            "aos-content-addressed-object" => Ok(Self::ContentAddressedObject),
-            _ => bail!("entry point does not select a checked Nix store handler role"),
+    fn from_method(method: &MethodReference) -> Result<Self> {
+        match method.interface.name.as_str() {
+            DATABASE_INTERFACE => Ok(Self::Database),
+            CONTENT_OBJECT_INTERFACE => Ok(Self::ContentAddressedObject),
+            _ => bail!("selected interface does not belong to the Nix store provider"),
         }
     }
 }
@@ -93,7 +80,7 @@ impl NixStoreProvider {
     /// Returns an error when the wire schema, authority, provider context, or
     /// selected executable is invalid, or when a requested database command
     /// cannot complete within its supplied deadline.
-    pub fn handle(&self, role: NixStoreRole, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
+    pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
         let result = match purpose {
             "admit" => {
                 let request: AdmissionRequest = aos_contract::canonical::from_slice(
@@ -105,6 +92,7 @@ impl NixStoreProvider {
                     request.schema == ADMISSION_REQUEST_SCHEMA,
                     "unsupported admission schema"
                 );
+                let role = NixStoreRole::from_method(&request.method)?;
                 match role {
                     NixStoreRole::Database => serde_json::to_value(self.admit(request)?)?,
                     NixStoreRole::ContentAddressedObject => {
@@ -124,6 +112,11 @@ impl NixStoreProvider {
                     purpose == purpose_name(invocation.purpose),
                     "invocation purpose differs from argv"
                 );
+                ensure!(
+                    invocation.method_is_bound(),
+                    "invocation method differs from durable recovery authority"
+                );
+                let role = NixStoreRole::from_method(&invocation.method)?;
                 match role {
                     NixStoreRole::Database => serde_json::to_value(self.invoke(invocation)?)?,
                     NixStoreRole::ContentAddressedObject => {
@@ -922,21 +915,37 @@ mod tests {
         anyhow::anyhow!("test lock is poisoned")
     }
 
+    fn method(interface: &str) -> MethodReference {
+        serde_json::from_value(json!({
+            "interface": {
+                "name": interface,
+                "abi": 1,
+                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "method": "observe"
+        }))
+        .expect("method fixture is valid")
+    }
+
     #[test]
-    fn entry_points_select_only_package_declared_roles() {
+    fn authenticated_interfaces_select_only_package_declared_roles() {
         assert_eq!(
-            NixStoreRole::from_entry_point(OsStr::new("aos-nix-store-database-effects"))
-                .expect("database entry point selects its role"),
+            NixStoreRole::from_method(&method(DATABASE_INTERFACE))
+                .expect("database interface selects its role"),
             NixStoreRole::Database
         );
         assert_eq!(
-            NixStoreRole::from_entry_point(OsStr::new("aos-content-addressed-object"))
-                .expect("artifact entry point selects its role"),
+            NixStoreRole::from_method(&method(CONTENT_OBJECT_INTERFACE))
+                .expect("content interface selects its role"),
             NixStoreRole::ContentAddressedObject
         );
         assert!(
-            NixStoreRole::from_entry_point(OsStr::new("aos-nix-store-provider")).is_err(),
-            "the unqualified provider entry point must not select a role"
+            NixStoreRole::from_method(&method("aos.artifact.content-addressed-object")).is_err(),
+            "the public resource interface must not select a terminal role"
+        );
+        assert!(
+            NixStoreRole::from_method(&method("aos.example.unowned-effects")).is_err(),
+            "an unowned interface must not select a role"
         );
     }
 
