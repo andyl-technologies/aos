@@ -304,6 +304,42 @@ fn transition_groups_for_outcome(
     Ok(groups)
 }
 
+pub(super) fn source_transition_groups(
+    binding: &aos_ability_validate::CheckedBindingPlan,
+    enabled: &[super::SourceEnabledProvider],
+) -> Result<BTreeMap<(InstanceId, Sha256Digest), TransitionGroup>, TransitionError> {
+    let mut groups = BTreeMap::new();
+    for selected in binding.bindings() {
+        if selected.implementation.handler.is_some() {
+            continue;
+        }
+        let package =
+            selected
+                .provider_package
+                .ok_or_else(|| TransitionError::MissingImplementation {
+                    provider: selected.provider.clone(),
+                })?;
+        insert_group(
+            &mut groups,
+            selected.provider.clone(),
+            selected.implementation.clone(),
+            package,
+        )?;
+    }
+    for selected in enabled {
+        if selected.implementation.handler.is_some() {
+            continue;
+        }
+        insert_group(
+            &mut groups,
+            selected.instance.clone(),
+            selected.implementation.clone(),
+            selected.package,
+        )?;
+    }
+    Ok(groups)
+}
+
 fn insert_group(
     groups: &mut BTreeMap<(InstanceId, Sha256Digest), TransitionGroup>,
     provider: InstanceId,

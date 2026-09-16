@@ -622,7 +622,8 @@ impl CompositionEvaluator for EmptyEvaluator {
     }
 }
 
-struct EmptyTransitionEvaluator;
+/// Returns empty valid transition fragments for direct planner tests.
+pub struct EmptyTransitionEvaluator;
 
 impl CompositionEvaluator for EmptyTransitionEvaluator {
     fn evaluate(
