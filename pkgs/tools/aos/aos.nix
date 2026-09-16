@@ -13,20 +13,13 @@
   perl,
   openssl,
   aos-landlock,
-  aos-service-root,
-  aos-selinux-run,
-  aos-verity-root-guard,
-  aos-ebpf-net-policy,
   aos-systemd-provider,
-  checkpolicy,
   cmake,
   coreutils,
   libssh2,
-  policycoreutils,
   pkg-config,
   protobuf,
   dbus,
-  semodule-utils,
   sbsigntools,
   systemd,
   mtools,
@@ -107,37 +100,18 @@
     );
   linuxRuntimeDeps = [
     aos-landlock
-    aos-service-root
-    aos-selinux-run
-    aos-verity-root-guard
-    aos-ebpf-net-policy
-    checkpolicy
-    policycoreutils
-    semodule-utils
   ];
-  nonAosLinuxRuntimeDeps = builtins.filter (dependency: dependency != aos-landlock) linuxRuntimeDeps;
   aosForbiddenRuntimeDeps =
     [sbsigntools mtools tpm2-tools which]
-    ++ lib.optionals (!isDarwinCross) ([systemd] ++ nonAosLinuxRuntimeDeps);
+    ++ lib.optionals (!isDarwinCross) [systemd];
   aprForbiddenRuntimeDeps =
     [tpm2-tools which]
-    ++ lib.optionals (!isDarwinCross) (
-      [systemd util-linux]
-      ++ lib.subtractLists [checkpolicy semodule-utils] linuxRuntimeDeps
-    );
+    ++ lib.optionals (!isDarwinCross) [systemd util-linux aos-landlock];
   linuxToolEnvironment = ''
     export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
     export AOS_UNSHARE="${util-linux}/bin/unshare"
     export AOS_PRLIMIT="${util-linux}/bin/prlimit"
-    export AOS_SERVICE_ROOT_HELPER="${aos-service-root}/bin/aos-service-root"
-    export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
-    export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
     export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
-    export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
-    export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
-    export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
-    export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
-    export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
   '';
   abilityEvaluatorFixture = builtins.path {
     path = ../../../tests/abilities/evaluator-provider;
@@ -550,10 +524,6 @@ in
                   cat << 'APR_ENVIRONMENT'
       export AOS_MCOPY="${mtools}/bin/mcopy"
       export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
-      ${lib.optionalString (!isDarwinCross) ''
-        export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
-        export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
-      ''}
       APR_ENVIRONMENT
                   ;;
                 apm|aos-package-runtime)
