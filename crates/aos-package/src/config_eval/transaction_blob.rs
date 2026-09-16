@@ -430,6 +430,7 @@ mod tests {
         };
         DurableRequest {
             schema: REQUEST_SCHEMA.into(),
+            handler: LocalKey::new("test-blob-handler").expect("handler key"),
             method: MethodReference {
                 interface: interface.clone(),
                 method: LocalKey::new("write").expect("method key"),

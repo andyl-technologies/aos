@@ -195,12 +195,13 @@ pub(super) fn rejected_admission(observation: AbilityValue) -> Result<AdmissionR
 }
 
 pub(super) fn storage_observation(
+    schema: &str,
     expected: &AbilityValue,
     realized: Option<String>,
     state: &str,
 ) -> Result<AbilityValue> {
     ability_value(json!({
-        "schema": "aos.ability.storage-allocation-observation/v1",
+        "schema": schema,
         "expected": expected.as_json(),
         "realized": realized,
         "state": state,
@@ -208,12 +209,13 @@ pub(super) fn storage_observation(
 }
 
 pub(super) fn storage_view_observation(
+    schema: &str,
     expected: &AbilityValue,
     realized: Option<String>,
     state: &str,
 ) -> Result<AbilityValue> {
     ability_value(json!({
-        "schema": "aos.ability.storage-view-observation/v1",
+        "schema": schema,
         "expected": expected.as_json(),
         "realized": realized,
         "state": state,
@@ -221,12 +223,13 @@ pub(super) fn storage_view_observation(
 }
 
 pub(super) fn entry_observation(
+    schema: &str,
     expected: &AbilityValue,
     realized: Option<String>,
     state: &str,
 ) -> Result<AbilityValue> {
     ability_value(json!({
-        "schema": "aos.ability.filesystem-entry-observation/v1",
+        "schema": schema,
         "expected": expected.as_json(),
         "realized": realized,
         "state": state,

@@ -30,8 +30,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, AccessMode, LocalKey, MethodReference, MethodSemantics,
-    ResourceReference,
+    ABILITY_LIMITS_V1, AbilityValue, AccessMode, LocalKey, MethodSemantics, ResourceReference,
 };
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
@@ -47,8 +46,8 @@ use crate::materialize::{
     UnitPaths, is_absent, matches, materialize, paths_for, remove, validate_removal,
 };
 use crate::model::{
-    Activation, OBSERVATION_SCHEMA, PackagedUnitEffectsRequest, PackagedUnitObservation,
-    PackagedUnitRealization, PackagedUnitRequest, ProviderContext, UnitState, empty_outputs,
+    Activation, PackagedUnitEffectsRequest, PackagedUnitObservation, PackagedUnitRealization,
+    PackagedUnitRequest, ProviderContext, UnitState, empty_outputs,
 };
 use crate::render::{RenderedUnit, render};
 
@@ -69,69 +68,66 @@ enum HandlerRole {
 }
 
 impl HandlerRole {
-    // The runtime authenticates the complete InterfaceKey against the selected
-    // package contract before launching this executable. This dispatch maps
-    // that checked interface to package-internal implementation code.
-    fn from_method(method: &MethodReference) -> Result<Self> {
-        if method.interface.abi.get() != 1 {
-            bail!("method interface selects an unsupported systemd handler ABI");
-        }
-
-        match method.interface.name.as_str() {
-            "aos.boot.artifact-storage" => Ok(Self::BootPlatform(
+    // The runtime resolves this alias from the selected implementation in the
+    // signed package contract. Provider code maps only that authenticated,
+    // package-owned behavior selector to its internal implementation.
+    fn from_handler(handler: Option<&LocalKey>) -> Result<Self> {
+        let handler = handler.context("selected systemd implementation has no handler")?;
+        match handler.as_str() {
+            "boot-artifact-storage" => Ok(Self::BootPlatform(
                 boot_platform::BootPlatformRole::ArtifactStorage,
             )),
-            "aos.boot.selection" => Ok(Self::BootPlatform(
+            "boot-selection" => Ok(Self::BootPlatform(
                 boot_platform::BootPlatformRole::Selection,
             )),
-            "aos.boot.success" => Ok(Self::BootPlatform(boot_platform::BootPlatformRole::Success)),
-            "aos.credential.delivery" => Ok(Self::Credential(credential::CredentialRole::Delivery)),
-            "aos.credential.named-resolution" => Ok(Self::Credential(
+            "boot-success" => Ok(Self::BootPlatform(boot_platform::BootPlatformRole::Success)),
+            "systemd-credential-delivery" => {
+                Ok(Self::Credential(credential::CredentialRole::Delivery))
+            }
+            "systemd-named-credential-resolution" => Ok(Self::Credential(
                 credential::CredentialRole::NamedResolution,
             )),
-            "aos.systemd.activation-group-effects" => Ok(Self::NativeResource(
+            "systemd-activation-group-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::ActivationGroup,
             )),
-            "aos.device.presence" => Ok(Self::DevicePresence),
-            "aos.systemd.group-effects" => Ok(Self::Identity(identity::IdentityRole::Group)),
-            "aos.systemd.group-membership-effects" => {
+            "device-presence" => Ok(Self::DevicePresence),
+            "systemd-group-effects" => Ok(Self::Identity(identity::IdentityRole::Group)),
+            "systemd-group-membership-effects" => {
                 Ok(Self::Identity(identity::IdentityRole::GroupMembership))
             }
-            "aos.host.restart" => Ok(Self::BootPlatform(
+            "host-restart" => Ok(Self::BootPlatform(
                 boot_platform::BootPlatformRole::HostRestart,
             )),
-            "aos.systemd.manager-watchdog-effects" => Ok(Self::ManagerWatchdog),
-            "aos.systemd.mount-effects" => Ok(Self::NativeResource(
+            "systemd-manager-watchdog-effects" => Ok(Self::ManagerWatchdog),
+            "systemd-mount-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::Mount,
             )),
-            "aos.systemd.packaged-unit-effects" => Ok(Self::PackagedUnit),
-            "aos.systemd.principal-effects" => {
-                Ok(Self::Identity(identity::IdentityRole::Principal))
-            }
-            "aos.systemd.scheduled-activation-effects" => Ok(Self::NativeResource(
+            "systemd-packaged-unit-effects" => Ok(Self::PackagedUnit),
+            "systemd-principal-effects" => Ok(Self::Identity(identity::IdentityRole::Principal)),
+            "systemd-scheduled-activation-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::ScheduledActivation,
             )),
-            "aos.systemd.service-effects" => Ok(Self::Service),
-            "aos.systemd.swap-effects" => Ok(Self::NativeResource(
+            "systemd-service-effects" => Ok(Self::Service),
+            "systemd-swap-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::Swap,
             )),
-            "aos.network.configuration-effects" => Ok(Self::NetworkConfiguration),
-            "aos.systemd.network-readiness-effects" => {
+            "network-configuration-effects" => Ok(Self::NetworkConfiguration),
+            "systemd-network-readiness-effects" => {
                 Ok(Self::Readiness(readiness::ReadinessRole::Network))
             }
-            "aos.systemd.filesystem-readiness-effects" => {
+            "systemd-filesystem-readiness-effects" => {
                 Ok(Self::Readiness(readiness::ReadinessRole::Filesystem))
             }
-            "aos.systemd.activation-milestone-effects" => Ok(Self::Readiness(
+            "systemd-activation-milestone-effects" => Ok(Self::Readiness(
                 readiness::ReadinessRole::ActivationMilestone,
             )),
-            "aos.systemd.runtime-entry-population-effects" => Ok(Self::Readiness(
+            "systemd-runtime-entry-population-effects" => Ok(Self::Readiness(
                 readiness::ReadinessRole::RuntimeEntryPopulation,
             )),
-            "aos.systemd.system-milestone-readiness-effects" => {
+            "systemd-system-milestone-readiness-effects" => {
                 Ok(Self::Readiness(readiness::ReadinessRole::SystemMilestone))
             }
-            _ => bail!("method interface does not select a checked systemd handler role"),
+            _ => bail!("selected implementation does not name a systemd handler behavior"),
         }
     }
 }
@@ -180,7 +176,8 @@ async fn run() -> Result<()> {
     match arguments[2].to_str() {
         Some("admit") => {
             let request: AdmissionRequest = decode_canonical(&bytes)?;
-            let role = HandlerRole::from_method(&request.method)?;
+            let role =
+                HandlerRole::from_handler(request.assignment.implementation.handler.as_ref())?;
             let timeout = deadline(request.control.attempt_remaining_millis);
             let result = tokio::time::timeout(timeout, admit(role, request))
                 .await
@@ -189,7 +186,7 @@ async fn run() -> Result<()> {
         }
         Some(purpose) => {
             let request: Invocation = decode_canonical(&bytes)?;
-            let role = HandlerRole::from_method(&request.method)?;
+            let role = HandlerRole::from_handler(Some(&request.request.handler))?;
             if serde_json::to_value(request.purpose)? != serde_json::Value::String(purpose.into()) {
                 bail!("argv purpose does not match the invocation envelope");
             }
@@ -230,6 +227,10 @@ async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResul
     validate_admission_resource(&request)?;
     require_method(&request.method, &request.semantics)?;
     validate_resource_contexts(&request.resources)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator_at(&["observation", "schema"])
+        .context("selected packaged-unit method has no exact observation discriminator")?;
 
     let expected: PackagedUnitRequest = decode_value(&request.resource_spec.value)?;
     require_resource_contexts(&packaged_resource_references(&expected), &request.resources)?;
@@ -244,6 +245,7 @@ async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResul
 
     let manager = PinnedSystemdManager::connect().await?;
     let inspection = inspect(
+        observation_schema,
         &manager,
         &expected,
         &realization,
@@ -311,6 +313,10 @@ async fn invoke_packaged_unit(invocation: Invocation) -> Result<InvocationResult
         bail!("invocation resource-set digest does not match");
     }
     validate_resource_contexts(&invocation.request.resources)?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator_at(&["observation", "schema"])
+        .context("selected packaged-unit method has no exact observation discriminator")?;
 
     let target = target_context(&invocation)?;
     let bound = validate_resource_context(target)?;
@@ -374,6 +380,7 @@ async fn invoke_packaged_unit(invocation: Invocation) -> Result<InvocationResult
                 }
             }
             inspect(
+                observation_schema,
                 &manager,
                 &expected,
                 &realization,
@@ -386,6 +393,7 @@ async fn invoke_packaged_unit(invocation: Invocation) -> Result<InvocationResult
         }
         InvocationPurpose::Effect if selected_method == "observe" => {
             inspect(
+                observation_schema,
                 &manager,
                 &expected,
                 &realization,
@@ -422,13 +430,28 @@ async fn invoke_packaged_unit(invocation: Invocation) -> Result<InvocationResult
                 bound.resource_spec.revision,
             )?;
             manager.daemon_reload().await?;
-            inspect_absence(&manager, &expected, &realization, &paths).await?
+            inspect_absence(
+                observation_schema,
+                &manager,
+                &expected,
+                &realization,
+                &paths,
+            )
+            .await?
         }
         InvocationPurpose::Reconcile if selected_method == "observe" => {
             if primary_method == "remove" {
-                inspect_absence(&manager, &expected, &realization, &paths).await?
+                inspect_absence(
+                    observation_schema,
+                    &manager,
+                    &expected,
+                    &realization,
+                    &paths,
+                )
+                .await?
             } else {
                 inspect(
+                    observation_schema,
                     &manager,
                     &expected,
                     &realization,
@@ -489,6 +512,7 @@ struct Inspection {
 }
 
 async fn inspect(
+    observation_schema: &str,
     manager: &PinnedSystemdManager,
     expected: &PackagedUnitRequest,
     realization: &PackagedUnitRealization,
@@ -549,7 +573,7 @@ async fn inspect(
     let observed = complete.then(|| normalized_request(expected, realization));
     Ok(Inspection {
         observation: PackagedUnitObservation {
-            schema: OBSERVATION_SCHEMA.to_string(),
+            schema: observation_schema.to_string(),
             expected: expected.clone(),
             observed,
             unit_name: realization.systemd_unit.unit_name.clone(),
@@ -564,6 +588,7 @@ async fn inspect(
 }
 
 async fn inspect_absence(
+    observation_schema: &str,
     manager: &PinnedSystemdManager,
     expected: &PackagedUnitRequest,
     realization: &PackagedUnitRealization,
@@ -592,7 +617,7 @@ async fn inspect_absence(
 
     Ok(Inspection {
         observation: PackagedUnitObservation {
-            schema: OBSERVATION_SCHEMA.to_string(),
+            schema: observation_schema.to_string(),
             expected: expected.clone(),
             observed: None,
             unit_name: realization.systemd_unit.unit_name.clone(),
@@ -796,7 +821,8 @@ fn deadline(milliseconds: u64) -> Duration {
 #[cfg(test)]
 mod tests {
     use aos_ability_model::{
-        AbilityValue, AccessMode, MethodReference, MethodSemantics, ResourceReference, RevisionId,
+        AbilityValue, AccessMode, LocalKey, MethodReference, MethodSemantics, ResourceReference,
+        RevisionId,
     };
     use aos_contract::Sha256Digest;
     use aos_provider_protocol::ResourceContext;
@@ -810,20 +836,16 @@ mod tests {
     use crate::native_resource::NativeResourceRole;
     use crate::readiness::ReadinessRole;
 
-    fn method_for_abi(interface: &str, abi: u32, name: &str) -> MethodReference {
+    fn method_for(interface: &str, name: &str) -> MethodReference {
         serde_json::from_value(serde_json::json!({
             "interface": {
                 "name": interface,
-                "abi": abi,
+                "abi": 1,
                 "descriptor": Sha256Digest::from_bytes([1; 32]).to_string(),
             },
             "method": name,
         }))
         .expect("method fixture is valid")
-    }
-
-    fn method_for(interface: &str, name: &str) -> MethodReference {
-        method_for_abi(interface, 1, name)
     }
 
     fn method(name: &str) -> MethodReference {
@@ -857,57 +879,57 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_interfaces_select_closed_semantic_roles() {
+    fn authenticated_handlers_select_closed_provider_behaviors() {
         assert_eq!(
-            HandlerRole::from_method(&method_for("aos.credential.delivery", "deliver"))
+            HandlerRole::from_handler(Some(
+                &LocalKey::new("systemd-credential-delivery").expect("handler key"),
+            ))
                 .expect("credential-delivery role parses"),
             HandlerRole::Credential(CredentialRole::Delivery)
         );
         assert_eq!(
-            HandlerRole::from_method(&method_for("aos.credential.named-resolution", "observe",))
+            HandlerRole::from_handler(Some(
+                &LocalKey::new("systemd-named-credential-resolution").expect("handler key"),
+            ))
                 .expect("named-credential role parses"),
             HandlerRole::Credential(CredentialRole::NamedResolution)
         );
         assert_eq!(
-            HandlerRole::from_method(&method_for(
-                "aos.systemd.activation-group-effects",
-                "create",
+            HandlerRole::from_handler(Some(
+                &LocalKey::new("systemd-activation-group-effects").expect("handler key"),
             ))
-            .expect("activation-group role parses"),
+            .expect("activation-group behavior parses"),
             HandlerRole::NativeResource(NativeResourceRole::ActivationGroup)
         );
         assert_eq!(
-            HandlerRole::from_method(&method_for("aos.systemd.group-effects", "create"))
-                .expect("group role parses"),
+            HandlerRole::from_handler(Some(
+                &LocalKey::new("systemd-group-effects").expect("handler key"),
+            ))
+            .expect("group behavior parses"),
             HandlerRole::Identity(IdentityRole::Group)
         );
         assert_eq!(
-            HandlerRole::from_method(&method_for("aos.systemd.mount-effects", "create"))
-                .expect("mount role parses"),
+            HandlerRole::from_handler(Some(
+                &LocalKey::new("systemd-mount-effects").expect("handler key"),
+            ))
+            .expect("mount behavior parses"),
             HandlerRole::NativeResource(NativeResourceRole::Mount)
         );
         assert_eq!(
-            HandlerRole::from_method(&method_for(
-                "aos.systemd.system-milestone-readiness-effects",
-                "observe",
+            HandlerRole::from_handler(Some(
+                &LocalKey::new("systemd-system-milestone-readiness-effects").expect("handler key"),
             ))
-            .expect("milestone role parses"),
+            .expect("milestone behavior parses"),
             HandlerRole::Readiness(ReadinessRole::SystemMilestone)
         );
         assert!(
-            HandlerRole::from_method(&method_for("aos.example.unknown-effects", "observe"))
-                .is_err(),
-            "an unknown authenticated interface cannot select a runtime handler role",
-        );
-        assert!(
-            HandlerRole::from_method(&method_for_abi(
-                "aos.systemd.packaged-unit-effects",
-                2,
-                "observe",
+            HandlerRole::from_handler(Some(
+                &LocalKey::new("unknown-effects").expect("handler key"),
             ))
             .is_err(),
-            "a known interface name with another ABI cannot select a runtime handler role",
+            "an unknown authenticated handler cannot select provider behavior",
         );
+        assert!(HandlerRole::from_handler(None).is_err());
     }
 
     fn resource_reference(key: &str) -> ResourceReference {

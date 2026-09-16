@@ -166,6 +166,55 @@ const fn is_false(value: &bool) -> bool {
 }
 
 impl ValueSchema {
+    /// Returns one exact string discriminator declared for a closed record field.
+    ///
+    /// This derives a wire discriminator from the canonical schema instead of
+    /// requiring consumers to repeat the package-owned literal.
+    #[must_use]
+    pub fn singleton_string_field(&self, field: &str) -> Option<&str> {
+        self.singleton_string_path(&[field])
+    }
+
+    /// Returns one exact string discriminator at a required closed-record path.
+    ///
+    /// Each segment must name a required field. This permits provider protocols
+    /// to derive nested evidence discriminators without copying schema literals.
+    #[must_use]
+    pub fn singleton_string_path(&self, path: &[&str]) -> Option<&str> {
+        let (field, rest) = path.split_first()?;
+        let schema = self.required_field(field)?;
+        if !rest.is_empty() {
+            return schema.singleton_string_path(rest);
+        }
+        let Self::StringEnum { values } = schema else {
+            return None;
+        };
+        let [value] = values.as_slice() else {
+            return None;
+        };
+        Some(value)
+    }
+
+    fn required_field(&self, field: &str) -> Option<&Self> {
+        match self {
+            Self::Record {
+                fields,
+                optional_fields,
+            } => {
+                let (key, schema) = fields.iter().find(|(name, _)| name.as_str() == field)?;
+                (!optional_fields.contains(key)).then_some(schema)
+            }
+            Self::DocumentRecord {
+                fields,
+                optional_fields,
+                ..
+            } => (!optional_fields.iter().any(|name| name == field))
+                .then(|| fields.get(field))
+                .flatten(),
+            _ => None,
+        }
+    }
+
     /// Reports whether recursive schema nesting and collection growth stay bounded.
     #[must_use]
     pub fn is_within_limits(&self, max_depth: u32, max_items: u64) -> bool {
@@ -270,6 +319,81 @@ impl ValueSchema {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn singleton_string_field_uses_the_canonical_record_schema() {
+        let schema = ValueSchema::DocumentRecord {
+            key_max_length: 64,
+            fields: [(
+                "schema".into(),
+                ValueSchema::StringEnum {
+                    values: vec!["aos.test.observation/v1".into()],
+                },
+            )]
+            .into(),
+            optional_fields: Vec::new(),
+        };
+
+        assert_eq!(
+            schema.singleton_string_field("schema"),
+            Some("aos.test.observation/v1")
+        );
+        assert_eq!(schema.singleton_string_field("missing"), None);
+    }
+
+    #[test]
+    fn singleton_string_field_rejects_an_open_or_ambiguous_discriminator() {
+        let schema = ValueSchema::Record {
+            fields: [(
+                LocalKey::new("schema").expect("schema key is valid"),
+                ValueSchema::StringEnum {
+                    values: vec!["aos.test.v1".into(), "aos.test.v2".into()],
+                },
+            )]
+            .into(),
+            optional_fields: Vec::new(),
+        };
+
+        assert_eq!(schema.singleton_string_field("schema"), None);
+        assert_eq!(ValueSchema::Boolean.singleton_string_field("schema"), None);
+    }
+
+    #[test]
+    fn singleton_string_path_walks_only_required_closed_fields() {
+        let discriminator = ValueSchema::StringEnum {
+            values: vec!["aos.test.observation/v1".into()],
+        };
+        let schema = ValueSchema::Record {
+            fields: [(
+                LocalKey::new("observation").expect("observation key is valid"),
+                ValueSchema::DocumentRecord {
+                    key_max_length: 64,
+                    fields: [("schema".into(), discriminator)].into(),
+                    optional_fields: Vec::new(),
+                },
+            )]
+            .into(),
+            optional_fields: Vec::new(),
+        };
+
+        assert_eq!(
+            schema.singleton_string_path(&["observation", "schema"]),
+            Some("aos.test.observation/v1")
+        );
+
+        let optional = ValueSchema::Record {
+            fields: [(
+                LocalKey::new("observation").expect("observation key is valid"),
+                schema,
+            )]
+            .into(),
+            optional_fields: vec![LocalKey::new("observation").expect("observation key is valid")],
+        };
+        assert_eq!(
+            optional.singleton_string_path(&["observation", "observation", "schema"]),
+            None
+        );
+    }
 
     #[test]
     fn structural_preflight_bounds_wide_schemas_before_stack_growth() {
