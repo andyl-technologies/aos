@@ -1,26 +1,47 @@
-##! Checks base Nix database ownership through native provider requests.
+##! Checks package-store readiness and package-owned runtime integration.
 {
   lib,
   pkgs,
 }: let
   evaluate = import ./base-module-evaluation.nix {inherit lib pkgs;};
-  evaluated = evaluate {
-    name = "base-nix-db";
-    module = ../../modules/base/nix-db.nix;
-    packages = [pkgs.systemd pkgs.aos-nix-store-provider];
+  evaluateStore = selection:
+    evaluate ({
+        name = "base-nix-db";
+        module = ../../modules/base/nix-db.nix;
+        packages = [pkgs.aos-nix-store-provider];
+      }
+      // selection);
+  unselected = evaluateStore {};
+  evaluated = evaluateStore {
+    enableAbilitySelection = true;
+    extraModules = [
+      {
+        aos.abilities = {
+          instances."aos-nix-store-provider:manager".implementation = "aos-nix-store-provider:nix-store-database";
+          bindings."test:nix-store-database" = {
+            request = "system:nix-store-database";
+            implementation = "aos-nix-store-provider:nix-store-database";
+            providerInstance = "aos-nix-store-provider:manager";
+            slot = "database";
+          };
+        };
+      }
+    ];
   };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
+  baseRequests = lib.filterAttrs (_: request: request.package == null) requests;
+  providerRequests = lib.filterAttrs (_: request: request.package == "aos-nix-store-provider") requests;
+  configurationEntry = providerRequests."aos-nix-store-provider:nix-configuration-entry".parameters;
+  configurationSource = configurationEntry.entry.source;
+  gcRootMount = providerRequests."aos-nix-store-provider:gcroot-mount".parameters;
+  runtimeChecks = config.aos.contributions.runtimeChecks.nix-store.checks;
+  checkScript = name: (builtins.head (builtins.filter (check: check.name == name) runtimeChecks)).script;
 in
-  assert builtins.attrNames requests
-  == [
-    "system:aos-nix-db-dependencies"
-    "system:aos-nix-db-environment"
-    "system:aos-nix-db-lifecycle"
-    "system:filesystem-readiness"
-    "system:nix-store-database"
-  ];
-  assert requests."system:nix-store-database".parameters
+  assert lib.filterAttrs (_: request: request.package == "aos-nix-store-provider") unselected.config.aos.abilities.requests == {};
+  assert unselected.config.aos.contributions.runtimeChecks == {};
+  assert builtins.attrNames baseRequests == ["system:nix-store-database"];
+  assert baseRequests."system:nix-store-database".parameters
   == {
     scope = "local";
     registration = {
@@ -29,17 +50,57 @@ in
     };
     prerequisites = [];
   };
-  assert requests."system:aos-nix-db-dependencies".parameters.requires
+  assert builtins.attrNames providerRequests
   == [
-    {
-      _type = "aos-request-output-reference";
-      request = "system:filesystem-readiness";
-      output = "readiness-resource";
-    }
-    {
-      _type = "aos-request-output-reference";
-      request = "system:nix-store-database";
-      output = "readiness-resource";
-    }
+    "aos-nix-store-provider:gcroot-directory"
+    "aos-nix-store-provider:gcroot-mount"
+    "aos-nix-store-provider:nix-configuration"
+    "aos-nix-store-provider:nix-configuration-entry"
+    "aos-nix-store-provider:profile-storage"
   ];
+  assert providerRequests."aos-nix-store-provider:nix-configuration".parameters.source
+  == {
+    kind = "inline-text";
+    content = ''
+      # Managed by the selected AOS package-store provider.
+      build-users-group =
+    '';
+  };
+  assert configurationEntry.name == "nix-configuration-entry";
+  assert configurationEntry.entry.kind == "copied-file";
+  assert configurationEntry.entry.maximum_size_bytes == lib.abilities.types.limits.maxStringLength;
+  assert configurationEntry.destination == "/etc/nix/nix.conf";
+  assert configurationEntry.owner == "root";
+  assert configurationEntry.group == "root";
+  assert configurationEntry.mode == "0444";
+  assert configurationSource.kind == "execution-path";
+  assert configurationSource.resource.request == "aos-nix-store-provider:nix-configuration";
+  assert configurationSource.resource.output == "retained-resource";
+  assert configurationSource.path.request == "aos-nix-store-provider:nix-configuration";
+  assert configurationSource.path.output == "planned-path";
+  assert builtins.head configurationEntry.prerequisites == configurationSource.resource;
+  assert providerRequests."aos-nix-store-provider:profile-storage".parameters.requested_path == "/var/lib/profiles";
+  assert providerRequests."aos-nix-store-provider:gcroot-directory".parameters.destination
+  == "/nix/var/nix/gcroots/aos-profiles";
+  assert gcRootMount.name == "aos-profile-gcroots";
+  assert gcRootMount.enabled;
+  assert gcRootMount.options == ["bind"];
+  assert gcRootMount.source.request == "aos-nix-store-provider:profile-storage";
+  assert gcRootMount.source.output == "planned-path";
+  assert gcRootMount.destination.request == "aos-nix-store-provider:gcroot-directory";
+  assert gcRootMount.destination.output == "planned-path";
+  assert config.environment.etc == {};
+  assert builtins.attrNames config.aos.contributions.runtimeChecks == ["nix-store"];
+  assert builtins.map (check: check.name) runtimeChecks
+  == [
+    "database-ready"
+    "managed-config"
+    "gcroot-bridge"
+    "current-system-valid"
+  ];
+  assert lib.hasInfix "${pkgs.coreutils}/bin/test" (checkScript "database-ready");
+  assert lib.hasInfix "${pkgs.grep}/bin/grep" (checkScript "managed-config");
+  assert lib.hasInfix "${pkgs.coreutils}/bin/stat" (checkScript "gcroot-bridge");
+  assert lib.hasInfix "${pkgs.nix}/bin/nix-store" (checkScript "current-system-valid");
+  assert lib.hasInfix "${pkgs.coreutils}/bin/readlink" (checkScript "current-system-valid");
   assert config.systemd.services == {}; true
