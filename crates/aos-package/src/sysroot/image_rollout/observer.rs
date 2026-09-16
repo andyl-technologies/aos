@@ -13,7 +13,7 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use super::ability::AbilityRolloutState;
-use super::{AbRolloutRequest, AbRolloutTerminalRequest, NativeAbRolloutBackend};
+use super::{ImageRolloutRequest, ImageRolloutTerminalRequest, NativeImageRolloutBackend};
 
 const ADAPTER: &str = "image-rollout";
 const KIND: &str = "rollout";
@@ -70,7 +70,7 @@ pub fn run_from_process() -> Result<()> {
 
     let request: ObserverRequest = serde_json::from_slice(&read_bounded(request_path)?)?;
     validate_request(&request)?;
-    let terminal: AbRolloutTerminalRequest =
+    let terminal: ImageRolloutTerminalRequest =
         serde_json::from_value(literal_value(&request.operation.inputs)?)
             .context("decoding checked image-rollout inputs")?;
     let desired = terminal.rollout;
@@ -115,16 +115,16 @@ fn literal_value(expression: &ValueExpression) -> Result<serde_json::Value> {
     }
 }
 
-fn observe(resource: &ResourceId, request: &AbRolloutRequest) -> Result<RolloutObservation> {
+fn observe(resource: &ResourceId, request: &ImageRolloutRequest) -> Result<RolloutObservation> {
     observe_at(resource, request, Path::new(IMAGE_PROFILE))
 }
 
 fn observe_at(
     resource: &ResourceId,
-    request: &AbRolloutRequest,
+    request: &ImageRolloutRequest,
     image_profile: &Path,
 ) -> Result<RolloutObservation> {
-    let backend = NativeAbRolloutBackend::new(image_profile);
+    let backend = NativeImageRolloutBackend::new(image_profile);
     let execution_directory = backend.execution_directory(request)?;
     let provider_state: Option<AbilityRolloutState> =
         read_optional_json(&execution_directory.join("state.json"))?;
@@ -209,19 +209,17 @@ fn local_key(value: &str) -> Result<LocalKey> {
 mod tests {
     use super::*;
 
-    fn request() -> AbRolloutRequest {
+    fn request() -> ImageRolloutRequest {
         serde_json::from_value(serde_json::json!({
-            "strategy": "single-host-ab-v1",
-            "concurrency": 1,
             "predecessor": {
                 "toplevel": "/nix/store/00000000000000000000000000000000-predecessor",
-                "uki": "/nix/store/11111111111111111111111111111111-predecessor.efi",
+                "boot-artifact-contract": "/nix/store/11111111111111111111111111111111-predecessor-boot-contract",
                 "executor": "/nix/store/22222222222222222222222222222222-executor",
                 "state-format": "fixture-state",
             },
             "candidate": {
                 "toplevel": "/nix/store/33333333333333333333333333333333-candidate",
-                "uki": "/nix/store/44444444444444444444444444444444-candidate.efi",
+                "boot-artifact-contract": "/nix/store/44444444444444444444444444444444-candidate-boot-contract",
                 "executor": "/nix/store/22222222222222222222222222222222-executor",
                 "state-format": "fixture-state",
             },

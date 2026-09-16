@@ -1681,10 +1681,10 @@ store_path = "/nix/store/img111-system-image"
 nar_hash = "sha256:image"
 nar_size = 2
 
-[versions.platforms.x86_64-linux.images.delivery.image_info]
+[versions.platforms.x86_64-linux.images.delivery.artifact_contract.document]
 store_path = "/nix/store/info111-system-image-info"
 
-[versions.platforms.x86_64-linux.images.delivery.update_payload]
+[versions.platforms.x86_64-linux.images.delivery.artifact_contract.artifacts]
 store_path = "/nix/store/payload111-system-update-payload"
 
 [versions.platforms.x86_64-linux.documentation]

@@ -10,7 +10,7 @@ use leptos::prelude::*;
 
 use crate::app::navigate;
 use crate::components::{EmptyState, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge};
-use crate::mutation::{idempotency_key, watch_draft, PendingPlan};
+use crate::mutation::{PendingPlan, idempotency_key, watch_draft};
 use crate::route::{ConsoleRoute, ConsoleScope};
 use crate::transport::ApiClient;
 use crate::workflows::infrastructure::InfrastructureWorkflow;
@@ -1680,7 +1680,7 @@ fn format_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_inventory_path, cache_path, llms_override, LlmsMode};
+    use super::{LlmsMode, cache_inventory_path, cache_path, llms_override};
 
     #[test]
     fn cache_routes_preserve_ownership_scope() {

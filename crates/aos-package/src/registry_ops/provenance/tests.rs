@@ -8,13 +8,12 @@ use super::{
 use crate::registry_ops::git::{commit_registry_paths, git};
 use crate::registry_ops::provenance::staged::validate_staged_package_provenance_transparency_log;
 use crate::registry_ops::provenance::statement::package_provenance_transparency_entry_hash;
-use crate::registry_ops::store_paths::StorePathInfo;
+use crate::registry_ops::sha256_hex;
 use crate::registry_ops::test_support::{
-    TEST_PROVENANCE_REGISTRY, init_test_transparency_repo, sample_transparency_provenance,
-    sign_test_provenance_statement, signed_provenance_statement, test_provenance_signer,
-    write_sample_package_toml, write_sample_provenance_artifact, write_sample_store_record,
+    init_test_transparency_repo, sample_transparency_provenance, sign_test_provenance_statement,
+    signed_provenance_statement, write_sample_package_toml, write_sample_provenance_artifact,
+    write_sample_store_record,
 };
-use crate::registry_ops::uki::sha256_hex;
 use crate::types::{AttestationMeta, DocumentationArtifactMeta};
 use anyhow::Result;
 use serde_json::Value;

@@ -6,13 +6,10 @@ use crate::package_contract::{
     contract_retention_digest,
 };
 use crate::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
-use crate::registry::parse::{ImageVerificationState, parse_package_file};
-use crate::registry::sb_certs::SbCertsToml;
-use crate::registry::{objectstore, sb_certs, store};
+use crate::registry::parse::parse_package_file;
+use crate::registry::{objectstore, store};
 use crate::registry_ops::attestation::publish_documentation_attestation_meta;
-use crate::registry_ops::config::{
-    format_size, read_registry_toml, registry_content_addressed, resolve_registry_name,
-};
+use crate::registry_ops::config::{format_size, registry_content_addressed, resolve_registry_name};
 use crate::registry_ops::documentation::publish_package_documentation;
 use crate::registry_ops::git::{
     commit_registry_paths, current_git_head, refresh_registry_object_store,
@@ -35,7 +32,6 @@ use crate::registry_ops::store_paths::{
     first_letter, introspect_deriver, introspect_store_path, parse_store_path,
     resolve_publish_platform, validate_store_path_release_policy, write_store_files,
 };
-use crate::registry_ops::uki::sb_db_cert_path;
 use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
 use crate::types::{
     PackageContractDocumentMeta, PackageContractMeta, validate_package_name, validate_registry_name,
@@ -65,8 +61,8 @@ use std::path::{Path, PathBuf};
 /// marker, falling back to the producer's native platform for legacy outputs;
 /// `--platform` may override only an unstamped output or agree with its stamp.
 /// `--image-payload`, `--image-disk`,
-/// `--image-info`, `--image-format`, and `--image-uki` groups attach explicit
-/// cache artifacts and their exact canonical UKI to the platform entry;
+/// `--image-info`, `--image-format`, and `--image-contract-schema` groups attach
+/// disk bytes and an opaque provider-owned artifact contract to the platform entry;
 /// `--sysroot` marks
 /// the package as a system root, `--previous` records the predecessor
 /// version for delta upgrades, and `--source-drv` records explicit source
@@ -103,7 +99,7 @@ pub async fn publish(
     image_disk_paths: &[String],
     image_info_paths: &[String],
     image_formats: &[String],
-    image_uki_paths: &[String],
+    image_contract_schemas: &[String],
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -135,7 +131,7 @@ pub async fn publish(
         image_disk_paths,
         image_info_paths,
         image_formats,
-        image_uki_paths,
+        image_contract_schemas,
         bless,
         no_ca,
         no_commit,
@@ -174,7 +170,7 @@ pub(crate) async fn publish_to_registry_directory(
     image_disk_paths: &[String],
     image_info_paths: &[String],
     image_formats: &[String],
-    image_uki_paths: &[String],
+    image_contract_schemas: &[String],
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -190,8 +186,6 @@ pub(crate) async fn publish_to_registry_directory(
 
     validate_registry_name(name)?;
     ensure_writable_registry_clone(name, dir)?;
-    let require_signed_ukis =
-        read_registry_toml(dir)?.is_some_and(|root| root.registry.require_signed_ukis);
     if let Some(name) = name_override {
         validate_package_name(name)?;
     }
@@ -207,15 +201,15 @@ pub(crate) async fn publish_to_registry_directory(
     if image_payload_paths.len() != image_disk_paths.len()
         || image_payload_paths.len() != image_info_paths.len()
         || image_payload_paths.len() != image_formats.len()
-        || image_payload_paths.len() != image_uki_paths.len()
+        || image_payload_paths.len() != image_contract_schemas.len()
     {
         bail!(
-            "--image-payload, --image-disk, --image-info, --image-format, and --image-uki must be specified in groups ({} payloads, {} disks, {} metadata files, {} formats, {} UKIs)",
+            "--image-payload, --image-disk, --image-info, --image-format, and --image-contract-schema must be specified in groups ({} payloads, {} disks, {} metadata files, {} formats, {} schemas)",
             image_payload_paths.len(),
             image_disk_paths.len(),
             image_info_paths.len(),
             image_formats.len(),
-            image_uki_paths.len()
+            image_contract_schemas.len()
         );
     }
     if !image_payload_paths.is_empty() && !sysroot {
@@ -239,17 +233,15 @@ pub(crate) async fn publish_to_registry_directory(
     let pkg_version = version_override.unwrap_or(&parsed_version);
     validate_package_name(pkg_name)?;
     let platform = resolve_publish_platform(&info.path, platform_override)?;
-    // Bind the exact disk, canonical per-format metadata, and paired UKI
-    // before catalog construction. Committed Secure Boot policy is enforced
-    // below.
-    let sb_db_cert = sb_db_cert_path(config, name);
+    // Bind the exact disk and provider-owned contract without interpreting
+    // the selected provider's boot artifact schema.
     let mut image_infos: Vec<PublishedImage> = Vec::new();
-    for ((((payload_path, disk_path), info_path), img_fmt), uki_path) in image_payload_paths
+    for ((((payload_path, disk_path), info_path), img_fmt), contract_schema) in image_payload_paths
         .iter()
         .zip(image_disk_paths.iter())
         .zip(image_info_paths.iter())
         .zip(image_formats.iter())
-        .zip(image_uki_paths.iter())
+        .zip(image_contract_schemas.iter())
     {
         let payload_info = introspect_store_path(payload_path)?;
         let disk_info = introspect_store_path(disk_path)?;
@@ -259,20 +251,12 @@ pub(crate) async fn publish_to_registry_directory(
             payload_info,
             disk_info,
             metadata_info,
-            Path::new(uki_path),
+            contract_schema,
             pkg_name,
             pkg_version,
             &platform,
-            sb_db_cert.as_deref(),
         )?);
     }
-    let sb_catalog = sb_certs::load_sb_certs_toml(dir)?;
-    apply_publish_sb_policy(
-        &mut image_infos,
-        sb_catalog.as_ref(),
-        sb_db_cert.is_some(),
-        require_signed_ukis,
-    )?;
     let documentation = publish_package_documentation(
         pkg_name,
         pkg_version,
@@ -452,9 +436,10 @@ pub(crate) async fn publish_to_registry_directory(
         printer.kv(&format!("Image ({})", image.format), &image.store.path);
         printer.kv("  File", &image.delivery.filename);
         printer.kv("  SHA-256", &image.delivery.sha256);
-        if let Some(cert) = &image.sb.signer_cert_sha256 {
-            printer.kv(&format!("  SB signer cert ({})", image.format), cert);
-        }
+        printer.kv(
+            "  Artifact contract",
+            &image.delivery.artifact_contract.schema,
+        );
     }
 
     let mut committed = false;
@@ -501,15 +486,7 @@ pub(crate) async fn publish_to_registry_directory(
                     "nar_hash": image.store.nar_hash.as_str(),
                     "nar_size": image.store.nar_size,
                     "delivery": &image.delivery,
-                    "sb_signer_cert_sha256": image.sb.signer_cert_sha256,
-                    "sbat": image.sb.sbat.iter().map(|item| serde_json::json!({
-                        "component": item.component,
-                        "generation": item.generation,
-                    })).collect::<Vec<_>>(),
-                    "expected_pcr11": image.sb.expected_pcr11,
-                    "ukis": image.sb.ukis,
-                    "recovery_ukis": image.sb.recovery_ukis,
-                    "recovery_bundle": image.sb.recovery_bundle,
+                    "artifact_contract": &image.delivery.artifact_contract,
                 })
             })
             .collect::<Vec<_>>();
@@ -892,78 +869,6 @@ pub(in crate::registry_ops) fn validate_release_publish_signing_identity(
         bail!(
             "releasing a store path requires --key-id so package provenance is tied to keys.toml"
         );
-    }
-    Ok(())
-}
-
-fn apply_publish_sb_policy(
-    images: &mut [PublishedImage],
-    catalog: Option<&SbCertsToml>,
-    has_db_cert: bool,
-    require_signed_ukis: bool,
-) -> Result<()> {
-    for image in images {
-        if require_signed_ukis {
-            if image.sb.signer_cert_sha256.is_none()
-                || image
-                    .sb
-                    .ukis
-                    .iter()
-                    .any(|uki| uki.sb_signer_cert_sha256.is_none())
-            {
-                bail!(
-                    "registry [registry] require_signed_ukis = true refuses unsigned UKIs in '{}' image",
-                    image.format
-                );
-            }
-            if catalog.is_none() {
-                bail!(
-                    "registry [registry] require_signed_ukis = true requires a committed sb-certs.toml policy"
-                );
-            }
-            if !has_db_cert {
-                bail!(
-                    "registry [registry] require_signed_ukis = true requires the matching registry sb-certs/db.pem for publish-time verification"
-                );
-            }
-        }
-
-        let signers = image
-            .sb
-            .signer_cert_sha256
-            .iter()
-            .map(String::as_str)
-            .chain(
-                image
-                    .sb
-                    .ukis
-                    .iter()
-                    .filter_map(|uki| uki.sb_signer_cert_sha256.as_deref()),
-            );
-        let signers = signers.chain(
-            image
-                .sb
-                .recovery_ukis
-                .iter()
-                .map(|uki| uki.sb_signer_cert_sha256.as_str()),
-        );
-        for signer in signers {
-            if let Some(catalog) = catalog {
-                if !catalog.accepts_signer(signer) {
-                    bail!(
-                        "image UKI signer {signer} is not active in the committed sb-certs.toml policy"
-                    );
-                }
-                if !has_db_cert {
-                    bail!(
-                        "committed Secure Boot policy requires the matching registry db.pem for publish-time verification"
-                    );
-                }
-            }
-        }
-        if image.sb.signer_cert_sha256.is_some() && catalog.is_some() {
-            image.delivery.uki.verification = ImageVerificationState::PolicyVerified;
-        }
     }
     Ok(())
 }

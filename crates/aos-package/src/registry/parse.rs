@@ -62,10 +62,10 @@ type PackageMetaValidator = fn(&PackageMeta) -> Result<()>;
 // contract fields and helpers such as `PlatformEntry::attestation` and the
 // `ReferenceField` accessors).
 pub use aos_registry_surface::manifest::{
-    ImageCompression, ImageDelivery, ImageEntry, ImageInfoReference, ImageStoreReference,
-    ImageTarget, ImageUkiIdentity, ImageVerificationState, PackageHeader, PackageToml,
-    PlatformEntry, ReferenceField, ReferenceGate, VersionEntry, immutable_image_info_object_key,
-    immutable_image_object_key,
+    ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
+    ImageDelivery, ImageEntry, ImageStoreReference, ImageTarget, PackageHeader, PackageToml,
+    PlatformEntry, ReferenceField, ReferenceGate, VersionEntry,
+    immutable_image_contract_object_key, immutable_image_object_key,
 };
 
 // ---------------------------------------------------------------------------
@@ -301,16 +301,6 @@ fn package_metas_for_platform(
                     nar_hash: img.nar_hash.clone(),
                     nar_size: img.nar_size,
                     delivery: img.delivery.clone(),
-                    sb_signer_cert_sha256: img.sb_signer_cert_sha256.clone(),
-                    sbat: img.sbat.clone(),
-                    expected_pcr11: img.expected_pcr11.clone(),
-                    ukis: img.ukis.clone(),
-                    recovery_ukis: img.recovery_ukis.clone(),
-                    recovery_bundle: img.recovery_bundle.clone(),
-                    root_image: img.root_image.clone(),
-                    root_verity: img.root_verity.clone(),
-                    root_hash: img.root_hash.clone(),
-                    root_hash_sig: img.root_hash_sig.clone(),
                 })
                 .collect();
 
@@ -626,7 +616,8 @@ nar_size = 10
         };
         let filename = format!("aos-server.{extension}");
         let object_key = immutable_image_object_key(&image_sha256, &filename);
-        let info_key = immutable_image_info_object_key(&image_sha256, &info_sha256);
+        let info_key =
+            immutable_image_contract_object_key(&image_sha256, &info_sha256, "image-info.json");
         let compression = if format == "raw" { "zstd" } else { "none" };
         format!(
             r#"
@@ -659,7 +650,6 @@ platform = "x86_64-linux"
 architecture = "x86_64"
 logical_image_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 logical_disk_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-rootfs_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 filename = "{filename}"
 object_key = "{object_key}"
 media_type = "{media_type}"
@@ -668,14 +658,10 @@ byte_size = 10
 sha256 = "{image_sha256}"
 compatible_targets = [{targets}]
 
-[versions.platforms.x86_64-linux.images.delivery.uki]
-filename = "aos-server.efi"
-esp_path = "EFI/Linux/aos-server.efi"
-byte_size = 1024
-sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-verification = "unsigned"
+[versions.platforms.x86_64-linux.images.delivery.artifact_contract]
+schema = "aos.test.boot-artifacts/v1"
 
-[versions.platforms.x86_64-linux.images.delivery.image_info]
+[versions.platforms.x86_64-linux.images.delivery.artifact_contract.document]
 filename = "image-info.json"
 object_key = "{info_key}"
 media_type = "application/vnd.aos.image-info+json"

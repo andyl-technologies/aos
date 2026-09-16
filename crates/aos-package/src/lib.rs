@@ -176,7 +176,7 @@ pub(crate) mod testutil;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{ErrorKind, Write as _};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -1095,9 +1095,7 @@ impl PackageCommand {
     pub fn is_runtime_internal(&self) -> bool {
         matches!(
             self,
-            PackageCommand::Attest {
-                command: AttestCommand::ReadUkiIdentitySection { .. },
-            } | PackageCommand::Eval { .. }
+            PackageCommand::Eval { .. }
                 | PackageCommand::EvalRetained { .. }
                 | PackageCommand::EvalService { .. }
                 | PackageCommand::Materialize { .. }
@@ -1231,16 +1229,6 @@ pub enum AttestCommand {
         #[arg(long = "catalog-file")]
         catalog_file: PathBuf,
     },
-    /// Read one bounded identity section from an installed UKI.
-    #[command(name = "__read-uki-identity-section", hide = true)]
-    ReadUkiIdentitySection {
-        /// Installed regular-file UKI to inspect.
-        #[arg(long)]
-        uki: PathBuf,
-        /// Fixed identity section to emit as exact UTF-8 text.
-        #[arg(long, value_enum)]
-        section: UkiIdentitySection,
-    },
     /// Verify a package event log against a PCR 15 value or quote bundle
     Verify {
         /// Use system registry metadata
@@ -1297,32 +1285,12 @@ pub enum AttestCommand {
     },
 }
 
-/// Selects one bounded UKI text section used by early boot identity checks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum UkiIdentitySection {
-    /// Selects the measured kernel command line.
-    Cmdline,
-    /// Selects the measured operating-system release fields.
-    Osrel,
-}
-
-impl UkiIdentitySection {
-    fn as_pe_name(self) -> &'static str {
-        match self {
-            Self::Cmdline => ".cmdline",
-            Self::Osrel => ".osrel",
-        }
-    }
-}
-
 impl AttestCommand {
     fn is_system(&self) -> bool {
         match self {
             AttestCommand::Verify { system, .. } => *system,
             AttestCommand::Catalog { system, .. } => *system,
-            AttestCommand::Quote { .. }
-            | AttestCommand::Enroll { .. }
-            | AttestCommand::ReadUkiIdentitySection { .. } => false,
+            AttestCommand::Quote { .. } | AttestCommand::Enroll { .. } => false,
         }
     }
 }
@@ -1516,14 +1484,6 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: KeysCommand,
     },
-    /// Manage the committed Secure Boot validation catalog (sb-certs.toml)
-    #[command(name = "sb-certs")]
-    SbCerts {
-        /// The sb-certs.toml catalog operation to run
-        #[command(subcommand)]
-        command: SbCertsCommand,
-    },
-
     // ----- Package Entries -----
     /// Publish a package to the registry from a store path
     Publish {
@@ -1571,9 +1531,9 @@ pub enum RegistryCommand {
         /// Image format for each image artifact group
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
-        /// Exact UKI file for each image artifact group
-        #[arg(long = "image-uki")]
-        image_ukis: Vec<String>,
+        /// Provider-owned contract schema for each image artifact group
+        #[arg(long = "image-contract-schema")]
+        image_contract_schemas: Vec<String>,
         /// Bless additional content for paths already recorded with different
         /// bits in the store/ graph instead of failing
         #[arg(long)]
@@ -1866,9 +1826,9 @@ pub enum RegistryCommand {
         /// Image format for each image artifact group
         #[arg(long = "image-format")]
         image_formats: Vec<String>,
-        /// Exact UKI file for each image artifact group
-        #[arg(long = "image-uki")]
-        image_ukis: Vec<String>,
+        /// Provider-owned contract schema for each image artifact group
+        #[arg(long = "image-contract-schema")]
+        image_contract_schemas: Vec<String>,
         /// Bless additional content for paths already recorded with different
         /// bits in the store/ graph when --store-path is used
         #[arg(long)]
@@ -2084,86 +2044,6 @@ pub enum KeysCommand {
         /// for manual handling instead
         #[arg(long = "no-resign")]
         no_resign: bool,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-}
-
-/// Secure Boot validation-catalog subcommands.
-///
-/// These mutate the committed `sb-certs.toml` roster in an authoring clone:
-/// the active db-cert set, its revocations, and the SBAT revocation floor
-/// (RFC-0006 phase 4). Like `keys.toml`, every change is written with
-/// [`registry_ops::run_sb_certs`] and committed (optionally signed) so the
-/// catalog is covered by the registry's release signature.
-#[derive(Subcommand)]
-pub enum SbCertsCommand {
-    /// List the active db certs, revocations, and SBAT floor
-    List {
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Add an active Secure Boot db certificate to the catalog
-    Add {
-        /// Stable cert id used by revocation entries
-        #[arg(value_name = "ID")]
-        id: String,
-        /// Lowercase hex SHA-256 of the db certificate (DER)
-        #[arg(long = "cert-sha256", value_name = "HEX")]
-        cert_sha256: String,
-        /// Skip creating a git commit
-        #[arg(long)]
-        no_commit: bool,
-        /// Private key path used to sign the catalog commit
-        #[arg(long = "key")]
-        signing_key: Option<String>,
-        /// Active key id whose configured private key signs the commit
-        #[arg(long = "key-id")]
-        signing_key_id: Option<String>,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Retire a db certificate by moving its id to [[revoked]]
-    Retire {
-        /// Active db cert id to retire
-        #[arg(value_name = "ID")]
-        id: String,
-        /// Human-readable retirement reason
-        #[arg(long)]
-        reason: Option<String>,
-        /// Skip creating a git commit
-        #[arg(long)]
-        no_commit: bool,
-        /// Private key path used to sign the catalog commit
-        #[arg(long = "key")]
-        signing_key: Option<String>,
-        /// Active key id whose configured private key signs the commit
-        #[arg(long = "key-id")]
-        signing_key_id: Option<String>,
-        /// Registry to operate on
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Set (or raise) the SBAT revocation floor for a component
-    SetFloor {
-        /// SBAT component identifier (e.g. aos, systemd)
-        #[arg(long, value_name = "COMPONENT")]
-        component: String,
-        /// Minimum acceptable SBAT generation for the component
-        #[arg(long, value_name = "N")]
-        generation: u32,
-        /// Skip creating a git commit
-        #[arg(long)]
-        no_commit: bool,
-        /// Private key path used to sign the catalog commit
-        #[arg(long = "key")]
-        signing_key: Option<String>,
-        /// Active key id whose configured private key signs the commit
-        #[arg(long = "key-id")]
-        signing_key_id: Option<String>,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -3212,33 +3092,27 @@ fn ensure_runtime_config_input_compatibility(development_bypass: bool) -> Result
     let image_profile = Path::new("/var/lib/profiles/image");
     let state = sysroot::load_image_generation_state_pub(image_profile)
         .context("loading bootable image generations for runtime-module compatibility gate")?;
-    let mut latest_by_slot = std::collections::BTreeMap::new();
     for generation in &state.generations {
-        let slot = match generation.slot {
-            types::ImageSlot::A => 'A',
-            types::ImageSlot::B => 'B',
-        };
-        latest_by_slot
-            .entry(slot)
-            .and_modify(|current: &mut &types::ImageGeneration| {
-                if generation.number > current.number {
-                    *current = generation;
-                }
-            })
-            .or_insert(generation);
-    }
-    for (slot, generation) in latest_by_slot {
         let path = Path::new(&generation.toplevel).join("meta/config-input-abi");
         let abi = std::fs::read_to_string(&path)
             .with_context(|| {
-                format!("bootable slot {slot} lacks runtime-module compatibility metadata")
+                format!(
+                    "image generation {} lacks runtime-module compatibility metadata",
+                    generation.number
+                )
             })?
             .trim()
             .parse::<u32>()
-            .with_context(|| format!("bootable slot {slot} has invalid config-input ABI"))?;
+            .with_context(|| {
+                format!(
+                    "image generation {} has invalid config-input ABI",
+                    generation.number
+                )
+            })?;
         if abi < 2 {
             bail!(
-                "bootable slot {slot} uses config-input ABI {abi}; upgrade every A/B slot before applying runtime modules"
+                "image generation {} uses config-input ABI {abi}; retire it before applying runtime modules",
+                generation.number
             );
         }
     }
@@ -3635,18 +3509,6 @@ pub async fn run(
         );
     }
 
-    if let PackageCommand::Attest {
-        command: AttestCommand::ReadUkiIdentitySection { uki, section },
-    } = command
-    {
-        let text = sysroot::read_uki_section_text(uki, section.as_pe_name())?;
-        let mut output = std::io::stdout().lock();
-        output
-            .write_all(text.as_bytes())
-            .context("writing UKI identity section")?;
-        return Ok(());
-    }
-
     if let PackageCommand::AbilityPlanBuildStage { spec, out } = command {
         return config_eval::build_stage::plan_build_stage(spec, out);
     }
@@ -3912,11 +3774,6 @@ pub async fn run(
         PackageCommand::Attest {
             command: AttestCommand::Enroll { .. },
         } => unreachable!("AttestCommand::Enroll is handled before ApmConfig::load"),
-        PackageCommand::Attest {
-            command: AttestCommand::ReadUkiIdentitySection { .. },
-        } => {
-            unreachable!("AttestCommand::ReadUkiIdentitySection is handled before ApmConfig::load")
-        }
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held { .. } => hold::run_held(&config, printer).await,
@@ -5141,9 +4998,6 @@ async fn run_registry(
         }
         RegistryCommand::Trust { command } => registry_ops::run_trust(config, command, printer),
         RegistryCommand::Keys { command } => registry_ops::run_keys(config, command, printer),
-        RegistryCommand::SbCerts { command } => {
-            registry_ops::run_sb_certs(config, command, printer)
-        }
         RegistryCommand::Create {
             name,
             remote,
@@ -5180,7 +5034,7 @@ async fn run_registry(
             image_disks,
             image_infos,
             image_formats,
-            image_ukis,
+            image_contract_schemas,
             bless,
             no_ca,
             no_commit,
@@ -5206,7 +5060,7 @@ async fn run_registry(
                 image_disks,
                 image_infos,
                 image_formats,
-                image_ukis,
+                image_contract_schemas,
                 *bless,
                 *no_ca,
                 *no_commit,
@@ -5408,7 +5262,7 @@ async fn run_registry(
             image_disks,
             image_infos,
             image_formats,
-            image_ukis,
+            image_contract_schemas,
             bless,
             message,
             channel,
@@ -5449,7 +5303,7 @@ async fn run_registry(
                 image_disks,
                 image_infos,
                 image_formats,
-                image_ukis,
+                image_contract_schemas,
                 *bless,
                 message.as_deref(),
                 channel.as_deref(),

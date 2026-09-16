@@ -464,7 +464,11 @@ mod tests {
 
             let error = serde_json::from_value::<RuntimePackagePin>(incomplete)
                 .expect_err("runtime NAR identity fields must be present");
-            assert!(error.to_string().contains(&format!("missing field `{field}`")));
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("missing field `{field}`"))
+            );
         }
     }
 

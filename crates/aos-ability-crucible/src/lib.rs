@@ -623,7 +623,10 @@ mod tests {
     fn configuration_path_is_explicit() {
         assert!(parse_args(Vec::<OsString>::new()).is_err());
         assert_eq!(
-            parse_args([OsString::from("--config"), OsString::from("/run/aos/config.json")])
+            parse_args([
+                OsString::from("--config"),
+                OsString::from("/run/aos/config.json")
+            ])
                 .unwrap(),
             PathBuf::from("/run/aos/config.json")
         );

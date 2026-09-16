@@ -9,9 +9,9 @@ mod indexing;
 mod scope;
 pub(super) use indexing::extend_tree_projection;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use aos_doc_model::PathSegment;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -842,16 +842,18 @@ mod tests {
         assert_eq!(roots.items[0].label, "services");
         assert_eq!(roots.items[0].child_count, 137);
         let foreign = documentation_node_key(&[literal("unrelated")]);
-        assert!(db
-            .documentation_tree_node_in_document(registry, "commit", &foreign, Some(digest))
+        assert!(
+            db.documentation_tree_node_in_document(registry, "commit", &foreign, Some(digest))
             .await
             .unwrap()
-            .is_none());
-        assert!(db
-            .documentation_tree_node(registry, "commit", &foreign)
+                .is_none()
+        );
+        assert!(
+            db.documentation_tree_node(registry, "commit", &foreign)
             .await
             .unwrap()
-            .is_some());
+                .is_some()
+        );
 
         let mut seen = std::collections::BTreeSet::new();
         let mut cursor = None;
@@ -877,8 +879,8 @@ mod tests {
             let Some(after) = cursor.as_deref() else {
                 break;
             };
-            assert!(db
-                .documentation_tree_descendants_in_document(
+            assert!(
+                db.documentation_tree_descendants_in_document(
                     registry,
                     "commit",
                     &root,
@@ -886,11 +888,13 @@ mod tests {
                     Some(&other.artifact.document_sha256)
                 )
                 .await
-                .is_err());
-            assert!(db
-                .documentation_tree_descendants(registry, "commit", &root, Some(after))
+                .is_err()
+            );
+            assert!(
+                db.documentation_tree_descendants(registry, "commit", &root, Some(after))
                 .await
-                .is_err());
+                    .is_err()
+            );
         }
         assert_eq!(seen.len(), 137);
 
@@ -923,12 +927,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(search.items.len(), 50);
-        assert!(search
+        assert!(
+            search
             .items
             .iter()
-            .all(|entry| entry.document_sha256 == digest));
-        assert!(db
-            .search_documentation_tree_in_document(
+                .all(|entry| entry.document_sha256 == digest)
+        );
+        assert!(
+            db.search_documentation_tree_in_document(
                 registry,
                 "commit",
                 None,
@@ -938,7 +944,8 @@ mod tests {
                 Some(&other.artifact.document_sha256)
             )
             .await
-            .is_err());
+            .is_err()
+        );
         let foreign_search = db
             .search_documentation_tree_in_document(
                 registry,
@@ -1028,15 +1035,16 @@ mod tests {
             .unwrap();
         assert_eq!(everything.items.len(), 50);
         assert!(everything.next_cursor.is_some());
-        assert!(db
-            .documentation_tree_descendants(
+        assert!(
+            db.documentation_tree_descendants(
                 registry,
                 "commit-a",
                 &root,
                 first_page_cursor(&db, registry, services).await.as_deref()
             )
             .await
-            .is_err());
+            .is_err()
+        );
         let branches = db
             .documentation_tree_children(registry, "commit-a", &root, None)
             .await
@@ -1048,18 +1056,21 @@ mod tests {
             .await
             .unwrap();
         let cursor = first.next_cursor.as_deref();
-        assert!(db
-            .documentation_tree_children(registry, "commit-b", services, cursor)
+        assert!(
+            db.documentation_tree_children(registry, "commit-b", services, cursor)
             .await
-            .is_err());
-        assert!(db
-            .documentation_tree_children(registry, "commit-a", &root, cursor)
+                .is_err()
+        );
+        assert!(
+            db.documentation_tree_children(registry, "commit-a", &root, cursor)
             .await
-            .is_err());
-        assert!(db
-            .documentation_tree_children(registry + 1, "commit-a", services, cursor)
+                .is_err()
+        );
+        assert!(
+            db.documentation_tree_children(registry + 1, "commit-a", services, cursor)
             .await
-            .is_err());
+                .is_err()
+        );
 
         let first_search = db
             .search_documentation_tree(registry, "commit-a", None, "enable", Some("option"), None)
@@ -1102,8 +1113,8 @@ mod tests {
             ("commit-a", None, "child", Some("option")),
             ("commit-a", None, "enable", None),
         ] {
-            assert!(db
-                .search_documentation_tree(
+            assert!(
+                db.search_documentation_tree(
                     registry,
                     commit,
                     root,
@@ -1112,7 +1123,8 @@ mod tests {
                     first_search.next_cursor.as_deref()
                 )
                 .await
-                .is_err());
+                .is_err()
+            );
         }
         let branch = documentation_node_key(&[literal("services"), literal("child073")]);
         let scoped = db
@@ -1131,24 +1143,26 @@ mod tests {
             variants.items[0].document_sha256,
             doc.artifact.document_sha256
         );
-        assert!(db
-            .documentation_tree_children(registry, "commit-a", leaf, None)
+        assert!(
+            db.documentation_tree_children(registry, "commit-a", leaf, None)
             .await
             .unwrap()
             .items
-            .is_empty());
+                .is_empty()
+        );
 
         // Rebuilding one generation replaces its search projection atomically;
         // cascade deletion must not retain stale terms from removed options.
         db.retain_release_browse_catalog(registry, "commit-a", &[], None, &[document(1)])
             .await
             .unwrap();
-        assert!(db
-            .search_documentation_tree(registry, "commit-a", None, "child073", None, None)
+        assert!(
+            db.search_documentation_tree(registry, "commit-a", None, "child073", None, None)
             .await
             .unwrap()
             .items
-            .is_empty());
+                .is_empty()
+        );
         assert!(
             db.documentation_tree_commit(registry, "1.0.0")
                 .await

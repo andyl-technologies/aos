@@ -15,8 +15,8 @@ use crate::registry_ops::provenance::{
     head_package_provenance_transparency_log, package_provenance_trusted_keys,
     parse_package_provenance_transparency_log,
 };
+use crate::registry_ops::sha256_hex;
 use crate::registry_ops::store_paths::extract_hash;
-use crate::registry_ops::uki::sha256_hex;
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;

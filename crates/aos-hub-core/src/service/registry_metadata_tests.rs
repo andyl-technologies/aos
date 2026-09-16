@@ -5,7 +5,7 @@ use crate::db::{BindingWriteRevisionRecord, IndexSnapshot, SurfacePlacementRecor
 use crate::domain::{Permission, Principal, Scope};
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::surface_write::{SurfaceWrite, SurfaceWriteProvider};
-use aos_registry_surface::object::{encode_loose, encode_tree, hash_object, ObjectKind, TreeEntry};
+use aos_registry_surface::object::{ObjectKind, TreeEntry, encode_loose, encode_tree, hash_object};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -16,7 +16,6 @@ description = "Old description"
 readme = "Old introduction"
 default_release = "2026.9.0"
 content_addressed = false
-require_signed_ukis = true
 
 [caches]
 endpoint = "https://cache.example.test"
@@ -57,7 +56,6 @@ fn optional_metadata_can_be_cleared_without_resetting_producer_flags() {
     assert!(metadata.support_toml.is_empty());
     let config = parse_metadata(&result).unwrap();
     assert!(!config.registry.content_addressed);
-    assert!(config.registry.require_signed_ukis);
     assert!(config.caches.is_some());
 }
 
@@ -94,12 +92,14 @@ fn invalid_metadata_is_rejected_before_a_plan_is_created() {
     ] {
         assert!(edit_metadata(ORIGINAL, &pb::RegistryMetadata::default(), &mask).is_err());
     }
-    assert!(edit_metadata(
+    assert!(
+        edit_metadata(
         ORIGINAL,
         &metadata_from_toml(ORIGINAL).unwrap(),
         &["name".into()]
     )
-    .is_err());
+        .is_err()
+    );
 }
 
 #[test]
@@ -420,11 +420,13 @@ async fn metadata_apply_checks_confirmation_and_current_permission_before_writin
             .await,
         Err(RpcError::PermissionDenied(_))
     ));
-    assert!(storage
+    assert!(
+        storage
         .fetch(&format!("refs/hub/changes/{}", plan.plan_id))
         .await
         .unwrap()
-        .is_none());
+            .is_none()
+    );
 
     service
         .update_registry_metadata(Some(&auth), apply.clone())

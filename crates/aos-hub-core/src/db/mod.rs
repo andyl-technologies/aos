@@ -4080,9 +4080,9 @@ impl Database {
                         image.delivery.byte_size,
                     ),
                     (
-                        image.delivery.image_info.object_key.as_str(),
-                        image.delivery.image_info.sha256.as_str(),
-                        image.delivery.image_info.byte_size,
+                        image.delivery.artifact_contract.document.object_key.as_str(),
+                        image.delivery.artifact_contract.document.sha256.as_str(),
+                        image.delivery.artifact_contract.document.byte_size,
                     ),
                 ] {
                     let size = i64::try_from(size)
@@ -4309,8 +4309,8 @@ impl Database {
                         catalog_artifacts.push(("image", image.store_path.as_str()));
                         if image.delivery.is_store_backed() {
                             catalog_artifacts
-                                .push(("image", image.delivery.image_info.store_path.as_str()));
-                            if let Some(payload) = &image.delivery.update_payload {
+                                .push(("image", image.delivery.artifact_contract.document.store_path.as_str()));
+                            if let Some(payload) = &image.delivery.artifact_contract.artifacts {
                                 catalog_artifacts.push(("image", payload.store_path.as_str()));
                             }
                         }
@@ -4559,9 +4559,9 @@ impl Database {
                         ),
                         (
                             "image_info",
-                            image.delivery.image_info.object_key.as_str(),
-                            image.delivery.image_info.sha256.as_str(),
-                            image.delivery.image_info.byte_size,
+                            image.delivery.artifact_contract.document.object_key.as_str(),
+                            image.delivery.artifact_contract.document.sha256.as_str(),
+                            image.delivery.artifact_contract.document.byte_size,
                         ),
                     ] {
                         let size = i64::try_from(size)
@@ -14292,7 +14292,7 @@ impl Database {
                     None
                 } else if image.delivery.object_key == object_key {
                     Some(IndexedSystemImageObject::Disk(image))
-                } else if image.delivery.image_info.object_key == object_key {
+                } else if image.delivery.artifact_contract.document.object_key == object_key {
                     Some(IndexedSystemImageObject::ImageInfo(image))
                 } else {
                     None
@@ -14856,9 +14856,9 @@ impl Database {
                 delivery.byte_size,
             ),
             (
-                delivery.image_info.object_key.as_str(),
-                delivery.image_info.sha256.as_str(),
-                delivery.image_info.byte_size,
+                delivery.artifact_contract.document.object_key.as_str(),
+                delivery.artifact_contract.document.sha256.as_str(),
+                delivery.artifact_contract.document.byte_size,
             ),
         ] {
             let size =
@@ -26965,9 +26965,9 @@ mod tests {
 
     fn signed_image_package() -> aos_registry_surface::manifest::PackageToml {
         use aos_registry_surface::manifest::{
-            immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
-            ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-            ImageVerificationState,
+            ImageArtifactContractDocumentReference, ImageArtifactContractReference,
+            ImageCompression, ImageDelivery, ImageTarget, immutable_image_contract_object_key,
+            immutable_image_object_key,
         };
 
         #[derive(serde::Serialize)]
@@ -27001,7 +27001,6 @@ mod tests {
                 architecture: "x86_64".into(),
                 logical_image_id: "e".repeat(64),
                 logical_disk_sha256: "a".repeat(64),
-                rootfs_sha256: "f".repeat(64),
                 filename: filename.clone(),
                 object_key: immutable_image_object_key(&sha256, &filename),
                 media_type: media_type.into(),
@@ -27013,28 +27012,24 @@ mod tests {
                 byte_size: 4096,
                 sha256: sha256.clone(),
                 compatible_targets,
-                uki: ImageUkiIdentity {
-                    filename: "aos-system.efi".into(),
-                    esp_path: "EFI/Linux/aos-system.efi".into(),
-                    byte_size: 1024,
-                    sha256: "1".repeat(64),
-                    verification: ImageVerificationState::Unsigned,
-                    signer_cert_sha256: None,
-                    sbat: Vec::new(),
-                    measured: false,
-                    expected_pcr11: None,
+                artifact_contract: ImageArtifactContractReference {
+                    schema: "aos.test.boot-artifacts/v1".into(),
+                    document: ImageArtifactContractDocumentReference {
+                        filename: "image-info.json".into(),
+                        object_key: immutable_image_contract_object_key(
+                            &sha256,
+                            &info_sha256,
+                            "image-info.json",
+                        ),
+                        store_path: String::new(),
+                        nar_hash: String::new(),
+                        nar_size: 0,
+                        media_type: "application/vnd.aos.image-info+json".into(),
+                        byte_size: 512,
+                        sha256: info_sha256,
+                    },
+                    artifacts: None,
                 },
-                image_info: ImageInfoReference {
-                    filename: "image-info.json".into(),
-                    object_key: immutable_image_info_object_key(&sha256, &info_sha256),
-                    store_path: String::new(),
-                    nar_hash: String::new(),
-                    nar_size: 0,
-                    media_type: "application/vnd.aos.image-info+json".into(),
-                    byte_size: 512,
-                    sha256: info_sha256,
-                },
-                update_payload: None,
             }
         };
         let mut images = String::new();
@@ -27054,12 +27049,12 @@ mod tests {
                 "[versions.platforms.x86_64-linux.images.delivery]",
             )
             .replace(
-                "[delivery.uki]",
-                "[versions.platforms.x86_64-linux.images.delivery.uki]",
+                "[delivery.artifact_contract]",
+                "[versions.platforms.x86_64-linux.images.delivery.artifact_contract]",
             )
             .replace(
-                "[delivery.image_info]",
-                "[versions.platforms.x86_64-linux.images.delivery.image_info]",
+                "[delivery.artifact_contract.document]",
+                "[versions.platforms.x86_64-linux.images.delivery.artifact_contract.document]",
             );
             images.push_str(&format!(
                 r#"
@@ -27143,11 +27138,11 @@ source_nar_hash = ""
                     image.nar_hash = format!("sha256:{}", "0".repeat(52));
                     image.delivery.schema_version = 2;
                     image.delivery.object_key.clear();
-                    image.delivery.image_info.object_key.clear();
-                    image.delivery.image_info.store_path =
+                    image.delivery.artifact_contract.document.object_key.clear();
+                    image.delivery.artifact_contract.document.store_path =
                         format!("/aos/store/{store_hash}-aos-system-{}-info", image.format);
-                    image.delivery.image_info.nar_hash = format!("sha256:{}", "0".repeat(52));
-                    image.delivery.image_info.nar_size = 1;
+                    image.delivery.artifact_contract.document.nar_hash = format!("sha256:{}", "0".repeat(52));
+                    image.delivery.artifact_contract.document.nar_size = 1;
                 }
             }
         }
@@ -28746,10 +28741,13 @@ source_nar_hash = ""
                         strong_etag: format!("\"snapshot-sha256-{}\"", disk.sha256),
                     },
                     VerifiedRegistryImageObject {
-                        object_key: disk.image_info.object_key.clone(),
-                        sha256: disk.image_info.sha256.clone(),
-                        byte_size: i64::try_from(disk.image_info.byte_size).unwrap(),
-                        strong_etag: format!("\"snapshot-sha256-{}\"", disk.image_info.sha256),
+                        object_key: disk.artifact_contract.document.object_key.clone(),
+                        sha256: disk.artifact_contract.document.sha256.clone(),
+                        byte_size: i64::try_from(disk.artifact_contract.document.byte_size).unwrap(),
+                        strong_etag: format!(
+                            "\"snapshot-sha256-{}\"",
+                            disk.artifact_contract.document.sha256
+                        ),
                     },
                 ]
             })

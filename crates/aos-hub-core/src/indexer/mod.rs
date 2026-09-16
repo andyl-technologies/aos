@@ -54,7 +54,7 @@ use aos_oci_types::{
     Descriptor, ImageConfig, ImageIndex, ImageManifest, ManifestReference, MediaType,
     RepositoryName, Sha256Digest, CONTAINER_DSSE_SIGNATURE_NAMESPACE,
 };
-use aos_registry_surface::manifest::{ImageVerificationState, RegistryRootConfig};
+use aos_registry_surface::manifest::RegistryRootConfig;
 use aos_registry_surface::object::{Commit, ObjectKind};
 use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
 use aos_registry_surface::sshsig;
@@ -707,7 +707,6 @@ async fn index_registry_inner(
                         refs_digest,
                         &source_commit,
                         &release_tree.root.registry.name,
-                        release_tree.root.registry.require_signed_ukis,
                         &release_tree.packages,
                         &tag_name,
                         &mut release_leases,
@@ -726,7 +725,7 @@ async fn index_registry_inner(
                             .flat_map(|image| {
                                 [
                                     image.delivery.object_key.clone(),
-                                    image.delivery.image_info.object_key.clone(),
+                                    image.delivery.artifact_contract.document.object_key.clone(),
                                 ]
                             })
                             .collect::<std::collections::BTreeSet<_>>();
@@ -1826,10 +1825,10 @@ fn release_snapshot_artifacts(
                             package_version: version.version.clone(),
                             platform: platform.clone(),
                             artifact_kind: "image".to_string(),
-                            store_hash: store_hash_component(&image.delivery.image_info.store_path),
-                            store_path: image.delivery.image_info.store_path.clone(),
+                            store_hash: store_hash_component(&image.delivery.artifact_contract.document.store_path),
+                            store_path: image.delivery.artifact_contract.document.store_path.clone(),
                         });
-                        if let Some(payload) = &image.delivery.update_payload {
+                        if let Some(payload) = &image.delivery.artifact_contract.artifacts {
                             artifacts.push(ReleaseSnapshotArtifact {
                                 package_name: package.package.name.clone(),
                                 package_version: version.version.clone(),
@@ -2154,9 +2153,9 @@ async fn revalidate_reused_release_images(
                 ImageObjectRole::Disk,
             ),
             (
-                image.delivery.image_info.object_key.as_str(),
-                image.delivery.image_info.sha256.as_str(),
-                image.delivery.image_info.byte_size,
+                image.delivery.artifact_contract.document.object_key.as_str(),
+                image.delivery.artifact_contract.document.sha256.as_str(),
+                image.delivery.artifact_contract.document.byte_size,
                 ImageObjectRole::ImageInfo,
             ),
         ] {
@@ -2252,7 +2251,6 @@ async fn verify_system_image_objects(
     refs_digest: &str,
     commit: &str,
     registry_identity: &str,
-    require_signed_ukis: bool,
     packages: &[aos_registry_surface::manifest::PackageToml],
     selected_release: &str,
     snapshot_leases: &mut Vec<String>,
@@ -2268,18 +2266,6 @@ async fn verify_system_image_objects(
                         continue;
                     }
                     image.validate_delivery(&version.version, platform)?;
-                    if require_signed_ukis
-                        && image.delivery.uki.verification != ImageVerificationState::PolicyVerified
-                    {
-                        bail!(
-                            "registry '{}' requires signed UKIs, but release '{}' package '{}' platform '{}' format '{}' is not policy-verified",
-                            registry_identity,
-                            version.version,
-                            package.package.name,
-                            platform,
-                            image.format
-                        );
-                    }
                     let indexed_image = crate::db::IndexedSystemImage {
                         package: package.package.name.clone(),
                         release: version.version.clone(),
@@ -2303,13 +2289,13 @@ async fn verify_system_image_objects(
                                 ImageObjectRole::Disk,
                             ),
                             (
-                                image.delivery.image_info.store_path.as_str(),
-                                image.delivery.image_info.nar_hash.as_str(),
-                                image.delivery.image_info.nar_size,
+                                image.delivery.artifact_contract.document.store_path.as_str(),
+                                image.delivery.artifact_contract.document.nar_hash.as_str(),
+                                image.delivery.artifact_contract.document.nar_size,
                                 ImageObjectRole::ImageInfo,
                             ),
                         ];
-                        if let Some(payload) = &image.delivery.update_payload {
+                        if let Some(payload) = &image.delivery.artifact_contract.artifacts {
                             store_artifacts.push((
                                 payload.store_path.as_str(),
                                 payload.nar_hash.as_str(),
@@ -2339,9 +2325,9 @@ async fn verify_system_image_objects(
                             ImageObjectRole::Disk,
                         ),
                         (
-                            image.delivery.image_info.object_key.as_str(),
-                            image.delivery.image_info.sha256.as_str(),
-                            image.delivery.image_info.byte_size,
+                            image.delivery.artifact_contract.document.object_key.as_str(),
+                            image.delivery.artifact_contract.document.sha256.as_str(),
+                            image.delivery.artifact_contract.document.byte_size,
                             ImageObjectRole::ImageInfo,
                         ),
                     ] {
@@ -2725,12 +2711,12 @@ async fn verify_system_image_cache_objects(
         )];
         if image.delivery.is_store_backed() {
             artifacts.push((
-                image.delivery.image_info.store_path.as_str(),
-                image.delivery.image_info.nar_hash.as_str(),
-                image.delivery.image_info.nar_size,
+                image.delivery.artifact_contract.document.store_path.as_str(),
+                image.delivery.artifact_contract.document.nar_hash.as_str(),
+                image.delivery.artifact_contract.document.nar_size,
                 "image metadata",
             ));
-            if let Some(payload) = &image.delivery.update_payload {
+            if let Some(payload) = &image.delivery.artifact_contract.artifacts {
                 artifacts.push((
                     payload.store_path.as_str(),
                     payload.nar_hash.as_str(),

@@ -32,18 +32,19 @@ mod ability_render;
 mod nar;
 
 pub use ability_deployment::{
-    ability_deployment_supported_features, AbilityDeploymentExport, AbilityDeploymentObservation,
+    ABILITY_DEPLOYMENT_OVERLAY_SCHEMA, AbilityDeploymentExport, AbilityDeploymentObservation,
     AbilityDeploymentObservationState, AbilityDeploymentPackage, AbilityDeploymentPlan,
-    AbilityDeploymentPlanState, PackageAbilityDeploymentOverlay, ABILITY_DEPLOYMENT_OVERLAY_SCHEMA,
-    MAX_ABILITY_DEPLOYMENT_OVERLAY_BYTES, MAX_ABILITY_DEPLOYMENT_VALID_FOR_SECONDS,
+    AbilityDeploymentPlanState, MAX_ABILITY_DEPLOYMENT_OVERLAY_BYTES,
+    MAX_ABILITY_DEPLOYMENT_VALID_FOR_SECONDS, PackageAbilityDeploymentOverlay,
+    ability_deployment_supported_features,
 };
 pub use ability_nar::{
-    decode_package_ability_nar, PackageAbilityDocuments, MAX_PACKAGE_ABILITY_NAR_BYTES,
+    MAX_PACKAGE_ABILITY_NAR_BYTES, PackageAbilityDocuments, decode_package_ability_nar,
 };
 pub use ability_reference::{
-    ability_reference_supported_features, AbilityExportReference, AbilityHandlerReference,
-    PackageAbilityReference, ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1, ABILITY_REFERENCE_SCHEMA,
-    MAX_ABILITY_REFERENCE_BYTES,
+    ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1, ABILITY_REFERENCE_SCHEMA, AbilityExportReference,
+    AbilityHandlerReference, MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference,
+    ability_reference_supported_features,
 };
 pub use nar::decode_single_file_nar;
 
@@ -1987,9 +1988,11 @@ mod tests {
         let anchors = identities.map(|(kind, key)| documentation_anchor(kind, key));
         assert_eq!(anchors.iter().collect::<BTreeSet<_>>().len(), anchors.len());
         for anchor in anchors {
-            assert!(anchor
+            assert!(
+                anchor
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b':'));
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b':')
+            );
             assert!(validate_token("section id", &anchor).is_err());
         }
     }

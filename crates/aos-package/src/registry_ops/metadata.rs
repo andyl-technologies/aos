@@ -14,13 +14,12 @@ use crate::registry_ops::provenance::bind_documentation_provenance;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::types::{
     AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1,
-    FEATURE_ATTESTATION_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
-    FEATURE_RECOVERY_UKIS_V1, FEATURE_UKI_SLOTS_V1, PACKAGE_META_FORMAT, PackageContractMeta,
-    validate_attestation_meta, validate_documentation_artifact_meta,
+    FEATURE_ATTESTATION_V1, FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
+    PACKAGE_META_FORMAT, PackageContractMeta, validate_attestation_meta,
+    validate_documentation_artifact_meta,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeSet, HashSet};
-use std::fs;
 
 /// Build package TOML content, merging with existing content if present.
 ///
@@ -61,7 +60,7 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
         let table = platform_table
             .as_table_mut()
             .context("new sysroot platform metadata is not a TOML table")?;
-        record_native_image_rollout_gate(table)?;
+        record_image_artifact_contract_gate(table)?;
     }
     if let Some(documentation) = documentation {
         let table = platform_table
@@ -433,15 +432,15 @@ fn merge_minimum_format(
     Ok(())
 }
 
-fn record_native_image_rollout_gate(
+fn record_image_artifact_contract_gate(
     platform: &mut toml::map::Map<String, toml::Value>,
 ) -> Result<()> {
-    let features = BTreeSet::from([FEATURE_NATIVE_IMAGE_ROLLOUT_V1.to_string()]);
+    let features = BTreeSet::from([FEATURE_IMAGE_ARTIFACT_CONTRACT_V1.to_string()]);
     merge_feature_gate(platform, "requires-features", &features)?;
     merge_minimum_format(platform, "sysroot platform")?;
 
     // The table representation makes readers that predate structural feature
-    // gates reject the sysroot before they can stage its A/B payload.
+    // gates reject the sysroot before they can stage its image payload.
     let prior_references = platform.remove("references");
     let mut reference_gate = match prior_references {
         Some(toml::Value::Array(hashes)) => {
@@ -526,7 +525,7 @@ fn package_platform_table(
 
     if !image_infos.is_empty() {
         let mut formats = HashSet::new();
-        let first = &image_infos[0];
+        let first = &image_infos[0].delivery;
         for image in image_infos {
             image.recheck_for_commit()?;
             if !formats.insert(image.format.as_str()) {
@@ -535,14 +534,12 @@ fn package_platform_table(
                     image.format
                 );
             }
-            if image.delivery.logical_image_id != first.delivery.logical_image_id
-                || image.delivery.uki != first.delivery.uki
-                || image.sb.signer_cert_sha256 != first.sb.signer_cert_sha256
-                || image.sb.sbat != first.sb.sbat
-                || image.sb.expected_pcr11 != first.sb.expected_pcr11
+            if image.delivery.logical_image_id != first.logical_image_id
+                || image.delivery.artifact_contract.schema != first.artifact_contract.schema
+                || image.delivery.artifact_contract.artifacts != first.artifact_contract.artifacts
             {
                 bail!(
-                    "all image encodings in one platform publication must share one logical disk and UKI identity"
+                    "all image encodings in one platform publication must share one logical disk and artifact contract"
                 );
             }
         }
@@ -565,136 +562,10 @@ fn package_platform_table(
                 let delivery = toml::Value::try_from(&image.delivery)
                     .context("serializing image delivery contract")?;
                 entry.insert("delivery".into(), delivery);
-                if let Some(cert) = &image.sb.signer_cert_sha256 {
-                    entry.insert(
-                        "sb_signer_cert_sha256".into(),
-                        toml::Value::String(cert.clone()),
-                    );
-                }
-                if !image.sb.sbat.is_empty() {
-                    let sbat = image
-                        .sb
-                        .sbat
-                        .iter()
-                        .map(|item| {
-                            let mut row = toml::map::Map::new();
-                            row.insert(
-                                "component".into(),
-                                toml::Value::String(item.component.clone()),
-                            );
-                            row.insert(
-                                "generation".into(),
-                                toml::Value::Integer(i64::from(item.generation)),
-                            );
-                            toml::Value::Table(row)
-                        })
-                        .collect::<Vec<_>>();
-                    entry.insert("sbat".into(), toml::Value::Array(sbat));
-                }
-                if let Some(pcr11) = &image.sb.expected_pcr11 {
-                    entry.insert("expected_pcr11".into(), toml::Value::String(pcr11.clone()));
-                }
-                if !image.sb.ukis.is_empty() {
-                    entry.insert(
-                        "ukis".into(),
-                        toml::Value::try_from(&image.sb.ukis)
-                            .context("serializing slot-specific UKI facts")?,
-                    );
-                }
-                if !image.sb.recovery_ukis.is_empty() {
-                    entry.insert(
-                        "recovery_ukis".into(),
-                        toml::Value::try_from(&image.sb.recovery_ukis)
-                            .context("serializing recovery UKI facts")?,
-                    );
-                }
-                if let Some(bundle) = &image.sb.recovery_bundle {
-                    entry.insert(
-                        "recovery_bundle".into(),
-                        toml::Value::try_from(bundle)
-                            .context("serializing recovery bundle manifest")?,
-                    );
-                }
-                let root_image = image.directory.path.join("root.img");
-                let root_verity = image.directory.path.join("root.verity");
-                let root_hash = image.directory.path.join("root.roothash");
-                let root_hash_sig = image.directory.path.join("root.roothash.p7s");
-                // Recovery UKIs are only valid with the complete A/B verity
-                // payload, including when its distributable disk encoding is
-                // `raw`. Ordinary raw disk images may contain unrelated files
-                // with these names and must not acquire a verity contract.
-                let catalogs_verity =
-                    matches!(image.format.as_str(), "ext4-verity" | "erofs-verity")
-                        || !image.sb.recovery_ukis.is_empty();
-                if catalogs_verity {
-                    let verity_count = [&root_image, &root_verity, &root_hash, &root_hash_sig]
-                        .iter()
-                        .filter(|path| path.is_file())
-                        .count();
-                    if verity_count != 4 {
-                        bail!("published image has an incomplete dm-verity artifact set");
-                    }
-
-                    let hash = fs::read_to_string(&root_hash)?;
-                    let hash = hash.trim();
-                    if hash.len() != 64
-                        || !hash
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                    {
-                        bail!("published image has a malformed root.roothash");
-                    }
-                    entry.insert("root_image".into(), toml::Value::String("root.img".into()));
-                    entry.insert(
-                        "root_verity".into(),
-                        toml::Value::String("root.verity".into()),
-                    );
-                    entry.insert(
-                        "root_hash".into(),
-                        toml::Value::String(format!("sha256:{hash}")),
-                    );
-                    entry.insert(
-                        "root_hash_sig".into(),
-                        toml::Value::String("root.roothash.p7s".into()),
-                    );
-                }
                 Ok(toml::Value::Table(entry))
             })
             .collect::<Result<Vec<_>>>()?;
         table.insert("images".into(), toml::Value::Array(images));
-        if image_infos.iter().any(|image| !image.sb.ukis.is_empty()) {
-            let feature = toml::Value::String(FEATURE_UKI_SLOTS_V1.to_string());
-            let features = table
-                .entry("requires-features")
-                .or_insert_with(|| toml::Value::Array(Vec::new()))
-                .as_array_mut()
-                .context("platform requires-features metadata is not an array")?;
-            if !features.contains(&feature) {
-                features.push(feature);
-            }
-            table.insert(
-                "min-format".into(),
-                toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-            );
-        }
-        if image_infos
-            .iter()
-            .any(|image| !image.sb.recovery_ukis.is_empty())
-        {
-            let feature = toml::Value::String(FEATURE_RECOVERY_UKIS_V1.to_string());
-            let features = table
-                .entry("requires-features")
-                .or_insert_with(|| toml::Value::Array(Vec::new()))
-                .as_array_mut()
-                .context("platform requires-features metadata is not an array")?;
-            if !features.contains(&feature) {
-                features.push(feature);
-            }
-            table.insert(
-                "min-format".into(),
-                toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-            );
-        }
     }
 
     Ok(toml::Value::Table(table))

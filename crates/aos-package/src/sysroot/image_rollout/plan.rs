@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result, ensure};
 use aos_ability_model::{AbilityValue, BindingId, Operation, ValueExpression, VersionedDocument};
 use aos_ability_validate::CheckedEffectPlan;
 
-use super::AbRolloutRequest;
+use super::ImageRolloutRequest;
 
 const ROLLOUT_HANDLER_ENTRY_POINT: &str = "libexec/aos-image-rollout-provider";
 
@@ -24,7 +24,7 @@ const ROLLOUT_HANDLER_ENTRY_POINT: &str = "libexec/aos-image-rollout-provider";
 /// provider results may occupy sibling fields in the terminal input object.
 pub(crate) fn authenticate_single_image_rollout_fragment(
     plan: &CheckedEffectPlan,
-) -> Result<AbRolloutRequest> {
+) -> Result<ImageRolloutRequest> {
     let rollout_operations = plan
         .operations()
         .iter()
@@ -124,6 +124,6 @@ fn operation_uses_rollout_handler(
     Ok((handler.entry_point == ROLLOUT_HANDLER_ENTRY_POINT).then(|| operation.binding.clone()))
 }
 
-fn decode_request(value: &AbilityValue) -> Result<AbRolloutRequest> {
+fn decode_request(value: &AbilityValue) -> Result<ImageRolloutRequest> {
     serde_json::from_value(value.as_json().clone()).context("decoding retained rollout request")
 }

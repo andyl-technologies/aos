@@ -45,7 +45,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use aos_proto_types as pb;
-use aos_registry_surface::manifest::{ImageCompression, ImageTarget, ImageVerificationState};
+use aos_registry_surface::manifest::{ImageCompression, ImageTarget};
 use aos_registry_surface::object::Oid;
 use base64::Engine as _;
 use futures_util::{StreamExt as _, TryStreamExt as _};
@@ -1291,14 +1291,6 @@ fn parse_image_target(value: &str) -> Result<Option<ImageTarget>, RpcError> {
         "vmware" => Ok(Some(ImageTarget::Vmware)),
         "hyper-v" => Ok(Some(ImageTarget::HyperV)),
         _ => Err(RpcError::invalid("unknown image target")),
-    }
-}
-
-fn image_verification_name(state: ImageVerificationState) -> &'static str {
-    match state {
-        ImageVerificationState::Unsigned => "unsigned",
-        ImageVerificationState::SignedUnverified => "signed-unverified",
-        ImageVerificationState::PolicyVerified => "policy-verified",
     }
 }
 
@@ -12601,7 +12593,6 @@ impl RpcService {
         cache_delivery: bool,
     ) -> Result<pb::SystemImage, RpcError> {
         let delivery = image.delivery;
-        let uki = delivery.uki.clone();
         let store_backed =
             delivery.is_store_backed() || (cache_delivery && !image.store_path.is_empty());
         Ok(pb::SystemImage {
@@ -12628,43 +12619,26 @@ impl RpcService {
                 .map(image_target_name)
                 .map(str::to_string)
                 .collect(),
-            boot_verification: image_verification_name(delivery.uki.verification).to_string(),
+            boot_verification: format!("provider-contract:{}", delivery.artifact_contract.schema),
             object_key: delivery.object_key,
             image_info: Some(pb::ImageInfo {
-                filename: delivery.image_info.filename,
+                filename: delivery.artifact_contract.document.filename,
                 download_url: if store_backed {
                     String::new()
                 } else {
-                    Self::image_object_url(download_base, &delivery.image_info.object_key)?
+                    Self::image_object_url(download_base, &delivery.artifact_contract.document.object_key)?
                 },
-                object_key: delivery.image_info.object_key,
-                media_type: delivery.image_info.media_type,
-                byte_size: delivery.image_info.byte_size,
-                sha256: delivery.image_info.sha256,
-                store_path: delivery.image_info.store_path,
-                nar_hash: delivery.image_info.nar_hash,
-                nar_size: delivery.image_info.nar_size,
+                object_key: delivery.artifact_contract.document.object_key,
+                media_type: delivery.artifact_contract.document.media_type,
+                byte_size: delivery.artifact_contract.document.byte_size,
+                sha256: delivery.artifact_contract.document.sha256,
+                store_path: delivery.artifact_contract.document.store_path,
+                nar_hash: delivery.artifact_contract.document.nar_hash,
+                nar_size: delivery.artifact_contract.document.nar_size,
             }),
             logical_disk_sha256: delivery.logical_disk_sha256,
-            rootfs_sha256: delivery.rootfs_sha256,
-            uki: Some(pb::ImageUki {
-                filename: uki.filename,
-                esp_path: uki.esp_path,
-                byte_size: uki.byte_size,
-                sha256: uki.sha256,
-                verification: image_verification_name(uki.verification).to_string(),
-                signer_cert_sha256: uki.signer_cert_sha256.unwrap_or_default(),
-                sbat: uki
-                    .sbat
-                    .into_iter()
-                    .map(|entry| pb::SbatGeneration {
-                        component: entry.component,
-                        generation: entry.generation,
-                    })
-                    .collect(),
-                measured: uki.measured,
-                expected_pcr11: uki.expected_pcr11.unwrap_or_default(),
-            }),
+            rootfs_sha256: String::new(),
+            uki: None,
             release_verification: "verified".to_string(),
             store_path: store_backed.then_some(image.store_path).unwrap_or_default(),
             nar_hash: store_backed.then_some(image.nar_hash).unwrap_or_default(),
@@ -28206,10 +28180,10 @@ impl RpcService {
                 sha256: image.delivery.sha256.clone(),
             },
             IndexedSystemImageObject::ImageInfo(image) => ImageHttpMetadata {
-                filename: image.delivery.image_info.filename.clone(),
-                media_type: image.delivery.image_info.media_type.clone(),
-                byte_size: image.delivery.image_info.byte_size,
-                sha256: image.delivery.image_info.sha256.clone(),
+                filename: image.delivery.artifact_contract.document.filename.clone(),
+                media_type: image.delivery.artifact_contract.document.media_type.clone(),
+                byte_size: image.delivery.artifact_contract.document.byte_size,
+                sha256: image.delivery.artifact_contract.document.sha256.clone(),
             },
         };
         let access = if registry.visibility == "public" {
@@ -38929,9 +38903,9 @@ mod cache_upload_tests {
 
     fn one_signed_raw_image_package() -> aos_registry_surface::manifest::PackageToml {
         use aos_registry_surface::manifest::{
-            immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
-            ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-            ImageVerificationState,
+            ImageArtifactContractDocumentReference, ImageArtifactContractReference,
+            ImageCompression, ImageDelivery, ImageEntry, ImageTarget,
+            immutable_image_contract_object_key, immutable_image_object_key,
         };
 
         let image_sha256 = "a".repeat(64);
@@ -38949,7 +38923,6 @@ mod cache_upload_tests {
                 architecture: "x86_64".into(),
                 logical_image_id: "c".repeat(64),
                 logical_disk_sha256: image_sha256.clone(),
-                rootfs_sha256: "d".repeat(64),
                 filename: filename.into(),
                 object_key: immutable_image_object_key(&image_sha256, filename),
                 media_type: "application/vnd.aos.disk-image.raw+zstd".into(),
@@ -38957,39 +38930,25 @@ mod cache_upload_tests {
                 byte_size: 16,
                 sha256: image_sha256.clone(),
                 compatible_targets: vec![ImageTarget::BareMetal],
-                uki: ImageUkiIdentity {
-                    filename: "aos-system.efi".into(),
-                    esp_path: "EFI/Linux/aos-system.efi".into(),
-                    byte_size: 8,
-                    sha256: "e".repeat(64),
-                    verification: ImageVerificationState::Unsigned,
-                    signer_cert_sha256: None,
-                    sbat: Vec::new(),
-                    measured: false,
-                    expected_pcr11: None,
+                artifact_contract: ImageArtifactContractReference {
+                    schema: "aos.test.boot-artifacts/v1".into(),
+                    document: ImageArtifactContractDocumentReference {
+                        filename: "image-info.json".into(),
+                        object_key: immutable_image_contract_object_key(
+                            &image_sha256,
+                            &info_sha256,
+                            "image-info.json",
+                        ),
+                        store_path: String::new(),
+                        nar_hash: String::new(),
+                        nar_size: 0,
+                        media_type: "application/vnd.aos.image-info+json".into(),
+                        byte_size: 8,
+                        sha256: info_sha256,
+                    },
+                    artifacts: None,
                 },
-                image_info: ImageInfoReference {
-                    filename: "image-info.json".into(),
-                    object_key: immutable_image_info_object_key(&image_sha256, &info_sha256),
-                    store_path: String::new(),
-                    nar_hash: String::new(),
-                    nar_size: 0,
-                    media_type: "application/vnd.aos.image-info+json".into(),
-                    byte_size: 8,
-                    sha256: info_sha256,
-                },
-                update_payload: None,
             },
-            sb_signer_cert_sha256: None,
-            sbat: Vec::new(),
-            expected_pcr11: None,
-            ukis: Vec::new(),
-            recovery_ukis: Vec::new(),
-            recovery_bundle: None,
-            root_image: None,
-            root_verity: None,
-            root_hash: None,
-            root_hash_sig: None,
         };
         let mut package: toml::Value = toml::from_str(
             "[package]\nname = \"aos-system\"\ndescription = \"AOS system\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"2026.8.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/aos/store/aos-system\"\nclosure_size = 1\nsource_drv = \"\"\nsource_nar_hash = \"\"\n",
@@ -39114,9 +39073,9 @@ mod cache_upload_tests {
                         strong_etag: "test-version".into(),
                     },
                     VerifiedRegistryImageObject {
-                        object_key: image.delivery.image_info.object_key.clone(),
-                        sha256: image.delivery.image_info.sha256.clone(),
-                        byte_size: i64::try_from(image.delivery.image_info.byte_size).unwrap(),
+                        object_key: image.delivery.artifact_contract.document.object_key.clone(),
+                        sha256: image.delivery.artifact_contract.document.sha256.clone(),
+                        byte_size: i64::try_from(image.delivery.artifact_contract.document.byte_size).unwrap(),
                         strong_etag: "test-version".into(),
                     },
                 ]

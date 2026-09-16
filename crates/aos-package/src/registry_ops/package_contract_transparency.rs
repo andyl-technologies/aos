@@ -10,7 +10,7 @@ use crate::registry_ops::provenance::{
     PACKAGE_PROVENANCE_TRANSPARENCY_LOG, package_provenance_trusted_keys,
     read_package_provenance_transparency_log_state,
 };
-use crate::registry_ops::uki::sha256_hex;
+use crate::registry_ops::sha256_hex;
 use crate::types::validate_attestation_provenance_ref;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};

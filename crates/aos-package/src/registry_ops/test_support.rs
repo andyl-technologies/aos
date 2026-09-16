@@ -12,14 +12,13 @@ use crate::registry_ops::git::git;
 use crate::registry_ops::images::files::{
     open_stable_regular_file_with_links, sha256_open_file, verify_stable_regular_file,
 };
-use crate::registry_ops::images::{PublishedImage, inspect_published_image_with};
+use crate::registry_ops::images::{PublishedImage, inspect_published_image};
 use crate::registry_ops::provenance::{
     LocalPackageProvenanceSigner, PublishProvenanceArtifact, publish_provenance_ref,
     publish_provenance_statement,
 };
 use crate::registry_ops::release::ReleaseTreeOptions;
 use crate::registry_ops::store_paths::{RELEASE_POLICY_RELATIVE_PATH, StorePathInfo, extract_hash};
-use crate::registry_ops::uki::SbFacts;
 use crate::testutil;
 use crate::types::{
     ApmSettings, AttestationMeta, ProfileScope, RegistryConfig, RegistryUploadAuthConfig,
@@ -48,9 +47,7 @@ pub(in crate::registry_ops) fn write_direct_image_output(
     targets: serde_json::Value,
 ) -> StorePathInfo {
     let root = container.join("00000000000000000000000000000000-image-output");
-    let uki_root = container.join("uki-output");
     fs::create_dir_all(&root).unwrap();
-    fs::create_dir_all(&uki_root).unwrap();
     let extension = if format == "raw" { "img.zst" } else { format };
     let filename = format!("aos-test.{extension}");
     let image_path = root.join(&filename);
@@ -62,7 +59,6 @@ pub(in crate::registry_ops) fn write_direct_image_output(
         .unwrap()
         .set_len(36 * 1024 * 1024)
         .unwrap();
-    let logical_size = fs::metadata(&logical_path).unwrap().len();
     let (mut logical_file, logical_identity) =
         open_stable_regular_file_with_links(&logical_path, false).unwrap();
     let logical_sha256 = sha256_open_file(&mut logical_file, &logical_path).unwrap();
@@ -78,13 +74,6 @@ pub(in crate::registry_ops) fn write_direct_image_output(
         open_stable_regular_file_with_links(&image_path, false).unwrap();
     let sha256 = sha256_open_file(&mut image_file, &image_path).unwrap();
     verify_stable_regular_file(&image_path, &image_file, &image_identity).unwrap();
-    let uki_filename = "aos-test.efi";
-    let uki_path = uki_root.join(uki_filename);
-    fs::write(&uki_path, b"unsigned fake UKI bytes").unwrap();
-    let (mut uki_file, uki_identity) =
-        open_stable_regular_file_with_links(&uki_path, false).unwrap();
-    let uki_sha256 = sha256_open_file(&mut uki_file, &uki_path).unwrap();
-    verify_stable_regular_file(&uki_path, &uki_file, &uki_identity).unwrap();
     let media_type = match format {
         "raw" => "application/vnd.aos.disk-image.raw+zstd",
         "qcow2" => "application/vnd.aos.disk-image.qcow2",
@@ -103,47 +92,12 @@ pub(in crate::registry_ops) fn write_direct_image_output(
         "mediaType": media_type,
         "compression": if format == "raw" { "zstd" } else { "none" },
         "byteSize": fs::metadata(&image_path).unwrap().len(),
-        "virtualSizeBytes": logical_size,
         "sha256": &sha256,
         "logicalDiskSha256": &logical_sha256,
-        "rootfsSha256": "2".repeat(64),
-        "artifactBudgetsMiB": {
-            "root": 1,
-            "verity": 1,
-            "initrd": 1,
-            "uki": 1,
-            "esp": 34,
-            "runtimeClosure": 1,
-            "download": 64,
-        },
         "compatibleTargets": targets,
-        "partitionTable": "gpt",
-        "kernelParams": "",
-        "partitions": [{
-            "number": 1,
-            "label": "ESP",
-            "type": "esp",
-            "filesystem": "vfat",
-            "sizeMiB": 34,
-            "offsetBytes": 0,
-            "sizeBytes": 34 * 1024 * 1024,
-        }, {
-            "number": 2,
-            "label": "root-a",
-            "type": "root",
-            "filesystem": "fake",
-            "sizeMiB": 1,
-            "offsetBytes": 34 * 1024 * 1024,
-            "sizeBytes": 1024 * 1024,
-        }],
-        "esp": {"uki": "EFI/Linux/aos-test.efi", "sdBoot": "EFI/systemd/systemd-bootx64.efi"},
-        "uki": {
-            "filename": uki_filename,
-            "espPath": "EFI/Linux/aos-test.efi",
-            "byteSize": uki_identity.len,
-            "sha256": uki_sha256,
-            "signed": false,
-            "measured": false,
+        "providerContract": {
+            "schema": "aos.test-boot-artifacts/v1",
+            "opaqueEvidence": {"provider-owned": true},
         },
     });
     fs::write(
@@ -191,22 +145,15 @@ pub(in crate::registry_ops) fn inspect_test_image(
     platform: &str,
 ) -> Result<PublishedImage> {
     let (disk_store, info_store) = write_test_image_projections(&payload)?;
-    let payload_path = Path::new(&payload.path);
-    let uki_path = payload_path
-        .parent()
-        .unwrap()
-        .join("uki-output/aos-test.efi");
-    inspect_published_image_with(
+    inspect_published_image(
         format,
         payload,
         disk_store,
         info_store,
-        &uki_path,
+        "aos.test-boot-artifacts/v1",
         "test",
         release,
         platform,
-        None,
-        |_uki, _db_cert| Ok(SbFacts::default()),
     )
 }
 
@@ -370,41 +317,6 @@ pub(in crate::registry_ops) fn write_internal_release_policy(path: &Path, identi
     )
     .unwrap();
 }
-
-pub(crate) fn synthetic_pe_section(name: &[u8], virtual_size: u32, raw: &[u8]) -> Vec<u8> {
-    assert!(name.len() <= 8);
-    let pe_offset = 0x40_usize;
-    let optional_size = 112_usize;
-    let section_table = pe_offset + 4 + 20 + optional_size;
-    let raw_offset = section_table + 40;
-    let mut pe = vec![0_u8; raw_offset + raw.len()];
-    pe[0..2].copy_from_slice(b"MZ");
-    pe[0x3c..0x40].copy_from_slice(&(pe_offset as u32).to_le_bytes());
-    pe[pe_offset..pe_offset + 4].copy_from_slice(&0x0000_4550_u32.to_le_bytes());
-    let coff = pe_offset + 4;
-    pe[coff + 2..coff + 4].copy_from_slice(&1_u16.to_le_bytes());
-    pe[coff + 16..coff + 18].copy_from_slice(&(optional_size as u16).to_le_bytes());
-    pe[coff + 20..coff + 22].copy_from_slice(&0x020b_u16.to_le_bytes());
-    pe[section_table..section_table + name.len()].copy_from_slice(name);
-    pe[section_table + 8..section_table + 12].copy_from_slice(&virtual_size.to_le_bytes());
-    pe[section_table + 16..section_table + 20].copy_from_slice(&(raw.len() as u32).to_le_bytes());
-    pe[section_table + 20..section_table + 24].copy_from_slice(&(raw_offset as u32).to_le_bytes());
-    pe[raw_offset..].copy_from_slice(raw);
-    pe
-}
-
-pub(in crate::registry_ops) fn der_wrap(tag: u8, value: &[u8]) -> Vec<u8> {
-    assert!(value.len() < 0x80, "test helper only handles short form");
-    let mut out = vec![tag, value.len() as u8];
-    out.extend_from_slice(value);
-    out
-}
-
-pub(in crate::registry_ops) const SBCERT_A: &str =
-    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
-
-pub(in crate::registry_ops) const SBCERT_B: &str =
-    "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
 
 pub(in crate::registry_ops) struct TestSigningFixture {
     pub(in crate::registry_ops) trusted_key: String,
