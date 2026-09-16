@@ -137,7 +137,7 @@ pub use production_receive::{
 pub use production_response::ProductionBrokerResponseErrorV1;
 pub use production_service::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1, ProductionMountBrokerOwnersV1,
-    production_deadline_after,
+    ProductionMountSourceOwnersV1, production_deadline_after,
 };
 pub use recovery::{
     ProtectedBrokerOutcomeAdmissionGateV1, ProtectedBrokerOutcomeAdmissionV1,

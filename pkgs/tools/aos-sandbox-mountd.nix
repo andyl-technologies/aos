@@ -41,7 +41,8 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount --bin aos-sandbox-mountd --bin aos-sandbox-mount-helper"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandbox-mountd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount --bin aos-sandbox-mount-helper"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount"
     ];
     buildDeps = [buildProtobuf];
@@ -52,7 +53,10 @@ in
     pname = "aos-sandbox-mountd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-mount --bin aos-sandbox-mountd --bin aos-sandbox-mount-helper";
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandbox-mountd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount --bin aos-sandbox-mount-helper"
+    ];
     cargoTestFlags = "-p aos-sandbox-mount";
     cargoNextest = true;
     doCheck = true;

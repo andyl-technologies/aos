@@ -6,7 +6,6 @@
   ...
 }: let
   cfg = config.aos.sandbox.mountBroker;
-  controller = config.aos.sandbox.controller;
   hostBroker = config.aos.sandbox.hostBroker;
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = [
@@ -130,7 +129,7 @@ in {
         Type = "simple";
         NotifyAccess = "main";
         ExecStartPre = brokerSessionConfiguration.installCommands;
-        ExecStart = "${cfg.package}/bin/aos-sandbox-mountd ${toString controller.uid} ${toString controller.gid} ${cfg.package}/bin/aos-sandbox-mount-helper";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-mountd ${cfg.package}/bin/aos-sandbox-mount-helper";
         LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials;
         Restart = "on-failure";
         RestartSec = "2s";

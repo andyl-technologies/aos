@@ -219,21 +219,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// Returns an error after consuming the session when durable Mount/source
     /// recovery, protected commit, or bounded response transport cannot finish.
     #[allow(clippy::too_many_arguments)]
-    pub fn complete_mount_request_event<Transport>(
+    pub fn complete_mount_request_event(
         self,
         event: ProductionBrokerRequestEventV1,
         mount: &mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1,
         catalog_scope: Option<aos_sandbox_mount::host_scope::ObservedMountScope>,
-        source_owner: &mut aos_sandbox_mount::source_acquisition::FixedMountSourceAcquisitionOwnerV2,
-        root_session: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
-        provider: &mut aos_sandbox_source_provider::FixedProviderOwnerV1,
-        backend: &mut Transport,
-        canonical_catalog_publication: &[u8],
+        source: Option<crate::ProductionMountSourceOwnersV1<'_>>,
         deadline_boottime_nanoseconds: u64,
-    ) -> Result<Self, ProductionBrokerResponseErrorV1>
-    where
-        Transport: aos_sandbox_source_provider::SourceProviderBackendTransportV1 + ?Sized,
-    {
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
         let request = match event {
             ProductionBrokerRequestEventV1::Request(request) => request,
             ProductionBrokerRequestEventV1::InFlightReplay(replay) => replay
@@ -251,11 +244,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             request,
             mount,
             catalog_scope,
-            source_owner,
-            root_session,
-            provider,
-            backend,
-            canonical_catalog_publication,
+            source,
             deadline_boottime_nanoseconds,
         )
     }
@@ -406,31 +395,16 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// recovery, protected commit, or bounded response transport cannot finish
     /// exactly. Reconnect and exact replay are then required.
     #[allow(clippy::too_many_arguments)]
-    pub fn dispatch_mount_request_to_completion<Transport>(
+    pub fn dispatch_mount_request_to_completion(
         mut self,
         request: DormantReceivedBrokerRequestV1,
         mount: &mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1,
         catalog_scope: Option<aos_sandbox_mount::host_scope::ObservedMountScope>,
-        source_owner: &mut aos_sandbox_mount::source_acquisition::FixedMountSourceAcquisitionOwnerV2,
-        root_session: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
-        provider: &mut aos_sandbox_source_provider::FixedProviderOwnerV1,
-        backend: &mut Transport,
-        canonical_catalog_publication: &[u8],
+        source: Option<crate::ProductionMountSourceOwnersV1<'_>>,
         deadline_boottime_nanoseconds: u64,
-    ) -> Result<Self, ProductionBrokerResponseErrorV1>
-    where
-        Transport: aos_sandbox_source_provider::SourceProviderBackendTransportV1 + ?Sized,
-    {
-        let dispatched = self.dispatch_mount_request_and_commit(
-            request,
-            mount,
-            catalog_scope,
-            source_owner,
-            root_session,
-            provider,
-            backend,
-            canonical_catalog_publication,
-        );
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        let dispatched =
+            self.dispatch_mount_request_and_commit(request, mount, catalog_scope, source);
         self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
     }
 
@@ -576,23 +550,16 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// is absent, authorization artifacts do not match, protected currentness
     /// fails, a domain effect is ambiguous, or terminal commit is incomplete.
     #[allow(clippy::too_many_arguments)]
-    pub fn dispatch_mount_request_and_commit<Transport>(
+    pub fn dispatch_mount_request_and_commit(
         &mut self,
         request: DormantReceivedBrokerRequestV1,
         mount: &mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1,
         catalog_scope: Option<aos_sandbox_mount::host_scope::ObservedMountScope>,
-        source_owner: &mut aos_sandbox_mount::source_acquisition::FixedMountSourceAcquisitionOwnerV2,
-        root_session: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
-        provider: &mut aos_sandbox_source_provider::FixedProviderOwnerV1,
-        backend: &mut Transport,
-        canonical_catalog_publication: &[u8],
+        source: Option<crate::ProductionMountSourceOwnersV1<'_>>,
     ) -> Result<
         ProtectedBrokerOutcomeCommitResultV1,
         DormantBrokerExecutionFailureV1<ProductionMountBrokerDispatchErrorV1>,
-    >
-    where
-        Transport: aos_sandbox_source_provider::SourceProviderBackendTransportV1 + ?Sized,
-    {
+    > {
         match request.method() {
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT => {
@@ -625,25 +592,33 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .map_err(|failure| map_execution_failure(failure, Into::into))
             }
             BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
-            | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => self
-                .execute_mount_source_operation_and_commit(
+            | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
+                let Some(source) = source else {
+                    return Err(before_effect_currentness(request));
+                };
+                self.execute_mount_source_operation_and_commit(
                     request,
-                    source_owner,
-                    root_session,
-                    provider,
-                    backend,
-                    canonical_catalog_publication,
+                    source.source_owner,
+                    source.root_session,
+                    source.provider,
+                    source.backend,
+                    source.canonical_catalog_publication,
                 )
-                .map_err(|failure| map_execution_failure(failure, Into::into)),
-            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => self
-                .execute_mount_source_inventory_and_commit(
+                .map_err(|failure| map_execution_failure(failure, Into::into))
+            }
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
+                let Some(source) = source else {
+                    return Err(before_effect_currentness(request));
+                };
+                self.execute_mount_source_inventory_and_commit(
                     request,
-                    source_owner,
-                    root_session,
-                    provider,
-                    backend,
+                    source.source_owner,
+                    source.root_session,
+                    source.provider,
+                    source.backend,
                 )
-                .map_err(|failure| map_execution_failure(failure, Into::into)),
+                .map_err(|failure| map_execution_failure(failure, Into::into))
+            }
             _ => Err(before_effect_currentness(request)),
         }
     }
