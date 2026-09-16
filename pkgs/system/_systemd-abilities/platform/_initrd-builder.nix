@@ -28,7 +28,7 @@
 ##! Arguments:
 ##!   pkgs          — AOS package set
 ##!   lib           — AOS library
-##!   kernel        — kernel derivation (provides /lib/modules/<ver>/)
+##!   kernel        — exact selected kernel projection
 ##!   loadModules — list of module names for /etc/modules-load.d/initrd.conf
 ##!   initrdUnits   — derivation whose output is the rendered
 ##!                   /etc/systemd/system directory (from generateUnits)
@@ -64,6 +64,12 @@
   validateBootIdentity ? false,
   keepBinutils ? false,
 }: let
+  kernelPackage = kernel.package;
+  kernelModuleTree =
+    if kernel.configuration.moduleTree == null
+    then throw "systemd initrd requires a selected kernel module tree"
+    else kernel.configuration.moduleTree;
+  kernelRelease = kernel.configuration.release;
   inherit
     (runtimePackages)
     bash
@@ -87,7 +93,7 @@
     [
       {
         kind = "kernel";
-        store_path = "${kernel}";
+        store_path = "${kernelPackage}";
         available_stage = "build";
       }
       {
@@ -525,11 +531,11 @@
           ${binarySymlinks}
 
           # ── 4. Kernel modules ──────────────────────────────────────────
-          if [ -d ${kernel}/lib/modules ]; then
-            cp -a ${kernel}/lib/modules/. root/lib/modules/
+          if [ -d ${kernelModuleTree} ]; then
+            cp -a ${kernelModuleTree}/. root/lib/modules/
             chmod -R u+w root/lib/modules
           else
-            echo "initrd-builder: ${kernel}/lib/modules not found" >&2
+            echo "initrd-builder: selected kernel module tree ${kernelModuleTree} not found" >&2
             exit 1
           fi
           ${lib.concatMapStringsSep "\n" (package: ''
@@ -920,7 +926,7 @@
           ${jq}/bin/jq -cS -n \
             --arg schema aos.boot.initrd-stage-contract/v1 \
             --arg platform ${lib.escapeShellArg lib.system} \
-            --arg kernelRelease ${lib.escapeShellArg kernel.version} \
+            --arg kernelRelease ${lib.escapeShellArg kernelRelease} \
             --arg archiveSha256 "sha256:$archive_sha256" \
             --argjson archiveSize "$archive_size" \
             --argjson dependencyRoots ${lib.escapeShellArg (builtins.toJSON dependencyRoots)} \

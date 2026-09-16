@@ -172,6 +172,7 @@ in {
   imports = [
     ./platform/system.nix
     ./platform/initrd.nix
+    ./platform/nsswitch.nix
     ./platform/presets.nix
     ./platform/users.nix
   ];
