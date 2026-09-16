@@ -205,6 +205,7 @@
     checkedSelector = checkedPackageOutputSelector selector;
   in
     checkedProjection.origin.packageArtifactFor checkedSelector;
+
   authenticatedModuleRecordIdentity = record: let
     exactRecordShape =
       builtins.isAttrs record
