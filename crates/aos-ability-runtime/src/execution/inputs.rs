@@ -32,6 +32,12 @@ pub enum InputResolutionError {
     /// A path composition base was not a normalized absolute execution path.
     #[error("path-within base or result is not a normalized absolute execution path")]
     InvalidExecutionPath,
+    /// A resolved canonical-JSON source violated the schema retained by the transform.
+    #[error("canonical-json source violates its retained schema: {0}")]
+    InvalidCanonicalJsonSource(#[source] aos_ability_validate::ValidationErrors),
+    /// A resolved value could not be encoded in the AOS canonical JSON dialect.
+    #[error("canonical-json encoding failed: {0}")]
+    CanonicalJson(#[source] anyhow::Error),
     /// The materialized value violates the checked method or nested authority.
     #[error("resolved input violates the checked method contract: {0}")]
     Checked(#[source] anyhow::Error),
@@ -206,6 +212,14 @@ fn expression_footprint(
         } => {
             let path = resolve_path_within(transaction, base, relative_path)?;
             json_footprint(&serde_json::Value::String(path), depth, limits)
+        }
+        ValueExpression::CanonicalJson {
+            source_schema,
+            value,
+            max_bytes,
+        } => {
+            let encoded = resolve_canonical_json(transaction, source_schema, value, *max_bytes)?;
+            json_footprint(&serde_json::Value::String(encoded), depth, limits)
         }
         ValueExpression::List { items } => {
             let mut footprint = Footprint {
@@ -397,6 +411,12 @@ fn resolve_expression(
             base,
             relative_path,
         } => resolve_path_within(transaction, base, relative_path).map(serde_json::Value::String),
+        ValueExpression::CanonicalJson {
+            source_schema,
+            value,
+            max_bytes,
+        } => resolve_canonical_json(transaction, source_schema, value, *max_bytes)
+            .map(serde_json::Value::String),
         ValueExpression::ArtifactReference { reference } => {
             serde_json::to_value(reference).map_err(InputResolutionError::Encoding)
         }
@@ -410,6 +430,37 @@ fn resolve_expression(
             transaction.resolved_result(reference).cloned()
         }
     }
+}
+
+fn resolve_canonical_json(
+    transaction: &ExecutionTransaction<'_>,
+    source_schema: &aos_ability_model::ValueSchema,
+    expression: &ValueExpression,
+    max_bytes: u64,
+) -> Result<String, InputResolutionError> {
+    let resolved = resolve_expression(transaction, expression)?;
+    encode_canonical_json(source_schema, resolved, max_bytes)
+}
+
+fn encode_canonical_json(
+    source_schema: &aos_ability_model::ValueSchema,
+    resolved: serde_json::Value,
+    max_bytes: u64,
+) -> Result<String, InputResolutionError> {
+    let checked = AbilityValue::new(resolved.clone()).map_err(InputResolutionError::Value)?;
+    aos_ability_validate::validate_value(
+        source_schema,
+        &ValueExpression::Literal { value: checked },
+    )
+    .map_err(InputResolutionError::InvalidCanonicalJsonSource)?;
+
+    let encoded = aos_contract::canonical::canonical_json(&resolved)
+        .map_err(InputResolutionError::CanonicalJson)?;
+    if encoded.len() as u64 > max_bytes {
+        return Err(InputResolutionError::Limit("canonical-json byte"));
+    }
+    String::from_utf8(encoded)
+        .map_err(|source| InputResolutionError::CanonicalJson(anyhow::Error::new(source)))
 }
 
 fn resolve_path_within(
@@ -510,6 +561,28 @@ mod tests {
         .expect_err("final repeated value must exceed the lowered bound");
 
         assert!(matches!(error, InputResolutionError::Limit("encoded byte")));
+    }
+
+    #[test]
+    fn canonical_json_uses_the_aos_dialect_and_enforces_its_bound() {
+        let schema = aos_ability_model::ValueSchema::DocumentRecord {
+            key_max_length: 32,
+            fields: std::collections::BTreeMap::from([
+                ("a".to_string(), aos_ability_model::ValueSchema::Boolean),
+                ("z".to_string(), aos_ability_model::ValueSchema::Boolean),
+            ]),
+            optional_fields: Vec::new(),
+        };
+        let value = serde_json::json!({"z": false, "a": true});
+
+        assert_eq!(
+            encode_canonical_json(&schema, value.clone(), 20).expect("canonical JSON"),
+            r#"{"a":true,"z":false}"#
+        );
+        assert!(matches!(
+            encode_canonical_json(&schema, value, 19),
+            Err(InputResolutionError::Limit("canonical-json byte"))
+        ));
     }
 
     fn limits_with_bytes(max_document_bytes: u64) -> aos_ability_model::LimitProfile {

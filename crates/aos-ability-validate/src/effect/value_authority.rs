@@ -64,6 +64,22 @@ pub(super) fn validate_nested_authority(
             resources,
             diagnostics,
         ),
+        ValueExpression::CanonicalJson {
+            source_schema,
+            value,
+            ..
+        } => validate_nested_authority(
+            context,
+            source_schema,
+            value,
+            operation,
+            operation_index,
+            binding,
+            grant,
+            artifacts,
+            resources,
+            diagnostics,
+        ),
         ValueExpression::List { items } => {
             if let ValueSchema::List { element, .. } = schema {
                 for item in items {

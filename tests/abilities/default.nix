@@ -158,6 +158,19 @@
     minimum = 0;
     maximum = 16;
   });
+  canonicalJsonSourceType = lib.abilities.types.record {
+    fields.enabled = lib.abilities.types.boolean;
+  };
+  canonicalJson = lib.abilities.canonicalJsonOf {
+    type = canonicalJsonSourceType;
+    value = lib.abilities.resultOf "selected-record" "locator";
+    maxBytes = 128;
+  };
+  deferredRuntimeString = lib.abilities.types.deferredResult lib.abilities.types.runtimeString;
+  canonicalJsonNixEncoding = builtins.toJSON {
+    z = false;
+    a = true;
+  };
   forgedIntegerPathWithin = {
     _type = "aos-runtime-path";
     base = 1;
@@ -427,6 +440,11 @@
     inherit (lib) abilities;
   };
   effectPlan = effectFixture.normalized;
+  canonicalJsonEffect = builtins.head (
+    builtins.filter
+    (operation: operation.key.key == "consumer")
+    effectFixture.canonicalJson.operations
+  );
   kubernetesPackageServices = import ./kubernetes-package-services.nix {
     inherit lib pkgs;
   };
@@ -687,6 +705,14 @@ in
   assert pathWithin.relative_path == "krb5/service.pid";
   assert !invalidPathWithin.success;
   assert !nonPathDeferred.check forgedIntegerPathWithin;
+  assert deferredRuntimeString.check canonicalJson;
+  assert canonicalJson._type == "aos-canonical-json";
+  assert canonicalJson.source_schema == lib.abilities.types.schemaOf "canonical source" canonicalJsonSourceType;
+  assert canonicalJson.max_bytes == 128;
+  assert canonicalJsonEffect.inputs.fields.encoded.source == "canonical-json";
+  assert canonicalJsonEffect.inputs.fields.encoded.source_schema.kind == "boolean";
+  assert canonicalJsonEffect.inputs.fields.encoded.value.source == "operation-result";
+  assert canonicalJsonNixEncoding == ''{"a":true,"z":false}'';
   assert (lib.abilities.types.schemaOf "execution path" lib.abilities.types.executionPath).syntax == "execution-path-v1";
   assert fails (lib.abilities.schemas.checkValue documentRecordSchema {unknown = true;});
   assert reservedAbilityOutputRejected "abilities";

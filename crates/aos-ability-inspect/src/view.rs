@@ -931,6 +931,11 @@ fn expression_uses_sensitive_reference(
         ValueExpression::PathWithin { base, .. } => {
             expression_uses_sensitive_reference(plan, schema, base)
         }
+        ValueExpression::CanonicalJson {
+            source_schema,
+            value,
+            ..
+        } => expression_uses_sensitive_reference(plan, source_schema, value),
         ValueExpression::List { items } => {
             let ValueSchema::List { element, .. } = schema else {
                 return false;
@@ -1080,6 +1085,13 @@ fn insert_expression_artifacts(
         }
         ValueExpression::PathWithin { base, .. } => {
             insert_expression_artifacts(nodes, edges, owner, schema, base)?;
+        }
+        ValueExpression::CanonicalJson {
+            source_schema,
+            value,
+            ..
+        } => {
+            insert_expression_artifacts(nodes, edges, owner, source_schema, value)?;
         }
         ValueExpression::List { items } => {
             if let ValueSchema::List { element, .. } = schema {

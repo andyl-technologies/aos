@@ -542,6 +542,43 @@ fn path_within_requires_an_execution_path_schema_and_base() {
 }
 
 #[test]
+fn canonical_json_validates_the_retained_source_schema_and_target_bound() {
+    let source_schema = ValueSchema::Record {
+        fields: BTreeMap::from([(
+            LocalKey::new("enabled").expect("field name"),
+            ValueSchema::Boolean,
+        )]),
+        optional_fields: Vec::new(),
+    };
+    let expression = ValueExpression::CanonicalJson {
+        source_schema: Box::new(source_schema.clone()),
+        value: Box::new(literal(serde_json::json!({"enabled": true}))),
+        max_bytes: 128,
+    };
+    let target = ValueSchema::String {
+        max_length: 128,
+        syntax: None,
+    };
+
+    assert!(validate_value(&target, &expression).is_ok());
+    assert!(validate_value(&ValueSchema::Boolean, &expression).is_err());
+
+    let too_large = ValueExpression::CanonicalJson {
+        source_schema: Box::new(source_schema.clone()),
+        value: Box::new(literal(serde_json::json!({"enabled": true}))),
+        max_bytes: 129,
+    };
+    assert!(validate_value(&target, &too_large).is_err());
+
+    let wrong_source = ValueExpression::CanonicalJson {
+        source_schema: Box::new(source_schema),
+        value: Box::new(literal(serde_json::json!({"enabled": "yes"}))),
+        max_bytes: 128,
+    };
+    assert!(validate_value(&target, &wrong_source).is_err());
+}
+
+#[test]
 fn authored_provider_assignment_is_rejected_but_materialized_evidence_is_accepted() {
     let digest = format!("sha256:{}", "00".repeat(32));
     let assignment = AbilityValue::new(serde_json::json!({

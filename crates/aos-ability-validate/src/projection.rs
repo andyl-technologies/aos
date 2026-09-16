@@ -292,6 +292,21 @@ fn authorize_expression(
             maximum_lifetime,
             root_authority,
         ),
+        ValueExpression::CanonicalJson {
+            source_schema,
+            value,
+            ..
+        } => authorize_expression(
+            context,
+            principal,
+            bindings,
+            source_schema,
+            value,
+            resources,
+            artifacts,
+            maximum_lifetime,
+            root_authority,
+        ),
         ValueExpression::List { items } => {
             let ValueSchema::List { element, .. } = schema else {
                 return Ok(());
@@ -740,6 +755,24 @@ fn preflight_projection_expressions(
                     );
                 }
                 stack.push((base, child_depth));
+            }
+            ValueExpression::CanonicalJson {
+                source_schema,
+                value,
+                ..
+            } => {
+                if !source_schema
+                    .is_within_limits(limits.max_structural_depth, limits.max_collection_items)
+                {
+                    return Err("canonical-json source schema exceeds the projection limits");
+                }
+                item_count = item_count.saturating_add(1);
+                if item_count > limits.max_collection_items {
+                    return Err(
+                        "aggregate output validation input exceeds the collection item limit",
+                    );
+                }
+                stack.push((value, child_depth));
             }
             ValueExpression::Literal { .. }
             | ValueExpression::ArtifactReference { .. }

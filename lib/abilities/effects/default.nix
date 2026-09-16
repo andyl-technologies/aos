@@ -519,6 +519,7 @@ let
       "aos-resource-reference"
       "aos-effect-result-reference"
       "aos-runtime-path"
+      "aos-canonical-json"
     ];
 
   containsTypedReference = depth: value:
@@ -546,6 +547,8 @@ let
   collectionItemCount = depth: value:
     if depth > profile.max_depth
     then failLimit "effect input exceeds ${builtins.toString profile.max_depth} structural levels"
+    else if builtins.isAttrs value && (value._type or null) == "aos-canonical-json"
+    then 1 + collectionItemCount (depth + 1) value.value
     else if isTypedReference value
     then 0
     else if builtins.isList value
@@ -740,6 +743,22 @@ let
       base = normalizeExpression rootDepth scope (depth + 1) checked.base;
       relative_path = requireRelativePath "path-within relative path" checked.relative_path;
     }
+    else if builtins.isAttrs value && (value._type or null) == "aos-canonical-json"
+    then let
+      checked = requireAttrs "canonical-json expression" ["_type" "source_schema" "value" "max_bytes"] value;
+      sourceSchema = schemas.validateSchema "canonical-json source schema" checked.source_schema;
+    in
+      if
+        builtins.isInt checked.max_bytes
+        && checked.max_bytes > 0
+        && checked.max_bytes <= profile.max_string_bytes
+      then {
+        source = "canonical-json";
+        source_schema = sourceSchema;
+        value = normalizeExpression rootDepth scope (depth + 1) checked.value;
+        max_bytes = checked.max_bytes;
+      }
+      else failLimit "canonical-json expression exceeds the bounded string profile"
     else if builtins.isAttrs value && (value._type or null) == "aos-resource-reference"
     then {
       source = "resource-reference";

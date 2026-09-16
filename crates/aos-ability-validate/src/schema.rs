@@ -347,6 +347,51 @@ fn validate_expression_with_literal_source(
         return;
     }
 
+    if let ValueExpression::CanonicalJson {
+        source_schema,
+        value,
+        max_bytes,
+    } = expression
+    {
+        let ValueSchema::String { max_length, .. } = schema else {
+            push_type_mismatch(path, "canonical-json expression", schema, diagnostics);
+            return;
+        };
+        if *max_bytes == 0 || *max_bytes > *max_length {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::LimitExceeded,
+                    path,
+                    format!(
+                        "canonical-json byte limit must be between 1 and the target string limit {max_length}"
+                    ),
+                ),
+            );
+        }
+        if let Err(errors) = validate_schema(source_schema) {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::ValueTypeMismatch,
+                    &path.child("source_schema"),
+                    format!("canonical-json source schema is invalid: {errors}"),
+                ),
+            );
+            return;
+        }
+        validate_expression_with_literal_source(
+            source_schema,
+            value,
+            &path.child("value"),
+            diagnostics,
+            result_validator,
+            aggregate_validator,
+            literal_source,
+        );
+        return;
+    }
+
     match expression {
         ValueExpression::Literal { value } => {
             validate_literal(schema, value.as_json(), path, diagnostics, literal_source);
@@ -413,6 +458,7 @@ fn validate_expression_with_literal_source(
                 literal_source,
             );
         }
+        ValueExpression::CanonicalJson { .. } => unreachable!("handled above"),
         ValueExpression::ArtifactReference { .. } => {
             if !matches!(schema, ValueSchema::ArtifactReference) {
                 push_type_mismatch(path, "artifact reference", schema, diagnostics);
@@ -775,6 +821,21 @@ fn validate_standalone_size_and_strings(
                 stack.extend(fields.values());
             }
             ValueExpression::PathWithin { base, .. } => stack.push(base),
+            ValueExpression::CanonicalJson {
+                source_schema,
+                value,
+                max_bytes,
+            } => {
+                if *max_bytes == 0 || *max_bytes > ABILITY_LIMITS_V1.max_string_bytes {
+                    return Err(
+                        "canonical-json byte limit exceeds the version-1 string limit".into(),
+                    );
+                }
+                validate_schema(source_schema).map_err(|errors| {
+                    format!("canonical-json source schema is invalid: {errors}")
+                })?;
+                stack.push(value);
+            }
             ValueExpression::ArtifactReference { reference } => {
                 if reference.store_path.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes {
                     return Err(
@@ -1452,6 +1513,7 @@ fn expression_kind(expression: &ValueExpression) -> &'static str {
         ValueExpression::Literal { value } => json_kind(value.as_json()),
         ValueExpression::List { .. } => "array",
         ValueExpression::PathWithin { .. } => "string",
+        ValueExpression::CanonicalJson { .. } => "canonical JSON string",
         ValueExpression::Object { .. }
         | ValueExpression::ArtifactReference { .. }
         | ValueExpression::ResourceReference { .. } => "object",
