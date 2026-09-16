@@ -1076,9 +1076,7 @@ impl PackageCommand {
             self,
             PackageCommand::AttestService
                 | PackageCommand::Attest {
-                    command: AttestCommand::VerifyBootCommit { .. }
-                        | AttestCommand::VerifyRolloutBootCommit { .. }
-                        | AttestCommand::ReadUkiIdentitySection { .. },
+                    command: AttestCommand::ReadUkiIdentitySection { .. },
                 }
                 | PackageCommand::Eval { .. }
                 | PackageCommand::EvalRetained { .. }
@@ -1215,32 +1213,6 @@ pub enum AttestCommand {
         #[arg(long = "catalog-file")]
         catalog_file: PathBuf,
     },
-    /// Verify the local generation quote before blessing a booted image.
-    #[command(name = "__verify-boot-commit", hide = true)]
-    VerifyBootCommit {
-        /// Generation-attestation JSON record produced by activation
-        #[arg(long = "generation-attestation")]
-        generation_attestation: PathBuf,
-        /// Private quote bundle published beside the generation record
-        #[arg(long = "quote-dir")]
-        quote_dir: PathBuf,
-        /// Catalog-published stable PCR 11, when the image record has one
-        #[arg(long = "expected-pcr11")]
-        expected_pcr11: Option<String>,
-    },
-    /// Verify native transaction and provider health before rollout finalization.
-    #[command(name = "__verify-rollout-boot-commit", hide = true)]
-    VerifyRolloutBootCommit {
-        /// Configuration generation that owns the protected transaction
-        #[arg(long)]
-        generation: u32,
-        /// Exact native ability transaction named by activation evidence
-        #[arg(long)]
-        transaction: String,
-        /// Authenticated running image generation
-        #[arg(long)]
-        running: u32,
-    },
     /// Read one bounded identity section from an installed UKI.
     #[command(name = "__read-uki-identity-section", hide = true)]
     ReadUkiIdentitySection {
@@ -1332,8 +1304,6 @@ impl AttestCommand {
             AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Quote { .. }
             | AttestCommand::Enroll { .. }
-            | AttestCommand::VerifyBootCommit { .. }
-            | AttestCommand::VerifyRolloutBootCommit { .. }
             | AttestCommand::ReadUkiIdentitySection { .. } => false,
         }
     }
@@ -3652,42 +3622,6 @@ pub async fn run(
     }
 
     if let PackageCommand::Attest {
-        command:
-            AttestCommand::VerifyBootCommit {
-                generation_attestation,
-                quote_dir,
-                expected_pcr11,
-            },
-    } = command
-    {
-        return verify_local_boot_commit(
-            generation_attestation,
-            quote_dir,
-            expected_pcr11.as_deref(),
-        );
-    }
-
-    if let PackageCommand::Attest {
-        command:
-            AttestCommand::VerifyRolloutBootCommit {
-                generation,
-                transaction,
-                running,
-            },
-    } = command
-    {
-        let transaction = aos_ability_model::TransactionId(
-            aos_ability_model::LocalKey::new(transaction.clone())
-                .context("decoding rollout transaction identity")?,
-        );
-        return sysroot::image_rollout::verify_rollout_boot_commit(
-            *generation,
-            &transaction,
-            *running,
-        );
-    }
-
-    if let PackageCommand::Attest {
         command: AttestCommand::ReadUkiIdentitySection { uki, section },
     } = command
     {
@@ -3964,14 +3898,6 @@ pub async fn run(
         PackageCommand::Attest {
             command: AttestCommand::Enroll { .. },
         } => unreachable!("AttestCommand::Enroll is handled before ApmConfig::load"),
-        PackageCommand::Attest {
-            command: AttestCommand::VerifyBootCommit { .. },
-        } => unreachable!("AttestCommand::VerifyBootCommit is handled before ApmConfig::load"),
-        PackageCommand::Attest {
-            command: AttestCommand::VerifyRolloutBootCommit { .. },
-        } => {
-            unreachable!("AttestCommand::VerifyRolloutBootCommit is handled before ApmConfig::load")
-        }
         PackageCommand::Attest {
             command: AttestCommand::ReadUkiIdentitySection { .. },
         } => {

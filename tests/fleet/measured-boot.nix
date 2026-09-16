@@ -1138,15 +1138,6 @@ in {
       # exact recovery keyslot remains usable.
       target.succeed(f"{TPM2_PCREXTEND} 12:sha256={'a5' * 32}")
       assert read_pcr12() != clean_pcr12
-      current_generation = target.succeed(
-          f"{JQ} -er '.current' /var/lib/profiles/system/state.json"
-      ).strip()
-      target.fail(f"""
-          {APM} attest __verify-boot-commit \
-            --generation-attestation /var/lib/profiles/system/gen-{current_generation}/gen-attestation.json \
-            --quote-dir /var/lib/profiles/system/gen-{current_generation}/gen-attestation-quote \
-            --expected-pcr11 sha256:{expected_pcr11}
-      """)
       target.fail(
           f"{CS} open --test-passphrase --token-only "
           f"--token-id {evidence['verified_tpm_token_id']} "

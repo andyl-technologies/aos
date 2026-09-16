@@ -135,7 +135,6 @@ fn install_panic_hook(program: &'static str) {
 /// Returns the private runtime command name present in an argument vector.
 fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
     const COMMANDS: &[&str] = &[
-        "__verify-boot-commit",
         "__eval",
         "__eval-retained",
         "__materialize",
