@@ -42,7 +42,7 @@ in {
       ), checkpoint
       assert checkpoint["source_stage"] == "initrd", checkpoint
       assert checkpoint["receiver_stage"] == "host", checkpoint
-      assert checkpoint["resolved_stage_sha256"].startswith("sha256:"), checkpoint
+      assert checkpoint["source_stage_bundle_sha256"].startswith("sha256:"), checkpoint
       assert checkpoint["execution_sha256"].startswith("sha256:"), checkpoint
       assert checkpoint["status"] == "ownership-released", checkpoint
       assert checkpoint["transaction_root"] == (

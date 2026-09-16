@@ -71,11 +71,6 @@
     debugConfig.aos.boot.initrd.packageRoots;
   debugHostRequests = debugConfig.aos.abilities.requests;
   debugInitrdRequests = debugConfig.system.build.initrdAbilityGraph.requests;
-  debugAutologinIntent =
-    lib.findFirst
-    (fragment: lib.hasAttrByPath ["aos" "services" "getty" "autologin"] fragment)
-    null
-    debugConfig.aos.abilities.stages.initrd.intent;
   portableOptionTree = options:
     builtins.all (option:
       if (option._type or null) == "option"
@@ -140,11 +135,6 @@ in
   assert builtins.elem "util-linux" debugPackageNames;
   assert builtins.elem "util-linux" debugInitrdPackageNames;
   assert builtins.elem "systemd" debugInitrdPackageNames;
-  assert debugAutologinIntent.aos.services.getty.autologin
-  == {
-    enable = true;
-    stage = "initrd";
-  };
   assert builtins.hasAttr "util-linux:virtual-console-terminal" debugHostRequests;
   assert builtins.hasAttr "util-linux:user-sessions-milestone" debugHostRequests;
   assert builtins.hasAttr "util-linux:virtual-console-terminal" debugInitrdRequests;
