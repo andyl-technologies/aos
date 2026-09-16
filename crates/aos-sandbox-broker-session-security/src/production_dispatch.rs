@@ -183,6 +183,77 @@ impl DormantAuthenticatedBrokerSessionV1 {
         }
     }
 
+    /// Dispatches and completes one Storage request on the authenticated session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after consuming the session when domain outcome
+    /// recovery, protected commit, or bounded response transport cannot finish
+    /// exactly. Reconnect and exact replay are then required.
+    pub fn dispatch_storage_request_to_completion(
+        mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        let dispatched = self.dispatch_storage_request_and_commit(request, storage);
+        self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
+    }
+
+    /// Dispatches and completes one Network request on the authenticated session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after consuming the session when domain outcome
+    /// recovery, protected commit, or bounded response transport cannot finish
+    /// exactly. Reconnect and exact replay are then required.
+    pub fn dispatch_network_request_to_completion(
+        mut self,
+        request: DormantReceivedBrokerRequestV1,
+        network: &mut dyn aos_sandbox_network::DormantNetworkBrokerCallsiteV1,
+        catalog: &aos_sandbox_network::NetworkNamespaceCatalogV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        let dispatched = self.dispatch_network_request_and_commit(request, network, catalog);
+        self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
+    }
+
+    /// Dispatches and completes one Mount request on the authenticated session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after consuming the session when domain or source
+    /// recovery, protected commit, or bounded response transport cannot finish
+    /// exactly. Reconnect and exact replay are then required.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_mount_request_to_completion<Transport>(
+        mut self,
+        request: DormantReceivedBrokerRequestV1,
+        mount: &mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1,
+        catalog_scope: Option<aos_sandbox_mount::host_scope::ObservedMountScope>,
+        source_owner: &mut aos_sandbox_mount::source_acquisition::FixedMountSourceAcquisitionOwnerV2,
+        root_session: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
+        provider: &mut aos_sandbox_source_provider::FixedProviderOwnerV1,
+        backend: &mut Transport,
+        canonical_catalog_publication: &[u8],
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1>
+    where
+        Transport: aos_sandbox_source_provider::SourceProviderBackendTransportV1 + ?Sized,
+    {
+        let dispatched = self.dispatch_mount_request_and_commit(
+            request,
+            mount,
+            catalog_scope,
+            source_owner,
+            root_session,
+            provider,
+            backend,
+            canonical_catalog_publication,
+        );
+        self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
+    }
+
     /// Dispatches every Host protocol method through sealed production owners.
     ///
     /// The request arrives through the mixed zero-or-one descriptor receive
