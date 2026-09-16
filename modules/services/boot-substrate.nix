@@ -213,7 +213,7 @@ in {
     environment.systemPackages = [pkgs.aos-boot-preparations];
     aos.boot.initrd.packageRoots = [pkgs.aos-boot-preparations];
     aos.abilities.stages.initrd = {
-      intent = [
+      modules = [
         {
           aos.boot.substrateServices = {
             enable = true;

@@ -143,9 +143,11 @@
   hostAbilityBindings = forceBindings hostPackageEvaluation.config.aos.abilities.bindings;
   hostProviderModules = selectedProviderModulesFor hostAbilityBindings;
   initrdEnvironment = abilityEnvironment "initrd";
+  initrdConfigurationModules = selectionEvaluation.config.aos.abilities.stages.initrd.modules;
   initrdPackageEvaluation = evaluateCompleteConfiguration {
     environment = initrdEnvironment;
     authenticatedPackageModules = initrdPackageModules;
+    configurationModules = initrdConfigurationModules;
   };
   initrdAbilityBindings = forceBindings initrdPackageEvaluation.config.aos.abilities.bindings;
   initrdProviderModules = selectedProviderModulesFor initrdAbilityBindings;
@@ -153,6 +155,7 @@
     environment = initrdEnvironment;
     authenticatedPackageModules = initrdPackageModules;
     authenticatedProviderModules = initrdProviderModules;
+    configurationModules = initrdConfigurationModules;
   };
   providerCheckedInitrdAbilityEvaluation = builtins.seq
     (lib.abilities.checkedProviderModuleEvaluation {

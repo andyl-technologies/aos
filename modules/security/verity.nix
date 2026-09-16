@@ -129,7 +129,7 @@ in {
     environment.systemPackages = [pkgs.aos-boot-identity pkgs.aos-verity-root-guard];
     aos.boot.initrd.packageRoots = [pkgs.aos-boot-identity pkgs.aos-verity-root-guard];
     aos.abilities.stages.initrd = {
-      intent = [
+      modules = [
         {
           aos.security = {
             bootIdentityServices.enable = true;

@@ -43,10 +43,10 @@ in {
       aos.services.getty.autologin.enable = true;
 
       # Stage 1 evaluates the same authenticated package module with an explicit
-      # initrd identity and data-only enable intent.
+      # initrd identity and ordinary stage-local configuration.
       aos.boot.initrd.packageRoots = [pkgs.util-linux];
       aos.abilities.stages.initrd = {
-        intent = [
+        modules = [
           {
             aos.services.getty.autologin = {
               enable = true;

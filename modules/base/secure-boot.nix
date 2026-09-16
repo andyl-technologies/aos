@@ -534,11 +534,11 @@ in {
     })
 
     # Keep the complete conditional on a selection-stage storage option. The
-    # resulting data-only intent does not depend on package-owned host options
+    # resulting stage module does not depend on package-owned host options
     # that are absent from the smaller selection and initrd option trees.
     (lib.mkIf (cfg.measuredBoot.enable && config.aos.boot.storage.backend != "zfs-zvol") {
       aos.abilities.stages.initrd = {
-        intent = [
+        modules = [
           {
             aos.security.measuredVar = {
               enable = true;
