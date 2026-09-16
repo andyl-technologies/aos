@@ -593,6 +593,9 @@
   packageStoreReadView = import ./package-store-read-view.nix {
     inherit pkgs lib;
   };
+  artifactBackend = import ./artifact-backend.nix {
+    inherit pkgs lib;
+  };
   baseKernelNative = import ./base-kernel-native.nix {
     inherit pkgs lib;
   };
@@ -1113,6 +1116,7 @@ in
   assert bootPreparationProvider;
   assert bootStorageServices;
   assert packageStoreReadView;
+  assert artifactBackend;
   assert stagedEnvironment;
   assert linuxServiceFeatures;
   assert postgresqlService;
