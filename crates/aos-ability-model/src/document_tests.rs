@@ -4,7 +4,7 @@ use super::*;
 use crate::interface::{
     AggregationContract, AggregationScope, LifecycleSemantics, ValueVisibility,
 };
-use crate::schema::ValueSchema;
+use crate::schema::{ValueConstraint, ValueSchema};
 use crate::value::ResourceLifetime;
 use crate::{DocumentedValue, OptionSource, OptionType, OptionVisibility};
 
@@ -268,6 +268,38 @@ fn package_option_declarations_check_literal_defaults_against_the_type() {
     declaration.default = Some(DocumentedValue::Literal {
         value: AbilityValue::new(serde_json::json!("yes")).expect("canonical test literal"),
     });
+
+    assert!(validate_package_option_declarations(&[declaration], &ABILITY_LIMITS_V1).is_err());
+}
+
+#[test]
+fn package_option_declarations_check_refined_defaults() {
+    let option_type = OptionType::Refined {
+        value: Box::new(OptionType::String {
+            pattern: None,
+            max_length: Some(16),
+        }),
+        constraints: vec![ValueConstraint::StringPattern {
+            pattern: "[a-z]+".to_string(),
+        }],
+    };
+    let mut declaration = package_option("name", option_type);
+    declaration.default = Some(DocumentedValue::Literal {
+        value: AbilityValue::new(serde_json::json!("INVALID")).expect("canonical test literal"),
+    });
+
+    assert!(validate_package_option_declarations(&[declaration], &ABILITY_LIMITS_V1).is_err());
+}
+
+#[test]
+fn package_option_declarations_reject_incompatible_refinements() {
+    let declaration = package_option(
+        "invalid-refinement",
+        OptionType::Refined {
+            value: Box::new(OptionType::Bool),
+            constraints: vec![ValueConstraint::MinimumSize { minimum: 1 }],
+        },
+    );
 
     assert!(validate_package_option_declarations(&[declaration], &ABILITY_LIMITS_V1).is_err());
 }

@@ -7,7 +7,8 @@ use aos_ability_model::{
     ABILITY_LIMITS_V1, ArtifactReference, Diagnostic, DiagnosticClass, DiagnosticCode,
     DiagnosticPhase, InterfaceName, JsonValueKind, LocalKey, MAX_TRANSACTION_BLOB_BYTES,
     OperationResultReference, ProviderAssignment, ResourceReference, StringSyntax,
-    TRANSACTION_BLOB_REFERENCE_TYPE, TransactionBlobReference, ValueExpression, ValueSchema,
+    TRANSACTION_BLOB_REFERENCE_TYPE, TransactionBlobReference, ValueConstraint, ValueExpression,
+    ValueSchema,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -70,6 +71,48 @@ pub fn validate_value(
     expression: &ValueExpression,
 ) -> Result<(), ValidationErrors> {
     validate_value_with_literal_source(schema, expression, LiteralSource::Authored, None)
+}
+
+/// Validates one closed value-schema declaration without evaluating a value.
+///
+/// This checks structural bounds, canonical ordering, and compatibility
+/// between every refinement and its base schema.
+///
+/// # Errors
+///
+/// Returns structured diagnostics when the schema is malformed, exceeds the
+/// shared limits, or contains a refinement that cannot apply to its base.
+pub fn validate_schema(schema: &ValueSchema) -> Result<(), ValidationErrors> {
+    let mut diagnostics = Vec::new();
+    if !schema.is_within_limits(
+        ABILITY_LIMITS_V1.max_structural_depth,
+        ABILITY_LIMITS_V1.max_collection_items,
+    ) {
+        push_diagnostic(
+            &mut diagnostics,
+            schema_diagnostic(
+                DiagnosticCode::LimitExceeded,
+                &SchemaPath::root(),
+                "schema exceeds the version-1 structural limits".to_string(),
+            ),
+        );
+        return Err(ValidationErrors::new(diagnostics));
+    }
+
+    validate_schema_definition(
+        schema,
+        &SchemaPath::root(),
+        1,
+        ABILITY_LIMITS_V1.max_structural_depth,
+        ABILITY_LIMITS_V1.max_string_bytes,
+        ABILITY_LIMITS_V1.max_collection_items,
+        &mut diagnostics,
+    );
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(ValidationErrors::new(diagnostics))
+    }
 }
 
 pub(crate) fn validate_materialized_value(
@@ -250,6 +293,22 @@ fn validate_expression_with_literal_source(
         return;
     }
 
+    if let ValueSchema::Refined { value, constraints } = schema {
+        validate_expression_with_literal_source(
+            value,
+            expression,
+            path,
+            diagnostics,
+            result_validator,
+            aggregate_validator,
+            literal_source,
+        );
+        if let ValueExpression::Literal { value } = expression {
+            validate_constraints(constraints, value.as_json(), path, diagnostics);
+        }
+        return;
+    }
+
     if let ValueSchema::Optional { value } = schema {
         if matches!(expression, ValueExpression::Literal { value } if value.as_json().is_null()) {
             return;
@@ -378,6 +437,16 @@ fn validate_literal(
     literal_source: LiteralSource,
 ) {
     match (schema, value) {
+        (
+            ValueSchema::Refined {
+                value: nested,
+                constraints,
+            },
+            value,
+        ) => {
+            validate_json_literal(nested, value, path, diagnostics, literal_source);
+            validate_constraints(constraints, value, path, diagnostics);
+        }
         (ValueSchema::Boolean, Value::Bool(_)) => {}
         (ValueSchema::Integer { minimum, maximum }, Value::Number(number)) => {
             if number
@@ -584,6 +653,26 @@ fn validate_literal(
             );
         }
         _ => push_type_mismatch(path, json_kind(value), schema, diagnostics),
+    }
+}
+
+fn validate_constraints(
+    constraints: &[ValueConstraint],
+    value: &Value,
+    path: &SchemaPath,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for constraint in constraints {
+        if !constraint.admits(value) {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::ValueTypeMismatch,
+                    path,
+                    format!("value does not satisfy {} refinement", constraint.kind()),
+                ),
+            );
+        }
     }
 }
 
@@ -1151,6 +1240,10 @@ fn validate_tagged_variant(
     path: &SchemaPath,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let mut variant = variant;
+    while let ValueSchema::Refined { value, .. } = variant {
+        variant = value;
+    }
     let ValueSchema::Record {
         fields,
         optional_fields,
@@ -1218,6 +1311,7 @@ fn validate_string(
         Some(StringSyntax::LocalKeyV1) => LocalKey::new(value).is_ok(),
         Some(StringSyntax::QualifiedNameV1) => InterfaceName::new(value).is_ok(),
         Some(StringSyntax::ExecutionPathV1) => is_execution_path(value),
+        Some(StringSyntax::RelativePathV1) => is_relative_path(value),
     };
     if !syntax_matches {
         push_diagnostic(
@@ -1238,6 +1332,15 @@ fn is_execution_path(path: &str) -> bool {
             || path[1..]
                 .split('/')
                 .all(|component| !component.is_empty() && component != "." && component != ".."))
+}
+
+fn is_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\0')
+        && path
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 fn validate_declared_string_bound(
@@ -1370,6 +1473,7 @@ fn schema_kind(schema: &ValueSchema) -> &'static str {
         ValueSchema::TaggedUnion { .. } => "tagged-union",
         ValueSchema::DisjointUnion { .. } => "disjoint-union",
         ValueSchema::Optional { .. } => "optional",
+        ValueSchema::Refined { .. } => "refined",
         ValueSchema::ArtifactReference => "artifact-reference",
         ValueSchema::ResourceReference => "resource-reference",
         ValueSchema::ProviderAssignment => "provider-assignment",

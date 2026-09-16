@@ -22,10 +22,34 @@
     evaluated.success
     && builtins.isAttrs evaluated.value
     && lib.isDerivation evaluated.value
-    && evaluated.value ? abilities) pkgs;
+    && evaluated.value ? abilities)
+  pkgs;
   packageNames = builtins.attrNames abilityPackages;
-  projectionPaths = builtins.map
+  projectionPaths =
+    builtins.map
     (name: abilityPackages.${name}.contract.document)
+    packageNames;
+  countRefinedSchemas = value:
+    if builtins.isList value
+    then builtins.foldl' (count: item: count + countRefinedSchemas item) 0 value
+    else if builtins.isAttrs value
+    then
+      (
+        if (value.kind or null) == "refined"
+        then 1
+        else 0
+      )
+      + builtins.foldl' (
+        count: name: count + countRefinedSchemas value.${name}
+      )
+      0 (builtins.attrNames value)
+    else 0;
+  productionRefinedSchemaCount =
+    builtins.foldl' (
+      count: name:
+        count + countRefinedSchemas abilityPackages.${name}.contract.value
+    )
+    0
     packageNames;
 
   discoverNixSources = directory: prefix:
@@ -36,23 +60,27 @@
       in
         if entryType == "directory"
         then discoverNixSources (directory + "/${name}") "${relative}/"
-        else lib.optional (
-          entryType == "regular"
-          && builtins.match ".*\\.nix" name != null
-          && relative != "default.nix"
-        ) {
-          inherit relative;
-          source = directory + "/${name}";
-        }
+        else
+          lib.optional (
+            entryType
+            == "regular"
+            && builtins.match ".*\\.nix" name != null
+            && relative != "default.nix"
+          ) {
+            inherit relative;
+            source = directory + "/${name}";
+          }
     ) (builtins.attrNames (builtins.readDir directory));
   packageSources = discoverNixSources ../../pkgs "";
   importsPrivateLibrary = source:
     builtins.any (
       line:
-        builtins.match ".*import[[:space:]]+(\\.\\./)+lib/.*" line != null
+        builtins.match ".*import[[:space:]]+(\\.\\./)+lib/.*" line
+        != null
         || builtins.match ".*import[[:space:]]+\\((\\.\\./)+lib/.*" line != null
     ) (lib.splitString "\n" (builtins.readFile source));
-  privateLibraryImports = builtins.map
+  privateLibraryImports =
+    builtins.map
     (entry: entry.relative)
     (builtins.filter (entry: importsPrivateLibrary entry.source) packageSources);
 
@@ -104,8 +132,9 @@ in
   else if privateLibraryImports != []
   then throw "package definitions import private library paths: ${builtins.concatStringsSep ", " privateLibraryImports}"
   else if invalidPackages != []
-  then
-    throw "package ability documentation projections are invalid: ${builtins.concatStringsSep ", " invalidPackages}"
+  then throw "package ability documentation projections are invalid: ${builtins.concatStringsSep ", " invalidPackages}"
+  else if productionRefinedSchemaCount == 0
+  then throw "package ability documentation projections contain no refined schemas"
   else
     pkgs.mkDerivation {
       pname = "package-documentation-policy-check";

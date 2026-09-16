@@ -20,7 +20,7 @@
       maxLength = 4096;
       syntax = null;
     };
-    predicate = value: builtins.match ".+" value != null;
+    constraints = [{kind = "minimum-size"; minimum = 1;}];
   };
   intervalType = abilityTypes.record {
     fields = {
@@ -42,7 +42,7 @@
       maxLength = 1024;
       syntax = null;
     };
-    predicate = value: builtins.match "[^[:space:][:cntrl:]]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[^[:space:][:cntrl:]]+";}];
   };
   intervalNames = builtins.attrNames cfg.intervals;
   enabledIntervals = builtins.filter (name: cfg.intervals.${name}.enable) intervalNames;

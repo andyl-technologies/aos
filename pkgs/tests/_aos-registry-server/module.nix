@@ -15,7 +15,7 @@
     name = "registry listen address";
     description = "a hostname or numeric address accepted by the registry test services";
     type = abilityTypes.runtimeString;
-    predicate = value: builtins.match "[A-Za-z0-9:._-]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9:._-]+";}];
   };
   port = abilityTypes.integer {
     minimum = 1;

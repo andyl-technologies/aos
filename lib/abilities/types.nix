@@ -75,6 +75,12 @@
       kind = "optional";
       value = nested schema.value;
     }
+    else if schema.kind == "refined"
+    then {
+      kind = "refined";
+      value = nested schema.value;
+      inherit (schema) constraints;
+    }
     else if
       builtins.elem schema.kind [
         "artifact-reference"
@@ -161,6 +167,18 @@
       || builtins.all (component: component != "" && component != "." && component != "..") components
     );
 
+  isRelativePath = value: let
+    components =
+      if builtins.isString value
+      then builtins.filter builtins.isString (builtins.split "/" value)
+      else [];
+  in
+    builtins.isString value
+    && value != ""
+    && builtins.stringLength value <= 4096
+    && builtins.substring 0 1 value != "/"
+    && builtins.all (component: component != "" && component != "." && component != "..") components;
+
   syntaxMatches = syntax: value:
     if syntax == null
     then true
@@ -170,6 +188,8 @@
     then builtins.match qualifiedNamePattern value != null
     else if syntax == "execution-path-v1"
     then isExecutionPath value
+    else if syntax == "relative-path-v1"
+    then isRelativePath value
     else false;
 
   semanticJson = value:
@@ -271,14 +291,7 @@
     check = value: packageOutputType.check value || configArtifactType.check value;
     merge = moduleTypes.mergeEqualOption;
   };
-  relativePathType = moduleTypes.addCheck moduleTypes.str (value: let
-    components = builtins.filter builtins.isString (builtins.split "/" value);
-  in
-    value
-    != ""
-    && builtins.stringLength value <= 4096
-    && builtins.substring 0 1 value != "/"
-    && builtins.all (component: component != "" && component != "." && component != "..") components);
+  relativePathType = moduleTypes.addCheck moduleTypes.str isRelativePath;
 
   normalizedAbsolutePath = value: let
     splitComponents = builtins.filter builtins.isString (builtins.split "/" value);
@@ -398,6 +411,12 @@ in rec {
     then disjointUnion (builtins.map fromSchema normalized.variants)
     else if normalized.kind == "optional"
     then optional (fromSchema normalized.value)
+    else if normalized.kind == "refined"
+    then
+      refined {
+        type = fromSchema normalized.value;
+        inherit (normalized) constraints;
+      }
     else if normalized.kind == "artifact-reference"
     then artifactReference
     else if normalized.kind == "resource-reference"
@@ -417,19 +436,25 @@ in rec {
     })
     localKeyType;
 
-  packageName =
-    decorate "package name" (schemas.string {
+  packageName = refined {
+    name = "package name";
+    description = "a canonical package name";
+    type = string {
       maxLength = 128;
       syntax = null;
-    })
-    packageNameType;
+    };
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9+._-]+";}];
+  };
 
-  declarationKey =
-    decorate "qualified declaration key" (schemas.string {
+  declarationKey = refined {
+    name = "qualified declaration key";
+    description = "a package-qualified declaration key";
+    type = string {
       maxLength = 257;
       syntax = null;
-    })
-    declarationKeyType;
+    };
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9+._-]+:[A-Za-z0-9._-]+";}];
+  };
 
   qualifiedName =
     decorate "qualified name" (schemas.string {
@@ -438,12 +463,15 @@ in rec {
     })
     qualifiedNameType;
 
-  digest =
-    decorate "SHA-256 digest" (schemas.string {
+  digest = refined {
+    name = "SHA-256 digest";
+    description = "a lowercase hexadecimal SHA-256 digest";
+    type = string {
       maxLength = 71;
       syntax = null;
-    })
-    digestType;
+    };
+    constraints = [{kind = "string-pattern"; pattern = "sha256:[0-9a-f]{64}";}];
+  };
 
   stage =
     decorate "execution stage" (schemas.enum [
@@ -477,7 +505,7 @@ in rec {
   relativePath =
     decorate "relative path" (schemas.string {
       maxLength = 4096;
-      syntax = null;
+      syntax = "relative-path-v1";
     })
     relativePathType;
 
@@ -495,14 +523,15 @@ in rec {
     decorate "absolute execution path" schema pathType;
   principalName = decorate "principal name" localKey._abilitySchema localKeyType;
   groupName = decorate "group name" localKey._abilitySchema localKeyType;
-  fileMode = let
-    schema = schemas.string {
+  fileMode = refined {
+    name = "file mode";
+    description = "a three- or four-digit octal file mode";
+    type = string {
       maxLength = 4;
       syntax = null;
     };
-  in
-    decorate "file mode" schema (moduleTypes.addCheck moduleTypes.str (value:
-        builtins.match "[0-7]{3,4}" value != null));
+    constraints = [{kind = "string-pattern"; pattern = "[0-7]{3,4}";}];
+  };
   interfaceKey = record {
     fields = {
       name = qualifiedName;
@@ -764,22 +793,27 @@ in rec {
     decorate "optional" schema (moduleTypes.nullOr value);
 
   refined = {
-    name,
-    description,
+    name ? "refined ability value",
+    description ? "an ability value satisfying portable refinements",
     type,
-    predicate,
-  }:
-    type
-    // {
+    constraints,
+  }: let
+    schema = schemas.refined {
+      value = schemaOf "refined ability value" type;
+      inherit constraints;
+    };
+  in
+    decorate description schema (type
+      // {
       inherit name description;
-      check = value: type.check value && predicate value;
+      check = value: type.check value && validates schema value;
       merge = location: definitions: let
         merged = type.merge location definitions;
       in
-        if predicate merged
+        if validates schema merged
         then merged
         else throw "The option '${builtins.concatStringsSep "." location}' is not valid for ${description}.";
-    };
+    });
 
   artifactReference = specialType "artifact-reference" schemas.artifactReference {
     _type = moduleTypes.enum ["aos-artifact-reference"];
@@ -815,10 +849,15 @@ in rec {
   };
   deferredResult = expectedType: let
     schema = schemaOf "deferred result" expectedType;
+    unwrapRefined = value:
+      if value.kind == "refined"
+      then unwrapRefined value.value
+      else value;
+    concreteSchema = unwrapRefined schema;
     admitsPathWithin =
-      schema.kind
+      concreteSchema.kind
       == "string"
-      && schema.syntax == "execution-path-v1";
+      && concreteSchema.syntax == "execution-path-v1";
     pathWithinType = moduleTypes.mkOptionType {
       name = "path within a deferred execution path";
       description = "normalized path below a literal or deferred absolute execution path";

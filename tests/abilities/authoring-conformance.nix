@@ -6,6 +6,158 @@
   corpus = import ./conformance/corpus.nix;
   corpusFile = builtins.toFile "aos-ability-authoring-conformance-v1.json" (builtins.toJSON corpus);
 
+  invalidRefinementDeclarations =
+    builtins.map (
+      schema: builtins.tryEval (builtins.deepSeq schema true)
+    ) [
+      (lib.abilities.schemas.refined {
+        value = lib.abilities.schemas.integer {
+          minimum = 0;
+          maximum = 10;
+        };
+        constraints = [
+          {
+            kind = "string-pattern";
+            pattern = "[0-9]+";
+          }
+        ];
+      })
+      (lib.abilities.schemas.refined {
+        value = lib.abilities.schemas.string {
+          maxLength = 16;
+          syntax = null;
+        };
+        constraints = [
+          {
+            kind = "map-keys-pattern";
+            pattern = "[a-z]+";
+          }
+        ];
+      })
+      (lib.abilities.schemas.refined {
+        value = lib.abilities.schemas.boolean;
+        constraints = [
+          {
+            kind = "minimum-size";
+            minimum = 1;
+          }
+        ];
+      })
+      (lib.abilities.schemas.refined {
+        value = lib.abilities.schemas.string {
+          maxLength = 4;
+          syntax = null;
+        };
+        constraints = [
+          {
+            kind = "minimum-size";
+            minimum = 5;
+          }
+        ];
+      })
+      (lib.abilities.schemas.refined {
+        value = lib.abilities.schemas.record {
+          fields = {
+            enabled = lib.abilities.schemas.boolean;
+            names = lib.abilities.schemas.list {
+              element = lib.abilities.schemas.string {
+                maxLength = 16;
+                syntax = null;
+              };
+              maxItems = 8;
+            };
+          };
+          optional = [];
+        };
+        constraints = [
+          {
+            kind = "unique-at";
+            path = ["missing"];
+          }
+        ];
+      })
+      (lib.abilities.schemas.refined {
+        value = lib.abilities.schemas.record {
+          fields.enabled = lib.abilities.schemas.boolean;
+          optional = [];
+        };
+        constraints = [
+          {
+            kind = "unique-at";
+            path = ["enabled"];
+          }
+        ];
+      })
+      (lib.abilities.schemas.refined {
+        value = lib.abilities.schemas.record {
+          fields.enabled = lib.abilities.schemas.boolean;
+          optional = [];
+        };
+        constraints = [
+          {
+            kind = "structured-document";
+            format_field = "enabled";
+            document_field = "missing";
+          }
+        ];
+      })
+      (lib.abilities.schemas.refined {
+        value = lib.abilities.schemas.record {
+          fields = {
+            allowed = lib.abilities.schemas.list {
+              element = lib.abilities.schemas.string {
+                maxLength = 16;
+                syntax = null;
+              };
+              maxItems = 8;
+            };
+            requested = lib.abilities.schemas.list {
+              element = lib.abilities.schemas.string {
+                maxLength = 16;
+                syntax = null;
+              };
+              maxItems = 8;
+            };
+            policy = lib.abilities.schemas.taggedUnion {
+              tag = "kind";
+              variants = {
+                bounded = lib.abilities.schemas.record {
+                  fields = {
+                    kind = lib.abilities.schemas.enum ["bounded"];
+                    limit = lib.abilities.schemas.integer {
+                      minimum = 0;
+                      maximum = 5;
+                    };
+                  };
+                  optional = [];
+                };
+                extended = lib.abilities.schemas.record {
+                  fields = {
+                    kind = lib.abilities.schemas.enum ["extended"];
+                    limit = lib.abilities.schemas.integer {
+                      minimum = 0;
+                      maximum = 10;
+                    };
+                  };
+                  optional = [];
+                };
+              };
+            };
+          };
+          optional = [];
+        };
+        constraints = [
+          {
+            kind = "subset-unless";
+            subset = ["requested"];
+            superset = ["allowed"];
+            unless_path = ["policy" "limit"];
+            unless_equals = 8;
+          }
+        ];
+      })
+    ];
+
   unique = values:
     builtins.length values
     == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map (value: {
@@ -1121,6 +1273,7 @@ in
     optional_fields = ["enabled"];
   };
   assert !invalidPortableRecord.success;
+  assert builtins.all (result: !result.success) invalidRefinementDeclarations;
   assert builtins.all checkAcceptedCase corpus.cases;
     pkgs.mkDerivation {
       pname = "aos-ability-authoring-conformance-v1";

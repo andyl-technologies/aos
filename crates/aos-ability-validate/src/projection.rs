@@ -250,6 +250,7 @@ fn authorize_expression(
     maximum_lifetime: aos_ability_model::ResourceLifetime,
     root_authority: Option<(&AuthorityGrant, aos_ability_model::ResourceLifetime)>,
 ) -> Result<(), &'static str> {
+    let schema = unwrap_refined(schema);
     let schema = unwrap_optional(schema, expression);
     let schema = unwrap_disjoint(schema, expression);
     match expression {
@@ -408,6 +409,17 @@ fn authorize_literal(
     root_authority: Option<(&AuthorityGrant, aos_ability_model::ResourceLifetime)>,
 ) -> Result<(), &'static str> {
     match (schema, value) {
+        (ValueSchema::Refined { value: nested, .. }, value) => authorize_literal(
+            context,
+            principal,
+            bindings,
+            nested,
+            value,
+            resources,
+            artifacts,
+            maximum_lifetime,
+            root_authority,
+        ),
         (ValueSchema::Optional { .. }, Value::Null) => Ok(()),
         (ValueSchema::Optional { value: nested }, value) => authorize_literal(
             context,
@@ -767,6 +779,13 @@ fn unwrap_optional<'a>(
         if matches!(expression, ValueExpression::Literal { value } if value.as_json().is_null()) {
             break;
         }
+        schema = value;
+    }
+    schema
+}
+
+fn unwrap_refined(mut schema: &ValueSchema) -> &ValueSchema {
+    while let ValueSchema::Refined { value, .. } = schema {
         schema = value;
     }
     schema

@@ -717,7 +717,7 @@
     then false
     else if schema.kind == "list"
     then configurationSchemaIsLiteral schema.element
-    else if schema.kind == "map" || schema.kind == "optional"
+    else if builtins.elem schema.kind ["map" "optional" "refined"]
     then configurationSchemaIsLiteral schema.value
     else if builtins.elem schema.kind ["record" "document-record"]
     then builtins.all configurationSchemaIsLiteral (builtins.attrValues schema.fields)
@@ -1093,6 +1093,13 @@
   in
     if resultMarker
     then value
+    else if schema.kind == "refined"
+    then let
+      checked = checkCompositionValue schema.value value;
+    in
+      if containsRequestOutput 0 checked
+      then checked
+      else schemas.checkValue schema checked
     else if pathMarker
     then let
       checked = requireAttrs "path-within expression" ["_type" "base" "relative_path"] value;
@@ -1408,26 +1415,7 @@
         then "object"
         else null;
     in
-      if pathMarker
-      then let
-        checked = checkCompositionValue schema value;
-        base = resolveComposition nodes sourceName schema checked.base trail;
-      in
-        if builtins.isString base
-        then let
-          separator =
-            if base == "/"
-            then ""
-            else "/";
-          joined = "${base}${separator}${checked.relative_path}";
-        in
-          if abilityTypes.executionPath.check joined
-          then joined
-          else fail "path-within expression did not resolve to a normalized absolute path"
-        else if builtins.isAttrs base && (base._type or null) == "aos-request-output-reference"
-        then checked // {inherit base;}
-        else fail "path-within base did not resolve to an execution path"
-      else if resultMarker
+      if resultMarker
       then let
         matches =
           builtins.filter
@@ -1460,6 +1448,32 @@
             else if descriptor.schema != schema
             then fail "resultOf '${referenceName}' has a different output schema"
             else resolveComposition nodes targetName schema targetValue (trail ++ [referenceName])
+      else if schema.kind == "refined"
+      then let
+        resolved = resolveComposition nodes sourceName schema.value value trail;
+      in
+        if containsRequestOutput 0 resolved
+        then resolved
+        else schemas.checkValue schema resolved
+      else if pathMarker
+      then let
+        checked = checkCompositionValue schema value;
+        base = resolveComposition nodes sourceName schema checked.base trail;
+      in
+        if builtins.isString base
+        then let
+          separator =
+            if base == "/"
+            then ""
+            else "/";
+          joined = "${base}${separator}${checked.relative_path}";
+        in
+          if abilityTypes.executionPath.check joined
+          then joined
+          else fail "path-within expression did not resolve to a normalized absolute path"
+        else if builtins.isAttrs base && (base._type or null) == "aos-request-output-reference"
+        then checked // {inherit base;}
+        else fail "path-within base did not resolve to an execution path"
       else let
         checked = checkCompositionValue schema value;
       in

@@ -19,7 +19,12 @@
     abilityTypes.refined {
       inherit name description;
       type = abilityTypes.runtimeString;
-      predicate = value: builtins.match pattern value != null;
+      constraints = [
+        {
+          kind = "string-pattern";
+          pattern = pattern;
+        }
+      ];
     };
   positiveInt = abilityTypes.integer {
     minimum = 1;
@@ -33,11 +38,21 @@
     minimum = 1;
     maximum = 65535;
   };
-  nonEmptyLine =
-    checkedString
-    "PostgreSQL non-empty line"
-    "a non-empty PostgreSQL value without line breaks"
-    "[^\n\r]+";
+  nonEmptyLine = abilityTypes.refined {
+    name = "PostgreSQL non-empty line";
+    description = "a non-empty PostgreSQL value without line breaks";
+    type = abilityTypes.runtimeString;
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+      {
+        kind = "string-excludes";
+        classes = ["line-break"];
+      }
+    ];
+  };
   identifier =
     checkedString
     "PostgreSQL identifier"
@@ -58,11 +73,17 @@
     "PostgreSQL setting name"
     "a lowercase PostgreSQL parameter name"
     "[a-z][a-z0-9_]*";
-  settingString =
-    checkedString
-    "PostgreSQL setting value"
-    "a PostgreSQL setting value without line breaks"
-    "[^\n\r]*";
+  settingString = abilityTypes.refined {
+    name = "PostgreSQL setting value";
+    description = "a PostgreSQL setting value without line breaks";
+    type = abilityTypes.runtimeString;
+    constraints = [
+      {
+        kind = "string-excludes";
+        classes = ["line-break"];
+      }
+    ];
+  };
   settingValue = abilityTypes.disjointUnion [
     abilityTypes.boolean
     (abilityTypes.integer {

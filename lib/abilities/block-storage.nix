@@ -181,7 +181,7 @@
       maxLength = 255;
       syntax = null;
     };
-    predicate = value: builtins.match "[A-Za-z][A-Za-z0-9_.:-]*" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z][A-Za-z0-9_.:-]*";}];
   };
   poolRequest = types.record {
     fields = {
@@ -229,8 +229,7 @@
       maxLength = 1024;
       syntax = null;
     };
-    predicate = value:
-      builtins.match "[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)*" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)*";}];
   };
   datasetProperties = types.map {
     keyMaxLength = 255;
@@ -300,7 +299,7 @@
       maxLength = 32;
       syntax = null;
     };
-    predicate = value: builtins.match "[1-9][0-9]*[KMGTP]?" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[1-9][0-9]*[KMGTP]?";}];
   };
   uuid = types.refined {
     name = "UUID";
@@ -309,9 +308,10 @@
       maxLength = 36;
       syntax = null;
     };
-    predicate = value:
-      builtins.match "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" value
-      != null;
+    constraints = [{
+      kind = "string-pattern";
+      pattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+    }];
   };
   storageDevice = types.executionPath;
   partitionTarget = types.taggedUnion {
@@ -335,7 +335,7 @@
       maxLength = 64;
       syntax = null;
     };
-    predicate = value: builtins.match "[A-Za-z0-9._:+-]+" value != null;
+    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9._:+-]+";}];
   };
   partitionSpec = types.record {
     fields = {

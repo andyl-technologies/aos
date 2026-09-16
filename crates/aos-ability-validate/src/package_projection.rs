@@ -475,8 +475,67 @@ pub fn decode_package_projection(bytes: &[u8]) -> Result<PackageAbilityProjectio
         );
     }
     validate_projection_structure(&projection)?;
+    validate_projection_schemas(&projection)?;
     validate_projected_interfaces(&projection)?;
     Ok(projection)
+}
+
+fn validate_projection_schemas(projection: &PackageAbilityProjection) -> Result<()> {
+    let validate = |label: &str, schema: &ValueSchema| {
+        crate::validate_schema(schema).map_err(|error| {
+            let detail = error.diagnostics().first().map_or_else(
+                || error.to_string(),
+                |diagnostic| format!("{} at /{}", diagnostic.message, diagnostic.path.join("/")),
+            );
+            anyhow::anyhow!("{label} contains an invalid value schema: {detail}")
+        })
+    };
+
+    for retained in &projection.interface_documents {
+        let interface = &retained.document.interface;
+        validate("interface request", &interface.request)?;
+        if let Some(configuration) = &interface.configuration {
+            validate("interface configuration", configuration)?;
+        }
+        for output in interface.outputs.values() {
+            validate("interface output", &output.schema)?;
+        }
+        for method in interface.methods.values() {
+            validate("method parameters", &method.parameters)?;
+            validate(
+                "method completion evidence",
+                &method.outcome.completion_evidence,
+            )?;
+            validate(
+                "method observation evidence",
+                &method.outcome.observation_evidence,
+            )?;
+            for output in method.outputs.values() {
+                validate("method output", &output.schema)?;
+            }
+        }
+    }
+    for provider in &projection.implementation.providers {
+        if let Some(schema) = &provider.desired_schema {
+            validate("provider desired state", schema)?;
+        }
+    }
+    for handler in projection.implementation.handlers.values() {
+        validate("handler arguments", &handler.arguments)?;
+        validate("handler result", &handler.result)?;
+    }
+    for qualification in projection.qualification.implementations.values() {
+        validate(
+            "qualification observer arguments",
+            &qualification.observer.arguments,
+        )?;
+        validate(
+            "qualification observer result",
+            &qualification.observer.result,
+        )?;
+    }
+
+    Ok(())
 }
 
 fn resolve_probe_template<F>(

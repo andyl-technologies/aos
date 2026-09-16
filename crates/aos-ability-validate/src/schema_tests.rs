@@ -92,6 +92,240 @@ fn canonical_order_requires_unique_elements() {
 }
 
 #[test]
+fn refined_string_constraints_are_enforced_from_the_schema() {
+    let schema = ValueSchema::Refined {
+        value: Box::new(ValueSchema::String {
+            max_length: 16,
+            syntax: None,
+        }),
+        constraints: vec![
+            ValueConstraint::MinimumSize { minimum: 1 },
+            ValueConstraint::StringPattern {
+                pattern: "[a-z]+".to_string(),
+            },
+        ],
+    };
+
+    assert!(validate_value(&schema, &literal(serde_json::json!("valid"))).is_ok());
+    assert!(validate_value(&schema, &literal(serde_json::json!(""))).is_err());
+    assert!(validate_value(&schema, &literal(serde_json::json!("INVALID"))).is_err());
+}
+
+#[test]
+fn refined_record_relationships_are_enforced() {
+    let string_list = ValueSchema::List {
+        element: Box::new(ValueSchema::String {
+            max_length: 32,
+            syntax: None,
+        }),
+        max_items: 8,
+        unique: false,
+        canonical_order: false,
+    };
+    let schema = ValueSchema::Refined {
+        value: Box::new(ValueSchema::Record {
+            fields: BTreeMap::from([
+                (
+                    LocalKey::new("allowed").expect("valid key"),
+                    string_list.clone(),
+                ),
+                (
+                    LocalKey::new("denied").expect("valid key"),
+                    string_list.clone(),
+                ),
+                (LocalKey::new("requested").expect("valid key"), string_list),
+                (
+                    LocalKey::new("mode").expect("valid key"),
+                    ValueSchema::StringEnum {
+                        values: vec!["bounded".to_string(), "unrestricted".to_string()],
+                    },
+                ),
+            ]),
+            optional_fields: Vec::new(),
+        }),
+        constraints: vec![
+            ValueConstraint::UniqueAt {
+                path: vec![LocalKey::new("requested").expect("valid key")],
+            },
+            ValueConstraint::DisjointAt {
+                left: vec![LocalKey::new("allowed").expect("valid key")],
+                right: vec![LocalKey::new("denied").expect("valid key")],
+            },
+            ValueConstraint::SubsetUnless {
+                subset: vec![LocalKey::new("requested").expect("valid key")],
+                superset: vec![LocalKey::new("allowed").expect("valid key")],
+                unless_path: vec![LocalKey::new("mode").expect("valid key")],
+                unless_equals: serde_json::json!("unrestricted"),
+            },
+        ],
+    };
+
+    let valid = serde_json::json!({
+        "allowed": ["read"],
+        "denied": ["write"],
+        "requested": ["read"],
+        "mode": "bounded",
+    });
+    let invalid = serde_json::json!({
+        "allowed": ["read"],
+        "denied": ["read"],
+        "requested": ["write", "write"],
+        "mode": "bounded",
+    });
+
+    assert!(validate_value(&schema, &literal(valid)).is_ok());
+    assert!(validate_value(&schema, &literal(invalid)).is_err());
+}
+
+#[test]
+fn refined_schema_declarations_reject_incompatible_root_constraints() {
+    let cases = [
+        ValueSchema::Refined {
+            value: Box::new(ValueSchema::Integer {
+                minimum: 0,
+                maximum: 10,
+            }),
+            constraints: vec![ValueConstraint::StringPattern {
+                pattern: "[0-9]+".to_string(),
+            }],
+        },
+        ValueSchema::Refined {
+            value: Box::new(ValueSchema::String {
+                max_length: 16,
+                syntax: None,
+            }),
+            constraints: vec![ValueConstraint::MapKeysPattern {
+                pattern: "[a-z]+".to_string(),
+            }],
+        },
+        ValueSchema::Refined {
+            value: Box::new(ValueSchema::Boolean),
+            constraints: vec![ValueConstraint::MinimumSize { minimum: 1 }],
+        },
+        ValueSchema::Refined {
+            value: Box::new(ValueSchema::String {
+                max_length: 4,
+                syntax: None,
+            }),
+            constraints: vec![ValueConstraint::MinimumSize { minimum: 5 }],
+        },
+    ];
+
+    for schema in cases {
+        assert!(validate_schema(&schema).is_err(), "accepted {schema:?}");
+    }
+}
+
+#[test]
+fn refined_schema_declarations_reject_absent_or_wrongly_typed_paths() {
+    let key = |value| LocalKey::new(value).expect("valid test key");
+    let base = ValueSchema::Record {
+        fields: BTreeMap::from([
+            (key("enabled"), ValueSchema::Boolean),
+            (
+                key("names"),
+                ValueSchema::List {
+                    element: Box::new(ValueSchema::String {
+                        max_length: 16,
+                        syntax: None,
+                    }),
+                    max_items: 8,
+                    unique: false,
+                    canonical_order: false,
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    };
+    let cases = [
+        ValueConstraint::UniqueAt {
+            path: vec![key("missing")],
+        },
+        ValueConstraint::UniqueAt {
+            path: vec![key("enabled")],
+        },
+        ValueConstraint::DisjointAt {
+            left: vec![key("names")],
+            right: vec![key("enabled")],
+        },
+        ValueConstraint::AtMostOneNonNull {
+            fields: vec![key("missing")],
+        },
+        ValueConstraint::StructuredDocument {
+            format_field: key("enabled"),
+            document_field: key("missing"),
+        },
+    ];
+
+    for constraint in cases {
+        let schema = ValueSchema::Refined {
+            value: Box::new(base.clone()),
+            constraints: vec![constraint],
+        };
+        assert!(validate_schema(&schema).is_err(), "accepted {schema:?}");
+    }
+}
+
+#[test]
+fn subset_unless_requires_a_literal_admitted_by_every_non_tag_variant_path() {
+    let key = |value| LocalKey::new(value).expect("valid test key");
+    let list = ValueSchema::List {
+        element: Box::new(ValueSchema::String {
+            max_length: 16,
+            syntax: None,
+        }),
+        max_items: 8,
+        unique: false,
+        canonical_order: false,
+    };
+    let policy_variant = |kind: &str, maximum| ValueSchema::Record {
+        fields: BTreeMap::from([
+            (
+                key("kind"),
+                ValueSchema::StringEnum {
+                    values: vec![kind.to_string()],
+                },
+            ),
+            (
+                key("limit"),
+                ValueSchema::Integer {
+                    minimum: 0,
+                    maximum,
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    };
+    let schema = ValueSchema::Refined {
+        value: Box::new(ValueSchema::Record {
+            fields: BTreeMap::from([
+                (key("allowed"), list.clone()),
+                (key("requested"), list),
+                (
+                    key("policy"),
+                    ValueSchema::TaggedUnion {
+                        tag: key("kind"),
+                        variants: BTreeMap::from([
+                            (key("bounded"), policy_variant("bounded", 5)),
+                            (key("extended"), policy_variant("extended", 10)),
+                        ]),
+                    },
+                ),
+            ]),
+            optional_fields: Vec::new(),
+        }),
+        constraints: vec![ValueConstraint::SubsetUnless {
+            subset: vec![key("requested")],
+            superset: vec![key("allowed")],
+            unless_path: vec![key("policy"), key("limit")],
+            unless_equals: serde_json::json!(8),
+        }],
+    };
+
+    assert!(validate_schema(&schema).is_err());
+}
+
+#[test]
 fn disjoint_union_accepts_raw_boolean_integer_and_string_values() {
     let schema = ValueSchema::DisjointUnion {
         variants: vec![

@@ -888,6 +888,7 @@ fn expression_uses_sensitive_reference(
     schema: &ValueSchema,
     expression: &ValueExpression,
 ) -> bool {
+    let schema = unwrap_refined_schema(schema);
     let schema = match schema {
         ValueSchema::Optional { value } if !matches!(expression, ValueExpression::Literal { value } if value.as_json().is_null()) => {
             value.as_ref()
@@ -992,7 +993,10 @@ fn schema_contains_sensitive_reference(schema: &ValueSchema) -> bool {
         | ValueSchema::OperationResultReference => true,
         ValueSchema::List { element, .. }
         | ValueSchema::Map { value: element, .. }
-        | ValueSchema::Optional { value: element } => schema_contains_sensitive_reference(element),
+        | ValueSchema::Optional { value: element }
+        | ValueSchema::Refined { value: element, .. } => {
+            schema_contains_sensitive_reference(element)
+        }
         ValueSchema::Record { fields, .. } => {
             fields.values().any(schema_contains_sensitive_reference)
         }
@@ -1064,6 +1068,7 @@ fn insert_expression_artifacts(
     schema: &ValueSchema,
     expression: &ValueExpression,
 ) -> Result<(), InspectionViewError> {
+    let schema = unwrap_refined_schema(schema);
     let schema = unwrap_optional_schema(schema, expression);
     let schema = unwrap_disjoint_schema(schema, expression);
     match expression {
@@ -1153,6 +1158,9 @@ fn insert_literal_artifacts(
     value: &serde_json::Value,
 ) -> Result<(), InspectionViewError> {
     match (schema, value) {
+        (ValueSchema::Refined { value: nested, .. }, value) => {
+            insert_literal_artifacts(nodes, edges, owner, nested, value)?;
+        }
         (ValueSchema::Optional { .. }, serde_json::Value::Null) => {}
         (ValueSchema::Optional { value: nested }, value) => {
             insert_literal_artifacts(nodes, edges, owner, nested, value)?;
@@ -1223,6 +1231,13 @@ fn insert_literal_artifacts(
         _ => {}
     }
     Ok(())
+}
+
+fn unwrap_refined_schema(mut schema: &ValueSchema) -> &ValueSchema {
+    while let ValueSchema::Refined { value, .. } = schema {
+        schema = value;
+    }
+    schema
 }
 
 fn insert_artifact_retention(

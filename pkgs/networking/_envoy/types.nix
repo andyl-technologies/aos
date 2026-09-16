@@ -7,7 +7,7 @@
     name = "non-empty Envoy string";
     description = "a non-empty Envoy configuration string";
     type = runtimeString;
-    predicate = value: builtins.match ".+" value != null;
+    constraints = [{kind = "minimum-size"; minimum = 1;}];
   };
   positiveInt = abilityTypes.integer {
     minimum = 1;
@@ -28,7 +28,7 @@
       minimum = 301;
       maximum = 308;
     };
-    predicate = value: builtins.elem value [301 302 303 307 308];
+    constraints = [{kind = "integer-set"; values = [301 302 303 307 308];}];
   };
   listOf = element:
     abilityTypes.list {

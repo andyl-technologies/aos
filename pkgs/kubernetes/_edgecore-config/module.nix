@@ -17,7 +17,12 @@
     abilityTypes.refined {
       inherit name description;
       type = abilityTypes.runtimeString;
-      predicate = value: builtins.match pattern value != null;
+      constraints = [
+        {
+          kind = "string-pattern";
+          pattern = pattern;
+        }
+      ];
     };
   credentials = {
     ca-certificate = cfg.tls.caCertificate;
@@ -409,20 +414,20 @@ in {
       httpServer = mkOption {
         type =
           refinedString "CloudHub HTTP server" "a bounded HTTPS CloudHub endpoint"
-          "https://[^\n\r ]+";
+          "https://[^[:space:]]+";
         description = "CloudHub HTTPS enrollment endpoint.";
       };
       server = mkOption {
         type =
           refinedString "CloudHub server" "a bounded host and port endpoint"
-          "[^\n\r ]+:[0-9]+";
+          "[^[:space:]]+:[0-9]+";
         description = "CloudHub WebSocket endpoint.";
       };
     };
     runtimeEndpoint = mkOption {
       type =
         refinedString "EdgeCore runtime endpoint" "a bounded Unix CRI endpoint"
-        "unix:///[^\n\r ]+";
+        "unix:///[^[:space:]]+";
       default = "unix:///run/containerd/containerd.sock";
       description = "CRI runtime and image service endpoint.";
     };
@@ -442,7 +447,7 @@ in {
     podSandboxImage = mkOption {
       type =
         refinedString "EdgeCore sandbox image" "a bounded image reference without whitespace"
-        "[^\n\r ]+";
+        "[^[:space:]]+";
       default = "registry.k8s.io/pause:3.10";
       description = "Pod sandbox image reference.";
     };
