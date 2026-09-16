@@ -107,10 +107,10 @@ in
   assert abilities.implementations."aos-filesystem-provider:filesystem-entry".handlerDescriptor == null;
   assert abilities.implementations."aos-filesystem-provider:filesystem-entry-effects".providerModule == null;
   assert abilities.implementations."aos-filesystem-provider:filesystem-entry-effects".handlerDescriptor.entryPoint
-  == "libexec/aos-filesystem-entry-effects";
+  == "libexec/aos-filesystem-provider";
   assert abilities.implementations."aos-filesystem-provider:storage-allocation-effects".handlerDescriptor.entryPoint
-  == "libexec/aos-storage-allocation-effects";
+  == "libexec/aos-filesystem-provider";
   assert abilities.implementations."aos-filesystem-provider:persistent-storage-allocation-effects".handlerDescriptor.entryPoint
-  == "libexec/aos-persistent-storage-allocation-effects";
+  == "libexec/aos-filesystem-provider";
   assert abilities.implementations."aos-filesystem-provider:storage-view-effects".handlerDescriptor.entryPoint
-  == "libexec/aos-storage-view-effects"; true
+  == "libexec/aos-filesystem-provider"; true

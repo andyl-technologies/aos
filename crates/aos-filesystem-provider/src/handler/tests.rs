@@ -371,28 +371,34 @@ fn invocation_with_dependencies(
 }
 
 #[test]
-fn package_entry_points_select_closed_filesystem_roles() {
+fn authenticated_interfaces_select_closed_filesystem_roles() {
+    let method = |name| MethodReference {
+        interface: interface(name),
+        method: key("observe"),
+    };
+
     assert_eq!(
-        FilesystemRole::from_entry_point(OsStr::new("aos-storage-allocation-effects"))
-            .expect("instance allocation role parses"),
+        FilesystemRole::from_method(&method(INSTANCE_ALLOCATION_INTERFACE))
+            .expect("instance allocation interface selects its role"),
         FilesystemRole::InstanceAllocation,
     );
     assert_eq!(
-        FilesystemRole::from_entry_point(OsStr::new("aos-persistent-storage-allocation-effects",))
-            .expect("persistent allocation role parses"),
+        FilesystemRole::from_method(&method(PERSISTENT_ALLOCATION_INTERFACE))
+            .expect("persistent allocation interface selects its role"),
         FilesystemRole::PersistentAllocation,
     );
     assert_eq!(
-        FilesystemRole::from_entry_point(OsStr::new("aos-storage-view-effects"))
-            .expect("storage view role parses"),
+        FilesystemRole::from_method(&method(STORAGE_VIEW_INTERFACE))
+            .expect("storage view interface selects its role"),
         FilesystemRole::StorageView,
     );
     assert_eq!(
-        FilesystemRole::from_entry_point(OsStr::new("aos-filesystem-entry-effects"))
-            .expect("filesystem entry role parses"),
+        FilesystemRole::from_method(&method(FILESYSTEM_ENTRY_INTERFACE))
+            .expect("filesystem entry interface selects its role"),
         FilesystemRole::FilesystemEntry,
     );
-    assert!(FilesystemRole::from_entry_point(OsStr::new("aos-filesystem-provider")).is_err());
+    assert!(FilesystemRole::from_method(&method("aos.filesystem.entry")).is_err());
+    assert!(FilesystemRole::from_method(&method("aos.example.unowned-effects")).is_err());
 }
 
 #[test]

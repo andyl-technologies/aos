@@ -1,7 +1,6 @@
 //! Durable storage allocation and child-view command-handler implementation.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
@@ -13,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, MAX_SAFE_INTEGER, ResourceId,
-    ResourceReference, RevisionId,
+    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, MAX_SAFE_INTEGER,
+    MethodReference, ResourceId, ResourceReference, RevisionId,
 };
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
@@ -41,41 +40,30 @@ const VIEW_CLAIM_SCHEMA: &str = "aos.filesystem.storage-view-claim/v1";
 const REALIZATION_SCHEMA: &str = "aos.filesystem.storage-realization/v1";
 const ENTRY_REALIZATION_SCHEMA: &str = "aos.filesystem.entry-realization/v1";
 const VIEW_REALIZATION_SCHEMA: &str = "aos.filesystem.storage-view-realization/v1";
+const INSTANCE_ALLOCATION_INTERFACE: &str = "aos.filesystem.storage-allocation-effects";
+const PERSISTENT_ALLOCATION_INTERFACE: &str =
+    "aos.filesystem.persistent-storage-allocation-effects";
+const STORAGE_VIEW_INTERFACE: &str = "aos.filesystem.storage-view-effects";
+const FILESYSTEM_ENTRY_INTERFACE: &str = "aos.filesystem.filesystem-entry-effects";
 const LOCK_RETRY: Duration = Duration::from_millis(5);
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Selects one package-declared filesystem handler role.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FilesystemRole {
-    /// Allocates storage whose ownership ends with the provider instance.
+pub(super) enum FilesystemRole {
     InstanceAllocation,
-    /// Allocates storage retained across provider instances.
     PersistentAllocation,
-    /// Resolves an authorized child view within an allocation.
     StorageView,
-    /// Materializes a declared directory or copied file.
     FilesystemEntry,
 }
 
 impl FilesystemRole {
-    /// Resolves a closed role from a package-installed handler entry point.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the executable name is not one of the entry
-    /// points published by the filesystem provider package.
-    pub fn from_entry_point(entry_point: &OsStr) -> Result<Self> {
-        let name = Path::new(entry_point)
-            .file_name()
-            .and_then(OsStr::to_str)
-            .context("filesystem handler entry point is not valid UTF-8")?;
-
-        match name {
-            "aos-storage-allocation-effects" => Ok(Self::InstanceAllocation),
-            "aos-persistent-storage-allocation-effects" => Ok(Self::PersistentAllocation),
-            "aos-storage-view-effects" => Ok(Self::StorageView),
-            "aos-filesystem-entry-effects" => Ok(Self::FilesystemEntry),
-            _ => bail!("entry point does not select a checked filesystem handler role"),
+    fn from_method(method: &MethodReference) -> Result<Self> {
+        match method.interface.name.as_str() {
+            INSTANCE_ALLOCATION_INTERFACE => Ok(Self::InstanceAllocation),
+            PERSISTENT_ALLOCATION_INTERFACE => Ok(Self::PersistentAllocation),
+            STORAGE_VIEW_INTERFACE => Ok(Self::StorageView),
+            FILESYSTEM_ENTRY_INTERFACE => Ok(Self::FilesystemEntry),
+            _ => bail!("selected interface does not belong to the filesystem provider"),
         }
     }
 
@@ -118,7 +106,7 @@ impl FilesystemProvider {
     /// Returns an error unless the purpose and input schema match, the selected
     /// role belongs to this provider, all native context is exact, and the
     /// requested filesystem operation completes safely.
-    pub fn handle(&self, role: FilesystemRole, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
+    pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
         let result = match purpose {
             "admit" => {
                 let request: AdmissionRequest =
@@ -127,6 +115,7 @@ impl FilesystemProvider {
                     request.schema == ADMISSION_REQUEST_SCHEMA,
                     "unsupported admission schema"
                 );
+                let role = FilesystemRole::from_method(&request.method)?;
                 serde_json::to_value(self.admit(role, request)?)?
             }
             "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
@@ -140,6 +129,11 @@ impl FilesystemProvider {
                     purpose == purpose_name(invocation.purpose),
                     "invocation purpose differs from argv"
                 );
+                ensure!(
+                    invocation.method_is_bound(),
+                    "invocation method differs from durable recovery authority"
+                );
+                let role = FilesystemRole::from_method(&invocation.method)?;
                 serde_json::to_value(self.invoke(role, invocation)?)?
             }
             _ => bail!("unsupported command-handler purpose {purpose:?}"),
