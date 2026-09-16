@@ -30,7 +30,7 @@ use rand::Rng as _;
 use zeroize::Zeroizing;
 
 pub use aos_hub_core::auth::seal::{
-    dev_sealer, parse_key, AesGcmSealer, SecretSealer, XorSealer, KEY_LEN,
+    AesGcmSealer, KEY_LEN, SecretSealer, XorSealer, dev_sealer, parse_key,
 };
 
 const MAX_SECRET_FILE_BYTES: u64 = 1024 * 1024;
@@ -93,13 +93,11 @@ fn is_already_exists(error: &anyhow::Error) -> bool {
 ///
 /// The opened file's device/inode is compared with the path metadata, closing
 /// the check/open replacement race without relying on a host-specific command.
-/// On Unix, the secret itself cannot grant group/other access. The sole
-/// exception is systemd's ACL-backed `0440` representation inside the exact
-/// directory named by `$CREDENTIALS_DIRECTORY`. A parent may grant read or
-/// traversal access, but cannot be group/other-writable because that would
-/// permit replacement. Ownership by either the effective user or root is
-/// accepted so `LoadCredential=` mounts can be consumed by an unprivileged
-/// service.
+/// On Unix, the secret itself cannot grant group/other access. A parent may
+/// grant read or traversal access, but cannot be group/other-writable because
+/// that would permit replacement. Ownership by either the effective user or
+/// root is accepted so provider-delivered views can be consumed by an
+/// unprivileged service.
 ///
 /// # Errors
 ///
@@ -263,15 +261,8 @@ fn secret_parent_mode_is_secure(mode: u32) -> bool {
 }
 
 #[cfg(unix)]
-fn secret_file_mode_is_secure(path: &Path, mode: u32) -> bool {
-    if mode & 0o077 == 0 {
-        return true;
-    }
-
-    let is_systemd_credential = std::env::var_os("CREDENTIALS_DIRECTORY")
-        .map(PathBuf::from)
-        .is_some_and(|directory| path.parent() == Some(directory.as_path()));
-    is_systemd_credential && mode & 0o077 == 0o040
+fn secret_file_mode_is_secure(_path: &Path, mode: u32) -> bool {
+    mode & 0o077 == 0
 }
 
 /// Writes `key` to `path` with `0600` permissions, creating parent dirs.
@@ -382,24 +373,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn systemd_credential_mode_exception_is_narrow() {
-        let path = Path::new("/run/credentials/aos-hub.service/key");
-        let previous = std::env::var_os("CREDENTIALS_DIRECTORY");
-        std::env::set_var("CREDENTIALS_DIRECTORY", "/run/credentials/aos-hub.service");
-
+    fn secret_mode_rejects_group_and_other_access() {
+        let path = Path::new("/run/aos/credential-views/key");
         assert!(secret_file_mode_is_secure(path, 0o100400));
-        assert!(secret_file_mode_is_secure(path, 0o100440));
+        assert!(!secret_file_mode_is_secure(path, 0o100440));
         assert!(!secret_file_mode_is_secure(path, 0o100460));
         assert!(!secret_file_mode_is_secure(path, 0o100444));
-        assert!(!secret_file_mode_is_secure(
-            Path::new("/var/lib/aos-hub/key"),
-            0o100440
-        ));
-
-        match previous {
-            Some(value) => std::env::set_var("CREDENTIALS_DIRECTORY", value),
-            None => std::env::remove_var("CREDENTIALS_DIRECTORY"),
-        }
     }
 
     #[test]
@@ -431,7 +410,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn secret_reader_rejects_symlinks_and_group_permissions() {
-        use std::os::unix::fs::{symlink, PermissionsExt as _};
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
 
         let dir = private_tempdir();
         let key = dir.path().join("key");
@@ -481,7 +460,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn secret_reader_rejects_a_symlinked_parent() {
-        use std::os::unix::fs::{symlink, PermissionsExt as _};
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
 
         let dir = private_tempdir();
         let private = dir.path().join("private");
@@ -510,7 +489,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn secret_reader_rejects_an_intermediate_symlink_component() {
-        use std::os::unix::fs::{symlink, PermissionsExt as _};
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
 
         let dir = private_tempdir();
         let private = dir.path().join("private");
@@ -556,7 +535,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn secret_reader_never_follows_a_racing_symlink() {
-        use std::os::unix::fs::{symlink, PermissionsExt as _};
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
         use std::sync::{Arc, Barrier};
 
         let dir = private_tempdir();
