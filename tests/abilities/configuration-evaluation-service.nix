@@ -39,6 +39,11 @@
           version = pkgs.aos-nix-store-provider.version;
           module = pkgs.aos-nix-store-provider.module + "/module.nix";
         }
+        {
+          name = "aos-systemd-provider";
+          version = pkgs.aos-systemd-provider.version;
+          module = pkgs.aos-systemd-provider.module + "/module.nix";
+        }
       ];
     };
   pcrPublicKey = "/nix/store/00000000000000000000000000000000-aos-pcr-pubkey/pcr.pem";
@@ -56,12 +61,11 @@
   dependencies = requests."aos:configuration-evaluation-dependencies".parameters;
   bootCommitLifecycle = requests."aos:image-boot-commit-lifecycle".parameters;
   bootCommitDependencies = requests."aos:image-boot-commit-dependencies".parameters;
-  fallbackLifecycle = requests."aos:image-rollout-fallback-lifecycle".parameters;
-  measurementLifecycle = requests."aos:image-measurement-index-lifecycle".parameters;
-  measurementDependencies = requests."aos:image-measurement-index-dependencies".parameters;
+  measurementLifecycle = requests."aos-systemd-provider:image-measurement-index-lifecycle".parameters;
+  measurementDependencies = requests."aos-systemd-provider:image-measurement-index-dependencies".parameters;
 in
   assert !(disabled.config.aos.abilities.requests ? "aos:configuration-evaluation-lifecycle");
-  assert !(unmeasured.config.aos.abilities.requests ? "aos:image-measurement-index-lifecycle");
+  assert !(unmeasured.config.aos.abilities.requests ? "aos-systemd-provider:image-measurement-index-lifecycle");
   assert !missingMeasurementKey.success;
   assert lifecycle.service == "configuration-evaluation";
   assert registryLifecycle.service == "registry-synchronization";
@@ -163,32 +167,14 @@ in
   == [(resultOf "aos:multi-user" "readiness-resource")];
   assert bootCommitDependencies.wanted_by
   == [(resultOf "aos:multi-user" "readiness-resource")];
-  assert requests."aos:image-boot-commit-failure_policy".parameters.handlers
-  == [(resultOf "aos:image-rollout-fallback-lifecycle" "service-resource")];
-  assert fallbackLifecycle.start
-  == [
-    {
-      executable = {
-        artifact = lib.abilities.packageOutput {
-          package = "aos";
-          output = "packageRuntime";
-        };
-        entry_point = "libexec/aos-image-rollout-boot";
-        arguments = ["fallback"];
-      };
-      ignore_failure = false;
-    }
-  ];
-  assert !fallbackLifecycle.enabled;
   assert measurementLifecycle.start
   == [
     {
       executable = {
         artifact = lib.abilities.packageOutput {
-          package = "aos";
-          output = "packageRuntime";
+          package = "aos-systemd-provider";
         };
-        entry_point = "libexec/aos-image-rollout-boot";
+        entry_point = "bin/aos-systemd-provider";
         arguments = ["measurement-index" "--pcr-public-key" pcrPublicKey];
       };
       ignore_failure = false;

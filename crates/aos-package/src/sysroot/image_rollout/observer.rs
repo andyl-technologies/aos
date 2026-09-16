@@ -13,13 +13,12 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use super::ability::AbilityRolloutState;
-use super::{AbRolloutRequest, NativeAbRolloutBackend};
+use super::{AbRolloutRequest, AbRolloutTerminalRequest, NativeAbRolloutBackend};
 
 const ADAPTER: &str = "image-rollout";
 const KIND: &str = "rollout";
 const SCOPE: &str = "host-machine";
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
-const BOOT_ROOT: &str = "/boot";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,15 +48,6 @@ struct RolloutObservation {
     resource: ResourceId,
     provider_state: Option<AbilityRolloutState>,
     image_state_digest: Option<Sha256Digest>,
-    boot_selection_digest: Option<Sha256Digest>,
-    kernel_command_line_digest: Option<Sha256Digest>,
-    retention: Vec<FileObservation>,
-}
-
-#[derive(Debug, Serialize)]
-struct FileObservation {
-    path: String,
-    digest: Sha256Digest,
 }
 
 /// Runs the package-owned read-only image-rollout qualification observer.
@@ -80,9 +70,10 @@ pub fn run_from_process() -> Result<()> {
 
     let request: ObserverRequest = serde_json::from_slice(&read_bounded(request_path)?)?;
     validate_request(&request)?;
-    let desired: AbRolloutRequest =
+    let terminal: AbRolloutTerminalRequest =
         serde_json::from_value(literal_value(&request.operation.inputs)?)
             .context("decoding checked image-rollout inputs")?;
+    let desired = terminal.rollout;
     let observation = observe(&request.operation.target.resource, &desired)?;
     let observation = String::from_utf8(aos_contract::canonical::to_vec(&observation)?)
         .context("encoding qualification observation as UTF-8")?;
@@ -125,23 +116,15 @@ fn literal_value(expression: &ValueExpression) -> Result<serde_json::Value> {
 }
 
 fn observe(resource: &ResourceId, request: &AbRolloutRequest) -> Result<RolloutObservation> {
-    observe_at(
-        resource,
-        request,
-        Path::new(IMAGE_PROFILE),
-        Path::new(BOOT_ROOT),
-        Path::new("/proc/cmdline"),
-    )
+    observe_at(resource, request, Path::new(IMAGE_PROFILE))
 }
 
 fn observe_at(
     resource: &ResourceId,
     request: &AbRolloutRequest,
     image_profile: &Path,
-    boot_root: &Path,
-    kernel_command_line: &Path,
 ) -> Result<RolloutObservation> {
-    let backend = NativeAbRolloutBackend::new(image_profile, boot_root);
+    let backend = NativeAbRolloutBackend::new(image_profile);
     let execution_directory = backend.execution_directory(request)?;
     let provider_state: Option<AbilityRolloutState> =
         read_optional_json(&execution_directory.join("state.json"))?;
@@ -157,42 +140,7 @@ fn observe_at(
         resource: resource.clone(),
         provider_state,
         image_state_digest: read_optional_digest(&image_profile.join("state.json"))?,
-        boot_selection_digest: read_optional_digest(&boot_root.join("loader/loader.conf"))?,
-        kernel_command_line_digest: read_optional_digest(kernel_command_line)?,
-        retention: observe_directory(&backend.retained_uki_directory(request)?)?,
     })
-}
-
-fn observe_directory(directory: &Path) -> Result<Vec<FileObservation>> {
-    let entries = match fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
-    };
-    let mut observed = Vec::new();
-    for (index, entry) in entries
-        .take(ABILITY_LIMITS_V1.max_collection_items as usize + 1)
-        .enumerate()
-    {
-        ensure!(
-            (index as u64) < ABILITY_LIMITS_V1.max_collection_items,
-            "rollout retention inventory exceeds the canonical bound"
-        );
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let path = entry.path();
-        observed.push(FileObservation {
-            path: path
-                .to_str()
-                .context("rollout retention path is not UTF-8")?
-                .to_owned(),
-            digest: Sha256Digest::of_bytes(&read_bounded(&path)?),
-        });
-    }
-    observed.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(observed)
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(input: impl Read) -> Result<T> {
@@ -301,25 +249,12 @@ mod tests {
     fn observation_is_scoped_to_the_checked_rollout() {
         let directory = tempfile::tempdir().expect("temporary directory is created");
         let image_profile = directory.path().join("image");
-        let boot_root = directory.path().join("boot");
-        let kernel_command_line = directory.path().join("cmdline");
-        fs::create_dir_all(boot_root.join("loader")).expect("boot fixture is created");
         fs::create_dir_all(&image_profile).expect("profile fixture is created");
         fs::write(image_profile.join("state.json"), b"image-state")
             .expect("image state is written");
-        fs::write(boot_root.join("loader/loader.conf"), b"default candidate\n")
-            .expect("boot selection is written");
-        fs::write(&kernel_command_line, b"aos.image=candidate\n")
-            .expect("kernel command line is written");
 
-        let observation = observe_at(
-            &resource(),
-            &request(),
-            &image_profile,
-            &boot_root,
-            &kernel_command_line,
-        )
-        .expect("rollout substrate is observable");
+        let observation = observe_at(&resource(), &request(), &image_profile)
+            .expect("rollout substrate is observable");
 
         assert_eq!(observation.resource, resource());
         assert!(observation.provider_state.is_none());
@@ -327,14 +262,5 @@ mod tests {
             observation.image_state_digest,
             Some(Sha256Digest::of_bytes(b"image-state"))
         );
-        assert_eq!(
-            observation.boot_selection_digest,
-            Some(Sha256Digest::of_bytes(b"default candidate\n"))
-        );
-        assert_eq!(
-            observation.kernel_command_line_digest,
-            Some(Sha256Digest::of_bytes(b"aos.image=candidate\n"))
-        );
-        assert!(observation.retention.is_empty());
     }
 }

@@ -6,6 +6,8 @@
 }: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interface = serviceManagement.interfaces.managedConfiguration;
+  imagePlatform = lib.abilities.interfaces.imageRolloutPlatform;
+  imagePlatformInterfaces = imagePlatform.interfaces;
   abilityTypes = lib.abilities.types;
   runtimeArtifact = lib.abilities.packageOutput {output = "packageRuntime";};
   realizationType = abilityTypes.record {
@@ -36,126 +38,10 @@
     lib.abilities.interfaceDocumentFromDeclaration configurationTerminalDeclaration;
   configurationTerminalIdentity =
     lib.abilities.interfaceIdentity configurationTerminalDocument;
-  rolloutRequest = abilityTypes.record {
-    fields = {
-      candidate = imageIdentity;
-      concurrency = abilityTypes.integer {
-        minimum = 1;
-        maximum = 1;
-      };
-      predecessor = imageIdentity;
-      retention-expires-at-millis = abilityTypes.integer {
-        minimum = 1;
-        maximum = 9007199254740991;
-      };
-      strategy = abilityTypes.enum ["single-host-ab-v1"];
-    };
-  };
-  imageIdentity = abilityTypes.record {
-    fields = {
-      executor = storePath;
-      state-format = abilityTypes.string {
-        maxLength = 128;
-        syntax = null;
-      };
-      toplevel = storePath;
-      uki = storePath;
-    };
-  };
-  storePath = abilityTypes.string {
-    maxLength = 4096;
-    syntax = null;
-  };
-  rolloutObservation = abilityTypes.record {
-    fields = {
-      active-image = abilityTypes.enum ["candidate" "predecessor"];
-      candidate-prepared = abilityTypes.boolean;
-      drained = abilityTypes.boolean;
-      healthy = abilityTypes.optional abilityTypes.boolean;
-      lease-expires-at-millis = abilityTypes.optional (abilityTypes.integer {
-        minimum = 1;
-        maximum = 9007199254740991;
-      });
-      phase = abilityTypes.enum [
-        "booted"
-        "drained"
-        "fallback-retained"
-        "healthy-retained"
-        "prepared"
-        "retained"
-        "retired"
-        "selected"
-      ];
-      schema = abilityTypes.enum ["aos.ability.ab-image-rollout-observation/v1"];
-    };
-  };
-  rolloutOutput = schema: {
-    description = "Reports the checked state established by this rollout step.";
-    inherit schema;
-    phase = "observation";
-    lifetime = "transaction";
-    visibility = "protected";
-  };
-  rolloutMethod = name: {
-    description = "Executes the ${name} step of a checked single-host A/B rollout.";
-    semantics = {
-      requiredTargetAccess =
-        if builtins.elem name ["observe-boot" "observe-health"]
-        then "read"
-        else "exclusive-write";
-      stopsProvider = false;
-    };
-    parameters = rolloutRequest;
-    targetResource = "aos.ab-image-rollout-effects";
-    outputs =
-      {
-        rollout-state = rolloutOutput rolloutObservation;
-      }
-      // lib.optionalAttrs (name == "observe-health") {
-        healthy = rolloutOutput abilityTypes.boolean;
-      };
-    permittedOperations = [name];
-    guarantees = [];
-    outcome = {
-      completionEvidence = rolloutObservation;
-      observationEvidence = rolloutObservation;
-      supportsRejectedBeforeEffect = true;
-      indeterminate = "reconcile";
-    };
-  };
-  rolloutMethods = builtins.listToAttrs (builtins.map (name: {
-      inherit name;
-      value = rolloutMethod name;
-    }) [
-      "drain"
-      "hold"
-      "observe-boot"
-      "observe-health"
-      "prepare"
-      "retain"
-      "retire"
-      "select"
-      "withdraw"
-    ]);
-  rolloutDeclaration = lib.abilities.declareInterface {
-    name = "aos.ab-image-rollout-effects";
-    description = "Executes the physical steps of a checked single-host A/B image rollout.";
-    abi = 1;
-    requestType = rolloutRequest;
-    outputs = {};
-    methods = rolloutMethods;
-    lifecycle = {
-      persistentDeleteMethod = null;
-    };
-    guarantees = [];
-    aggregation = {
-      scope = "provider-instance";
-      key = "slot";
-      rejectSlotCollisions = true;
-      mergeContract = null;
-      controllerGroup = "rollout-effects";
-    };
-  };
+  rolloutRequest = imagePlatform.rolloutRequest;
+  rolloutDeclaration = imagePlatformInterfaces.rollout.declaration;
+  rolloutMethods = rolloutDeclaration.methods;
+  rolloutObservation = imagePlatformInterfaces.rollout.observationType;
   rolloutRealizationType = abilityTypes.record {
     fields.schema = abilityTypes.enum ["aos.image-rollout.realization/v1"];
   };
@@ -165,16 +51,30 @@
     abi = 1;
     requestType = rolloutRequest;
     outputs = {};
-    methods = terminalMethods rolloutDeclaration;
+    methods = builtins.mapAttrs (name: method:
+      method
+      // {
+        description = "Executes one checked package-owned rollout-state operation.";
+        parameters = abilityTypes.record {
+          fields =
+            {rollout = rolloutRequest;}
+            // lib.optionalAttrs (name == "retain" || name == "retire") {
+              platform = imagePlatformInterfaces.artifactStorage.observationType;
+            }
+            // lib.optionalAttrs (name == "select") {
+              entry = abilityTypes.deferredResult abilityTypes.runtimeString;
+            };
+        };
+      })
+    rolloutMethods;
     inherit (rolloutDeclaration) lifecycle aggregation;
     guarantees = [];
   };
   rolloutTerminalDocument =
     lib.abilities.interfaceDocumentFromDeclaration rolloutTerminalDeclaration;
   rolloutTerminalIdentity = lib.abilities.interfaceIdentity rolloutTerminalDocument;
-  terminalRequirement = description: identity: methods: {
-    inherit description methods;
-    alias = "terminal";
+  terminalRequirement = alias: description: identity: methods: {
+    inherit alias description methods;
     accepted_interfaces = [identity];
     guarantees = [];
     strength = "required";
@@ -197,7 +97,6 @@
 in {
   config.aos.abilities = {
     interfaces.configuration-materialization-terminal = configurationTerminalDeclaration;
-    interfaces.image-rollout-effects = rolloutDeclaration;
     interfaces.image-rollout-terminal = rolloutTerminalDeclaration;
     implementations.configuration-materialization = {
       description = "Materializes typed configuration through the AOS configuration provider.";
@@ -207,6 +106,7 @@ in {
       guarantees = [];
       requirements.terminal =
         terminalRequirement
+        "terminal"
         "Selects the exact package-owned configuration effect handler."
         configurationTerminalIdentity
         interface.methods;
@@ -241,15 +141,42 @@ in {
     };
     implementations.image-rollout-effects = {
       description = "Executes A/B image transitions through the AOS package-owned rollout handler.";
-      interface = "image-rollout-effects";
+      interface = imagePlatformInterfaces.rollout.alias;
       artifact = runtimeArtifact;
       methods = builtins.attrNames rolloutMethods;
       guarantees = [];
-      requirements.terminal =
-        terminalRequirement
-        "Selects the exact package-owned A/B image effect handler."
-        rolloutTerminalIdentity
-        (builtins.attrNames rolloutMethods);
+      requirements = {
+        terminal =
+          terminalRequirement
+          "terminal"
+          "Selects the exact package-owned A/B image state handler."
+          rolloutTerminalIdentity
+          (builtins.attrNames rolloutMethods);
+        artifact-storage =
+          terminalRequirement
+          "artifact-storage"
+          "Retains immutable boot payloads through the selected boot storage provider."
+          imagePlatformInterfaces.artifactStorage.identity
+          imagePlatformInterfaces.artifactStorage.methods;
+        boot-selection =
+          terminalRequirement
+          "boot-selection"
+          "Resolves and selects entries through the selected boot provider."
+          imagePlatformInterfaces.selection.identity
+          imagePlatformInterfaces.selection.methods;
+        boot-success =
+          terminalRequirement
+          "boot-success"
+          "Publishes running-boot success through the selected boot provider."
+          imagePlatformInterfaces.success.identity
+          imagePlatformInterfaces.success.methods;
+        host-restart =
+          terminalRequirement
+          "host-restart"
+          "Requests image-transition restarts through the selected host provider."
+          imagePlatformInterfaces.hostRestart.identity
+          imagePlatformInterfaces.hostRestart.methods;
+      };
       providerModule = {
         artifact = runtimeArtifact;
         path = "share/aos/providers/configuration-materialization.nix";

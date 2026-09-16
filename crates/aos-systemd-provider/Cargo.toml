@@ -11,8 +11,10 @@ aos-contract.workspace = true
 aos-net = { workspace = true, default-features = false }
 aos-provider-protocol.workspace = true
 aos-systemd.workspace = true
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 rustix = { workspace = true, features = ["fs"] }
 tempfile.workspace = true
 tokio.workspace = true

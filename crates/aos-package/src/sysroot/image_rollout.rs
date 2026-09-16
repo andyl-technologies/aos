@@ -26,8 +26,9 @@ mod provider;
 pub(crate) use ability::NativeAbRolloutBackend;
 pub use boot_commit::run_from_process as run_boot_commit_from_process;
 pub(crate) use boot_commit::verify_rollout_boot_commit;
-pub(super) use ability::retained_uki_entry_ids;
-pub(crate) use model::{AbRolloutRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity};
+pub(crate) use model::{
+    AbRolloutRequest, AbRolloutTerminalRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity,
+};
 pub use observer::run_from_process as run_observer_from_process;
 pub(crate) use plan::authenticate_single_image_rollout_fragment;
 pub use provider::run_from_process as run_provider_from_process;
@@ -36,25 +37,6 @@ const IMAGE_ROLLOUT_SCHEMA: &str = "aos.image-rollout/v1";
 
 pub(super) const fn is_qualified_image_rollout(mode: SystemTransitionMode, drain: bool) -> bool {
     matches!(mode, SystemTransitionMode::Reboot) && drain
-}
-
-/// Verifies the data and executor boundary before any A/B image selection.
-pub(super) fn preflight_image_selection(
-    image_profile: &Path,
-    system_profile: &Path,
-    candidate_toplevel: &Path,
-    qualified_rollout: bool,
-) -> Result<()> {
-    let authenticated_running = running_image_generation()
-        .context("authenticating the actual running image before selection")?;
-    preflight_image_selection_beneath(
-        image_profile,
-        system_profile,
-        candidate_toplevel,
-        qualified_rollout,
-        Path::new("/"),
-        &authenticated_running,
-    )
 }
 
 /// Verifies an image selection against live authenticated state without mutation.
@@ -318,10 +300,7 @@ mod tests {
     use crate::types::ImageSlot;
 
     use super::*;
-    use crate::sysroot::{
-        IMAGE_STATE_FILE, IMAGE_TRANSITION_INTENT, abort_unpublished_image_selection,
-        prepare_image_selection,
-    };
+    use crate::sysroot::{IMAGE_STATE_FILE, IMAGE_TRANSITION_INTENT, prepare_image_selection};
 
     fn rollout_test_image(number: u32, state_version: &str, executor: &str) -> ImageGeneration {
         ImageGeneration {
@@ -585,9 +564,6 @@ mod tests {
             .to_string()
             .contains("ambiguous")
         );
-        let error = abort_unpublished_image_selection(tmp.path(), &mut state, 2)
-            .expect_err("a qualified unpublished candidate must remain recoverable");
-        assert!(error.to_string().contains("qualified rollout is active"));
         assert_eq!(state.pending, Some(2));
         let error = prepare_image_selection(tmp.path(), &mut state, 3, "aos-3+3.efi", None)
             .expect_err("an active rollout must reject an unqualified superseding selection");

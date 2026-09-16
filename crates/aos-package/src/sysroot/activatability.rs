@@ -277,7 +277,7 @@ pub(super) fn configuration(
     )
 }
 
-/// Authenticates a retained image, boot artifact, and compatibility boundary.
+/// Authenticates a retained image and its compatibility boundary.
 pub(super) fn image(
     image_profile: &Path,
     system_profile: &Path,
@@ -286,15 +286,6 @@ pub(super) fn image(
     drain: bool,
 ) -> RetainedActivatabilityReport {
     let mut reasons = Vec::new();
-    if let Err(error) =
-        super::resolve_installed_uki_entry(Path::new(super::BOOT_ROOT), &target.uki_path)
-    {
-        push_reason(
-            &mut reasons,
-            ActivatabilityReasonCode::BootArtifactUnavailable,
-            error,
-        );
-    }
     let qualified = image_rollout::is_qualified_image_rollout(transition_mode, drain);
     image_rollout::probe_image_selection(
         image_profile,

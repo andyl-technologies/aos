@@ -21,16 +21,11 @@ use aos_provider_protocol::{
 
 use super::ability::{AbilityRolloutOutcome, AbilityRolloutPhase, AbilityRolloutState};
 use super::process::run_bounded_command;
-use super::{AbRolloutRequest, NativeAbRolloutBackend};
+use super::{AbRolloutRequest, AbRolloutTerminalRequest, NativeAbRolloutBackend};
 
 const OBSERVATION_SCHEMA: &str = "aos.ability.ab-image-rollout-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.image-rollout.provider-context/v1";
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
-const BOOT_ROOT: &str = "/boot";
-const MOUNT: &str = "/run/current-system/sw/bin/mount";
-const BOOTCTL: &str = "/run/current-system/sw/bin/bootctl";
-const SYSTEMCTL: &str = "/run/current-system/sw/bin/systemctl";
-const ROLLOUT_DRAIN: &str = "/run/current-system/sw/bin/aos-rollout-drain";
 const ROLLOUT_HEALTH: &str = "/run/current-system/sw/bin/aos-rollout-health";
 
 /// Runs one image-rollout provider request from process arguments and streams.
@@ -107,7 +102,6 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
         native_context: ability_value(serde_json::json!({
             "schema": PROVIDER_CONTEXT_SCHEMA,
             "image_profile": IMAGE_PROFILE,
-            "boot_root": BOOT_ROOT,
         }))?,
         supported_purposes: SupportedPurposes::from_ordered(vec![
             InvocationPurpose::Effect,
@@ -141,8 +135,9 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
         .find(|resource| resource.reference.resource == invocation.request.target.resource)
         .context("rollout target context is absent")?;
     let bound = validate_resource_context(target)?;
+    let terminal: AbRolloutTerminalRequest = decode_value(&invocation.request.inputs)?;
     ensure!(
-        bound.resource_spec.value == invocation.request.inputs,
+        ability_value(serde_json::to_value(&terminal.rollout)?)? == bound.resource_spec.value,
         "rollout inputs differ from the admitted resource value"
     );
     ensure!(
@@ -157,7 +152,7 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
                 .is_ok(),
         "rollout target authority differs from its admitted context"
     );
-    let desired: AbRolloutRequest = decode_value(&invocation.request.inputs)?;
+    let desired = terminal.rollout;
     let control = WireControl(&invocation.control);
     let original_method = invocation.request.method.method.as_str();
 
@@ -171,7 +166,14 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
     }
 
     match invocation.purpose {
-        InvocationPurpose::Effect => execute(&invocation, &desired, original_method, &control),
+        InvocationPurpose::Effect => execute(
+            &invocation,
+            &desired,
+            terminal.entry.as_deref(),
+            terminal.platform.as_ref(),
+            original_method,
+            &control,
+        ),
         InvocationPurpose::Reconcile => reconcile(&invocation, &desired, original_method, &control),
         InvocationPurpose::Cancel => cancel(&invocation, &desired, original_method, &control),
         InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation => {
@@ -183,6 +185,8 @@ fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
 fn execute(
     invocation: &Invocation,
     request: &AbRolloutRequest,
+    entry: Option<&str>,
+    platform: Option<&serde_json::Value>,
     method: &str,
     control: &dyn RuntimeControl,
 ) -> Result<InvocationResult> {
@@ -192,29 +196,30 @@ fn execute(
         .context("preflighting image-rollout effect")?;
 
     let state = match method {
-        "retain" => SystemRolloutPlatform.with_writable_boot(control, || backend.retain(request)),
-        "prepare" => backend.prepare(request),
-        "drain" => backend.drain(request, || SystemRolloutPlatform.drain(control)),
-        "select" => {
-            let entry = backend.candidate_entry_id(request)?;
-            let state = backend.select(request, &entry, |entry| {
-                SystemRolloutPlatform.select(entry, control)
-            })?;
-            SystemRolloutPlatform.reboot(control)?;
-            Ok(state)
+        "retain" => {
+            ensure!(
+                platform.is_some(),
+                "rollout retention lacks boot-storage evidence"
+            );
+            backend.retain(request)
         }
+        "prepare" => backend.prepare(request),
+        "drain" => backend.drain(request),
+        "select" => backend.select(
+            request,
+            entry.context("rollout selection lacks a provider-resolved boot entry")?,
+        ),
         "observe-boot" => backend.reconcile(request),
         "observe-health" => observe_health(&backend, request, control),
-        "withdraw" => {
-            let state = backend.withdraw(request)?;
-            if state.phase == AbilityRolloutPhase::CandidateBooted {
-                SystemRolloutPlatform.reboot(control)?;
-            }
-            Ok(state)
-        }
+        "withdraw" => backend.withdraw(request),
         "hold" => backend.hold(request),
-        "retire" => SystemRolloutPlatform
-            .with_writable_boot(control, || backend.retire(request, system_now_millis())),
+        "retire" => {
+            ensure!(
+                platform.is_some(),
+                "rollout retirement lacks boot-storage evidence"
+            );
+            backend.retire(request, system_now_millis())
+        }
         _ => anyhow::bail!("unsupported image-rollout method"),
     }?;
     complete_or_indeterminate(invocation, method, &state)
@@ -431,7 +436,7 @@ fn ability_value(value: serde_json::Value) -> Result<AbilityValue> {
 }
 
 fn backend() -> NativeAbRolloutBackend {
-    NativeAbRolloutBackend::new(IMAGE_PROFILE, BOOT_ROOT)
+    NativeAbRolloutBackend::new(IMAGE_PROFILE)
 }
 
 fn purpose_name(purpose: InvocationPurpose) -> &'static str {
@@ -481,30 +486,6 @@ impl RuntimeControl for WireControl<'_> {
 struct SystemRolloutPlatform;
 
 impl SystemRolloutPlatform {
-    fn with_writable_boot<T>(
-        self,
-        control: &dyn RuntimeControl,
-        effect: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
-        crate::sysroot::with_writable_boot_controlled(
-            |boot_root, writable| {
-                let mode = if writable { "remount,rw" } else { "remount,ro" };
-                let boot_root = boot_root.to_str().context("EFI mount path is not UTF-8")?;
-                run_command(
-                    MOUNT,
-                    &["-o", mode, boot_root],
-                    "remounting the EFI partition",
-                    control,
-                )
-            },
-            effect,
-        )
-    }
-
-    fn drain(self, control: &dyn RuntimeControl) -> Result<()> {
-        run_command(ROLLOUT_DRAIN, &[], "draining the current image", control)
-    }
-
     fn health(self, control: &dyn RuntimeControl) -> Result<bool> {
         let status = run_bounded_command(&mut Command::new(ROLLOUT_HEALTH), control)?;
         match status.code() {
@@ -513,37 +494,6 @@ impl SystemRolloutPlatform {
             _ => anyhow::bail!("assessing rollout health failed with {status}"),
         }
     }
-
-    fn select(self, entry: &str, control: &dyn RuntimeControl) -> Result<()> {
-        self.with_writable_boot(control, || {
-            run_command(
-                BOOTCTL,
-                &["set-default", entry],
-                "selecting the exact next boot image",
-                control,
-            )
-        })
-    }
-
-    fn reboot(self, control: &dyn RuntimeControl) -> Result<()> {
-        run_command(
-            SYSTEMCTL,
-            &["reboot"],
-            "requesting the rollout reboot",
-            control,
-        )
-    }
-}
-
-fn run_command(
-    executable: &str,
-    arguments: &[&str],
-    action: &str,
-    control: &dyn RuntimeControl,
-) -> Result<()> {
-    let status = run_bounded_command(Command::new(executable).args(arguments), control)?;
-    ensure!(status.success(), "{action} failed with {status}");
-    Ok(())
 }
 
 #[allow(

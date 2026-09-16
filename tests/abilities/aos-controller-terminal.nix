@@ -189,10 +189,8 @@
     lib.abilities.interfaceDocumentFromDeclaration
     abilities.interfaces."aos:image-rollout-terminal"
   );
-  rolloutResourceInterface = lib.abilities.interfaceIdentity (
-    lib.abilities.interfaceDocumentFromDeclaration
-    abilities.interfaces."aos:image-rollout-effects"
-  );
+  rolloutResourceInterface =
+    lib.abilities.interfaces.imageRolloutPlatform.interfaces.rollout.identity;
   rolloutController = {
     provider = rolloutProvider;
     group = "rollout-effects";
@@ -222,6 +220,44 @@
       };
     };
   };
+  rolloutPlatformInterfaces = lib.abilities.interfaces.imageRolloutPlatform.interfaces;
+  platformBinding = id: request: interface: methods: {
+    binding = {
+      inherit id;
+      request = {
+        consumer = rolloutProvider;
+        scope = ["release" request];
+        key = "${request}-machine";
+      };
+      interface = interface.identity;
+      caller_grant = {
+        inherit methods;
+        contributions = [];
+      };
+    };
+  };
+  rolloutPlatformBindings = [
+    (platformBinding
+      "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      "artifact-storage"
+      rolloutPlatformInterfaces.artifactStorage
+      ["retain" "observe" "release"])
+    (platformBinding
+      "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      "boot-selection"
+      rolloutPlatformInterfaces.selection
+      ["resolve" "select" "observe" "clear"])
+    (platformBinding
+      "sha256:abababababababababababababababababababababababababababababababab"
+      "boot-success"
+      rolloutPlatformInterfaces.success
+      ["mark" "observe"])
+    (platformBinding
+      "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+      "host-restart"
+      rolloutPlatformInterfaces.hostRestart
+      ["request" "observe"])
+  ];
   rolloutContext = {
     provider = rolloutProvider;
     operation_scope = ["activation"];
@@ -241,7 +277,7 @@
         controller = rolloutController;
       }
     ];
-    authorized_bindings = [rolloutBinding];
+    authorized_bindings = [rolloutBinding] ++ rolloutPlatformBindings;
   };
   rolloutTransition = rolloutImplementation.transition rolloutContext;
   rolloutObserve = builtins.head (builtins.filter (operation:
@@ -275,16 +311,24 @@ in
   assert operation.recovery.cancel.interface == terminalInterface;
   assert !wrongTerminalBinding.success;
   assert builtins.all hasExactlyOneExecutor signedProviders;
-  assert builtins.attrNames rolloutProvision.requests == ["terminal-machine"];
+  assert builtins.attrNames rolloutProvision.requests == [
+    "artifact-storage-machine"
+    "boot-selection-machine"
+    "boot-success-machine"
+    "host-restart-machine"
+    "terminal-machine"
+  ];
   assert rolloutTerminalImplementation.handlerDescriptor.entryPoint
   == "libexec/aos-image-rollout-provider";
   assert builtins.length rolloutTransition.decisions == 1;
   assert builtins.length rolloutTransition.merges == 1;
   assert builtins.all (operation:
-    operation.interface
-    == rolloutTerminalInterface
+    builtins.elem operation.interface (
+      [rolloutTerminalInterface]
+      ++ builtins.map (interface: interface.identity) (builtins.attrValues rolloutPlatformInterfaces)
+    )
     && operation.target.interface == rolloutResourceInterface)
   rolloutTransition.operations;
   assert (builtins.head rolloutObserve.accesses).mode == "read";
   assert builtins.map (operation: operation.method) retirementTransition.operations
-  == ["retire" "observe-health"]; true
+  == ["release" "retire" "observe-health"]; true
