@@ -84,7 +84,12 @@
     identity = interfaceIdentity document;
     methods = builtins.attrNames declaration.methods;
   };
+  libraryView = {
+    interfaces = {inherit readView;};
+    declarations.${readView.alias} = readView.declaration;
+  };
 in {
-  interfaces = {inherit readView;};
-  declarations.${readView.alias} = readView.declaration;
+  name = "packageStoreReadView";
+  readView = libraryView;
+  module.config.aos.abilities.interfaces = libraryView.declarations;
 }

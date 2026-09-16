@@ -190,13 +190,18 @@
         types.resourceReference;
       controllerGroup = "boot-preparation-handoff";
     };
-in {
-  interfaces = {
-    inherit preparation handoff;
-  };
+  readView = {
+    interfaces = {
+      inherit preparation handoff;
+    };
 
-  declarations = {
-    ${preparation.alias} = preparation.declaration;
-    ${handoff.alias} = handoff.declaration;
+    declarations = {
+      ${preparation.alias} = preparation.declaration;
+      ${handoff.alias} = handoff.declaration;
+    };
   };
+in {
+  name = "bootPreparation";
+  inherit readView;
+  module.config.aos.abilities.interfaces = readView.declarations;
 }
