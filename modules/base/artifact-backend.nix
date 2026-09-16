@@ -23,14 +23,15 @@
     name = "package artifact backend";
     description = "package-owned artifact construction backend";
     check = backendRecordValid;
-    merge = location: definitions: let
-      value = (builtins.head definitions).value;
-    in
+    merge = location: definitions:
       if builtins.length definitions != 1
       then throw "The option '${builtins.concatStringsSep "." location}' requires exactly one selected artifact backend."
-      else if !backendRecordValid value
-      then throw "The option '${builtins.concatStringsSep "." location}' is not a complete package artifact backend."
-      else value;
+      else let
+        value = (builtins.head definitions).value;
+      in
+        if !backendRecordValid value
+        then throw "The option '${builtins.concatStringsSep "." location}' is not a complete package artifact backend."
+        else value;
   };
 in {
   options.aos.artifacts.backend = lib.mkOption {
