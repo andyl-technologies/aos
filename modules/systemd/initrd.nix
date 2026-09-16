@@ -29,6 +29,7 @@
 {
   config,
   initrdAbilityEvaluation ? null,
+  initrdStaticContract ? null,
   lib,
   pkgs,
   ...
@@ -100,6 +101,61 @@
     executionStage = "initrd";
     packageRoots = config.aos.boot.initrd.packageRoots;
   };
+  initrdAbilityGraph =
+    if initrdAbilityEvaluation == null
+    then null
+    else initrdAbilityEvaluation.config.aos.abilities;
+  initrdSourceFixedPoint =
+    if initrdAbilityGraph == null
+    then null
+    else
+      buildPkgs.writeTextFile {
+        name = "aos-initrd-source-fixed-point";
+        destination = "/fixed-point.json";
+        text = builtins.toJSON {
+          inherit (initrdAbilityGraph)
+            environment
+            instances
+            instanceIdentities
+            requests
+            compositionRequests
+            compositionRequirements
+            bindings
+            compositionOutputs
+            compositionPendingRequests
+            resolvedResources
+            ;
+          executionObserver = initrdAbilityGraph.resolvedExecutionObserver;
+        };
+      };
+  initrdSourceStageBundle =
+    if initrdSourceFixedPoint == null || initrdStaticContract == null
+    then null
+    else let
+      expectedContractIdentity = "${initrdStaticAbilityContractBuild.artifact}/contract.json";
+      checkedStaticContract =
+        if initrdStaticContract.identity == expectedContractIdentity
+        then initrdStaticContract
+        else throw "systemd initrd static contract differs from the completed initrd fixed point";
+      specification = builtins.toFile "aos-initrd-source-stage-materialization.json" (builtins.toJSON {
+        schema = "aos.ability.source-stage-materialization/v1";
+        stage = "initrd";
+        authority = initrdAbilityGraph.environment.authority;
+        key = initrdAbilityGraph.environment.key;
+        platform = {
+          system = pkgs.stdenv.hostPlatform.constraints.os;
+          architecture = pkgs.stdenv.hostPlatform.constraints.cpu;
+        };
+        staticContract = checkedStaticContract;
+        fixedPoint = "${initrdSourceFixedPoint}/fixed-point.json";
+      });
+    in
+      buildPkgs.runCommand "aos-initrd-source-stage-bundle.json" {} ''
+        ${buildPkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped \
+          __ability-materialize-source-stage \
+          --spec ${specification} \
+          --out "$out"
+      '';
 
   # Render the typed `boot.initrd.systemd.network` tree to a directory of
   # `<name>.network` files. These are networkd config (not units), so they
@@ -221,6 +277,13 @@ in {
     '';
   };
 
+  options.system.build.initrdSourceStageBundle = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    readOnly = true;
+    internal = true;
+    description = "Checked source-composed plan emitted from the completed initrd fixed point.";
+  };
+
   config = {
     # The selected initrd manager owns its package implementations. Security
     # policy contributes only provider-neutral intent; it does not select a
@@ -322,11 +385,7 @@ in {
       renderedUnits = builtins.attrNames renderedInitrdUnits;
       renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);
       handoff = config.system.build.bootSubstrateContract;
-      inherit initrdStaticAbilityContractBuild;
-      abilityResolutionInput = config.aos.abilities.stages.initrd.resolutionInput;
-      abilityEnvironment = config.system.build.initrdAbilityGraph.environment;
-      abilityIntent = config.aos.abilities.stages.initrd.intent;
-      baseLib = config.aos.config.evalAtBoot.baseLib;
+      inherit initrdStaticContract initrdSourceStageBundle;
       maskedUnits =
         cfg.maskedUnits
         ++ lib.optionals config.aos.security.verity.enable [
@@ -338,5 +397,6 @@ in {
     };
 
     system.build.initrdStaticAbilityContract = initrdStaticAbilityContractBuild.artifact;
+    system.build.initrdSourceStageBundle = initrdSourceStageBundle;
   };
 }

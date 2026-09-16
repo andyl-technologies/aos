@@ -760,9 +760,15 @@ pub enum PackageCommand {
         /// Mounted root that will become the host root.
         #[arg(long)]
         root: PathBuf,
-        /// Checked build-stage projection carrying the exact executable plan.
-        #[arg(long = "resolved-stage")]
-        resolved_stage: PathBuf,
+        /// Checked source bundle carrying the exact executable plan.
+        #[arg(long = "source-stage-bundle")]
+        source_stage_bundle: PathBuf,
+        /// Canonical immutable identity of the bound static contract.
+        #[arg(long = "static-contract-identity")]
+        static_contract_identity: String,
+        /// Stage-visible read path for the exact static contract.
+        #[arg(long = "static-contract")]
+        static_contract: PathBuf,
     },
     /// Hidden: validate initrd ownership release before switch-root.
     #[command(name = "__ability-stage-validate", hide = true)]
@@ -773,6 +779,15 @@ pub enum PackageCommand {
         /// Mounted root that will become the host root.
         #[arg(long)]
         root: PathBuf,
+        /// Checked source bundle carrying the exact executable plan.
+        #[arg(long = "source-stage-bundle")]
+        source_stage_bundle: PathBuf,
+        /// Canonical immutable identity of the bound static contract.
+        #[arg(long = "static-contract-identity")]
+        static_contract_identity: String,
+        /// Stage-visible read path for the exact static contract.
+        #[arg(long = "static-contract")]
+        static_contract: PathBuf,
     },
     /// Hidden: revalidate and receive an initrd ability journal.
     #[command(name = "__ability-stage-receive", hide = true)]
@@ -783,6 +798,15 @@ pub enum PackageCommand {
         /// Durable image profile for the running image.
         #[arg(long = "image-profile")]
         image_profile: PathBuf,
+        /// Checked source bundle retained by the running image.
+        #[arg(long = "source-stage-bundle")]
+        source_stage_bundle: PathBuf,
+        /// Canonical immutable identity of the bound static contract.
+        #[arg(long = "static-contract-identity")]
+        static_contract_identity: String,
+        /// Image-visible read path for the exact static contract.
+        #[arg(long = "static-contract")]
+        static_contract: PathBuf,
     },
 }
 
@@ -3530,20 +3554,50 @@ pub async fn run(
     if let PackageCommand::AbilityStageRun {
         stage,
         root,
-        resolved_stage,
+        source_stage_bundle,
+        static_contract_identity,
+        static_contract,
     } = command
     {
-        return config_eval::stage_handoff::run_initrd_stage(stage, root, resolved_stage);
+        return config_eval::stage_handoff::run_initrd_stage(
+            stage,
+            root,
+            source_stage_bundle,
+            static_contract_identity,
+            static_contract,
+        );
     }
-    if let PackageCommand::AbilityStageValidate { from_stage, root } = command {
-        return config_eval::stage_handoff::validate_initrd_stage(from_stage, root);
+    if let PackageCommand::AbilityStageValidate {
+        from_stage,
+        root,
+        source_stage_bundle,
+        static_contract_identity,
+        static_contract,
+    } = command
+    {
+        return config_eval::stage_handoff::validate_initrd_stage(
+            from_stage,
+            root,
+            source_stage_bundle,
+            static_contract_identity,
+            static_contract,
+        );
     }
     if let PackageCommand::AbilityStageReceive {
         from_stage,
         image_profile,
+        source_stage_bundle,
+        static_contract_identity,
+        static_contract,
     } = command
     {
-        return config_eval::stage_handoff::receive_initrd_stage(from_stage, image_profile);
+        return config_eval::stage_handoff::receive_initrd_stage(
+            from_stage,
+            image_profile,
+            source_stage_bundle,
+            static_contract_identity,
+            static_contract,
+        );
     }
 
     validate_system_transition_options(command)?;

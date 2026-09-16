@@ -1090,6 +1090,47 @@
       then instance.configuration == {}
       else typeAccepts configurationType instance.configuration;
 
+  requestLifetime = request: let
+    requirement =
+      config.aos.abilities.requirementTemplates.${request.requirement}
+      or (config.aos.abilities.compositionRequirements.${request.requirement}.requirement or null);
+    matches =
+      if requirement == null
+      then []
+      else interfacesMatchingRequirement requirement;
+    interface =
+      if builtins.length matches == 1
+      then builtins.head matches
+      else null;
+    methodOutputs =
+      if interface == null
+      then []
+      else
+        builtins.concatMap
+        (method:
+          builtins.attrValues (
+            interface.methods.${method}.outputs
+            or (throw "Ability request method '${method}' has no interface contract.")
+          ))
+        requirement.methods;
+    outputLifetimes = builtins.map (output: output.lifetime) (
+      (
+        if interface == null
+        then []
+        else builtins.attrValues interface.outputs
+      )
+      ++ methodOutputs
+    );
+    lifetimes = builtins.attrNames (builtins.listToAttrs (builtins.map (lifetime: {
+        name = lifetime;
+        value = true;
+      })
+      outputLifetimes));
+  in
+    if builtins.length lifetimes == 1
+    then builtins.head lifetimes
+    else throw "Ability request '${request.requirement}' does not derive one canonical lifetime from its selected interface methods and outputs.";
+
   requestBaseType = strictSubmodule {
     package = mkOption {
       type = moduleTypes.nullOr packageNameType;
@@ -1119,6 +1160,12 @@
     parameters = mkOption {
       type = canonicalValueType;
       description = "Request value checked against the referenced interface type.";
+    };
+    lifetime = mkOption {
+      type = moduleTypes.nullOr lifetimeType;
+      default = null;
+      internal = true;
+      description = "Semantic lifetime derived from the selected interface method contract.";
     };
   };
   requestAccepted = request:
@@ -1595,9 +1642,13 @@ in {
       type = abilityMapType "requests" requestBaseType;
       default = {};
       contributable = true;
-      apply = requests:
+      apply = requests: let
+        withLifetime = builtins.mapAttrs (_: request:
+          request // {lifetime = requestLifetime request;})
+        requests;
+      in
         if builtins.all requestAccepted (builtins.attrValues requests)
-        then requests
+        then withLifetime
         else throw "An ability request does not match its requirement interface request type.";
       description = "Concrete ability requests emitted by configured instances.";
     };
@@ -1632,6 +1683,8 @@ in {
     compositionRequests = mkOption {
       type = moduleTypes.attrsOf requestBaseType;
       default = {};
+      apply = builtins.mapAttrs (_: request:
+        request // {lifetime = requestLifetime request;});
       readOnly = true;
       internal = true;
       description = "Exact provider child requests derived inside the module fixed point.";

@@ -38,7 +38,9 @@ in {
           __ability-stage-run \
           --stage initrd \
           --root /sysroot \
-          --resolved-stage /lib/aos/initrd/resolved-ability-stage.json
+          --source-stage-bundle /lib/aos/initrd/source-stage-bundle.json \
+          --static-contract-identity ${config.system.build.initrdStaticAbilityContract}/contract.json \
+          --static-contract /lib/aos/initrd/static-ability-contract.json
       '';
     };
 
@@ -66,7 +68,10 @@ in {
         exec ${packageRuntime}/bin/.aos-package-runtime-unwrapped \
           __ability-stage-validate \
           --from-stage initrd \
-          --root /sysroot
+          --root /sysroot \
+          --source-stage-bundle /lib/aos/initrd/source-stage-bundle.json \
+          --static-contract-identity ${config.system.build.initrdStaticAbilityContract}/contract.json \
+          --static-contract /lib/aos/initrd/static-ability-contract.json
       '';
     };
 
@@ -99,7 +104,10 @@ in {
         exec ${packageRuntime}/bin/.aos-package-runtime-unwrapped \
           __ability-stage-receive \
           --from-stage initrd \
-          --image-profile /var/lib/profiles/image
+          --image-profile /var/lib/profiles/image \
+          --source-stage-bundle /usr/lib/aos/initrd/source-stage-bundle.json \
+          --static-contract-identity ${config.system.build.initrdStaticAbilityContract}/contract.json \
+          --static-contract /usr/lib/aos/initrd/static-ability-contract.json
       '';
     };
   };
