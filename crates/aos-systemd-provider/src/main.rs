@@ -6,6 +6,7 @@
 //! pinned systemd manager over D-Bus.
 
 mod boot_platform;
+mod credential;
 mod identity;
 mod manager_watchdog;
 mod materialize;
@@ -55,6 +56,7 @@ const ETC_ROOT: &str = "/etc";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HandlerRole {
     BootPlatform(boot_platform::BootPlatformRole),
+    Credential(credential::CredentialRole),
     DevicePresence,
     Identity(identity::IdentityRole),
     ManagerWatchdog,
@@ -82,6 +84,10 @@ impl HandlerRole {
                 boot_platform::BootPlatformRole::Selection,
             )),
             "aos.boot.success" => Ok(Self::BootPlatform(boot_platform::BootPlatformRole::Success)),
+            "aos.credential.delivery" => Ok(Self::Credential(credential::CredentialRole::Delivery)),
+            "aos.credential.named-resolution" => Ok(Self::Credential(
+                credential::CredentialRole::NamedResolution,
+            )),
             "aos.systemd.activation-group-effects" => Ok(Self::NativeResource(
                 native_resource::NativeResourceRole::ActivationGroup,
             )),
@@ -198,6 +204,7 @@ async fn run() -> Result<()> {
 async fn admit(role: HandlerRole, request: AdmissionRequest) -> Result<AdmissionResult> {
     match role {
         HandlerRole::BootPlatform(role) => boot_platform::admit(role, request),
+        HandlerRole::Credential(role) => credential::admit(role, request),
         HandlerRole::DevicePresence => native_resource::admit_device_role(request).await,
         HandlerRole::Identity(role) => identity::admit(role, request).await,
         HandlerRole::ManagerWatchdog => manager_watchdog::admit(request).await,
@@ -270,6 +277,7 @@ async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResul
 async fn invoke(role: HandlerRole, invocation: Invocation) -> Result<InvocationResult> {
     match role {
         HandlerRole::BootPlatform(role) => boot_platform::invoke(role, invocation),
+        HandlerRole::Credential(role) => credential::invoke(role, invocation),
         HandlerRole::DevicePresence => native_resource::invoke_device_role(invocation).await,
         HandlerRole::Identity(role) => identity::invoke(role, invocation).await,
         HandlerRole::ManagerWatchdog => manager_watchdog::invoke(invocation).await,
@@ -789,6 +797,7 @@ mod tests {
     use super::{
         HandlerRole, packaged_resource_references, require_method, require_resource_contexts,
     };
+    use crate::credential::CredentialRole;
     use crate::identity::IdentityRole;
     use crate::model::PackagedUnitRequest;
     use crate::native_resource::NativeResourceRole;
@@ -842,6 +851,16 @@ mod tests {
 
     #[test]
     fn authenticated_interfaces_select_closed_semantic_roles() {
+        assert_eq!(
+            HandlerRole::from_method(&method_for("aos.credential.delivery", "deliver"))
+                .expect("credential-delivery role parses"),
+            HandlerRole::Credential(CredentialRole::Delivery)
+        );
+        assert_eq!(
+            HandlerRole::from_method(&method_for("aos.credential.named-resolution", "observe",))
+                .expect("named-credential role parses"),
+            HandlerRole::Credential(CredentialRole::NamedResolution)
+        );
         assert_eq!(
             HandlerRole::from_method(&method_for(
                 "aos.systemd.activation-group-effects",
