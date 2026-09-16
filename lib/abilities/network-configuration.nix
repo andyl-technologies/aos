@@ -157,9 +157,6 @@
       };
     };
   };
-  realizationType = types.record {
-    fields.schema = types.enum ["aos.systemd.network-configuration-realization/v1"];
-  };
   output = phase: lifetime: description: schema: {
     inherit phase lifetime description schema;
     visibility = "protected";
@@ -216,13 +213,13 @@
   document = interfaceDocumentFromDeclaration declaration;
   identity = interfaceIdentity document;
   effectsAlias = "network-configuration-effects";
-  effectsMethod = name: description: access: stopsProvider: {
+  effectsMethod = name: description: parameters: access: stopsProvider: {
     inherit description;
     semantics = {
       requiredTargetAccess = access;
       inherit stopsProvider;
     };
-    parameters = applyInputType;
+    inherit parameters;
     targetResource = interfaceName;
     outputs.observation =
       output
@@ -246,9 +243,9 @@
     requestType = applyInputType;
     outputs = {};
     methods = {
-      apply = effectsMethod "apply" "Applies a persistent policy with optional authorized early-network input." "exclusive-write" false;
-      observe = effectsMethod "observe" "Observes the exact applied host network state." "read" false;
-      remove = effectsMethod "remove" "Removes the exact owned host network state." "exclusive-write" true;
+      apply = effectsMethod "apply" "Applies a persistent policy with optional authorized early-network input." applyInputType "exclusive-write" false;
+      observe = effectsMethod "observe" "Observes the exact applied host network state." emptyInputType "read" false;
+      remove = effectsMethod "remove" "Removes the exact owned host network state." emptyInputType "exclusive-write" true;
     };
     inherit lifecycle;
     aggregation = aggregation // {controllerGroup = effectsAlias;};
@@ -259,7 +256,7 @@
   effectsIdentity = interfaceIdentity effectsDocument;
 in {
   interface = {
-    inherit alias declaration document identity observationType realizationType;
+    inherit alias declaration document identity observationType;
     requestType = policyType;
     types = {
       policy = policyType;

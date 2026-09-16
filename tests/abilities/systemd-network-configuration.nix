@@ -118,6 +118,7 @@
   resource = builtins.head (builtins.attrValues abilities.desiredResources);
   networkInterface = lib.abilities.interfaces.networkConfiguration.interface;
   effectsInterface = networkInterface.effects;
+  emptyInput = lib.abilities.types.record {fields = {};};
   transition = abilities.implementations."systemd:network-configuration".transition;
   transitionOperation = kind: let
     method =
@@ -191,6 +192,14 @@ in
   == lib.abilities.types.schemaOf "network apply input" networkInterface.types.applyInput;
   assert (lib.abilities.types.schemaOf "network apply input" networkInterface.types.applyInput).fields.bootstrap.value
   == lib.abilities.types.schemaOf "network bootstrap" networkInterface.types.bootstrap;
+  assert lib.abilities.types.schemaOf "network observe parameters" networkInterface.declaration.methods.observe.parameters
+  == lib.abilities.types.schemaOf "network empty input" emptyInput;
+  assert lib.abilities.types.schemaOf "network remove parameters" networkInterface.declaration.methods.remove.parameters
+  == lib.abilities.types.schemaOf "network empty input" emptyInput;
+  assert lib.abilities.types.schemaOf "network effects observe parameters" effectsInterface.declaration.methods.observe.parameters
+  == lib.abilities.types.schemaOf "network empty input" emptyInput;
+  assert lib.abilities.types.schemaOf "network effects remove parameters" effectsInterface.declaration.methods.remove.parameters
+  == lib.abilities.types.schemaOf "network empty input" emptyInput;
   assert applyOperation.interface == effectsInterface.identity;
   assert applyOperation.method == "apply";
   assert applyOperation.target.interface == networkInterface.identity;
