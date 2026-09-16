@@ -593,6 +593,17 @@ impl DormantReceivedBrokerRequestV1 {
     pub const fn request_id(&self) -> [u8; 16] {
         self.0.request_id()
     }
+
+    /// Returns the exact structurally validated authorization artifacts, if present.
+    ///
+    /// These bytes remain explicitly untrusted. Only the sealed broker-domain
+    /// adapters can authenticate and consume them as operation authority.
+    #[must_use]
+    pub const fn authorization_artifacts(
+        &self,
+    ) -> Option<&aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts> {
+        self.0.authorization()
+    }
 }
 
 impl DormantReceivedBrokerDescriptorRequestV1 {
