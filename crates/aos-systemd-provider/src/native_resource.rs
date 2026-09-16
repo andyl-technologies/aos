@@ -3,7 +3,7 @@
 use std::path::{Component, Path};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use aos_ability_model::{
     AbilityValue, AccessMode, LocalKey, MethodReference, MethodSemantics, ResourceId,
     ResourceReference, RevisionId,
@@ -35,12 +35,6 @@ const SCHEDULED_ACTIVATION_RESOURCE_KIND: &str = "aos.activation.schedule";
 const SWAP_RESOURCE_KIND: &str = "aos.memory.swap";
 const ACTIVATION_GROUP_RESOURCE_KIND: &str = "aos.activation.group";
 const REALIZATION_SCHEMA: &str = "aos.systemd.native-resource-realization/v1";
-const MOUNT_OBSERVATION_SCHEMA: &str = "aos.ability.mount-resource-observation/v1";
-const SCHEDULED_ACTIVATION_OBSERVATION_SCHEMA: &str =
-    "aos.ability.scheduled-activation-observation/v1";
-const SWAP_OBSERVATION_SCHEMA: &str = "aos.ability.swap-resource-observation/v1";
-const ACTIVATION_GROUP_OBSERVATION_SCHEMA: &str = "aos.ability.activation-group-observation/v1";
-const DEVICE_OBSERVATION_SCHEMA: &str = "aos.ability.device-presence-observation/v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -169,15 +163,6 @@ impl Desired {
         }
     }
 
-    fn observation_schema(&self) -> &'static str {
-        match self {
-            Self::ActivationGroup(_) => ACTIVATION_GROUP_OBSERVATION_SCHEMA,
-            Self::Mount(_) => MOUNT_OBSERVATION_SCHEMA,
-            Self::ScheduledActivation(_) => SCHEDULED_ACTIVATION_OBSERVATION_SCHEMA,
-            Self::Swap(_) => SWAP_OBSERVATION_SCHEMA,
-        }
-    }
-
     fn desired_active_state(&self) -> Option<bool> {
         match self {
             // Activation groups are passive coordination resources. Their
@@ -208,6 +193,10 @@ pub(crate) async fn admit(
     validate_admission_resource(&request)?;
     validate_resource_contexts(&request.resources)?;
     require_method(&request.method, &request.semantics)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator_at(&["observation", "schema"])
+        .context("selected native-resource method has no exact observation discriminator")?;
 
     let desired = desired_from_value(role, &request.resource_spec.value)?;
     let realization = require_realization(&desired, &request.resource_spec.realization)?;
@@ -223,6 +212,7 @@ pub(crate) async fn admit(
     );
     let manager = PinnedSystemdManager::connect().await?;
     let inspection = inspect(
+        observation_schema,
         &manager,
         &desired,
         &request.resource_spec.value,
@@ -275,6 +265,10 @@ pub(crate) async fn invoke(
     validate_resource_contexts(&invocation.request.resources)?;
     require_method(&invocation.method, &invocation.semantics)?;
     require_method(&invocation.request.method, &invocation.request.semantics)?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator_at(&["observation", "schema"])
+        .context("selected native-resource method has no exact observation discriminator")?;
 
     if invocation.method.interface != invocation.request.method.interface {
         bail!("native-resource recovery cannot cross effect interfaces");
@@ -337,6 +331,7 @@ pub(crate) async fn invoke(
 
     let reference = observed_reference(&target_context(&invocation)?.reference)?;
     let inspection = inspect(
+        observation_schema,
         &manager,
         &desired,
         &bound.resource_spec.value,
@@ -387,8 +382,12 @@ async fn admit_device(request: AdmissionRequest) -> Result<AdmissionResult> {
         bail!("device-presence observation unexpectedly carries a realization");
     }
     let desired: DeviceDesired = decode_value(&request.resource_spec.value)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator()
+        .context("selected device method has no exact observation discriminator")?;
     let manager = PinnedSystemdManager::connect().await?;
-    let inspection = inspect_device(&manager, &desired).await?;
+    let inspection = inspect_device(&manager, observation_schema, &desired).await?;
 
     Ok(AdmissionResult {
         schema: ADMISSION_SCHEMA.to_string(),
@@ -448,6 +447,10 @@ async fn invoke_device(invocation: Invocation) -> Result<InvocationResult> {
         bail!("device-presence inputs differ from the checked desired value");
     }
     let desired: DeviceDesired = decode_value(&bound.resource_spec.value)?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator()
+        .context("selected device method has no exact observation discriminator")?;
     let provider: ProviderContext = decode_value(&bound.provider_context)?;
     if provider.schema != PROVIDER_CONTEXT_SCHEMA {
         bail!("unsupported device-presence provider context schema");
@@ -459,7 +462,13 @@ async fn invoke_device(invocation: Invocation) -> Result<InvocationResult> {
         .timeout_millis
         .unwrap_or(0)
         .min(invocation.control.attempt_remaining_millis);
-    let inspection = wait_for_device(&manager, &desired, Duration::from_millis(budget)).await?;
+    let inspection = wait_for_device(
+        &manager,
+        observation_schema,
+        &desired,
+        Duration::from_millis(budget),
+    )
+    .await?;
     let mut outputs = empty_outputs();
     outputs.insert(
         LocalKey::new("observation")?,
@@ -844,6 +853,7 @@ struct Inspection {
 
 #[allow(clippy::too_many_arguments)]
 async fn inspect(
+    observation_schema: &str,
     manager: &PinnedSystemdManager,
     desired: &Desired,
     expected: &AbilityValue,
@@ -903,7 +913,7 @@ async fn inspect(
         None
     };
     let observation = value(&serde_json::json!({
-        "schema": desired.observation_schema(),
+        "schema": observation_schema,
         "expected": expected.as_json(),
         "realized": realized,
         "state": state,
@@ -925,6 +935,7 @@ struct DeviceInspection {
 
 async fn inspect_device(
     manager: &PinnedSystemdManager,
+    observation_schema: &str,
     desired: &DeviceDesired,
 ) -> Result<DeviceInspection> {
     validate_absolute_path(&desired.device, "device path")?;
@@ -951,7 +962,7 @@ async fn inspect_device(
         "unknown"
     };
     let observation = value(&serde_json::json!({
-        "schema": DEVICE_OBSERVATION_SCHEMA,
+        "schema": observation_schema,
         "expected": desired,
         "realized": observed,
         "state": state,
@@ -966,12 +977,13 @@ async fn inspect_device(
 
 async fn wait_for_device(
     manager: &PinnedSystemdManager,
+    observation_schema: &str,
     desired: &DeviceDesired,
     budget: Duration,
 ) -> Result<DeviceInspection> {
     let deadline = Instant::now() + budget;
     loop {
-        let inspection = inspect_device(manager, desired).await?;
+        let inspection = inspect_device(manager, observation_schema, desired).await?;
         if inspection.ready || Instant::now() >= deadline {
             return Ok(inspection);
         }

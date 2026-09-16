@@ -48,6 +48,7 @@ pub trait Backend {
     /// Observes the exact desired resource without mutation.
     fn observe(
         &self,
+        observation_schema: &str,
         desired: &AbilityValue,
         realization: &AbilityValue,
         target: &ResourceReference,
@@ -61,13 +62,21 @@ pub trait Backend {
     /// this hook and report an absent revision until transition inputs resolve.
     fn observe_admission(
         &self,
+        observation_schema: &str,
         desired: &AbilityValue,
         realization: &AbilityValue,
         target: &ResourceReference,
         revision: aos_ability_model::RevisionId,
         context: &AbilityValue,
     ) -> Result<BackendObservation> {
-        self.observe(desired, realization, target, revision, context)
+        self.observe(
+            observation_schema,
+            desired,
+            realization,
+            target,
+            revision,
+            context,
+        )
     }
 
     /// Applies the exact desired resource.
@@ -161,6 +170,10 @@ impl<B: Backend> Provider<B> {
         )?;
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
+        let observation_schema = request
+            .contract
+            .observation_discriminator()
+            .context("selected block-storage method has no exact observation discriminator")?;
         require_prerequisites(&request.resource_spec.value, &request.resources)?;
         let context = self.backend.admit_context(
             &request.resource_spec.value,
@@ -170,6 +183,7 @@ impl<B: Backend> Provider<B> {
             &request.resources,
         )?;
         let observation = self.backend.observe_admission(
+            observation_schema,
             &request.resource_spec.value,
             &request.resource_spec.realization,
             &request.target,
@@ -214,6 +228,10 @@ impl<B: Backend> Provider<B> {
             invocation.request.method.method.as_str(),
             &invocation.request.semantics,
         )?;
+        let observation_schema = invocation
+            .contract
+            .observation_discriminator()
+            .context("selected block-storage method has no exact observation discriminator")?;
         validate_method(
             self.backend.action_method(),
             invocation.method.method.as_str(),
@@ -257,6 +275,7 @@ impl<B: Backend> Provider<B> {
         let observing = invocation.request.method.method.as_str() == "observe";
         let removing = invocation.request.method.method.as_str() == "release";
         let before = self.backend.observe(
+            observation_schema,
             &desired,
             &bound.resource_spec.realization,
             &invocation.request.target,
@@ -286,6 +305,7 @@ impl<B: Backend> Provider<B> {
                     invocation.control.attempt_remaining_millis,
                 )?;
                 self.backend.observe(
+                    observation_schema,
                     &desired,
                     &bound.resource_spec.realization,
                     &invocation.request.target,
@@ -302,6 +322,7 @@ impl<B: Backend> Provider<B> {
                     invocation.control.attempt_remaining_millis,
                 )?;
                 self.backend.observe(
+                    observation_schema,
                     &desired,
                     &bound.resource_spec.realization,
                     &invocation.request.target,

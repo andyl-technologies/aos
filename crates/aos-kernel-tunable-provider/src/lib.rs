@@ -28,8 +28,6 @@ use aos_provider_protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const REALIZATION_SCHEMA: &str = "aos.kernel.tunables-realization/v1";
-const OBSERVATION_SCHEMA: &str = "aos.ability.kernel-tunables-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.kernel.tunables-context/v1";
 const MARKER_SCHEMA: &str = "aos.kernel.tunables-state/v1";
 const PROC_ROOT: &str = "/proc/sys";
@@ -46,7 +44,8 @@ struct TunableRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TunableRealization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -149,16 +148,16 @@ impl KernelTunableProvider {
         validate_method(request.method.method.as_str(), &request.semantics)?;
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
+        let observation_schema = request
+            .contract
+            .observation_discriminator()
+            .context("selected kernel-tunable method has no exact observation discriminator")?;
         let desired: TunableRequest = decode_value(&request.resource_spec.value)?;
         validate_request(&desired)?;
-        let realization: TunableRealization = decode_value(&request.resource_spec.realization)?;
-        ensure!(
-            realization.schema == REALIZATION_SCHEMA,
-            "unsupported realization schema"
-        );
+        let _realization: TunableRealization = decode_value(&request.resource_spec.realization)?;
         require_dependencies(&desired.dependencies, &request.resources)?;
 
-        let observation = self.observe(&desired, &request.target)?;
+        let observation = self.observe(observation_schema, &desired, &request.target)?;
         let revision = observation_revision(&observation, request.resource_spec.revision)?;
         let supported_purposes = if request.method.method.as_str() == "observe" {
             SupportedPurposes::from_ordered(vec![InvocationPurpose::Effect])
@@ -188,6 +187,10 @@ impl KernelTunableProvider {
             "invocation method is not durably bound"
         );
         validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
+        let observation_schema = invocation
+            .contract
+            .observation_discriminator()
+            .context("selected kernel-tunable method has no exact observation discriminator")?;
         validate_resource_contexts(&invocation.request.resources)?;
         ensure!(
             resource_set_digest(&invocation.request.resources)?
@@ -211,11 +214,7 @@ impl KernelTunableProvider {
             bound.resource_spec.value == invocation.request.inputs,
             "bound inputs differ"
         );
-        let realization: TunableRealization = decode_value(&bound.resource_spec.realization)?;
-        ensure!(
-            realization.schema == REALIZATION_SCHEMA,
-            "unsupported realization schema"
-        );
+        let _realization: TunableRealization = decode_value(&bound.resource_spec.realization)?;
         let context: ProviderContext = decode_value(&bound.provider_context)?;
         ensure!(
             context.schema == CONTEXT_SCHEMA,
@@ -226,7 +225,7 @@ impl KernelTunableProvider {
         validate_request(&desired)?;
         require_dependencies(&desired.dependencies, &invocation.request.resources)?;
         let removing = invocation.method.method.as_str() == "remove";
-        let before = self.observe(&desired, &invocation.request.target)?;
+        let before = self.observe(observation_schema, &desired, &invocation.request.target)?;
         let (disposition, evidence) = match invocation.purpose {
             InvocationPurpose::Effect if invocation.method.method.as_str() == "observe" => {
                 (InvocationDisposition::Completed, before)
@@ -236,7 +235,8 @@ impl KernelTunableProvider {
             }
             InvocationPurpose::Effect if invocation.method.method.as_str() == "apply" => {
                 self.apply(&desired, &invocation.request.target, target.revision)?;
-                let after = self.observe(&desired, &invocation.request.target)?;
+                let after =
+                    self.observe(observation_schema, &desired, &invocation.request.target)?;
                 let disposition = if after.state == TunableState::Applied {
                     InvocationDisposition::Completed
                 } else {
@@ -246,7 +246,8 @@ impl KernelTunableProvider {
             }
             InvocationPurpose::Effect => {
                 self.remove(&invocation.request.target)?;
-                let after = self.observe(&desired, &invocation.request.target)?;
+                let after =
+                    self.observe(observation_schema, &desired, &invocation.request.target)?;
                 let disposition = if after.state == TunableState::Unmanaged {
                     InvocationDisposition::Completed
                 } else {
@@ -315,6 +316,7 @@ impl KernelTunableProvider {
 
     fn observe(
         &self,
+        observation_schema: &str,
         desired: &TunableRequest,
         target: &ResourceReference,
     ) -> Result<TunableObservation> {
@@ -346,7 +348,7 @@ impl KernelTunableProvider {
             TunableState::Unmanaged
         };
         Ok(TunableObservation {
-            schema: OBSERVATION_SCHEMA.into(),
+            schema: observation_schema.into(),
             expected: desired.clone(),
             observed,
             state,
@@ -692,7 +694,10 @@ mod tests {
             .expect("apply tunable");
         assert_eq!(fs::read_to_string(&tunable).expect("read applied"), "1\n");
         assert_eq!(
-            provider.observe(&request, &target).expect("observe").state,
+            provider
+                .observe("aos.test.tunable-observation/v1", &request, &target)
+                .expect("observe")
+                .state,
             TunableState::Applied
         );
 
@@ -700,7 +705,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&tunable).expect("read restored"), "0\n");
         assert_eq!(
             provider
-                .observe(&request, &target)
+                .observe("aos.test.tunable-observation/v1", &request, &target)
                 .expect("observe removal")
                 .state,
             TunableState::Unmanaged
@@ -724,7 +729,7 @@ mod tests {
         let desired_revision = RevisionId(Sha256Digest::of_bytes(b"matching desired"));
 
         let unowned = provider
-            .observe(&request, &target)
+            .observe("aos.test.tunable-observation/v1", &request, &target)
             .expect("observe matching unowned value");
         assert_eq!(unowned.state, TunableState::Unmanaged);
         assert_eq!(
@@ -743,7 +748,7 @@ mod tests {
         );
         assert_eq!(
             provider
-                .observe(&request, &target)
+                .observe("aos.test.tunable-observation/v1", &request, &target)
                 .expect("observe owned value")
                 .state,
             TunableState::Applied

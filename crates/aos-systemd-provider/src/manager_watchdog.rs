@@ -19,10 +19,9 @@ use crate::materialize::{
     ensure_directory, publish_file, remove_managed_path, verify_file_exact_or_absent,
 };
 use crate::model::{
-    MANAGER_WATCHDOG_CONTEXT_SCHEMA, MANAGER_WATCHDOG_OBSERVATION_SCHEMA,
-    MANAGER_WATCHDOG_REALIZATION_SCHEMA, ManagerWatchdogContext, ManagerWatchdogEffectsRequest,
-    ManagerWatchdogObservation, ManagerWatchdogRealization, ManagerWatchdogRequest,
-    ManagerWatchdogState,
+    MANAGER_WATCHDOG_CONTEXT_SCHEMA, MANAGER_WATCHDOG_REALIZATION_SCHEMA, ManagerWatchdogContext,
+    ManagerWatchdogEffectsRequest, ManagerWatchdogObservation, ManagerWatchdogRealization,
+    ManagerWatchdogRequest, ManagerWatchdogState,
 };
 use crate::{decode_value, target_context, value};
 
@@ -52,6 +51,10 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     validate_admission_resource(&request)?;
     require_method(&request.method, &request.semantics)?;
     validate_resource_contexts(&request.resources)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator_at(&["observation", "schema"])
+        .context("selected manager-watchdog method has no exact observation discriminator")?;
 
     let expected: ManagerWatchdogRequest = decode_value(&request.resource_spec.value)?;
     let realization: ManagerWatchdogRealization = decode_value(&request.resource_spec.realization)?;
@@ -60,7 +63,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     let paths = paths_for(Path::new("/etc"), request.resource_spec.revision);
     let files_match = files_match(&paths, &bytes, request.resource_spec.revision)?;
     let manager = PinnedSystemdManager::connect().await?;
-    let observation = observation(&expected, files_match, false)?;
+    let observation = observation(observation_schema, &expected, files_match, false)?;
     let supported_purposes = SupportedPurposes::from_ordered(vec![
         InvocationPurpose::Effect,
         InvocationPurpose::Reconcile,
@@ -104,6 +107,10 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         bail!("invocation resource-set digest does not match");
     }
     validate_resource_contexts(&invocation.request.resources)?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator_at(&["observation", "schema"])
+        .context("selected manager-watchdog method has no exact observation discriminator")?;
 
     let target = target_context(&invocation)?;
     let bound = validate_resource_context(target)?;
@@ -150,7 +157,13 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     } else {
         files_match(&paths, &bytes, bound.resource_spec.revision)?
     };
-    let raw_observation = observation_for_goal(&expected, matches, remove, manager_changed)?;
+    let raw_observation = observation_for_goal(
+        observation_schema,
+        &expected,
+        matches,
+        remove,
+        manager_changed,
+    )?;
     let evidence = effect_observation(&raw_observation)?;
     let mut outputs = BTreeMap::new();
     outputs.insert(LocalKey::new("observation")?, evidence.clone());
@@ -264,14 +277,22 @@ fn files_absent(paths: &WatchdogPaths) -> Result<bool> {
 }
 
 fn observation(
+    observation_schema: &str,
     expected: &ManagerWatchdogRequest,
     matches: bool,
     manager_incarnation_changed: bool,
 ) -> Result<aos_ability_model::AbilityValue> {
-    observation_for_goal(expected, matches, false, manager_incarnation_changed)
+    observation_for_goal(
+        observation_schema,
+        expected,
+        matches,
+        false,
+        manager_incarnation_changed,
+    )
 }
 
 fn observation_for_goal(
+    observation_schema: &str,
     expected: &ManagerWatchdogRequest,
     matches: bool,
     absent_goal: bool,
@@ -289,7 +310,7 @@ fn observation_for_goal(
         ManagerWatchdogState::Configured
     };
     value(&ManagerWatchdogObservation {
-        schema: MANAGER_WATCHDOG_OBSERVATION_SCHEMA.to_string(),
+        schema: observation_schema.to_string(),
         expected: expected.clone(),
         observed: if matches && !absent_goal {
             Some(expected.clone())

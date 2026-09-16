@@ -7,14 +7,11 @@ use aos_ability_model::{
 };
 use serde::{Deserialize, Serialize};
 
-pub(crate) const OBSERVATION_SCHEMA: &str = "aos.ability.systemd-packaged-unit-observation/v1";
 pub(crate) const REALIZATION_SCHEMA: &str = "aos.systemd.packaged-unit-realization/v1";
 pub(crate) const PROVIDER_CONTEXT_SCHEMA: &str = "aos.systemd.packaged-unit-context/v1";
 pub(crate) const SERVICE_REALIZATION_SCHEMA: &str = "aos.systemd.service-realization/v1";
 pub(crate) const MANAGER_WATCHDOG_REALIZATION_SCHEMA: &str =
     "aos.systemd.manager-watchdog-realization/v1";
-pub(crate) const MANAGER_WATCHDOG_OBSERVATION_SCHEMA: &str =
-    "aos.ability.systemd-manager-watchdog-observation/v1";
 pub(crate) const MANAGER_WATCHDOG_CONTEXT_SCHEMA: &str = "aos.systemd.manager-watchdog-context/v1";
 pub(crate) const STATIC_MANIFEST_SCHEMA: &str = "aos.systemd.static-unit-manifest/v1";
 

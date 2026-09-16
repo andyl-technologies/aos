@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use aos_ability_model::{AbilityValue, AccessMode, LocalKey, MethodReference, MethodSemantics};
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
@@ -15,15 +15,6 @@ use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 
 use crate::model::{PROVIDER_CONTEXT_SCHEMA, ProviderContext};
 use crate::{decode_value, provider_context, target_context, value};
-
-const NETWORK_OBSERVATION_SCHEMA: &str = "aos.ability.network-readiness-observation/v1";
-const FILESYSTEM_OBSERVATION_SCHEMA: &str = "aos.ability.filesystem-readiness-observation/v1";
-const ACTIVATION_MILESTONE_OBSERVATION_SCHEMA: &str =
-    "aos.ability.activation-milestone-observation/v1";
-const SYSTEM_MILESTONE_READINESS_OBSERVATION_SCHEMA: &str =
-    "aos.ability.system-milestone-readiness-observation/v1";
-const RUNTIME_ENTRY_POPULATION_OBSERVATION_SCHEMA: &str =
-    "aos.ability.runtime-entry-population-observation/v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReadinessRole {
@@ -43,16 +34,6 @@ impl ReadinessRole {
             Self::Filesystem | Self::Network => "configuring",
         }
     }
-
-    fn observation_schema(self) -> &'static str {
-        match self {
-            Self::ActivationMilestone => ACTIVATION_MILESTONE_OBSERVATION_SCHEMA,
-            Self::Filesystem => FILESYSTEM_OBSERVATION_SCHEMA,
-            Self::Network => NETWORK_OBSERVATION_SCHEMA,
-            Self::RuntimeEntryPopulation => RUNTIME_ENTRY_POPULATION_OBSERVATION_SCHEMA,
-            Self::SystemMilestone => SYSTEM_MILESTONE_READINESS_OBSERVATION_SCHEMA,
-        }
-    }
 }
 
 pub(crate) async fn admit(
@@ -68,10 +49,21 @@ pub(crate) async fn admit(
         bail!("readiness publication unexpectedly carries a desired realization");
     }
     validate_resource_contexts(&request.resources)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator()
+        .context("selected readiness method has no exact observation discriminator")?;
 
     let selected = selected_target(&request.resource_spec.value)?;
     let manager = PinnedSystemdManager::connect().await?;
-    let inspection = inspect(&manager, role, &request.resource_spec.value, selected).await?;
+    let inspection = inspect(
+        &manager,
+        role,
+        observation_schema,
+        &request.resource_spec.value,
+        selected,
+    )
+    .await?;
     let context = provider_context(&manager, inspection.unit_identity.clone(), false)?;
     let supported_purposes = SupportedPurposes::from_ordered(vec![
         InvocationPurpose::Effect,
@@ -119,6 +111,10 @@ pub(crate) async fn invoke(
         bail!("invocation resource-set digest does not match");
     }
     validate_resource_contexts(&invocation.request.resources)?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator()
+        .context("selected readiness method has no exact observation discriminator")?;
 
     let target = target_context(&invocation)?;
     let bound = validate_resource_context(target)?;
@@ -140,7 +136,14 @@ pub(crate) async fn invoke(
     {
         bail!("systemd manager changed after admission");
     }
-    let inspection = inspect(&manager, role, &bound.resource_spec.value, selected).await?;
+    let inspection = inspect(
+        &manager,
+        role,
+        observation_schema,
+        &bound.resource_spec.value,
+        selected,
+    )
+    .await?;
     let mut outputs = BTreeMap::new();
     outputs.insert(
         LocalKey::new("observation")?,
@@ -164,6 +167,7 @@ struct Inspection {
 async fn inspect(
     manager: &PinnedSystemdManager,
     role: ReadinessRole,
+    observation_schema: &str,
     expected: &AbilityValue,
     unit_name: &str,
 ) -> Result<Inspection> {
@@ -184,9 +188,8 @@ async fn inspect(
         Some(UnitActiveState::Inactive) => inactive_state,
         Some(_) | None => "unknown",
     };
-    let schema = role.observation_schema();
     let observation = value(&serde_json::json!({
-        "schema": schema,
+        "schema": observation_schema,
         "expected": selected_expected(expected)?,
         "state": state,
     }))?;

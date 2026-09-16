@@ -13,8 +13,6 @@ use crate::engine::{Backend, BackendObservation, ability_value};
 use crate::process::{Executable, ExecutableReference};
 use crate::state;
 
-const REALIZATION_SCHEMA: &str = "aos.storage.format-realization/v1";
-const OBSERVATION_SCHEMA: &str = "aos.ability.storage-format-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.util-linux.storage-format-context/v1";
 const MARKER_SCHEMA: &str = "aos.util-linux.storage-format-state/v1";
 const STATE_ROOT: &str = "/run/aos/storage-formats";
@@ -46,7 +44,8 @@ enum FormatPolicy {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Realization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     mkswap: ExecutableReference,
     blkid: ExecutableReference,
 }
@@ -91,10 +90,6 @@ impl Backend for StorageFormatBackend {
     ) -> Result<AbilityValue> {
         validate_desired(&decode(desired)?)?;
         let realization: Realization = decode(realization)?;
-        ensure!(
-            realization.schema == REALIZATION_SCHEMA,
-            "unsupported storage-format realization"
-        );
         let context = Context {
             schema: CONTEXT_SCHEMA.into(),
             mkswap: realization.mkswap.resolve()?,
@@ -105,6 +100,7 @@ impl Backend for StorageFormatBackend {
 
     fn observe(
         &self,
+        observation_schema: &str,
         desired: &AbilityValue,
         _realization: &AbilityValue,
         target: &ResourceReference,
@@ -131,7 +127,7 @@ impl Backend for StorageFormatBackend {
             observed_format.as_ref().and_then(|value| value.as_deref()),
         );
         let evidence = ability_value(json!({
-            "schema": OBSERVATION_SCHEMA,
+            "schema": observation_schema,
             "expected": desired.as_json(),
             "realized": ready.then(|| source.clone()).flatten(),
             "state": state,

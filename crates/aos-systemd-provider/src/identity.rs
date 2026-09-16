@@ -29,7 +29,6 @@ use crate::{decode_value, empty_outputs, target_context, value};
 
 const ETC_ROOT: &str = "/etc";
 const SYSUSERS: &str = "/run/current-system/sw/bin/systemd-sysusers";
-const REALIZATION_SCHEMA: &str = "aos.systemd.identity-realization/v1";
 const CONTEXT_SCHEMA: &str = "aos.systemd.identity-context/v1";
 const IDENTITY_LOCK: &str = "/run/lock/aos-systemd-identity.lock";
 
@@ -79,7 +78,8 @@ struct EffectRequest<T> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct IdentityRealization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     backend: String,
 }
 
@@ -127,6 +127,10 @@ pub(crate) async fn admit(
     }
     validate_admission_resource(&request)?;
     validate_resource_contexts(&request.resources)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator_at(&["observation", "schema"])
+        .context("selected identity method has no exact observation discriminator")?;
     require_method(&request.method, &request.semantics)?;
     require_realization(&request.resource_spec.realization)?;
 
@@ -146,6 +150,7 @@ pub(crate) async fn admit(
         false,
     )?;
     let observation = observation(
+        observation_schema,
         &desired,
         &request.resource_spec.value,
         &resolved,
@@ -192,6 +197,10 @@ pub(crate) async fn invoke(role: IdentityRole, invocation: Invocation) -> Result
         bail!("identity invocation resource-set digest does not match");
     }
     validate_resource_contexts(&invocation.request.resources)?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator_at(&["observation", "schema"])
+        .context("selected identity method has no exact observation discriminator")?;
     require_method(&invocation.method, &invocation.semantics)?;
     require_method(&invocation.request.method, &invocation.request.semantics)?;
     if invocation.method.interface != invocation.request.method.interface {
@@ -244,6 +253,7 @@ pub(crate) async fn invoke(role: IdentityRole, invocation: Invocation) -> Result
         removing,
     )?;
     let evidence = observation(
+        observation_schema,
         &desired,
         &bound.resource_spec.value,
         &resolved,
@@ -284,7 +294,7 @@ fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Resu
 
 fn require_realization(value: &AbilityValue) -> Result<()> {
     let realization: IdentityRealization = decode_value(value)?;
-    if realization.schema != REALIZATION_SCHEMA || realization.backend != "systemd-sysusers" {
+    if realization.backend != "systemd-sysusers" {
         bail!("identity resource uses an unsupported realization");
     }
     Ok(())
@@ -587,31 +597,20 @@ fn observe(
 }
 
 fn observation(
+    observation_schema: &str,
     desired: &Desired,
     expected: &AbilityValue,
     resolved: &ResolvedMembership,
     complete: bool,
     removing: bool,
 ) -> Result<AbilityValue> {
-    let (kind, schema, realized) = match desired {
-        Desired::Principal(principal) => (
-            "aos.identity.principal",
-            "aos.ability.principal-resolution-observation/v1",
-            Some(json!(principal.name)),
-        ),
-        Desired::Group(group) => (
-            "aos.identity.group",
-            "aos.ability.group-resolution-observation/v1",
-            Some(json!(group.name)),
-        ),
-        Desired::Membership(_) => (
-            "aos.identity.group-membership",
-            "aos.ability.group-membership-observation/v1",
-            None,
-        ),
+    let (kind, realized) = match desired {
+        Desired::Principal(principal) => ("aos.identity.principal", Some(json!(principal.name))),
+        Desired::Group(group) => ("aos.identity.group", Some(json!(group.name))),
+        Desired::Membership(_) => ("aos.identity.group-membership", None),
     };
     let mut inner = json!({
-        "schema": schema,
+        "schema": observation_schema,
         "expected": expected.as_json(),
         "state": if complete && !removing { "ready" } else { "absent" },
     });

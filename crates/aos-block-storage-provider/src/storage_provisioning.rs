@@ -23,9 +23,7 @@ use serde_json::{Value, json};
 use crate::engine::{Backend, BackendObservation, ability_value};
 use crate::process::{Executable, ExecutableReference};
 
-const REALIZATION_SCHEMA: &str = "aos.storage.provisioning-realization/v1";
 const CONTEXT_SCHEMA: &str = "aos.storage.provisioning-context/v1";
-const OBSERVATION_SCHEMA: &str = "aos.ability.storage-provisioning-observation/v1";
 const SCRATCH_ROOT: &str = "/run/aos/storage-provisioning";
 const REPART_DIR: &str = "repart.d";
 const REPART_TARGETS_FILE: &str = "repart-targets";
@@ -122,7 +120,8 @@ enum PartitionTarget {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Realization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     systemd_repart: ExecutableReference,
     blkid: ExecutableReference,
     lsblk: ExecutableReference,
@@ -187,10 +186,6 @@ impl Backend for StorageProvisioningBackend {
     ) -> Result<AbilityValue> {
         validate_request(&decode(desired)?)?;
         let realization: Realization = decode(realization)?;
-        ensure!(
-            realization.schema == REALIZATION_SCHEMA,
-            "unsupported storage-provisioning realization"
-        );
         ability_value(serde_json::to_value(Context {
             schema: CONTEXT_SCHEMA.into(),
             systemd_repart: realization.systemd_repart.resolve()?,
@@ -203,6 +198,7 @@ impl Backend for StorageProvisioningBackend {
 
     fn observe_admission(
         &self,
+        observation_schema: &str,
         desired: &AbilityValue,
         _realization: &AbilityValue,
         _target: &ResourceReference,
@@ -211,7 +207,7 @@ impl Backend for StorageProvisioningBackend {
     ) -> Result<BackendObservation> {
         let request: ProvisioningRequest = decode(desired)?;
         Ok(BackendObservation {
-            evidence: observation(&request, None, "absent")?,
+            evidence: observation(observation_schema, &request, None, "absent")?,
             ready: false,
             released: false,
             path: None,
@@ -221,6 +217,7 @@ impl Backend for StorageProvisioningBackend {
 
     fn observe(
         &self,
+        observation_schema: &str,
         desired: &AbilityValue,
         _realization: &AbilityValue,
         target: &ResourceReference,
@@ -238,7 +235,12 @@ impl Backend for StorageProvisioningBackend {
             DiskState::Pending => ("pending", None, false, true),
             DiskState::Unknown => ("unknown", None, false, true),
         };
-        let evidence = observation(&desired_value.request, committed_source, state_name)?;
+        let evidence = observation(
+            observation_schema,
+            &desired_value.request,
+            committed_source,
+            state_name,
+        )?;
         Ok(BackendObservation {
             evidence,
             ready,
@@ -795,12 +797,13 @@ fn validate_request(request: &ProvisioningRequest) -> Result<()> {
 }
 
 fn observation(
+    observation_schema: &str,
     request: &ProvisioningRequest,
     committed_source: Option<Source>,
     state: &str,
 ) -> Result<AbilityValue> {
     ability_value(json!({
-        "schema": OBSERVATION_SCHEMA,
+        "schema": observation_schema,
         "expected": request,
         "committed_source": committed_source.map(Source::name),
         "state": state,

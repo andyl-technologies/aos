@@ -13,8 +13,6 @@ use crate::engine::{Backend, BackendObservation, ability_value};
 use crate::process::{Executable, ExecutableReference};
 use crate::state;
 
-const REALIZATION_SCHEMA: &str = "aos.storage.dataset-realization/v1";
-const OBSERVATION_SCHEMA: &str = "aos.ability.storage-dataset-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.zfs.storage-dataset-context/v1";
 const MARKER_SCHEMA: &str = "aos.zfs.storage-dataset-state/v1";
 const STATE_ROOT: &str = "/run/aos/storage-datasets";
@@ -36,7 +34,8 @@ struct Desired {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Realization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     zfs: ExecutableReference,
 }
 
@@ -89,10 +88,6 @@ impl Backend for ZfsDatasetBackend {
     ) -> Result<AbilityValue> {
         validate_desired(&decode(desired)?)?;
         let realization: Realization = decode(realization)?;
-        ensure!(
-            realization.schema == REALIZATION_SCHEMA,
-            "unsupported storage-dataset realization"
-        );
         ability_value(serde_json::to_value(Context {
             schema: CONTEXT_SCHEMA.into(),
             zfs: realization.zfs.resolve()?,
@@ -101,6 +96,7 @@ impl Backend for ZfsDatasetBackend {
 
     fn observe(
         &self,
+        observation_schema: &str,
         desired: &AbilityValue,
         _realization: &AbilityValue,
         target: &ResourceReference,
@@ -121,7 +117,7 @@ impl Backend for ZfsDatasetBackend {
             &native,
         );
         let evidence = ability_value(json!({
-            "schema": OBSERVATION_SCHEMA,
+            "schema": observation_schema,
             "expected": desired.as_json(),
             "realized": ready.then(|| desired_value.mountpoint.clone()),
             "state": state_name,

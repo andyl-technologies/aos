@@ -29,10 +29,7 @@ use tokio::process::Command;
 
 use crate::{decode_value, target_context, value};
 
-pub(crate) const EFFECTS_INTERFACE_NAME: &str = "aos.network.configuration-effects";
-pub(crate) const REALIZATION_SCHEMA: &str = "aos.systemd.network-configuration-realization/v1";
 pub(crate) const STATIC_INPUT_SCHEMA: &str = "aos.systemd.network-configuration-static-input/v1";
-const OBSERVATION_SCHEMA: &str = "aos.ability.network-configuration-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.systemd.network-configuration-context/v1";
 const MANAGED_NETWORK_RELATIVE_PATH: &str = "systemd/network/10-aos-managed-host-network.network";
 
@@ -116,7 +113,8 @@ struct TaggedArtifactReference {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct NetworkConfigurationRealization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     systemd: TaggedArtifactReference,
 }
 
@@ -147,10 +145,6 @@ struct NetworkContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RenderedConfiguration {
     files: BTreeMap<PathBuf, Vec<u8>>,
-}
-
-pub(crate) fn supports(method: &MethodReference) -> bool {
-    method.interface.name.as_str() == EFFECTS_INTERFACE_NAME
 }
 
 pub(crate) fn render_static(value: Value, output: &Path) -> Result<()> {
@@ -348,6 +342,10 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     validate_admission_resource(&request)?;
     require_method(&request.method, &request.semantics)?;
     validate_resource_contexts(&request.resources)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator()
+        .context("selected network method has no exact observation discriminator")?;
 
     let expected = network_configuration_from_validated(&request.resource_spec.value)?;
     require_resource_contexts(&expected.prerequisites, &request.resources)?;
@@ -356,7 +354,14 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     require_realization(&realization)?;
     let rendered = render(&expected)?;
     let configuration_matches = rendered_matches(Path::new("/etc"), &rendered)?;
-    let observation = observation(&expected, None, configuration_matches, true, false)?;
+    let observation = observation(
+        observation_schema,
+        &expected,
+        None,
+        configuration_matches,
+        true,
+        false,
+    )?;
     let supported_purposes = SupportedPurposes::from_ordered(vec![
         InvocationPurpose::Effect,
         InvocationPurpose::Reconcile,
@@ -399,6 +404,10 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         bail!("invocation resource-set digest does not match");
     }
     validate_resource_contexts(&invocation.request.resources)?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator()
+        .context("selected network method has no exact observation discriminator")?;
 
     let target = target_context(&invocation)?;
     let bound = validate_resource_context(target)?;
@@ -440,6 +449,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
         bootstrap.as_ref(),
     )?;
     let raw = observation(
+        observation_schema,
         &expected,
         bootstrap.as_ref(),
         configuration_matches,
@@ -460,9 +470,6 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
 }
 
 fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Result<()> {
-    if !supports(method) {
-        bail!("handler invocation selects an unsupported network-effects interface");
-    }
     let expected = match method.method.as_str() {
         "observe" => MethodSemantics::ordinary(AccessMode::Read),
         "remove" => MethodSemantics::provider_stop(),
@@ -476,9 +483,6 @@ fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Resu
 }
 
 fn require_realization(realization: &NetworkConfigurationRealization) -> Result<()> {
-    if realization.schema != REALIZATION_SCHEMA {
-        bail!("unsupported network-configuration realization schema");
-    }
     if realization.systemd.value_type != "aos-artifact-reference" {
         bail!("systemd artifact carries an unsupported value type");
     }
@@ -857,6 +861,7 @@ async fn reload_networkd(realization: &NetworkConfigurationRealization) -> Resul
 }
 
 fn observation(
+    observation_schema: &str,
     expected: &NetworkConfiguration,
     applied_bootstrap: Option<&BootstrapNetwork>,
     configuration_matches: bool,
@@ -878,7 +883,7 @@ fn observation(
         NetworkState::Drifted
     };
     Ok(NetworkObservation {
-        schema: OBSERVATION_SCHEMA.to_string(),
+        schema: observation_schema.to_string(),
         expected: expected.clone(),
         applied_bootstrap: applied_bootstrap.cloned(),
         state,
@@ -1145,7 +1150,7 @@ mod tests {
         let desired = network_configuration_to_json(&configuration(NetworkAuthority::Operator))
             .expect("semantic network value");
         let realization = NetworkConfigurationRealization {
-            schema: super::REALIZATION_SCHEMA.to_string(),
+            _schema: "validated-by-runtime".to_string(),
             systemd: super::TaggedArtifactReference {
                 value_type: "aos-artifact-reference".to_string(),
                 content: Sha256Digest::from_bytes([1; 32]),
