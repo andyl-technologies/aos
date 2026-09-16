@@ -12,6 +12,8 @@
   pkgs,
   ...
 }: {
+  imports = [./_artifact-backend.nix];
+
   # Image capability: the evaluator, base module library, and activation
   # machinery live on a read-only EROFS root authenticated by dm-verity.
   aos.filesystems.zfs.enable = lib.mkDefault false;

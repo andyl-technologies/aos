@@ -1,18 +1,17 @@
 ##! Deployment inputs for structured ability activation.
 {
   config,
-  checkedPackageProjections ? [],
   pkgs,
   lib,
   ...
 }: let
   buildPkgs = pkgs.buildPackages;
-  selectedStaticContractBackend = config.aos.artifacts.staticContractBackend or null;
-  staticContractBackend =
+  selectedArtifactBackend = config.aos.artifacts.backend;
+  artifactBackend =
     if
-      builtins.isAttrs selectedStaticContractBackend
-      && (selectedStaticContractBackend._type or null) == "aos-package-artifact-backend"
-    then selectedStaticContractBackend
+      builtins.isAttrs selectedArtifactBackend
+      && (selectedArtifactBackend._type or null) == "aos-package-artifact-backend"
+    then selectedArtifactBackend
     else throw "host static ability contracts require one selected package-owned artifact backend";
   targetPlatform = {
     os = pkgs.stdenv.hostPlatform.constraints.os;
@@ -24,14 +23,13 @@
     inherit lib;
     inherit (buildPkgs) mkDerivation coreutils jq;
   };
-  staticAbilityContractBuild = staticContractBackend.buildStaticContract {
+  staticAbilityContractBuild = artifactBackend.buildStaticContract {
     inherit lib targetPlatform mkReferenceGraph;
     buildPackages = buildPkgs;
     pname = "aos-host-static-abilities";
     artifactClass = "bootable";
     executionStage = "host";
-    packageProjections = checkedPackageProjections;
-    runtimeRoots = config.environment.systemPackages;
+    packageRoots = config.environment.systemPackages;
   };
   staticAbilityContractSource = staticAbilityContractBuild.artifact;
   # The base library captures the image-built contract under this key. Runtime
@@ -47,7 +45,6 @@
       __toString = _: path;
     }
     else staticAbilityContractSource;
-
 in {
   options = {
     aos.abilities.activationInput = lib.mkOption {
