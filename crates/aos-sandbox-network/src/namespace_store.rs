@@ -37,8 +37,9 @@ use self::systemd::SystemdStoreBackend;
 
 pub use self::format::{
     ActivatedNetworkDescriptors, MAXIMUM_RETAINED_NETWORK_NAMESPACES,
-    NetworkNamespaceCustodyRequirementV1, NetworkNamespaceStoreName, RetainedNetworkNamespace,
-    adopt_systemd_activation, validate_activation_replay,
+    NetworkNamespaceCustodyRequirementV1, NetworkNamespaceStoreName,
+    PendingNetworkSystemdActivationV1, RetainedNetworkNamespace, adopt_systemd_activation,
+    claim_network_activation, validate_activation_replay,
 };
 
 /// Reports invalid activation, divergent custody, or an unconfirmed manager mutation.

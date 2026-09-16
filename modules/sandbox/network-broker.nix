@@ -169,7 +169,7 @@ in {
           ExecStartPre =
             lib.optional protectedRoots "+${runtimeRootsCommand}"
             ++ brokerSessionConfiguration.installCommands;
-          ExecStart = "${cfg.package}/bin/aos-netd";
+          ExecStart = "${cfg.package}/bin/aos-netd ${toString cfg.maximumRetainedNamespaces}";
           LoadCredential = authorityLoadCredentials ++ brokerSessionConfiguration.loadCredentials;
           Restart = "on-failure";
           RestartSec = "2s";

@@ -157,8 +157,9 @@ pub use namespace_observer::{
 pub use namespace_store::{
     ActivatedNetworkDescriptors, MAXIMUM_RETAINED_NETWORK_NAMESPACES,
     NetworkNamespaceCustodyRequirementV1, NetworkNamespaceStoreError, NetworkNamespaceStoreName,
-    NetworkNamespaceStoreOutcome, RetainedNetworkNamespace, SystemdNetworkNamespaceStore,
-    adopt_systemd_activation, validate_activation_replay,
+    NetworkNamespaceStoreOutcome, PendingNetworkSystemdActivationV1, RetainedNetworkNamespace,
+    SystemdNetworkNamespaceStore, adopt_systemd_activation, claim_network_activation,
+    validate_activation_replay,
 };
 pub use nftables_reader::{FixedNftablesObservationReader, decode_nftables_observation};
 pub use policy::{

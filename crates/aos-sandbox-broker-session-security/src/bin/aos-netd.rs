@@ -14,9 +14,11 @@ use aos_sandbox_broker_session_security::{
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
     production_deadline_after,
 };
+use aos_sandbox_linux::pidfd::NamespaceFd;
 use aos_sandbox_network::{
-    NetworkBrokerSessionRuntimeErrorV1, NetworkBrokerSessionRuntimeV1, NetworkPolicyCatalogV1,
-    ProtectedNetworkPolicyErrorV1,
+    MAXIMUM_RETAINED_NETWORK_NAMESPACES, NetworkBrokerSessionRuntimeErrorV1,
+    NetworkBrokerSessionRuntimeV1, NetworkNamespaceStoreError, NetworkPolicyCatalogV1,
+    ProtectedNetworkPolicyErrorV1, claim_network_activation,
 };
 
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-network/broker-state";
@@ -26,6 +28,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 enum NetworkDaemonErrorV1 {
+    #[error("usage: aos-netd MAXIMUM_RETAINED_NAMESPACES")]
+    Arguments,
     #[error("Network broker must start with real and effective UID zero")]
     Identity,
     #[error("systemd authority credential directory is absent")]
@@ -36,6 +40,10 @@ enum NetworkDaemonErrorV1 {
     Policy(#[from] ProtectedNetworkPolicyErrorV1),
     #[error("Network runtime failed: {0}")]
     Runtime(#[from] NetworkBrokerSessionRuntimeErrorV1),
+    #[error("Network descriptor custody failed: {0}")]
+    NamespaceStore(#[from] NetworkNamespaceStoreError),
+    #[error("Network namespace inspection failed")]
+    Namespace,
     #[error("Network deadline failed: {0}")]
     Deadline(#[from] ProductionBrokerDeadlineErrorV1),
     #[error("Network request failed: {0}")]
@@ -57,9 +65,17 @@ fn run() -> Result<(), NetworkDaemonErrorV1> {
         return Err(NetworkDaemonErrorV1::Identity);
     }
 
+    let maximum_retained_namespaces = parse_capacity()?;
+
     // SAFETY: this is the single-threaded entrypoint before any descriptor is
-    // opened. PID 1 exclusively transfers the sole fixed Network listener.
-    let mut activation = unsafe { ProductionBrokerSessionActivationV1::adopt_network() }?;
+    // opened. PID 1 exclusively transfers the listener and complete FD-store tail.
+    let pending_activation = unsafe { claim_network_activation() }?;
+    let host_namespace =
+        NamespaceFd::current_network().map_err(|_| NetworkDaemonErrorV1::Namespace)?;
+    let mut retained =
+        pending_activation.classify(maximum_retained_namespaces, host_namespace.identity())?;
+    let listener = retained.take_listener()?;
+    let mut activation = ProductionBrokerSessionActivationV1::adopt_network_listener(listener)?;
     let authority_directory =
         env::var_os("CREDENTIALS_DIRECTORY").ok_or(NetworkDaemonErrorV1::CredentialDirectory)?;
     let policy = NetworkPolicyCatalogV1::load_protected_publication(
@@ -71,6 +87,8 @@ fn run() -> Result<(), NetworkDaemonErrorV1> {
         Path::new(STATE_ROOT),
         policy,
         MINIMUM_POLICY_GENERATION,
+        retained,
+        host_namespace,
     )?;
 
     loop {
@@ -90,4 +108,23 @@ fn run() -> Result<(), NetworkDaemonErrorV1> {
             eprintln!("aos-netd: authenticated request failed: {error}");
         }
     }
+}
+
+fn parse_capacity() -> Result<usize, NetworkDaemonErrorV1> {
+    let mut arguments = env::args_os();
+    let _program = arguments.next().ok_or(NetworkDaemonErrorV1::Arguments)?;
+    let value = arguments.next().ok_or(NetworkDaemonErrorV1::Arguments)?;
+    if arguments.next().is_some() {
+        return Err(NetworkDaemonErrorV1::Arguments);
+    }
+    let value = value
+        .to_str()
+        .ok_or(NetworkDaemonErrorV1::Arguments)?
+        .parse::<usize>()
+        .map_err(|_| NetworkDaemonErrorV1::Arguments)?;
+    if value == 0 || value > MAXIMUM_RETAINED_NETWORK_NAMESPACES {
+        return Err(NetworkDaemonErrorV1::Arguments);
+    }
+
+    Ok(value)
 }

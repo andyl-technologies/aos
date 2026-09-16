@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::{BorrowedFd, OwnedFd};
 
+use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use rustix::fs::{FileType, Mode};
@@ -22,6 +23,89 @@ const LISTEN_FDNAMES_ENV_PREFIX_BYTES: usize = "LISTEN_FDNAMES=".len();
 /// minimum `MAX_ARG_STRLEN`. It is intentionally distinct from lifetime handle
 /// or allocation-generation limits.
 pub const MAXIMUM_RETAINED_NETWORK_NAMESPACES: usize = 1_024;
+
+/// Owns the complete, still-unclassified systemd activation table.
+#[derive(Debug)]
+pub struct PendingNetworkSystemdActivationV1 {
+    listener: RecordSubjectListener,
+    names: String,
+    retained: Vec<OwnedFd>,
+}
+
+impl PendingNetworkSystemdActivationV1 {
+    /// Classifies the listener and every retained Network namespace descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceStoreError`] when names, capacity, descriptor
+    /// types, or retained physical identities violate the fixed contract.
+    pub fn classify(
+        self,
+        configured_capacity: usize,
+        host_network_identity: NamespaceIdentity,
+    ) -> Result<ActivatedNetworkDescriptors, NetworkNamespaceStoreError> {
+        adopt_systemd_activation(
+            self.listener,
+            &self.names,
+            self.retained,
+            configured_capacity,
+            host_network_identity,
+        )
+    }
+}
+
+/// Claims the complete Network listener-plus-FD-store activation table.
+///
+/// This function validates `LISTEN_PID` and a bounded `LISTEN_FDS` before it
+/// duplicates and closes every contiguous activation descriptor. Classification
+/// remains separate because the configured store capacity and host namespace
+/// identity are protected runtime inputs rather than environment authority.
+///
+/// # Safety
+///
+/// The caller must be the single-threaded startup owner of systemd's contiguous
+/// activation descriptor range. No Rust owner or concurrent descriptor-table
+/// mutation may exist until this function returns.
+///
+/// # Errors
+///
+/// Returns [`NetworkNamespaceStoreError::InvalidActivation`] when the systemd
+/// envelope is absent, malformed, addressed to another process, out of bounds,
+/// or does not begin with a record-subject listener.
+pub unsafe fn claim_network_activation()
+-> Result<PendingNetworkSystemdActivationV1, NetworkNamespaceStoreError> {
+    let listen_pid = environment_u32("LISTEN_PID")?;
+    let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
+        .map_err(|_| invalid_activation("process identifier does not fit u32"))?;
+    if listen_pid != current_pid {
+        return Err(invalid_activation(
+            "LISTEN_PID does not name the Network broker process",
+        ));
+    }
+
+    let descriptor_count = usize::try_from(environment_u32("LISTEN_FDS")?)
+        .map_err(|_| invalid_activation("LISTEN_FDS does not fit usize"))?;
+    if descriptor_count == 0 || descriptor_count > MAXIMUM_RETAINED_NETWORK_NAMESPACES + 1 {
+        return Err(invalid_activation("LISTEN_FDS is outside the hard bound"));
+    }
+    let names = std::env::var("LISTEN_FDNAMES")
+        .map_err(|_| invalid_activation("LISTEN_FDNAMES is absent or non-Unicode"))?;
+
+    // SAFETY: forwarded from this function's exact startup ownership contract
+    // after validating the complete bounded descriptor range.
+    let mut descriptors = unsafe { claim_systemd_activation_descriptor_range(0, descriptor_count) }
+        .map_err(|_| invalid_activation("systemd activation descriptors cannot be claimed"))?
+        .into_descriptors();
+    let listener_descriptor = descriptors.remove(0);
+    let listener = RecordSubjectListener::from_owned(listener_descriptor)
+        .map_err(|_| invalid_activation("activation fd 3 is not a record-subject listener"))?;
+
+    Ok(PendingNetworkSystemdActivationV1 {
+        listener,
+        names,
+        retained: descriptors,
+    })
+}
 
 pub(super) type RawSystemdStoreRow = (String, u32, u32, u32, u64, u32, u32, String, u32);
 
@@ -143,7 +227,7 @@ impl RetainedNetworkNamespace {
 #[derive(Debug)]
 pub struct ActivatedNetworkDescriptors {
     /// The record-subject Network listener at activation descriptor 3.
-    pub listener: RecordSubjectListener,
+    listener: Option<RecordSubjectListener>,
     /// Every canonically named, kernel-typed retained namespace.
     pub namespaces: BTreeMap<NetworkNamespaceStoreName, RetainedNetworkNamespace>,
     pub(super) maximum_entries: usize,
@@ -151,6 +235,21 @@ pub struct ActivatedNetworkDescriptors {
 }
 
 impl ActivatedNetworkDescriptors {
+    /// Transfers the fixed Network listener to the authenticated session owner.
+    ///
+    /// Namespace custody remains available for replay validation and the
+    /// systemd descriptor-store owner. A second transfer fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceStoreError::InvalidActivation`] when the
+    /// listener was already transferred.
+    pub fn take_listener(&mut self) -> Result<RecordSubjectListener, NetworkNamespaceStoreError> {
+        self.listener
+            .take()
+            .ok_or_else(|| invalid_activation("Network listener was already transferred"))
+    }
+
     /// Returns the configured service-manager descriptor-store capacity.
     #[must_use]
     pub const fn maximum_entries(&self) -> usize {
@@ -211,6 +310,12 @@ impl NetworkNamespaceCustodyRequirementV1 {
             network_handle,
             namespace_identity,
         })
+    }
+
+    /// Returns the opaque Network handle naming the required descriptor.
+    #[must_use]
+    pub const fn network_handle(&self) -> [u8; 32] {
+        self.network_handle
     }
 }
 
@@ -382,11 +487,18 @@ fn adopt_descriptor_values(
     }
 
     Ok(ActivatedNetworkDescriptors {
-        listener,
+        listener: Some(listener),
         namespaces,
         maximum_entries,
         host_network_identity,
     })
+}
+
+fn environment_u32(name: &'static str) -> Result<u32, NetworkNamespaceStoreError> {
+    std::env::var(name)
+        .map_err(|_| invalid_activation("activation variable is absent or non-Unicode"))?
+        .parse()
+        .map_err(|_| invalid_activation("activation variable is not a decimal u32"))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

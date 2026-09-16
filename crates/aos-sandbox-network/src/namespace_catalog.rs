@@ -30,7 +30,7 @@ use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, Rec
 use aos_sandbox_core::{BrokerAssignment, ObjectDigest};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::path::BeneathRoot;
-use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_sandbox_linux::pidfd::{NamespaceIdentity, NamespaceKind};
 use aos_sandbox_protocol::{
     MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS, MAXIMUM_RESPONSE_BYTES,
     decode_network_resource_inventory_response,
@@ -39,7 +39,10 @@ use buffa::{Enumeration as _, Message as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::{CommittedNetworkResultV1, NetworkCatalogBindingV1, ResolvedNetworkPreparationV1};
+use crate::{
+    CommittedNetworkResultV1, NetworkCatalogBindingV1, NetworkNamespaceCustodyRequirementV1,
+    ResolvedNetworkPreparationV1,
+};
 
 mod checkpoint;
 mod lifecycle;
@@ -302,6 +305,42 @@ impl NetworkNamespaceCatalogV1 {
     pub fn checked_generation(&self) -> Result<u64, NetworkNamespaceCatalogError> {
         self.journal.ensure_healthy()?;
         Ok(self.generation)
+    }
+
+    /// Projects exact current-boot namespace custody required at process restart.
+    ///
+    /// Every non-retired row is physically revalidated through its fixed pin.
+    /// The returned requirements are strictly ordered by Network handle for
+    /// exact comparison with systemd's restored descriptor store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] when journal state is unhealthy,
+    /// a current pin is missing or changed, or a retained row cannot form a
+    /// valid custody requirement.
+    pub fn current_custody_requirements(
+        &self,
+    ) -> Result<Vec<NetworkNamespaceCustodyRequirementV1>, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
+
+        self.records
+            .values()
+            .filter(|record| {
+                record.kernel_boot_id == self.kernel_boot_id
+                    && !matches!(record.lifecycle, NamespaceLifecycleV1::Retired)
+            })
+            .map(|record| {
+                self.pin_root.verify_record(record)?;
+                NetworkNamespaceCustodyRequirementV1::new(
+                    record.network_handle,
+                    NamespaceIdentity {
+                        device: record.namespace_device,
+                        inode: record.namespace_inode,
+                    },
+                )
+                .map_err(|_| NetworkNamespaceCatalogError::InvalidCandidate)
+            })
+            .collect()
     }
 
     /// Returns one physically revalidated current namespace identity.

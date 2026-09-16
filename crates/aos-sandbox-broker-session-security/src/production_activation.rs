@@ -157,6 +157,26 @@ impl ProductionBrokerSessionActivationV1 {
         Self::from_owned_listener(ProtectedBrokerSessionFixedEndpointV1::MountBroker, listener)
     }
 
+    /// Adopts the fixed Network listener after the Network FD store claims activation.
+    ///
+    /// The Network service receives retained namespace descriptors beside its
+    /// listener. Its FD-store owner must claim and classify that complete table
+    /// first, then transfer only the typed listener here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `listener` is the fixed Network filesystem
+    /// listener with record-subject reporting enabled.
+    pub fn adopt_network_listener(
+        listener: RecordSubjectListener,
+    ) -> Result<Self, ProductionBrokerSessionActivationErrorV1> {
+        let endpoint = ProtectedBrokerSessionFixedEndpointV1::NetworkBroker;
+        listener.require_local_filesystem_path(Path::new(endpoint.production_socket_path()))?;
+        Ok(Self {
+            listeners: vec![FixedListenerV1 { endpoint, listener }],
+        })
+    }
+
     /// Adopts the sole fixed Network listener.
     ///
     /// # Safety
