@@ -36,15 +36,6 @@
         "rollback-revalidates-and-retains-transaction-evidence"
       ]
       ++ hostSystemdNginxTlsChecks;
-    ability-native-image-rollout = [
-      "advisory-exact-candidate-staging-without-selection-or-reboot"
-      "authenticated-rollout-plan-and-exact-native-request"
-      "booted-candidate-health-hook-before-config-generation-commit"
-      "healthy-provider-and-journal-evidence-before-physical-commit"
-      "failed-health-mark-reboot-and-predecessor-retention"
-      "exact-generation-roots-and-uki-retention"
-      "post-expiry-rollout-root-retirement"
-    ];
     ability-native-kubernetes = [
       "authenticated-k3s-bootstrap-and-provider-authority"
       "exact-service-and-kubernetes-object-resource-mapping"
@@ -75,7 +66,6 @@
   };
   requiredRegressions = {
     ability-native-activation = ["checks.fleet.runtime-module-composition"];
-    ability-native-image-rollout = ["checks.fleet.ability-native-image-rollout"];
     ability-native-kubernetes = ["checks.fleet.k3s-control-plane-worker"];
     ability-native-recovery = [
       "checks.fleet.ability-initrd-activation"
@@ -87,7 +77,6 @@
   };
   requiredProductionOnly = {
     ability-native-activation = false;
-    ability-native-image-rollout = true;
     ability-native-kubernetes = false;
     ability-native-recovery = false;
     ability-crucible-baseline = false;
@@ -117,15 +106,6 @@ in {
         production_only = false;
         checks = requiredChecks.ability-native-activation;
         regressions = requiredRegressions.ability-native-activation;
-        invalidated_by = requiredInvalidation;
-      };
-      ability-native-image-rollout = {
-        phase = "staging";
-        scope = "release";
-        method = "automated";
-        production_only = true;
-        checks = requiredChecks.ability-native-image-rollout;
-        regressions = requiredRegressions.ability-native-image-rollout;
         invalidated_by = requiredInvalidation;
       };
       ability-native-kubernetes = {

@@ -18,7 +18,6 @@ pub fn contract() -> Result<QualificationContract> {
         ("ability-native-adapter-matrix", "staging", "release", true),
         ("ability-crucible-baseline", "staging", "release", false),
         ("ability-native-activation", "staging", "release", false),
-        ("ability-native-image-rollout", "staging", "release", true),
         ("ability-native-kubernetes", "staging", "release", false),
         ("ability-native-recovery", "staging", "release", false),
         ("build-integrity", "build", "release", false),

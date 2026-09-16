@@ -128,9 +128,6 @@ pub struct CheckObservation {
 /// Stable requirement identity for the closed native adapter matrix.
 pub const NATIVE_ADAPTER_MATRIX_REQUIREMENT: &str = "ability-native-adapter-matrix";
 
-/// Stable requirement identity for the native finalized-image rollout flight.
-pub const NATIVE_IMAGE_ROLLOUT_REQUIREMENT: &str = "ability-native-image-rollout";
-
 /// Canonical schema for an immutable native adapter matrix specification.
 pub const NATIVE_ADAPTER_MATRIX_SPEC_V1: &str = "aos.qualification.native-adapter-matrix-spec/v1";
 
@@ -626,13 +623,7 @@ pub fn cases(
     let mut requirements: Vec<_> = contract
         .selected(&plan.registry, plan.release_class)?
         .filter(|gate| gate.phase == phase)
-        .filter(|gate| {
-            !qualification_snapshot
-                || !matches!(
-                    gate.id.as_str(),
-                    "image-update-recovery" | NATIVE_IMAGE_ROLLOUT_REQUIREMENT
-                )
-        })
+        .filter(|gate| !qualification_snapshot || gate.id != "image-update-recovery")
         .filter(|gate| {
             !current
                 || !matches!(
@@ -735,7 +726,6 @@ pub fn cases(
             };
             let predecessor = if requirement.id == "image-update-recovery"
                 || requirement.id == NATIVE_ADAPTER_MATRIX_REQUIREMENT
-                || requirement.id == NATIVE_IMAGE_ROLLOUT_REQUIREMENT
                 || claim.as_ref().is_some_and(|claim| {
                     claim.minimum_assurance >= AssuranceLevel::A2
                         && claim
