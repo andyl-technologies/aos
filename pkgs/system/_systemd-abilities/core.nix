@@ -1249,6 +1249,38 @@
       requiredFeatures = [];
     };
   };
+  credentialImplementations = {
+    systemd-named-credential-resolution = {
+      description = "Resolves system-scoped credentials through systemd's named credential stores.";
+      interface = serviceInterfaces.namedCredential.identity;
+      artifact = handlerArtifact;
+      inherit (serviceInterfaces.namedCredential) methods;
+      guarantees = [];
+      handlerDescriptor = {
+        artifact = handlerArtifact;
+        entryPoint = handlerEntryPoint;
+        arguments = serviceInterfaces.namedCredential.requestType;
+        result = serviceInterfaces.namedCredential.observationType;
+      };
+      desiredType = null;
+      requiredFeatures = [];
+    };
+    systemd-credential-delivery = {
+      description = "Delivers system-scoped credentials through systemd-owned credential stores and runtime views.";
+      interface = serviceInterfaces.credentialDelivery.identity;
+      artifact = handlerArtifact;
+      inherit (serviceInterfaces.credentialDelivery) methods;
+      guarantees = [];
+      handlerDescriptor = {
+        artifact = handlerArtifact;
+        entryPoint = handlerEntryPoint;
+        arguments = serviceInterfaces.credentialDelivery.requestType;
+        result = serviceInterfaces.credentialDelivery.observationType;
+      };
+      desiredType = null;
+      requiredFeatures = [];
+    };
+  };
   serviceFeatureNames = builtins.filter (featureName: let
     selected = serviceInterfaces.${featureName};
     aggregation = selected.document.interface.aggregation;
@@ -1433,6 +1465,7 @@ in {
       // nativeTerminalImplementations
       // devicePresenceImplementation
       // imagePlatformImplementations
+      // credentialImplementations
       // {
         systemd-manager-watchdog = {
           description = "Controls systemd manager watchdog configuration through a pure package-owned controller.";
