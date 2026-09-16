@@ -47,6 +47,7 @@
   provisioningEffects = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "provisioning";
   provisioningDetection = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "detect-platform-provisioning";
   provisioningAuthorization = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "authorize-input-provisioning";
+  provisioningMarker = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "observe-marker-provisioning";
   provisioningPlan = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "observe-plan-provisioning";
   provisioningNetwork = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "network-readiness-provisioning";
   provisioningNetworkEffects = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "network-configuration-effects-provisioning";
@@ -70,6 +71,7 @@
             "aos-cryptsetup-provider:manager" = {};
             "aos-storage-format-provider:manager" = {};
             "aos-storage-provisioning-provider:manager" = {};
+            "aos-storage-provisioning-provider:marker-observer" = {};
             "aos-nix-store-provider:manager" = {};
             "aos-zfs-provider:manager" = {};
             "network-provider:manager" = {};
@@ -153,6 +155,12 @@
               implementation = "aos:storage-provisioning-plan-observer";
               providerInstance = "aos:storage-provisioning-plan-observer";
               slot = "provisioning";
+            };
+            "test:provisioning-marker" = {
+              request = provisioningMarker;
+              implementation = "aos-storage-provisioning-provider:storage-provisioning-marker-observer";
+              providerInstance = "aos-storage-provisioning-provider:marker-observer";
+              slot = "provisioning-marker";
             };
             "test:provisioning-network" = {
               request = provisioningNetwork;
@@ -488,6 +496,14 @@
           access = "exclusive-write";
         })
         (authorizedBinding {
+          id = "observe-marker";
+          request = "observe-marker-${provisioning.resource.key}";
+          interface = interfaceIdentity "aos.storage.provisioning-marker-observation";
+          method = "observe";
+          resource = provisioning.resource;
+          access = "read";
+        })
+        (authorizedBinding {
           id = "observe-plan";
           request = "observe-plan-${provisioning.resource.key}";
           interface = interfaceIdentity "aos.metadata.storage-provisioning-plan";
@@ -546,6 +562,8 @@
     builtins.head (builtins.filter (operation: operation.key.key == key) transitionFragment.operations);
   imageNetworkApply = operationByKey imageTransition "apply-network-bootstrap-${provisioning.resource.key}";
   operatorNetworkApply = operationByKey operatorTransition "apply-network-bootstrap-${provisioning.resource.key}";
+  markerObservation = operationByKey imageTransition "observe-marker-${provisioning.resource.key}";
+  planObservation = operationByKey imageTransition "observe-plan-${provisioning.resource.key}";
   authorizedInputCommit = operationByKey imageTransition "commit-authorized-input-${provisioning.resource.key}";
   bootstrapEdge = edge:
     edge.from.kind
@@ -574,6 +592,21 @@ in
   assert abilities.compositionRequests.${provisioningEffects}.parameters == provisioning.value;
   assert abilities.compositionRequests.${provisioningNetworkEffects}.parameters == {};
   assert hostNetwork.value.authority == "image";
+  assert markerObservation.inputs.fields.lsblk.value.entry_point == "bin/lsblk";
+  assert planObservation.inputs.fields.marker
+  == {
+    source = "operation-result";
+    reference = {
+      producer = {
+        kind = "operation";
+        key = {
+          scope = ["storage-provisioning"];
+          key = "observe-marker-${provisioning.resource.key}";
+        };
+      };
+      output = "marker";
+    };
+  };
   assert imageNetworkApply.inputs.fields.bootstrap
   == {
     source = "operation-result";
@@ -627,6 +660,8 @@ in
   assert abilities.implementations."aos-zfs-provider:storage-dataset-effects".providerModule == null;
   assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning".handlerDescriptor == null;
   assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning-effects".providerModule == null;
+  assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning-marker-observer".handlerDescriptor.entryPoint
+  == "bin/aos-storage-provisioning-marker-observer";
   assert abilities.implementations."aos:storage-provisioning-platform-detector".handlerDescriptor.entryPoint
   == "libexec/aos-metadata-provisioning-provider";
   assert abilities.implementations."aos:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint

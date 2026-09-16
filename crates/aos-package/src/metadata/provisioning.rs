@@ -12,14 +12,16 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
 use aos_storage_provisioning::{
-    CanonicalProvisioningPlan, CanonicalProvisioningSource, canonicalize_provisioning_plan,
+    CanonicalProvisioningPlan, CanonicalProvisioningSource, ProvisioningMarkerObservation,
+    ProvisioningMarkerState, canonicalize_provisioning_plan,
+    validate_provisioning_marker_observation,
 };
 use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 
 use crate::config_trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload};
 
-use super::repart::{ProvisioningPlan, normalize_marker_uuid};
+use super::repart::ProvisioningPlan;
 use super::stash::{Stash, sha256_hex};
 
 /// Raw user-data filename written by the fetch phase.
@@ -126,44 +128,10 @@ pub struct EvalProvisioningOptions {
     pub eval_root: PathBuf,
     /// Whether measured boot requires `/var` to remain raw.
     pub measured_boot: bool,
-    /// Existing committed source when evaluating advisory post-commit drift.
-    pub committed_source: Option<ProvisioningSource>,
-    /// Existing GPT marker UUID used as the namespace for generated UUIDs.
-    pub marker_uuid: Option<String>,
+    /// Typed durable marker state observed by the selected storage provider.
+    pub marker: ProvisioningMarkerObservation,
     /// Exact evaluator executable supplied by the authenticated runtime artifact.
     pub nix_instantiate: PathBuf,
-}
-
-/// Provenance arm recorded in the durable GPT marker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProvisioningSource {
-    /// Storage intent came from authenticated `host.nix`.
-    Operator,
-    /// No host input existed, so the image schema defaults were used.
-    Fallback,
-}
-
-impl ProvisioningSource {
-    /// Returns the stable source name used by files and CLI arguments.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Operator => "operator",
-            Self::Fallback => "fallback",
-        }
-    }
-}
-
-impl FromStr for ProvisioningSource {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "operator" => Ok(Self::Operator),
-            "fallback" => Ok(Self::Fallback),
-            _ => bail!("unknown provisioning source '{value}'"),
-        }
-    }
 }
 
 /// Authorizes fetched user-data as literal `host.nix`.
@@ -263,17 +231,12 @@ pub fn evaluate_canonical_provisioning_plan(
         source,
         marker_uuid,
     } = evaluate_provisioning(opts)?;
-    let source = match source {
-        ProvisioningSource::Operator => CanonicalProvisioningSource::Operator,
-        ProvisioningSource::Fallback => CanonicalProvisioningSource::Fallback,
-    };
-
     canonicalize_provisioning_plan(plan, source, opts.measured_boot, &marker_uuid)
 }
 
 struct EvaluatedProvisioning {
     plan: ProvisioningPlan,
-    source: ProvisioningSource,
+    source: CanonicalProvisioningSource,
     marker_uuid: String,
 }
 
@@ -328,30 +291,43 @@ fn evaluate_provisioning(opts: &EvalProvisioningOptions) -> Result<EvaluatedProv
     let plan: ProvisioningPlan =
         serde_json::from_slice(&output.stdout).context("parsing evaluated provisioning plan")?;
     let source = if host_path.is_file() {
-        ProvisioningSource::Operator
+        CanonicalProvisioningSource::Operator
     } else {
-        ProvisioningSource::Fallback
+        CanonicalProvisioningSource::Fallback
     };
-    if let Some(committed) = opts.committed_source
-        && committed != source
-    {
-        bail!(
-            "current storage source '{}' differs from committed source '{}'",
-            source.as_str(),
-            committed.as_str()
-        );
-    }
-    let marker_uuid = match opts.marker_uuid.as_deref() {
-        Some(value) => normalize_marker_uuid(value)
-            .with_context(|| format!("parsing committed provisioning marker UUID '{value}'"))?,
-        None => generate_marker_uuid(),
-    };
+    let marker_uuid = marker_uuid_for_source(&opts.marker, source)?;
 
     Ok(EvaluatedProvisioning {
         plan,
         source,
         marker_uuid,
     })
+}
+
+fn marker_uuid_for_source(
+    marker: &ProvisioningMarkerObservation,
+    source: CanonicalProvisioningSource,
+) -> Result<String> {
+    validate_provisioning_marker_observation(marker)?;
+    match marker.state {
+        ProvisioningMarkerState::Absent => Ok(generate_marker_uuid()),
+        ProvisioningMarkerState::Completed => {
+            let committed = marker.source.context("completed marker has no source")?;
+            if committed != source {
+                bail!("current storage source differs from the committed provisioning source");
+            }
+            marker
+                .marker_uuid
+                .clone()
+                .context("completed marker has no UUID")
+        }
+        ProvisioningMarkerState::Pending => {
+            bail!("pending provisioning marker requires explicit recovery")
+        }
+        ProvisioningMarkerState::Indeterminate => {
+            bail!("provisioning marker state is indeterminate")
+        }
+    }
 }
 
 /// Verifies that stage 2 is consuming the exact host bytes accepted in initrd.
@@ -380,4 +356,51 @@ pub fn verify_host_binding(stash_dir: &Path) -> Result<()> {
 
 fn nix_path(path: &Path) -> String {
     path.to_string_lossy().replace(' ', "\\ ")
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    fn marker(
+        state: ProvisioningMarkerState,
+        source: Option<CanonicalProvisioningSource>,
+        marker_uuid: Option<&str>,
+    ) -> ProvisioningMarkerObservation {
+        ProvisioningMarkerObservation {
+            schema: "aos.storage.provisioning-marker-observation/v1".into(),
+            state,
+            source,
+            marker_uuid: marker_uuid.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn completed_marker_must_match_the_selected_source() {
+        let observed = marker(
+            ProvisioningMarkerState::Completed,
+            Some(CanonicalProvisioningSource::Operator),
+            Some("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+        );
+
+        assert!(marker_uuid_for_source(&observed, CanonicalProvisioningSource::Fallback).is_err());
+        assert_eq!(
+            marker_uuid_for_source(&observed, CanonicalProvisioningSource::Operator)
+                .expect("matching committed marker"),
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        );
+    }
+
+    #[test]
+    fn unfinished_marker_states_fail_closed() {
+        for state in [
+            ProvisioningMarkerState::Pending,
+            ProvisioningMarkerState::Indeterminate,
+        ] {
+            let observed = marker(state, None, None);
+            assert!(
+                marker_uuid_for_source(&observed, CanonicalProvisioningSource::Fallback).is_err()
+            );
+        }
+    }
 }

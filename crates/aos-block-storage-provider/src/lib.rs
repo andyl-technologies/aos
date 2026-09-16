@@ -10,6 +10,7 @@ pub mod boot_transaction_storage;
 pub mod cryptsetup;
 pub mod engine;
 pub mod process;
+pub mod provisioning_marker;
 pub mod state;
 pub mod storage_format;
 pub mod storage_provisioning;
