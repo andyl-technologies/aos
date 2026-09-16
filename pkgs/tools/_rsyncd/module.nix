@@ -30,7 +30,12 @@
       maxLength = 128;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9][A-Za-z0-9_.@-]*";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Za-z0-9][A-Za-z0-9_.@-]*";
+      }
+    ];
   };
   credentialReference = serviceTypes.credentialReference;
   moduleType = abilityTypes.record {

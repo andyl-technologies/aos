@@ -925,11 +925,13 @@
     name = "structured configuration source";
     description = "a canonical rooted document tree with contiguous arrays";
     type = structuredConfigurationSourceBase;
-    constraints = [{
-      kind = "structured-document";
-      format_field = "format";
-      document_field = "document";
-    }];
+    constraints = [
+      {
+        kind = "structured-document";
+        format_field = "format";
+        document_field = "document";
+      }
+    ];
   };
   configurationMaterializationSource = types.taggedUnion {
     tag = "kind";
@@ -1229,10 +1231,12 @@
         };
       };
     };
-    constraints = [{
-      kind = "at-most-one-non-null";
-      fields = ["name" "resource"];
-    }];
+    constraints = [
+      {
+        kind = "at-most-one-non-null";
+        fields = ["name" "resource"];
+      }
+    ];
   };
   credentialDelivery = types.record {
     fields =

@@ -20,7 +20,12 @@
       maxLength = 4096;
       syntax = null;
     };
-    constraints = [{kind = "minimum-size"; minimum = 1;}];
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+    ];
   };
   intervalType = abilityTypes.record {
     fields = {
@@ -42,7 +47,12 @@
       maxLength = 1024;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[^[:space:][:cntrl:]]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[^[:space:][:cntrl:]]+";
+      }
+    ];
   };
   intervalNames = builtins.attrNames cfg.intervals;
   enabledIntervals = builtins.filter (name: cfg.intervals.${name}.enable) intervalNames;

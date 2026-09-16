@@ -27,7 +27,12 @@
       maxLength = abilityTypes.limits.maxStringLength;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9 ()*/+.,_-]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Za-z0-9 ()*/+.,_-]+";
+      }
+    ];
   };
   compressionAlgorithm = abilityTypes.refined {
     name = "zram compression algorithm";
@@ -36,7 +41,12 @@
       maxLength = abilityTypes.limits.maxStringLength;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9_+().,=-]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Za-z0-9_+().,=-]+";
+      }
+    ];
   };
   compressionAlgorithms = abilityTypes.refined {
     name = "zram compression algorithm list";
@@ -45,7 +55,12 @@
       element = compressionAlgorithm;
       maxItems = abilityTypes.limits.maxCollectionItems;
     };
-    constraints = [{kind = "minimum-size"; minimum = 1;}];
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+    ];
   };
   zramGeneratorArtifact = lib.abilities.packageOutput {};
   utilLinuxArtifact = lib.abilities.packageOutput {

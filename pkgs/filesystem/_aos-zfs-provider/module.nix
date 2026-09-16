@@ -25,7 +25,12 @@
       maxLength = 32;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[0-9]+[KMGTP]?";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[0-9]+[KMGTP]?";
+      }
+    ];
   };
   optionalSize = abilityTypes.optional size;
   compression = abilityTypes.refined {
@@ -35,7 +40,12 @@
       maxLength = 64;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[a-z0-9-]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[a-z0-9-]+";
+      }
+    ];
   };
   propertyValue = abilityTypes.string {
     maxLength = 4096;
@@ -218,20 +228,22 @@
     dataset = name;
   }}";
   reservedDatasetName = builtins.unsafeDiscardStringContext cfg.reservedSpace.dataset;
-  configuredDatasets = cfg.datasets // lib.optionalAttrs cfg.reservedSpace.enable {
-    ${reservedDatasetName} = {
-      mountPoint = null;
-      recordSize = "128K";
-      compression = "zstd-3";
-      atime = false;
-      quota = null;
-      snapshot = false;
-      deduplicate = false;
-      reservation = cfg.reservedSpace.size;
-      mountOptions = [];
-      extraProperties = {};
+  configuredDatasets =
+    cfg.datasets
+    // lib.optionalAttrs cfg.reservedSpace.enable {
+      ${reservedDatasetName} = {
+        mountPoint = null;
+        recordSize = "128K";
+        compression = "zstd-3";
+        atime = false;
+        quota = null;
+        snapshot = false;
+        deduplicate = false;
+        reservation = cfg.reservedSpace.size;
+        mountOptions = [];
+        extraProperties = {};
+      };
     };
-  };
   propertiesOf = attributes:
     {
       recordsize = attributes.recordSize;
@@ -252,24 +264,25 @@
     // lib.optionalAttrs ((attributes.quota or null) != null) {quota = attributes.quota;}
     // lib.optionalAttrs ((attributes.reservation or null) != null) {refreservation = attributes.reservation;}
     // attributes.extraProperties;
-  datasetEntries = lib.mapAttrsToList (name: attributes: let
-    key = datasetKey name;
-    mountpoint = attributes.mountPoint or null;
-  in {
-    inherit key;
-    fragment = producer key storage.dataset {
-      name = key;
-      enabled = true;
-      pool = resultOf "pool" "pool-name";
-      dataset = name;
-      inherit mountpoint;
-      mount_options = attributes.mountOptions;
-      properties = propertiesOf attributes;
-      prerequisites = [(resultOf "pool" "readiness-resource")];
-    };
-    readiness = qualifiedResultOf key "readiness-resource";
-  })
-  configuredDatasets;
+  datasetEntries =
+    lib.mapAttrsToList (name: attributes: let
+      key = datasetKey name;
+      mountpoint = attributes.mountPoint or null;
+    in {
+      inherit key;
+      fragment = producer key storage.dataset {
+        name = key;
+        enabled = true;
+        pool = resultOf "pool" "pool-name";
+        dataset = name;
+        inherit mountpoint;
+        mount_options = attributes.mountOptions;
+        properties = propertiesOf attributes;
+        prerequisites = [(resultOf "pool" "readiness-resource")];
+      };
+      readiness = qualifiedResultOf key "readiness-resource";
+    })
+    configuredDatasets;
   datasets = builtins.map (entry: entry.fragment) datasetEntries;
   readinessResources =
     [(qualifiedResultOf "pool" "readiness-resource")]
@@ -391,20 +404,20 @@ in {
     }
     {
       aos.abilities = lib.mkMerge ([
-      {
-        interfaces.${poolTerminal.alias} = poolTerminal.declaration;
-        interfaces.${datasetTerminal.alias} = datasetTerminal.declaration;
-        implementations.storage-pool = controller storage.pool poolTerminal "share/aos/providers/storage-pool.nix" "Converges storage pools through the OpenZFS controller.";
-        implementations.storage-dataset = controller storage.dataset datasetTerminal "share/aos/providers/storage-dataset.nix" "Converges storage datasets through the OpenZFS controller.";
-        implementations.${poolTerminal.alias} = poolTerminal.implementation;
-        implementations.${datasetTerminal.alias} = datasetTerminal.implementation;
-      }
-    ]
-    ++ builtins.map (contribution: contribution.declarations) contributions
-    ++ lib.optional cfg.enable (lib.mkMerge (
-      [{instances.${consumerInstance} = {};}]
-      ++ builtins.map (contribution: contribution.configured) contributions
-    )));
+          {
+            interfaces.${poolTerminal.alias} = poolTerminal.declaration;
+            interfaces.${datasetTerminal.alias} = datasetTerminal.declaration;
+            implementations.storage-pool = controller storage.pool poolTerminal "share/aos/providers/storage-pool.nix" "Converges storage pools through the OpenZFS controller.";
+            implementations.storage-dataset = controller storage.dataset datasetTerminal "share/aos/providers/storage-dataset.nix" "Converges storage datasets through the OpenZFS controller.";
+            implementations.${poolTerminal.alias} = poolTerminal.implementation;
+            implementations.${datasetTerminal.alias} = datasetTerminal.implementation;
+          }
+        ]
+        ++ builtins.map (contribution: contribution.declarations) contributions
+        ++ lib.optional cfg.enable (lib.mkMerge (
+          [{instances.${consumerInstance} = {};}]
+          ++ builtins.map (contribution: contribution.configured) contributions
+        )));
     }
   ];
 }

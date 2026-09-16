@@ -19,13 +19,23 @@
     name = "Garage socket address";
     description = "a non-empty Garage socket address without whitespace";
     type = abilityTypes.runtimeString;
-    constraints = [{kind = "string-pattern"; pattern = "[^[:space:]]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[^[:space:]]+";
+      }
+    ];
   };
   nonEmpty = abilityTypes.refined {
     name = "non-empty Garage value";
     description = "a non-empty Garage configuration value";
     type = abilityTypes.runtimeString;
-    constraints = [{kind = "minimum-size"; minimum = 1;}];
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+    ];
   };
   dbEngineType = abilityTypes.enum ["lmdb" "sqlite"];
   credentialReference = serviceTypes.credentialReference;

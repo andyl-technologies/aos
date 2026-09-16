@@ -41,7 +41,12 @@
     abilityTypes.refined {
       inherit name description;
       type = boundedText maximum;
-      constraints = [{kind = "string-pattern"; pattern = pattern;}];
+      constraints = [
+        {
+          kind = "string-pattern";
+          pattern = pattern;
+        }
+      ];
     };
   size = checkedString "nginx size" "an nginx byte size" "[0-9]+[kKmMgG]?" 64;
   duration = checkedString "nginx duration" "an nginx duration" "[0-9]+(ms|s|m|h|d)" 64;

@@ -21,7 +21,12 @@
       maxLength = 255;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9:.%_-]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Za-z0-9:.%_-]+";
+      }
+    ];
   };
   addresses = abilityTypes.list {
     element = address;

@@ -21,7 +21,12 @@
       maxLength = 255;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9:.%_-]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Za-z0-9:.%_-]+";
+      }
+    ];
   };
   server = abilityTypes.refined {
     name = "dnsmasq upstream server";
@@ -31,8 +36,14 @@
       syntax = null;
     };
     constraints = [
-      {kind = "minimum-size"; minimum = 1;}
-      {kind = "string-excludes"; classes = ["line-break"];}
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+      {
+        kind = "string-excludes";
+        classes = ["line-break"];
+      }
     ];
   };
   dhcpRange = abilityTypes.refined {
@@ -43,8 +54,14 @@
       syntax = null;
     };
     constraints = [
-      {kind = "minimum-size"; minimum = 1;}
-      {kind = "string-excludes"; classes = ["line-break"];}
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+      {
+        kind = "string-excludes";
+        classes = ["line-break"];
+      }
     ];
   };
   addresses = abilityTypes.list {

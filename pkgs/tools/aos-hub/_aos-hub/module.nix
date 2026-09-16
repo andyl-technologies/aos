@@ -88,7 +88,12 @@
     name = "HTTPS DNS endpoint";
     description = "an HTTPS URL without whitespace";
     type = boundedString;
-    constraints = [{kind = "string-pattern"; pattern = "https://[^[:space:]]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "https://[^[:space:]]+";
+      }
+    ];
   };
   optionalString = abilityTypes.optional boundedString;
   optionalCredential = abilityTypes.optional abilityTypes.localKey;
