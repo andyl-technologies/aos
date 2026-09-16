@@ -552,7 +552,7 @@ fn binding_candidates(
     intent: &StaticSelectionIntent,
     package_contracts: &[(PackageDocument, Vec<InterfaceDocument>)],
     policy_revision: RevisionId,
-) -> Result<Vec<(String, BindingCandidate)>> {
+) -> Result<Vec<(aos_ability_model::BindingRequest, BindingCandidate)>> {
     let packages_by_name = package_contracts
         .iter()
         .map(|(package, interfaces)| (package.package.name.clone(), (package, interfaces)))
@@ -668,7 +668,7 @@ fn binding_candidates(
 
         let candidate_key = static_candidate_key(selection)?;
         candidates.push((
-            selection.request_name.clone(),
+            request.request.clone(),
             BindingCandidate {
                 key: candidate_key,
                 request: selection.request.clone(),
@@ -708,7 +708,7 @@ fn static_candidate_key(selection: &StaticSelection) -> Result<LocalKey> {
 }
 
 fn planned_provider_inventory(
-    candidates: &[(String, BindingCandidate)],
+    candidates: &[(aos_ability_model::BindingRequest, BindingCandidate)],
 ) -> Result<Vec<ProviderInventory>> {
     let mut providers = BTreeMap::new();
     for (_, candidate) in candidates {
@@ -735,7 +735,7 @@ fn compose_static_policies(
     catalog: &VerifiedPackagePlanningCatalog,
     environment: &EnvironmentDocument,
     seed: &DesiredStateDocument,
-    candidates: Vec<(String, BindingCandidate)>,
+    candidates: Vec<(aos_ability_model::BindingRequest, BindingCandidate)>,
 ) -> Result<Vec<ResolutionPolicyDocument>> {
     let mut evaluator = super::native_activation::production_evaluator()?;
     compose_static_policies_with(catalog, environment, seed, candidates, &mut evaluator)
@@ -745,7 +745,7 @@ fn compose_static_policies_with(
     catalog: &VerifiedPackagePlanningCatalog,
     environment: &EnvironmentDocument,
     seed: &DesiredStateDocument,
-    candidates: Vec<(String, BindingCandidate)>,
+    candidates: Vec<(aos_ability_model::BindingRequest, BindingCandidate)>,
     evaluator: &mut impl aos_ability_plan::CompositionEvaluator,
 ) -> Result<Vec<ResolutionPolicyDocument>> {
     let candidate_requests = candidates
@@ -795,14 +795,13 @@ fn compose_static_policies_with(
         }
     };
 
-    let final_requests = outcome
-        .desired_state
-        .child_requests
+    let mut expected_requests = candidates
         .iter()
-        .map(|request| request.id.clone())
-        .collect::<BTreeSet<_>>();
+        .map(|(request, _)| request.clone())
+        .collect::<Vec<_>>();
+    expected_requests.sort_by(|left, right| left.id.cmp(&right.id));
     ensure!(
-        final_requests == candidate_requests,
+        outcome.desired_state.child_requests == expected_requests,
         "static selection does not exactly cover the composed request graph"
     );
     Ok(outcome.policies)
@@ -813,7 +812,7 @@ fn policy_for_desired(
     desired_state: Sha256Digest,
     environment: Sha256Digest,
     policy_revision: RevisionId,
-    selections: &[(String, BindingCandidate)],
+    selections: &[(aos_ability_model::BindingRequest, BindingCandidate)],
 ) -> Result<ResolutionPolicyDocument> {
     let requests = desired
         .child_requests
