@@ -457,6 +457,9 @@
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
+  linuxServiceFeatures = import ./linux-service-features.nix {
+    inherit lib pkgs;
+  };
   managedIdentityAllocation = import ./managed-identity-allocation.nix {
     inherit lib pkgs;
   };
@@ -1064,6 +1067,7 @@ in
   assert bootPreparationProvider;
   assert bootStorageServices;
   assert stagedEnvironment;
+  assert linuxServiceFeatures;
   assert postgresqlService;
   assert securityWrappers;
   assert releaseCoordinatorService;

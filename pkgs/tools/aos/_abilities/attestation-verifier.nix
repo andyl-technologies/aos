@@ -55,6 +55,46 @@
     parameters.scope = "local-filesystems";
   };
   service = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = {
+          allow_privilege_escalation = false;
+          ambient_capabilities = [];
+          capability_bounds = {
+            kind = "restricted";
+            capabilities = [];
+          };
+          control_group_delegation = false;
+          control_group_access = "read-only";
+          device_namespace = "private";
+          kernel_clock_mutation = true;
+          kernel_hostname_mutation = true;
+          kernel_log_access = true;
+          kernel_module_access = true;
+          kernel_tunable_access = true;
+          lock_personality = false;
+          memory_write_execute = false;
+          namespace_isolation = [];
+          namespace_creation = "denied";
+          network_address_families = ["unix"];
+          oom_score_adjust = 0;
+          permit_realtime = true;
+          permit_suid_sgid = true;
+          process_visibility = "all";
+          syscall_architectures = [];
+          syscall_allow = [];
+          syscall_deny = [];
+          syscall_denial_action = "return-permission-denied";
+          syscall_profile = "system-service";
+          user_namespace_ownership = "none";
+        };
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "service";
     declaration = {
@@ -131,37 +171,6 @@
             }
           ];
         permit_core_dumps = false;
-      };
-      linux_isolation = {
-        allow_privilege_escalation = false;
-        ambient_capabilities = [];
-        capability_bounds = {
-          kind = "restricted";
-          capabilities = [];
-        };
-        control_group_delegation = false;
-        control_group_access = "read-only";
-        device_namespace = "private";
-        kernel_clock_mutation = true;
-        kernel_hostname_mutation = true;
-        kernel_log_access = true;
-        kernel_module_access = true;
-        kernel_tunable_access = true;
-        lock_personality = false;
-        memory_write_execute = false;
-        namespace_isolation = [];
-        namespace_creation = "denied";
-        network_address_families = ["unix"];
-        oom_score_adjust = 0;
-        permit_realtime = true;
-        permit_suid_sgid = true;
-        process_visibility = "all";
-        syscall_architectures = [];
-        syscall_allow = [];
-        syscall_deny = [];
-        syscall_denial_action = "return-permission-denied";
-        syscall_profile = "system-service";
-        user_namespace_ownership = "none";
       };
     };
   };

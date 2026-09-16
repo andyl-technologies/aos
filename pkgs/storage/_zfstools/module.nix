@@ -132,6 +132,16 @@
     io_priority = 7;
   };
   prepareService = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = linuxIsolation;
+      })
+    ];
     inherit serviceTypes consumerInstance;
     declaration = {
       service = "prepare";
@@ -149,7 +159,6 @@
         wants = [];
       };
       inherit isolation;
-      linux_isolation = linuxIsolation;
     };
   };
   intervalFragments = name: let
@@ -173,6 +182,16 @@
       wants = cfg.storageReadiness;
     };
     service = serviceManagement.forService {
+      featureContributions = [
+        (serviceManagement.featureContribution {
+          key = "linux_isolation";
+          requirementAlias = "linux-service-isolation";
+          description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+          interface = "aos.platform.linux.service-isolation";
+          abi = 1;
+          parameters = linuxIsolation;
+        })
+      ];
       inherit serviceTypes consumerInstance;
       declaration = {
         service = unitName name;
@@ -183,7 +202,6 @@
           [(snapshotCommand name)]
           false;
         inherit dependencies isolation scheduling;
-        linux_isolation = linuxIsolation;
         activation.bindings = [
           {
             name = "schedule";

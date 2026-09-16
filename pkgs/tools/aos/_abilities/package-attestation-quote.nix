@@ -11,7 +11,8 @@
   serviceName = "aos-attest";
   packageProfile = resultOf "package-profile-convergence-lifecycle" "service-resource";
   hostStage =
-    config.aos.abilities.environment != null
+    config.aos.abilities.environment
+    != null
     && config.aos.abilities.environment.stage == "host";
   command = {
     executable = {
@@ -22,6 +23,47 @@
     ignore_failure = false;
   };
   service = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = {
+          allow_privilege_escalation = false;
+          ambient_capabilities = [];
+          capability_bounds = {
+            kind = "restricted";
+            capabilities = [];
+          };
+          control_group_delegation = false;
+          control_group_access = "read-only";
+          device_namespace = "shared";
+          kernel_clock_mutation = false;
+          kernel_hostname_mutation = false;
+          kernel_log_access = false;
+          kernel_module_access = false;
+          kernel_tunable_access = false;
+          lock_personality = true;
+          memory_write_execute = false;
+          remove_ipc = false;
+          namespace_isolation = [];
+          namespace_creation = "denied";
+          network_address_families = ["unix"];
+          oom_score_adjust = 0;
+          permit_realtime = false;
+          permit_suid_sgid = false;
+          process_visibility = "all";
+          syscall_architectures = [];
+          syscall_allow = [];
+          syscall_deny = [];
+          syscall_denial_action = "return-permission-denied";
+          syscall_profile = "system-service";
+          user_namespace_ownership = "none";
+        };
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "package-attestation-quote";
     declaration = {
@@ -86,38 +128,6 @@
           }
         ];
         permit_core_dumps = false;
-      };
-      linux_isolation = {
-        allow_privilege_escalation = false;
-        ambient_capabilities = [];
-        capability_bounds = {
-          kind = "restricted";
-          capabilities = [];
-        };
-        control_group_delegation = false;
-        control_group_access = "read-only";
-        device_namespace = "shared";
-        kernel_clock_mutation = false;
-        kernel_hostname_mutation = false;
-        kernel_log_access = false;
-        kernel_module_access = false;
-        kernel_tunable_access = false;
-        lock_personality = true;
-        memory_write_execute = false;
-        remove_ipc = false;
-        namespace_isolation = [];
-        namespace_creation = "denied";
-        network_address_families = ["unix"];
-        oom_score_adjust = 0;
-        permit_realtime = false;
-        permit_suid_sgid = false;
-        process_visibility = "all";
-        syscall_architectures = [];
-        syscall_allow = [];
-        syscall_deny = [];
-        syscall_denial_action = "return-permission-denied";
-        syscall_profile = "system-service";
-        user_namespace_ownership = "none";
       };
     };
   };

@@ -428,6 +428,16 @@
     )
   ];
   initService = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = commonLinuxIsolation;
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "postgresql";
     declaration = {
@@ -487,7 +497,6 @@
       storage = commonStorage;
       identity = commonIdentity;
       isolation = commonIsolation;
-      linux_isolation = commonLinuxIsolation;
     };
   };
   mainCredentialNames =
@@ -499,6 +508,16 @@
   credentialByName = name:
     builtins.head (builtins.filter (credential: credential.name == name) configuredCredentials);
   mainService = serviceManagement.forService {
+    featureContributions = [
+      (serviceManagement.featureContribution {
+        key = "linux_isolation";
+        requirementAlias = "linux-service-isolation";
+        description = "Requires the selected Linux platform to enforce the declared kernel isolation policy.";
+        interface = "aos.platform.linux.service-isolation";
+        abi = 1;
+        parameters = commonLinuxIsolation;
+      })
+    ];
     inherit serviceTypes;
     consumerInstance = "postgresql";
     declaration = {
@@ -589,7 +608,6 @@
         kind = "maximum";
         value = 1048576;
       };
-      linux_isolation = commonLinuxIsolation;
     };
   };
   potentialFragments = [

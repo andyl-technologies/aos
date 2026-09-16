@@ -37,7 +37,7 @@
     };
 in {
   types = serviceTypes;
-  inherit (interfaceCatalog) guaranteeAliases guaranteeDeclarations;
+  inherit (interfaceCatalog) aggregation guaranteeAliases guaranteeDeclarations mergeContract;
   inherit interfaces;
   declarations = builtins.listToAttrs (builtins.map (value: {
       name = value.alias;
@@ -50,5 +50,5 @@ in {
     })
     (builtins.attrValues interfaces));
   guarantees = interfaceCatalog.guaranteeDeclarations;
-  inherit (constructors) credentialReferenceConfigured featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitContribution structuredSource validate valueFromStructuredSource;
+  inherit (constructors) credentialReferenceConfigured featureContribution featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitContribution structuredSource validate valueFromStructuredSource;
 }

@@ -11,8 +11,7 @@
   };
   mergeContract = descriptorFor "aos.ability.merge-contract/v1" {
     resource = "aos.service.instance";
-    strategy = "closed-record-facets";
-    schema = serviceTypes.serviceResourceSchema;
+    strategy = "typed-interface-facets";
   };
   aggregation = {
     scope = "provider-instance";
@@ -98,20 +97,12 @@
       "the provider evaluates whether mandatory access control is available or enforcing without translating provider-specific condition tokens"
       "Evaluates exact mandatory access control state for a service condition.";
   };
-  linuxConditionGuaranteeDeclarations = {
-    capability =
-      guaranteeDeclaration
-      "aos.guarantee.linux-service-condition.capability"
-      "the provider evaluates availability of the declared Linux capability name"
-      "Evaluates availability of an exact Linux capability for a service condition.";
-  };
   templateInstanceGuaranteeDeclaration =
     guaranteeDeclaration
     "aos.guarantee.service-template-exact-reuse"
     "a concrete instance retains and authenticates its static template resource, matches every reusable service facet in canonical bytes after omitting service, enabled, and instantiation identity, and installs no instance-specific drop-in"
     "Retains exact reusable service-template semantics in a concrete instance.";
   conditionGuarantees = builtins.mapAttrs (_: guaranteeIdentity) conditionGuaranteeDeclarations;
-  linuxConditionGuarantees = builtins.mapAttrs (_: guaranteeIdentity) linuxConditionGuaranteeDeclarations;
   templateInstanceGuarantee = guaranteeIdentity templateInstanceGuaranteeDeclaration;
   guaranteeAliases = {
     condition = {
@@ -119,14 +110,12 @@
       kernelArgument = "core:service-condition-kernel-argument";
       mandatoryAccessControl = "core:service-condition-mandatory-access-control";
     };
-    linuxCondition.capability = "core:linux-service-condition-capability";
     templateExactReuse = "core:service-template-exact-reuse";
   };
   guaranteeDeclarations = {
     ${guaranteeAliases.condition.path} = conditionGuaranteeDeclarations.path;
     ${guaranteeAliases.condition.kernelArgument} = conditionGuaranteeDeclarations.kernel-argument;
     ${guaranteeAliases.condition.mandatoryAccessControl} = conditionGuaranteeDeclarations.mandatory-access-control;
-    ${guaranteeAliases.linuxCondition.capability} = linuxConditionGuaranteeDeclarations.capability;
     ${guaranteeAliases.templateExactReuse} = templateInstanceGuaranteeDeclaration;
   };
   guaranteeAliasFor = identity: let
@@ -706,19 +695,6 @@
             read;
         }))
       // {guaranteesByKind = builtins.mapAttrs (_: guaranteeAliasFor) conditionGuarantees;};
-    linuxConditions =
-      (canonicalWithGuarantees (builtins.attrValues linuxConditionGuarantees) {}
-        "linux-service-conditions" "aos.platform.linux.service-conditions"
-        "Contributes Linux capability-availability conditions to a service resource."
-        serviceTypes.linuxConditions
-        serviceTypes.observations.linuxConditions
-        (targetResource: {
-          observe =
-            method serviceTypes.linuxConditions serviceTypes.observations.linuxConditions targetResource "observe"
-            "Observes the Linux capability conditions applied to the service."
-            read;
-        }))
-      // {guaranteesByKind = builtins.mapAttrs (_: guaranteeAliasFor) linuxConditionGuarantees;};
     instantiation =
       canonical "service-instantiation" "aos.service.instantiation"
       "Contributes singleton, static-template, or exact template-derived instance identity to a service resource."
@@ -970,28 +946,6 @@
         observe =
           method serviceTypes.isolation serviceTypes.observations.isolation targetResource "observe"
           "Observes the provider-neutral isolation intent enforced for the service."
-          read;
-      });
-    linuxIsolation =
-      canonical "linux-service-isolation" "aos.platform.linux.service-isolation"
-      "Contributes Linux-specific kernel isolation policy to a service resource."
-      serviceTypes.linuxIsolation
-      serviceTypes.observations.linuxIsolation
-      (targetResource: {
-        observe =
-          method serviceTypes.linuxIsolation serviceTypes.observations.linuxIsolation targetResource "observe"
-          "Observes the Linux kernel isolation policy enforced for the service."
-          read;
-      });
-    linuxDevicePolicy =
-      canonical "linux-service-device-policy" "aos.platform.linux.service-device-policy"
-      "Contributes Linux cgroup device-class and device-number access policy to a service resource."
-      serviceTypes.linuxDevicePolicy
-      serviceTypes.observations.linuxDevicePolicy
-      (targetResource: {
-        observe =
-          method serviceTypes.linuxDevicePolicy serviceTypes.observations.linuxDevicePolicy targetResource "observe"
-          "Observes the Linux device access policy enforced for the service."
           read;
       });
     managedConfiguration = {
@@ -1334,5 +1288,5 @@
   };
 in {
   interfaces = declarations;
-  inherit guaranteeAliases guaranteeDeclarations guaranteeAliasFor;
+  inherit aggregation guaranteeAliases guaranteeDeclarations guaranteeAliasFor mergeContract;
 }

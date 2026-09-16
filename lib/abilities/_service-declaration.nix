@@ -10,7 +10,6 @@
     template_definition = serviceInterfaces.templateDefinition;
     dependencies = serviceInterfaces.dependencies;
     conditions = serviceInterfaces.conditions;
-    linux_conditions = serviceInterfaces.linuxConditions;
     instantiation = serviceInterfaces.instantiation;
     manager_identity = serviceInterfaces.managerIdentity;
     supervision = serviceInterfaces.supervision;
@@ -34,8 +33,6 @@
     terminal = serviceInterfaces.terminal;
     identity = serviceInterfaces.identity;
     isolation = serviceInterfaces.isolation;
-    linux_isolation = serviceInterfaces.linuxIsolation;
-    linux_device_policy = serviceInterfaces.linuxDevicePolicy;
   };
 
   uniqueBy = field: values:
@@ -115,7 +112,6 @@
     socketActivation = declaration.socket_activation or null;
     logging = declaration.logging or null;
     terminal = declaration.terminal or null;
-    linuxIsolation = declaration.linux_isolation or null;
     reloadValid =
       reload
       == null
@@ -298,36 +294,6 @@
           value = true;
         })
         logging.directories)));
-    linuxIsolationValid =
-      linuxIsolation
-      == null
-      || (
-        builtins.length linuxIsolation.namespace_isolation
-        == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
-            inherit name;
-            value = true;
-          })
-          linuxIsolation.namespace_isolation)))
-        && builtins.length linuxIsolation.network_address_families
-        == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
-            inherit name;
-            value = true;
-          })
-          linuxIsolation.network_address_families)))
-      );
-    capabilityBoundsValid =
-      linuxIsolation
-      == null
-      || linuxIsolation.capability_bounds.kind == "unrestricted"
-      || builtins.all
-      (capability: builtins.elem capability linuxIsolation.capability_bounds.capabilities)
-      linuxIsolation.ambient_capabilities;
-    syscallSetsDisjoint =
-      linuxIsolation
-      == null
-      || builtins.all
-      (syscall: !(builtins.elem syscall linuxIsolation.syscall_deny))
-      linuxIsolation.syscall_allow;
     terminalValid =
       terminal
       == null
@@ -388,12 +354,6 @@
     then throw "service '${declaration.service}' has an invalid public manager identity"
     else if !loggingValid
     then throw "service '${declaration.service}' has duplicate log directory names"
-    else if !linuxIsolationValid
-    then throw "service '${declaration.service}' Linux isolation lists must not contain duplicate namespace or address-family entries"
-    else if !capabilityBoundsValid
-    then throw "service '${declaration.service}' ambient capabilities must be included in its restricted capability bounds"
-    else if !syscallSetsDisjoint
-    then throw "service '${declaration.service}' syscall allow and deny sets must be disjoint"
     else
       declaration
       // {
@@ -419,6 +379,25 @@
     inherit guarantees;
     strength = "required";
     fallback = null;
+  };
+
+  featureContribution = {
+    key,
+    requirementAlias,
+    description,
+    interface,
+    parameters,
+    abi ? 1,
+    descriptor ? null,
+    methods ? ["observe"],
+    guarantees ? [],
+  }: {
+    inherit key parameters requirementAlias;
+    requirement = {
+      inherit description interface abi descriptor methods guarantees;
+      strength = "required";
+      fallback = null;
+    };
   };
 
   namespaceOf = consumerInstance: let
@@ -687,6 +666,7 @@
     serviceTypes,
     consumerInstance,
     declaration,
+    featureContributions ? [],
   }: let
     checked = validate serviceTypes declaration;
     staticTemplate =
@@ -713,30 +693,55 @@
         uniqueGuarantees (builtins.map
           (condition: featureInterfaces.conditions.guaranteesByKind.${condition.kind})
           checked.conditions.all)
-      else if feature == "linux_conditions" && checked.linux_conditions.capabilities != []
-      then [featureInterfaces.linux_conditions.guaranteesByKind.capability]
       else if feature == "lifecycle" && (checked.instantiation or null) != null && checked.instantiation.kind == "instance"
       then [featureInterfaces.lifecycle.guaranteesByKind.instance]
       else [];
+    coreRequirementTemplates = builtins.listToAttrs (builtins.map (feature: {
+        name = featureInterfaces.${feature}.alias;
+        value = requirementFor featureInterfaces.${feature} (methodsFor feature) (guaranteesFor feature);
+      })
+      enabledFeatures);
+    coreRequests = builtins.listToAttrs (builtins.map (feature: {
+        name = "${checked.service}-${feature}";
+        value = {
+          requirement = featureInterfaces.${feature}.alias;
+          consumer = consumerInstance;
+          scope = [checked.service];
+          parameters = requestParameters checked feature;
+        };
+      })
+      enabledFeatures);
+    featureKeys = builtins.map (feature: feature.key) featureContributions;
+    requirementAliases = builtins.map (feature: feature.requirementAlias) featureContributions;
+    externalRequirementTemplates = builtins.listToAttrs (builtins.map (feature: {
+        name = feature.requirementAlias;
+        value = feature.requirement;
+      })
+      featureContributions);
+    externalRequests = builtins.listToAttrs (builtins.map (feature: {
+        name = "${checked.service}-${feature.key}";
+        value = {
+          requirement = feature.requirementAlias;
+          consumer = consumerInstance;
+          scope = [checked.service];
+          parameters =
+            {
+              inherit (checked) service enabled;
+            }
+            // feature.parameters;
+        };
+      })
+      featureContributions);
     contribution = {
-      requirementTemplates = builtins.listToAttrs (builtins.map (feature: {
-          name = featureInterfaces.${feature}.alias;
-          value = requirementFor featureInterfaces.${feature} (methodsFor feature) (guaranteesFor feature);
-        })
-        enabledFeatures);
-      requests = builtins.listToAttrs (builtins.map (feature: {
-          name = "${checked.service}-${feature}";
-          value = {
-            requirement = featureInterfaces.${feature}.alias;
-            consumer = consumerInstance;
-            scope = [checked.service];
-            parameters = requestParameters checked feature;
-          };
-        })
-        enabledFeatures);
+      requirementTemplates = coreRequirementTemplates // externalRequirementTemplates;
+      requests = coreRequests // externalRequests;
     };
   in
-    qualifyForConsumer consumerInstance contribution;
+    if !uniqueBy "value" (builtins.map (value: {inherit value;}) featureKeys)
+    then throw "service '${checked.service}' has duplicate external feature keys"
+    else if !uniqueBy "value" (builtins.map (value: {inherit value;}) requirementAliases)
+    then throw "service '${checked.service}' has duplicate external feature requirements"
+    else qualifyForConsumer consumerInstance contribution;
 
   ## Derives a concrete instance from one checked static template declaration.
   instanceOf = {
@@ -936,5 +941,5 @@
     requests = namedCredentials.requests // credentialDeliveries.requests;
   };
 in {
-  inherit credentialReferenceConfigured featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitContribution structuredSource validate valueFromStructuredSource;
+  inherit credentialReferenceConfigured featureContribution featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitContribution structuredSource validate valueFromStructuredSource;
 }
