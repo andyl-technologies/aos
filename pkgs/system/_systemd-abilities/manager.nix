@@ -15,7 +15,8 @@
     then []
     else abilitySelection.bindingsForImplementation "system-manager";
   selected =
-    builtins.length managerBindings == 1
+    builtins.length managerBindings
+    == 1
     && (builtins.head managerBindings).binding.request == "system:manager";
 
   packageOutput = package: lib.abilities.packageOutput {inherit package;};
@@ -61,16 +62,17 @@
           providerArtifactsPath="$providerArtifactsJsonPath" \
             ${providerPackage}/bin/aos-systemd-provider assemble
         '';
-    presets = runCommand "systemd-system-preset" {
-      presetRules = config.system.build.systemdPresetText;
-      passAsFile = ["presetRules"];
-    } ''
-      mkdir -p "$out"
-      if [ -s "$presetRulesPath" ]; then
-        cp "$presetRulesPath" "$out/50-aos-image-packages.preset"
-      fi
-      printf 'disable *\n' > "$out/99-aos-default.preset"
-    '';
+    presets =
+      runCommand "systemd-system-preset" {
+        presetRules = config.system.build.systemdPresetText;
+        passAsFile = ["presetRules"];
+      } ''
+        mkdir -p "$out"
+        if [ -s "$presetRulesPath" ]; then
+          cp "$presetRulesPath" "$out/50-aos-image-packages.preset"
+        fi
+        printf 'disable *\n' > "$out/99-aos-default.preset"
+      '';
     managerConfigurations =
       builtins.map renderPlan config.systemd.providerManagerConfigurationPlans;
     networkConfigurations =
@@ -109,7 +111,8 @@
   };
   manager =
     if
-      selectedManagerOutput != null
+      selectedManagerOutput
+      != null
       && selectedManagerOutput._type == "aos-artifact-reference"
       && selectedManagerOutput.store_path == builtins.toString systemdPackage
     then authoredManager

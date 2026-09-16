@@ -73,34 +73,35 @@
       };
     };
   };
-  configurationType = lib.types.addCheck (lib.types.submodule {
-    options = {
-      buildInitrd = lib.mkOption {
-        type = lib.types.functionTo initrdBuildResultType;
-        description = "Opaque package-owned initrd artifact builder.";
+  configurationType =
+    lib.types.addCheck (lib.types.submodule {
+      options = {
+        buildInitrd = lib.mkOption {
+          type = lib.types.functionTo initrdBuildResultType;
+          description = "Opaque package-owned initrd artifact builder.";
+        };
+        buildOutput = lib.mkOption {
+          type = lib.types.functionTo lib.types.package;
+          description = "Opaque package-owned manager configuration builder.";
+        };
+        executableScripts = lib.mkOption {
+          type = lib.types.attrsOf executableScriptType;
+          description = "Executable scripts emitted by the selected manager.";
+        };
+        filesystemEntries = lib.mkOption {
+          type = lib.types.attrsOf filesystemEntryType;
+          description = "Filesystem entries emitted by the selected manager.";
+        };
+        ownership = lib.mkOption {
+          type = ownershipType;
+          description = "Authenticated ownership of the selected configuration artifacts.";
+        };
       };
-      buildOutput = lib.mkOption {
-        type = lib.types.functionTo lib.types.package;
-        description = "Opaque package-owned manager configuration builder.";
-      };
-      executableScripts = lib.mkOption {
-        type = lib.types.attrsOf executableScriptType;
-        description = "Executable scripts emitted by the selected manager.";
-      };
-      filesystemEntries = lib.mkOption {
-        type = lib.types.attrsOf filesystemEntryType;
-        description = "Filesystem entries emitted by the selected manager.";
-      };
-      ownership = lib.mkOption {
-        type = ownershipType;
-        description = "Authenticated ownership of the selected configuration artifacts.";
-      };
-    };
-  }) (value:
-    builtins.attrNames value.filesystemEntries
-    == builtins.attrNames value.ownership.filesystemEntries
-    && builtins.attrNames value.executableScripts
-    == builtins.attrNames value.ownership.executableScripts);
+    }) (value:
+      builtins.attrNames value.filesystemEntries
+      == builtins.attrNames value.ownership.filesystemEntries
+      && builtins.attrNames value.executableScripts
+      == builtins.attrNames value.ownership.executableScripts);
   selectedManagerType = lib.types.submodule {
     options = {
       _type = lib.mkOption {
