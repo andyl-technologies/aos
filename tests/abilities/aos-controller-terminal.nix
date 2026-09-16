@@ -251,6 +251,11 @@
       rolloutPlatformInterfaces.success
       ["mark" "observe"])
     (platformBinding
+      "sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc"
+      "image-health"
+      rolloutPlatformInterfaces.healthObservation
+      ["observe"])
+    (platformBinding
       "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
       "host-restart"
       rolloutPlatformInterfaces.hostRestart
@@ -281,6 +286,9 @@
   rolloutObserve = builtins.head (builtins.filter (operation:
     operation.key.key == "observe-health")
   rolloutTransition.operations);
+  selectedHealthObservation = builtins.head (builtins.filter (operation:
+    operation.key.key == "observe-candidate-health")
+  rolloutTransition.operations);
   retirementTransition = rolloutImplementation.transition (
     rolloutContext
     // {
@@ -309,18 +317,20 @@ in
   assert operation.recovery.cancel.interface == terminalInterface;
   assert !wrongTerminalBinding.success;
   assert builtins.all hasExactlyOneExecutor signedProviders;
-  assert builtins.attrNames rolloutProvision.requests == [
+  assert builtins.attrNames rolloutProvision.requests
+  == [
     "artifact-storage-machine"
     "boot-selection-machine"
     "boot-success-machine"
     "host-restart-machine"
+    "image-health-machine"
     "terminal-machine"
   ];
   assert rolloutTerminalImplementation.handlerDescriptor.entryPoint
   == "libexec/aos-image-rollout-provider";
-  assert rolloutComposition.realizations.machine == {
+  assert rolloutComposition.realizations.machine
+  == {
     schema = "aos.image-rollout.realization/v1";
-    health-command = "${rolloutParameters.candidate.toplevel}/health";
   };
   assert builtins.length rolloutTransition.decisions == 1;
   assert builtins.length rolloutTransition.merges == 1;
@@ -331,6 +341,9 @@ in
     )
     && operation.target.interface == rolloutResourceInterface)
   rolloutTransition.operations;
+  assert selectedHealthObservation.interface == rolloutPlatformInterfaces.healthObservation.identity;
+  assert selectedHealthObservation.method == "observe";
+  assert rolloutObserve.inputs.fields.health.reference.producer.key.key == "observe-candidate-health";
   assert (builtins.head rolloutObserve.accesses).mode == "read";
   assert builtins.map (operation: operation.method) retirementTransition.operations
   == ["release" "retire" "observe-health"]; true

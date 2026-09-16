@@ -20,13 +20,13 @@ mod boot_commit;
 mod model;
 mod observer;
 mod plan;
-mod process;
 mod provider;
 
 pub(crate) use ability::NativeImageRolloutBackend;
 pub use boot_commit::run_from_process as run_boot_commit_from_process;
 pub(crate) use model::{
-    ImageRolloutRequest, ImageRolloutTerminalRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity,
+    ImageHealthObservation, ImageRolloutRequest, ImageRolloutTerminalRequest, MAX_RETENTION_MILLIS,
+    RolloutImageIdentity,
 };
 pub use observer::run_from_process as run_observer_from_process;
 pub(crate) use plan::authenticate_single_image_rollout_fragment;
