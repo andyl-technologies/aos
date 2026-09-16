@@ -10,12 +10,12 @@
     abi = 1;
     description = "Selects one package-owned immutable image builder.";
     requestType = types.boolean;
-    outputs.builder-artifact = {
+    outputs.selected-builder = {
       phase = "planning";
-      lifetime = "instance";
+      lifetime = "persistent";
       visibility = "protected";
-      description = "References the package that produces the selected immutable image plan.";
-      schema = types.artifactSelector;
+      description = "References the authenticated package selected to realize immutable image artifacts.";
+      schema = types.artifactReference;
     };
     methods = {};
     lifecycle.persistentDeleteMethod = null;

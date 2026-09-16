@@ -25,7 +25,7 @@
   # server profile already sets rootFsType = "erofs" (required by the verity
   # assertion). This flips on the build-side hash tree (lib/build/rootfs.nix),
   # the root-a-hash partition (selected package image builder), the roothash-on-
-  # cmdline append (pkgs/boot/aos-uki.nix), and the eval-side
+  # cmdline append (pkgs/system/_systemd-abilities/platform/_uki-builder.nix), and the eval-side
   # systemd-veritysetup-generator params + /dev/mapper/root retarget
   # (modules/security/verity.nix).
   aos.security.verity.enable = true;

@@ -1286,14 +1286,8 @@
     libbsd = resolvedBuildPackages.libbsd;
     util-linux = resolvedBuildPackages.util-linux;
   };
-  # Discovered factory modules are callable package constructors, not
-  # derivations. Keep them in `pkgs` for their consumers, but never advertise
-  # them as buildable `pkg-*` flake outputs or aggregate build dependencies.
-  # This explicit structural inventory preserves lazy package enumeration:
-  # probing every value with tryEval would execute unrelated IFDs.
-  packageFactories = ["aos-uki"];
   uncheckedPackageNames = builtins.attrNames (
-    builtins.removeAttrs discoveredPackages (["trivial-builders"] ++ packageFactories)
+    builtins.removeAttrs discoveredPackages ["trivial-builders"]
     // {
       nuke-references = null;
       qemu-crucible = null;

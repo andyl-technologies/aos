@@ -19,7 +19,7 @@ rather than re-deriving it.
 - Source pin (`:40,44`): `edk2-stable202602`, rev `b7a715f7…`,
   `builtins.fetchGit submodules=true`.
 
-**UKI** — `pkgs/boot/aos-uki.nix`
+**UKI** — `pkgs/system/_systemd-abilities/platform/_uki-builder.nix`
 
 - `ukify build` (`:71-77`): `--stub --linux --initrd --cmdline --os-release
   --output`. **No `--secureboot-private-key`, `--secureboot-certificate`,

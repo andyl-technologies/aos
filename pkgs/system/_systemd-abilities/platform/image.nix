@@ -4,37 +4,108 @@
   config,
   lib,
   packageArtifactFor,
-  pkgs,
   ...
 }: let
   builderInterface = lib.abilities.interfaces.imageBuilder.interfaces.builder;
   builderArtifact = lib.abilities.packageOutput {};
+  packageOutput = package: lib.abilities.packageOutput {inherit package;};
+  systemdToolsOutput = lib.abilities.packageOutput {output = "tools";};
+  dependencyNames = [
+    "bash"
+    "binutils"
+    "coreutils"
+    "cpio"
+    "cryptsetup"
+    "dosfstools"
+    "e2fsprogs"
+    "erofs-utils"
+    "findutils"
+    "gcc-libs"
+    "gptfdisk"
+    "jq"
+    "mtools"
+    "openssl"
+    "qemu"
+    "sbsigntools"
+    "tar"
+    "util-linux"
+    "zstd"
+  ];
+  dependencyOutputs = builtins.map packageOutput dependencyNames;
+  artifactFor = name: packageArtifactFor (packageOutput name);
+  systemdPackage = packageArtifactFor builderArtifact;
+  systemdTools = packageArtifactFor systemdToolsOutput;
+  builderBindings =
+    if abilitySelection == null
+    then []
+    else abilitySelection.bindingsForImplementation "image-builder";
   selected =
-    config.aos.abilities.environment != null
-    && abilitySelection != null
-    && abilitySelection.isImplementationSelected "image-builder";
+    builtins.length builderBindings == 1
+    && (builtins.head builderBindings).binding.request == "image:builder";
+  selectedBuilderOutput =
+    config.aos.abilities.compositionOutputs."image:builder"."selected-builder".value or null;
+
   normalArtifactPath = let
     tries = config.aos.boot.bootCountingTries;
   in "EFI/Linux/aos-generation-0000000001${lib.optionalString (tries != null) "+${toString tries}"}.efi";
 
-  buildPlan = {
-    name,
-    rootfs,
-    runtimeClosureAudit,
-    trustBundle,
+  buildImage = {
+    mkDerivation,
+    writeTextFile,
+    targetPlatform,
+    inputs,
   }: let
+    imagePackages = {
+      inherit mkDerivation writeTextFile;
+      aos-uki = import ./_uki-builder.nix {
+        inherit mkDerivation;
+        stdenv.binutils = artifactFor "binutils";
+        systemd = imagePackages.systemd;
+        sbsigntools = imagePackages.sbsigntools;
+        openssl = imagePackages.openssl;
+      };
+      bash = artifactFor "bash";
+      binutils = artifactFor "binutils";
+      coreutils = artifactFor "coreutils";
+      cpio = artifactFor "cpio";
+      cryptsetup = artifactFor "cryptsetup";
+      dosfstools = artifactFor "dosfstools";
+      e2fsprogs = artifactFor "e2fsprogs";
+      erofs-utils = artifactFor "erofs-utils";
+      findutils = artifactFor "findutils";
+      gcc-libs = artifactFor "gcc-libs";
+      gptfdisk = artifactFor "gptfdisk";
+      jq = artifactFor "jq";
+      mtools = artifactFor "mtools";
+      openssl = artifactFor "openssl";
+      qemu = artifactFor "qemu";
+      sbsigntools = artifactFor "sbsigntools";
+      systemd = {
+        outPath = systemdPackage;
+        tools = systemdTools;
+      };
+      tar = artifactFor "tar";
+      util-linux = artifactFor "util-linux";
+      zstd = artifactFor "zstd";
+    };
+    inherit (inputs) name rootfs runtimeClosureAudit trustBundle;
+    rawDiskFilename = "aos-${name}.img.zst";
+    rawMetadataFilename = "image-info.json";
     bootArtifacts = import ./_boot-artifacts.nix {
-      inherit pkgs lib name rootfs normalArtifactPath;
+      pkgs = imagePackages;
+      inherit lib name rootfs normalArtifactPath targetPlatform;
       system = {inherit config;};
       activeImageDbCerts = trustBundle;
     };
     rawImage = import ./_image-builder.nix {
-      inherit pkgs lib bootArtifacts rootfs runtimeClosureAudit;
+      pkgs = imagePackages;
+      inherit lib bootArtifacts rawDiskFilename rootfs runtimeClosureAudit targetPlatform;
       system = {inherit config;};
       inherit name;
     };
     budgetCheck = import ./_image-budget-check.nix {
-      inherit config lib pkgs runtimeClosureAudit;
+      pkgs = imagePackages;
+      inherit config lib runtimeClosureAudit;
       image = rawImage;
       inherit name rootfs;
       uki = "${rawImage.ukiA}/${rawImage.ukiAStoreFilename}";
@@ -43,16 +114,19 @@
       if config.aos.boot.storage.backend == "zfs-zvol"
       then
         import ./install-bundle.nix {
-          inherit config lib pkgs bootArtifacts budgetCheck;
+          pkgs = imagePackages;
+          inherit config lib bootArtifacts budgetCheck;
           image = rawImage;
+          zfs = config.aos.filesystems.zfs.package;
         }
       else null;
   in {
     _type = "aos-image-build-plan";
-    inherit budgetCheck installBundle rawImage;
+    inherit budgetCheck installBundle rawDiskFilename rawImage rawMetadataFilename;
     finishConvertedImage = {baseImage}:
       import ./_converted-image.nix {
-        inherit baseImage config lib pkgs rawImage;
+        pkgs = imagePackages;
+        inherit baseImage config lib rawImage targetPlatform;
       };
     unsignedAssembly = rawImage.unsignedAssembly;
     initialBootExecutable = rawImage.uki;
@@ -63,25 +137,33 @@
     recoveryBundle = rawImage.recoveryBundle;
   };
 
-  platform = {
+  authoredPlatform = {
     _type = "aos-image-builder";
+    artifact = selectedBuilderOutput;
     name = "systemd-boot";
-    package = packageArtifactFor builderArtifact;
+    package = systemdPackage;
     inherit normalArtifactPath;
-    plan = buildPlan;
+    build = buildImage;
   };
+  platform =
+    if
+      selectedBuilderOutput != null
+      && selectedBuilderOutput._type == "aos-artifact-reference"
+      && selectedBuilderOutput.store_path == builtins.toString systemdPackage
+    then authoredPlatform
+    else throw "selected image builder projection differs from its checked planning output";
 in {
   config = {
-    aos.abilities = {
-      implementations.image-builder = {
-        description = "Builds immutable disk images through the package-owned systemd boot stack.";
-        interface = builderInterface.alias;
+    aos.abilities.implementations.image-builder = {
+      description = "Builds immutable disk images through the package-owned systemd boot stack.";
+      interface = builderInterface.alias;
+      artifact = builderArtifact;
+      artifacts = [systemdToolsOutput] ++ dependencyOutputs;
+      methods = [];
+      guarantees = [];
+      providerModule = {
         artifact = builderArtifact;
-        methods = [];
-        guarantees = [];
-      };
-      instances = lib.mkIf selected {
-        image-builder-provider.implementation = "image-builder";
+        path = "share/aos/providers/systemd.nix";
       };
     };
 

@@ -34,7 +34,7 @@ the implemented result.
 
 - `pkgs/boot/edk2.nix` builds `OvmfPkgX64.dsc` with no `-D SECURE_BOOT_ENABLE`
   — the firmware has no authenticated-variable / SB drivers compiled in.
-- `pkgs/boot/aos-uki.nix` calls `ukify build` with no
+- `pkgs/system/_systemd-abilities/platform/_uki-builder.nix` calls `ukify build` with no
   `--secureboot-private-key`/`--secureboot-certificate` — the UKI is
   assembled, not signed (the docstring's "signed PE-COFF" is wrong).
 - `pkgs/system/_systemd-abilities/platform/_image-builder.nix` copies `systemd-bootx64.efi` to the ESP
@@ -131,7 +131,7 @@ the validation facts*, and neither is the role that *enforces at runtime*.
 | Layer | Today | Source |
 |---|---|---|
 | OVMF | no SB drivers compiled | `pkgs/boot/edk2.nix:141-146` |
-| UKI | assembled, unsigned | `pkgs/boot/aos-uki.nix:71-77` |
+| UKI | assembled, unsigned | `pkgs/system/_systemd-abilities/platform/_uki-builder.nix:71-77` |
 | sd-boot | copied unsigned to ESP | `pkgs/system/_systemd-abilities/platform/_image-builder.nix:117-118` |
 | SBAT | distro metadata set on sd-boot/stub | `pkgs/system/systemd.nix:231-236` |
 | sbsigntools | packaged, never invoked | `pkgs/boot/sbsigntools.nix` |

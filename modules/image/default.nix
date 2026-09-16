@@ -41,42 +41,8 @@
   };
 
   platform = cfg.platform;
-  plan = platform.plan {
-    name = config.aos.system.name;
-    rootfs = rootfsArtifacts.rootfs;
-    trustBundle = rootfsArtifacts.activeImageDbCerts;
-    inherit runtimeClosureAudit;
-  };
+  plan = cfg.plan;
   rawImage = plan.rawImage;
-  planFields = [
-    "_type"
-    "budgetCheck"
-    "finishConvertedImage"
-    "initialBootExecutable"
-    "installBundle"
-    "rawImage"
-    "recoveryBootExecutableA"
-    "recoveryBootExecutableB"
-    "recoveryBundle"
-    "recoveryInitrd"
-    "recoverySlotManifest"
-    "unsignedAssembly"
-  ];
-  planValid =
-    builtins.isAttrs plan
-    && builtins.attrNames plan == planFields
-    && (plan._type or null) == "aos-image-build-plan"
-    && lib.types.package.check plan.rawImage
-    && lib.types.package.check plan.budgetCheck
-    && builtins.isFunction plan.finishConvertedImage
-    && lib.types.package.check plan.initialBootExecutable
-    && lib.types.package.check plan.unsignedAssembly
-    && (plan.installBundle == null || lib.types.package.check plan.installBundle)
-    && (plan.recoveryBundle == null || lib.types.package.check plan.recoveryBundle)
-    && (plan.recoveryInitrd == null || lib.types.package.check plan.recoveryInitrd)
-    && (plan.recoverySlotManifest == null || lib.types.package.check plan.recoverySlotManifest)
-    && (plan.recoveryBootExecutableA == null || lib.types.package.check plan.recoveryBootExecutableA)
-    && (plan.recoveryBootExecutableB == null || lib.types.package.check plan.recoveryBootExecutableB);
 
   # Convert a raw image to another format via qemu-img and emit a per-format
   # manifest. The manifest retains the canonical boot/partition facts from
@@ -101,7 +67,7 @@
           script = ''
             mkdir -p $out
             zstd -d --no-progress \
-              ${rawImage}/aos-${config.aos.system.name}.img.zst \
+              ${rawImage}/${plan.rawDiskFilename} \
               -o image.raw
             qemu-img convert -f raw -O ${formatFlag} \
               image.raw \
@@ -109,7 +75,7 @@
 
             filename="$IMAGE_FILENAME"
             byte_size=$(stat -c %s "$out/$filename")
-            max_download_mib=$(${pkgs.jq}/bin/jq -er '.artifactBudgetsMiB.download' ${rawImage}/image-info.json)
+            max_download_mib=$(${pkgs.jq}/bin/jq -er '.artifactBudgetsMiB.download' ${rawImage}/${plan.rawMetadataFilename})
             if [ "$byte_size" -gt $(( max_download_mib * 1048576 )) ]; then
               echo "$IMAGE_FORMAT image exceeds its $max_download_mib MiB download contract" >&2
               exit 1
@@ -117,7 +83,7 @@
             sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
             virtual_size=$(${pkgs.qemu}/bin/qemu-img info --output=json "$out/$filename" \
               | ${pkgs.jq}/bin/jq -er '.["virtual-size"]')
-            expected_virtual_size=$(${pkgs.jq}/bin/jq -er '.virtualSizeBytes' ${rawImage}/image-info.json)
+            expected_virtual_size=$(${pkgs.jq}/bin/jq -er '.virtualSizeBytes' ${rawImage}/${plan.rawMetadataFilename})
             if [ "$virtual_size" -ne "$expected_virtual_size" ]; then
               echo "converted image virtual size does not match the raw logical disk" >&2
               exit 1
@@ -139,7 +105,7 @@
                | .sha256 = $sha256
                | .compatibleTargets = $compatibleTargets
                | .virtualSizeBytes = $expectedVirtualSize' \
-              ${rawImage}/image-info.json > $out/image-info.json
+              ${rawImage}/${plan.rawMetadataFilename} > $out/image-info.json
 
           '';
         }
@@ -384,12 +350,19 @@ in {
       ];
     }
     (lib.mkIf (cfg.enable && platform != null) {
-      assertions = [
-        {
-          assertion = planValid;
-          message = "the selected image builder produced an invalid immutable image plan";
-        }
-      ];
+      aos.image.plan = platform.build {
+        inherit (pkgs) mkDerivation writeTextFile;
+        targetPlatform = {
+          system = lib.system;
+          cpu = lib.platform.constraints.cpu;
+        };
+        inputs = {
+          name = config.aos.system.name;
+          rootfs = rootfsArtifacts.rootfs;
+          trustBundle = rootfsArtifacts.activeImageDbCerts;
+          inherit runtimeClosureAudit;
+        };
+      };
       system.build.unsignedImageAssembly =
         if externalFinalization
         then plan.unsignedAssembly
@@ -403,7 +376,7 @@ in {
         inherit (convertedImages) qcow2 vmdk vhd;
       };
       system.build.imageArtifacts = {
-        raw = artifactFor "raw" rawImage "aos-${config.aos.system.name}.img.zst";
+        raw = artifactFor "raw" rawImage plan.rawDiskFilename;
         qcow2 = artifactFor "qcow2" convertedImages.qcow2 "aos-${config.aos.system.name}.qcow2";
         vmdk = artifactFor "vmdk" convertedImages.vmdk "aos-${config.aos.system.name}.vmdk";
         vhd = artifactFor "vhd" convertedImages.vhd "aos-${config.aos.system.name}.vhd";

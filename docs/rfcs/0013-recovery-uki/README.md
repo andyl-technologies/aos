@@ -4,7 +4,7 @@
 - **Date:** 2026-08-17
 - **Audience:** maintainers of `modules/image/`, `modules/base/_initrd-builder.nix`,
   `modules/base/secure-boot.nix`, `modules/services/boot-substrate.nix`,
-  `pkgs/boot/aos-uki.nix`, the APM system-image lifecycle, and Secure
+  `pkgs/system/_systemd-abilities/platform/_uki-builder.nix`, the APM system-image lifecycle, and Secure
   Boot/measured-boot fleet tests.
 - **Relates to:** [RFC-0006](../0006-secure-boot/README.md),
   [RFC-0011](../0011-on-host-config-eval/README.md).
