@@ -15,6 +15,7 @@
   common,
 }: {
   platform ? null,
+  targetPlatform ? null,
   packageRegistry ? null,
   packageRoots ? [],
   runtimeRoots ? [],
@@ -92,6 +93,21 @@
     if platformMode
     then common.validatePlatform platform
     else null;
+  checkedTargetPlatform =
+    if targetPlatform == null
+    then
+      if artifactClass == "container" || combinedMode
+      then null
+      else common.fail "bootable static ability contracts require an exact targetPlatform"
+    else if
+      builtins.isAttrs targetPlatform
+      && builtins.attrNames targetPlatform == ["architecture" "system"]
+      && builtins.isString targetPlatform.architecture
+      && targetPlatform.architecture != ""
+      && builtins.isString targetPlatform.system
+      && targetPlatform.system != ""
+    then targetPlatform
+    else common.fail "static ability contract targetPlatform must contain exact system and architecture strings";
   checkedPackages =
     if !platformMode
     then []
@@ -216,6 +232,7 @@
         checkedArtifactClass
         checkedExecutionStage
         checkedPlatform
+        checkedTargetPlatform
         checkedPackages
         checkedRuntimeRoots
         checkedContracts
@@ -233,6 +250,7 @@
       inherit schema artifactClass executionStage;
       mediaType = mediaType;
       platform = checkedPlatform;
+      targetPlatform = checkedTargetPlatform;
       packages = assemblyPackages;
       contracts = checkedContracts;
     }));
@@ -270,7 +288,7 @@ in
   builtins.deepSeq validated {
     _type = "aos-oci-static-ability-contract";
     artifact = contractArtifact;
-    inherit mediaType schema artifactClass executionStage checkedPlatform runtimeRootPaths;
+    inherit mediaType schema artifactClass executionStage checkedPlatform checkedTargetPlatform runtimeRootPaths;
     inherit retainedPackageContractArtifacts;
     inputContractPaths = contractPaths;
     selectedPayloadPaths = payloadPaths;

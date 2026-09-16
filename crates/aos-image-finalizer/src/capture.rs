@@ -305,6 +305,7 @@ fn capture_static_ability_contract(
             os: os.to_string(),
             architecture: architecture.to_string(),
             variant: None,
+            target: None,
         }),
     };
     validate_static_ability_artifacts(&bytes, &expectation)?;

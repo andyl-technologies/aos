@@ -1157,7 +1157,7 @@ fn resolved_image_package_module(
     let resolved = super::static_packages::resolve(
         name,
         &package.version,
-        "image",
+        &package.platform,
         &package.store_path,
         &package.nar_hash,
         origin,
@@ -1169,7 +1169,7 @@ fn resolved_image_package_module(
         realization: None,
         package: name.to_string(),
         version: package.version.clone(),
-        platform: "image".to_string(),
+        platform: package.platform.clone(),
         runtime_output: package.store_path.clone(),
         contract: super::ResolvedPackageContract {
             document: resolved.document,

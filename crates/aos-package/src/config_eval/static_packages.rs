@@ -10,12 +10,11 @@ use std::fs::File;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail, ensure};
+use anyhow::{Context as _, Result, ensure};
 use aos_ability_model::{InterfaceDocument, PackageDocument};
 use aos_ability_validate::{
     CheckedStaticAbilityContract, StaticAbilityArtifactClass, StaticAbilityContractExpectation,
-    StaticAbilityExecutionStage, StaticAbilityPlatform,
-    validate_static_ability_artifacts_at_store_root,
+    StaticAbilityExecutionStage, validate_static_ability_artifacts_at_store_root,
 };
 use aos_contract::Sha256Digest;
 
@@ -44,6 +43,7 @@ pub(crate) struct ResolvedContract {
 /// companions, platform, or package identities are absent or invalid.
 pub(super) fn load() -> Result<BTreeMap<String, LocalRuntimePackage>> {
     let (contract, checked) = checked_host_selection()?;
+    let platform = runtime_platform(&checked)?;
 
     let mut packages = BTreeMap::new();
     for selected in checked.packages() {
@@ -61,6 +61,7 @@ pub(super) fn load() -> Result<BTreeMap<String, LocalRuntimePackage>> {
 
         let package = LocalRuntimePackage {
             version: selected.version().to_string(),
+            platform: platform.clone(),
             store_path: selected.payload().store_path.clone(),
             nar_hash: selected.payload().nar_hash.to_string(),
             contract: Some(ContractOrigin::EmbeddedStatic {
@@ -158,9 +159,13 @@ pub(super) fn resolve(
             let bytes = read_contract(&lower_contract)?;
             let checked = validate_static_ability_artifacts_at_store_root(
                 &bytes,
-                &host_expectation()?,
+                &host_expectation(),
                 Path::new(IMMUTABLE_STORE_ROOT),
             )?;
+            ensure!(
+                runtime_platform(&checked)? == platform,
+                "embedded static package target differs from runtime pin"
+            );
             let mut matching = checked
                 .packages()
                 .filter(|selected| selected.name() == package);
@@ -195,27 +200,18 @@ pub(super) fn resolve(
     }
 }
 
-fn host_expectation() -> Result<StaticAbilityContractExpectation> {
+fn host_expectation() -> StaticAbilityContractExpectation {
     boot_expectation(StaticAbilityExecutionStage::Host)
 }
 
 fn boot_expectation(
     execution_stage: StaticAbilityExecutionStage,
-) -> Result<StaticAbilityContractExpectation> {
-    let architecture = match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        architecture => bail!("unsupported host static-contract architecture {architecture}"),
-    };
-    Ok(StaticAbilityContractExpectation {
+) -> StaticAbilityContractExpectation {
+    StaticAbilityContractExpectation {
         artifact_class: StaticAbilityArtifactClass::Bootable,
         execution_stage: Some(execution_stage),
-        platform: Some(StaticAbilityPlatform {
-            os: "linux".to_string(),
-            architecture: architecture.to_string(),
-            variant: None,
-        }),
-    })
+        platform: None,
+    }
 }
 
 /// Authenticates every package selected by an embedded initrd contract.
@@ -233,10 +229,10 @@ pub(super) fn verified_initrd_packages(
 ) -> Result<crate::package_contract::VerifiedPackageContractSet> {
     let checked = validate_static_ability_artifacts_at_store_root(
         contract_bytes,
-        &boot_expectation(StaticAbilityExecutionStage::Initrd)?,
+        &boot_expectation(StaticAbilityExecutionStage::Initrd),
         Path::new(INITRD_STORE_ROOT),
     )?;
-    let platform = runtime_platform()?;
+    let platform = runtime_platform(&checked)?;
     let mut packages = Vec::with_capacity(checked.packages().len());
 
     for selected in checked.packages() {
@@ -275,13 +271,19 @@ pub(super) fn verified_initrd_packages(
     crate::package_contract::VerifiedPackageContractSet::from_verified(packages)
 }
 
-fn runtime_platform() -> Result<String> {
-    let architecture = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        architecture => bail!("unsupported initrd package architecture {architecture}"),
+fn runtime_platform(checked: &CheckedStaticAbilityContract) -> Result<String> {
+    let [platform] = checked.platforms() else {
+        anyhow::bail!("boot static ability contract must select one exact platform");
     };
-    Ok(format!("{architecture}-linux"))
+    let target = platform
+        .target
+        .as_ref()
+        .context("boot static ability contract omits its authenticated target platform")?;
+    Ok(format!(
+        "{}-{}",
+        target.architecture.as_str(),
+        target.system.as_str()
+    ))
 }
 
 pub(crate) fn checked_host_selection() -> Result<(
@@ -299,7 +301,7 @@ pub(crate) fn checked_host_selection() -> Result<(
     let bytes = read_contract(&contract_path)?;
     let checked = validate_static_ability_artifacts_at_store_root(
         &bytes,
-        &host_expectation()?,
+        &host_expectation(),
         Path::new(IMMUTABLE_STORE_ROOT),
     )?;
 

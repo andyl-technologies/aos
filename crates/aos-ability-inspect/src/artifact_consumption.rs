@@ -5,7 +5,6 @@
 
 use std::collections::BTreeSet;
 
-use aos_ability_model::document::PlatformIdentity;
 use aos_ability_model::{
     ABILITY_LIMITS_V1, ARTIFACT_CONSUMPTION_EVIDENCE_SCHEMA, ArtifactConsumptionContract,
     ArtifactConsumptionEvidenceDocument, ArtifactConsumptionMechanism,
@@ -157,9 +156,6 @@ pub enum ArtifactConsumptionEvidenceError {
     /// The mechanism does not carry its required contract and observation shape.
     #[error("artifact-consumption evidence mechanism and payload shape disagree")]
     MechanismPayloadMismatch,
-    /// A platform is not a valid ELF startup-linkage platform identity.
-    #[error("artifact-consumption evidence has an unsupported platform relationship")]
-    Platform,
     /// An artifact store path is not an absolute Nix store output.
     #[error("artifact-consumption evidence has an invalid {role} store path")]
     StorePath {
@@ -195,8 +191,8 @@ pub enum ArtifactConsumptionEvidenceError {
     /// Facts inspected from the output do not equal the authored contract.
     #[error("artifact-consumption observation does not satisfy its linkage contract")]
     ObservationMismatch,
-    /// The observed ELF machine does not match the exact target platform.
-    #[error("artifact-consumption ELF machine does not match its target platform")]
+    /// The observed ELF identity is absent or internally inconsistent.
+    #[error("artifact-consumption evidence has invalid observed ELF identity facts")]
     MachineMismatch,
     /// The closure observation did not match the mechanism's retention rule.
     #[error("artifact-consumption evidence does not satisfy its provider-retention contract")]
@@ -513,13 +509,7 @@ fn validate_platforms(
             return Err(ArtifactConsumptionEvidenceError::Bound { field: "platform" });
         }
     }
-    if platforms.host != platforms.target || platforms.target.system.as_str() != "linux" {
-        return Err(ArtifactConsumptionEvidenceError::Platform);
-    }
-    match platforms.target.architecture.as_str() {
-        "x86_64" | "aarch64" => Ok(()),
-        _ => Err(ArtifactConsumptionEvidenceError::Platform),
-    }
+    Ok(())
 }
 
 fn validate_artifact_file(
@@ -553,7 +543,7 @@ fn validate_contract_and_observation(
             ArtifactConsumptionObservation::ElfStartupLinkage(observation),
         ) if document.mechanism == ArtifactConsumptionMechanism::ElfStartupLinkage => {
             validate_elf_contract(document, contract)?;
-            validate_elf_observation(document, contract, observation)
+            validate_elf_observation(contract, observation)
         }
         (
             ArtifactConsumptionContract::ObservedPath(contract),
@@ -685,7 +675,6 @@ fn validate_elf_contract(
 }
 
 fn validate_elf_observation(
-    document: &ArtifactConsumptionEvidenceDocument,
     contract: &aos_ability_model::ElfStartupLinkageContract,
     observation: &aos_ability_model::ElfStartupLinkageObservation,
 ) -> Result<(), ArtifactConsumptionEvidenceError> {
@@ -698,11 +687,10 @@ fn validate_elf_observation(
     {
         return Err(ArtifactConsumptionEvidenceError::ObservationMismatch);
     }
-    let expected_machine = machine_for(&document.platforms.target)?;
-    if observation.machine != expected_machine
-        || observation.elf_class != "ELF64"
-        || observation.data_encoding != "2's complement, little endian"
-    {
+    validate_string("ELF machine", &observation.machine)?;
+    validate_string("ELF class", &observation.elf_class)?;
+    validate_string("ELF data encoding", &observation.data_encoding)?;
+    if !observation.provider_elf_compatible || !observation.loader_elf_compatible {
         return Err(ArtifactConsumptionEvidenceError::MachineMismatch);
     }
     validate_string("ELF OS/ABI", &observation.os_abi)?;
@@ -710,23 +698,10 @@ fn validate_elf_observation(
     if !observation.provider_retained_by_consumer {
         return Err(ArtifactConsumptionEvidenceError::ProviderRetentionMismatch);
     }
-    if !observation.provider_elf_compatible
-        || !observation.loader_elf_compatible
-        || !observation.search_resolves_exact_provider
-    {
+    if !observation.search_resolves_exact_provider {
         return Err(ArtifactConsumptionEvidenceError::ObservationMismatch);
     }
     Ok(())
-}
-
-fn machine_for(
-    platform: &PlatformIdentity,
-) -> Result<&'static str, ArtifactConsumptionEvidenceError> {
-    match platform.architecture.as_str() {
-        "x86_64" => Ok("Advanced Micro Devices X86-64"),
-        "aarch64" => Ok("AArch64"),
-        _ => Err(ArtifactConsumptionEvidenceError::Platform),
-    }
 }
 
 fn validate_string(
@@ -849,7 +824,8 @@ fn has_duplicate<T: Ord + Clone>(values: &[T]) -> bool {
 mod tests {
     use aos_ability_model::{
         ArtifactConsumptionPlatforms, ElfSearchPathKind, ElfStartupLinkageContract,
-        ElfStartupLinkageObservation, ElfSymbolVersion, LocalKey, encode_canonical,
+        ElfStartupLinkageObservation, ElfSymbolVersion, LocalKey, PlatformIdentity,
+        encode_canonical,
     };
     use aos_ability_validate::test_support::plan_fixture;
 
@@ -1016,6 +992,27 @@ mod tests {
                 .limitations
                 .contains(&ArtifactConsumptionLimitation::NoDataInputEvidence)
         );
+    }
+
+    #[test]
+    fn checked_evidence_accepts_selected_cross_platform_identity() {
+        let mut document = document();
+        document.platforms.host = PlatformIdentity {
+            system: LocalKey::new("darwin").unwrap(),
+            architecture: LocalKey::new("aarch64").unwrap(),
+        };
+        document.platforms.target = PlatformIdentity {
+            system: LocalKey::new("freebsd").unwrap(),
+            architecture: LocalKey::new("riscv64").unwrap(),
+        };
+        let ArtifactConsumptionObservation::ElfStartupLinkage(observation) =
+            &mut document.observation
+        else {
+            panic!("ELF observation fixture");
+        };
+        observation.machine = "RISC-V".to_string();
+
+        CheckedArtifactConsumptionEvidence::check(document).unwrap();
     }
 
     #[test]

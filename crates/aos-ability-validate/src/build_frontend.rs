@@ -10,6 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
+use aos_ability_model::document::PlatformIdentity;
 use aos_ability_model::{
     ArtifactClosureMemberInput, ArtifactReference, artifact_closure_identity,
     artifact_content_identity, encode_canonical,
@@ -83,6 +84,7 @@ struct StaticAssemblySpec {
     artifact_class: String,
     execution_stage: Option<String>,
     platform: Option<StaticAssemblyPlatform>,
+    target_platform: Option<PlatformIdentity>,
     packages: Vec<StaticAssemblyPackage>,
     contracts: Vec<String>,
 }
@@ -104,11 +106,12 @@ struct StaticAssemblyPlatform {
 }
 
 impl StaticAssemblyPlatform {
-    fn expectation(&self) -> StaticAbilityPlatform {
+    fn expectation(&self, target: Option<PlatformIdentity>) -> StaticAbilityPlatform {
         StaticAbilityPlatform {
             os: self.os.clone(),
             architecture: self.architecture.clone(),
             variant: self.variant.clone(),
+            target,
         }
     }
 }
@@ -155,7 +158,7 @@ pub fn assemble_static_contract(spec_path: &Path, graph_path: &Path, output: &Pa
             platform: spec
                 .platform
                 .as_ref()
-                .map(StaticAssemblyPlatform::expectation),
+                .map(|platform| platform.expectation(spec.target_platform.clone())),
         },
     })?;
     if bytes.len() > 4 * 1024 * 1024 {
@@ -265,6 +268,9 @@ fn assemble_platform(
         "abilities": abilities,
         "unresolved_launch_obligations": obligations,
     });
+    if let Some(target) = &spec.target_platform {
+        result["target"] = serde_json::to_value(target)?;
+    }
     if let Some(stage) = &spec.execution_stage {
         result["execution_stage"] = Value::String(stage.clone());
     }
@@ -325,12 +331,15 @@ fn assemble_combined_platforms(
     Ok(platforms)
 }
 
-fn platform_sort_key(value: &Value) -> (&str, &str, &str) {
+fn platform_sort_key(value: &Value) -> (&str, &str, &str, &str, &str) {
     let platform = &value["platform"];
+    let target = &value["target"];
     (
         value_string(platform, "os"),
         value_string(platform, "architecture"),
         value_string(platform, "variant"),
+        value_string(target, "system"),
+        value_string(target, "architecture"),
     )
 }
 
@@ -812,6 +821,7 @@ pub fn validate_static_contract(arguments: &[std::ffi::OsString]) -> Result<()> 
             os: text(3, "platform operating system")?,
             architecture: text(4, "platform architecture")?,
             variant: (variant != "-").then_some(variant),
+            target: None,
         })
     } else {
         None

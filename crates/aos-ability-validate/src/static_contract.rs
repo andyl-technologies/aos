@@ -13,6 +13,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail, ensure};
+use aos_ability_model::document::PlatformIdentity;
 use aos_ability_model::{
     ABILITY_LIMITS_V1, ArtifactReference, InterfaceDocument, InterfaceKey, LocalKey,
     PackageDocument, RequirementDeclaration, RequirementStrength,
@@ -52,6 +53,8 @@ pub struct StaticAbilityPlatform {
     pub architecture: String,
     /// Carries an optional OCI platform variant.
     pub variant: Option<String>,
+    /// Identifies the exact AOS target without consulting the evaluator host.
+    pub target: Option<PlatformIdentity>,
 }
 
 /// Supplies artifact and platform expectations known by the invoking builder.
@@ -68,7 +71,7 @@ pub struct StaticAbilityContractExpectation {
 /// Retains summary information after static-contract semantic validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckedStaticAbilityContract {
-    platform_count: usize,
+    platforms: Vec<StaticAbilityPlatform>,
     packages: Vec<CheckedStaticAbilityPackage>,
 }
 
@@ -76,7 +79,13 @@ impl CheckedStaticAbilityContract {
     /// Returns the number of distinct platform records in the contract.
     #[must_use]
     pub const fn platform_count(&self) -> usize {
-        self.platform_count
+        self.platforms.len()
+    }
+
+    /// Returns the exact checked platform identities retained by the contract.
+    #[must_use]
+    pub fn platforms(&self) -> &[StaticAbilityPlatform] {
+        &self.platforms
     }
 
     /// Iterates the exact package selections retained by the checked contract.
@@ -275,6 +284,14 @@ fn validate_static_ability_contract_document(
             platform.platform.os.as_str(),
             platform.platform.architecture.as_str(),
             platform.platform.variant.as_deref(),
+            platform
+                .target
+                .as_ref()
+                .map(|target| target.system.as_str()),
+            platform
+                .target
+                .as_ref()
+                .map(|target| target.architecture.as_str()),
         );
         ensure!(
             platform_keys.insert(key),
@@ -291,7 +308,11 @@ fn validate_static_ability_contract_document(
         ensure!(
             actual.os == expected.os
                 && actual.architecture == expected.architecture
-                && actual.variant == expected.variant,
+                && actual.variant == expected.variant
+                && expected
+                    .target
+                    .as_ref()
+                    .is_none_or(|target| contract.platforms[0].target.as_ref() == Some(target)),
             "static ability contract has the wrong platform"
         );
     }
@@ -303,6 +324,16 @@ fn checked_static_ability_contract(
     contract: StaticAbilityContract,
     package_documents: BTreeMap<(String, Sha256Digest), ArtifactBackedPackage>,
 ) -> CheckedStaticAbilityContract {
+    let platforms = contract
+        .platforms
+        .iter()
+        .map(|record| StaticAbilityPlatform {
+            os: record.platform.os.clone(),
+            architecture: record.platform.architecture.clone(),
+            variant: record.platform.variant.clone(),
+            target: record.target.clone(),
+        })
+        .collect();
     let packages = contract
         .platforms
         .iter()
@@ -325,7 +356,7 @@ fn checked_static_ability_contract(
         .collect();
 
     CheckedStaticAbilityContract {
-        platform_count: contract.platforms.len(),
+        platforms,
         packages,
     }
 }
@@ -814,11 +845,25 @@ fn compare_platform_records(
         left.platform.os.as_str(),
         left.platform.architecture.as_str(),
         left.platform.variant.as_deref().unwrap_or_default(),
+        left.target
+            .as_ref()
+            .map_or("", |target| target.system.as_str()),
+        left.target
+            .as_ref()
+            .map_or("", |target| target.architecture.as_str()),
     )
         .cmp(&(
             right.platform.os.as_str(),
             right.platform.architecture.as_str(),
             right.platform.variant.as_deref().unwrap_or_default(),
+            right
+                .target
+                .as_ref()
+                .map_or("", |target| target.system.as_str()),
+            right
+                .target
+                .as_ref()
+                .map_or("", |target| target.architecture.as_str()),
         ))
 }
 
@@ -893,6 +938,8 @@ enum StaticRuntimeGrant {}
 #[serde(deny_unknown_fields)]
 struct StaticAbilityPlatformRecord {
     platform: OciPlatform,
+    #[serde(default)]
+    target: Option<PlatformIdentity>,
     #[serde(default)]
     execution_stage: Option<StaticAbilityExecutionStage>,
     packages: Vec<StaticAbilityPackage>,
