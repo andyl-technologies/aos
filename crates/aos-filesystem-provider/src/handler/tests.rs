@@ -5,7 +5,8 @@ use aos_ability_model::{
     MethodReference, MethodSemantics, ResourceLifetime,
 };
 use aos_provider_protocol::{
-    ADMISSION_REQUEST_SCHEMA, INVOCATION_SCHEMA, InvocationControl, REQUEST_SCHEMA, ResourceSpec,
+    ADMISSION_REQUEST_SCHEMA, HandlerSchemaContract, INVOCATION_SCHEMA, InvocationControl,
+    REQUEST_SCHEMA, ResourceSpec,
 };
 use tempfile::tempdir;
 
@@ -18,6 +19,29 @@ const TEST_ENTRY_INTERFACE: &str = "aos.test.filesystem-entry";
 
 fn key(value: &str) -> LocalKey {
     LocalKey::new(value).expect("test key is valid")
+}
+
+fn observation_schema(discriminator: &str) -> aos_ability_model::ValueSchema {
+    aos_ability_model::ValueSchema::DocumentRecord {
+        key_max_length: 64,
+        fields: [(
+            "schema".into(),
+            aos_ability_model::ValueSchema::StringEnum {
+                values: vec![discriminator.into()],
+            },
+        )]
+        .into(),
+        optional_fields: Vec::new(),
+    }
+}
+
+fn handler_contract(observation_discriminator: &str) -> HandlerSchemaContract {
+    HandlerSchemaContract {
+        realization: None,
+        parameters: aos_ability_model::ValueSchema::Boolean,
+        completion_evidence: aos_ability_model::ValueSchema::Boolean,
+        observation_evidence: observation_schema(observation_discriminator),
+    }
 }
 
 fn interface(name: &str) -> InterfaceKey {
@@ -116,6 +140,7 @@ fn admission_request(provider: &FilesystemProvider, resource: ResourceId) -> Adm
             method: key("allocate"),
         },
         semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+        contract: handler_contract("aos.test.storage-allocation-observation/v1"),
         target,
         assignment,
         resource_spec: ResourceSpec {
@@ -125,7 +150,7 @@ fn admission_request(provider: &FilesystemProvider, resource: ResourceId) -> Adm
             lifetime: aos_ability_model::ResourceLifetime::Instance,
             value,
             realization: ability_value(json!({
-                "schema": REALIZATION_SCHEMA,
+                "schema": "validated-by-runtime",
                 "path": path_string(&path).expect("planned path is UTF-8"),
             }))
             .expect("realization is valid"),
@@ -175,6 +200,7 @@ fn entry_request(
             method: key("materialize"),
         },
         semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+        contract: handler_contract("aos.test.filesystem-entry-observation/v1"),
         target,
         assignment,
         resource_spec: ResourceSpec {
@@ -183,7 +209,7 @@ fn entry_request(
             lifetime: ResourceLifetime::Instance,
             value,
             realization: ability_value(json!({
-                "schema": ENTRY_REALIZATION_SCHEMA,
+                "schema": "validated-by-runtime",
                 "path": destination,
                 "source_path": source_path,
             }))
@@ -219,7 +245,7 @@ fn persistent_request(provider: &FilesystemProvider, resource: ResourceId) -> Ad
         )
         .expect("persistent planned path computes");
     request.resource_spec.realization = ability_value(json!({
-        "schema": REALIZATION_SCHEMA,
+        "schema": "validated-by-runtime",
         "path": path,
     }))
     .expect("persistent realization is valid");
@@ -257,6 +283,7 @@ fn storage_view_request(
             method: key("materialize"),
         },
         semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+        contract: handler_contract("aos.test.storage-view-observation/v1"),
         target,
         assignment,
         resource_spec: ResourceSpec {
@@ -266,7 +293,7 @@ fn storage_view_request(
             lifetime: ResourceLifetime::Instance,
             value,
             realization: ability_value(json!({
-                "schema": VIEW_REALIZATION_SCHEMA,
+                "schema": "validated-by-runtime",
                 "source": source_context.reference,
                 "relative_path": "service.sock",
                 "path": path,
@@ -319,8 +346,15 @@ fn invocation(
         purpose,
         method: request.method.clone(),
         semantics: request.semantics.clone(),
+        contract: request.contract.clone(),
         request: aos_provider_protocol::DurableRequest {
             schema: REQUEST_SCHEMA.into(),
+            handler: request
+                .assignment
+                .implementation
+                .handler
+                .clone()
+                .expect("test assignment selects a handler"),
             method: request.method.clone(),
             semantics: request.semantics.clone(),
             recovery: aos_provider_protocol::RecoveryMethods {
@@ -352,8 +386,15 @@ fn invocation_with_dependencies(
         purpose,
         method: request.method.clone(),
         semantics: request.semantics.clone(),
+        contract: request.contract.clone(),
         request: aos_provider_protocol::DurableRequest {
             schema: REQUEST_SCHEMA.into(),
+            handler: request
+                .assignment
+                .implementation
+                .handler
+                .clone()
+                .expect("test assignment selects a handler"),
             method: request.method.clone(),
             semantics: request.semantics.clone(),
             recovery: aos_provider_protocol::RecoveryMethods {
@@ -371,34 +412,29 @@ fn invocation_with_dependencies(
 }
 
 #[test]
-fn authenticated_interfaces_select_closed_filesystem_roles() {
-    let method = |name| MethodReference {
-        interface: interface(name),
-        method: key("observe"),
-    };
-
+fn authenticated_handlers_select_closed_filesystem_behaviors() {
     assert_eq!(
-        FilesystemRole::from_method(&method(INSTANCE_ALLOCATION_INTERFACE))
-            .expect("instance allocation interface selects its role"),
+        FilesystemRole::from_handler(Some(&key("storage-allocation-effects")))
+            .expect("instance allocation handler selects its behavior"),
         FilesystemRole::InstanceAllocation,
     );
     assert_eq!(
-        FilesystemRole::from_method(&method(PERSISTENT_ALLOCATION_INTERFACE))
-            .expect("persistent allocation interface selects its role"),
+        FilesystemRole::from_handler(Some(&key("persistent-storage-allocation-effects")))
+            .expect("persistent allocation handler selects its behavior"),
         FilesystemRole::PersistentAllocation,
     );
     assert_eq!(
-        FilesystemRole::from_method(&method(STORAGE_VIEW_INTERFACE))
-            .expect("storage view interface selects its role"),
+        FilesystemRole::from_handler(Some(&key("storage-view-effects")))
+            .expect("storage view handler selects its behavior"),
         FilesystemRole::StorageView,
     );
     assert_eq!(
-        FilesystemRole::from_method(&method(FILESYSTEM_ENTRY_INTERFACE))
-            .expect("filesystem entry interface selects its role"),
+        FilesystemRole::from_handler(Some(&key("filesystem-entry-effects")))
+            .expect("filesystem entry handler selects its behavior"),
         FilesystemRole::FilesystemEntry,
     );
-    assert!(FilesystemRole::from_method(&method("aos.filesystem.entry")).is_err());
-    assert!(FilesystemRole::from_method(&method("aos.example.unowned-effects")).is_err());
+    assert!(FilesystemRole::from_handler(Some(&key("filesystem-entry"))).is_err());
+    assert!(FilesystemRole::from_handler(None).is_err());
 }
 
 #[test]
@@ -419,6 +455,10 @@ fn allocation_effect_creates_an_owned_exact_directory() {
         )
         .expect("allocation effect succeeds");
     assert_eq!(result.disposition, InvocationDisposition::Completed);
+    assert_eq!(
+        result.evidence.as_json()["schema"],
+        "aos.test.storage-allocation-observation/v1"
+    );
     assert!(result.outputs.contains_key(&key("storage-path")));
     assert!(result.outputs.contains_key(&key("retained-resource")));
     assert!(result.outputs.contains_key(&key("observation")));
@@ -431,6 +471,10 @@ fn allocation_effect_creates_an_owned_exact_directory() {
         AdmissionRevision::Present {
             revision: RevisionId(Sha256Digest::of_bytes(b"desired-storage")),
         }
+    );
+    assert_eq!(
+        observed.observation.as_json()["schema"],
+        "aos.test.storage-allocation-observation/v1"
     );
 }
 
@@ -484,7 +528,7 @@ fn admission_rejects_a_realization_that_differs_from_the_planned_path() {
     let provider = provider(temporary.path());
     let mut request = admission_request(&provider, resource("drifted-realization"));
     request.resource_spec.realization = ability_value(json!({
-        "schema": REALIZATION_SCHEMA,
+        "schema": "validated-by-runtime",
         "path": temporary.path().join("other"),
     }))
     .expect("drifted realization is valid JSON");
@@ -529,7 +573,7 @@ fn requested_path_admission_rejects_an_overlapping_durable_claim() {
     }))
     .expect("requested-path input is valid");
     request.resource_spec.realization = ability_value(json!({
-        "schema": REALIZATION_SCHEMA,
+        "schema": "validated-by-runtime",
         "path": requested_path,
     }))
     .expect("requested-path realization is valid");

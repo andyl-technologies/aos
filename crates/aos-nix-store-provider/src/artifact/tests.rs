@@ -196,10 +196,18 @@ fn semantic_revision_and_recovery_track_resolved_blob_content() {
 
     let first_inspection = Inspection::Ready(first.clone());
     let second_inspection = Inspection::Ready(second.clone());
-    let first_observation =
-        observation(&expected, &first_inspection).expect("first observation is encoded");
-    let second_observation =
-        observation(&expected, &second_inspection).expect("second observation is encoded");
+    let first_observation = observation(
+        "aos.test.content-observation/v1",
+        &expected,
+        &first_inspection,
+    )
+    .expect("first observation is encoded");
+    let second_observation = observation(
+        "aos.test.content-observation/v1",
+        &expected,
+        &second_inspection,
+    )
+    .expect("second observation is encoded");
     let first_revision =
         admission_revision(&first_inspection, &first_observation).expect("first revision exists");
     let second_revision = admission_revision(&second_inspection, &second_observation)

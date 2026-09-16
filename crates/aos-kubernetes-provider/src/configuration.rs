@@ -22,9 +22,7 @@ use super::{
     read_bounded, require_resource,
 };
 
-const OBSERVATION_SCHEMA: &str = "aos.ability.k3s-configuration-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.k3s.configuration-context/v1";
-const REALIZATION_SCHEMA: &str = "aos.k3s.configuration-realization/v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -56,7 +54,8 @@ struct K3sIntegration {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct K3sConfigurationRealization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     path: String,
 }
 
@@ -69,7 +68,7 @@ struct K3sConfigurationContext {
 
 #[derive(Clone, Debug, Serialize)]
 struct K3sConfigurationObservation<'a> {
-    schema: &'static str,
+    schema: &'a str,
     expected: &'a K3sConfiguration,
     state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,13 +84,23 @@ pub(super) fn admit(request: AdmissionRequest) -> Result<AdmissionResult, Kubern
     validate_configuration(&desired)?;
     validate_configuration_prerequisites(&request.resources, &desired)?;
     validate_configuration_realization(&realization)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator()
+        .ok_or_else(|| invalid("selected K3s method has no exact observation discriminator"))?;
     let content = render_configuration(&desired)?;
     let current = configuration_matches(
         Path::new(&realization.path),
         &content,
         &request.resource_spec.revision.0.to_string(),
     )?;
-    let observation = configuration_observation(&desired, &realization.path, &content, current);
+    let observation = configuration_observation(
+        observation_schema,
+        &desired,
+        &realization.path,
+        &content,
+        current,
+    );
 
     Ok(AdmissionResult {
         schema: ADMISSION_SCHEMA.into(),
@@ -282,8 +291,7 @@ fn validate_configuration_realization(
     realization: &K3sConfigurationRealization,
 ) -> Result<(), KubernetesProviderError> {
     let path = Path::new(&realization.path);
-    if realization.schema != REALIZATION_SCHEMA
-        || path.parent() != Some(Path::new("/run/aos/k3s"))
+    if path.parent() != Some(Path::new("/run/aos/k3s"))
         || path.extension().and_then(|value| value.to_str()) != Some("json")
     {
         return Err(invalid(
@@ -402,13 +410,14 @@ fn release_configuration(path: &Path, revision: &str) -> Result<(), KubernetesPr
 }
 
 fn configuration_observation<'a>(
+    observation_schema: &'a str,
     desired: &'a K3sConfiguration,
     path: &str,
     content: &[u8],
     current: bool,
 ) -> K3sConfigurationObservation<'a> {
     K3sConfigurationObservation {
-        schema: OBSERVATION_SCHEMA,
+        schema: observation_schema,
         expected: desired,
         state: if current { "current" } else { "absent" },
         path: current.then(|| path.to_owned()),
@@ -425,6 +434,10 @@ fn configuration_result(
     disposition: InvocationDisposition,
     retained: bool,
 ) -> Result<InvocationResult, KubernetesProviderError> {
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator()
+        .ok_or_else(|| invalid("selected K3s method has no exact observation discriminator"))?;
     let mut outputs = BTreeMap::new();
     if retained {
         outputs.insert(
@@ -436,7 +449,11 @@ fn configuration_result(
         schema: RESULT_SCHEMA.into(),
         disposition,
         evidence: ability_value(serde_json::to_value(configuration_observation(
-            desired, path, content, current,
+            observation_schema,
+            desired,
+            path,
+            content,
+            current,
         ))?)?,
         outputs,
         native_context_digest: invocation.request.native_context_digest,

@@ -194,6 +194,46 @@ pub struct ResourceContext {
     pub native_context_digest: Sha256Digest,
 }
 
+/// Carries the package-owned schemas selected for one authenticated handler method.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandlerSchemaContract {
+    /// Defines the selected implementation's provider realization, when present.
+    pub realization: Option<aos_ability_model::ValueSchema>,
+    /// Defines the selected method's closed parameters.
+    pub parameters: aos_ability_model::ValueSchema,
+    /// Defines successful completion evidence.
+    pub completion_evidence: aos_ability_model::ValueSchema,
+    /// Defines rejection, uncertainty, and observation evidence.
+    pub observation_evidence: aos_ability_model::ValueSchema,
+}
+
+impl HandlerSchemaContract {
+    /// Returns the package-owned realization document discriminator.
+    #[must_use]
+    pub fn realization_discriminator(&self) -> Option<&str> {
+        self.realization.as_ref()?.singleton_string_field("schema")
+    }
+
+    /// Returns the package-owned completion-evidence document discriminator.
+    #[must_use]
+    pub fn completion_discriminator(&self) -> Option<&str> {
+        self.completion_evidence.singleton_string_field("schema")
+    }
+
+    /// Returns the package-owned observation-evidence document discriminator.
+    #[must_use]
+    pub fn observation_discriminator(&self) -> Option<&str> {
+        self.observation_evidence.singleton_string_field("schema")
+    }
+
+    /// Returns a nested package-owned observation-evidence discriminator.
+    #[must_use]
+    pub fn observation_discriminator_at(&self, path: &[&str]) -> Option<&str> {
+        self.observation_evidence.singleton_string_path(path)
+    }
+}
+
 /// Binds a fixed-point resource specification to provider-native observations.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -216,6 +256,8 @@ pub struct AdmissionRequest {
     pub method: MethodReference,
     /// Carries its retained provider-neutral authority semantics.
     pub semantics: MethodSemantics,
+    /// Carries the exact schemas projected from the selected package contract.
+    pub contract: HandlerSchemaContract,
     /// Retains the full target resource authority.
     pub target: ResourceReference,
     /// Pins the exact provider implementation and live incarnation selected by
@@ -235,6 +277,8 @@ pub struct AdmissionRequest {
 pub struct DurableRequest {
     /// Carries [`REQUEST_SCHEMA`].
     pub schema: String,
+    /// Names the package-owned handler selected by the authenticated implementation.
+    pub handler: LocalKey,
     /// Identifies the exact selected interface method.
     pub method: MethodReference,
     /// Carries its retained provider-neutral authority semantics.
@@ -271,6 +315,8 @@ pub struct Invocation {
     pub method: MethodReference,
     /// Carries the selected method's retained authority semantics.
     pub semantics: MethodSemantics,
+    /// Carries the exact schemas projected from the selected package contract.
+    pub contract: HandlerSchemaContract,
     /// Carries the exact durable request.
     pub request: DurableRequest,
     /// Carries live bounded execution control.
@@ -495,9 +541,9 @@ mod tests {
 
     use super::{
         ADMISSION_REQUEST_SCHEMA, AdmissionDisposition, AdmissionRequest, AdmissionRevision,
-        BoundNativeContext, InvocationControl, InvocationDisposition, InvocationPurpose,
-        NATIVE_CONTEXT_DIGEST_DOMAIN, RecoveryMethods, ResourceContext, ResourceSpec,
-        SupportedPurposes, native_context_digest, validate_admission_resource,
+        BoundNativeContext, HandlerSchemaContract, InvocationControl, InvocationDisposition,
+        InvocationPurpose, NATIVE_CONTEXT_DIGEST_DOMAIN, RecoveryMethods, ResourceContext,
+        ResourceSpec, SupportedPurposes, native_context_digest, validate_admission_resource,
         validate_resource_contexts,
     };
 
@@ -622,6 +668,12 @@ mod tests {
                 method: LocalKey::new("apply").expect("method is valid"),
             },
             semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            contract: HandlerSchemaContract {
+                realization: None,
+                parameters: aos_ability_model::ValueSchema::Boolean,
+                completion_evidence: aos_ability_model::ValueSchema::Boolean,
+                observation_evidence: aos_ability_model::ValueSchema::Boolean,
+            },
             target: aos_ability_model::ResourceReference {
                 interface: resource_interface.clone(),
                 resource: resource.clone(),

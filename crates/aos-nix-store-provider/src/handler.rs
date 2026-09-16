@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    AbilityValue, AccessMode, ArtifactReference, LocalKey, MethodReference, MethodSemantics,
-    ResourceReference, RevisionId,
+    AbilityValue, AccessMode, ArtifactReference, LocalKey, MethodSemantics, ResourceReference,
+    RevisionId,
 };
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
@@ -28,14 +28,10 @@ use crate::process::ProcessStoreCommands;
 #[cfg(test)]
 use crate::process::argument_batches;
 
-const REALIZATION_SCHEMA: &str = "aos.nix.store-database-realization/v1";
-const OBSERVATION_SCHEMA: &str = "aos.ability.nix-store-database-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.nix.store-database-context/v1";
 const DATABASE_PATH: &str = "/nix/var/nix/db/db.sqlite";
 const MAX_REGISTRATION_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_REGISTRATION_RECORDS: usize = 1_000_000;
-const DATABASE_INTERFACE: &str = "aos.nix.store-database-effects";
-const CONTENT_OBJECT_INTERFACE: &str = "aos.artifact.content-addressed-object-operations";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NixStoreRole {
@@ -44,11 +40,12 @@ enum NixStoreRole {
 }
 
 impl NixStoreRole {
-    fn from_method(method: &MethodReference) -> Result<Self> {
-        match method.interface.name.as_str() {
-            DATABASE_INTERFACE => Ok(Self::Database),
-            CONTENT_OBJECT_INTERFACE => Ok(Self::ContentAddressedObject),
-            _ => bail!("selected interface does not belong to the Nix store provider"),
+    fn from_handler(handler: Option<&LocalKey>) -> Result<Self> {
+        let handler = handler.context("selected Nix store implementation has no handler")?;
+        match handler.as_str() {
+            "nix-store-database-effects" => Ok(Self::Database),
+            "content-addressed-object-operations" => Ok(Self::ContentAddressedObject),
+            _ => bail!("selected implementation does not name a Nix store handler behavior"),
         }
     }
 }
@@ -92,7 +89,8 @@ impl NixStoreProvider {
                     request.schema == ADMISSION_REQUEST_SCHEMA,
                     "unsupported admission schema"
                 );
-                let role = NixStoreRole::from_method(&request.method)?;
+                let role =
+                    NixStoreRole::from_handler(request.assignment.implementation.handler.as_ref())?;
                 match role {
                     NixStoreRole::Database => serde_json::to_value(self.admit(request)?)?,
                     NixStoreRole::ContentAddressedObject => {
@@ -116,7 +114,7 @@ impl NixStoreProvider {
                     invocation.method_is_bound(),
                     "invocation method differs from durable recovery authority"
                 );
-                let role = NixStoreRole::from_method(&invocation.method)?;
+                let role = NixStoreRole::from_handler(Some(&invocation.request.handler))?;
                 match role {
                     NixStoreRole::Database => serde_json::to_value(self.invoke(invocation)?)?,
                     NixStoreRole::ContentAddressedObject => {
@@ -135,6 +133,10 @@ impl NixStoreProvider {
         validate_method(request.method.method.as_str(), &request.semantics)?;
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
+        let observation_schema = request
+            .contract
+            .observation_discriminator()
+            .context("selected Nix store method has no exact observation discriminator")?;
 
         let desired: DatabaseRequest = decode_value(&request.resource_spec.value)?;
         validate_request(&desired)?;
@@ -143,6 +145,7 @@ impl NixStoreProvider {
         let executable = self.validate_realization(&realization)?;
         let registration = read_registration(desired.registration.as_ref())?;
         let observation = self.observe(
+            observation_schema,
             &request.resource_spec.value,
             &desired,
             &executable,
@@ -184,6 +187,10 @@ impl NixStoreProvider {
             "invocation method differs from durable recovery authority"
         );
         validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
+        let observation_schema = invocation
+            .contract
+            .observation_discriminator()
+            .context("selected Nix store method has no exact observation discriminator")?;
 
         let request = &invocation.request;
         validate_resource_contexts(&request.resources)?;
@@ -228,6 +235,7 @@ impl NixStoreProvider {
         );
 
         let observation_before = self.observe(
+            observation_schema,
             &bound.resource_spec.value,
             &desired,
             &executable,
@@ -252,6 +260,7 @@ impl NixStoreProvider {
                     invocation.control.attempt_remaining_millis,
                 )?;
                 let evidence = self.observe(
+                    observation_schema,
                     &bound.resource_spec.value,
                     &desired,
                     &executable,
@@ -332,10 +341,6 @@ impl NixStoreProvider {
 
     fn validate_realization(&self, realization: &DatabaseRealization) -> Result<Executable> {
         ensure!(
-            realization.schema == REALIZATION_SCHEMA,
-            "unsupported Nix store database realization"
-        );
-        ensure!(
             realization.nix_store.arguments.is_empty(),
             "the Nix store executable must not carry undeclared arguments"
         );
@@ -349,6 +354,7 @@ impl NixStoreProvider {
 
     fn observe(
         &self,
+        observation_schema: &str,
         expected: &AbilityValue,
         desired: &DatabaseRequest,
         executable: &Executable,
@@ -388,7 +394,7 @@ impl NixStoreProvider {
         };
 
         ability_value(json!({
-            "schema": OBSERVATION_SCHEMA,
+            "schema": observation_schema,
             "expected": expected.as_json(),
             "initialized": initialized,
             "registration_digest": registration_digest,
@@ -451,7 +457,8 @@ struct RegistrationInput {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DatabaseRealization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     nix_store: ExecutableReference,
 }
 
@@ -915,38 +922,27 @@ mod tests {
         anyhow::anyhow!("test lock is poisoned")
     }
 
-    fn method(interface: &str) -> MethodReference {
-        serde_json::from_value(json!({
-            "interface": {
-                "name": interface,
-                "abi": 1,
-                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "method": "observe"
-        }))
-        .expect("method fixture is valid")
+    fn key(value: &str) -> LocalKey {
+        LocalKey::new(value).expect("handler key is valid")
     }
 
     #[test]
-    fn authenticated_interfaces_select_only_package_declared_roles() {
+    fn authenticated_handlers_select_only_package_declared_behaviors() {
         assert_eq!(
-            NixStoreRole::from_method(&method(DATABASE_INTERFACE))
-                .expect("database interface selects its role"),
+            NixStoreRole::from_handler(Some(&key("nix-store-database-effects")))
+                .expect("database handler selects its behavior"),
             NixStoreRole::Database
         );
         assert_eq!(
-            NixStoreRole::from_method(&method(CONTENT_OBJECT_INTERFACE))
-                .expect("content interface selects its role"),
+            NixStoreRole::from_handler(Some(&key("content-addressed-object-operations")))
+                .expect("content handler selects its behavior"),
             NixStoreRole::ContentAddressedObject
         );
         assert!(
-            NixStoreRole::from_method(&method("aos.artifact.content-addressed-object")).is_err(),
-            "the public resource interface must not select a terminal role"
+            NixStoreRole::from_handler(Some(&key("content-addressed-object"))).is_err(),
+            "the public controller alias must not select terminal behavior"
         );
-        assert!(
-            NixStoreRole::from_method(&method("aos.example.unowned-effects")).is_err(),
-            "an unowned interface must not select a role"
-        );
+        assert!(NixStoreRole::from_handler(None).is_err());
     }
 
     #[test]
@@ -1018,7 +1014,14 @@ mod tests {
         );
 
         let before = provider
-            .observe(&expected, &desired, &executable, Some(&registration), 1_000)
+            .observe(
+                "aos.test.nix-store-observation/v1",
+                &expected,
+                &desired,
+                &executable,
+                Some(&registration),
+                1_000,
+            )
             .expect("initial state observes");
         assert_eq!(observation_state(&before), Some(DatabaseState::Degraded));
 
@@ -1026,7 +1029,14 @@ mod tests {
             .apply(&executable, Some(&registration), 1_000)
             .expect("registration loads");
         let after = provider
-            .observe(&expected, &desired, &executable, Some(&registration), 1_000)
+            .observe(
+                "aos.test.nix-store-observation/v1",
+                &expected,
+                &desired,
+                &executable,
+                Some(&registration),
+                1_000,
+            )
             .expect("loaded state observes");
         assert_eq!(observation_state(&after), Some(DatabaseState::Ready));
     }

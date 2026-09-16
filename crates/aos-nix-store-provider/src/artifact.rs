@@ -33,9 +33,6 @@ use serde_json::json;
 use crate::handler::{ability_value, decode_value, remaining};
 use crate::process::ProcessStoreCommands;
 
-const RESOURCE_INTERFACE_NAME: &str = "aos.artifact.content-addressed-object";
-const REALIZATION_SCHEMA: &str = "aos.artifact.content-addressed-object-realization/v1";
-const OBSERVATION_SCHEMA: &str = "aos.artifact.content-addressed-object-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.artifact.content-addressed-object-context/v1";
 const METADATA_SCHEMA: &str = "aos.artifact.content-addressed-object-metadata/v1";
 const ROOT_DIRECTORY: &str = "/nix/var/nix/gcroots/aos/content-addressed-objects";
@@ -68,14 +65,17 @@ impl ContentArtifactProvider {
         validate_method(request.method.method.as_str(), &request.semantics)?;
         validate_admission_resource(&request)?;
         validate_resource_contexts(&request.resources)?;
+        let observation_schema = request
+            .contract
+            .observation_discriminator()
+            .context("selected content-object method has no exact observation discriminator")?;
 
         let desired: ContentObjectRequest = decode_value(&request.resource_spec.value)?;
         validate_request(&desired)?;
         validate_prerequisites(&desired.prerequisites, &request.resources)?;
         validate_target(&request.target, request.method.method.as_str())?;
-        let realization: ContentObjectRealization =
+        let _realization: ContentObjectRealization =
             decode_value(&request.resource_spec.realization)?;
-        validate_realization(&realization)?;
         let executable = self.executable()?;
         let inspection = self.inspect(
             &request.resource_spec.resource,
@@ -83,7 +83,7 @@ impl ContentArtifactProvider {
             &executable,
             request.control.attempt_remaining_millis,
         );
-        let observation = observation(&desired, &inspection)?;
+        let observation = observation(observation_schema, &desired, &inspection)?;
         let revision = admission_revision(&inspection, &observation)?;
         let native_context = ability_value(json!({
             "schema": PROVIDER_CONTEXT_SCHEMA,
@@ -114,6 +114,10 @@ impl ContentArtifactProvider {
 
     /// Executes or reconciles one checked persistent object operation.
     pub(super) fn invoke(&self, invocation: Invocation) -> Result<InvocationResult> {
+        let observation_schema = invocation
+            .contract
+            .observation_discriminator()
+            .context("selected content-object method has no exact observation discriminator")?;
         ensure!(
             invocation.schema == INVOCATION_SCHEMA,
             "unsupported invocation schema"
@@ -150,8 +154,8 @@ impl ContentArtifactProvider {
             "content object method request differs from the checked resource"
         );
         validate_parameters(invocation.request.method.method.as_str(), &parameters)?;
-        let realization: ContentObjectRealization = decode_value(&bound.resource_spec.realization)?;
-        validate_realization(&realization)?;
+        let _realization: ContentObjectRealization =
+            decode_value(&bound.resource_spec.realization)?;
         let provider: ProviderContext = decode_value(&bound.provider_context)?;
         ensure!(
             provider.schema == PROVIDER_CONTEXT_SCHEMA
@@ -224,7 +228,7 @@ impl ContentArtifactProvider {
                 observation_before,
             ),
         };
-        let evidence = observation(&desired, &inspection)?;
+        let evidence = observation(observation_schema, &desired, &inspection)?;
         let outputs = if disposition == InvocationDisposition::Completed
             && matches!(primary_method, "commit" | "observe")
         {
@@ -506,7 +510,8 @@ struct ContentObjectParameters {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContentObjectRealization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -627,14 +632,6 @@ fn validate_parameters(method: &str, parameters: &ContentObjectParameters) -> Re
     Ok(())
 }
 
-fn validate_realization(realization: &ContentObjectRealization) -> Result<()> {
-    ensure!(
-        realization.schema == REALIZATION_SCHEMA,
-        "unsupported content object realization"
-    );
-    Ok(())
-}
-
 fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
     let expected = match method {
         "commit" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
@@ -650,10 +647,6 @@ fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
 }
 
 fn validate_target(target: &ResourceReference, method: &str) -> Result<()> {
-    ensure!(
-        target.interface.name.as_str() == RESOURCE_INTERFACE_NAME,
-        "content object operation does not target the public resource interface"
-    );
     ensure!(
         target
             .operations
@@ -762,7 +755,11 @@ fn read_metadata(path: &Path) -> Result<ObjectMetadata> {
     aos_contract::canonical::from_slice(&bytes, "content object metadata")
 }
 
-fn observation(desired: &ContentObjectRequest, inspection: &Inspection) -> Result<AbilityValue> {
+fn observation(
+    observation_schema: &str,
+    desired: &ContentObjectRequest,
+    inspection: &Inspection,
+) -> Result<AbilityValue> {
     let (state, content_sha256, artifact) = match inspection {
         Inspection::Absent => ("absent", None, None),
         Inspection::Ready(stored) => (
@@ -774,7 +771,7 @@ fn observation(desired: &ContentObjectRequest, inspection: &Inspection) -> Resul
         Inspection::Unknown => ("unknown", None, None),
     };
     ability_value(json!({
-        "schema": OBSERVATION_SCHEMA,
+        "schema": observation_schema,
         "expected": desired,
         "state": state,
         "content_sha256": content_sha256,

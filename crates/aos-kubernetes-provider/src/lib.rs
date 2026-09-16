@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, AccessMode, IncarnationId, LocalKey, MethodReference,
-    MethodSemantics, ResourceReference,
+    ABILITY_LIMITS_V1, AbilityValue, AccessMode, IncarnationId, LocalKey, MethodSemantics,
+    ResourceReference,
 };
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
@@ -33,16 +33,12 @@ use thiserror::Error;
 
 mod configuration;
 
-const OBSERVATION_SCHEMA: &str = "aos.ability.kubernetes-object-set-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.kubernetes.object-set-context/v1";
-const REALIZATION_SCHEMA: &str = "aos.kubernetes.object-set-realization/v1";
 const RECEIPT_SCHEMA: &str = "aos.kubernetes.object-set-receipt/v1";
 const OWNER_ANNOTATION: &str = "aos.andyl.com/object-set-owner";
 const REVISION_ANNOTATION: &str = "aos.andyl.com/object-revision";
 const STATE_ROOT: &str = "/var/lib/aos/ability-runtime/kubernetes-object-set";
 const MAX_KUBECONFIG_BYTES: u64 = 1024 * 1024;
-const CONFIGURATION_INTERFACE: &str = "aos.k3s.configuration-effects";
-const OBJECT_SET_INTERFACE: &str = "aos.k3s.kubernetes-object-effects";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HandlerRole {
@@ -51,12 +47,14 @@ enum HandlerRole {
 }
 
 impl HandlerRole {
-    fn from_method(method: &MethodReference) -> Result<Self, KubernetesProviderError> {
-        match method.interface.name.as_str() {
-            CONFIGURATION_INTERFACE => Ok(Self::Configuration),
-            OBJECT_SET_INTERFACE => Ok(Self::ObjectSet),
+    fn from_handler(handler: Option<&LocalKey>) -> Result<Self, KubernetesProviderError> {
+        let handler =
+            handler.ok_or_else(|| invalid("selected Kubernetes implementation has no handler"))?;
+        match handler.as_str() {
+            "k3s-configuration-effects" => Ok(Self::Configuration),
+            "kubernetes-object-effects" => Ok(Self::ObjectSet),
             _ => Err(invalid(
-                "selected interface does not belong to the Kubernetes provider",
+                "selected implementation does not name a Kubernetes handler behavior",
             )),
         }
     }
@@ -110,7 +108,8 @@ struct KubernetesObject {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Realization {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     kubeconfig: String,
 }
 
@@ -166,7 +165,7 @@ struct LiveMetadata {
 
 #[derive(Clone, Debug, Serialize)]
 struct Observation<'a> {
-    schema: &'static str,
+    schema: &'a str,
     expected: &'a AggregateRequest,
     cluster: ClusterObservation,
     objects: BTreeMap<String, ObjectObservation>,
@@ -233,11 +232,17 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, KubernetesProvide
     }
     validate_admission_resource(&request).map_err(|error| invalid(error.to_string()))?;
     validate_contexts(&request.resources)?;
-    let role = HandlerRole::from_method(&request.method)?;
+    let role = HandlerRole::from_handler(request.assignment.implementation.handler.as_ref())?;
     if role == HandlerRole::Configuration {
         return configuration::admit(request);
     }
     validate_method(request.method.method.as_str(), &request.semantics)?;
+    let observation_schema = request
+        .contract
+        .observation_discriminator()
+        .ok_or_else(|| {
+            invalid("selected Kubernetes method has no exact observation discriminator")
+        })?;
     let desired: AggregateRequest = decode(&request.resource_spec.value)?;
     let realization: Realization = decode(&request.resource_spec.realization)?;
     validate_desired(&desired)?;
@@ -245,7 +250,7 @@ fn admit(request: AdmissionRequest) -> Result<AdmissionResult, KubernetesProvide
     validate_realization(&realization)?;
     let capability = Capability::acquire(&realization, request.control.attempt_remaining_millis)?;
     let owner = canonical_owner(&request.target)?;
-    let observation = observe(&capability, &desired, &owner)?;
+    let observation = observe(observation_schema, &capability, &desired, &owner)?;
     let current = observation.state == "current";
 
     Ok(AdmissionResult {
@@ -297,7 +302,7 @@ fn invoke(
             "invocation differs from its selected durable operation",
         ));
     }
-    let role = HandlerRole::from_method(&invocation.method)?;
+    let role = HandlerRole::from_handler(Some(&invocation.request.handler))?;
     validate_contexts(&invocation.request.resources)?;
     if resource_set_digest(&invocation.request.resources)
         .map_err(|error| invalid(error.to_string()))?
@@ -311,6 +316,12 @@ fn invoke(
         return configuration::invoke(invocation);
     }
     validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator()
+        .ok_or_else(|| {
+            invalid("selected Kubernetes method has no exact observation discriminator")
+        })?;
     let (desired, realization, provider_context) = target_context(&invocation)?;
     validate_desired(&desired)?;
     validate_object_prerequisites(&invocation.request.resources, &desired)?;
@@ -348,12 +359,19 @@ fn invoke(
         InvocationPurpose::Effect if invocation.method.method.as_str() == "apply" => {
             let prior_receipt = read_retained_receipt(&invocation, &capability)?;
             apply(
+                observation_schema,
                 &capability,
                 &desired,
                 &provider_context.owner,
                 prior_receipt.as_ref(),
             )?;
-            write_receipt(&invocation, &capability, &desired, &provider_context.owner)?;
+            write_receipt(
+                observation_schema,
+                &invocation,
+                &capability,
+                &desired,
+                &provider_context.owner,
+            )?;
             result(
                 &invocation,
                 &desired,
@@ -364,7 +382,15 @@ fn invoke(
             )
         }
         InvocationPurpose::Effect if invocation.method.method.as_str() == "release" => {
-            if observe(&capability, &desired, &provider_context.owner)?.state == "absent" {
+            if observe(
+                observation_schema,
+                &capability,
+                &desired,
+                &provider_context.owner,
+            )?
+            .state
+                == "absent"
+            {
                 remove_receipt(&invocation)?;
                 return result(
                     &invocation,
@@ -376,7 +402,13 @@ fn invoke(
                 );
             }
             let receipt = read_receipt(&invocation, &capability, &desired)?;
-            release(&capability, &desired, &provider_context.owner, &receipt)?;
+            release(
+                observation_schema,
+                &capability,
+                &desired,
+                &provider_context.owner,
+                &receipt,
+            )?;
             remove_receipt(&invocation)?;
             result(
                 &invocation,
@@ -396,7 +428,12 @@ fn invoke(
             false,
         ),
         InvocationPurpose::Reconcile => {
-            let observation = observe(&capability, &desired, &provider_context.owner)?;
+            let observation = observe(
+                observation_schema,
+                &capability,
+                &desired,
+                &provider_context.owner,
+            )?;
             let disposition = if invocation.request.method.method.as_str() == "release" {
                 if observation.state == "absent" {
                     remove_receipt(&invocation)?;
@@ -597,8 +634,7 @@ fn validate_object_identity(
 }
 
 fn validate_realization(realization: &Realization) -> Result<(), KubernetesProviderError> {
-    if realization.schema != REALIZATION_SCHEMA || !Path::new(&realization.kubeconfig).is_absolute()
-    {
+    if !Path::new(&realization.kubeconfig).is_absolute() {
         return Err(invalid(
             "Kubernetes realization is outside the package-owned schema",
         ));
@@ -736,6 +772,7 @@ fn desired_document(
 }
 
 fn observe<'a>(
+    observation_schema: &'a str,
     capability: &Capability,
     desired: &'a AggregateRequest,
     owner: &str,
@@ -794,7 +831,7 @@ fn observe<'a>(
         "drifted"
     };
     Ok(Observation {
-        schema: OBSERVATION_SCHEMA,
+        schema: observation_schema,
         expected: desired,
         cluster: ClusterObservation {
             available: true,
@@ -837,6 +874,7 @@ fn get_object(
 }
 
 fn apply(
+    observation_schema: &str,
     capability: &Capability,
     desired: &AggregateRequest,
     owner: &str,
@@ -870,7 +908,7 @@ fn apply(
     if let Some(receipt) = prior_receipt {
         prune_retired_objects(capability, desired, owner, receipt)?;
     }
-    if observe(capability, desired, owner)?.state != "current" {
+    if observe(observation_schema, capability, desired, owner)?.state != "current" {
         return Err(invalid(
             "Kubernetes object set did not converge after apply",
         ));
@@ -922,6 +960,7 @@ fn prune_retired_objects(
 }
 
 fn release(
+    observation_schema: &str,
     capability: &Capability,
     desired: &AggregateRequest,
     owner: &str,
@@ -966,7 +1005,7 @@ fn release(
     for (object, live) in retained_objects {
         delete_with_preconditions(capability, object, &live)?;
     }
-    if observe(capability, desired, owner)?.state != "absent" {
+    if observe(observation_schema, capability, desired, owner)?.state != "absent" {
         return Err(invalid(
             "Kubernetes object set remained present after release",
         ));
@@ -1068,7 +1107,13 @@ fn result(
     disposition: InvocationDisposition,
     retained: bool,
 ) -> Result<InvocationResult, KubernetesProviderError> {
-    let observation = observe(capability, desired, owner)?;
+    let observation_schema = invocation
+        .contract
+        .observation_discriminator()
+        .ok_or_else(|| {
+            invalid("selected Kubernetes method has no exact observation discriminator")
+        })?;
+    let observation = observe(observation_schema, capability, desired, owner)?;
     result_with_observation(invocation, observation, disposition, retained)
 }
 
@@ -1104,12 +1149,13 @@ fn receipt_path(invocation: &Invocation) -> Result<PathBuf, KubernetesProviderEr
 }
 
 fn write_receipt(
+    observation_schema: &str,
     invocation: &Invocation,
     capability: &Capability,
     desired: &AggregateRequest,
     owner: &str,
 ) -> Result<(), KubernetesProviderError> {
-    let observation = observe(capability, desired, owner)?;
+    let observation = observe(observation_schema, capability, desired, owner)?;
     if observation.state != "current" {
         return Err(invalid(
             "cannot publish a receipt for a noncurrent object set",
@@ -1372,16 +1418,8 @@ pub(crate) fn invalid(message: impl Into<String>) -> KubernetesProviderError {
 mod tests {
     use super::*;
 
-    fn method(interface: &str) -> MethodReference {
-        serde_json::from_value(serde_json::json!({
-            "interface": {
-                "name": interface,
-                "abi": 1,
-                "descriptor": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "method": "observe"
-        }))
-        .expect("method fixture is valid")
+    fn key(value: &str) -> LocalKey {
+        LocalKey::new(value).expect("handler key is valid")
     }
 
     fn object() -> KubernetesObject {
@@ -1402,17 +1440,17 @@ mod tests {
         assert!(validate_method("apply", &apply).is_ok());
         assert!(validate_method("unknown", &apply).is_err());
         assert_eq!(
-            HandlerRole::from_method(&method(OBJECT_SET_INTERFACE))
-                .expect("object interface selects its role"),
+            HandlerRole::from_handler(Some(&key("kubernetes-object-effects")))
+                .expect("object handler selects its behavior"),
             HandlerRole::ObjectSet,
         );
         assert_eq!(
-            HandlerRole::from_method(&method(CONFIGURATION_INTERFACE))
-                .expect("configuration interface selects its role"),
+            HandlerRole::from_handler(Some(&key("k3s-configuration-effects")))
+                .expect("configuration handler selects its behavior"),
             HandlerRole::Configuration,
         );
-        assert!(HandlerRole::from_method(&method("aos.kubernetes.objects")).is_err());
-        assert!(HandlerRole::from_method(&method("aos.example.unowned-effects")).is_err());
+        assert!(HandlerRole::from_handler(Some(&key("kubernetes-objects"))).is_err());
+        assert!(HandlerRole::from_handler(None).is_err());
     }
 
     #[test]

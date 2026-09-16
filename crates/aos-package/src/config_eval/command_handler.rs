@@ -27,7 +27,7 @@ use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, BoundNativeContext, DurableRequest, HANDLER_ABI_ARGUMENT,
-    INVOCATION_SCHEMA, Invocation, InvocationControl,
+    HandlerSchemaContract, INVOCATION_SCHEMA, Invocation, InvocationControl,
     InvocationDisposition as HandlerInvocationDisposition,
     InvocationPurpose as HandlerInvocationPurpose, InvocationResult, MAX_HANDLER_RESULT_BYTES,
     REQUEST_SCHEMA, RESOURCE_CONTEXT_SCHEMA, RESULT_SCHEMA, RecoveryMethods, ResourceContext,
@@ -431,10 +431,12 @@ impl CommandHandlerResourceEntry {
             &self.spec,
         )?;
         let semantics = method_semantics_for(&self.handler_interface, &method)?;
+        let contract = handler_schema_contract(&self.handler, &self.handler_interface, &method)?;
         let request = AdmissionRequest {
             schema: ADMISSION_REQUEST_SCHEMA.into(),
             method,
             semantics,
+            contract,
             target: target.clone(),
             assignment: self.assignment.clone(),
             resource_spec: resource_spec(&self.spec),
@@ -616,10 +618,12 @@ impl CommandHandlerAdapter {
         control: &dyn RuntimeControl,
     ) -> Result<InvocationResult, io::Error> {
         let method = invocation_method(&request.durable, purpose)?;
+        let contract = handler_schema_contract(&self.handler, &self.interface, &method)?;
         let invocation = Invocation {
             schema: INVOCATION_SCHEMA.into(),
             purpose: handler_purpose(purpose)?,
             semantics: method_semantics_for(&self.interface, &method)?,
+            contract,
             method,
             request: request.durable.clone(),
             control: invocation_control(
@@ -753,6 +757,7 @@ impl TrustedAdapter for CommandHandlerAdapter {
 
         encode_value(&DurableRequest {
             schema: REQUEST_SCHEMA.into(),
+            handler: self.handler.name.clone(),
             method,
             semantics: method_semantics(&self.interface, operation)?,
             recovery: RecoveryMethods {
@@ -774,6 +779,7 @@ impl TrustedAdapter for CommandHandlerAdapter {
         let request: DurableRequest =
             serde_json::from_value(durable.as_json().clone()).map_err(err)?;
         if request.schema != REQUEST_SCHEMA
+            || request.handler != self.handler.name
             || request.resources.len() != resources.len()
             || resource_set_digest(&request.resources).map_err(err)?
                 != request.native_context_digest
@@ -976,7 +982,9 @@ impl AdmittedResourceContext {
 
 #[derive(Clone)]
 struct AuthenticatedCommandHandler {
+    name: LocalKey,
     executable: PathBuf,
+    realization: Option<ValueSchema>,
     arguments: ValueSchema,
     result: ValueSchema,
 }
@@ -1006,6 +1014,26 @@ fn authenticate_method_contract(
         ));
     }
     Ok(())
+}
+
+fn handler_schema_contract(
+    authenticated: &AuthenticatedCommandHandler,
+    interface: &InterfaceDocument,
+    method: &MethodReference,
+) -> Result<HandlerSchemaContract, io::Error> {
+    authenticate_method_contract(authenticated, interface, method)?;
+    let descriptor = interface
+        .interface
+        .methods
+        .get(&method.method)
+        .ok_or_else(|| invalid("command handler method is absent from authenticated interface"))?;
+
+    Ok(HandlerSchemaContract {
+        realization: authenticated.realization.clone(),
+        parameters: descriptor.parameters.clone(),
+        completion_evidence: descriptor.outcome.completion_evidence.clone(),
+        observation_evidence: descriptor.outcome.observation_evidence.clone(),
+    })
 }
 
 fn authenticate_method_target(
@@ -1110,7 +1138,9 @@ fn authenticate(
         "package command",
     )?;
     Ok(AuthenticatedCommandHandler {
+        name: key.clone(),
         executable,
+        realization: terminal.provider().desired_schema.clone(),
         arguments: terminal.handler().arguments.clone(),
         result: terminal.handler().result.clone(),
     })
@@ -1844,6 +1874,64 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn handler_contract_uses_the_authenticated_package_schemas() {
+        let mut interface = interface_document("aos.test.terminal", Some("aos.test.resource"));
+        let observation = ValueSchema::Record {
+            fields: [(
+                LocalKey::new("observation").expect("observation key is valid"),
+                ValueSchema::DocumentRecord {
+                    key_max_length: 64,
+                    fields: [(
+                        "schema".into(),
+                        ValueSchema::StringEnum {
+                            values: vec!["aos.test.observation/v1".into()],
+                        },
+                    )]
+                    .into(),
+                    optional_fields: Vec::new(),
+                },
+            )]
+            .into(),
+            optional_fields: Vec::new(),
+        };
+        let descriptor = interface
+            .interface
+            .methods
+            .get_mut("apply")
+            .expect("test method is declared");
+        descriptor.outcome.completion_evidence = observation.clone();
+        descriptor.outcome.observation_evidence = observation.clone();
+
+        let method = MethodReference {
+            interface: interface
+                .interface_key()
+                .expect("handler interface key is valid"),
+            method: LocalKey::new("apply").expect("method name is valid"),
+        };
+        let handler = AuthenticatedCommandHandler {
+            name: LocalKey::new("package-handler").expect("handler name is valid"),
+            executable: PathBuf::from("/nix/store/test-handler"),
+            realization: Some(ValueSchema::Boolean),
+            arguments: ValueSchema::Boolean,
+            result: observation,
+        };
+
+        let contract = handler_schema_contract(&handler, &interface, &method)
+            .expect("authenticated schemas project into the invocation contract");
+
+        assert_eq!(contract.realization, Some(ValueSchema::Boolean));
+        assert_eq!(contract.parameters, ValueSchema::Boolean);
+        assert_eq!(
+            contract.observation_discriminator_at(&["observation", "schema"]),
+            Some("aos.test.observation/v1")
+        );
+
+        let mut drifted = handler.clone();
+        drifted.result = ValueSchema::Boolean;
+        assert!(handler_schema_contract(&drifted, &interface, &method).is_err());
     }
 
     fn resource_spec(value: serde_json::Value) -> CommandHandlerResourceSpec {
