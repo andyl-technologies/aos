@@ -152,11 +152,7 @@
         }
       ];
       packageModules = [
-        {
-          name = "systemd";
-          inherit (pkgs.systemd) version;
-          module = pkgs.systemd.module + "/module.nix";
-        }
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
         {
           name = "consumer";
           module = consumerModuleFor stage extraRequests;

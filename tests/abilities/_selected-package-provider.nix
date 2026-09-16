@@ -5,6 +5,7 @@
   implementation,
   dependencies ? {},
 }: let
+  authenticatedOutputs = lib.abilities.authenticatedPackageOutputsFor package;
   provider =
     lib.findFirst
     (candidate: candidate.name == implementation)
@@ -26,7 +27,7 @@ in {
   configRoot = root;
   module = "${root}/${locator.path}";
   outputs = {
-    self = root;
-    inherit dependencies;
+    inherit (authenticatedOutputs) self;
+    dependencies = authenticatedOutputs.dependencies // dependencies;
   };
 }
