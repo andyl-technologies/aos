@@ -441,6 +441,9 @@ in
       };
       requests = evaluated.config.aos.abilities.requests;
       sockets = requests."libvirt:libvirtd-socket_activation".parameters.sockets;
+      socketModes = builtins.listToAttrs (
+        builtins.map (socket: lib.nameValuePair socket.manager_name socket.mode) sockets
+      );
       socketDependencies =
         requests."libvirt:libvirtd-socket_activation".parameters.service_dependencies;
       requestsHaveAutomaticIdentities =
@@ -452,8 +455,12 @@ in
         && requests ? "libvirt:virtlogd-lifecycle"
         && requests ? "libvirt:virtlockd-lifecycle"
         && requests ? "libvirt:access-membership"
-        && builtins.length sockets == 3
-        && (builtins.head sockets).mode == "0660"
+        && socketModes
+        == {
+          libvirtd = "0660";
+          "libvirtd-admin" = "0660";
+          "libvirtd-ro" = "0660";
+        }
         && socketDependencies.after == ["libvirtd" "libvirtd-admin" "libvirtd-ro"]
         && socketDependencies.wants == ["libvirtd" "libvirtd-admin" "libvirtd-ro"]
         && requestsHaveAutomaticIdentities;
