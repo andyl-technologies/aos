@@ -5,6 +5,7 @@
   ...
 }: let
   storage = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
+  networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
   provisioningPlan = lib.abilities.interfaces.blockStorage.types.provisioningPlan;
   artifact = lib.abilities.packageOutput {};
   interfaceSelector = name: {
@@ -97,6 +98,15 @@ in {
         description = "Observes configured network readiness only when the detected metadata platform needs it.";
         accepted_interfaces = [lib.abilities.interfaces.serviceManagement.interfaces.networkReadiness.identity];
         methods = ["observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+      requirements.network-configuration-effects = {
+        alias = "network-configuration-effects";
+        description = "Applies an authorized provisioning bootstrap to the selected persistent host network resource.";
+        accepted_interfaces = [networkConfiguration.effects.identity];
+        methods = ["apply" "observe"];
         guarantees = [];
         strength = "required";
         fallback = null;

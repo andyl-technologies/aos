@@ -6,6 +6,7 @@
 }: let
   alias = "storage-provisioning";
   interface = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
+  networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
   emptyResult = {
     requests = {};
     outputs = {};
@@ -72,6 +73,12 @@
     "network-readiness-${key}" = childRequest "network-readiness" key {
       scope = "configured-connectivity";
       address_families = ["ipv4" "ipv6"];
+    };
+    "network-configuration-effects-${key}" = {
+      requirement = "network-configuration-effects";
+      scope = [key "network-configuration-effects"];
+      slot = "host-network";
+      parameters = {};
     };
   };
   compose = {resources, ...}:
@@ -268,6 +275,7 @@
       onlineAuthorizationKey = "authorize-online-${resourceKey}";
       authorizationMergeKey = "authorized-input-${resourceKey}";
       planKey = "observe-plan-${resourceKey}";
+      networkApplyKey = "apply-network-bootstrap-${resourceKey}";
       commitKey = "commit-${resourceKey}";
       detectBinding = selectedBinding change "detect-platform" "detect" "read";
       authorizationBinding = selectedBinding change "authorize-input" "authorize" "exclusive-write";
@@ -281,6 +289,30 @@
         && builtins.elem "observe" permission.operations)
       networkBinding.caller_grant.resources;
       networkResource = (builtins.head networkPermissions).resource;
+      networkEffectsEntry = selectedExternalBinding change "network-configuration-effects" "apply" "exclusive-write";
+      networkEffectsBinding = networkEffectsEntry.binding;
+      networkEffectsPermissions = builtins.filter (permission:
+        permission.access
+        == "exclusive-write"
+        && builtins.elem "apply" permission.operations)
+      networkEffectsBinding.caller_grant.resources;
+      hostNetworkResource = (builtins.head networkEffectsPermissions).resource;
+      hostNetworkRevisions = builtins.filter (revision:
+        revision.resource == hostNetworkResource
+        && revision.kind == networkConfiguration.identity.name)
+      context.after.resources;
+      hostNetworkRevision =
+        if builtins.length hostNetworkRevisions == 1
+        then builtins.head hostNetworkRevisions
+        else throw "storage provisioning requires one exact persistent host-network revision";
+      bootstrapInput =
+        if hostNetworkRevision.value.authority == "operator"
+        then literal null
+        else result "merge" authorizationMergeKey "network-bootstrap";
+      bootstrapEdges =
+        lib.optional
+        (hostNetworkRevision.value.authority != "operator")
+        (edge "merge" authorizationMergeKey "operation" networkApplyKey "data");
       requestInput = literal desired.value;
       metadataInputs = extra: object ({request = requestInput;} // extra);
       authorizationInputs = metadataInputs {
@@ -347,6 +379,19 @@
         access = "exclusive-write";
         controller = controllerIdentity;
       };
+      networkApplyOperation = operation {
+        key = networkApplyKey;
+        binding = networkEffectsBinding;
+        method = "apply";
+        phase = "converging";
+        inputPhase = "runtime";
+        targetInterface = networkConfiguration.identity;
+        targetResource = hostNetworkResource;
+        targetLifetime = "persistent";
+        inputs = object {bootstrap = bootstrapInput;};
+        access = "exclusive-write";
+        controller = controllerIdentity;
+      };
       commitOperation = operation {
         key = commitKey;
         binding = effectBinding;
@@ -367,6 +412,7 @@
         (authorize offlineAuthorizationKey "offline")
         (authorize onlineAuthorizationKey "online")
         planOperation
+        networkApplyOperation
         commitOperation
       ];
       decisions = [
@@ -408,11 +454,11 @@
                 online = (result "operation" onlineAuthorizationKey "authorized-provisioning-input").reference;
               };
             };
-            network-seed = {
-              descriptor = methodOutput "aos.metadata.storage-provisioning-input-authorization" "authorize" "network-seed";
+            network-bootstrap = {
+              descriptor = methodOutput "aos.metadata.storage-provisioning-input-authorization" "authorize" "network-bootstrap";
               alternatives = {
-                offline = (result "operation" offlineAuthorizationKey "network-seed").reference;
-                online = (result "operation" onlineAuthorizationKey "network-seed").reference;
+                offline = (result "operation" offlineAuthorizationKey "network-bootstrap").reference;
+                online = (result "operation" onlineAuthorizationKey "network-bootstrap").reference;
               };
             };
           };
@@ -428,7 +474,8 @@
         (edge "operation" onlineAuthorizationKey "merge" authorizationMergeKey "branch-merge")
         (edge "merge" authorizationMergeKey "operation" planKey "data")
         (edge "operation" planKey "operation" commitKey "data")
-      ];
+      ]
+      ++ bootstrapEdges;
     };
     fragments = builtins.map fragmentFor activeChanges;
   in {
