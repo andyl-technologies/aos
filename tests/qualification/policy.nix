@@ -305,7 +305,6 @@ in
   assert abilityRequirements.ability-native-adapter-matrix.regressions
   == [
     "checks.fleet.runtime-module-composition"
-    "checks.fleet.ability-native-foreground-container"
     "checks.fleet.k3s-control-plane-worker"
     "checks.fleet.ability-native-power-loss"
     "checks.fleet.system-image-rollback"

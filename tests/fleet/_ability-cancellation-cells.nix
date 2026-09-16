@@ -23,7 +23,6 @@
       "network-endpoint"
       "nginx-validation"
     ];
-    foreground = byAdapters ["foreground-process"];
     kubernetes = byAdapters ["kubernetes-object"];
     systemd = byAdapters [
       "systemd-bootstrap"
@@ -36,7 +35,6 @@ in
   assert builtins.length all == builtins.length (lib.unique all);
   assert builtins.sort builtins.lessThan (
     groups.reference
-    ++ groups.foreground
     ++ groups.kubernetes
     ++ groups.systemd
     ++ groups.rollout

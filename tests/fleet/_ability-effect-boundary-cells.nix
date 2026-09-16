@@ -33,14 +33,12 @@
     systemdManager = byAdapters ["systemd-manager"];
     kubernetes = byAdapters ["kubernetes-object" "systemd-bootstrap"];
     rollout = byAdapters ["image-rollout"];
-    foreground = byAdapters ["foreground-process"];
   };
   all =
     groups.reference
     ++ groups.systemdManager
     ++ groups.kubernetes
-    ++ groups.rollout
-    ++ groups.foreground;
+    ++ groups.rollout;
 in
   assert builtins.length all == builtins.length (lib.unique all);
   assert builtins.sort builtins.lessThan all

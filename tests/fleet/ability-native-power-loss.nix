@@ -2,7 +2,9 @@
 {
   lib,
   mkSystem,
+  mkAbilityQualificationProjection,
   pkgs,
+  qualificationProjection ? mkAbilityQualificationProjection [../../systems/server.nix],
   qualificationImage ? false,
   forwardObserverToCrucible ? false,
   extraRuntimeModules ? [],
@@ -13,14 +15,10 @@
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
   };
-  selectedPackageEntries =
-    fixture.orderedPackages
-    ++ [
-      {
-        name = "aos";
-        package = pkgs.aos;
-      }
-    ];
+  selectedPackageEntries = map (package: {
+    name = package.contract.value.package.name;
+    inherit package;
+  }) qualificationProjection.packages;
   selectedPackages = builtins.attrValues (builtins.listToAttrs (map (entry: {
       name = builtins.unsafeDiscardStringContext (builtins.toString entry.package);
       value = entry.package;
@@ -30,9 +28,9 @@
   authorityMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {
     inherit lib;
     packages = selectedPackages;
+    bindings = qualificationProjection.bindings;
     regressions = [
       "checks.fleet.runtime-module-composition"
-      "checks.fleet.ability-native-foreground-container"
       "checks.fleet.k3s-control-plane-worker"
       "checks.fleet.ability-native-power-loss"
       "checks.fleet.system-image-rollback"

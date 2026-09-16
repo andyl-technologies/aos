@@ -43,9 +43,8 @@
     ];
     kubernetes = byAdapters ["kubernetes-object" "systemd-bootstrap"];
     rollout = byAdapters ["image-rollout"];
-    foreground = byAdapters ["foreground-process"];
   };
-  all = groups.reference ++ groups.kubernetes ++ groups.rollout ++ groups.foreground;
+  all = groups.reference ++ groups.kubernetes ++ groups.rollout;
   compatible = builtins.filter (lib.hasSuffix "/adopt-compatible-state") all;
   retained = builtins.filter (lib.hasSuffix "/activate-retained-target") all;
   unsupported = builtins.filter (lib.hasSuffix "/reject-unsupported-transfer") all;
