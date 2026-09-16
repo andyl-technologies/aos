@@ -6,6 +6,7 @@
 }: let
   cfg = config.aos.security.measuredVar;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  milestones = serviceManagement.milestones;
   serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
@@ -21,12 +22,12 @@
       interface = interfaces.systemMilestoneReadiness;
       parameters.milestone = name;
     };
-  bootIdentity = systemMilestone "boot-identity" "boot-identity-validated";
-  deviceEvents = systemMilestone "device-events" "device-settle";
-  initrdStageExecution = systemMilestone "initrd-stage" "initrd-stage-executed";
-  initrdFilesystems = systemMilestone "initrd-filesystems" "initrd-filesystems";
-  persistentState = systemMilestone "persistent-state" "var";
-  verityRoot = systemMilestone "verity-root" "verity-root-verified";
+  bootIdentity = systemMilestone "boot-identity" milestones.bootIdentityValidated;
+  deviceEvents = systemMilestone "device-events" milestones.deviceSettle;
+  initrdStageExecution = systemMilestone "initrd-stage" milestones.initrdStageExecuted;
+  initrdFilesystems = systemMilestone "initrd-filesystems" milestones.initrdFilesystems;
+  persistentState = systemMilestone "persistent-state" milestones.var;
+  verityRoot = systemMilestone "verity-root" milestones.verityRootVerified;
   verityReadiness = resultOf "verity-root" "readiness-resource";
 
   service = serviceManagement.forService {

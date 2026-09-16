@@ -6,6 +6,7 @@
 }: let
   cfg = config.aos.security.verityRootVerification;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  milestones = serviceManagement.milestones;
   serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
@@ -29,13 +30,13 @@
       interface = interfaces.systemMilestoneReadiness;
       parameters.milestone = name;
     };
-  bootIdentity = systemMilestone "boot-identity" "boot-identity-validated";
-  verityRootMapping = systemMilestone "verity-root-mapping" "verity-root-mapping-ready";
-  deviceEvents = systemMilestone "device-events" "device-settle";
-  initrdStageExecution = systemMilestone "initrd-stage" "initrd-stage-executed";
-  initrdFilesystems = systemMilestone "initrd-filesystems" "initrd-filesystems";
-  persistentState = systemMilestone "persistent-state" "var";
-  integrityFailure = systemMilestone "integrity-failure" "boot-integrity-failure";
+  bootIdentity = systemMilestone "boot-identity" milestones.bootIdentityValidated;
+  verityRootMapping = systemMilestone "verity-root-mapping" milestones.verityRootMappingReady;
+  deviceEvents = systemMilestone "device-events" milestones.deviceSettle;
+  initrdStageExecution = systemMilestone "initrd-stage" milestones.initrdStageExecuted;
+  initrdFilesystems = systemMilestone "initrd-filesystems" milestones.initrdFilesystems;
+  persistentState = systemMilestone "persistent-state" milestones.var;
+  integrityFailure = systemMilestone "integrity-failure" milestones.bootIntegrityFailure;
 
   verification = serviceManagement.forService {
     inherit serviceTypes consumerInstance;

@@ -3,11 +3,28 @@
   lib,
   pkgs,
 }: let
+  milestones = lib.abilities.interfaces.serviceManagement.milestones;
   serviceInterfaces = lib.abilities.interfaces.serviceManagement.interfaces;
   selectedSystemdProvider = import ./_selected-package-provider.nix {
     inherit lib;
     package = pkgs.systemd;
     implementation = "system-milestone-readiness";
+  };
+  unselected = lib.evalModules {
+    inherit lib;
+    modules = [
+      lib.abilities.module
+      {
+        aos.abilities.environment = {
+          authority = "test";
+          key = "unselected-systemd-milestones";
+          stage = "host";
+        };
+      }
+    ];
+    packageModules = [
+      (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
+    ];
   };
   requirement = selected: {
     interface = selected.identity.name;
@@ -45,11 +62,39 @@
       verity-root-verified = "aos-verity-root-verify.service";
     };
   };
+  milestoneIds = {
+    host = {
+      local-filesystems = milestones.localFilesystems;
+      multi-user = milestones.multiUser;
+    };
+    initrd = {
+      initrd-filesystems = milestones.initrdFilesystems;
+      initrd-root-filesystems = milestones.initrdRootFilesystems;
+      root-device = milestones.rootDevice;
+      switch-root = milestones.switchRoot;
+      sysroot = milestones.sysroot;
+      var = milestones.var;
+      nix-overlay = milestones.nixOverlay;
+      etc-overlay = milestones.etcOverlay;
+      run-etc = milestones.runEtc;
+      device-settle = milestones.deviceSettle;
+      device-manager = milestones.deviceManager;
+      device-events-triggered = milestones.deviceEventsTriggered;
+      kernel-modules = milestones.kernelModules;
+      boot-identity-validated = milestones.bootIdentityValidated;
+      boot-storage-unlocked = milestones.bootStorageUnlocked;
+      boot-integrity-failure = milestones.bootIntegrityFailure;
+      initrd-stage-executed = milestones.initrdStageExecuted;
+      root-a-device = milestones.rootADevice;
+      verity-root-mapping-ready = milestones.verityRootMappingReady;
+      verity-root-verified = milestones.verityRootVerified;
+    };
+  };
   earlySystemUnit = {
     host = "sysinit.target";
     initrd = "initrd-fs.target";
   };
-  consumerModuleFor = stage: {
+  consumerModuleFor = stage: extraRequests: {
     config.aos.abilities = {
       instances.application = {};
       requirementTemplates = {
@@ -57,24 +102,27 @@
         activation-milestone = requirement serviceInterfaces.activationMilestone;
       };
       requests =
-        builtins.mapAttrs (milestone: _unit: {
-          requirement = "system-milestone";
-          consumer = "application";
-          scope = [stage milestone];
-          parameters = {inherit milestone;};
-        })
-        expectedUnits.${stage}
-        // {
-          early-system = {
-            requirement = "activation-milestone";
+        (
+          builtins.mapAttrs (milestone: _unit: {
+            requirement = "system-milestone";
             consumer = "application";
-            scope = [stage "early-system"];
-            parameters.milestone = "early-system";
-          };
-        };
+            scope = [stage milestone];
+            parameters.milestone = milestoneIds.${stage}.${milestone};
+          })
+          expectedUnits.${stage}
+          // {
+            early-system = {
+              requirement = "activation-milestone";
+              consumer = "application";
+              scope = [stage "early-system"];
+              parameters.milestone = "early-system";
+            };
+          }
+        )
+        // extraRequests;
     };
   };
-  baseBindingsFor = stage:
+  baseBindingsFor = stage: extraRequests:
     lib.mapAttrs' (requestName: _request:
       lib.nameValuePair "test:${stage}-${requestName}" {
         request = "consumer:${requestName}";
@@ -85,13 +133,12 @@
         providerInstance = "systemd:manager";
         slot = "${stage}-${requestName}";
       })
-    (consumerModuleFor stage).config.aos.abilities.requests;
-  evaluate = stage: bindings:
+    (consumerModuleFor stage extraRequests).config.aos.abilities.requests;
+  evaluate = stage: extraRequests: bindings:
     lib.evalModules {
       inherit lib;
       modules = [
         lib.abilities.module
-        ./_systemd-platform-module.nix
         {
           config.aos.abilities = {
             environment = {
@@ -112,7 +159,7 @@
         }
         {
           name = "consumer";
-          module = consumerModuleFor stage;
+          module = consumerModuleFor stage extraRequests;
         }
       ];
       selectedProviderModules = [selectedSystemdProvider];
@@ -124,9 +171,9 @@
         };
       };
     };
-  complete = stage: let
-    baseBindings = baseBindingsFor stage;
-    pending = evaluate stage baseBindings;
+  complete = stage: extraRequests: let
+    baseBindings = baseBindingsFor stage extraRequests;
+    pending = evaluate stage extraRequests baseBindings;
     children = builtins.attrValues pending.config.aos.abilities.compositionPendingRequests;
     effectBindings = builtins.listToAttrs (builtins.map (child: {
         name = "test:${child.request}";
@@ -142,14 +189,18 @@
       })
       children);
   in
-    evaluate stage (baseBindings // effectBindings);
+    evaluate stage extraRequests (baseBindings // effectBindings);
   checkStage = stage: let
-    abilities = (complete stage).config.aos.abilities;
+    abilities = (complete stage {}).config.aos.abilities;
     expected = expectedUnits.${stage} // {early-system = earlySystemUnit.${stage};};
+    milestoneFor = name:
+      if name == "early-system"
+      then name
+      else milestoneIds.${stage}.${name};
     requestFor = name:
       builtins.head (builtins.filter
         (request:
-          request.parameters.expected.milestone == name)
+          request.parameters.expected.milestone == milestoneFor name)
         (builtins.attrValues abilities.compositionRequests));
     outputFor = name:
       abilities.compositionOutputs."consumer:${name}".readiness-resource.value;
@@ -161,9 +212,22 @@
     builtins.all (name:
       (requestFor name).parameters.systemd_unit.unit_name
       == expected.${name}
-      && (resourceFor (outputFor name)).value.milestone == name
+      && (resourceFor (outputFor name)).value.milestone == milestoneFor name
       && (resourceFor (outputFor name)).lifetime == "instance")
     (builtins.attrNames expected);
+  unknownRejected =
+    !(builtins.tryEval (builtins.deepSeq
+      (complete "host" {
+        unsupported = {
+          requirement = "system-milestone";
+          consumer = "application";
+          scope = ["host" "unsupported"];
+          parameters.milestone = "vendor.platform-ready";
+        };
+      }).config.aos.abilities.compositionRequests
+      true)).success;
 in
+  assert unselected.config.aos.abilities.compositionOutputs == {};
   assert checkStage "host";
-  assert checkStage "initrd"; true
+  assert checkStage "initrd";
+  assert unknownRejected; true

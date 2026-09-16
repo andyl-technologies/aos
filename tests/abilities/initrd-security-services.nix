@@ -4,6 +4,7 @@
   mkSystem,
   pkgs,
 }: let
+  milestones = lib.abilities.interfaces.serviceManagement.milestones;
   environment = stage: {
     authority = "test";
     key = "initrd-security-services";
@@ -16,6 +17,7 @@
       modules =
         [
           lib.abilities.module
+          ../../modules/base/_kernel-parameter-contributions.nix
           {aos.abilities.environment = environment stage;}
         ]
         ++ modules;
@@ -127,17 +129,17 @@ in
     }
   ];
   assert (request "aos-systemd-var-policy" "boot-identity").milestone
-  == "boot-identity-validated";
+  == milestones.bootIdentityValidated;
   assert (request "aos-systemd-var-policy" "initrd-stage").milestone
-  == "initrd-stage-executed";
-  assert (request "aos-systemd-var-policy" "device-events").milestone == "device-settle";
+  == milestones.initrdStageExecuted;
+  assert (request "aos-systemd-var-policy" "device-events").milestone == milestones.deviceSettle;
   assert (request "aos-systemd-var-policy" "initrd-filesystems").milestone
-  == "initrd-filesystems";
-  assert (request "aos-systemd-var-policy" "persistent-state").milestone == "var";
+  == milestones.initrdFilesystems;
+  assert (request "aos-systemd-var-policy" "persistent-state").milestone == milestones.var;
   assert (request "aos-systemd-var-policy" "verity-root").milestone
-  == "verity-root-verified";
+  == milestones.verityRootVerified;
   assert (request "aos-verity-root-guard" "verity-root-mapping").milestone
-  == "verity-root-mapping-ready";
+  == milestones.verityRootMappingReady;
   assert !(requests ? "aos-boot-identity:boot-identity-failure-target");
   assert !(lib.hasInfix "aos.systemd.packaged-unit" bootIdentityModule);
   assert !(lib.hasInfix ''{package = "systemd";}'' bootIdentityModule);
