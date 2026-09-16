@@ -474,12 +474,7 @@
   );
   qualificationPackageNames =
     pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
-  nativeAdapterPackages = [
-    pkgs.nginx
-    pkgs.aos
-    pkgs.systemd
-    pkgs.aos-systemd-provider
-  ];
+  nativeAdapterPackages = map (name: pkgs.${name}) qualificationPackageNames;
   nativeAdapterMatrix = import ./qualification/modules/_generated-provider-subjects.nix {
     inherit lib;
     packages = nativeAdapterPackages;

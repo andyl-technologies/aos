@@ -93,7 +93,7 @@
   };
   projectedHandler = owner: handler: {
     artifact = resolvedArtifact owner handler.artifact;
-    entry_point = handler.entryPoint;
+    inherit (handler) entry_point;
     inherit (handler) arguments result;
   };
   interfaceIdentity = interface: lib.abilities.interfaceIdentity interface;
