@@ -37,6 +37,7 @@
   bash,
   python3-pefile,
   python3-pyelftools,
+  aos-systemd-provider,
 }: let
   version = "261.2";
 
@@ -73,8 +74,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -185,7 +197,7 @@ in
     # Installed helpers and the cryptsetup/ukify wrappers execute the target
     # interpreters. TPM2 supplies libtss2-esys/rc/mu and the device TCTI for
     # systemd-cryptsetup's TPM2 token, systemd-pcrextend, and systemd-measure.
-    runtimeDeps = systemdRuntimeDeps;
+    runtimeDeps = systemdRuntimeDeps ++ [aos-systemd-provider];
     propagatedDeps = [];
 
     # systemd's many [0]/[1] trailing-array structs get narrowed to a fixed
@@ -602,6 +614,36 @@ in
           exec "${python3}/bin/python3" "$ukify_hook.unwrapped" "\$@"
           EOF
           chmod +x "$ukify_hook"
+        '';
+      }
+      {
+        name = "install-ability-provider-launcher";
+        script = ''
+          mkdir -p "$out/libexec"
+          cat > "$out/libexec/aos-systemd-provider" << EOF
+          #!${bash}/bin/bash
+          if [ "\''${1-}" = credential-encrypt ]; then
+            shift
+            exec "${aos-systemd-provider}/bin/aos-systemd-provider" \\
+              credential-encrypt \\
+              --systemd-creds "$out/bin/systemd-creds" \\
+              "\$@"
+          fi
+
+          exec "${aos-systemd-provider}/bin/aos-systemd-provider" \\
+            --bootctl "$out/bin/bootctl" \\
+            --bless-boot "$out/lib/systemd/systemd-bless-boot" \\
+            --mount "${util-linux}/bin/mount" \\
+            --systemctl "$out/bin/systemctl" \\
+            "\$@"
+          EOF
+          chmod +x "$out/libexec/aos-systemd-provider"
+
+          cat > "$out/libexec/aos-systemd-attestation-provider" << EOF
+          #!${bash}/bin/bash
+          exec "${aos-systemd-provider}/bin/aos-systemd-attestation-provider" "\$@"
+          EOF
+          chmod +x "$out/libexec/aos-systemd-attestation-provider"
         '';
       }
       {

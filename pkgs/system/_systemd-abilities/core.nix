@@ -2,14 +2,26 @@
 {
   config ? null,
   lib,
+  packageArtifactFor,
   ...
 }: let
   types = lib.abilities.types;
   artifact = lib.abilities.packageOutput {};
-  handlerArtifact = lib.abilities.packageOutput {
+  providerArtifact = lib.abilities.packageOutput {
     package = "aos-systemd-provider";
   };
-  handlerEntryPoint = "bin/aos-systemd-provider";
+  handlerArtifact =
+    if config == null || config.aos.abilities.environment == null
+    then artifact
+    else builtins.seq (packageArtifactFor providerArtifact) artifact;
+  handlerEntryPoint = "libexec/aos-systemd-provider";
+  withHandlerDependency = implementations:
+    builtins.mapAttrs (_: implementation:
+      implementation
+      // lib.optionalAttrs ((implementation.handlerDescriptor or null) != null) {
+        artifacts = (implementation.artifacts or []) ++ [providerArtifact];
+      })
+    implementations;
   serviceEffectsQualification = {
     adapter = "service-management";
     observationKind = "systemd";
@@ -820,7 +832,7 @@
   networkConfigurationRealization = types.record {
     fields = {
       schema = types.enum ["aos.systemd.network-configuration-realization/v1"];
-      systemd = types.artifactReference;
+      networkctl = types.executableReference;
     };
   };
   networkConfigurationEffectsRequirement = {
@@ -924,6 +936,9 @@
     fields = {
       schema = types.enum ["aos.systemd.identity-realization/v1"];
       backend = types.enum ["systemd-sysusers"];
+      systemd_sysusers = types.executableReference;
+      login_shell = types.executableReference;
+      nologin_shell = types.executableReference;
     };
   };
   identityKinds = {
@@ -1498,7 +1513,7 @@ in {
         value = nativeEffectsDeclarations.${kind};
       }) (builtins.attrNames nativeResourceKinds));
 
-    implementations =
+    implementations = withHandlerDependency (
       serviceImplementations
       // readinessImplementations
       // readinessTerminalImplementations
@@ -1616,7 +1631,8 @@ in {
           desiredType = null;
           requiredFeatures = [];
         };
-      };
+      }
+    );
 
     requirementTemplates = lib.mkMerge [
       (lib.mkIf dbusRegistrationAvailable {

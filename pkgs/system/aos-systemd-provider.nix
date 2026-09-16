@@ -11,9 +11,7 @@
   pkg-config,
   protobuf,
   sqlite,
-  systemd,
   tpm2-tools,
-  util-linux,
   zlib,
 }: let
   version = "0.1.0";
@@ -22,8 +20,19 @@
 in
   mkCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -42,11 +51,6 @@ in
       OPENSSL_STATIC = "0";
       LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       PROTOC = "${protobuf}/bin/protoc";
-      AOS_SYSTEMD_BOOTCTL = "${systemd}/bin/bootctl";
-      AOS_SYSTEMD_BLESS_BOOT = "${systemd}/lib/systemd/systemd-bless-boot";
-      AOS_SYSTEMD_CREDS = "${systemd}/bin/systemd-creds";
-      AOS_SYSTEMD_PCREXTEND = "${systemd}/lib/systemd/systemd-pcrextend";
-      AOS_SYSTEMD_SYSTEMCTL = "${systemd}/bin/systemctl";
       AOS_TPM2_CREATEEK = "${tpm2-tools}/bin/tpm2_createek";
       AOS_TPM2_CREATEAK = "${tpm2-tools}/bin/tpm2_createak";
       AOS_TPM2_READPUBLIC = "${tpm2-tools}/bin/tpm2_readpublic";
@@ -54,7 +58,6 @@ in
       AOS_TPM2_PCRREAD = "${tpm2-tools}/bin/tpm2_pcrread";
       AOS_TPM2_CHECKQUOTE = "${tpm2-tools}/bin/tpm2_checkquote";
       AOS_TPM2_FLUSHCONTEXT = "${tpm2-tools}/bin/tpm2_flushcontext";
-      AOS_UTIL_LINUX_MOUNT = "${util-linux}/bin/mount";
     };
     cargoRoot = "crates";
     cargoFlags = "-p aos-systemd-provider";
@@ -62,7 +65,7 @@ in
     doCheck = true;
 
     buildDeps = [cmake perl pkg-config protobuf];
-    runtimeDeps = [libssh2 openssl sqlite systemd tpm2-tools util-linux zlib];
+    runtimeDeps = [libssh2 openssl sqlite tpm2-tools zlib];
 
     meta = {
       description = "Authenticated systemd ability provider";

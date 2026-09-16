@@ -1,5 +1,6 @@
 ##! Pure systemd identity composition and provider transition wiring.
 {
+  artifactLocatorFor,
   config,
   lib,
   packageName,
@@ -11,6 +12,17 @@
     outputs = {};
     resourceFragments = {};
   };
+  executableReference = artifact: entry_point: let
+    locator = artifactLocatorFor artifact;
+  in {
+    artifact =
+      {_type = "aos-artifact-reference";}
+      // locator.artifactReference;
+    inherit entry_point;
+    arguments = [];
+  };
+  systemdArtifact = lib.abilities.packageOutput {};
+  bashArtifact = lib.abilities.packageOutput {package = "bash";};
   bindingFor = bindings: requestName: let
     matches = builtins.filter (binding: binding.request == requestName) (builtins.attrValues bindings);
   in
@@ -72,7 +84,8 @@
                 ${specification.outputName} = entry.parameters.name;
                 identity-resource = entry.reference;
               };
-          }) entries);
+          })
+          entries);
         resourceFragments = builtins.listToAttrs (builtins.map (entry: {
             name = entry.binding.slot;
             value = {
@@ -80,20 +93,28 @@
               lifetime = "instance";
               value = entry.parameters;
             };
-          }) entries);
+          })
+          entries);
       };
     compose = {resources, ...}: {
       outputs = {};
-      requests = builtins.mapAttrs (key: resource: {
-        requirement = "identity-effects";
-        scope = ["identity-effects"];
-        slot = key;
-        parameters.desired = resource.value;
-      }) resources;
-      realizations = builtins.mapAttrs (_: _: {
-        schema = "aos.systemd.identity-realization/v1";
-        backend = "systemd-sysusers";
-      }) resources;
+      requests =
+        builtins.mapAttrs (key: resource: {
+          requirement = "identity-effects";
+          scope = ["identity-effects"];
+          slot = key;
+          parameters.desired = resource.value;
+        })
+        resources;
+      realizations =
+        builtins.mapAttrs (_: _: {
+          schema = "aos.systemd.identity-realization/v1";
+          backend = "systemd-sysusers";
+          systemd_sysusers = executableReference systemdArtifact "bin/systemd-sysusers";
+          login_shell = executableReference bashArtifact "bin/bash";
+          nologin_shell = executableReference systemdArtifact "bin/nologin";
+        })
+        resources;
     };
     transition = import ./_systemd-identity-transition.nix {
       inherit effectsInterface;
@@ -105,6 +126,6 @@
   };
 in
   builtins.listToAttrs (builtins.map (kind: {
-      name = kinds.${kind}.selected.alias;
-      value = providerFor kind;
-    }) (builtins.attrNames kinds))
+    name = kinds.${kind}.selected.alias;
+    value = providerFor kind;
+  }) (builtins.attrNames kinds))

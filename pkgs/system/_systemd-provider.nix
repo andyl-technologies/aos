@@ -9,8 +9,7 @@
 }: let
   # This digest only stabilizes human-readable derivation names. The complete
   # rendering input remains an explicit derivation input through `passAsFile`.
-  derivationDisplayName = prefix: content:
-    "${prefix}-${builtins.hashString "sha256" content}";
+  derivationDisplayName = prefix: content: "${prefix}-${builtins.hashString "sha256" content}";
 
   implementationAlias = "systemd-packaged-unit";
   implementationName = "${packageName}:${implementationAlias}";
@@ -501,9 +500,13 @@
 
   composeNetworkConfiguration = {resources, ...}: let
     systemdLocator = artifactLocatorFor (lib.abilities.packageOutput {});
-    systemdReference =
-      {_type = "aos-artifact-reference";}
-      // systemdLocator.artifactReference;
+    networkctl = {
+      artifact =
+        {_type = "aos-artifact-reference";}
+        // systemdLocator.artifactReference;
+      entry_point = "bin/networkctl";
+      arguments = [];
+    };
     realizationSchema =
       lib.abilities.singletonSchemaDiscriminator
       "systemd network configuration realization"
@@ -561,7 +564,7 @@
       realizations =
         builtins.mapAttrs (_: _: {
           schema = realizationSchema;
-          systemd = systemdReference;
+          inherit networkctl;
         })
         resources;
     };
@@ -1083,12 +1086,13 @@
           desired = resource.value;
           inherit (resource) realization;
         };
-        rendered = pkgs.runCommand (derivationDisplayName "systemd-network-configuration" input) {
-          realization = input;
-          passAsFile = ["realization"];
-        } ''
-          ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider render
-        '';
+        rendered =
+          pkgs.runCommand (derivationDisplayName "systemd-network-configuration" input) {
+            realization = input;
+            passAsFile = ["realization"];
+          } ''
+            ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider render
+          '';
       in {
         root = rendered;
         resolver_enabled = resource.value.resolver.enabled;
@@ -1124,7 +1128,7 @@
     })
     readinessControllers);
   identityProviderImplementations = import ./_systemd-identity-provider.nix {
-    inherit config lib packageName;
+    inherit artifactLocatorFor config lib packageName;
   };
   nativeResourceProviderImplementations = import ./_systemd-native-resource-provider.nix {
     inherit config lib packageName;

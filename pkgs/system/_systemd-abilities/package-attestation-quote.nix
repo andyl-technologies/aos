@@ -4,12 +4,15 @@
   lib,
   ...
 }: let
-  packageProfileEnabled = lib.attrByPath [
-    "aos"
-    "packageRuntime"
-    "packageAttestationQuote"
-    "packageProfileEnabled"
-  ] false config;
+  packageProfileEnabled =
+    lib.attrByPath [
+      "aos"
+      "packageRuntime"
+      "packageAttestationQuote"
+      "packageProfileEnabled"
+    ]
+    false
+    config;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   serviceName = "aos-attest";
@@ -24,8 +27,8 @@
     && config.aos.abilities.environment.stage == "host";
   command = {
     executable = {
-      artifact = lib.abilities.packageOutput {package = "aos-systemd-provider";};
-      entry_point = "bin/aos-systemd-attestation-provider";
+      artifact = lib.abilities.packageOutput {};
+      entry_point = "libexec/aos-systemd-attestation-provider";
       arguments = [];
     };
     ignore_failure = false;

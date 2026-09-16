@@ -7,13 +7,12 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use aos_ability_model::{
     AbilityValue, AccessMode, LocalKey, MethodReference, MethodSemantics, ResourceReference,
 };
-use aos_contract::Sha256Digest;
 use aos_net::{BootstrapLinkSelector, BootstrapNetwork};
 use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
@@ -27,6 +26,7 @@ use serde_json::{Map, Value};
 use tempfile::NamedTempFile;
 use tokio::process::Command;
 
+use crate::executable::{Executable, ExecutableReference};
 use crate::{decode_value, target_context, value};
 
 pub(crate) const STATIC_INPUT_SCHEMA: &str = "aos.systemd.network-configuration-static-input/v1";
@@ -99,23 +99,12 @@ struct NetworkConfiguration {
     prerequisites: Vec<ResourceReference>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct TaggedArtifactReference {
-    #[serde(rename = "_type")]
-    value_type: String,
-    content: Sha256Digest,
-    store_path: String,
-    nar_hash: Sha256Digest,
-    closure: Sha256Digest,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct NetworkConfigurationRealization {
     #[serde(rename = "schema")]
     _schema: String,
-    systemd: TaggedArtifactReference,
+    networkctl: ExecutableReference,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,14 +143,13 @@ pub(crate) fn render_static(value: Value, output: &Path) -> Result<()> {
     }
     let desired = ability_value_field(document, "desired")?;
     let desired = network_configuration_from_validated(&desired)?;
-    let realization = serde_json::from_value(
+    let _realization: NetworkConfigurationRealization = serde_json::from_value(
         document
             .get("realization")
             .context("static network-configuration input has no realization")?
             .clone(),
     )
     .context("decoding systemd network-configuration realization")?;
-    require_realization(&realization)?;
     let rendered = render(&desired)?;
 
     for (relative, bytes) in rendered.files {
@@ -351,7 +339,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     require_resource_contexts(&expected.prerequisites, &request.resources)?;
     let realization: NetworkConfigurationRealization =
         decode_value(&request.resource_spec.realization)?;
-    require_realization(&realization)?;
+    realization.networkctl.resolve()?;
     let rendered = render(&expected)?;
     let configuration_matches = rendered_matches(Path::new("/etc"), &rendered)?;
     let observation = observation(
@@ -417,7 +405,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     require_resource_contexts(&expected.prerequisites, &invocation.request.resources)?;
     let realization: NetworkConfigurationRealization =
         decode_value(&bound.resource_spec.realization)?;
-    require_realization(&realization)?;
+    let networkctl = realization.networkctl.resolve()?;
     let context: NetworkContext = decode_value(&bound.provider_context)?;
     if context.schema != CONTEXT_SCHEMA {
         bail!("unsupported network provider context schema");
@@ -434,7 +422,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
             &expected.authority,
             bootstrap.as_ref(),
         )?;
-        reload_networkd(&realization).await?;
+        reload_networkd(&networkctl).await?;
     }
 
     let rendered = render(&expected)?;
@@ -478,22 +466,6 @@ fn require_method(method: &MethodReference, semantics: &MethodSemantics) -> Resu
     };
     if *semantics != expected {
         bail!("network method carries mismatched semantics");
-    }
-    Ok(())
-}
-
-fn require_realization(realization: &NetworkConfigurationRealization) -> Result<()> {
-    if realization.systemd.value_type != "aos-artifact-reference" {
-        bail!("systemd artifact carries an unsupported value type");
-    }
-    let path = Path::new(&realization.systemd.store_path);
-    if !path.is_absolute()
-        || !realization.systemd.store_path.starts_with("/nix/store/")
-        || !path
-            .components()
-            .all(|component| matches!(component, Component::RootDir | Component::Normal(_)))
-    {
-        bail!("systemd artifact does not carry a normalized store path");
     }
     Ok(())
 }
@@ -845,14 +817,14 @@ fn ensure_network_directory(root: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn reload_networkd(realization: &NetworkConfigurationRealization) -> Result<()> {
-    let networkctl = Path::new(&realization.systemd.store_path).join("bin/networkctl");
+async fn reload_networkd(networkctl: &Executable) -> Result<()> {
     for arguments in [["reload"].as_slice(), ["reconfigure", "--all"].as_slice()] {
-        let status = Command::new(&networkctl)
+        let path = networkctl.path();
+        let status = Command::new(&path)
             .args(arguments)
             .status()
             .await
-            .with_context(|| format!("executing {}", networkctl.display()))?;
+            .with_context(|| format!("executing {}", path.display()))?;
         if !status.success() {
             bail!("networkctl {} failed with {status}", arguments.join(" "));
         }
@@ -1086,12 +1058,13 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use aos_contract::Sha256Digest;
     use aos_net::{BootstrapLinkSelector, BootstrapNetwork};
 
     use super::{
         Addressing, LinkSelector, NetworkAuthority, NetworkConfiguration,
-        NetworkConfigurationRealization, NetworkLink, ResolverConfiguration, Sha256Digest,
-        converge_bootstrap, network_configuration_to_json, render, render_static,
+        NetworkLink, ResolverConfiguration, converge_bootstrap, network_configuration_to_json,
+        render, render_static,
     };
 
     fn configuration(authority: NetworkAuthority) -> NetworkConfiguration {
@@ -1149,20 +1122,22 @@ mod tests {
         let output = TempDir::new().expect("temporary output");
         let desired = network_configuration_to_json(&configuration(NetworkAuthority::Operator))
             .expect("semantic network value");
-        let realization = NetworkConfigurationRealization {
-            _schema: "validated-by-runtime".to_string(),
-            systemd: super::TaggedArtifactReference {
-                value_type: "aos-artifact-reference".to_string(),
-                content: Sha256Digest::from_bytes([1; 32]),
-                store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd".to_string(),
-                nar_hash: Sha256Digest::from_bytes([2; 32]),
-                closure: Sha256Digest::from_bytes([3; 32]),
-            },
-        };
         let input = serde_json::json!({
             "schema": super::STATIC_INPUT_SCHEMA,
             "desired": desired,
-            "realization": realization,
+            "realization": {
+                "schema": "aos.systemd.network-configuration-realization/v1",
+                "networkctl": {
+                    "artifact": {
+                        "content": Sha256Digest::from_bytes([1; 32]),
+                        "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd",
+                        "nar_hash": Sha256Digest::from_bytes([2; 32]),
+                        "closure": Sha256Digest::from_bytes([3; 32]),
+                    },
+                    "entry_point": "bin/networkctl",
+                    "arguments": [],
+                },
+            },
         });
 
         render_static(input, output.path()).expect("static render succeeds");
