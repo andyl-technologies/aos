@@ -380,7 +380,7 @@ impl LifecycleSuspensionPlanV1 {
                     action
                 };
                 self.action = action;
-                self.next_effect(current)?;
+                let _current_effect = self.next_effect(current)?;
                 Ok(action)
             }
             None if current

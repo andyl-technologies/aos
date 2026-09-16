@@ -534,7 +534,7 @@ impl LifecycleDeletionPlanV1 {
             self.action = *actions
                 .get(index % actions.len())
                 .ok_or(LifecyclePhase6ErrorV1::InvalidTransition)?;
-            self.next_effect(current)?;
+            let _current_effect = self.next_effect(current)?;
             return Ok(());
         }
         match self.restore_deferred_cursor(current) {

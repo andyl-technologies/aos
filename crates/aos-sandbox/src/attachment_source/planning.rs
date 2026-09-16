@@ -1108,7 +1108,7 @@ fn source_projection(
         intent.source_incarnation().map(|value| *value.as_bytes()),
     )
     .map_err(|_| AttachmentSourceError::Protocol)?;
-    let request = prospective_create(intent, view.source_handle(), target, sample, consistency);
+    let request = prospective_create(intent, view.source_handle(), target, consistency);
     let bytes = request.encode_to_vec();
     let peer = PeerCredentials {
         uid: 1,
@@ -1135,7 +1135,6 @@ fn prospective_create(
     intent: &AttachmentIntent,
     source: &aos_sandbox_core::model::ViewSource,
     target: &CurrentNamespaceTarget,
-    sample: RawPairedClockSample,
     consistency: MountSourceConsistency,
 ) -> ApplyMountRequest {
     let (view_id, revision) = intent.source_view();

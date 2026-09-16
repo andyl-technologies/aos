@@ -678,7 +678,7 @@ impl CacheResidencyProtectedOwnerV1 {
             clock,
         )?;
 
-        let (mut state_journal, state_report) =
+        let (state_journal, state_report) =
             Journal::open_protected_at(root, CACHE_STATE_JOURNAL, cache_state_journal_limits())?;
         let mut owner = Self {
             state_journal: Some(state_journal),

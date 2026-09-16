@@ -70,7 +70,6 @@ impl CliOutputPlanV1 {
                     | StructuredOutputSchemaV1::Event
                     | StructuredOutputSchemaV1::SandboxTree
             ),
-            _ => false,
         };
         if compatible {
             Ok(Self { mode, schema })

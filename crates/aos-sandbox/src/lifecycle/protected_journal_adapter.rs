@@ -69,7 +69,7 @@ pub enum ProtectedReducerPhaseV1 {
 }
 
 /// Borrows one fully decoded terminal member for capacity-lineage validation.
-pub(crate) struct ProtectedCapacitySettlementMemberV1<'member, K> {
+pub struct ProtectedCapacitySettlementMemberV1<'member, K> {
     /// Closed schema kind decoded from the canonical key and envelope.
     pub(crate) kind: K,
     /// Exact schema-validated key identity.
@@ -1300,7 +1300,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         validate_capacity_domain_shape(&prepared.transaction, request.purpose)?;
 
         let transaction_id = *prepared.transaction.id();
-        let mut authority = self
+        let authority = self
             .journal
             .claim_global_capacity_reservation_authority(request.purpose)?;
         let reservation =

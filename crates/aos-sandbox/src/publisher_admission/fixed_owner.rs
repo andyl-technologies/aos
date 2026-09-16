@@ -415,7 +415,7 @@ fn read_config(
                 .try_into()
                 .map_err(|_| PublisherFixedProtectedOwnerErrorV1::Configuration)?,
         );
-        decode_recovery_fence(bytes, operation, decoded.1)?;
+        let _validated_recovery = decode_recovery_fence(bytes, operation, decoded.1)?;
     }
     Ok(decoded)
 }

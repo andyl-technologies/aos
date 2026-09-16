@@ -586,7 +586,7 @@ impl ProtectedStoreBackendV1 for ProtectedJournalStoreBackendV1 {
             if !current_matches || records.next().is_some() {
                 return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
             }
-            drop(current);
+            let _ = current;
             drop(records);
             let preflight = authority
                 .preflight_transactions(std::slice::from_ref(&transaction))

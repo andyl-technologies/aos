@@ -610,7 +610,7 @@ impl LifecycleSnapshotBarrierV1 {
                         return Err(LifecyclePhase6ErrorV1::InvalidTransition);
                     }
                     self.action = LifecycleSnapshotBarrierActionV1::CompensateThaw;
-                    self.next_effect(current)?;
+                    let _current_effect = self.next_effect(current)?;
                     return Ok(self.action);
                 }
                 if self.hibernate && index < base {
@@ -636,7 +636,7 @@ impl LifecycleSnapshotBarrierV1 {
                 ];
                 let action = actions[relative];
                 self.action = action;
-                self.next_effect(current)?;
+                let _current_effect = self.next_effect(current)?;
                 Ok(action)
             }
             None if matches!(

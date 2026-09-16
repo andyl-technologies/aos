@@ -1391,8 +1391,7 @@ fn operation_progress_is_valid(
             | LifecyclePhaseV1::ReadyToCommit
             | LifecyclePhaseV1::Committed
             | LifecyclePhaseV1::Completing
-            | LifecyclePhaseV1::Compensating
-            | LifecyclePhaseV1::RetryWaiting,
+            | LifecyclePhaseV1::Compensating,
             None,
             None,
         ) => true,

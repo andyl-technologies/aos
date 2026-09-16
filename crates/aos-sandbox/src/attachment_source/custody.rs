@@ -300,7 +300,7 @@ impl CustodyHistory {
 
         let mut completion_digests = BTreeMap::new();
         for completion in completions.values() {
-            let attempt = attempts
+            let _validated_attempt = attempts
                 .get(&completion.operation_id)
                 .filter(|attempt| {
                     attempt.digest == completion.attempt_digest

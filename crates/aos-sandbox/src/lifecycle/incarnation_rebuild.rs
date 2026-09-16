@@ -413,7 +413,7 @@ impl LifecycleIncarnationRebuildV1 {
                     .get(index)
                     .ok_or(LifecyclePhase6ErrorV1::InvalidTransition)?;
                 self.action = action;
-                self.next_effect(current)?;
+                let _current_effect = self.next_effect(current)?;
                 Ok(action)
             }
             None if current

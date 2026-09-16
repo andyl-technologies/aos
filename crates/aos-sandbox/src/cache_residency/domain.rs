@@ -175,7 +175,7 @@ impl<'authority, 'journal> CacheAuthorityOwner<'authority, 'journal> {
         {
             return Err(CacheAuthorityError::InvalidScope);
         }
-        authority.snapshot()?;
+        let _validated_snapshot = authority.snapshot()?;
         Ok(Self {
             authority,
             owner_scope,

@@ -3154,7 +3154,7 @@ impl LifecycleBootReconcilerV1 {
         match self.method_plan.cursor_index(current)? {
             Some(index) => {
                 self.cursor = index;
-                self.next_effect(current)?;
+                let _current_effect = self.next_effect(current)?;
                 Ok(())
             }
             None if current

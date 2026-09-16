@@ -1725,11 +1725,11 @@ impl LifecycleSnapshotAvailabilityContractV1 {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
         let publication = state.publication();
-        if (publication.is_some()
+        if publication.is_some()
             && self
                 .dependencies
                 .iter()
-                .any(|dependency| dependency.required && dependency.availability_receipt.is_none()))
+                .any(|dependency| dependency.required && dependency.availability_receipt.is_none())
         {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }

@@ -319,7 +319,7 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
     ///
     /// Returns [`PublisherDomainServiceErrorV1`] for invalid limits, protected
     /// replay, epoch mismatch, catalog reconstruction, or clock initialization.
-    pub(crate) fn claim(
+    pub(super) fn claim(
         journal: &'journal mut Journal,
         durable_catalog: PublisherDurableCatalogOwnerV1,
         config: PublisherDomainServiceConfigV1,

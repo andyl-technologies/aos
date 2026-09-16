@@ -791,7 +791,6 @@ impl NodeAssignmentObservationV1 {
         observed_at_unix_seconds: u64,
     ) -> Result<Self, InvalidAssignmentModel> {
         let node = context.node();
-        let lineage = context.lineage();
         if node.as_bytes() == &[0; 16]
             || sandbox.as_bytes() == &[0; 16]
             || incarnation.as_bytes() == &[0; 16]

@@ -870,7 +870,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         if &stored != admission {
             return Err(EffectCommitError::StaleAuthority);
         }
-        self.load_capacity_reservation(admission)?;
+        let _validated_reservation = self.load_capacity_reservation(admission)?;
         Ok(())
     }
 
