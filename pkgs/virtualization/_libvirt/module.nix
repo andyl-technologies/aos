@@ -39,7 +39,10 @@
     primary_group = resultOf "qemu-group" "group-name";
     supplementary_groups = [(resultOf "kvm-group" "group-name")];
   };
-  allowedPrincipalKey = name: "allowed-${builtins.substring 0 32 (builtins.hashString "sha256" name)}";
+  allowedPrincipalKey = name: "allowed-${lib.abilities.identityKeyFor "aos.libvirt.allowed-principal-request/v1" {
+    principal = name;
+    allocation = "existing";
+  }}";
   allowedPrincipals =
     builtins.map
     (name: principal (allowedPrincipalKey name) name "existing" {})

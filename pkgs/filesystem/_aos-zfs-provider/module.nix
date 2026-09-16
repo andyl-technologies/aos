@@ -213,7 +213,10 @@
     };
     prerequisites = [(resultOf "memory-policy" "readiness-resource")];
   };
-  datasetKey = name: "dataset-${builtins.substring 0 32 (builtins.hashString "sha256" name)}";
+  datasetKey = name: "dataset-${lib.abilities.identityKeyFor "aos.zfs.dataset-request/v1" {
+    pool = cfg.poolName;
+    dataset = name;
+  }}";
   reservedDatasetName = builtins.unsafeDiscardStringContext cfg.reservedSpace.dataset;
   configuredDatasets = cfg.datasets // lib.optionalAttrs cfg.reservedSpace.enable {
     ${reservedDatasetName} = {

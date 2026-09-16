@@ -708,10 +708,12 @@
     || (group != null && group != (identity.primary_group or null));
   preparationFor = resource: directory: let
     destination = "${directoryRoot.${directory.purpose}}/${directory.path}";
-    key = "directory-${builtins.hashString "sha256" (builtins.toJSON {
+    key = "directory-${lib.abilities.identityKeyFor "aos.systemd.directory-preparation-request/v1" {
       inherit (resource) resource;
-      inherit (directory) purpose path;
-    })}";
+      directory = {
+        inherit (directory) purpose path;
+      };
+    }}";
   in {
     inherit key destination directory;
     request = {

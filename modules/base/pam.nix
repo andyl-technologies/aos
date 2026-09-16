@@ -63,17 +63,19 @@
     limits;
 
   # The merged limits.conf is registered as an image-fixed config artifact
-  # keyed by a hash of its content, so identical limit sets dedupe and the
+  # keyed by its canonical typed limits, so identical limit sets dedupe and the
   # on-host eval-only evaluator reads a stage-1-frozen store path instead of
   # rebuilding it (`pkgs.writeTextFile` is absent from the stage-2 frozen pkgs).
   # NOTE: pam limits are operator-tunable (`aos.pam.loginLimits`), so this is a
-  # *config-dependent* artifact frozen per content hash. An operator who
-  # overrides limits via host.nix produces a new content hash with no frozen
-  # artifact; that is a build-time rebuild today (the on-host path would fail
-  # loudly rather than silently use stale limits). Full config-dependence —
+  # *config-dependent* artifact frozen per canonical limits identity. An
+  # operator who overrides limits via host.nix produces a new identity with no
+  # frozen artifact. That requires a build-time rebuild today; the on-host path
+  # fails loudly rather than silently using stale limits. Full config-dependence —
   # rendering limits.conf as `/etc` data so it re-renders on-host — is tracked
   # as follow-up work in eval-only-core.md.
-  limitsKey = limits: "pam-limits-" + builtins.substring 0 32 (builtins.hashString "sha256" (renderLimitsText limits));
+  limitsKey = limits: "pam-limits-${lib.abilities.identityKeyFor "aos.pam.limits-artifact/v1" {
+    inherit limits;
+  }}";
   makeLimitsConf = limits: "${config.aos.config.artifacts.${limitsKey limits}}/limits.conf";
 
   defaultRules = service: {
@@ -326,7 +328,7 @@ in {
     {aos.pam.services = config.aos.contributions.pamServices;}
     (lib.mkIf cfg.enable {
     # Register every distinct non-empty limit set as an image-fixed config
-    # artifact keyed by content hash. `makeLimitsConf`
+    # artifact keyed by its canonical limits identity. `makeLimitsConf`
     # references `artifacts.<limitsKey>` so a `pam_limits.so conf=` argument
     # resolves to the stage-1-frozen store path on-host without rebuilding.
     # Guarded so the stage-2 frozen pkgs never evaluates `writeTextFile`. The
