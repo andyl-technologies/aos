@@ -1745,7 +1745,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         socket: SeqpacketSocket,
         hello: BrokerClientHello,
     ) -> Result<DormantControllerClientHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
-        let (root, custody) = self.into_handshake_parts();
+        let (root, _, _, _, custody) = self.into_handshake_parts();
         let FixedEndpointCustodyV1::Client(custody) = custody else {
             return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
         };
@@ -1766,7 +1766,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         socket: SeqpacketSocket,
         hello: BrokerServerHello,
     ) -> Result<DormantBrokerEndpointHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
-        let (root, custody) = self.into_handshake_parts();
+        let (root, _, _, _, custody) = self.into_handshake_parts();
         let FixedEndpointCustodyV1::Broker(custody) = custody else {
             return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
         };

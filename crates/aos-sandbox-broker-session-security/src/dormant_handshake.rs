@@ -6,6 +6,7 @@
 //! service registration, background task, or broker effect.
 
 use std::os::fd::{BorrowedFd, OwnedFd};
+use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerDescriptorDisposition, BrokerDescriptorDispositionEntry, BrokerDescriptorEntry,
@@ -13,8 +14,8 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerResponseEnvelope, HostCatalogPublicationStatus, PublishHostCatalogResponse,
 };
 use aos_sandbox_broker_session_protocol::{
-    AUTHENTICATED_RESPONSE_MAXIMUM_BYTES, BrokerSessionProtocolV1,
-    ProtectedBrokerSessionVerificationContextV1, decode_canonical_response_v1,
+    AUTHENTICATED_RESPONSE_MAXIMUM_BYTES, ProtectedBrokerSessionVerificationContextV1,
+    decode_canonical_response_v1,
     hello_message::{BrokerClientHello, BrokerServerHello},
     production_broker_client_hello_v1, production_broker_server_hello_v1,
 };
@@ -4672,6 +4673,27 @@ impl DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl ProtectedBrokerSessionFixedCustodyV1 {
+    /// Connects a fixed client endpoint and completes its production handshake.
+    ///
+    /// The socket path, protocol, audience, complete method profile, and
+    /// protected custody root are selected by the same fixed endpoint variant.
+    /// Callers supply only the boot-time deadline and cannot substitute any
+    /// deployment coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected endpoint is not a client, connection
+    /// or protected custody fails, the peer rejects the fixed profile, or the
+    /// handshake deadline expires.
+    pub fn connect_production_client_session(
+        self,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        let socket = SeqpacketSocket::connect(Path::new(self.production_socket_path()))
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
+        self.complete_production_client_handshake(socket, deadline_boottime_nanoseconds)
+    }
+
     /// Completes a controller-side production handshake before a boot-time deadline.
     ///
     /// This is the bounded activation path for a fixed client endpoint. It
@@ -4688,11 +4710,9 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     pub fn complete_production_client_handshake(
         self,
         socket: SeqpacketSocket,
-        protocol: BrokerSessionProtocolV1,
-        audience: Audience,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
-        let mut handshake = self.begin_production_client_handshake(socket, protocol, audience)?;
+        let mut handshake = self.begin_production_client_handshake(socket)?;
 
         loop {
             match handshake.advance()? {
@@ -4727,11 +4747,9 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     pub fn complete_production_broker_handshake(
         self,
         socket: SeqpacketSocket,
-        protocol: BrokerSessionProtocolV1,
-        audience: Audience,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
-        let mut handshake = self.begin_production_broker_handshake(socket, protocol, audience)?;
+        let mut handshake = self.begin_production_broker_handshake(socket)?;
 
         loop {
             match handshake.advance()? {
@@ -4752,9 +4770,9 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 
     /// Adopts a controller-side socket using the complete production profile.
     ///
-    /// The method set, features, protocol version, and ceilings come only from
-    /// the authenticated broker registry. Callers select the fixed protocol
-    /// and audience but cannot supply a partial or downgraded hello.
+    /// The protocol, audience, method set, features, version, and ceilings come
+    /// only from the fixed endpoint and authenticated broker registry. Callers
+    /// cannot supply a partial, substituted, or downgraded hello.
     ///
     /// # Errors
     ///
@@ -4764,9 +4782,9 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     pub fn begin_production_client_handshake(
         self,
         socket: SeqpacketSocket,
-        protocol: BrokerSessionProtocolV1,
-        audience: Audience,
     ) -> Result<DormantControllerClientHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
+        let protocol = self.production_protocol();
+        let audience = self.production_audience();
         let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         let hello = production_broker_client_hello_v1(protocol, audience, maximum_response_bytes)
@@ -4788,9 +4806,9 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     pub fn begin_production_broker_handshake(
         self,
         socket: SeqpacketSocket,
-        protocol: BrokerSessionProtocolV1,
-        audience: Audience,
     ) -> Result<DormantBrokerEndpointHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
+        let protocol = self.production_protocol();
+        let audience = self.production_audience();
         let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         let hello = production_broker_server_hello_v1(protocol, audience, maximum_response_bytes)

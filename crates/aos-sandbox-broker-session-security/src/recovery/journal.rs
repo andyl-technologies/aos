@@ -274,6 +274,9 @@ pub(crate) enum FixedEndpointCustodyV1 {
 #[must_use = "consume fixed custody into an adopted-socket handshake"]
 pub struct ProtectedBrokerSessionFixedCustodyV1 {
     root: &'static str,
+    protocol: aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1,
+    audience: aos_proto::aos::sandbox::local::v1::Audience,
+    socket_path: &'static str,
     custody: FixedEndpointCustodyV1,
 }
 
@@ -293,20 +296,54 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     pub fn open_fixed_protected(
         endpoint: ProtectedBrokerSessionFixedEndpointV1,
     ) -> Result<Self, BrokerSessionSecurityError> {
-        let (root, role) = fixed_endpoint(endpoint);
-        let custody = match role {
+        let configuration = fixed_endpoint(endpoint);
+        let custody = match configuration.role {
             FixedEndpointRole::Client => FixedEndpointCustodyV1::Client(
-                ProtectedBrokerSessionClientV1::load(Path::new(root))?,
+                ProtectedBrokerSessionClientV1::load(Path::new(configuration.root))?,
             ),
             FixedEndpointRole::Broker => FixedEndpointCustodyV1::Broker(
-                ProtectedBrokerSessionBrokerV1::load(Path::new(root))?,
+                ProtectedBrokerSessionBrokerV1::load(Path::new(configuration.root))?,
             ),
         };
-        Ok(Self { root, custody })
+        Ok(Self {
+            root: configuration.root,
+            protocol: configuration.protocol,
+            audience: configuration.audience,
+            socket_path: configuration.socket_path,
+            custody,
+        })
     }
 
-    pub(crate) fn into_handshake_parts(self) -> (&'static str, FixedEndpointCustodyV1) {
-        (self.root, self.custody)
+    pub(crate) const fn production_protocol(
+        &self,
+    ) -> aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1 {
+        self.protocol
+    }
+
+    pub(crate) const fn production_audience(&self) -> aos_proto::aos::sandbox::local::v1::Audience {
+        self.audience
+    }
+
+    pub(crate) const fn production_socket_path(&self) -> &'static str {
+        self.socket_path
+    }
+
+    pub(crate) fn into_handshake_parts(
+        self,
+    ) -> (
+        &'static str,
+        aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1,
+        aos_proto::aos::sandbox::local::v1::Audience,
+        &'static str,
+        FixedEndpointCustodyV1,
+    ) {
+        (
+            self.root,
+            self.protocol,
+            self.audience,
+            self.socket_path,
+            self.custody,
+        )
     }
 }
 
@@ -701,47 +738,83 @@ enum FixedEndpointRole {
     Broker,
 }
 
-fn fixed_endpoint(
-    endpoint: ProtectedBrokerSessionFixedEndpointV1,
-) -> (&'static str, FixedEndpointRole) {
+struct FixedEndpointConfiguration {
+    root: &'static str,
+    role: FixedEndpointRole,
+    protocol: aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1,
+    audience: aos_proto::aos::sandbox::local::v1::Audience,
+    socket_path: &'static str,
+}
+
+fn fixed_endpoint(endpoint: ProtectedBrokerSessionFixedEndpointV1) -> FixedEndpointConfiguration {
     use ProtectedBrokerSessionFixedEndpointV1 as Endpoint;
+    use aos_proto::aos::sandbox::local::v1::Audience;
+    use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1 as Protocol;
+
     match endpoint {
-        Endpoint::ControllerHostClient => (
-            "/var/lib/aos/sandboxd/broker-session/host",
-            FixedEndpointRole::Client,
-        ),
-        Endpoint::HostBroker => (
-            "/var/lib/aos/sandbox-host/broker-session",
-            FixedEndpointRole::Broker,
-        ),
-        Endpoint::RootMountHostClient => (
-            "/var/lib/aos/sandbox-mount/broker-session/host",
-            FixedEndpointRole::Client,
-        ),
-        Endpoint::ControllerStorageClient => (
-            "/var/lib/aos/sandboxd/broker-session/storage",
-            FixedEndpointRole::Client,
-        ),
-        Endpoint::StorageBroker => (
-            "/var/lib/aos/sandbox-storage/broker-session",
-            FixedEndpointRole::Broker,
-        ),
-        Endpoint::ControllerMountClient => (
-            "/var/lib/aos/sandboxd/broker-session/mount",
-            FixedEndpointRole::Client,
-        ),
-        Endpoint::MountBroker => (
-            "/var/lib/aos/sandbox-mount/broker-session",
-            FixedEndpointRole::Broker,
-        ),
-        Endpoint::ControllerNetworkClient => (
-            "/var/lib/aos/sandboxd/broker-session/network",
-            FixedEndpointRole::Client,
-        ),
-        Endpoint::NetworkBroker => (
-            "/var/lib/aos/sandbox-network/broker-session",
-            FixedEndpointRole::Broker,
-        ),
+        Endpoint::ControllerHostClient => FixedEndpointConfiguration {
+            root: "/var/lib/aos/sandboxd/broker-session/host",
+            role: FixedEndpointRole::Client,
+            protocol: Protocol::Host,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            socket_path: "/run/aos/sandbox-host/control.sock",
+        },
+        Endpoint::HostBroker => FixedEndpointConfiguration {
+            root: "/var/lib/aos/sandbox-host/broker-session",
+            role: FixedEndpointRole::Broker,
+            protocol: Protocol::Host,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            socket_path: "/run/aos/sandbox-host/control.sock",
+        },
+        Endpoint::RootMountHostClient => FixedEndpointConfiguration {
+            root: "/var/lib/aos/sandbox-mount/broker-session/host",
+            role: FixedEndpointRole::Client,
+            protocol: Protocol::Host,
+            audience: Audience::AUDIENCE_ROOT_MOUNT,
+            socket_path: "/run/aos/sandbox-host/control.sock",
+        },
+        Endpoint::ControllerStorageClient => FixedEndpointConfiguration {
+            root: "/var/lib/aos/sandboxd/broker-session/storage",
+            role: FixedEndpointRole::Client,
+            protocol: Protocol::Storage,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            socket_path: "/run/aos/sandbox-storage/control.sock",
+        },
+        Endpoint::StorageBroker => FixedEndpointConfiguration {
+            root: "/var/lib/aos/sandbox-storage/broker-session",
+            role: FixedEndpointRole::Broker,
+            protocol: Protocol::Storage,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            socket_path: "/run/aos/sandbox-storage/control.sock",
+        },
+        Endpoint::ControllerMountClient => FixedEndpointConfiguration {
+            root: "/var/lib/aos/sandboxd/broker-session/mount",
+            role: FixedEndpointRole::Client,
+            protocol: Protocol::Mount,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            socket_path: "/run/aos/sandbox-mount/control.sock",
+        },
+        Endpoint::MountBroker => FixedEndpointConfiguration {
+            root: "/var/lib/aos/sandbox-mount/broker-session",
+            role: FixedEndpointRole::Broker,
+            protocol: Protocol::Mount,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            socket_path: "/run/aos/sandbox-mount/control.sock",
+        },
+        Endpoint::ControllerNetworkClient => FixedEndpointConfiguration {
+            root: "/var/lib/aos/sandboxd/broker-session/network",
+            role: FixedEndpointRole::Client,
+            protocol: Protocol::Network,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            socket_path: "/run/aos/sandbox-network/control.sock",
+        },
+        Endpoint::NetworkBroker => FixedEndpointConfiguration {
+            root: "/var/lib/aos/sandbox-network/broker-session",
+            role: FixedEndpointRole::Broker,
+            protocol: Protocol::Network,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            socket_path: "/run/aos/sandbox-network/control.sock",
+        },
     }
 }
 
