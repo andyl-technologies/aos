@@ -6,9 +6,9 @@
 //! lifecycle, event, coverage, and assertion markers. It introduces no choice,
 //! measurement, campaign, QEMU, or shared-memory protocol.
 //!
-//! The package-owned adapter configuration is canonical JSON. Its native
-//! ability module supplies `ready_command` as an authenticated package output;
-//! no host tool path or `PATH` lookup participates in readiness.
+//! The package-owned adapter configuration is canonical JSON. Service readiness
+//! is established by a second invocation that waits for the protected socket;
+//! the adapter does not implement a service-manager notification protocol.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -17,7 +17,8 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{OperationId, TransactionId};
@@ -35,11 +36,12 @@ const EVENT_DIGEST_DOMAIN: &str = "aos.ability-execution-boundary-event/v1";
 const FRAME_MAX_BYTES: usize = 16 * 1024;
 const CONFIG_MAX_BYTES: u64 = 4 * 1024;
 const MAX_ACTIVE_MONITORS: usize = 1024;
+const READY_WAIT_INTERVAL: Duration = Duration::from_millis(10);
 const REQUIRED_MARKER_KINDS: [&str; 4] = ["assertion", "coverage", "event", "lifecycle"];
 
 /// Runs the baseline adapter with command-line arguments after the binary name.
 ///
-/// The only accepted form is `--config PATH`.
+/// Accepted forms are `--config PATH` and `--wait-ready SOCKET`.
 ///
 /// # Errors
 ///
@@ -49,26 +51,47 @@ pub fn run_from_args<I>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let config_path = parse_args(args)?;
-    let config = AdapterConfig::load(&config_path)?;
-    let transport = InstructionDoorbellTransport::native()
-        .context("selecting the Crucible guest doorbell transport")?;
-    let emitter = DoorbellEmitter { transport };
-    let notifier = SystemdReadyNotifier {
-        command: config.ready_command.clone(),
-    };
+    match parse_args(args)? {
+        CommandMode::Serve(config_path) => {
+            let config = AdapterConfig::load(&config_path)?;
+            let transport = InstructionDoorbellTransport::native()
+                .context("selecting the Crucible guest doorbell transport")?;
+            let emitter = DoorbellEmitter { transport };
 
-    Adapter::new(config, emitter, notifier).serve()
+            Adapter::new(config, emitter).serve()
+        }
+        CommandMode::WaitReady(socket) => wait_until_ready(&socket),
+    }
 }
 
-fn parse_args<I>(args: I) -> Result<PathBuf>
+#[derive(Debug, Eq, PartialEq)]
+enum CommandMode {
+    Serve(PathBuf),
+    WaitReady(PathBuf),
+}
+
+fn parse_args<I>(args: I) -> Result<CommandMode>
 where
     I: IntoIterator<Item = OsString>,
 {
     let words = args.into_iter().collect::<Vec<_>>();
     match words.as_slice() {
-        [flag, path] if flag == "--config" => Ok(PathBuf::from(path)),
-        _ => bail!("usage: aos-ability-crucible --config PATH"),
+        [flag, path] if flag == "--config" => Ok(CommandMode::Serve(PathBuf::from(path))),
+        [flag, path] if flag == "--wait-ready" => {
+            Ok(CommandMode::WaitReady(PathBuf::from(path)))
+        }
+        _ => bail!("usage: aos-ability-crucible (--config PATH | --wait-ready SOCKET)"),
+    }
+}
+
+fn wait_until_ready(socket: &Path) -> Result<()> {
+    loop {
+        match UnixStream::connect(socket) {
+            Ok(_) => return Ok(()),
+            Err(_) => {
+                thread::sleep(READY_WAIT_INTERVAL);
+            }
+        }
     }
 }
 
@@ -77,7 +100,6 @@ where
 struct AdapterConfig {
     schema: String,
     socket: PathBuf,
-    ready_command: PathBuf,
     required_instruction_abi: u16,
     required_marker_kinds: Vec<String>,
 }
@@ -126,15 +148,6 @@ impl AdapterConfig {
             is_canonical_absolute(socket_text),
             "adapter socket path is not canonical"
         );
-        let ready_command = self
-            .ready_command
-            .to_str()
-            .context("adapter readiness command path is not UTF-8")?;
-        ensure!(
-            is_canonical_absolute(ready_command),
-            "adapter readiness command path is not canonical"
-        );
-
         Ok(())
     }
 }
@@ -149,25 +162,6 @@ fn is_canonical_absolute(path: &str) -> bool {
 
 trait MarkerEmitter {
     fn emit(&mut self, command: &GuestCommand) -> Result<()>;
-}
-
-trait ReadyNotifier {
-    fn notify_ready(&mut self) -> Result<()>;
-}
-
-struct SystemdReadyNotifier {
-    command: PathBuf,
-}
-
-impl ReadyNotifier for SystemdReadyNotifier {
-    fn notify_ready(&mut self) -> Result<()> {
-        let status = Command::new(&self.command)
-            .args(["--ready", "--status=AOS ability Crucible adapter ready"])
-            .status()
-            .context("executing systemd readiness notification")?;
-        ensure!(status.success(), "systemd readiness notification failed");
-        Ok(())
-    }
 }
 
 struct DoorbellEmitter<Transport> {
@@ -185,23 +179,20 @@ where
     }
 }
 
-struct Adapter<Emitter, Notifier> {
+struct Adapter<Emitter> {
     config: AdapterConfig,
     emitter: Emitter,
-    notifier: Notifier,
     monitors: BTreeMap<MonitorKey, MonitorState>,
 }
 
-impl<Emitter, Notifier> Adapter<Emitter, Notifier>
+impl<Emitter> Adapter<Emitter>
 where
     Emitter: MarkerEmitter,
-    Notifier: ReadyNotifier,
 {
-    fn new(config: AdapterConfig, emitter: Emitter, notifier: Notifier) -> Self {
+    fn new(config: AdapterConfig, emitter: Emitter) -> Self {
         Self {
             config,
             emitter,
-            notifier,
             monitors: BTreeMap::new(),
         }
     }
@@ -229,8 +220,7 @@ where
     }
 
     fn announce_ready(&mut self) -> Result<()> {
-        self.emitter.emit(&GuestCommand::setup_complete())?;
-        self.notifier.notify_ready()
+        self.emitter.emit(&GuestCommand::setup_complete())
     }
 
     fn serve_connection(&mut self, stream: &mut UnixStream) -> Result<()> {
@@ -558,18 +548,6 @@ mod tests {
         commands: Vec<GuestCommand>,
     }
 
-    #[derive(Default)]
-    struct CapturingNotifier {
-        called: bool,
-    }
-
-    impl ReadyNotifier for CapturingNotifier {
-        fn notify_ready(&mut self) -> Result<()> {
-            self.called = true;
-            Ok(())
-        }
-    }
-
     struct FailingEmitter;
 
     impl MarkerEmitter for FailingEmitter {
@@ -589,7 +567,6 @@ mod tests {
         AdapterConfig {
             schema: CONFIG_SCHEMA.to_owned(),
             socket,
-            ready_command: PathBuf::from("/usr/bin/systemd-notify"),
             required_instruction_abi: WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
             required_marker_kinds: REQUIRED_MARKER_KINDS.map(str::to_owned).to_vec(),
         }
@@ -628,8 +605,35 @@ mod tests {
                 OsString::from("/run/aos/config.json")
             ])
                 .unwrap(),
-            PathBuf::from("/run/aos/config.json")
+            CommandMode::Serve(PathBuf::from("/run/aos/config.json"))
         );
+        assert_eq!(
+            parse_args([
+                OsString::from("--wait-ready"),
+                OsString::from("/run/aos/controller.sock"),
+            ])
+            .unwrap(),
+            CommandMode::WaitReady(PathBuf::from("/run/aos/controller.sock"))
+        );
+    }
+
+    #[test]
+    fn readiness_waits_for_the_package_socket_without_manager_protocols() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let socket = directory.path().join("controller.sock");
+        let server_socket = socket.clone();
+        let server = thread::spawn(move || -> std::io::Result<()> {
+            thread::sleep(Duration::from_millis(30));
+            let listener = UnixListener::bind(server_socket)?;
+            listener.accept()?;
+            Ok(())
+        });
+
+        wait_until_ready(&socket)?;
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("readiness test server panicked"))??;
+        Ok(())
     }
 
     #[test]
@@ -649,7 +653,6 @@ mod tests {
         let mut adapter = Adapter::new(
             config(PathBuf::from("/run/aos-instrumentation/controller.sock")),
             emitter,
-            CapturingNotifier::default(),
         );
         adapter.process_event(&event(BoundaryName::EffectIntentDurable))?;
         adapter.process_event(&event(BoundaryName::EffectReturned))?;
@@ -686,7 +689,6 @@ mod tests {
         let mut adapter = Adapter::new(
             config(PathBuf::from("/run/aos-instrumentation/controller.sock")),
             emitter,
-            CapturingNotifier::default(),
         );
         assert!(
             adapter
@@ -708,7 +710,6 @@ mod tests {
         let mut adapter = Adapter::new(
             config(PathBuf::from("/run/aos-instrumentation/controller.sock")),
             emitter,
-            CapturingNotifier::default(),
         );
         let (mut client, mut server) = UnixStream::pair()?;
         let event_bytes =
@@ -741,7 +742,6 @@ mod tests {
         let mut adapter = Adapter::new(
             config(PathBuf::from("/run/aos-instrumentation/controller.sock")),
             emitter,
-            CapturingNotifier::default(),
         );
         assert!(
             adapter
@@ -809,10 +809,8 @@ mod tests {
         let mut adapter = Adapter::new(
             config(PathBuf::from("/run/aos-instrumentation/controller.sock")),
             FailingEmitter,
-            CapturingNotifier::default(),
         );
 
         assert!(adapter.announce_ready().is_err());
-        assert!(!adapter.notifier.called);
     }
 }

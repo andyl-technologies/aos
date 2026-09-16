@@ -14,6 +14,7 @@
   packageArtifact = lib.abilities.packageOutput {};
   settings = import ./settings.nix {socketName = cfg.socketName;};
   inherit (settings) runtimePath socketPath;
+  readinessTimeoutMillis = 30000;
 
   producer = key: interface: parameters:
     serviceManagement.forProducer {
@@ -36,18 +37,7 @@
         fragments = [
           {
             kind = "literal";
-            text = ''{"ready_command":"'';
-          }
-          {
-            kind = "artifact-file-path";
-            reference = {
-              artifact = lib.abilities.packageOutput {package = "systemd";};
-              path = "bin/systemd-notify";
-            };
-          }
-          {
-            kind = "literal";
-            text = ''","required_instruction_abi":1,"required_marker_kinds":["assertion","coverage","event","lifecycle"],"schema":"aos.ability-crucible-adapter/v1","socket":"'';
+            text = ''{"required_instruction_abi":1,"required_marker_kinds":["assertion","coverage","event","lifecycle"],"schema":"aos.ability-crucible-adapter/v1","socket":"'';
           }
           {
             kind = "execution-path";
@@ -84,14 +74,14 @@
         condition = [];
         pre_start = [];
         start = [(command ["--config" (resultOf "configuration-file" "planned-path")])];
-        post_start = [];
+        post_start = [(command ["--wait-ready" socketPath])];
         stop = [];
         post_stop = [];
         restart = "on-failure";
         restart_delay_millis = 1000;
         configuration_change_action = "restart";
         remain_after_exit = false;
-        start_timeout_millis = 30000;
+        start_timeout_millis = readinessTimeoutMillis;
         stop_timeout_millis = 90000;
       };
       dependencies = {
@@ -105,17 +95,17 @@
         wants = [];
       };
       supervision = {
-        startup_protocol = "notification";
-        notification_access = "all-processes";
+        startup_protocol = "process";
+        notification_access = "none";
       };
       manager_identity = {
         name = "aos-ability-crucible";
         aliases = [];
       };
       readiness = {
-        mechanism = "process-signal";
-        signal_scope = "all-processes";
-        timeout_millis = 30000;
+        mechanism = "process-running";
+        signal_scope = "none";
+        timeout_millis = readinessTimeoutMillis;
       };
       configuration.views = [
         {
