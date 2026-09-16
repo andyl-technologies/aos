@@ -18,6 +18,7 @@ use aos_core::nar::cache::{
 };
 use aos_release::artifact::{
     ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath, Compression,
+    ImageArtifactIdentity,
 };
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
@@ -180,46 +181,76 @@ fn prepare(arguments: &[String]) -> Result<()> {
         });
         artifacts.push(package);
     }
-    for (id, kind, platform) in Platform::LINUX
-        .into_iter()
-        .flat_map(|platform| {
-            [
-                (
-                    format!("image/server/{platform}"),
-                    ArtifactKind::RawImage,
-                    Some(platform),
-                ),
-                (
-                    format!("image/server/{platform}/metadata"),
-                    ArtifactKind::ImageMetadata,
-                    Some(platform),
-                ),
-                (
-                    format!("oci/{platform}"),
-                    ArtifactKind::OciManifest,
-                    Some(platform),
-                ),
-            ]
-        })
-        .chain([(String::from("oci/index"), ArtifactKind::OciIndex, None)])
-    {
-        let path = if kind == ArtifactKind::RawImage {
-            format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}/raw")
-        } else {
-            format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}")
-        };
-        let bytes = if kind == ArtifactKind::ImageMetadata {
-            canonical::canonical_json(&qualification_fixture::metadata()?)?
-        } else {
-            format!("synthetic release protocol fixture: {id}\n").into_bytes()
-        };
-        write_new(output.join(&path), &bytes)?;
-        let mut artifact = record(id, kind, platform, &path, &bytes)?;
-        if matches!(kind, ArtifactKind::RawImage | ArtifactKind::ImageMetadata) {
+    for platform in Platform::LINUX {
+        let contract_id = format!("provenance/image/server/{platform}/provider-contract");
+        let contract_path = format!("releases/candidate/{RELEASE_VERSION}/fixtures/{contract_id}");
+        let contract_bytes =
+            format!("synthetic image provider contract: {platform}\n").into_bytes();
+        write_new(output.join(&contract_path), &contract_bytes)?;
+        artifacts.push(record(
+            contract_id.clone(),
+            ArtifactKind::Provenance,
+            Some(platform),
+            &contract_path,
+            &contract_bytes,
+        )?);
+
+        for (suffix, role, bytes) in [
+            (
+                "payload",
+                "aos.test.image-artifact.payload/v1",
+                format!("synthetic release protocol fixture: image/server/{platform}\n")
+                    .into_bytes(),
+            ),
+            (
+                "metadata",
+                "aos.test.image-artifact.metadata/v1",
+                canonical::canonical_json(&qualification_fixture::metadata()?)?,
+            ),
+        ] {
+            let id = if suffix == "payload" {
+                format!("image/server/{platform}")
+            } else {
+                format!("image/server/{platform}/{suffix}")
+            };
+            let path = format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}");
+            write_new(output.join(&path), &bytes)?;
+            let mut artifact = record(id, ArtifactKind::Image, Some(platform), &path, &bytes)?;
             artifact.system_variant = Some("server".into());
+            artifact.image = Some(ImageArtifactIdentity {
+                contract_schema: "aos.test.image-provider/v1".into(),
+                contract_artifact: contract_id.clone(),
+                role: role.into(),
+            });
+            artifact.relationships.push(ArtifactRelationship {
+                relation: ArtifactRelation::Documents,
+                target: contract_id.clone(),
+            });
+            artifacts.push(artifact);
         }
-        artifacts.push(artifact);
+
+        let id = format!("oci/{platform}");
+        let path = format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}");
+        let bytes = format!("synthetic release protocol fixture: {id}\n").into_bytes();
+        write_new(output.join(&path), &bytes)?;
+        artifacts.push(record(
+            id,
+            ArtifactKind::OciManifest,
+            Some(platform),
+            &path,
+            &bytes,
+        )?);
     }
+    let index_path = format!("releases/candidate/{RELEASE_VERSION}/fixtures/oci/index");
+    let index_bytes = b"synthetic release protocol fixture: oci/index\n";
+    write_new(output.join(&index_path), index_bytes)?;
+    artifacts.push(record(
+        "oci/index".into(),
+        ArtifactKind::OciIndex,
+        None,
+        &index_path,
+        index_bytes,
+    )?);
     let gate_report = canonical::to_vec(&json!({
         "schema_version": "aos.release.fleet-gate-report/v1",
         "result": "passed"
@@ -515,6 +546,7 @@ fn record(
         kind,
         platform,
         system_variant: None,
+        image: None,
         path: BundlePath::parse(path)?,
         size_bytes: u64::try_from(bytes.len())?,
         sha256: Sha256Digest::of_bytes(bytes),

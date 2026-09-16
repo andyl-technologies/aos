@@ -673,6 +673,7 @@ mod tests {
                 kind: ArtifactKind::PackageNar,
                 platform: Some(platform),
                 system_variant: None,
+                image: None,
                 path: BundlePath::parse(format!("packages/{platform}.nar")).unwrap(),
                 size_bytes: 1,
                 sha256: digest(platform.as_str()),

@@ -9,8 +9,10 @@ use aos_core::nar::cache::canonical_sha256_hex;
 use aos_core::nix::NixRunner;
 use aos_image_finalizer::assembly::UnsignedImageAssemblyV1;
 use aos_image_finalizer::capture::capture_unsigned_assembly;
-use aos_image_finalizer::result::{FinalizedImageKind, FinalizedImageSetV1};
-use aos_release::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression};
+use aos_image_finalizer::result::FinalizedImageSetV1;
+use aos_release::artifact::{
+    ArtifactKind, ArtifactRelation, ArtifactRelationship, ImageArtifactIdentity,
+};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::plan::{PlannedArtifact, ReleasePlanV1};
@@ -62,8 +64,8 @@ pub(super) fn assemble(
             bail!("finalized image set is unplanned or duplicated");
         }
 
-        let planned = planned_cell(plan, &set.system_variant, set.platform)?;
-        let assembly_root = planned_assembly_root(planned)?;
+        let planned_artifacts = planned_cell(plan, &set.system_variant, set.platform)?;
+        let assembly_root = planned_assembly_root(planned_artifacts)?;
         let recaptured =
             capture_unsigned_assembly(assembly_root, &plan.release_id, |executable| {
                 tool_owner_nar_hash(executable, nix, &mut tool_nar_hashes)
@@ -71,18 +73,13 @@ pub(super) fn assemble(
         if recaptured != assembly {
             bail!("finalized image control differs from its planned Nix assembly");
         }
-        if planned.len() != set.artifacts.len() {
+        if planned_artifacts.len() != set.artifacts.len() {
             bail!(
                 "finalized {} {} artifact count differs from its plan",
                 set.system_variant,
                 set.platform
             );
         }
-        let logical_id = planned
-            .iter()
-            .find(|artifact| local_id(&artifact.id) == "logical-disk")
-            .map(|artifact| artifact.id.clone())
-            .context("planned image cell lacks logical-disk artifact")?;
         let provenance_prefix = format!("provenance/image/{}/{}", set.system_variant, set.platform);
         let assembly_id = format!("{provenance_prefix}/unsigned-assembly");
         let finalized_id = format!("{provenance_prefix}/finalized-set");
@@ -126,7 +123,7 @@ pub(super) fn assemble(
         )?;
         let mut matched = BTreeSet::new();
         for artifact in &set.artifacts {
-            let planned = planned
+            let planned = planned_artifacts
                 .iter()
                 .find(|planned| local_id(&planned.id) == artifact.id)
                 .with_context(|| {
@@ -138,20 +135,22 @@ pub(super) fn assemble(
             if !matched.insert(planned.id.as_str()) {
                 bail!("finalized image artifacts repeat planned id {}", planned.id);
             }
-            let mut relationships = if matches!(
-                artifact.kind,
-                FinalizedImageKind::Raw
-                    | FinalizedImageKind::Qcow2
-                    | FinalizedImageKind::Vmdk
-                    | FinalizedImageKind::Vhd
-            ) {
-                vec![ArtifactRelationship {
+            let mut relationships = Vec::new();
+            if let Some(encoded) = artifact.publication.encodes.as_deref() {
+                let target = planned_artifacts
+                    .iter()
+                    .find(|candidate| local_id(&candidate.id) == encoded)
+                    .with_context(|| {
+                        format!(
+                            "provider image role {} encodes absent artifact {encoded}",
+                            artifact.publication.role
+                        )
+                    })?;
+                relationships.push(ArtifactRelationship {
                     relation: ArtifactRelation::Encodes,
-                    target: logical_id.clone(),
-                }]
-            } else {
-                Vec::new()
-            };
+                    target: target.id.clone(),
+                });
+            }
             relationships.push(ArtifactRelationship {
                 relation: ArtifactRelation::Documents,
                 target: finalized_id.clone(),
@@ -160,8 +159,13 @@ pub(super) fn assemble(
             let attributes = ArtifactAttributes {
                 platform: Some(set.platform),
                 system_variant: Some(set.system_variant.clone()),
-                media_type: media_type(artifact.kind).to_owned(),
-                compression: compression(artifact.kind),
+                image: Some(ImageArtifactIdentity {
+                    contract_schema: set.schema_version.clone(),
+                    contract_artifact: finalized_id.clone(),
+                    role: artifact.publication.role.clone(),
+                }),
+                media_type: artifact.publication.media_type.clone(),
+                compression: artifact.publication.compression,
                 derivation,
                 output,
                 store_path,
@@ -172,7 +176,7 @@ pub(super) fn assemble(
             payload.copy(
                 &root.join(artifact.path.as_str()),
                 planned.id.clone(),
-                artifact_kind(artifact.kind),
+                ArtifactKind::Image,
                 format!(
                     "images/{}/{}/{}",
                     set.system_variant, set.platform, artifact.id
@@ -311,43 +315,4 @@ fn nix_identity(
 
 fn local_id(id: &str) -> &str {
     id.rsplit('/').next().unwrap_or(id)
-}
-
-const fn artifact_kind(kind: FinalizedImageKind) -> ArtifactKind {
-    match kind {
-        FinalizedImageKind::LogicalDisk => ArtifactKind::LogicalDisk,
-        FinalizedImageKind::Raw => ArtifactKind::RawImage,
-        FinalizedImageKind::Qcow2 => ArtifactKind::Qcow2Image,
-        FinalizedImageKind::Vmdk => ArtifactKind::VmdkImage,
-        FinalizedImageKind::Vhd => ArtifactKind::VhdImage,
-        FinalizedImageKind::UkiA | FinalizedImageKind::UkiB => ArtifactKind::Uki,
-        FinalizedImageKind::RecoveryUkiA | FinalizedImageKind::RecoveryUkiB => {
-            ArtifactKind::RecoveryUki
-        }
-        FinalizedImageKind::RecoveryBundle => ArtifactKind::RecoveryBundle,
-        FinalizedImageKind::Metadata => ArtifactKind::ImageMetadata,
-    }
-}
-
-const fn compression(kind: FinalizedImageKind) -> Compression {
-    match kind {
-        FinalizedImageKind::Raw | FinalizedImageKind::RecoveryBundle => Compression::Zstd,
-        _ => Compression::None,
-    }
-}
-
-const fn media_type(kind: FinalizedImageKind) -> &'static str {
-    match kind {
-        FinalizedImageKind::LogicalDisk => "application/vnd.aos.logical-disk.raw",
-        FinalizedImageKind::Raw => "application/vnd.aos.disk-image.raw+zstd",
-        FinalizedImageKind::Qcow2 => "application/vnd.aos.disk-image.qcow2",
-        FinalizedImageKind::Vmdk => "application/vnd.vmware.vmdk",
-        FinalizedImageKind::Vhd => "application/vnd.microsoft.vhd",
-        FinalizedImageKind::UkiA
-        | FinalizedImageKind::UkiB
-        | FinalizedImageKind::RecoveryUkiA
-        | FinalizedImageKind::RecoveryUkiB => "application/vnd.aos.uki",
-        FinalizedImageKind::RecoveryBundle => "application/vnd.aos.recovery-bundle.v1+tar+zstd",
-        FinalizedImageKind::Metadata => "application/vnd.aos.image-metadata.v1+json",
-    }
 }

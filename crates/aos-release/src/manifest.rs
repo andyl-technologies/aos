@@ -220,7 +220,6 @@ impl ReleaseManifestV1 {
         }
         if plan.release_class.requires_complete_matrix() {
             validate_production_supply_chain(self, &artifacts)?;
-            validate_production_images(self, &artifacts)?;
         }
         Ok(())
     }
@@ -273,43 +272,6 @@ fn validate_production_supply_chain(
     Ok(())
 }
 
-fn validate_production_images(
-    manifest: &ReleaseManifestV1,
-    artifacts: &BTreeMap<&str, &ArtifactRecord>,
-) -> Result<()> {
-    let required = [
-        ArtifactKind::LogicalDisk,
-        ArtifactKind::RawImage,
-        ArtifactKind::Qcow2Image,
-        ArtifactKind::VmdkImage,
-        ArtifactKind::VhdImage,
-        ArtifactKind::Uki,
-        ArtifactKind::RecoveryUki,
-        ArtifactKind::RecoveryBundle,
-        ArtifactKind::ImageMetadata,
-    ];
-    for image in &manifest.images {
-        for cell in &image.platforms {
-            let MatrixCell::Artifact { artifact } = &cell.decision else {
-                bail!("production image matrix contains a non-artifact cell");
-            };
-            let kinds = artifact
-                .artifact_ids
-                .iter()
-                .filter_map(|id| artifacts.get(id.as_str()).map(|artifact| artifact.kind))
-                .collect::<BTreeSet<_>>();
-            if required.iter().any(|kind| !kinds.contains(kind)) {
-                bail!(
-                    "production image {}/{} lacks its complete finalized format set",
-                    image.system_variant,
-                    cell.platform
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
 /// One request and response embedded in the signed manifest envelope.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -337,6 +299,7 @@ pub struct ManifestEnvelopeV1 {
 fn validate_artifacts(artifacts: &[ArtifactRecord]) -> Result<BTreeMap<&str, &ArtifactRecord>> {
     let mut ids = BTreeMap::new();
     let mut paths = BTreeSet::new();
+    let mut image_roles = BTreeSet::new();
     for artifact in artifacts {
         artifact.validate()?;
         if ids.insert(artifact.id.as_str(), artifact).is_some() {
@@ -375,6 +338,29 @@ fn validate_artifacts(artifacts: &[ArtifactRecord]) -> Result<BTreeMap<&str, &Ar
                 "package artifact {} lacks its exact signed narinfo",
                 artifact.id
             );
+        }
+        if let Some(image) = &artifact.image {
+            let contract = ids.get(image.contract_artifact.as_str()).ok_or_else(|| {
+                anyhow::anyhow!("image artifact {} lacks its provider contract", artifact.id)
+            })?;
+            if contract.kind != ArtifactKind::Provenance
+                || contract.platform != artifact.platform
+                || !artifact.relationships.iter().any(|relationship| {
+                    relationship.relation == crate::artifact::ArtifactRelation::Documents
+                        && relationship.target == image.contract_artifact
+                })
+            {
+                bail!(
+                    "image artifact {} is not bound to its provider contract",
+                    artifact.id
+                );
+            }
+            if !image_roles.insert((image.contract_artifact.as_str(), image.role.as_str())) {
+                bail!(
+                    "provider image contract repeats artifact role {}",
+                    image.role
+                );
+            }
         }
     }
     Ok(ids)
@@ -427,6 +413,7 @@ fn validate_final_cells(
                     bail!("final artifact ids differ from the planned cell");
                 }
                 let mut unique = BTreeSet::new();
+                let mut image_contract = None;
                 for (id, planned_artifact) in
                     final_set.artifact_ids.iter().zip(&planned_set.artifacts)
                 {
@@ -442,8 +429,21 @@ fn validate_final_cells(
                     {
                         bail!("artifact {id} has the wrong platform for its matrix cell");
                     }
-                    if image && !artifact.kind.is_linux_image() {
+                    if image && artifact.kind != ArtifactKind::Image {
                         bail!("image matrix cell references non-image artifact {id}");
+                    }
+                    if image {
+                        let identity = artifact.image.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("image matrix artifact {id} lacks provider identity")
+                        })?;
+                        let contract = (
+                            identity.contract_schema.as_str(),
+                            identity.contract_artifact.as_str(),
+                        );
+                        if image_contract.is_some_and(|expected| expected != contract) {
+                            bail!("image matrix cell mixes provider artifact contracts");
+                        }
+                        image_contract = Some(contract);
                     }
                     if planned_artifact.derivation.is_some()
                         && (artifact.derivation.as_deref()

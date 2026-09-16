@@ -1051,6 +1051,7 @@ mod tests {
             kind: ArtifactKind::PackageNar,
             platform: Some(Platform::X86_64Linux),
             system_variant: None,
+            image: None,
             path: BundlePath::parse(format!("objects/{id}")).unwrap(),
             size_bytes: 1,
             sha256: Sha256Digest::of_bytes(id.as_bytes()),
