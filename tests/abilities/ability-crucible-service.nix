@@ -149,23 +149,23 @@ in
   assert lifecycle.restart == "on-failure";
   assert lifecycle.restart_delay_millis == 1000;
   assert lifecycle.start_timeout_millis == 30000;
+  assert lifecycle.post_start
+  == [
+    {
+      executable = {
+        artifact = lib.abilities.packageOutput {package = "aos-ability-crucible";};
+        entry_point = "bin/aos-ability-crucible";
+        arguments = ["--wait-ready" runtimePath];
+      };
+      ignore_failure = false;
+    }
+  ];
   assert configuration.mode == "0400";
   assert configuration.source.fragments
   == [
     {
       kind = "literal";
-      text = ''{"ready_command":"'';
-    }
-    {
-      kind = "artifact-file-path";
-      reference = {
-        artifact = lib.abilities.packageOutput {package = "systemd";};
-        path = "bin/systemd-notify";
-      };
-    }
-    {
-      kind = "literal";
-      text = ''","required_instruction_abi":1,"required_marker_kinds":["assertion","coverage","event","lifecycle"],"schema":"aos.ability-crucible-adapter/v1","socket":"'';
+      text = ''{"required_instruction_abi":1,"required_marker_kinds":["assertion","coverage","event","lifecycle"],"schema":"aos.ability-crucible-adapter/v1","socket":"'';
     }
     {
       kind = "execution-path";
@@ -181,8 +181,9 @@ in
     (outputReference "aos-ability-crucible:runtime-storage" "retained-resource")
     (outputReference "aos-ability-crucible:configuration-file" "retained-resource")
   ];
-  assert requests."aos-ability-crucible:adapter-supervision".parameters.notification_access == "all-processes";
-  assert requests."aos-ability-crucible:adapter-readiness".parameters.timeout_millis == 30000;
+  assert requests."aos-ability-crucible:adapter-supervision".parameters.notification_access == "none";
+  assert requests."aos-ability-crucible:adapter-readiness".parameters.mechanism == "process-running";
+  assert requests."aos-ability-crucible:adapter-readiness".parameters.timeout_millis == lifecycle.start_timeout_millis;
   assert requests."aos-ability-crucible:adapter-identity".parameters.file_creation_mask == "0077";
   assert requests."aos-ability-crucible:adapter-isolation".parameters.filesystem == "read-only-system";
   assert portableOptionTree enabled.options.aos.services.abilityCrucible;
