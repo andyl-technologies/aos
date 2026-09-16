@@ -271,7 +271,8 @@ The recovery build explicitly excludes or masks:
 
 - `aos-var-crypt.service`;
 - normal `sysroot.mount` and switch-root;
-- provisioning evaluation and `aos-repart.service`;
+- the normal initrd resolved ability stage, including storage-provisioning
+  evaluation and effects;
 - configuration activation and package installation;
 - debug autologin gettys;
 - automatic filesystem discovery/mounting; and

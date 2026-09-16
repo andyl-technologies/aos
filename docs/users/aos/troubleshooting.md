@@ -25,23 +25,18 @@ previous boot and `journalctl -b -u UNIT` for one unit.
 ## The machine does not finish first boot
 
 First boot must authorize and evaluate storage intent before it changes the
-disk. Inspect the serial or physical console and these units:
+disk. The initrd controller executes the checked stage plan; metadata and
+storage steps are package-owned provider operations rather than separate
+systemd services. Inspect the serial or physical console and the controller:
 
 ```sh
-systemctl status \
-  aos-metadata-detect.service \
-  aos-metadata-fetch.service \
-  aos-metadata-authorize.service \
-  aos-provisioning-eval.service \
-  aos-repart.service
-
-journalctl -b \
-  -u aos-metadata-detect.service \
-  -u aos-metadata-fetch.service \
-  -u aos-metadata-authorize.service \
-  -u aos-provisioning-eval.service \
-  -u aos-repart.service
+systemctl status aos-ability-initrd-controller.service
+journalctl -b -u aos-ability-initrd-controller.service
 ```
+
+The controller journal names the failing checked operation and selected
+provider. Use that identity with the package's generated `apm docs` or Hub
+documentation to inspect its consumed and exposed abilities.
 
 Common causes are:
 
