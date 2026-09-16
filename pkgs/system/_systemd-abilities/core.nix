@@ -41,6 +41,7 @@
     };
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  milestones = serviceManagement.milestones;
   serviceInterfaces = serviceManagement.interfaces;
   serviceTypes = serviceManagement.types;
   imageRolloutPlatform = lib.abilities.interfaces.imageRolloutPlatform.interfaces;
@@ -77,6 +78,28 @@
     != null
     && hostPlatformAvailable
     && (config.aos.packageRuntime.configurationEvaluation.measuredBoot or false);
+  measurementMilestone = key: milestone:
+    serviceManagement.forProducer {
+      consumerInstance = "image-measurement-index";
+      inherit key;
+      interface = serviceInterfaces.systemMilestoneReadiness;
+      parameters = {inherit milestone;};
+    };
+  measurementEspReady = measurementMilestone "measurement-esp-ready" milestones.espReady;
+  measurementLocalFilesystems = measurementMilestone "measurement-local-filesystems" milestones.localFilesystems;
+  measurementMultiUser = measurementMilestone "measurement-multi-user" milestones.multiUser;
+  measurementIndexed = measurementMilestone "measurement-indexed" milestones.imageMeasurementIndexed;
+  measurementRuntimeEntries = serviceManagement.forProducer {
+    consumerInstance = "image-measurement-index";
+    key = "measurement-runtime-entries";
+    interface = serviceInterfaces.runtimeEntryPopulation;
+    parameters.scope = "runtime-entries";
+  };
+  measurementEspReadyResource = resultOf "measurement-esp-ready" "readiness-resource";
+  measurementLocalFilesystemsResource = resultOf "measurement-local-filesystems" "readiness-resource";
+  measurementMultiUserResource = resultOf "measurement-multi-user" "readiness-resource";
+  measurementIndexedResource = resultOf "measurement-indexed" "readiness-resource";
+  measurementRuntimeEntriesResource = resultOf "measurement-runtime-entries" "lifecycle-resource";
   imageMeasurementService = serviceManagement.forService {
     inherit serviceTypes;
     consumerInstance = "image-measurement-index";
@@ -116,18 +139,18 @@
       dependencies = {
         prerequisites = [];
         after = [
-          (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "service-resource")
-          (resultOf "aos:local-filesystems" "readiness-resource")
-          (resultOf "aos:runtime-entry-population" "lifecycle-resource")
+          measurementEspReadyResource
+          measurementLocalFilesystemsResource
+          measurementRuntimeEntriesResource
         ];
         before = [
-          (resultOf "aos:configuration-evaluation-lifecycle" "service-resource")
-          (resultOf "aos:multi-user" "readiness-resource")
+          measurementIndexedResource
+          measurementMultiUserResource
         ];
         requires = [
-          (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "service-resource")
-          (resultOf "aos:local-filesystems" "readiness-resource")
-          (resultOf "aos:runtime-entry-population" "lifecycle-resource")
+          measurementEspReadyResource
+          measurementLocalFilesystemsResource
+          measurementRuntimeEntriesResource
         ];
         wants = [];
         requisite = [];
@@ -135,8 +158,8 @@
         binds_to = [];
         part_of = [];
         upholds = [];
-        required_by = [];
-        wanted_by = [(resultOf "aos:multi-user" "readiness-resource")];
+        required_by = [measurementIndexedResource];
+        wanted_by = [measurementMultiUserResource];
         required_mounts = [];
         implicit_dependencies = false;
       };
@@ -155,6 +178,20 @@
       };
     };
   };
+  imageMeasurementFragments = [
+    measurementEspReady
+    measurementLocalFilesystems
+    measurementMultiUser
+    measurementIndexed
+    measurementRuntimeEntries
+    imageMeasurementService
+  ];
+  imageMeasurementRequirementTemplates = lib.mkMerge (
+    builtins.map (fragment: fragment.requirementTemplates or {}) imageMeasurementFragments
+  );
+  imageMeasurementRequests = lib.mkMerge (
+    builtins.map (fragment: fragment.requests or {}) imageMeasurementFragments
+  );
   dbusRegistrationInterface = {
     name = "aos.dbus.system-registration-contribution";
     abi = 1;
@@ -1686,7 +1723,7 @@ in {
           fallback = null;
         };
       })
-      (lib.mkIf measurementEnabled imageMeasurementService.requirementTemplates)
+      (lib.mkIf measurementEnabled imageMeasurementRequirementTemplates)
     ];
 
     requests = lib.mkMerge [
@@ -1712,7 +1749,7 @@ in {
           };
         };
       })
-      (lib.mkIf measurementEnabled imageMeasurementService.requests)
+      (lib.mkIf measurementEnabled imageMeasurementRequests)
     ];
   };
 }

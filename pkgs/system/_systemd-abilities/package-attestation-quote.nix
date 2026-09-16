@@ -16,11 +16,13 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   serviceName = "aos-attest";
-  packageProfile = {
-    _type = "aos-request-output-reference";
-    request = "aos:package-profile-convergence-lifecycle";
-    output = "service-resource";
+  packageProfileConverged = serviceManagement.forProducer {
+    consumerInstance = "package-attestation-quote";
+    key = "package-profile-converged";
+    interface = serviceManagement.interfaces.systemMilestoneReadiness;
+    parameters.milestone = serviceManagement.milestones.packageProfileConverged;
   };
+  packageProfileReadiness = lib.abilities.resultOf "package-profile-converged" "readiness-resource";
   hostStage =
     config.aos.abilities.environment
     != null
@@ -98,7 +100,7 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        prerequisites = lib.optional packageProfileEnabled packageProfile;
+        prerequisites = lib.optional packageProfileEnabled packageProfileReadiness;
         after = [];
         before = [];
         requires = [];
@@ -142,13 +144,13 @@
       };
     };
   };
-  contribution = serviceManagement.splitContribution service;
+  contributions = builtins.map serviceManagement.splitContribution [packageProfileConverged service];
 in {
   config.aos.abilities = lib.mkMerge [
-    contribution.declarations
-    (lib.mkIf hostStage (
-      {instances.package-attestation-quote = {};}
-      // contribution.configured
-    ))
+    (lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions))
+    (lib.mkIf hostStage (lib.mkMerge (
+      [{instances.package-attestation-quote = {};}]
+      ++ builtins.map (contribution: contribution.configured) contributions
+    )))
   ];
 }
