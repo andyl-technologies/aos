@@ -1322,7 +1322,7 @@ in {
           description = "Executes checked terminal systemd manager-watchdog effects.";
           interface = "systemd-manager-watchdog-effects";
           artifact = handlerArtifact;
-          inherit (networkConfigurationEffects) methods;
+          methods = ["create" "observe" "reconcile" "remove" "update"];
           guarantees = [];
           handlerDescriptor = {
             artifact = handlerArtifact;

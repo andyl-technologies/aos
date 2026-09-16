@@ -440,6 +440,11 @@
     systemdReference =
       {_type = "aos-artifact-reference";}
       // systemdLocator.artifactReference;
+    realizationSchemas = networkConfigurationController.desiredType._abilitySchema.fields.schema.values or [];
+    realizationSchema =
+      if builtins.length realizationSchemas != 1
+      then throw "systemd network configuration must declare one exact realization schema"
+      else builtins.head realizationSchemas;
   in
     emptyResult
     // {
@@ -450,7 +455,7 @@
         parameters = {};
       }) resources;
       realizations = builtins.mapAttrs (_: _: {
-        schema = "aos.systemd.network-configuration-realization/v1";
+        schema = realizationSchema;
         systemd = systemdReference;
       }) resources;
     };
