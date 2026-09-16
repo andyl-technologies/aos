@@ -37,6 +37,18 @@ in {
   aos.filesystems.rootFsType = lib.mkForce "ext4";
   aos.security.verity.enable = lib.mkForce false;
 
+  # The writable ext4 fixture retains free-space headroom in addition to the
+  # ZFS runtime payload. Keep that test-only allocation out of the production
+  # server image contract while leaving enough room for the populated image.
+  aos.image.rootPartitionMiB = 2688;
+  aos.image.budgets = {
+    maxRootMiB = 2624;
+    maxConvertedDownloadMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 1696
+      else 1504;
+  };
+
   aos.filesystems.zfs = {
     enable = true;
     poolName = "aostest";
