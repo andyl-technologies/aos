@@ -165,13 +165,28 @@ struct EvaluationObservation {
     state: &'static str,
 }
 
-/// Runs one metadata provisioning handler call from the process streams.
+/// Runs an authorization or plan-normalization call from the process streams.
 ///
 /// # Errors
 ///
 /// Returns an error when the selected ABI, checked authority, metadata input,
 /// restricted evaluation, or provider result is invalid.
-pub async fn run_provider_from_process() -> Result<()> {
+pub async fn run_policy_provider_from_process() -> Result<()> {
+    run_provider_from_process(&[MetadataRole::Authorization, MetadataRole::PlanObservation]).await
+}
+
+/// Runs one retained-input configuration-evaluation call from the process
+/// streams.
+///
+/// # Errors
+///
+/// Returns an error when the selected ABI, checked authority, retained input,
+/// restricted evaluation, or provider result is invalid.
+pub async fn run_evaluator_provider_from_process() -> Result<()> {
+    run_provider_from_process(&[MetadataRole::ConfigurationEvaluation]).await
+}
+
+async fn run_provider_from_process(allowed_roles: &[MetadataRole]) -> Result<()> {
     let arguments = std::env::args_os().collect::<Vec<_>>();
     ensure!(
         arguments.len() == 3 && arguments[1] == HANDLER_ABI_ARGUMENT,
@@ -195,12 +210,20 @@ pub async fn run_provider_from_process() -> Result<()> {
             let request: AdmissionRequest =
                 aos_contract::canonical::from_slice(&input, "metadata admission")?;
             let role = MetadataRole::from_method(&request.method)?;
+            ensure!(
+                allowed_roles.contains(&role),
+                "method is not exposed by this provider entry point"
+            );
             serde_json::to_value(admit(role, request)?)?
         }
         "effect" | "reconcile" | "cancel" => {
             let invocation: Invocation =
                 aos_contract::canonical::from_slice(&input, "metadata invocation")?;
             let role = MetadataRole::from_method(&invocation.method)?;
+            ensure!(
+                allowed_roles.contains(&role),
+                "method is not exposed by this provider entry point"
+            );
             serde_json::to_value(invoke(role, invocation, purpose).await?)?
         }
         purpose => bail!("unsupported metadata provider purpose {purpose:?}"),
