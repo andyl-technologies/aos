@@ -35,8 +35,8 @@ use regex::Regex;
 
 /// Why a runaway evaluation subprocess was killed.
 ///
-/// Populated by the driver from the transient scope's exit cause
-/// (`systemctl show --property=Result`), not guessed from stderr.
+/// Populated by the driver from the selected process manager's exit cause,
+/// without guessing from stderr.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KillReason {
     /// The cgroup `MemoryMax` limit triggered an OOM kill.

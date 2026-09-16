@@ -26,9 +26,7 @@ use super::ability_policy::{
     validate_independent_binding_authority,
 };
 use super::ability_policy_authority::OperatorPolicyAuthorityStore;
-use super::activation::{
-    ActivateConfigParams, ActivationFailure, read_stored_activation_record,
-};
+use super::activation::{ActivateConfigParams, ActivationFailure, read_stored_activation_record};
 use super::execution_observer::AbilityExecutionBoundaryObserver;
 use super::handler_dispatch::HandlerDispatcher;
 use super::materialize::ConfigManifest;
@@ -51,9 +49,10 @@ pub(super) fn activate_config(
     let switch_lock = Arc::new(super::activation::acquire_switch_lock_pub(
         &params.switch_lock,
     )?);
-    let transaction_manifest = crate::graph_compile::graph_transaction(&desired_manifest)
-        .context("identifying the preflighted structured manifest")?
-        .manifest;
+    let transaction_manifest = crate::canonical_json_digest(
+        &serde_json::to_value(&desired_manifest)
+            .context("identifying the preflighted structured manifest")?,
+    )?;
     let pending = load_pending_activation(params)?;
     let failed = if pending.is_none() {
         load_failed_activation(params)?
@@ -562,7 +561,9 @@ fn load_selected_native_activation(
         "selected native activation differs from its generation identity"
     );
     let manifest = load_generation_manifest(params, state.current)?;
-    let transaction_manifest = crate::graph_compile::graph_transaction(&manifest)?.manifest;
+    let transaction_manifest = crate::canonical_json_digest(
+        &serde_json::to_value(&manifest).context("identifying the retained manifest")?,
+    )?;
     ensure!(
         record.transaction_manifest == transaction_manifest,
         "selected native activation differs from its retained manifest identity"
@@ -701,7 +702,7 @@ fn load_generation_manifest(
     let manifest = super::activation::load_config_manifest(&path)?;
     let value = serde_json::to_value(&manifest).context("encoding retained config manifest")?;
     ensure!(
-        crate::graph_compile::reproject::hash_cjson(&value) == record.manifest_hash,
+        crate::canonical_json_digest(&value)? == record.manifest_hash,
         "retained current manifest differs from its generation identity"
     );
     Ok(manifest)

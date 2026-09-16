@@ -50,9 +50,7 @@ mod protected_fs;
 mod transaction_blob;
 mod transaction_verification;
 pub use native_activation::supported_native_ability_features;
-pub(crate) use native_activation::{
-    RetainedNativePreflightError, preflight_retained_manifest,
-};
+pub(crate) use native_activation::{RetainedNativePreflightError, preflight_retained_manifest};
 mod cancellation;
 mod execution_observer;
 pub(crate) mod provisioning_evaluator;
@@ -920,10 +918,10 @@ fn read_base_lib_abi_hash(base_lib: &Path, expected_abi: u32) -> Result<String> 
     if !schema.is_array() {
         anyhow::bail!("base library option-schema.json is not an array");
     }
-    let expected_hash = crate::graph_compile::reproject::hash_cjson(&serde_json::json!({
+    let expected_hash = crate::canonical_json_digest(&serde_json::json!({
         "abi": recorded_abi,
         "schema": schema,
-    }));
+    }))?;
     if abi_hash != expected_hash {
         anyhow::bail!(
             "base library {} ABI hash does not match its module ABI and option schema",
@@ -1064,8 +1062,7 @@ fn package_module_release_identity(
             .unwrap_or_default()
             .cmp(right[0].as_str().unwrap_or_default())
     });
-    let realization =
-        crate::graph_compile::reproject::hash_cjson(&serde_json::Value::Array(realization_members));
+    let realization = crate::canonical_json_digest(&serde_json::Value::Array(realization_members))?;
     Ok((
         Some(registry.to_string()),
         Some(receipt.release_tag.clone()),

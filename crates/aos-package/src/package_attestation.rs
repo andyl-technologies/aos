@@ -3042,7 +3042,10 @@ mod tests {
             "eval_mode": "pure-eval",
             "quote_status": "quoted"
         });
-        let canonical = crate::graph_compile::reproject::canonical_json(&record);
+        let canonical = String::from_utf8(
+            aos_contract::canonical::canonical_json(&record).expect("canonical record"),
+        )
+        .expect("canonical JSON is UTF-8");
         let activation_a = format!("sha256:{}", "a".repeat(64));
         assert!(
             !measure_generation_attestation(

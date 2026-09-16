@@ -14,7 +14,7 @@
 //! # On-disk format
 //!
 //! Serialized to **canonical JSON** (the same canonicalization as the manifest
-//! hash; see [`crate::graph_compile::reproject::hash_cjson`]) and persisted
+//! hash; see [`aos_contract::canonical::canonical_json`]) and persisted
 //! alongside `gen-N/manifest.json`. Each successful activation, including a
 //! same-generation rollback, receives a fresh random `activation_id`; crash
 //! recovery retains that identity only while completing the same transaction.
@@ -66,7 +66,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config_eval::materialize::{ConfigManifest, PackageModulesInput};
-use crate::graph_compile::reproject::hash_cjson;
 use crate::types::{ImageGeneration, PackageModule, PackageModuleOrigin};
 
 /// Schema discriminator for the generation-attestation record.
@@ -296,22 +295,9 @@ pub trait QuoteChecker {
 pub fn record_hash(record: &GenAttestation) -> Result<[u8; 32]> {
     let mut bare = record.clone();
     bare.quote = String::new();
-    // `hash_cjson` is the single canonicalization used everywhere (build-spec
-    // §0): it returns "sha256:<hex>" over the canonical JSON bytes. The quoter
-    // extends the 32 raw digest bytes into PCR 15, so decode the hex back to
-    // bytes here rather than re-canonicalizing independently.
     let value = serde_json::to_value(&bare).context("serializing generation attestation")?;
-    let digest_hex = hash_cjson(&value);
-    let hex_part = digest_hex
-        .strip_prefix("sha256:")
-        .context("canonical generation attestation hash has no sha256 prefix")?;
-    let bytes = hex::decode(hex_part).context("decoding generation attestation hash")?;
-    bytes.try_into().map_err(|bytes: Vec<u8>| {
-        anyhow::anyhow!(
-            "generation attestation hash decoded to {} bytes, expected 32",
-            bytes.len()
-        )
-    })
+    let canonical = aos_contract::canonical::canonical_json(&value)?;
+    Ok(*aos_contract::Sha256Digest::of_bytes(canonical).as_bytes())
 }
 
 /// Returns the canonical bytes measured into PCR 15, excluding the quote.
@@ -323,7 +309,7 @@ pub(crate) fn bare_record_bytes(record: &GenAttestation) -> Result<Vec<u8>> {
     let mut bare = record.clone();
     bare.quote = String::new();
     let value = serde_json::to_value(&bare).context("serializing generation attestation")?;
-    Ok(crate::graph_compile::reproject::canonical_json(&value).into_bytes())
+    aos_contract::canonical::canonical_json(&value)
 }
 
 /// Compute the canonical-JSON hash of the full record (incl. `quote`), the
@@ -334,7 +320,7 @@ pub(crate) fn bare_record_bytes(record: &GenAttestation) -> Result<Vec<u8>> {
 /// Returns an error if the record cannot be serialized to JSON.
 pub fn attestation_content_hash(record: &GenAttestation) -> anyhow::Result<String> {
     let value = serde_json::to_value(record)?;
-    Ok(hash_cjson(&value))
+    crate::canonical_json_digest(&value)
 }
 
 /// Build and quote a [`GenAttestation`] from its inputs (build-spec §1.4).
@@ -744,7 +730,7 @@ fn write_record_atomic(path: &Path, record: &GenAttestation) -> Result<()> {
 
 fn write_canonical_json_atomic<T: Serialize>(path: &Path, record: &T) -> Result<()> {
     let value = serde_json::to_value(record).context("serializing generation attestation")?;
-    let bytes = crate::graph_compile::reproject::canonical_json(&value);
+    let bytes = aos_contract::canonical::canonical_json(&value)?;
     let parent = path
         .parent()
         .context("generation attestation path has no parent")?;
@@ -755,7 +741,7 @@ fn write_canonical_json_atomic<T: Serialize>(path: &Path, record: &T) -> Result<
         .mode(0o600)
         .open(&temporary)
         .with_context(|| format!("creating {}", temporary.display()))?;
-    file.write_all(bytes.as_bytes())
+    file.write_all(&bytes)
         .with_context(|| format!("writing {}", temporary.display()))?;
     file.sync_all()
         .with_context(|| format!("syncing {}", temporary.display()))?;

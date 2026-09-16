@@ -510,10 +510,11 @@ fn base_lib_identity_cross_checks_schema_and_module_abi() {
         serde_json::to_vec(&schema).expect("schema JSON"),
     )
     .expect("schema");
-    let hash = crate::graph_compile::reproject::hash_cjson(&serde_json::json!({
+    let hash = crate::canonical_json_digest(&serde_json::json!({
         "abi": 7,
         "schema": schema,
-    }));
+    }))
+    .expect("canonical ABI identity");
     std::fs::write(root.path().join("abi-hash"), format!("{hash}\n")).expect("ABI hash");
 
     assert_eq!(

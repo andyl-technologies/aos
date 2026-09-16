@@ -135,21 +135,14 @@ fn install_panic_hook(program: &'static str) {
 /// Returns the private runtime command name present in an argument vector.
 fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
     const COMMANDS: &[&str] = &[
-        "activate-pre-etc-swap",
-        "activate-post-etc-swap",
-        "activate-restore-routed-sources",
         "recover-credential-transactions",
-        "_test-systemd-client",
-        "_test-reconcile-exposed-units",
         "__verify-boot-commit",
         "_load-ebpf-lsm-policies",
         "__eval",
         "__eval-retained",
         "__materialize",
-        "__activate-config",
-        "fetch",
-        "render-one",
-        "__graph-compile",
+        "__ability-activation-preflight",
+        "__ability-activate",
         "__ability-plan-build-stage",
         "__ability-build-stage",
         "__ability-stage-run",
