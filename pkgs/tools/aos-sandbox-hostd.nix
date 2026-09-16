@@ -41,8 +41,8 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-host --bin aos-sandbox-hostd"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-host"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandbox-hostd"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --lib --test api_surface"
     ];
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
@@ -52,8 +52,8 @@ in
     pname = "aos-sandbox-hostd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-host --bin aos-sandbox-hostd";
-    cargoTestFlags = "-p aos-sandbox-host";
+    cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-sandbox-hostd";
+    cargoTestFlags = "-p aos-sandbox-broker-session-security --lib --test api_surface";
     cargoNextest = true;
     doCheck = true;
     buildDeps = [buildProtobuf];
