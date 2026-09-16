@@ -7,10 +7,13 @@
 //! opens the systemd readiness gate.
 //!
 //! The first production tranche deliberately exposes only the read-only
-//! `GetNodeCapabilities` diagnostic RPC to root on a local Unix socket.
+//! public feature registry and `GetNodeCapabilities` diagnostic RPCs to root
+//! on a local Unix socket.
 //! UID 0 is trusted here as the local administrator, not as another node
-//! service role; the response contains no catalog rows, resources, credentials,
-//! operation state, mutation surface, or dormant source-contract advertisement.
+//! service role. The responses contain no catalog rows, resources, credentials,
+//! operation state, or mutation surface. The feature registry describes the
+//! closed public protocol vocabulary; the node-capability response advertises
+//! none of those features until their production implementations are active.
 //! Assignment compilation, Guardian plan signing, and every broker Apply path
 //! return explicit unavailable results; their absence can never be mistaken
 //! for mutation authority.
@@ -25,9 +28,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use aos_proto::aos::sandbox::v1::{
-    CancelOperationRequestView, CancelOperationResponse, Event, GetNodeCapabilitiesRequestView,
-    GetNodeCapabilitiesResponse, GetOperationRequestView, GetOperationResponse, NodeCapabilities,
-    OperationService, OperationServiceExt, Timestamp, WatchRequestView,
+    CancelOperationRequestView, CancelOperationResponse, DiscoveryService, DiscoveryServiceExt,
+    Event, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse, GetOperationRequestView,
+    GetOperationResponse, GetPublicFeatureRegistryRequestView, GetPublicFeatureRegistryResponse,
+    NodeCapabilities, OperationService, OperationServiceExt, Timestamp, WatchRequestView,
 };
 use aos_sandbox_core::{NodeId, ObjectDigest, OperationId};
 use aos_sandbox_linux::Error as LinuxError;
@@ -151,9 +155,8 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     SystemdReadyNotifier::from_environment()?.notify_ready()?;
 
     let service = Arc::new(CapabilityService { capabilities });
-    let connect = service
-        .register(connectrpc::Router::new())
-        .into_axum_service();
+    let connect = DiscoveryServiceExt::register(Arc::clone(&service), connectrpc::Router::new());
+    let connect = OperationServiceExt::register(service, connect).into_axum_service();
     let application = axum::Router::new().fallback_service(connect);
     let result = runtime.block_on(serve_until_worker_failure(listener, application, events_rx));
     runtime.shutdown_timeout(Duration::from_secs(1));
@@ -952,6 +955,52 @@ struct CapabilityService {
     capabilities: Arc<Mutex<CapabilityState>>,
 }
 
+impl DiscoveryService for CapabilityService {
+    async fn get_public_feature_registry(
+        &self,
+        context: Context,
+        _request: OwnedView<GetPublicFeatureRegistryRequestView<'static>>,
+    ) -> Result<(GetPublicFeatureRegistryResponse, Context), ConnectError> {
+        Ok((
+            GetPublicFeatureRegistryResponse {
+                registry: Some(crate::controller_query::public_feature_registry_v1()).into(),
+                ..Default::default()
+            },
+            context,
+        ))
+    }
+
+    async fn get_node_capabilities(
+        &self,
+        context: Context,
+        request: OwnedView<GetNodeCapabilitiesRequestView<'static>>,
+    ) -> Result<(GetNodeCapabilitiesResponse, Context), ConnectError> {
+        self.node_capabilities(context, &request)
+    }
+}
+
+impl CapabilityService {
+    fn node_capabilities(
+        &self,
+        context: Context,
+        request: &GetNodeCapabilitiesRequestView<'_>,
+    ) -> Result<(GetNodeCapabilitiesResponse, Context), ConnectError> {
+        let capabilities = self.capabilities.lock().map_err(|_| {
+            ConnectError::new(
+                ErrorCode::Internal,
+                "controller capability state is unavailable",
+            )
+        })?;
+        if request.node_id != capabilities.node_id {
+            return Err(ConnectError::new(
+                ErrorCode::NotFound,
+                "requested node does not match this controller",
+            ));
+        }
+        Ok((capabilities.response()?, context))
+    }
+}
+
 impl OperationService for CapabilityService {
     async fn get_operation(
         &self,
@@ -988,19 +1037,7 @@ impl OperationService for CapabilityService {
         context: Context,
         request: OwnedView<GetNodeCapabilitiesRequestView<'static>>,
     ) -> Result<(GetNodeCapabilitiesResponse, Context), ConnectError> {
-        let capabilities = self.capabilities.lock().map_err(|_| {
-            ConnectError::new(
-                ErrorCode::Internal,
-                "controller capability state is unavailable",
-            )
-        })?;
-        if request.node_id != capabilities.node_id {
-            return Err(ConnectError::new(
-                ErrorCode::NotFound,
-                "requested node does not match this controller",
-            ));
-        }
-        Ok((capabilities.response()?, context))
+        self.node_capabilities(context, &request)
     }
 }
 
@@ -1198,6 +1235,56 @@ mod tests {
         assert_eq!(capabilities.capability_generation, 2);
         assert!(capabilities.capabilities.is_empty());
         assert!(capabilities.observed_at.as_option().is_some());
+    }
+
+    #[tokio::test]
+    async fn canonical_discovery_service_exposes_only_checked_diagnostics() {
+        use aos_proto::aos::sandbox::v1::{
+            GetNodeCapabilitiesRequest, GetPublicFeatureRegistryRequest,
+        };
+
+        let mut state = CapabilityState::starting([7; 16]);
+        state.record_success(9, ObjectDigest::from_bytes([8; 32]));
+        let service = CapabilityService {
+            capabilities: Arc::new(Mutex::new(state)),
+        };
+
+        let registry_request =
+            OwnedView::<GetPublicFeatureRegistryRequestView<'static>>::from_owned(
+                &GetPublicFeatureRegistryRequest::default(),
+            )
+            .unwrap();
+        let (registry_response, _) = DiscoveryService::get_public_feature_registry(
+            &service,
+            Context::default(),
+            registry_request,
+        )
+        .await
+        .unwrap();
+        let expected_registry = crate::controller_query::public_feature_registry_v1();
+        assert_eq!(
+            registry_response.registry.as_option(),
+            Some(&expected_registry)
+        );
+
+        let capabilities_request =
+            OwnedView::<GetNodeCapabilitiesRequestView<'static>>::from_owned(
+                &GetNodeCapabilitiesRequest {
+                    node_id: vec![7; 16],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let (capabilities_response, _) = DiscoveryService::get_node_capabilities(
+            &service,
+            Context::default(),
+            capabilities_request,
+        )
+        .await
+        .unwrap();
+        let capabilities = capabilities_response.capabilities.as_option().unwrap();
+        assert_eq!(capabilities.node_id, [7; 16]);
+        assert!(capabilities.capabilities.is_empty());
     }
 
     #[test]

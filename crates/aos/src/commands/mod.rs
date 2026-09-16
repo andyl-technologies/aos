@@ -4,7 +4,7 @@
 //! dispatches to after parsing the CLI defined in the `cli` module. Most
 //! take an `aos_core::nix::NixRunner` for evaluating/building Nix
 //! attributes and an `aos_core::output::Printer` for human/JSON output;
-//! the non-Nix commands (`serve`, `token`, `package`, `cache`,
+//! the non-Nix commands (`serve`, `token`, `package`, `cache`, `sandbox`,
 //! `completions`) take only what they need.
 
 pub mod build;

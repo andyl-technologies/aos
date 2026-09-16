@@ -168,10 +168,12 @@ dependencies = [
  "aos-oci-types",
  "aos-package",
  "aos-profile",
+ "aos-proto",
  "aos-proto-types",
  "aos-registry-surface",
  "aos-release",
  "aos-remote",
+ "aos-sandbox",
  "aos-server",
  "async-trait",
  "atty",
@@ -179,6 +181,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "clap_complete",
+ "connectrpc",
  "console",
  "crossterm",
  "ed25519-dalek",
@@ -186,6 +189,7 @@ dependencies = [
  "futures-util",
  "glob",
  "hex",
+ "http 1.4.1",
  "humantime",
  "hyper-util",
  "ignore",
@@ -310,9 +314,15 @@ name = "aos-filesystem-fuse"
 version = "0.1.0"
 dependencies = [
  "aos-filesystem-view",
+ "aos-sandbox",
+ "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-broker-session-security",
  "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "ed25519-dalek",
  "libc",
  "pkg-config",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 
@@ -337,7 +347,13 @@ dependencies = [
 name = "aos-filesystem-view"
 version = "0.1.0"
 dependencies = [
+ "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-broker-session-security",
  "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "ed25519-dalek",
+ "libc",
+ "rustix 1.1.4",
  "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
@@ -811,7 +827,6 @@ version = "0.1.0"
 dependencies = [
  "aos-proto",
  "aos-sandbox-core",
- "ed25519-dalek",
  "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
@@ -850,11 +865,19 @@ dependencies = [
 name = "aos-sandbox-broker-session-security"
 version = "0.1.0"
 dependencies = [
+ "aos-proto",
  "aos-sandbox",
  "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-core",
+ "aos-sandbox-host",
  "aos-sandbox-linux",
+ "aos-sandbox-mount",
  "aos-sandbox-network",
  "aos-sandbox-protocol",
+ "aos-sandbox-source-provider",
+ "aos-sandbox-source-provider-security",
+ "aos-sandbox-storage",
+ "buffa",
  "ed25519-dalek",
  "hex",
  "rustix 1.1.4",
@@ -938,6 +961,7 @@ dependencies = [
  "aos-sandbox-core",
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
+ "aos-sandbox-source-provider",
  "aos-sandbox-source-provider-protocol",
  "aos-sandbox-source-provider-security",
  "buffa",
@@ -1045,6 +1069,7 @@ dependencies = [
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
  "aos-sandbox-source-provider-security",
+ "ed25519-dalek",
  "rustix 1.1.4",
  "sha2 0.10.9",
  "thiserror 2.0.18",

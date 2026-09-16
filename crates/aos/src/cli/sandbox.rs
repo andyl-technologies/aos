@@ -10,6 +10,7 @@ use aos_sandbox::cli_model::{
 };
 use clap::{Args, Subcommand, ValueEnum};
 
+#[derive(Clone)]
 struct HexValue(Vec<u8>);
 
 impl HexValue {
@@ -841,7 +842,7 @@ impl SandboxSubcommand {
             Self::AttachExec(a) => K::ExecutionControl(execution_control(a, 1)),
             Self::ResizeExec(a) => K::ExecutionControl(wire::ExecutionControlRequest {
                 execution_id: a.execution_id.clone(),
-                action: 2,
+                action: 2.into(),
                 terminal_rows: a.rows,
                 terminal_columns: a.columns,
                 mutation: a.mutation.proto().into(),
@@ -849,8 +850,8 @@ impl SandboxSubcommand {
             }),
             Self::SignalExec(a) => K::ExecutionControl(wire::ExecutionControlRequest {
                 execution_id: a.execution_id.clone(),
-                action: 3,
-                signal: signal(a.signal),
+                action: 3.into(),
+                signal: signal(a.signal).into(),
                 mutation: a.mutation.proto().into(),
                 ..Default::default()
             }),
@@ -866,10 +867,11 @@ impl SandboxSubcommand {
             }),
             Self::Snapshot(a) => K::Snapshot(wire::CreateSnapshotRequest {
                 sandbox_id: a.sandbox_id.clone(),
-                requested_availability: match a.availability {
+                requested_availability: (match a.availability {
                     SnapshotAvailabilityValue::SelfContained => 1,
                     SnapshotAvailabilityValue::ExternalDependencies => 2,
-                },
+                })
+                .into(),
                 mutation: a.mutation.proto().into(),
                 ..Default::default()
             }),
@@ -945,12 +947,13 @@ impl SandboxSubcommand {
             Self::OperatorRecover(a) => K::OperatorRecover(wire::OperatorRecoveryRequest {
                 resource_id: a.resource_id.clone(),
                 expected_resource_version: a.expected_resource_version.clone(),
-                action: match a.action {
+                action: (match a.action {
                     RecoveryActionValue::Retry => 1,
                     RecoveryActionValue::Abandon => 2,
                     RecoveryActionValue::Reconcile => 3,
                     RecoveryActionValue::Repair => 4,
-                },
+                })
+                .into(),
                 idempotency_key: a.idempotency_key.clone(),
                 evidence: a.evidence.0.clone().into(),
                 ..Default::default()
@@ -1049,13 +1052,14 @@ impl ViewSubcommand {
                 view_id: a.view_id.clone(),
                 view_revision: a.view_revision.0.clone().into(),
                 destination_slot_id: a.destination_slot_id.clone(),
-                mutation_mode: match a.mode {
+                mutation_mode: (match a.mode {
                     ViewModeValue::ReadOnly => 1,
                     ViewModeValue::ReadWrite => 2,
                     ViewModeValue::PrivateCow => 3,
                     ViewModeValue::AppendOnly => 4,
                     ViewModeValue::Service => 5,
-                },
+                })
+                .into(),
                 mutation: a
                     .mutation
                     .proto_with_semantic_features(if a.noexec {
@@ -1236,7 +1240,7 @@ fn lifecycle(a: &LifecycleArgs) -> wire::SandboxLifecycleRequest {
 fn execution_control(a: &ExecutionIdArgs, action: i32) -> wire::ExecutionControlRequest {
     wire::ExecutionControlRequest {
         execution_id: a.execution_id.clone(),
-        action,
+        action: action.into(),
         mutation: a.mutation.proto().into(),
         ..Default::default()
     }
@@ -1350,7 +1354,7 @@ fn exec(a: &ExecArgs) -> Result<wire::CreateExecutionRequest> {
             allocate_terminal,
             sandbox_shell,
             execution_timeout: duration(a.execution_timeout_ns).into(),
-            io_mode,
+            io_mode: io_mode.into(),
             terminal_rows,
             terminal_columns,
             detached_capture_bytes: capture,
