@@ -15,27 +15,48 @@
     name = "Kerberos realm";
     description = "an uppercase Kerberos realm name";
     type = abilityTypes.runtimeString;
-    constraints = [{kind = "string-pattern"; pattern = "[A-Z0-9][A-Z0-9.-]*";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Z0-9][A-Z0-9.-]*";
+      }
+    ];
   };
   hostName = abilityTypes.refined {
     name = "Kerberos server name";
     description = "a DNS host name or address without whitespace";
     type = abilityTypes.runtimeString;
-    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9][A-Za-z0-9.:-]*";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Za-z0-9][A-Za-z0-9.:-]*";
+      }
+    ];
   };
   duration = abilityTypes.refined {
     name = "Kerberos duration";
     description = "a positive duration with an s, m, h, or d suffix";
     type = abilityTypes.runtimeString;
-    constraints = [{kind = "string-pattern"; pattern = "[1-9][0-9]*[smhd]";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[1-9][0-9]*[smhd]";
+      }
+    ];
   };
   aclEntry = abilityTypes.refined {
     name = "Kerberos ACL entry";
     description = "a non-empty single-line kadmind ACL entry";
     type = abilityTypes.runtimeString;
     constraints = [
-      {kind = "minimum-size"; minimum = 1;}
-      {kind = "string-excludes"; classes = ["line-break"];}
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+      {
+        kind = "string-excludes";
+        classes = ["line-break"];
+      }
     ];
   };
   hostNames = abilityTypes.list {

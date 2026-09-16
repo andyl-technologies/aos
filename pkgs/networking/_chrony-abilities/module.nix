@@ -313,7 +313,12 @@
     name = "non-empty chrony value";
     description = "a non-empty chrony configuration value";
     type = abilityTypes.runtimeString;
-    constraints = [{kind = "minimum-size"; minimum = 1;}];
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+    ];
   };
   boundedStrings = abilityTypes.list {
     element = boundedString;

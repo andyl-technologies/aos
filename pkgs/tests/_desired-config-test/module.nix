@@ -17,7 +17,12 @@
       maxLength = 256;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9_.-]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Za-z0-9_.-]+";
+      }
+    ];
   };
 
   state = serviceManagement.forProducer {

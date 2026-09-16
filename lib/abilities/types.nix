@@ -443,7 +443,12 @@ in rec {
       maxLength = 128;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9+._-]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Za-z0-9+._-]+";
+      }
+    ];
   };
 
   declarationKey = refined {
@@ -453,7 +458,12 @@ in rec {
       maxLength = 257;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z0-9+._-]+:[A-Za-z0-9._-]+";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Za-z0-9+._-]+:[A-Za-z0-9._-]+";
+      }
+    ];
   };
 
   qualifiedName =
@@ -470,7 +480,12 @@ in rec {
       maxLength = 71;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "sha256:[0-9a-f]{64}";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "sha256:[0-9a-f]{64}";
+      }
+    ];
   };
 
   stage =
@@ -530,7 +545,12 @@ in rec {
       maxLength = 4;
       syntax = null;
     };
-    constraints = [{kind = "string-pattern"; pattern = "[0-7]{3,4}";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[0-7]{3,4}";
+      }
+    ];
   };
   interfaceKey = record {
     fields = {
@@ -805,15 +825,15 @@ in rec {
   in
     decorate description schema (type
       // {
-      inherit name description;
-      check = value: type.check value && validates schema value;
-      merge = location: definitions: let
-        merged = type.merge location definitions;
-      in
-        if validates schema merged
-        then merged
-        else throw "The option '${builtins.concatStringsSep "." location}' is not valid for ${description}.";
-    });
+        inherit name description;
+        check = value: type.check value && validates schema value;
+        merge = location: definitions: let
+          merged = type.merge location definitions;
+        in
+          if validates schema merged
+          then merged
+          else throw "The option '${builtins.concatStringsSep "." location}' is not valid for ${description}.";
+      });
 
   artifactReference = specialType "artifact-reference" schemas.artifactReference {
     _type = moduleTypes.enum ["aos-artifact-reference"];
@@ -844,8 +864,9 @@ in rec {
     transaction = localKeyType;
     handle = localKeyType;
     content_sha256 = digestType;
-    size_bytes = moduleTypes.addCheck moduleTypes.int (value:
-      value >= 0 && value <= 32 * 1024 * 1024);
+    size_bytes =
+      moduleTypes.addCheck moduleTypes.int (value:
+        value >= 0 && value <= 32 * 1024 * 1024);
   };
   deferredResult = expectedType: let
     schema = schemaOf "deferred result" expectedType;

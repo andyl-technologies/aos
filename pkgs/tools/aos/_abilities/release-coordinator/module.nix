@@ -33,7 +33,12 @@
       maxLength = 4096;
       syntax = null;
     };
-    constraints = [{kind = "minimum-size"; minimum = 1;}];
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+    ];
   };
 
   producer = key: interface: parameters:

@@ -17,7 +17,12 @@
     abilityTypes.refined {
       inherit name description;
       type = abilityTypes.runtimeString;
-      constraints = [{kind = "string-pattern"; pattern = pattern;}];
+      constraints = [
+        {
+          kind = "string-pattern";
+          pattern = pattern;
+        }
+      ];
     };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   networkPolicy = lib.abilities.interfaces.networkPolicy;

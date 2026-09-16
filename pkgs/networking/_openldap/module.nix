@@ -19,7 +19,12 @@
     name = "OpenLDAP listener URL";
     description = "an LDAP, LDAPS, or local-domain listener URL";
     type = abilityTypes.runtimeString;
-    constraints = [{kind = "string-pattern"; pattern = "(ldap|ldaps|ldapi)://[^[:space:]]*";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "(ldap|ldaps|ldapi)://[^[:space:]]*";
+      }
+    ];
   };
   ldapUrls = abilityTypes.refined {
     name = "OpenLDAP listener URLs";
@@ -28,13 +33,23 @@
       element = ldapUrl;
       maxItems = abilityTypes.limits.maxCollectionItems;
     };
-    constraints = [{kind = "minimum-size"; minimum = 1;}];
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+    ];
   };
   distinguishedName = abilityTypes.refined {
     name = "OpenLDAP distinguished name";
     description = "a non-empty distinguished name without control characters";
     type = abilityTypes.runtimeString;
-    constraints = [{kind = "string-pattern"; pattern = "[A-Za-z][^[:cntrl:]]*";}];
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[A-Za-z][^[:cntrl:]]*";
+      }
+    ];
   };
   credentialReference = serviceTypes.credentialReference;
   literal = text: {

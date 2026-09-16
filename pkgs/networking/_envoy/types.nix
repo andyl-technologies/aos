@@ -7,7 +7,12 @@
     name = "non-empty Envoy string";
     description = "a non-empty Envoy configuration string";
     type = runtimeString;
-    constraints = [{kind = "minimum-size"; minimum = 1;}];
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+    ];
   };
   positiveInt = abilityTypes.integer {
     minimum = 1;
@@ -28,7 +33,12 @@
       minimum = 301;
       maximum = 308;
     };
-    constraints = [{kind = "integer-set"; values = [301 302 303 307 308];}];
+    constraints = [
+      {
+        kind = "integer-set";
+        values = [301 302 303 307 308];
+      }
+    ];
   };
   listOf = element:
     abilityTypes.list {

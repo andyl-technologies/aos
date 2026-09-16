@@ -59,10 +59,12 @@ let
       max_length = 128;
       syntax = null;
     };
-    constraints = [{
-      kind = "string-pattern";
-      inherit pattern;
-    }];
+    constraints = [
+      {
+        kind = "string-pattern";
+        inherit pattern;
+      }
+    ];
   };
   uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
   partitionKindPattern = "(linux-generic|swap|${uuidPattern})";
