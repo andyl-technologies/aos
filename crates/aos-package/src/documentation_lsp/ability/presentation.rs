@@ -167,6 +167,12 @@ pub(super) fn schema_summary(schema: &ValueSchema) -> String {
                 .join(", ")
         ),
         ValueSchema::Optional { value } => format!("optional {}", schema_summary(value)),
+        ValueSchema::Refined { value, constraints } => format!(
+            "{} ({} refined constraint{})",
+            schema_summary(value),
+            constraints.len(),
+            if constraints.len() == 1 { "" } else { "s" }
+        ),
         ValueSchema::ArtifactReference => "artifact reference".to_string(),
         ValueSchema::ResourceReference => "resource reference".to_string(),
         ValueSchema::ProviderAssignment => "provider assignment".to_string(),
