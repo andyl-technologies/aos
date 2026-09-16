@@ -173,6 +173,7 @@ dependencies = [
  "aos-oci",
  "aos-oci-types",
  "aos-package",
+ "aos-package-store-model",
  "aos-profile",
  "aos-proto-types",
  "aos-registry-surface",
@@ -787,6 +788,7 @@ dependencies = [
  "anyhow",
  "aos-ability-model",
  "aos-contract",
+ "aos-package-store-model",
  "aos-provider-protocol",
  "libc",
  "serde",
@@ -852,6 +854,7 @@ dependencies = [
  "aos-metadata",
  "aos-net",
  "aos-oci-types",
+ "aos-package-store-model",
  "aos-proto-types",
  "aos-provider-protocol",
  "aos-registry-surface",
@@ -894,6 +897,18 @@ dependencies = [
  "zbus",
  "zeroize",
  "zstd",
+]
+
+[[package]]
+name = "aos-package-store-model"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-ability-model",
+ "aos-ability-validate",
+ "aos-contract",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

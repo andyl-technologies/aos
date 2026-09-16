@@ -5,6 +5,7 @@ members = [
     "aos-oci",
     "aos-oci-types",
     "aos-contract",
+    "aos-package-store-model",
     "aos-ability-model",
     "aos-ability-validate",
     "aos-ability-plan",
@@ -222,6 +223,7 @@ rcgen = "0.14"
 
 # Internal crates
 aos-contract = { path = "aos-contract" }
+aos-package-store-model = { path = "aos-package-store-model" }
 aos-ability-model = { path = "aos-ability-model" }
 aos-ability-validate = { path = "aos-ability-validate" }
 aos-ability-plan = { path = "aos-ability-plan" }

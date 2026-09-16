@@ -49,6 +49,7 @@ required-features = ["release-fleet-fixture"]
 [dependencies]
 rustix = { workspace = true, features = ["process"] }
 aos-contract = { workspace = true }
+aos-package-store-model = { workspace = true }
 aos-ability-model = { workspace = true }
 aos-ability-plan = { workspace = true }
 aos-ability-validate = { workspace = true }
