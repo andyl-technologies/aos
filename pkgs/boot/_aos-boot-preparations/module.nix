@@ -304,7 +304,6 @@
           (externalServiceResource "aos:aos-graph-compile-lifecycle")
           (resultOf "aos:aos-config" "activation-resource")
         ];
-        required_mounts = ["/var/lib/profiles/image"];
       };
   };
   substrateEnvironment = {
