@@ -106,7 +106,7 @@ in {
               --replace-fail '@dosfstools@' '${pkgs.dosfstools}' \
               --replace-fail '@gptfdisk@' '${pkgs.gptfdisk}' \
               --replace-fail '@mtools@' '${pkgs.mtools}' \
-              --replace-fail '@systemd@' '${pkgs.systemd}' \
+              --replace-fail '@credential_seal@' '${pkgs.systemd}/libexec/aos-boot-credential-seal' \
               --replace-fail '@util_linux@' '${pkgs.util-linux}' \
               --replace-fail '@zfs@' '${zfs}' \
               --replace-fail '@pool@' '${cfg.zfs.poolName}' \

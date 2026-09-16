@@ -13,6 +13,7 @@
   transactionStorage = lib.abilities.interfaces.bootTransactionStorage.interfaces.view;
   transactionStorageAlias = transactionStorage.alias;
   transactionStorageRoot = "/run/aos-boot-transaction-storage";
+  stagedZfsCredential = "/run/aos/boot-credentials/zfs-key.cred";
   stage =
     if config.aos.abilities.environment == null
     then null
@@ -66,6 +67,7 @@
     arguments ? [],
     dependencies,
     conditions ? null,
+    credentials ? null,
     environment ? null,
     logging ? null,
   }:
@@ -100,6 +102,7 @@
           };
         }
         // lib.optionalAttrs (conditions != null) {inherit conditions;}
+        // lib.optionalAttrs (credentials != null) {inherit credentials;}
         // lib.optionalAttrs (environment != null) {inherit environment;}
         // lib.optionalAttrs (logging != null) {inherit logging;};
     };
@@ -162,14 +165,37 @@
       }
     ];
   };
-  unlockArguments =
-    [
-      cfg.zfs.poolName
-      cfg.zfs.encryptionRoot
-      cfg.zfs.sealedKeyPath
-      (toString (builtins.length cfg.espDevices))
-    ]
-    ++ cfg.espDevices ++ cfg.zfs.expectedDevices;
+  stageZfsCredential = service {
+    key = "aos-stage-zfs-credential";
+    description = "Materialize the sealed native ZFS credential from an available ESP";
+    entryPoint = "aos-stage-zfs-credential";
+    arguments = [cfg.zfs.sealedKeyPath stagedZfsCredential] ++ cfg.espDevices;
+    dependencies = {
+      prerequisites = [];
+      after = [deviceSettleReadiness];
+      before = [];
+      requires = [deviceSettleReadiness];
+      wants = [];
+      requisite = [];
+      conflicts = [];
+      binds_to = [];
+      part_of = [];
+      upholds = [];
+      required_by = [];
+      wanted_by = [];
+      required_mounts = [];
+      implicit_dependencies = false;
+    };
+    environment = {
+      variables = {};
+      search_path = builtins.map lib.abilities.packageOutput [
+        {package = "coreutils";}
+        {package = "util-linux";}
+      ];
+    };
+  };
+  stagedZfsCredentialReadiness = resultOf "aos-stage-zfs-credential-lifecycle" "service-resource";
+  unlockArguments = [cfg.zfs.poolName cfg.zfs.encryptionRoot] ++ cfg.zfs.expectedDevices;
   zfsUnlock = service {
     key = "aos-zfs-unlock";
     description = "Import and unlock immutable ZFS boot storage";
@@ -177,9 +203,9 @@
     arguments = unlockArguments;
     dependencies = {
       prerequisites = [];
-      after = [deviceSettleReadiness kernelModulesReadiness];
+      after = [deviceSettleReadiness kernelModulesReadiness stagedZfsCredentialReadiness];
       before = [sysrootReadiness earlySystemReadiness];
-      requires = [deviceSettleReadiness kernelModulesReadiness];
+      requires = [deviceSettleReadiness kernelModulesReadiness stagedZfsCredentialReadiness];
       wants = [];
       requisite = [];
       conflicts = [];
@@ -191,12 +217,19 @@
       required_mounts = [];
       implicit_dependencies = false;
     };
+    credentials.views = [
+      {
+        name = "aos-zfs-key";
+        reference = stagedZfsCredential;
+        encrypted = true;
+        optional = false;
+        environment_variable = "AOS_ZFS_KEY";
+      }
+    ];
     environment = {
       variables = {};
       search_path = builtins.map lib.abilities.packageOutput [
         {package = "coreutils";}
-        {package = "systemd";}
-        {package = "util-linux";}
         {package = "zfs";}
       ];
     };
@@ -250,6 +283,7 @@
     mountEsp
     syncEsps
     zfsUnlock
+    stageZfsCredential
     transactionStorageMount
   ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
@@ -346,6 +380,7 @@ in {
         (serviceManagement.splitContribution sysroot).configured
         (serviceManagement.splitContribution deviceSettle).configured
         (serviceManagement.splitContribution kernelModules).configured
+        (serviceManagement.splitContribution stageZfsCredential).configured
         (serviceManagement.splitContribution zfsUnlock).configured
       ];
     })

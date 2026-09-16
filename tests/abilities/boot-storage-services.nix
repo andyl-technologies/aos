@@ -69,7 +69,14 @@
   unlockLifecycle = request initrdRequests "aos-boot-storage" "aos-zfs-unlock-lifecycle";
   unlockDependencies = request initrdRequests "aos-boot-storage" "aos-zfs-unlock-dependencies";
   unlockEnvironment = request initrdRequests "aos-boot-storage" "aos-zfs-unlock-environment";
+  unlockCredentials = request initrdRequests "aos-boot-storage" "aos-zfs-unlock-credentials";
   unlockLogging = request initrdRequests "aos-boot-storage" "aos-zfs-unlock-logging";
+  stageCredentialLifecycle =
+    request initrdRequests "aos-boot-storage" "aos-stage-zfs-credential-lifecycle";
+  stageCredentialDependencies =
+    request initrdRequests "aos-boot-storage" "aos-stage-zfs-credential-dependencies";
+  stageCredentialResource =
+    resultOf "aos-boot-storage:aos-stage-zfs-credential-lifecycle" "service-resource";
   transactionStorageRequest =
     request initrdRequests "aos-boot-storage" "boot-transaction-storage-view";
   transactionStorageLifecycle =
@@ -82,6 +89,9 @@
     initrdImplementations."aos-boot-transaction-storage-provider:boot-transaction-storage-view-effects";
   recoveryDependencies = request initrdRequests "aos-boot-preparations" "aos-credential-recovery-dependencies";
   seedDependencies = request initrdRequests "aos-boot-preparations" "aos-config-seed-dependencies";
+  installerScript = builtins.readFile ../../modules/image/install-zfs.sh.in;
+  unlockScript = builtins.readFile ../../pkgs/boot/_aos-boot-storage/zfs-unlock.sh.in;
+  systemdSealAdapter = builtins.readFile ../../pkgs/system/aos-systemd-boot-credential-seal.sh.in;
 in
   assert mountLifecycle.start
   == [
@@ -114,10 +124,6 @@ in
         arguments = [
           "tank"
           "tank/system"
-          "aos/tank-key.cred"
-          "2"
-          "/dev/disk/by-partlabel/ESP-A"
-          "/dev/disk/by-partlabel/ESP-B"
           "/dev/zvol/tank/root-a"
           "/dev/zvol/tank/root-a-hash"
         ];
@@ -129,6 +135,7 @@ in
   == [
     (storageMilestone "device-settle")
     (storageMilestone "kernel-modules")
+    stageCredentialResource
   ];
   assert unlockDependencies.before
   == [
@@ -141,10 +148,42 @@ in
   assert unlockEnvironment.search_path
   == builtins.map lib.abilities.packageOutput [
     {package = "coreutils";}
-    {package = "systemd";}
-    {package = "util-linux";}
     {package = "zfs";}
   ];
+  assert unlockCredentials.views
+  == [
+    {
+      name = "aos-zfs-key";
+      reference = "/run/aos/boot-credentials/zfs-key.cred";
+      encrypted = true;
+      optional = false;
+      environment_variable = "AOS_ZFS_KEY";
+    }
+  ];
+  assert (builtins.head stageCredentialLifecycle.start).executable
+  == {
+    artifact = lib.abilities.packageOutput {package = "aos-boot-storage";};
+    entry_point = "bin/aos-stage-zfs-credential";
+    arguments = [
+      "aos/tank-key.cred"
+      "/run/aos/boot-credentials/zfs-key.cred"
+      "/dev/disk/by-partlabel/ESP-A"
+      "/dev/disk/by-partlabel/ESP-B"
+    ];
+  };
+  assert stageCredentialDependencies.after == [(storageMilestone "device-settle")];
+  assert stageCredentialDependencies.requires == stageCredentialDependencies.after;
+  assert !(lib.hasInfix "systemd-creds" installerScript);
+  assert !(lib.hasInfix "systemd-creds" unlockScript);
+  assert builtins.all (option: !(lib.hasInfix option installerScript)) [
+    "--with-key"
+    "--tpm2-public-key"
+    "--tpm2-public-key-pcrs"
+    "--tpm2-pcrs"
+    "/run/credstore.encrypted"
+  ];
+  assert !(lib.hasInfix "/run/credstore.encrypted" unlockScript);
+  assert lib.hasInfix "@systemd_creds@ encrypt" systemdSealAdapter;
   assert unlockLogging.standard_output == "structured-and-console";
   assert unlockLogging.standard_error == "structured-and-console";
   assert transactionStorageRequest

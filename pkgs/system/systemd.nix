@@ -497,6 +497,13 @@ in
             ${./aos-systemd-verity-root-setup.sh.in} \
             > "$out/libexec/aos-systemd-verity-root-setup"
           chmod 0555 "$out/libexec/aos-systemd-verity-root-setup"
+
+          sed \
+            -e 's|@bash@|${bash}|g' \
+            -e "s|@systemd_creds@|$out/bin/systemd-creds|g" \
+            ${./aos-systemd-boot-credential-seal.sh.in} \
+            > "$out/libexec/aos-boot-credential-seal"
+          chmod 0555 "$out/libexec/aos-boot-credential-seal"
         '';
       }
       {
