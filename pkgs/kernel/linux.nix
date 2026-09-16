@@ -69,6 +69,7 @@ in
       role = "public-package";
     };
     pname = "linux";
+    abilities = ./_linux-abilities;
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
@@ -245,7 +246,8 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p $out/boot $out/lib/modules
+          mkdir -p $out/boot $out/lib/modules $out/share/aos/providers
+          cp ${./_linux-provider.nix} $out/share/aos/providers/linux.nix
 
           # Install kernel image (the self-decompressing, BTF-bearing image
           # the system actually boots).
