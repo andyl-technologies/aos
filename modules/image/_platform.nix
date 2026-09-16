@@ -3,7 +3,10 @@
   consumer = "image:builder";
   builderInterface = lib.abilities.interfaces.imageBuilder.interfaces.builder;
   artifactFilenameType = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._+-]*";
-  selectedBuilderType = lib.types.submodule {
+  pathSegments = path: lib.splitString "/" path;
+  safeRelativePath = path:
+    builtins.all (segment: segment != "." && segment != "..") (pathSegments path);
+  selectedBuilderType = lib.types.addCheck (lib.types.submodule {
     config._module.strict = true;
 
     options = {
@@ -32,9 +35,11 @@
         description = "Authenticated package output that owns the selected image builder.";
       };
     };
-  };
+  }) (value:
+    value.artifact.store_path == builtins.toString value.package
+    && safeRelativePath value.normalArtifactPath);
   nullableArtifact = lib.types.nullOr lib.types.package;
-  imagePlanType = lib.types.submodule {
+  imagePlanType = lib.types.addCheck (lib.types.submodule {
     config._module.strict = true;
 
     options = {
@@ -95,7 +100,18 @@
         description = "Deterministic public-only image assembly inputs.";
       };
     };
-  };
+  }) (value: let
+    recoveryArtifacts = [
+      value.recoveryBootExecutableA
+      value.recoveryBootExecutableB
+      value.recoveryBundle
+      value.recoveryInitrd
+      value.recoverySlotManifest
+    ];
+    present = builtins.map (artifact: artifact != null) recoveryArtifacts;
+  in
+    value.rawDiskFilename != value.rawMetadataFilename
+    && (lib.all (value: value) present || lib.all (value: !value) present));
 in {
   options.aos.image.platform = lib.mkOption {
     type = lib.types.nullOr (lib.types.uniq selectedBuilderType);
