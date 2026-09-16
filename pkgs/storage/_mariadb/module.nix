@@ -38,29 +38,12 @@
     predicate = value: builtins.match "[A-Z0-9_,]*" value != null;
   };
   characterSet = abilityTypes.enum ["utf8mb4" "utf8mb3" "latin1"];
-  secretRef = abilityTypes.record {
-    fields = {
-      resource = {
-        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
-        default = null;
-        description = "Typed resource reference producing the credential without exposing its bytes.";
-      };
-      encrypted = {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Whether the referenced credential requires encrypted delivery.";
-      };
-    };
-  };
-  normalizeSecret = reference: {
-    resource = reference.resource or null;
-    encrypted = reference.encrypted or false;
-  };
-  tlsCertificate = normalizeSecret cfg.tls.certificate;
-  tlsPrivateKey = normalizeSecret cfg.tls.privateKey;
-  tlsCa = normalizeSecret cfg.tls.ca;
-  adminSql = normalizeSecret cfg.bootstrap.adminSql;
-  replicationSql = normalizeSecret cfg.bootstrap.replicationSql;
+  credentialReference = serviceTypes.credentialReference;
+  tlsCertificate = cfg.tls.certificate;
+  tlsPrivateKey = cfg.tls.privateKey;
+  tlsCa = cfg.tls.ca;
+  adminSql = cfg.bootstrap.adminSql;
+  replicationSql = cfg.bootstrap.replicationSql;
 
   boolValue = value:
     if value
@@ -95,25 +78,25 @@
       lib.optionals cfg.tls.enable [
         {
           name = "tls-certificate";
-          inherit (tlsCertificate) resource encrypted;
+          reference = tlsCertificate;
         }
         {
           name = "tls-private-key";
-          inherit (tlsPrivateKey) resource encrypted;
+          reference = tlsPrivateKey;
         }
       ]
-      ++ lib.optional (tlsCa.resource != null) {
+      ++ lib.optional (serviceManagement.credentialReferenceConfigured tlsCa) {
         name = "tls-ca";
-        inherit (tlsCa) resource encrypted;
+        reference = tlsCa;
       };
     bootstrapCredentials =
-      lib.optional (adminSql.resource != null) {
+      lib.optional (serviceManagement.credentialReferenceConfigured adminSql) {
         name = "admin-bootstrap-sql";
-        inherit (adminSql) resource encrypted;
+        reference = adminSql;
       }
-      ++ lib.optional (replicationSql.resource != null) {
+      ++ lib.optional (serviceManagement.credentialReferenceConfigured replicationSql) {
         name = "replication-bootstrap-sql";
-        inherit (replicationSql) resource encrypted;
+        reference = replicationSql;
       };
   in {
     inherit tlsCredentials bootstrapCredentials;
@@ -125,16 +108,12 @@
     logPath = resultOf "log-storage" "planned-path";
     configPath = resultOf "server-configuration" "planned-path";
     bootstrapPath = resultOf "bootstrap-configuration" "planned-path";
-    credentialRequests = serviceManagement.forProducers {
+    credentialRequests = serviceManagement.forCredentialReferences {
       consumerInstance = "mariadb";
-      interface = serviceManagement.interfaces.credentialDelivery;
-      producers =
+      references =
         builtins.map (credential: {
           key = "credential-${credential.name}";
-          parameters = {
-            inherit (credential) name encrypted;
-            source = credential.resource;
-          };
+          inherit (credential) name reference;
         })
         credentials.all;
     };
@@ -230,7 +209,7 @@
           (executionPath (resultOf "credential-tls-private-key" "credential-path"))
           (literal "\n")
         ]
-        ++ lib.optionals (tlsCa.resource != null) [
+        ++ lib.optionals (serviceManagement.credentialReferenceConfigured tlsCa) [
           (literal "ssl-ca=")
           (executionPath (resultOf "credential-tls-ca" "credential-path"))
           (literal "\n")
@@ -438,7 +417,8 @@
         };
         credentials.views =
           builtins.map (credential: {
-            inherit (credential) name encrypted;
+            inherit (credential) name;
+            inherit (credential.reference) encrypted;
             reference = resultOf "credential-${credential.name}" "credential-path";
             optional = false;
           })
@@ -563,29 +543,29 @@ in {
         description = "Enable TLS using credential-backed certificate material.";
       };
       certificate = mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Opaque reference for the PEM server certificate.";
       };
       privateKey = mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Opaque reference for the PEM server private key.";
       };
       ca = mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Optional opaque reference for the client CA bundle.";
       };
     };
     bootstrap = {
       adminSql = mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Optional credential containing idempotent SQL for administrator provisioning.";
       };
       replicationSql = mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Optional credential containing idempotent SQL for replication provisioning.";
       };
@@ -597,11 +577,22 @@ in {
       aos.abilities = lib.mkMerge abilityFragments.declarations;
       assertions = [
         {
-          assertion = !cfg.enable || !cfg.tls.enable || (tlsCertificate.resource != null && tlsPrivateKey.resource != null);
+          assertion =
+            !cfg.enable
+            || !cfg.tls.enable
+            || (
+              serviceManagement.credentialReferenceConfigured tlsCertificate
+              && serviceManagement.credentialReferenceConfigured tlsPrivateKey
+            );
           message = "mariadb TLS requires certificate and private-key credential references";
         }
         {
-          assertion = !cfg.enable || cfg.tls.enable || (tlsCertificate.resource == null && tlsPrivateKey.resource == null && tlsCa.resource == null);
+          assertion =
+            !cfg.enable
+            || cfg.tls.enable
+            || builtins.all
+            (reference: !serviceManagement.credentialReferenceConfigured reference)
+            [tlsCertificate tlsPrivateKey tlsCa];
           message = "mariadb TLS credentials require mariadb.tls.enable";
         }
       ];

@@ -29,31 +29,16 @@
     minimum = 1;
     maximum = 65535;
   };
-  secretReference = abilityTypes.refined {
-    name = "CloudCore secret reference";
-    description = "an opaque supported credential reference";
-    type = abilityTypes.runtimeString;
-    predicate = value:
-      builtins.match "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?" value != null;
-  };
   bool = value:
     if value
     then "true"
     else "false";
-  secretRef = description:
-    abilityTypes.record {
-      fields.ref = {
-        type = abilityTypes.optional secretReference;
-        default = null;
-        inherit description;
-      };
-    };
   credentials = {
-    kubeconfig = cfg.kubeApi.kubeconfig.ref or null;
-    ca-certificate = cfg.tls.caCertificate.ref or null;
-    ca-private-key = cfg.tls.caPrivateKey.ref or null;
-    server-certificate = cfg.tls.serverCertificate.ref or null;
-    server-private-key = cfg.tls.serverPrivateKey.ref or null;
+    kubeconfig = cfg.kubeApi.kubeconfig;
+    ca-certificate = cfg.tls.caCertificate;
+    ca-private-key = cfg.tls.caPrivateKey;
+    server-certificate = cfg.tls.serverCertificate;
+    server-private-key = cfg.tls.serverPrivateKey;
   };
   configurationFragments = [
     {
@@ -157,30 +142,12 @@
     };
   credentialPath = name: resultOf "${name}-delivery" "credential-path";
   configuredCredentials = lib.filterAttrs (_: ref: ref != null) credentials;
-  credentialSources = serviceManagement.forProducers {
+  credentialRequests = serviceManagement.forCredentialReferences {
     consumerInstance = "service";
-    interface = serviceManagement.interfaces.namedCredential;
-    producers =
-      lib.mapAttrsToList (name: ref: {
-        key = "${name}-source";
-        parameters = {
-          name = lib.last (lib.splitString ":" ref);
-          scope = "system";
-        };
-      })
-      configuredCredentials;
-  };
-  credentialDeliveries = serviceManagement.forProducers {
-    consumerInstance = "service";
-    interface = serviceManagement.interfaces.credentialDelivery;
-    producers =
-      lib.mapAttrsToList (name: _: {
+    references =
+      lib.mapAttrsToList (name: reference: {
         key = "${name}-delivery";
-        parameters = {
-          inherit name;
-          source = resultOf "${name}-source" "credential-resource";
-          encrypted = false;
-        };
+        inherit name reference;
       })
       configuredCredentials;
   };
@@ -287,10 +254,10 @@
         }
       ];
       credentials.views =
-        lib.mapAttrsToList (name: _: {
+        lib.mapAttrsToList (name: reference: {
           inherit name;
           reference = credentialPath name;
-          encrypted = false;
+          inherit (reference) encrypted;
           optional = true;
         })
         configuredCredentials;
@@ -355,8 +322,7 @@
     network
     ingressPolicy
     configuration
-    credentialSources
-    credentialDeliveries
+    credentialRequests
     service
   ];
   contributions = map serviceManagement.splitContribution fragments;
@@ -389,8 +355,8 @@ in {
     };
     kubeApi = {
       kubeconfig = mkOption {
-        type = secretRef "Opaque Kubernetes API kubeconfig reference.";
-        default = {};
+        type = abilityTypes.optional serviceTypes.credentialReference;
+        default = null;
         description = "Opaque credential reference for CloudCore's Kubernetes API kubeconfig.";
       };
       qps = mkOption {
@@ -442,23 +408,23 @@ in {
     };
     tls = {
       caCertificate = mkOption {
-        type = secretRef "Opaque CloudCore CA certificate reference.";
-        default = {};
+        type = abilityTypes.optional serviceTypes.credentialReference;
+        default = null;
         description = "Opaque credential reference for the CloudHub certificate authority certificate.";
       };
       caPrivateKey = mkOption {
-        type = secretRef "Opaque CloudCore CA private-key reference.";
-        default = {};
+        type = abilityTypes.optional serviceTypes.credentialReference;
+        default = null;
         description = "Opaque credential reference for the CloudHub certificate authority private key.";
       };
       serverCertificate = mkOption {
-        type = secretRef "Opaque CloudCore server certificate reference.";
-        default = {};
+        type = abilityTypes.optional serviceTypes.credentialReference;
+        default = null;
         description = "Opaque credential reference for the CloudHub server certificate.";
       };
       serverPrivateKey = mkOption {
-        type = secretRef "Opaque CloudCore server private-key reference.";
-        default = {};
+        type = abilityTypes.optional serviceTypes.credentialReference;
+        default = null;
         description = "Opaque credential reference for the CloudHub server private key.";
       };
     };
@@ -472,7 +438,14 @@ in {
           message = "cloudcore.enable requires at least one cloudcore.advertiseAddresses entry";
         }
         {
-          assertion = !cfg.enable || builtins.all (value: value != null) requiredRefs;
+          assertion =
+            !cfg.enable
+            || builtins.all
+            (reference:
+              reference
+              != null
+              && serviceManagement.credentialReferenceConfigured reference)
+            requiredRefs;
           message = "cloudcore.enable requires kubeconfig and all CloudHub TLS credential references";
         }
         {

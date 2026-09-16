@@ -32,20 +32,7 @@
     };
     predicate = value: builtins.match "[A-Za-z0-9][A-Za-z0-9_.@-]*" value != null;
   };
-  secretRef = abilityTypes.record {
-    fields = {
-      resource = {
-        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
-        default = null;
-        description = "Typed resource reference for the rsync secrets file.";
-      };
-      encrypted = {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Whether the referenced secrets file requires encrypted delivery.";
-      };
-    };
-  };
+  credentialReference = serviceTypes.credentialReference;
   moduleType = abilityTypes.record {
     fields = {
       comment = {
@@ -170,15 +157,15 @@
       })
       cfg.modules;
   };
-  credentialRequest = serviceManagement.forProducer {
+  credentialRequest = serviceManagement.forCredentialReferences {
     consumerInstance = "rsyncd";
-    key = "secrets-file";
-    interface = serviceManagement.interfaces.credentialDelivery;
-    parameters = {
-      name = "secrets-file";
-      source = cfg.secrets.resource;
-      inherit (cfg.secrets) encrypted;
-    };
+    references = [
+      {
+        key = "secrets-file";
+        name = "secrets-file";
+        reference = cfg.secrets;
+      }
+    ];
   };
   configurationRequest = serviceManagement.forConfiguration {
     inherit serviceTypes;
@@ -363,7 +350,7 @@ in {
       description = "Exports rooted below persistent rsyncd storage.";
     };
     secrets = mkOption {
-      type = secretRef;
+      type = credentialReference;
       default = {};
       description = "Opaque credential containing user:password lines.";
     };
@@ -378,8 +365,10 @@ in {
             message = "rsyncd.enable requires at least one rsyncd.modules entry";
           }
           {
-            assertion = !authenticated || cfg.secrets.resource != null;
-            message = "authenticated rsyncd modules require rsyncd.secrets.resource";
+            assertion =
+              !authenticated
+              || serviceManagement.credentialReferenceConfigured cfg.secrets;
+            message = "authenticated rsyncd modules require an rsyncd.secrets credential reference";
           }
         ];
         aos.abilities = lib.mkMerge staticAbilityFragments;

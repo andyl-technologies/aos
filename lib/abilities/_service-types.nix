@@ -1385,6 +1385,38 @@
       scope = types.enum ["system" "user"];
     };
   };
+  credentialReference = types.refined {
+    name = "credential reference";
+    description = "a credential identified by a provider-neutral name or an existing resource";
+    type = types.record {
+      fields = {
+        resource = {
+          type = types.optional (types.deferredResult types.resourceReference);
+          default = null;
+          description = "A resource that already contains the credential.";
+        };
+        name = {
+          type = types.optional localKey;
+          default = null;
+          description = "A provider-neutral credential name to resolve.";
+        };
+        scope = {
+          type = types.enum ["system" "user"];
+          default = "system";
+          description = "The namespace used when resolving a named credential.";
+        };
+        encrypted = {
+          type = types.boolean;
+          default = false;
+          description = "Whether delivery requires an encrypted credential channel.";
+        };
+      };
+    };
+    predicate = reference:
+      (reference.resource or null)
+      == null
+      || (reference.name or null) == null;
+  };
   credentialDelivery = types.record {
     fields =
       referencedViewFields
@@ -1864,6 +1896,7 @@ in {
     kernelModules
     kernelModulesObservation
     namedCredential
+    credentialReference
     credentialDelivery
     storageView
     storageAllocation

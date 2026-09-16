@@ -35,12 +35,12 @@
     cloudcore = {
       enable = true;
       advertiseAddresses = ["192.0.2.20"];
-      kubeApi.kubeconfig.ref = "system-credential:kubeconfig";
+      kubeApi.kubeconfig.name = "kubeconfig";
       tls = {
-        caCertificate.ref = "system-credential:ca";
-        caPrivateKey.ref = "system-credential:ca-key";
-        serverCertificate.ref = "system-credential:server";
-        serverPrivateKey.ref = "system-credential:server-key";
+        caCertificate.name = "ca";
+        caPrivateKey.name = "ca-key";
+        serverCertificate.name = "server";
+        serverPrivateKey.name = "server-key";
       };
     };
   };
@@ -53,9 +53,9 @@
         server = "cloud.example.test:10000";
       };
       tls = {
-        caCertificate.ref = "system-credential:ca";
-        clientCertificate.ref = "system-credential:client";
-        clientPrivateKey.ref = "system-credential:client-key";
+        caCertificate.name = "ca";
+        clientCertificate.name = "client";
+        clientPrivateKey.name = "client-key";
       };
     };
   };
@@ -65,7 +65,7 @@
       nodeName = "worker-a";
       maxPods = 80;
       registerNode = true;
-      kubeconfig.ref = "system-credential:kubelet";
+      kubeconfig.name = "kubelet";
     };
   };
   disabledCloudcore = evaluate pkgs.cloudcore {};
@@ -80,26 +80,26 @@
     k3s = {
       enable = true;
       serverUrl = "https://control.example.test:6443";
-      token.ref = "system-credential:k3s-token";
+      token.name = "k3s-token";
     };
   };
   disabledK3sWorker = evaluate pkgs.k3s-worker {
     k3s = {
       serverUrl = "https://control.example.test:6443";
-      token.ref = "system-credential:k3s-token";
+      token.name = "k3s-token";
     };
   };
   k3sCombined = evaluate pkgs.k3s-combined {
     k3s = {
       enable = true;
-      token.ref = "system-credential:k3s-token";
+      token.name = "k3s-token";
       networking.flannelBackend = "wireguard-native";
     };
   };
   k3sControlPlane = evaluate pkgs.k3s-control-plane {
     k3s = {
       enable = true;
-      token.ref = "system-credential:k3s-token";
+      token.name = "k3s-token";
       server = {
         clusterInit = true;
         disableComponents = [

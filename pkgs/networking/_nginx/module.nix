@@ -51,13 +51,7 @@
   upstreamUri = checkedString "nginx upstream URI" "an absolute upstream URI" "[A-Za-z][A-Za-z0-9+.-]*://[^;[:space:]]+" 4096;
   confinedDirectives = checkedString "confined nginx directives" "nginx directives without braces" "[^{}]*" 1048576;
   documentRoot = abilityTypes.relativePath;
-  secretRef = abilityTypes.record {
-    fields = {
-      resource = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
-      encrypted = abilityTypes.boolean;
-    };
-    optional = ["resource" "encrypted"];
-  };
+  credentialReference = serviceTypes.credentialReference;
 
   quote = value: ''"${builtins.replaceStrings ["\\" "\"" "\n" "\r"] ["\\\\" "\\\"" "\\n" ""] value}"'';
   indent = prefix: text:
@@ -234,10 +228,6 @@
     enable = tls.enable or false;
     protocols = tls.protocols or ["TLSv1.2" "TLSv1.3"];
   };
-  normalizeSecret = reference: {
-    resource = reference.resource or null;
-    encrypted = reference.encrypted or false;
-  };
   normalizeVirtualHost = host: {
     listen = host.listen or [80];
     serverNames = host.serverNames or [];
@@ -250,8 +240,8 @@
   upstreams = builtins.mapAttrs (_: normalizeUpstream) cfg.upstreams;
   virtualHosts = builtins.mapAttrs (_: normalizeVirtualHost) cfg.virtualHosts;
   tlsCredentials = {
-    certificate = normalizeSecret cfg.tlsCredentials.certificate;
-    privateKey = normalizeSecret cfg.tlsCredentials.privateKey;
+    certificate = cfg.tlsCredentials.certificate;
+    privateKey = cfg.tlsCredentials.privateKey;
   };
 
   renderUpstreamServer = server:
@@ -467,23 +457,19 @@
   configuredCredentials = lib.optionals usesTls [
     {
       name = "tls-certificate";
-      inherit (tlsCredentials.certificate) resource encrypted;
+      reference = tlsCredentials.certificate;
     }
     {
       name = "tls-private-key";
-      inherit (tlsCredentials.privateKey) resource encrypted;
+      reference = tlsCredentials.privateKey;
     }
   ];
-  credentialRequests = serviceManagement.forProducers {
+  credentialRequests = serviceManagement.forCredentialReferences {
     consumerInstance = "nginx";
-    interface = serviceManagement.interfaces.credentialDelivery;
-    producers =
+    references =
       builtins.map (credential: {
         key = "credential-${credential.name}";
-        parameters = {
-          inherit (credential) name encrypted;
-          source = credential.resource;
-        };
+        inherit (credential) name reference;
       })
       configuredCredentials;
   };
@@ -711,12 +697,12 @@ in {
     };
     tlsCredentials = {
       certificate = lib.mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Opaque reference for the PEM certificate reserved for conditional delivery as `tls-certificate`.";
       };
       privateKey = lib.mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Opaque reference for the PEM private key reserved for conditional delivery as `tls-private-key`.";
       };
@@ -735,12 +721,18 @@ in {
           message = "nginx.enable requires at least one nginx.virtualHosts entry";
         }
         {
-          assertion = !cfg.enable || !usesTls || tlsCredentials.certificate.resource != null;
-          message = "TLS-enabled nginx virtual hosts require nginx.tlsCredentials.certificate.resource";
+          assertion =
+            !cfg.enable
+            || !usesTls
+            || serviceManagement.credentialReferenceConfigured tlsCredentials.certificate;
+          message = "TLS-enabled nginx virtual hosts require a certificate credential reference";
         }
         {
-          assertion = !cfg.enable || !usesTls || tlsCredentials.privateKey.resource != null;
-          message = "TLS-enabled nginx virtual hosts require nginx.tlsCredentials.privateKey.resource";
+          assertion =
+            !cfg.enable
+            || !usesTls
+            || serviceManagement.credentialReferenceConfigured tlsCredentials.privateKey;
+          message = "TLS-enabled nginx virtual hosts require a private-key credential reference";
         }
         {
           assertion = validUpstreamNames;

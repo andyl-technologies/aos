@@ -27,19 +27,6 @@
   labelNameRegex = "([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?";
   labelValueRegex = "([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?";
   taintRegex = "${labelNameRegex}(=${labelValueRegex})?:(NoSchedule|PreferNoSchedule|NoExecute)";
-  secretReference = abilityTypes.refined {
-    name = "K3s credential reference";
-    description = "an opaque supported K3s credential reference";
-    type = abilityTypes.runtimeString;
-    predicate = value:
-      builtins.match "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?" value != null;
-  };
-  secretRefType = abilityTypes.record {
-    fields.ref = {
-      type = secretReference;
-      description = "Opaque reference to the cluster token.";
-    };
-  };
   serverRole = role != "worker";
   labelValue = abilityTypes.refined {
     name = "Kubernetes label value";
@@ -238,31 +225,12 @@
       consumerInstance = "service";
       inherit key interface parameters;
     };
-  tokenName =
-    if cfg.token == null
-    then null
-    else lib.last (lib.splitString ":" cfg.token.ref);
-  tokenSource = serviceManagement.forProducers {
+  tokenCredential = serviceManagement.forCredentialReferences {
     consumerInstance = "service";
-    interface = serviceManagement.interfaces.namedCredential;
-    producers = lib.optional (tokenName != null) {
-      key = "token-source";
-      parameters = {
-        name = tokenName;
-        scope = "system";
-      };
-    };
-  };
-  tokenDelivery = serviceManagement.forProducers {
-    consumerInstance = "service";
-    interface = serviceManagement.interfaces.credentialDelivery;
-    producers = lib.optional (tokenName != null) {
+    references = lib.optional (cfg.token != null) {
       key = "token";
-      parameters = {
-        name = "token";
-        source = resultOf "token-source" "credential-resource";
-        encrypted = false;
-      };
+      name = "token";
+      reference = cfg.token;
     };
   };
   network = producer "network" serviceManagement.interfaces.networkReadiness {
@@ -408,7 +376,10 @@
         {
           name = "token";
           reference = resultOf "token" "credential-path";
-          encrypted = false;
+          encrypted =
+            if cfg.token == null
+            then false
+            else cfg.token.encrypted;
           optional = false;
         }
       ];
@@ -541,8 +512,7 @@
       modules
       tunables
       ingressPolicy
-      tokenSource
-      tokenDelivery
+      tokenCredential
       service
       configurationController
     ]
@@ -579,7 +549,7 @@ in {
     };
 
     token = mkOption {
-      type = abilityTypes.optional secretRefType;
+      type = abilityTypes.optional serviceTypes.credentialReference;
       default = null;
       description = "Opaque reference to the cluster token delivered as an opaque service credential.";
     };
@@ -735,7 +705,13 @@ in {
 
     assertions = [
       {
-        assertion = !cfg.enable || cfg.token != null;
+        assertion =
+          !cfg.enable
+          || (
+            cfg.token
+            != null
+            && serviceManagement.credentialReferenceConfigured cfg.token
+          );
         message = "k3s.token must reference a credential when k3s is enabled";
       }
       {

@@ -28,27 +28,10 @@
     predicate = value: builtins.match ".+" value != null;
   };
   dbEngineType = abilityTypes.enum ["lmdb" "sqlite"];
-  secretRef = abilityTypes.record {
-    fields = {
-      resource = {
-        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
-        default = null;
-        description = "Typed resource reference producing the credential without exposing secret bytes.";
-      };
-      encrypted = {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Whether the referenced credential requires encrypted delivery.";
-      };
-    };
-  };
-  normalizeSecret = reference: {
-    resource = reference.resource or null;
-    encrypted = reference.encrypted or false;
-  };
-  rpcSecret = normalizeSecret cfg.rpc.secret;
-  adminToken = normalizeSecret cfg.admin.token;
-  metricsToken = normalizeSecret cfg.admin.metrics.token;
+  credentialReference = serviceTypes.credentialReference;
+  rpcSecret = cfg.rpc.secret;
+  adminToken = cfg.admin.token;
+  metricsToken = cfg.admin.metrics.token;
   runtimeString = abilityTypes.runtimeString;
   optionalRuntimeString = {
     type = abilityTypes.optional runtimeString;
@@ -129,21 +112,21 @@
     [
       {
         name = "rpc-secret";
-        inherit (rpcSecret) resource encrypted;
+        reference = rpcSecret;
         environment_variable = "GARAGE_RPC_SECRET_FILE";
       }
     ]
     ++ lib.optionals variant.admin [
       {
         name = "admin-token";
-        inherit (adminToken) resource encrypted;
+        reference = adminToken;
         environment_variable = "GARAGE_ADMIN_TOKEN_FILE";
       }
     ]
     ++ lib.optionals (variant.admin && variant.metrics) [
       {
         name = "metrics-token";
-        inherit (metricsToken) resource encrypted;
+        reference = metricsToken;
         environment_variable = "GARAGE_METRICS_TOKEN_FILE";
       }
     ];
@@ -162,16 +145,12 @@
         inherit key interface parameters;
       };
     credentials = credentialsFor variant;
-    credentialRequests = serviceManagement.forProducers {
+    credentialRequests = serviceManagement.forCredentialReferences {
       consumerInstance = "garage";
-      interface = serviceManagement.interfaces.credentialDelivery;
-      producers =
+      references =
         builtins.map (credential: {
           key = "credential-${credential.name}";
-          parameters = {
-            inherit (credential) name encrypted;
-            source = credential.resource;
-          };
+          inherit (credential) name reference;
         })
         credentials;
     };
@@ -276,7 +255,8 @@
         };
         credentials.views =
           builtins.map (credential: {
-            inherit (credential) name encrypted environment_variable;
+            inherit (credential) name environment_variable;
+            inherit (credential.reference) encrypted;
             reference = resultOf "credential-${credential.name}" "credential-path";
             optional = false;
           })
@@ -431,7 +411,7 @@ in {
         description = "Garage node-ID and RPC-address peers used for cluster discovery.";
       };
       secret = mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Opaque resource reference for the shared 32-byte hexadecimal RPC secret.";
       };
@@ -482,7 +462,7 @@ in {
         description = "Socket address used by the administration API.";
       };
       token = mkOption {
-        type = secretRef;
+        type = credentialReference;
         default = {};
         description = "Opaque resource reference for the administration bearer token.";
       };
@@ -493,7 +473,7 @@ in {
           description = "Require a bearer token when scraping metrics.";
         };
         token = mkOption {
-          type = secretRef;
+          type = credentialReference;
           default = {};
           description = "Opaque resource reference for the metrics bearer token.";
         };
@@ -505,16 +485,16 @@ in {
     {
       assertions = [
         {
-          assertion = !cfg.enable || rpcSecret.resource != null;
-          message = "garage.rpc.secret.resource is required when Garage is enabled";
+          assertion = !cfg.enable || serviceManagement.credentialReferenceConfigured rpcSecret;
+          message = "garage.rpc.secret requires a credential reference when Garage is enabled";
         }
         {
-          assertion = !cfg.enable || !cfg.admin.enable || adminToken.resource != null;
-          message = "garage.admin.token.resource is required when the administration API is enabled";
+          assertion = !cfg.enable || !cfg.admin.enable || serviceManagement.credentialReferenceConfigured adminToken;
+          message = "garage.admin.token requires a credential reference when the administration API is enabled";
         }
         {
-          assertion = !cfg.enable || !cfg.admin.enable || !cfg.admin.metrics.requireToken || metricsToken.resource != null;
-          message = "garage.admin.metrics.token.resource is required when authenticated metrics are enabled";
+          assertion = !cfg.enable || !cfg.admin.enable || !cfg.admin.metrics.requireToken || serviceManagement.credentialReferenceConfigured metricsToken;
+          message = "garage.admin.metrics.token requires a credential reference when authenticated metrics are enabled";
         }
         {
           assertion = builtins.length cfg.rpc.bootstrapPeers == builtins.length (lib.unique cfg.rpc.bootstrapPeers);

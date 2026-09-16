@@ -31,30 +31,42 @@
       stop_timeout_millis = 1000;
     };
   };
-  nestedDirectoryService = minimalService // {
-    directories.managed = [{
-      path = "rancher/k3s";
-      purpose = "state";
-      mode = "0755";
-      retention = "persistent";
-    }];
-  };
-  configurationDirectoryService = minimalService // {
-    directories.managed = [{
-      path = "rancher/k3s";
-      purpose = "configuration";
-      mode = "0755";
-      retention = "persistent";
-    }];
-  };
-  escapedDirectoryService = minimalService // {
-    directories.managed = [{
-      path = "../k3s";
-      purpose = "state";
-      mode = "0755";
-      retention = "persistent";
-    }];
-  };
+  nestedDirectoryService =
+    minimalService
+    // {
+      directories.managed = [
+        {
+          path = "rancher/k3s";
+          purpose = "state";
+          mode = "0755";
+          retention = "persistent";
+        }
+      ];
+    };
+  configurationDirectoryService =
+    minimalService
+    // {
+      directories.managed = [
+        {
+          path = "rancher/k3s";
+          purpose = "configuration";
+          mode = "0755";
+          retention = "persistent";
+        }
+      ];
+    };
+  escapedDirectoryService =
+    minimalService
+    // {
+      directories.managed = [
+        {
+          path = "../k3s";
+          purpose = "state";
+          mode = "0755";
+          retention = "persistent";
+        }
+      ];
+    };
   evaluateAs = type: value:
     (lib.evalModules {
       modules = [
@@ -264,12 +276,14 @@
     declaration = staticTemplateService;
   };
   checkedStaticTemplate = serviceManagement.validate serviceTypes staticTemplateService;
-  publicStaticTemplate = staticTemplateService // {
-    manager_identity = {
-      name = "worker";
-      aliases = [];
+  publicStaticTemplate =
+    staticTemplateService
+    // {
+      manager_identity = {
+        name = "worker";
+        aliases = [];
+      };
     };
-  };
   templateInstanceService = serviceManagement.instanceOf {
     inherit serviceTypes;
     template = staticTemplateService;
@@ -711,6 +725,31 @@
       source = resultOf "credential-source" "credential-resource";
       encrypted = false;
     };
+  };
+  credentialReferences = serviceManagement.forCredentialReferences {
+    consumerInstance = "system:registry-hub";
+    references = [
+      {
+        key = "signing-key";
+        reference = {
+          name = "hub-signing-key";
+          scope = "system";
+          encrypted = true;
+        };
+      }
+      {
+        key = "tls-certificate";
+        name = "certificate";
+        reference = {
+          resource = (builtins.head credentialProducers).parameters.source;
+          encrypted = false;
+        };
+      }
+      {
+        key = "disabled";
+        reference = {};
+      }
+    ];
   };
   credentialProducers =
     builtins.genList (index: {
@@ -1410,6 +1449,14 @@ in
     name = "hub-jwt";
     scope = "system";
   };
+  assert succeedsAs serviceTypes.credentialReference {name = "hub-signing-key";};
+  assert succeedsAs serviceTypes.credentialReference {
+    resource = (builtins.head credentialProducers).parameters.source;
+  };
+  assert !succeedsAs serviceTypes.credentialReference {
+    name = "hub-signing-key";
+    resource = (builtins.head credentialProducers).parameters.source;
+  };
   assert builtins.all validatesActivationRelationship [
     "resource-triggers-service"
     "service-depends-on-resource"
@@ -1496,6 +1543,28 @@ in
     _type = "aos-request-output-reference";
     request = "system:credential-source";
     output = "credential-resource";
+  };
+  assert builtins.attrNames credentialReferences.requests
+  == [
+    "system:signing-key"
+    "system:signing-key-source"
+    "system:tls-certificate"
+  ];
+  assert credentialReferences.requests."system:signing-key".parameters
+  == {
+    name = "signing-key";
+    source = {
+      _type = "aos-request-output-reference";
+      request = "system:signing-key-source";
+      output = "credential-resource";
+    };
+    encrypted = true;
+  };
+  assert credentialReferences.requests."system:tls-certificate".parameters
+  == {
+    name = "certificate";
+    source = (builtins.head credentialProducers).parameters.source;
+    encrypted = false;
   };
   assert succeedsAs serviceTypes.principalResolution principalResolution;
   assert !succeedsAs serviceTypes.principalResolution invalidPrincipalResolution;

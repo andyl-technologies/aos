@@ -19,22 +19,10 @@
       type = abilityTypes.runtimeString;
       predicate = value: builtins.match pattern value != null;
     };
-  secretReference =
-    refinedString "EdgeCore secret reference"
-    "an opaque supported credential reference"
-    "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?";
-  secretRef = description:
-    abilityTypes.record {
-      fields.ref = {
-        type = abilityTypes.optional secretReference;
-        default = null;
-        inherit description;
-      };
-    };
   credentials = {
-    ca-certificate = cfg.tls.caCertificate.ref or null;
-    client-certificate = cfg.tls.clientCertificate.ref or null;
-    client-private-key = cfg.tls.clientPrivateKey.ref or null;
+    ca-certificate = cfg.tls.caCertificate;
+    client-certificate = cfg.tls.clientCertificate;
+    client-private-key = cfg.tls.clientPrivateKey;
   };
   configurationFragments = [
     {
@@ -126,30 +114,12 @@
       inherit key interface parameters;
     };
   configuredCredentials = lib.filterAttrs (_: ref: ref != null) credentials;
-  credentialSources = serviceManagement.forProducers {
+  credentialRequests = serviceManagement.forCredentialReferences {
     consumerInstance = "service";
-    interface = serviceManagement.interfaces.namedCredential;
-    producers =
-      lib.mapAttrsToList (name: ref: {
-        key = "${name}-source";
-        parameters = {
-          name = lib.last (lib.splitString ":" ref);
-          scope = "system";
-        };
-      })
-      configuredCredentials;
-  };
-  credentialDeliveries = serviceManagement.forProducers {
-    consumerInstance = "service";
-    interface = serviceManagement.interfaces.credentialDelivery;
-    producers =
-      lib.mapAttrsToList (name: _: {
+    references =
+      lib.mapAttrsToList (name: reference: {
         key = "${name}-delivery";
-        parameters = {
-          inherit name;
-          source = resultOf "${name}-source" "credential-resource";
-          encrypted = false;
-        };
+        inherit name reference;
       })
       configuredCredentials;
   };
@@ -280,10 +250,10 @@
         }
       ];
       credentials.views =
-        lib.mapAttrsToList (name: _: {
+        lib.mapAttrsToList (name: reference: {
           inherit name;
           reference = resultOf "${name}-delivery" "credential-path";
-          encrypted = false;
+          inherit (reference) encrypted;
           optional = true;
         })
         configuredCredentials;
@@ -401,8 +371,7 @@
     modules
     tunables
     configuration
-    credentialSources
-    credentialDeliveries
+    credentialRequests
     service
   ];
   contributions = map serviceManagement.splitContribution fragments;
@@ -463,18 +432,18 @@ in {
     };
     tls = {
       caCertificate = mkOption {
-        type = secretRef "Opaque CloudHub CA certificate reference.";
-        default = {};
+        type = abilityTypes.optional serviceTypes.credentialReference;
+        default = null;
         description = "Opaque credential reference for the CloudHub certificate authority certificate.";
       };
       clientCertificate = mkOption {
-        type = secretRef "Opaque EdgeCore client certificate reference.";
-        default = {};
+        type = abilityTypes.optional serviceTypes.credentialReference;
+        default = null;
         description = "Opaque credential reference for this edge node's CloudHub client certificate.";
       };
       clientPrivateKey = mkOption {
-        type = secretRef "Opaque EdgeCore client private-key reference.";
-        default = {};
+        type = abilityTypes.optional serviceTypes.credentialReference;
+        default = null;
         description = "Opaque credential reference for this edge node's CloudHub client private key.";
       };
     };
@@ -484,7 +453,14 @@ in {
     {
       assertions = [
         {
-          assertion = !cfg.enable || builtins.all (value: value != null) requiredRefs;
+          assertion =
+            !cfg.enable
+            || builtins.all
+            (reference:
+              reference
+              != null
+              && serviceManagement.credentialReferenceConfigured reference)
+            requiredRefs;
           message = "edgecore.enable requires CA, client certificate, and client private-key references";
         }
       ];

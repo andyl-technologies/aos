@@ -19,17 +19,6 @@
       type = abilityTypes.runtimeString;
       predicate = value: builtins.match pattern value != null;
     };
-  secretReference =
-    refinedString "kubelet credential reference"
-    "an opaque supported kubeconfig reference"
-    "(desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?";
-  kubeconfigType = abilityTypes.record {
-    fields.ref = {
-      type = abilityTypes.optional secretReference;
-      default = null;
-      description = "Opaque reference to the kubeconfig used for API authentication.";
-    };
-  };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   networkPolicy = lib.abilities.interfaces.networkPolicy;
   serviceTypes = serviceManagement.types;
@@ -100,32 +89,13 @@
       mode = "0444";
     };
   };
-  kubeconfigRef = cfg.kubeconfig.ref or null;
-  credentialName =
-    if kubeconfigRef == null
-    then null
-    else lib.last (lib.splitString ":" kubeconfigRef);
-  credentialSource = serviceManagement.forProducers {
+  kubeconfigRef = cfg.kubeconfig;
+  credential = serviceManagement.forCredentialReferences {
     consumerInstance = "service";
-    interface = serviceManagement.interfaces.namedCredential;
-    producers = lib.optional (credentialName != null) {
-      key = "kubeconfig-source";
-      parameters = {
-        name = credentialName;
-        scope = "system";
-      };
-    };
-  };
-  credential = serviceManagement.forProducers {
-    consumerInstance = "service";
-    interface = serviceManagement.interfaces.credentialDelivery;
-    producers = lib.optional (credentialName != null) {
+    references = lib.optional (kubeconfigRef != null) {
       key = "kubeconfig";
-      parameters = {
-        name = "kubeconfig";
-        source = resultOf "kubeconfig-source" "credential-resource";
-        encrypted = false;
-      };
+      name = "kubeconfig";
+      reference = kubeconfigRef;
     };
   };
   commandArgs =
@@ -137,7 +107,7 @@
       "--hostname-override"
       cfg.nodeName
     ]
-    ++ lib.optionals (credentialName != null) [
+    ++ lib.optionals (kubeconfigRef != null) [
       "--kubeconfig"
       (resultOf "kubeconfig" "credential-path")
     ];
@@ -229,10 +199,10 @@
           optional = false;
         }
       ];
-      credentials.views = lib.optional (credentialName != null) {
+      credentials.views = lib.optional (kubeconfigRef != null) {
         name = "kubeconfig";
         reference = resultOf "kubeconfig" "credential-path";
-        encrypted = false;
+        encrypted = kubeconfigRef.encrypted;
         optional = true;
       };
       logging = {
@@ -334,10 +304,7 @@
     configuration
     service
   ];
-  credentialFragments = [
-    credentialSource
-    credential
-  ];
+  credentialFragments = [credential];
   fragments = serviceFragments ++ credentialFragments;
   contributions = map serviceManagement.splitContribution fragments;
   serviceContributions = map serviceManagement.splitContribution serviceFragments;
@@ -423,8 +390,8 @@ in {
       description = "Permit unauthenticated requests to the kubelet HTTPS endpoint.";
     };
     kubeconfig = mkOption {
-      type = kubeconfigType;
-      default = {};
+      type = abilityTypes.optional serviceTypes.credentialReference;
+      default = null;
       description = "Kubernetes API client identity delivered as an opaque service credential.";
     };
   };
@@ -433,8 +400,15 @@ in {
     {
       assertions = [
         {
-          assertion = !cfg.enable || !cfg.registerNode || kubeconfigRef != null;
-          message = "kubelet.enable with kubelet.registerNode requires kubelet.kubeconfig.ref";
+          assertion =
+            !cfg.enable
+            || !cfg.registerNode
+            || (
+              kubeconfigRef
+              != null
+              && serviceManagement.credentialReferenceConfigured kubeconfigRef
+            );
+          message = "kubelet.enable with kubelet.registerNode requires a kubelet.kubeconfig credential reference";
         }
         {
           assertion = cfg.clusterDns != [];
@@ -451,7 +425,7 @@ in {
         ++ map (contribution: {aos.abilities = contribution.configured;}) serviceContributions
       )
     ))
-    (lib.mkIf (cfg.enable && credentialName != null) (
+    (lib.mkIf (cfg.enable && kubeconfigRef != null) (
       lib.mkMerge (
         map (contribution: {aos.abilities = contribution.configured;}) credentialContributions
       )

@@ -54,7 +54,7 @@
       addresses = ["127.0.0.1"];
       port = 55432;
     };
-    bootstrap.password.resource = credential "bootstrap-password";
+    bootstrap.password.name = "bootstrap-password";
     settings.log_min_duration_statement = 250;
   };
   standby = evaluate {
@@ -112,6 +112,7 @@ in
   assert builtins.elem "postgresql:initialize-lifecycle" standaloneRequests;
   assert builtins.elem "postgresql:main-lifecycle" standaloneRequests;
   assert builtins.elem "postgresql:credential-bootstrap-superuser-password" standaloneRequests;
+  assert builtins.elem "postgresql:credential-bootstrap-superuser-password-source" standaloneRequests;
   assert !(builtins.elem "postgresql:credential-replication-passfile" standaloneRequests);
   assert builtins.elem "postgresql:credential-replication-passfile" standbyRequests;
   assert builtins.elem "postgresql:credential-tls-certificate" standbyRequests;
