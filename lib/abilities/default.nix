@@ -844,7 +844,10 @@ in rec {
 
   resultOf = request: output: {
     _type = "aos-request-output-reference";
-    request = requireLocalKey "result request" request;
+    request =
+      if isLocalKey request || abilityTypes.declarationKey.check request
+      then request
+      else fail "result request must be a local or qualified declaration key";
     output = requireLocalKey "result output" output;
   };
 
