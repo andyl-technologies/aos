@@ -24,10 +24,10 @@ use crate::{decode_value, target_context, value};
 
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
 const BOOT_ROOT: &str = "/boot";
-const MOUNT: &str = "/run/current-system/sw/bin/mount";
-const BOOTCTL: &str = "/run/current-system/sw/bin/bootctl";
-const BLESS_BOOT: &str = "/run/current-system/sw/lib/systemd/systemd-bless-boot";
-const SYSTEMCTL: &str = "/run/current-system/sw/bin/systemctl";
+const MOUNT: Option<&str> = option_env!("AOS_UTIL_LINUX_MOUNT");
+const BOOTCTL: Option<&str> = option_env!("AOS_SYSTEMD_BOOTCTL");
+const BLESS_BOOT: Option<&str> = option_env!("AOS_SYSTEMD_BLESS_BOOT");
+const SYSTEMCTL: Option<&str> = option_env!("AOS_SYSTEMD_SYSTEMCTL");
 const RETENTION_ROOT: &str = "EFI/.aos-rollout-retention";
 
 const CONTEXT_SCHEMA: &str = "aos.systemd.image-rollout-platform-context/v1";
@@ -331,7 +331,7 @@ fn apply(
             );
             with_writable_boot(|| {
                 run(
-                    BOOTCTL,
+                    package_executable(BOOTCTL, "bootctl")?,
                     &["set-default", entry],
                     "selecting the next boot entry",
                 )
@@ -351,12 +351,12 @@ fn apply(
             let stable = running_entry(rollout)?;
             with_writable_boot(|| {
                 run(
-                    BLESS_BOOT,
+                    package_executable(BLESS_BOOT, "systemd-bless-boot")?,
                     &["--path", BOOT_ROOT, "good"],
                     "marking the running boot successful",
                 )?;
                 run(
-                    BOOTCTL,
+                    package_executable(BOOTCTL, "bootctl")?,
                     &["set-default", &stable],
                     "publishing the stable boot default",
                 )
@@ -366,7 +366,7 @@ fn apply(
         (BootPlatformRole::Success, "observe") => success_observation(observation_schema, rollout),
         (BootPlatformRole::HostRestart, "request") => {
             run(
-                SYSTEMCTL,
+                package_executable(SYSTEMCTL, "systemctl")?,
                 &["--no-block", "reboot"],
                 "requesting a host restart",
             )?;
@@ -832,13 +832,13 @@ fn selected_entry() -> Result<Option<String>> {
 
 fn with_writable_boot<T>(effect: impl FnOnce() -> Result<T>) -> Result<T> {
     run(
-        MOUNT,
+        package_executable(MOUNT, "mount")?,
         &["-o", "remount,rw", BOOT_ROOT],
         "remounting boot storage writable",
     )?;
     let result = effect();
     let read_only = run(
-        MOUNT,
+        package_executable(MOUNT, "mount")?,
         &["-o", "remount,ro", BOOT_ROOT],
         "remounting boot storage read-only",
     );
@@ -850,6 +850,10 @@ fn with_writable_boot<T>(effect: impl FnOnce() -> Result<T>) -> Result<T> {
             Err(effect.context(format!("also failed to restore boot storage: {remount:#}")))
         }
     }
+}
+
+fn package_executable<'a>(path: Option<&'a str>, name: &str) -> Result<&'a str> {
+    path.with_context(|| format!("selected systemd provider omits its {name} executable"))
 }
 
 fn run(executable: &str, arguments: &[&str], action: &str) -> Result<()> {
