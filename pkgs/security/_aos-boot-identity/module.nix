@@ -110,7 +110,7 @@
     };
   identitySuccess = service {
     key = "aos-boot-identity-success";
-    description = "Validate normal boot identity and generated verity unit";
+    description = "Validate the normal boot identity";
     dependencies =
       emptyDependencies
       // {

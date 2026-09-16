@@ -105,7 +105,7 @@
           name = "systemd";
           module = {
             imports = [
-              ../../pkgs/system/_systemd-abilities.nix
+              ../../pkgs/system/_systemd-abilities/core.nix
               ../../pkgs/system/_systemd-provider.nix
             ];
             config.aos.abilities.instances.manager = {};
@@ -137,12 +137,13 @@
   composed = evaluate authoredBindings;
   implementations = composed.config.aos.abilities.implementations;
   interfaces = composed.config.aos.abilities.interfaces;
-  implementationInterfaceIdentity = implementation: let
-    declaration = interfaces.${implementation.interface};
-  in
-    lib.abilities.interfaceIdentity (
-      lib.abilities.interfaceDocumentFromDeclaration declaration
-    );
+  implementationInterfaceIdentity = implementation:
+    if builtins.isAttrs implementation.interface
+    then implementation.interface
+    else
+      lib.abilities.interfaceIdentity (
+        lib.abilities.interfaceDocumentFromDeclaration interfaces.${implementation.interface}
+      );
   childImplementationFor = pending: let
     requirement = implementations.${pending.implementation}.requirements.${pending.requirement};
     candidates = builtins.filter (implementationName: let
@@ -178,13 +179,8 @@
   realizedUnitNames = builtins.filter (name: name != null) (builtins.map realizedUnitName resources);
   expectedControlPlaneUnits = [
     "aos-activate.service"
-    "aos-config-render.target"
     "aos-config.target"
-    "aos-fetch.target"
     "aos-graph-compile.service"
-    "aos-pkg-fetch@.service"
-    "aos-pkg-install@.service"
-    "aos-preset.service"
   ];
 in
   assert builtins.length (builtins.attrNames initial.config.aos.abilities.requests) > 0;

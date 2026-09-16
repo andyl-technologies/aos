@@ -66,6 +66,12 @@
   measuredVarCondition = request "aos-var-policy-migrate" "aos-var-crypt-conditions";
   identityGuardDependencies = request "aos-boot-identity" "aos-boot-identity-guard-dependencies";
   identityGuardFailure = request "aos-boot-identity" "aos-boot-identity-guard-failure_policy";
+  systemdVerityDependencies = request "systemd" "aos-systemd-verity-root-setup-dependencies";
+  systemdVerityLifecycle = request "systemd" "aos-systemd-verity-root-setup-lifecycle";
+  bootIdentityScript = builtins.readFile ../../pkgs/security/_aos-boot-identity/aos-boot-identity-success.sh;
+  verityVerificationScript = builtins.readFile ../../pkgs/security/_aos-verity-root-guard/aos-verity-root-verify.sh;
+  seedProfilesScript = builtins.readFile ../../pkgs/boot/_aos-boot-preparations/aos-seed-profiles.sh;
+  managerCommands = ["systemctl" "bootctl" "aos-systemd-veritysetup-generator" "/run/systemd"];
   secureVeritySystem = mkSystem {
     systemName = "initrd-security-intent-test";
     modules = [../../systems/server-verity.nix];
@@ -85,6 +91,15 @@ in
     "aos-boot-identity:boot-identity"
     "aos-var-policy-migrate:measured-var"
     "aos-verity-root-guard:verity-root-verification"
+    "systemd:systemd-verity-root"
+  ];
+  assert (builtins.head systemdVerityLifecycle.start).executable.entry_point
+  == "libexec/aos-systemd-verity-root-setup";
+  assert systemdVerityDependencies.requires
+  == [
+    (output "systemd:boot-identity" "readiness-resource")
+    (output "systemd:device-manager" "readiness-resource")
+    (output "systemd:device-events" "readiness-resource")
   ];
   assert (builtins.head measuredVarLifecycle.start).executable.entry_point == "bin/aos-var-crypt";
   assert (builtins.head measuredVarLifecycle.start).executable.arguments
@@ -125,6 +140,8 @@ in
   assert (request "aos-var-policy-migrate" "persistent-state").milestone == "var";
   assert (request "aos-var-policy-migrate" "verity-root").milestone
   == "verity-root-verified";
+  assert (request "aos-verity-root-guard" "verity-root-mapping").milestone
+  == "verity-root-mapping-ready";
   assert (request "aos-boot-identity" "boot-identity-failure-target").source.unit_file
   == "lib/systemd/system/aos-boot-identity-failure.target";
   assert identityGuardDependencies.required_by
@@ -144,6 +161,7 @@ in
   assert guardDependencies.after
   == [
     (output "aos-verity-root-guard:boot-identity" "readiness-resource")
+    (output "aos-verity-root-guard:verity-root-mapping" "readiness-resource")
     (output "aos-verity-root-guard:initrd-stage" "readiness-resource")
     (output "aos-verity-root-guard:device-events" "readiness-resource")
   ];
@@ -153,4 +171,7 @@ in
     enabled = true;
     handlers = [(output "aos-verity-root-guard:integrity-failure" "readiness-resource")];
     dispatch = "isolate-active-goal";
-  }; true
+  };
+  assert builtins.all (command: !(lib.hasInfix command bootIdentityScript)) managerCommands;
+  assert builtins.all (command: !(lib.hasInfix command verityVerificationScript)) managerCommands;
+  assert builtins.all (command: !(lib.hasInfix command seedProfilesScript)) ["systemctl" "bootctl"]; true

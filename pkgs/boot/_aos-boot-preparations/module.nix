@@ -213,7 +213,6 @@
         {package = "coreutils";}
         {package = "jq";}
         {package = "sbsigntools";}
-        {package = "systemd";}
         {package = "tpm2-tools";}
         {package = "util-linux";}
         {

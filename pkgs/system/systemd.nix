@@ -121,7 +121,7 @@ in
     };
 
     inherit version;
-    abilities = ./_systemd-abilities.nix;
+    abilities = ./_systemd-abilities;
 
     # Keep UKI construction and kernel installation in `tools`, including
     # kernel-install's Python hook. PID 1 and boot-time generators do not need
@@ -491,6 +491,12 @@ in
           cp ${./_systemd-identity-provider.nix} "$out/share/aos/providers/_systemd-identity-provider.nix"
           cp ${./_systemd-identity-transition.nix} "$out/share/aos/providers/_systemd-identity-transition.nix"
           cp ${./_systemd-unit-document.nix} "$out/share/aos/providers/_systemd-unit-document.nix"
+
+          mkdir -p "$out/libexec"
+          sed 's|@bash@|${bash}|g' \
+            ${./aos-systemd-verity-root-setup.sh.in} \
+            > "$out/libexec/aos-systemd-verity-root-setup"
+          chmod 0555 "$out/libexec/aos-systemd-verity-root-setup"
         '';
       }
       {

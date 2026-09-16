@@ -43,6 +43,7 @@
       root-a-device = "dev-disk-by\\x2dpartlabel-root\\x2da.device";
       storage-provisioning-state-ready = "aos-provisioning-state.service";
       storage-provisioning-plan-ready = "aos-provisioning-eval.service";
+      verity-root-mapping-ready = "aos-systemd-verity-root-setup.service";
       verity-root-verified = "aos-verity-root-verify.service";
     };
   };

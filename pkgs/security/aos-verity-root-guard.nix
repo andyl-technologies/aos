@@ -6,7 +6,6 @@
   coreutils,
   efitools,
   openssl,
-  systemd,
 }:
 mkDerivation {
   pname = "aos-verity-root-guard";
@@ -70,7 +69,6 @@ mkDerivation {
     coreutils
     efitools
     openssl
-    systemd
   ];
   propagatedDeps = [];
 
@@ -236,7 +234,6 @@ mkDerivation {
         sed \
           -e 's|@bash@|${bash}|g' \
           -e 's|@coreutils@|${coreutils}|g' \
-          -e 's|@systemd@|${systemd}|g' \
           ${./_aos-verity-root-guard/aos-verity-root-verify.sh} \
           > $out/bin/aos-verity-root-verify
         chmod +x $out/bin/aos-verity-root-verify
