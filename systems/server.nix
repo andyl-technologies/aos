@@ -12,11 +12,13 @@
 }: {
   imports = [
     ./_artifact-backend.nix
+    ./_image-builder.nix
     ./_kernel.nix
     ./_system-manager.nix
   ];
 
   # Image capability: immutable root with writable state provisioned on /var.
+  aos.image.enable = true;
   aos.filesystems.zfs.enable = lib.mkDefault false;
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
@@ -29,8 +31,8 @@
     maxRootMiB = 640;
     maxVerityMiB = 16;
     maxInitrdMiB = 128;
-    maxUkiMiB = 160;
-    maxEspMiB = 384;
+    maxBootExecutableMiB = 160;
+    maxFirmwarePartitionMiB = 384;
     maxRuntimeClosureMiB = 768;
     maxDownloadMiB = 768;
   };

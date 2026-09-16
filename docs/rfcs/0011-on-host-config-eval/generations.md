@@ -17,7 +17,7 @@ RFC-0011 splits this into **two axes** — a tree, not a grid:
 - **Image generation (substrate).** The measured, signed UKI = kernel + initrd +
   **base lib + evaluator** + render-core + baked trust anchors. Delivered as an
   A/B partition swap; tracked by the ESP `default aos-*.efi` glob
-  (`modules/image/_builder.nix:176-183`), root-a/root-b, and the TPM PCR-11
+  (`pkgs/system/_systemd-abilities/platform/_image-builder.nix:176-183`), root-a/root-b, and the TPM PCR-11
   policy. Carries `module_abi`.
 - **Config generation (overlay).** Pure data: a manifest → materialized `/etc`
   composefs overlay, produced by on-host eval, committed by the existing
@@ -129,7 +129,7 @@ schema; replaying it against a different schema is undefined.
 
 - **Per image-gen:** the UKI/toplevel (kernel+initrd+**base-lib**+evaluator) for
   as many A/B slots as kept (ESP is sized ×2 today,
-  `modules/image/_builder.nix:192-197` → 2 image-gens). The base lib must be
+  `pkgs/system/_systemd-abilities/platform/_image-builder.nix:192-197` → 2 image-gens). The base lib must be
   retained *with* its image-gen, because it *is* the ABI.
 - **Per config-gen:** the materialized manifest/`/etc` gen dir **and** the eval
   inputs (`package_module_closure` + `host_nix_ref` + `module_abi_pinned` +

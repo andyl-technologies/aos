@@ -578,7 +578,11 @@ in {
                 printf '%s' "${toString config.aos.system.configInputAbi}" > $out/meta/config-input-abi
                 printf '%s' "${config.aos.config.evalAtBoot.baseLibAbiHash}" > $out/meta/base-lib-abi-hash
                 printf '%s' "${pkgs.aos.packageRuntime}" > $out/meta/native-executor-ref
-                printf '%s' "EFI/Linux/aos-generation-0000000001${lib.optionalString (config.aos.boot.bootCountingTries != null) "+${toString config.aos.boot.bootCountingTries}"}.efi" > $out/meta/uki-path
+                printf '%s' ${lib.escapeShellArg (
+                  if config.aos.image.platform == null
+                  then ""
+                  else config.aos.image.platform.normalArtifactPath
+                )} > $out/meta/uki-path
                 printf '%s' ${lib.escapeShellArg config.aos.filesystems.espDevice} > $out/meta/esp-device
                 printf '%s\n' ${lib.escapeShellArg (builtins.toJSON {
                   backend = config.aos.boot.storage.backend;
