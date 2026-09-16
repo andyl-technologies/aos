@@ -313,12 +313,7 @@
       builtins.match "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" value
       != null;
   };
-  stableDevice = types.refined {
-    name = "stable storage device path";
-    description = "an immutable /dev/disk/by-id device identity";
-    type = types.executionPath;
-    predicate = value: builtins.match "/dev/disk/by-id/[^/]+" value != null;
-  };
+  storageDevice = types.executionPath;
   partitionTarget = types.taggedUnion {
     tag = "kind";
     variants = {
@@ -328,37 +323,19 @@
       device = types.record {
         fields = {
           kind = types.enum ["device"];
-          path = stableDevice;
+          path = storageDevice;
         };
       };
     };
   };
-  protectedPartitionTypes = [
-    "163bea60-58c7-46e7-b69a-6846a5a688af"
-    "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-    "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
-    "b921b045-1df0-41c3-af44-4c6f280d3fae"
-    "44479540-f297-41b2-9af7-d131d5f0458a"
-    "72ec70a6-cf74-40e6-bd49-4bda08e8f224"
-    "2c7357ed-ebd2-46d9-aec1-23d437ec2bf5"
-    "df3300ce-d69f-4c92-978c-9bfb0f38d820"
-    "d13c5d3b-b5d1-422a-b29f-9454fdc89d76"
-    "b6ed5582-440b-4209-b8da-5ff7c419ea3d"
-    "41092b05-9fc8-4523-994f-2def0408b176"
-  ];
-  partitionType = types.refined {
-    name = "storage partition type";
-    description = "a portable additive partition type or unreserved canonical GUID";
+  providerIdentifier = types.refined {
+    name = "storage provider identifier";
+    description = "an opaque identifier interpreted by the selected storage provider";
     type = types.string {
       maxLength = 64;
       syntax = null;
     };
-    predicate = value:
-      builtins.elem value ["linux-generic" "swap"]
-      || (
-        uuid.check value
-        && !(builtins.elem value protectedPartitionTypes)
-      );
+    predicate = value: builtins.match "[A-Za-z0-9._:+-]+" value != null;
   };
   partitionSpec = types.record {
     fields = {
@@ -367,7 +344,7 @@
         maxLength = 36;
         syntax = "local-key-v1";
       };
-      partition_type = partitionType;
+      partition_type = providerIdentifier;
       size_min = partitionSize;
       size_max = {
         type = types.optional partitionSize;
@@ -378,7 +355,7 @@
         maximum = 2147483647;
       };
       format = {
-        type = types.optional (types.enum ["ext4" "vfat" "swap"]);
+        type = types.optional providerIdentifier;
         optional = true;
       };
       uuid = {
@@ -473,7 +450,7 @@
   };
 in {
   types = {
-    inherit poolName datasetName datasetProperties stableDevice partitionType provisioningPlan;
+    inherit poolName datasetName datasetProperties storageDevice providerIdentifier provisioningPlan;
   };
   interfaces = {
     inherit encryptedMapping storageFormat pool dataset provisioning;

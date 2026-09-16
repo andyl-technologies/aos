@@ -14,8 +14,8 @@ use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{AbilityValue, ResourceReference, RevisionId};
 use aos_provider_protocol::ResourceContext;
 use aos_storage_provisioning::{
-    FALLBACK_LABEL, OPERATOR_LABEL, PENDING_LABEL, PartitionSpec, ProvisioningPlan, StoragePlan,
-    assign_missing_partition_uuids, normalize_marker_uuid, validate_provisioning_plan,
+    PartitionSpec, ProvisioningPlan, StoragePlan, assign_missing_partition_uuids,
+    normalize_marker_uuid, validate_provisioning_plan,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -30,6 +30,9 @@ const SCRATCH_ROOT: &str = "/run/aos/storage-provisioning";
 const REPART_DIR: &str = "repart.d";
 const REPART_TARGETS_FILE: &str = "repart-targets";
 const STORAGE_PLAN_FILE: &str = "provisioning-plan.json";
+const PENDING_LABEL: &str = "aos-provisioning-pending-v1";
+const OPERATOR_LABEL: &str = "aos-provenance-operator-v1";
+const FALLBACK_LABEL: &str = "aos-provenance-fallback-v1";
 const SENTINEL_TYPE_GUID: &str = "163bea60-58c7-46e7-b69a-6846a5a688af";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -377,6 +380,7 @@ struct RenderedTarget {
 }
 
 fn render(desired: &Desired, target: &ResourceReference) -> Result<RenderedPlan> {
+    validate_repart_plan(&desired.plan)?;
     let mut plan = shared_plan(&desired.plan);
     let digest = aos_contract::Sha256Digest::of_canonical(
         "aos.storage.provisioning-scratch/v1",
@@ -695,7 +699,85 @@ fn validate_desired(desired: &Desired) -> Result<()> {
         "unsupported storage-provisioning plan schema"
     );
     normalize_marker_uuid(&desired.plan.marker_uuid)?;
+    validate_repart_plan(&desired.plan)?;
     validate_provisioning_plan(&shared_plan(&desired.plan), desired.plan.measured_boot)
+}
+
+fn validate_repart_plan(plan: &DesiredPlan) -> Result<()> {
+    for (name, partition) in &plan.partitions {
+        ensure!(
+            !matches!(
+                partition.label.as_str(),
+                "root-a"
+                    | "root-b"
+                    | "root-a-hash"
+                    | "root-b-hash"
+                    | "esp"
+                    | "ESP"
+                    | PENDING_LABEL
+                    | OPERATOR_LABEL
+                    | FALLBACK_LABEL
+            ),
+            "partition label '{}' is reserved or protected",
+            partition.label
+        );
+        if let PartitionTarget::Device { path } = &partition.target {
+            let device_name = path.strip_prefix("/dev/disk/by-id/").unwrap_or_default();
+            ensure!(
+                !device_name.is_empty() && !device_name.contains('/'),
+                "partition '{name}' device must use one /dev/disk/by-id identity"
+            );
+        }
+
+        validate_repart_partition_type(&partition.partition_type)?;
+        ensure!(
+            matches!(
+                partition.format.as_deref(),
+                None | Some("ext4" | "vfat" | "swap")
+            ),
+            "partition '{name}' uses a format unsupported by systemd-repart"
+        );
+        ensure!(
+            (partition.partition_type == "swap") == (partition.format.as_deref() == Some("swap")),
+            "partition '{name}' must use type = \"swap\" exactly when format = \"swap\""
+        );
+    }
+    Ok(())
+}
+
+fn validate_repart_partition_type(value: &str) -> Result<()> {
+    if matches!(value, "linux-generic" | "swap") {
+        return Ok(());
+    }
+
+    let lower = value.to_ascii_lowercase();
+    ensure!(
+        lower != SENTINEL_TYPE_GUID
+            && !matches!(
+                lower.as_str(),
+                "root"
+                    | "root-a"
+                    | "root-b"
+                    | "root-verity"
+                    | "root-verity-sig"
+                    | "var"
+                    | "esp"
+                    | "xbootldr"
+                    | "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+                    | "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
+                    | "b921b045-1df0-41c3-af44-4c6f280d3fae"
+                    | "44479540-f297-41b2-9af7-d131d5f0458a"
+                    | "72ec70a6-cf74-40e6-bd49-4bda08e8f224"
+                    | "2c7357ed-ebd2-46d9-aec1-23d437ec2bf5"
+                    | "df3300ce-d69f-4c92-978c-9bfb0f38d820"
+                    | "d13c5d3b-b5d1-422a-b29f-9454fdc89d76"
+                    | "b6ed5582-440b-4209-b8da-5ff7c419ea3d"
+                    | "41092b05-9fc8-4523-994f-2def0408b176"
+            ),
+        "partition type '{value}' is reserved or protected"
+    );
+    normalize_marker_uuid(value).context("raw partition type GUID")?;
+    Ok(())
 }
 
 fn validate_request(request: &ProvisioningRequest) -> Result<()> {
@@ -875,6 +957,30 @@ mod tests {
 
         let error = validate_desired(&desired).expect_err("unstable device must fail");
         assert!(error.to_string().contains("/dev/disk/by-id"));
+    }
+
+    #[test]
+    fn rejects_repart_specific_types_and_formats() {
+        let mut protected_type = desired();
+        protected_type
+            .plan
+            .partitions
+            .get_mut("var")
+            .expect("var")
+            .partition_type = "root-a".into();
+        let error = validate_desired(&protected_type).expect_err("protected type must fail");
+        assert!(error.to_string().contains("reserved or protected"));
+
+        let mut unsupported_format = desired();
+        unsupported_format
+            .plan
+            .partitions
+            .get_mut("var")
+            .expect("var")
+            .format = Some("xfs".into());
+        let error =
+            validate_desired(&unsupported_format).expect_err("unsupported format must fail");
+        assert!(error.to_string().contains("unsupported by systemd-repart"));
     }
 
     #[test]
