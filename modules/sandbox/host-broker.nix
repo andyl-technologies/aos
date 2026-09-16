@@ -11,13 +11,24 @@
   brokerSessionEndpoints = [
     {
       name = "host-broker";
-      description = "Host broker";
+      description = "controller-facing Host broker";
       role = "broker";
-      journalRoot = "/var/lib/aos/sandbox-host/broker-session";
+      journalRoot = "/var/lib/aos/sandbox-host/broker-session/controller";
       options = {
         manifest = "brokerSessionManifest";
         hello = "brokerSessionHelloKey";
         record = "brokerSessionOutcomeKey";
+      };
+    }
+    {
+      name = "host-root-mount-broker";
+      description = "RootMount-facing Host broker";
+      role = "broker";
+      journalRoot = "/var/lib/aos/sandbox-host/broker-session/root-mount";
+      options = {
+        manifest = "brokerSessionRootMountManifest";
+        hello = "brokerSessionRootMountHelloKey";
+        record = "brokerSessionRootMountOutcomeKey";
       };
     }
   ];

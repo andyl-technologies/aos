@@ -247,6 +247,8 @@ pub enum ProtectedBrokerSessionFixedEndpointV1 {
     HostBroker,
     /// Uses the RootMount-side Host client custody root.
     RootMountHostClient,
+    /// Uses the Host-service broker custody root dedicated to RootMount.
+    RootMountHostBroker,
     /// Uses the controller-side Storage client custody root.
     ControllerStorageClient,
     /// Uses the Storage-service broker custody root.
@@ -762,8 +764,8 @@ fn fixed_endpoint(endpoint: ProtectedBrokerSessionFixedEndpointV1) -> FixedEndpo
             socket_path: "/run/aos/sandbox-host/control.sock",
         },
         Endpoint::HostBroker => FixedEndpointConfiguration {
-            journal_root: "/var/lib/aos/sandbox-host/broker-session",
-            custody_root: "/var/lib/aos/sandbox-host/broker-session/custody",
+            journal_root: "/var/lib/aos/sandbox-host/broker-session/controller",
+            custody_root: "/var/lib/aos/sandbox-host/broker-session/controller/custody",
             role: FixedEndpointRole::Broker,
             protocol: Protocol::Host,
             audience: Audience::AUDIENCE_NODE_CONTROLLER,
@@ -775,7 +777,15 @@ fn fixed_endpoint(endpoint: ProtectedBrokerSessionFixedEndpointV1) -> FixedEndpo
             role: FixedEndpointRole::Client,
             protocol: Protocol::Host,
             audience: Audience::AUDIENCE_ROOT_MOUNT,
-            socket_path: "/run/aos/sandbox-host/control.sock",
+            socket_path: "/run/aos/sandbox-host/root-mount.sock",
+        },
+        Endpoint::RootMountHostBroker => FixedEndpointConfiguration {
+            journal_root: "/var/lib/aos/sandbox-host/broker-session/root-mount",
+            custody_root: "/var/lib/aos/sandbox-host/broker-session/root-mount/custody",
+            role: FixedEndpointRole::Broker,
+            protocol: Protocol::Host,
+            audience: Audience::AUDIENCE_ROOT_MOUNT,
+            socket_path: "/run/aos/sandbox-host/root-mount.sock",
         },
         Endpoint::ControllerStorageClient => FixedEndpointConfiguration {
             journal_root: "/var/lib/aos/sandboxd/broker-session/storage",
