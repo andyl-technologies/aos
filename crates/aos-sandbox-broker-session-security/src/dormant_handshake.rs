@@ -24,6 +24,7 @@ use aos_sandbox_linux::seqpacket::SeqpacketSocket;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
 use aos_sandbox_protocol::host_catalog::MAXIMUM_HOST_CATALOG_BYTES;
 use buffa::Message as _;
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use sha2::{Digest as _, Sha256};
 
 use crate::handshake;
@@ -56,6 +57,9 @@ pub enum DormantBrokerSessionHandshakeErrorV1 {
     /// The adopted socket failed outside the retryable interruption profile.
     #[error("broker-session handshake transport failed")]
     Transport,
+    /// The protected hello exchange did not finish before its fixed deadline.
+    #[error("broker-session handshake deadline expired")]
+    Deadline,
 }
 
 impl From<handshake::DormantBrokerSessionHandshakeErrorV1>
@@ -71,6 +75,44 @@ impl From<handshake::DormantBrokerSessionHandshakeErrorV1>
             handshake::DormantBrokerSessionHandshakeErrorV1::KernelEvidence => Self::KernelEvidence,
             handshake::DormantBrokerSessionHandshakeErrorV1::Transport => Self::Transport,
         }
+    }
+}
+
+fn wait_for_handshake_readiness(
+    descriptor: BorrowedFd<'_>,
+    wants_write: bool,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let seconds =
+        u64::try_from(now.tv_sec).map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
+    let nanoseconds =
+        u64::try_from(now.tv_nsec).map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
+    let now = seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or(DormantBrokerSessionHandshakeErrorV1::Transport)?;
+    let remaining = deadline_boottime_nanoseconds
+        .checked_sub(now)
+        .filter(|remaining| *remaining > 0)
+        .ok_or(DormantBrokerSessionHandshakeErrorV1::Deadline)?;
+    let timeout = Timespec {
+        tv_sec: i64::try_from(remaining / 1_000_000_000)
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Deadline)?,
+        tv_nsec: i64::try_from(remaining % 1_000_000_000)
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Deadline)?,
+    };
+    let readiness = if wants_write {
+        PollFlags::OUT
+    } else {
+        PollFlags::IN
+    };
+    let mut descriptors = [PollFd::from_borrowed_fd(descriptor, readiness)];
+
+    match poll(&mut descriptors, Some(&timeout)) {
+        Ok(0) => Err(DormantBrokerSessionHandshakeErrorV1::Deadline),
+        Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+        Err(_) => Err(DormantBrokerSessionHandshakeErrorV1::Transport),
     }
 }
 
@@ -1025,6 +1067,19 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Borrows the authenticated session socket for readiness polling.
+    ///
+    /// The descriptor is observation-only. All traffic must continue through
+    /// the protected session methods so record-subject, transcript, sequence,
+    /// and durable-currentness checks remain inseparable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after a fatal transport failure closes the socket.
+    pub fn as_fd(&self) -> Result<BorrowedFd<'_>, DormantBrokerSessionHandshakeErrorV1> {
+        self.0.as_fd().map_err(Into::into)
+    }
+
     pub(crate) fn sign_lifecycle_bootstrap_attestation(
         &mut self,
         message: &[u8; 32],
@@ -4617,6 +4672,84 @@ impl DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl ProtectedBrokerSessionFixedCustodyV1 {
+    /// Completes a controller-side production handshake before a boot-time deadline.
+    ///
+    /// This is the bounded activation path for a fixed client endpoint. It
+    /// derives the complete hello from the registry, advances only the retained
+    /// protected typestate, and polls the same adopted socket between retryable
+    /// flights. The deadline uses `CLOCK_BOOTTIME`, so host suspension cannot
+    /// extend activation indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported role profile, wrong fixed endpoint
+    /// role, expired deadline, changed kernel or protected custody, invalid
+    /// remote flight, or transport failure.
+    pub fn complete_production_client_handshake(
+        self,
+        socket: SeqpacketSocket,
+        protocol: BrokerSessionProtocolV1,
+        audience: Audience,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        let mut handshake = self.begin_production_client_handshake(socket, protocol, audience)?;
+
+        loop {
+            match handshake.advance()? {
+                DormantControllerClientHandshakeProgressV1::Complete(session) => {
+                    return Ok(session);
+                }
+                DormantControllerClientHandshakeProgressV1::Pending(pending) => {
+                    wait_for_handshake_readiness(
+                        pending.as_fd()?,
+                        pending.wants_write(),
+                        deadline_boottime_nanoseconds,
+                    )?;
+                    handshake = pending;
+                }
+            }
+        }
+    }
+
+    /// Completes a service-side production handshake before a boot-time deadline.
+    ///
+    /// This is the bounded activation path for a fixed broker endpoint. It
+    /// derives the complete hello from the registry, advances only the retained
+    /// protected typestate, and polls the same adopted socket between retryable
+    /// flights. The deadline uses `CLOCK_BOOTTIME`, so host suspension cannot
+    /// extend activation indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported role profile, wrong fixed endpoint
+    /// role, expired deadline, changed kernel or protected custody, invalid
+    /// remote flight, or transport failure.
+    pub fn complete_production_broker_handshake(
+        self,
+        socket: SeqpacketSocket,
+        protocol: BrokerSessionProtocolV1,
+        audience: Audience,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        let mut handshake = self.begin_production_broker_handshake(socket, protocol, audience)?;
+
+        loop {
+            match handshake.advance()? {
+                DormantBrokerEndpointHandshakeProgressV1::Complete(session) => {
+                    return Ok(session);
+                }
+                DormantBrokerEndpointHandshakeProgressV1::Pending(pending) => {
+                    wait_for_handshake_readiness(
+                        pending.as_fd()?,
+                        pending.wants_write(),
+                        deadline_boottime_nanoseconds,
+                    )?;
+                    handshake = pending;
+                }
+            }
+        }
+    }
+
     /// Adopts a controller-side socket using the complete production profile.
     ///
     /// The method set, features, protocol version, and ceilings come only from

@@ -1203,6 +1203,12 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn as_fd(&self) -> Result<BorrowedFd<'_>, DormantBrokerSessionHandshakeErrorV1> {
+        self.socket
+            .as_fd()
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)
+    }
+
     pub(super) fn sign_lifecycle_bootstrap_attestation(
         &mut self,
         message: &[u8; 32],
