@@ -3,10 +3,10 @@
 //! A broker request remains replayable bytes even though its in-memory dispatch
 //! permit is non-reconstructible. The fixed worker therefore commits one claim
 //! to this separately root-owned ledger before its first namespace, policy, or
-//! link mutation. Preparation and destructive lifecycle effects reject every
-//! replay. Non-destructive lifecycle effects may admit an exact byte-for-byte
-//! replay because each fixed step is replacement-style and idempotent. A
-//! reused request ID with different effect bytes always rejects.
+//! link mutation. Preparation rejects every replay. Lifecycle effects may
+//! admit an exact byte-for-byte replay only when each fixed step is a
+//! replacement or an exact absence-tolerant removal. A reused request ID with
+//! different effect bytes always rejects.
 
 use std::path::Path;
 

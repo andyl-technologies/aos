@@ -561,6 +561,7 @@ impl NetworkLifecycleStateStore {
             NetworkNamespaceLifecycleActionV1::Arm
                 | NetworkNamespaceLifecycleActionV1::Renew
                 | NetworkNamespaceLifecycleActionV1::Disarm
+                | NetworkNamespaceLifecycleActionV1::Destroy
         ) {
             return Err(NetworkLifecycleStateError::InvalidTransition);
         }

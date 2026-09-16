@@ -152,8 +152,8 @@ pub(crate) struct NetworkEffectDispatchPermitV1 {
 /// Authorizes construction of one lifecycle-worker request.
 ///
 /// This value exists only after the synchronous `Prepared -> Ambiguous`
-/// transition. Recovery may recreate it only for an exact Arm, Renew, or
-/// Disarm replay whose complete fixed worker sequence is idempotent.
+/// transition. Recovery may recreate it only for an exact Arm, Renew, Disarm,
+/// or Destroy replay whose complete fixed worker sequence is idempotent.
 #[must_use]
 pub struct NetworkLifecycleEffectDispatchPermitV1 {
     durable: AmbiguousNetworkLifecycleDispatchV1,
@@ -866,17 +866,18 @@ impl NetworkLifecycleAdmissionCoordinator {
             .map_err(Into::into)
     }
 
-    /// Reconstructs an exact non-destructive lifecycle dispatch after restart.
+    /// Reconstructs an exact idempotent lifecycle dispatch after restart.
     ///
-    /// Only Arm, Renew, and Disarm are eligible because their worker steps are
-    /// replacement-style and safe to repeat. Destroy remains observation-only.
-    /// The returned permit is derived from the authenticated current Ambiguous
-    /// row and must still reproduce the request, preparation, and kernel plan.
+    /// Arm, Renew, and Disarm use replacement-style steps. Destroy uses exact,
+    /// absence-tolerant removals whose final observation still proves complete
+    /// kernel-object absence. The returned permit is derived from the
+    /// authenticated current Ambiguous row and must still reproduce the
+    /// request, preparation, and kernel plan.
     ///
     /// # Errors
     ///
     /// Returns an error for stale identity, a noncurrent effect, or a
-    /// destructive lifecycle action.
+    /// non-idempotent lifecycle action.
     pub fn recover_idempotent_lifecycle_effect(
         &self,
         request_id: [u8; 16],
@@ -2533,7 +2534,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn lifecycle_destroy_replay_remains_strictly_rejected() {
+    fn lifecycle_destroy_admits_only_exact_replay() {
         let fixture = Fixture::new();
         let mut case = lifecycle_case(&fixture);
         let dispatch = issue_destroy_lifecycle_dispatch(&mut case, &fixture);
@@ -2543,15 +2544,22 @@ pub(crate) mod tests {
         let replay_directory = TempDir::new().unwrap();
         let mut replay = NetworkWorkerReplayLedger::open_for_test(replay_directory.path()).unwrap();
 
-        assert!(matches!(
-            case.coordinator.recover_idempotent_lifecycle_effect(
-                dispatch.request_id(),
-                dispatch.effect_digest(),
-            ),
-            Err(NetworkBrokerError::LifecycleState(
-                NetworkLifecycleStateError::InvalidTransition
-            ))
-        ));
+        let recovery_permit = case
+            .coordinator
+            .recover_idempotent_lifecycle_effect(dispatch.request_id(), dispatch.effect_digest())
+            .unwrap();
+        let (_, _, _, request, _) = lifecycle_requests(&fixture);
+        let preparation = authenticated_catalog(&authority, case.resolution.clone(), &request);
+        let recovery_dispatch = case
+            .coordinator
+            .issue_lifecycle_worker_dispatch(
+                recovery_permit,
+                &request,
+                preparation,
+                case.kernel_plan.clone(),
+            )
+            .unwrap();
+        assert_eq!(recovery_dispatch.encode().unwrap(), bytes);
 
         let first = dispatch
             .authenticate(&authority)
@@ -2564,19 +2572,17 @@ pub(crate) mod tests {
             );
         assert!(first.is_ok());
 
-        assert!(matches!(
-            NetworkLifecycleWorkerDispatchV1::decode(&bytes)
-                .unwrap()
-                .authenticate(&authority)
-                .unwrap()
-                .authorize_execution(
-                    &authority,
-                    &mut replay,
-                    &mut || Ok::<_, NetworkAdmissionError>(current_fence.clone()),
-                    &mut || Ok::<_, NetworkAdmissionError>(clock()),
-                ),
-            Err(NetworkWorkerProtocolError::Replay)
-        ));
+        let replayed = NetworkLifecycleWorkerDispatchV1::decode(&bytes)
+            .unwrap()
+            .authenticate(&authority)
+            .unwrap()
+            .authorize_execution(
+                &authority,
+                &mut replay,
+                &mut || Ok::<_, NetworkAdmissionError>(current_fence.clone()),
+                &mut || Ok::<_, NetworkAdmissionError>(clock()),
+            );
+        assert!(replayed.is_ok());
     }
 
     #[test]

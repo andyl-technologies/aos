@@ -57,10 +57,9 @@ pub enum NetworkLifecycleExecutionStepV1 {
 impl AuthenticatedNetworkLifecycleWorkerDispatchV1 {
     /// Claims the attempt under two fresh authority checks.
     ///
-    /// A claim remains consumed if the second check fails. Arm, Renew, and
-    /// Disarm admit only an exact replay because all of their fixed mutation
-    /// steps are idempotent replacements. Destroy remains strictly one-shot;
-    /// recovery must observe its potentially absent objects instead.
+    /// A claim remains consumed if the second check fails. Arm, Renew, Disarm,
+    /// and Destroy admit only an exact replay because every fixed mutation is
+    /// either a replacement or an exact absence-tolerant removal.
     ///
     /// # Errors
     ///
@@ -85,14 +84,14 @@ impl AuthenticatedNetworkLifecycleWorkerDispatchV1 {
         match self.request.context.action {
             NetworkNamespaceLifecycleActionV1::Arm
             | NetworkNamespaceLifecycleActionV1::Renew
-            | NetworkNamespaceLifecycleActionV1::Disarm => replay.claim_idempotent_lifecycle(
+            | NetworkNamespaceLifecycleActionV1::Disarm
+            | NetworkNamespaceLifecycleActionV1::Destroy => replay.claim_idempotent_lifecycle(
                 self.request.request_id,
                 self.request.effect_digest,
                 self.request.kernel_plan.digest(),
                 dispatch_digest,
             )?,
-            NetworkNamespaceLifecycleActionV1::Destroy
-            | NetworkNamespaceLifecycleActionV1::Fence => replay.claim(
+            NetworkNamespaceLifecycleActionV1::Fence => replay.claim(
                 self.request.request_id,
                 self.request.effect_digest,
                 self.request.kernel_plan.digest(),

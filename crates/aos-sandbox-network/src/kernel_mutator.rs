@@ -13,6 +13,7 @@
 //! arguments; no shell, caller path, interface label, or command text crosses
 //! this boundary.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Seek as _, Write as _};
@@ -35,7 +36,7 @@ use serde_json::{Value, json};
 use crate::kernel_observation::{
     NetworkKernelExpectationV1, ObservedIpAddressV1, ObservedIpPrefixV1,
 };
-use crate::kernel_reader::{NetworkKernelReaderError, PinnedArtifact};
+use crate::kernel_reader::{NetworkKernelReaderError, PinnedArtifact, successful_helper_stdout};
 use crate::namespace_pin::{NetworkNamespacePinMutationError, publish_namespace_pin};
 use crate::policy::{
     NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1, NetworkTransportProtocolV1,
@@ -46,6 +47,7 @@ use crate::{
 };
 
 const MAXIMUM_NFT_BATCH_BYTES: usize = 4 * 1024 * 1024;
+const MAXIMUM_LINK_INVENTORY_BYTES: usize = 64 * 1024;
 const MAXIMUM_ARGUMENTS: usize = 32;
 const MAXIMUM_ARGUMENT_BYTES: usize = 16 * 1024;
 const HELPER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -276,6 +278,7 @@ impl FixedNetworkKernelMutator {
                 bootstrap_namespace,
                 worker,
                 false,
+                false,
             )?,
             NetworkLifecycleExecutionStepV1::ArmLeaseGate
             | NetworkLifecycleExecutionStepV1::ReplaceLeaseGateAtomically => {
@@ -310,6 +313,7 @@ impl FixedNetworkKernelMutator {
                 bootstrap_namespace,
                 worker,
                 true,
+                false,
             )?,
             NetworkLifecycleExecutionStepV1::LowerLinks => self.set_link_pair_state(
                 expectation,
@@ -318,6 +322,7 @@ impl FixedNetworkKernelMutator {
                 bootstrap_namespace,
                 worker,
                 false,
+                authorization.action() == crate::NetworkNamespaceLifecycleActionV1::Destroy,
             )?,
             NetworkLifecycleExecutionStepV1::DisarmLeaseGate => {
                 self.set_default_drop_gate(expectation)?
@@ -347,15 +352,22 @@ impl FixedNetworkKernelMutator {
         bootstrap_namespace: &NamespaceFd,
         worker: &SingleThreadedProcess,
         raised: bool,
+        absent_is_success: bool,
     ) -> Result<(), NetworkKernelMutationError> {
         let Some(veth) = expectation.veth() else {
             return Ok(());
         };
         let state = if raised { "up" } else { "down" };
         self.in_namespace(target_namespace, bootstrap_namespace, worker, || {
+            if absent_is_success && !self.link_name_present(&veth.sandbox_name)? {
+                return Ok(());
+            }
             self.run_ip(&["link", "set", "dev", &veth.sandbox_name, state])
         })?;
         self.in_namespace(host_namespace, bootstrap_namespace, worker, || {
+            if absent_is_success && !self.link_name_present(&veth.host_name)? {
+                return Ok(());
+            }
             self.run_ip(&["link", "set", "dev", &veth.host_name, state])
         })
     }
@@ -472,7 +484,7 @@ impl FixedNetworkKernelMutator {
         worker: &SingleThreadedProcess,
     ) -> Result<(), NetworkKernelMutationError> {
         self.in_namespace(target_namespace, bootstrap_namespace, worker, || {
-            self.run_nft_batch(&encode_nftables_delete()?)
+            self.run_nft_destroy_table()
         })?;
         let Some(veth) = expectation.veth() else {
             return Ok(());
@@ -484,8 +496,22 @@ impl FixedNetworkKernelMutator {
                 expectation.assignment().epoch().get().to_string().into(),
                 encode_hex(expectation.assignment().digest().as_bytes()).into(),
             ])?;
-            self.run_ip(&["link", "delete", "dev", &veth.host_name])
+            if self.link_name_present(&veth.host_name)? {
+                self.run_ip(&["link", "delete", "dev", &veth.host_name])?;
+            }
+            Ok(())
         })
+    }
+
+    fn link_name_present(&self, expected_name: &str) -> Result<bool, NetworkKernelMutationError> {
+        let arguments = [
+            OsString::from("-j"),
+            OsString::from("link"),
+            OsString::from("show"),
+        ];
+        let output = self.ip.run(&arguments, MAXIMUM_LINK_INVENTORY_BYTES)?;
+        let stdout = successful_helper_stdout(output)?;
+        link_name_present_in_inventory(&stdout, expected_name)
     }
 
     fn in_namespace<T>(
@@ -810,6 +836,10 @@ impl FixedNetworkKernelMutator {
         )
     }
 
+    fn run_nft_destroy_table(&self) -> Result<(), NetworkKernelMutationError> {
+        run_fixed_status(&self.nft, &nftables_destroy_arguments(), None, &[])
+    }
+
     fn run_ip(&self, arguments: &[&str]) -> Result<(), NetworkKernelMutationError> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         self.run_ip_owned(&arguments)
@@ -822,6 +852,33 @@ impl FixedNetworkKernelMutator {
     fn run_lease_gate(&self, arguments: &[OsString]) -> Result<(), NetworkKernelMutationError> {
         run_fixed_status(&self.lease_gate_loader, arguments, None, &[])
     }
+}
+
+fn link_name_present_in_inventory(
+    bytes: &[u8],
+    expected_name: &str,
+) -> Result<bool, NetworkKernelMutationError> {
+    if !bytes.ends_with(b"\n") {
+        return Err(NetworkKernelMutationError::Helper);
+    }
+    let inventory =
+        serde_json::from_slice::<Value>(bytes).map_err(|_| NetworkKernelMutationError::Helper)?;
+    let records = inventory
+        .as_array()
+        .ok_or(NetworkKernelMutationError::Helper)?;
+    let mut names = BTreeSet::new();
+    for record in records {
+        let name = record
+            .as_object()
+            .and_then(|object| object.get("ifname"))
+            .and_then(Value::as_str)
+            .ok_or(NetworkKernelMutationError::Helper)?;
+        if name.is_empty() || name.len() > 15 || name.as_bytes().contains(&0) || !names.insert(name)
+        {
+            return Err(NetworkKernelMutationError::Helper);
+        }
+    }
+    Ok(names.contains(expected_name))
 }
 
 fn run_fixed_status(
@@ -919,10 +976,15 @@ fn encode_nftables_rules(
     encode_nftables_commands(commands)
 }
 
-fn encode_nftables_delete() -> Result<Vec<u8>, NetworkKernelMutationError> {
-    encode_nftables_commands(vec![
-        json!({"delete":{"table":{"family":TABLE_FAMILY,"name":TABLE_NAME}}}),
-    ])
+fn nftables_destroy_arguments() -> [OsString; 4] {
+    // `destroy` is the idempotent form: it removes the exact table when
+    // present and succeeds when a prior attempt already removed it.
+    [
+        "destroy".into(),
+        "table".into(),
+        TABLE_FAMILY.into(),
+        TABLE_NAME.into(),
+    ]
 }
 
 fn encode_nftables_commands(commands: Vec<Value>) -> Result<Vec<u8>, NetworkKernelMutationError> {
@@ -1191,6 +1253,45 @@ mod tests {
         assert_eq!(
             commands[2]["add"]["rule"]["comment"],
             format!("{FLOW_COMMENT_PREFIX}{}", "44".repeat(16))
+        );
+    }
+
+    #[test]
+    fn destroy_command_is_an_exact_idempotent_table_removal() {
+        assert_eq!(
+            nftables_destroy_arguments(),
+            ["destroy", "table", TABLE_FAMILY, TABLE_NAME].map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn complete_link_inventory_proves_presence_or_absence_without_filtering() {
+        let inventory = br#"[{"ifname":"lo"},{"ifname":"aoh000000000009"}]
+"#;
+
+        assert_eq!(
+            link_name_present_in_inventory(inventory, "aoh000000000009").unwrap(),
+            true
+        );
+        assert_eq!(
+            link_name_present_in_inventory(inventory, "aoh000000000010").unwrap(),
+            false
+        );
+        assert!(
+            link_name_present_in_inventory(
+                br#"[{"ifname":"lo"},{"ifname":"lo"}]
+"#,
+                "lo"
+            )
+            .is_err()
+        );
+        assert!(
+            link_name_present_in_inventory(
+                br#"[{"ifindex":1}]
+"#,
+                "lo"
+            )
+            .is_err()
         );
     }
 

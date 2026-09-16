@@ -558,6 +558,7 @@ impl DormantNetworkBrokerCallsiteV1 for ProductionNetworkBrokerCompositionV1<'_>
                             NetworkNamespaceLifecycleActionV1::Arm
                                 | NetworkNamespaceLifecycleActionV1::Renew
                                 | NetworkNamespaceLifecycleActionV1::Disarm
+                                | NetworkNamespaceLifecycleActionV1::Destroy
                         ) {
                             let permit = self
                                 .coordinator
