@@ -166,8 +166,8 @@ of the degraded one.)
 genuine substrate loss — never a single package — can pull the system out of
 multi-user:
 
-- authenticated `host.nix` provisioning projection invalid, or substrate broken in initrd
-  (repart/cryptsetup/mount-var, hard edges) → cannot
+- complete authenticated initrd configuration invalid, or substrate broken in
+  initrd (repart/cryptsetup/mount-var, hard edges) → cannot
   reach `initrd-fs.target` → **`emergency.target`**;
 - stage-2 structural failure (`/etc` swap indeterminate, `EX_SWAP=4`) →
   **`rescue.target`**.
