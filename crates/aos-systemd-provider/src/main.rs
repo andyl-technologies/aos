@@ -82,6 +82,9 @@ impl HandlerRole {
                 boot_platform::BootPlatformRole::Selection,
             )),
             "boot-success" => Ok(Self::BootPlatform(boot_platform::BootPlatformRole::Success)),
+            "image-health-observation" => Ok(Self::BootPlatform(
+                boot_platform::BootPlatformRole::HealthObservation,
+            )),
             "systemd-credential-delivery" => {
                 Ok(Self::Credential(credential::CredentialRole::Delivery))
             }

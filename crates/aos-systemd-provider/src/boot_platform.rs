@@ -27,6 +27,8 @@ use crate::{decode_value, target_context, value};
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
 const BOOT_ROOT: &str = "/boot";
 const RETENTION_ROOT: &str = "EFI/.aos-rollout-retention";
+const BOOT_ARTIFACT_CONTRACT: &str = "contract.json";
+const MAX_BOOT_ARTIFACT_CONTRACT_BYTES: u64 = 64 * 1024;
 
 const CONTEXT_SCHEMA: &str = "aos.systemd.image-rollout-platform-context/v1";
 
@@ -35,6 +37,7 @@ pub(crate) enum BootPlatformRole {
     ArtifactStorage,
     Selection,
     Success,
+    HealthObservation,
     HostRestart,
 }
 
@@ -53,6 +56,13 @@ struct RolloutRequest {
     predecessor: ImageIdentity,
     candidate: ImageIdentity,
     retention_expires_at_millis: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct BootArtifactContract {
+    schema: String,
+    health_executable: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,6 +195,12 @@ struct SuccessObservation<'a> {
 struct RestartObservation<'a> {
     schema: &'a str,
     state: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct HealthObservation<'a> {
+    schema: &'a str,
+    healthy: bool,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -326,7 +342,9 @@ fn validate_inputs(
     inputs: &AbilityValue,
 ) -> Result<Option<String>> {
     match role {
-        BootPlatformRole::ArtifactStorage | BootPlatformRole::Success => {
+        BootPlatformRole::ArtifactStorage
+        | BootPlatformRole::Success
+        | BootPlatformRole::HealthObservation => {
             let requested: RolloutRequest = decode_value(inputs)?;
             ensure!(
                 &requested == rollout,
@@ -426,6 +444,9 @@ fn apply(
             success_observation(observation_schema, rollout)
         }
         (BootPlatformRole::Success, "observe") => success_observation(observation_schema, rollout),
+        (BootPlatformRole::HealthObservation, "observe") => {
+            health_observation(observation_schema, rollout)
+        }
         (BootPlatformRole::HostRestart, "request") => {
             run(
                 &tools.systemctl,
@@ -455,6 +476,7 @@ fn observe_role(
         BootPlatformRole::ArtifactStorage => storage_observation(observation_schema, rollout),
         BootPlatformRole::Selection => selection_observation(observation_schema, rollout, entry),
         BootPlatformRole::Success => success_observation(observation_schema, rollout),
+        BootPlatformRole::HealthObservation => health_observation(observation_schema, rollout),
         BootPlatformRole::HostRestart => value(&RestartObservation {
             schema: observation_schema,
             state: "not-requested",
@@ -517,6 +539,97 @@ fn success_observation(observation_schema: &str, rollout: &RolloutRequest) -> Re
     })
 }
 
+fn health_observation(observation_schema: &str, rollout: &RolloutRequest) -> Result<AbilityValue> {
+    let (root, contract) = boot_artifact_contract(&rollout.candidate)?;
+    let executable = contract_health_executable(&root, &contract)?;
+    let status = Command::new(executable)
+        .status()
+        .context("observing candidate image health")?;
+    let healthy = health_from_exit_code(status.code())?;
+
+    value(&HealthObservation {
+        schema: observation_schema,
+        healthy,
+    })
+}
+
+fn health_from_exit_code(code: Option<i32>) -> Result<bool> {
+    match code {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        Some(code) => bail!("image health executable returned indeterminate status {code}"),
+        None => bail!("image health executable terminated without an exit status"),
+    }
+}
+
+fn immutable_store_root(path: &Path, label: &str) -> Result<PathBuf> {
+    ensure!(
+        path.is_absolute()
+            && path.starts_with("/nix/store")
+            && path
+                .components()
+                .all(|component| matches!(component, Component::RootDir | Component::Normal(_))),
+        "{label} is not a normalized immutable store path"
+    );
+    ensure!(
+        path.strip_prefix("/nix/store")?.components().count() == 1,
+        "{label} does not name an immutable artifact root"
+    );
+    let canonical = fs::canonicalize(path).with_context(|| format!("resolving {label}"))?;
+    ensure!(
+        canonical == path,
+        "{label} is not its canonical artifact root"
+    );
+    Ok(canonical)
+}
+
+fn boot_artifact_contract(identity: &ImageIdentity) -> Result<(PathBuf, BootArtifactContract)> {
+    let root = immutable_store_root(
+        Path::new(&identity.boot_artifact_contract),
+        "boot artifact contract",
+    )?;
+    let path = root.join(BOOT_ARTIFACT_CONTRACT);
+    let metadata =
+        fs::symlink_metadata(&path).with_context(|| format!("inspecting {}", path.display()))?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "boot artifact contract document is not a regular file"
+    );
+    ensure!(
+        metadata.len() <= MAX_BOOT_ARTIFACT_CONTRACT_BYTES,
+        "boot artifact contract document exceeds its size bound"
+    );
+    let contract: BootArtifactContract = serde_json::from_slice(
+        &fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
+    )
+    .with_context(|| format!("decoding {}", path.display()))?;
+    ensure!(
+        contract.schema == "aos.systemd.boot-artifact-contract/v1",
+        "unsupported systemd boot artifact contract"
+    );
+    Ok((root, contract))
+}
+
+fn contract_health_executable(root: &Path, contract: &BootArtifactContract) -> Result<PathBuf> {
+    let metadata = fs::symlink_metadata(&contract.health_executable)
+        .context("inspecting image health executable")?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "image health executable is not a regular file"
+    );
+    ensure!(
+        metadata.permissions().mode() & 0o111 != 0,
+        "image health executable is not executable"
+    );
+    let executable =
+        validate_store_executable(&contract.health_executable, "image health executable")?;
+    ensure!(
+        executable.starts_with(root),
+        "image health executable is outside its authenticated contract"
+    );
+    Ok(executable)
+}
+
 fn validate_rollout(request: &RolloutRequest) -> Result<()> {
     ensure!(
         !request.candidate.state_format.is_empty()
@@ -535,6 +648,7 @@ fn require_method(
         (BootPlatformRole::ArtifactStorage, "observe")
         | (BootPlatformRole::Selection, "resolve" | "observe")
         | (BootPlatformRole::Success, "observe")
+        | (BootPlatformRole::HealthObservation, "observe")
         | (BootPlatformRole::HostRestart, "observe") => AccessMode::Read,
         (BootPlatformRole::ArtifactStorage, "retain" | "release")
         | (BootPlatformRole::Selection, "select" | "clear")
@@ -554,6 +668,7 @@ const fn role_name(role: BootPlatformRole) -> &'static str {
         BootPlatformRole::ArtifactStorage => "artifact-storage",
         BootPlatformRole::Selection => "selection",
         BootPlatformRole::Success => "success",
+        BootPlatformRole::HealthObservation => "health-observation",
         BootPlatformRole::HostRestart => "host-restart",
     }
 }
@@ -951,5 +1066,13 @@ mod tests {
         );
         assert!(safe_entry_path("../EFI/Linux/aos.efi").is_err());
         assert!(safe_entry_path("loader/aos.conf").is_err());
+    }
+
+    #[test]
+    fn health_exit_codes_are_fail_closed() {
+        assert!(health_from_exit_code(Some(0)).unwrap());
+        assert!(!health_from_exit_code(Some(1)).unwrap());
+        assert!(health_from_exit_code(Some(2)).is_err());
+        assert!(health_from_exit_code(None).is_err());
     }
 }
