@@ -977,12 +977,8 @@ in rec {
   # Render the `[Install]` directives — Alias=, WantedBy=, RequiredBy=,
   # UpheldBy= — for every unit type. Stage 2 ALSO populates .wants /
   # .requires / .upholds via `generateUnits`'s symlink farm; the
-  # `[Install]` section is redundant-but-safe in that case (systemd's
-  # preset/enable mechanism is idempotent if the symlinks already
-  # exist). RFC-0001 package targets rely on this section as the
-  # runtime preset path: the evaluated manifest names the target, and the
-  # every-boot `aos-preset.service` walks `[Install]` to create the runtime
-  # symlink in the tmpfs /etc upper.
+  # `[Install]` section preserves the unit's standard systemd installation
+  # metadata. Runtime activation is authored by typed service resources.
   commonUnitText = def: bodyLines: let
     install =
       optionalString (def.aliases != []) "Alias=${concatStringsSep " " def.aliases}\n"
@@ -1005,16 +1001,7 @@ in rec {
   # `text` is the rendered unit file; everything else drives how
   # `generateUnits` assembles symlinks and drop-ins.
 
-  targetToUnit = def: let
-    # RFC-0001 package targets are enabled by preset policy at runtime, so
-    # their unit text needs an [Install] section even though the expose
-    # artifact must not carry direct multi-user.target.wants symlinks.
-    presetOnlyWantedBy =
-      if lib.hasPrefix "aos-pkg-" def.name && lib.hasSuffix ".target" def.name && def.wantedBy == []
-      then ["multi-user.target"]
-      else def.wantedBy;
-    textDef = def // {wantedBy = presetOnlyWantedBy;};
-  in {
+  targetToUnit = def: {
     inherit
       (def)
       name
@@ -1025,7 +1012,7 @@ in rec {
       enable
       overrideStrategy
       ;
-    text = commonUnitText textDef "";
+    text = commonUnitText def "";
   };
 
   # serviceToUnit — pure function of `def`. Upstream's

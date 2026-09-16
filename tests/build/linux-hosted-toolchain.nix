@@ -52,7 +52,6 @@
   fakeSystem.config.system.build = {
     toplevel = empty;
     kernel = targetKernel;
-    systemdSystemPresets = empty;
   };
   rootfs = import ../../lib/build/rootfs.nix {
     pkgs = cross.buildPackages;

@@ -129,13 +129,8 @@
   realizedUnitNames = builtins.filter (name: name != null) (builtins.map realizedUnitName resources);
   expectedControlPlaneUnits = [
     "aos-activate.service"
-    "aos-config-render.target"
     "aos-config.target"
-    "aos-fetch.target"
     "aos-graph-compile.service"
-    "aos-pkg-fetch@.service"
-    "aos-pkg-install@.service"
-    "aos-preset.service"
   ];
 in
   assert builtins.length (builtins.attrNames initial.config.aos.abilities.requests) > 0;

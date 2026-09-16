@@ -97,7 +97,6 @@
   system.config.system.build = {
     toplevel = empty;
     kernel = target.linux;
-    systemdSystemPresets = empty;
   };
   rootfs = import ../../lib/build/rootfs.nix {
     pkgs = cross.buildPackages;

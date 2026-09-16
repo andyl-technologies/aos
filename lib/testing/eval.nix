@@ -452,11 +452,6 @@
         system.config.systemd.targets.aos-config.after)
     then throw "aos-config.target must wait for the atomic activation commit"
     else if
-      !(builtins.elem
-        "aos-activate.service"
-        system.config.systemd.services.aos-preset.after)
-    then throw "package presets must run after host configuration activation"
-    else if
       !(containsStr
         "__activate-config"
         system.config.systemd.services.aos-activate.script)

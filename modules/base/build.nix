@@ -503,7 +503,6 @@ in {
                 ln -sfn ${config.system.build.etcBasedir} $out/etc-basedir
                 ln -sfn ${config.system.build.etcDump} $out/etc-dump
                 ln -sfn ${config.system.build.systemdSystemUnits} $out/systemd-units
-                ln -sfn ${config.system.build.systemdSystemPresets} $out/systemd-presets
                 ln -sfn ${config.environment.etc."os-release".source} $out/os-release
                 ln -sfn ${config.system.build.kernel} $out/kernel
                 ln -sfn ${config.system.build.initrd} $out/initrd
