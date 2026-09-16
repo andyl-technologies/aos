@@ -262,11 +262,6 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return commands::cache::run(printer, command).await;
     }
 
-    // The metadata agent does not need a repository or NixRunner.
-    if let Commands::Metadata { command } = &cli.command {
-        return commands::metadata::run(command).await;
-    }
-
     // Hub commands talk to the public API and do not need NixRunner.
     if let Commands::Hub { command } = &cli.command {
         return commands::hub::run(printer, command).await;
@@ -501,7 +496,6 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         Commands::Serve { .. } => unreachable!(),
         Commands::Token { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
-        Commands::Metadata { .. } => unreachable!(),
         Commands::Hub { .. } => unreachable!(),
         Commands::Image { .. } => unreachable!(),
         Commands::Container { .. } => unreachable!(),
@@ -535,9 +529,7 @@ fn validate_container_runtime(command: &Commands) -> Result<()> {
 /// Applies the runtime boundary using an explicit value so tests do not mutate
 /// the process environment.
 fn validate_runtime(command: &Commands, runtime: Option<&OsStr>) -> Result<()> {
-    if runtime == Some(OsStr::new("container"))
-        && matches!(command, Commands::Vm { .. } | Commands::Metadata { .. })
-    {
+    if runtime == Some(OsStr::new("container")) && matches!(command, Commands::Vm { .. }) {
         bail!(
             "this command requires host boot, virtualization, or device access unavailable in an AOS container; run it on an AOS machine or VM"
         );

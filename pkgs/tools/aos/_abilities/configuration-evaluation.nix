@@ -11,7 +11,8 @@
   resultOf = lib.abilities.resultOf;
   consumerInstance = "configuration-evaluation";
   hostStage =
-    config.aos.abilities.environment != null
+    config.aos.abilities.environment
+    != null
     && config.aos.abilities.environment.stage == "host";
 
   producer = key: interface: parameters:
@@ -117,14 +118,6 @@
         name = "aos-registry-sync";
         aliases = [];
       };
-      conditions.all = [
-        {
-          kind = "path";
-          predicate = "exists";
-          path = cfg.hostNix;
-          negated = false;
-        }
-      ];
       readiness = {
         mechanism = "successful-exit";
         signal_scope = "none";
@@ -327,8 +320,6 @@
               entry_point = "bin/aos-package-runtime";
               arguments = [
                 "__eval-service"
-                "--host-nix"
-                cfg.hostNix
                 "--base-lib"
                 cfg.baseLib
                 "--module-abi"
@@ -339,10 +330,6 @@
                 cfg.manifest
                 "--eval-root"
                 cfg.evalRoot
-                "--provisioning-state"
-                cfg.provisioningState
-                "--image-version"
-                cfg.imageVersion
               ];
             };
             ignore_failure = false;
@@ -522,12 +509,6 @@ in {
       internal = true;
       description = "Whether this host runs boot configuration evaluation.";
     };
-    hostNix = lib.mkOption {
-      type = lib.abilities.types.executionPath;
-      default = "/run/aos-metadata/host.nix";
-      internal = true;
-      description = "Authenticated host module path released by initrd metadata authorization.";
-    };
     baseLib = lib.mkOption {
       type = lib.abilities.types.executionPath;
       default = "/aos-toplevel/base-lib";
@@ -535,7 +516,10 @@ in {
       description = "Immutable image base module library path.";
     };
     moduleAbi = lib.mkOption {
-      type = lib.abilities.types.integer {minimum = 1; maximum = 4294967295;};
+      type = lib.abilities.types.integer {
+        minimum = 1;
+        maximum = 4294967295;
+      };
       default = 1;
       internal = true;
       description = "Fallback module ABI when the running image omits it.";
@@ -557,21 +541,6 @@ in {
       default = "/run/aos-eval";
       internal = true;
       description = "Private evaluation scratch directory.";
-    };
-    provisioningState = lib.mkOption {
-      type = lib.abilities.types.executionPath;
-      default = "/var/lib/aos-provisioning";
-      internal = true;
-      description = "Durable provisioning evidence and last-known-good input directory.";
-    };
-    imageVersion = lib.mkOption {
-      type = lib.abilities.types.string {
-        maxLength = 256;
-        syntax = null;
-      };
-      default = "unknown";
-      internal = true;
-      description = "Immutable image version recorded with provisioning evidence.";
     };
     measuredBoot = lib.mkOption {
       type = lib.abilities.types.boolean;

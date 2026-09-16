@@ -288,7 +288,7 @@ class QemuMachine(Machine):
             # identity is baked into the image's /etc (via extendModules), so a
             # kernel-boot machine may carry no metadata channel at all. When
             # absent, no SCSI CD-ROM is attached (see the argv block below) and
-            # aos-metadata-detect falls through to the `metal` platform.
+            # the metadata provisioning provider detects the `metal` platform.
             # A repart-provisioned kernel disk ships no /var, so
             # grow the per-run copy by var_size_mib to open trailing free
             # space (sparse — os.truncate extends with holes) and relocate

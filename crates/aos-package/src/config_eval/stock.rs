@@ -62,9 +62,6 @@ pub const DEFAULT_EVAL_ROOT: &str = "/run/aos-eval";
 /// The default manifest path the converged eval emits.
 pub const DEFAULT_MANIFEST_PATH: &str = "/run/aos/manifest.json";
 
-/// The normalized metadata facts consumed by the production evaluator.
-pub const DEFAULT_FACTS_PATH: &str = "/run/aos-metadata/facts.json";
-
 /// A cold stock-Nix evaluator over a prepared eval root.
 ///
 /// Each [`NixEvaluator::evaluate`] call writes `entry.nix` into the root and

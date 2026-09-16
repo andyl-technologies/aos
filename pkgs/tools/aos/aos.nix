@@ -599,7 +599,6 @@ in
           install_cli aos "$out" ${lib.escapeShellArg (runtimeBinPath aosRuntimeTools)} 0
           install_cli apm "$apm" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
           install_cli apr "$apr" ${lib.escapeShellArg (runtimeBinPath aprRuntimeTools)} 0
-          install_cli aos-metadata-runtime "$metadataRuntime" ${lib.escapeShellArg (runtimeBinPath metadataRuntimeTools)} 0
           mkdir -p "$metadataRuntime/libexec"
           mv \
             "$out/bin/aos-metadata-provisioning-provider" \
@@ -615,11 +614,6 @@ in
       exec "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped" "$@"
       METADATA_PROVIDER
           chmod +x "$metadataRuntime/libexec/aos-metadata-provisioning-provider"
-          substitute \
-            ${./_abilities/aos-metadata-initrd-service.sh.in} \
-            "$metadataRuntime/libexec/aos-metadata-initrd-service" \
-            --replace-fail @bash@ ${bash}
-          chmod +x "$metadataRuntime/libexec/aos-metadata-initrd-service"
 
           # Give the shared binary the private entry-point name so
           # current_exe() resolves to the exact signed handler path. The public
@@ -696,9 +690,7 @@ in
         PATH=/unreachable "$apm/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
         PATH=/unreachable "$packageRuntime/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
         PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" __eval --help > /dev/null
-        PATH=/unreachable "$metadataRuntime/bin/aos-metadata-runtime" --help > /dev/null
         test -x "$metadataRuntime/libexec/aos-metadata-provisioning-provider"
-        test -x "$metadataRuntime/libexec/aos-metadata-initrd-service"
       ''}
 
           # This deterministic signer/fixture process exists only for the
@@ -716,7 +708,6 @@ in
             "$out/bin/.aos-unwrapped" \
             "$apm/bin/.aos-package-runtime-unwrapped" \
             "$apr/bin/.apr-unwrapped" \
-            "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped" \
             "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped"; do
             strip -s "$binary"
           done
@@ -729,7 +720,6 @@ in
             for binary in \
               "$apm/bin/.aos-package-runtime-unwrapped" \
               "$apr/bin/.apr-unwrapped" \
-              "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped" \
               "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped"; do
               rpath=$(patchelf --print-rpath "$binary")
               rpath=$(printf '%s' "$rpath" | sed \

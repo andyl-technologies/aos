@@ -1,7 +1,7 @@
 //! Offline-channel [`PlatformFetcher`] implementations.
 //!
 //! Every offline channel resolves to a mounted directory under
-//! `/run/aos-metadata` produced by `detect`'s config-drive mount helper (or
+//! the provider's private transaction scratch produced by its config-drive mount helper (or
 //! the qemu `fw_cfg` sysfs tree). The fetcher reads files from that directory
 //! with `std::fs` — no network — so each is unit-testable against a fixture
 //! directory with no root.

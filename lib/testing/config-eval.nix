@@ -100,40 +100,24 @@
     !(builtins.tryEval mismatchSystem.config.system.build.toplevel.name).success;
 
   defaultTrustsPlatform =
-    systemA.config.aos.config.evalAtBoot.trust
-    == "platform"
-    && systemA.config.aos.config.evalAtBoot.hostNix == "/run/aos-metadata/host.nix";
-  metadataRuntimeCommand = "${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime";
-  metadataRuntimeCommandText = builtins.unsafeDiscardStringContext metadataRuntimeCommand;
-  signedAuthorizeService =
-    signedSystem.config.boot.initrd.systemd.services.aos-metadata-authorize;
-  signedAuthorizeScript = signedAuthorizeService.script;
+    systemA.config.aos.config.evalAtBoot.trust == "platform";
+  signedAuthorization =
+    signedSystem.config.aos.metadata.storageProvisioning.authorizationConfiguration;
   stage2Script = signedSystem.config.systemd.services.aos-eval.script;
-  stage2BeforeBindingVerification =
-    builtins.head (lib.splitString "${metadataRuntimeCommandText} verify-binding" stage2Script);
   signedModeRequiresSignature =
-    lib.hasInfix
-    "${metadataRuntimeCommand} authorize"
-    signedAuthorizeScript
-    && lib.hasInfix "--trust signed" signedAuthorizeScript
+    signedAuthorization.schema
+    == "aos.metadata.provisioning-authorization-configuration/v1"
+    && signedAuthorization.trust_mode == "signed"
+    && builtins.length signedAuthorization.trusted_config_keys == 1
+    && (builtins.head signedAuthorization.trusted_config_keys).kind == "immutable-file"
     && builtins.match
-    ".*--trusted-config-keys-dir /nix/store/[a-z0-9]+-aos-provisioning-trust-anchors.*"
-    signedAuthorizeScript
-    != null
-    && builtins.elem "aos-metadata-fetch.service" signedAuthorizeService.requires
-    && builtins.elem "aos-provisioning-eval.service" signedAuthorizeService.before;
-  stage2UsesAcceptedBinding =
-    lib.hasInfix
-    "${metadataRuntimeCommand} verify-binding"
-    stage2Script
-    && builtins.match
-    ".*--require-signed-host-nix.*"
-    stage2Script
-    == null;
-  stage2InvalidatesStaleEvidenceBeforeVerification =
-    lib.hasInfix "rm -f" stage2BeforeBindingVerification
-    && lib.hasInfix "manifest.json" stage2BeforeBindingVerification
-    && lib.hasInfix "graph.json" stage2BeforeBindingVerification;
+    "/nix/store/[a-z0-9]+-aos-provisioning-trust-anchors/ops.pub"
+    (builtins.head signedAuthorization.trusted_config_keys).path
+    != null;
+  stage2UsesRetainedManifest =
+    lib.hasInfix "__eval-service" stage2Script
+    && !lib.hasInfix "/run/aos-metadata" stage2Script
+    && !lib.hasInfix "--host-nix" stage2Script;
   signedModeWithoutKeyThrows =
     !(builtins.tryEval signedWithoutKeySystem.config.system.build.toplevel.name).success;
 
@@ -149,16 +133,14 @@
           (lib.throwIfNot mismatchBuildThrows
             "config-eval: an operator-prefix mismatch must be rejected"
             (lib.throwIfNot defaultTrustsPlatform
-              "config-eval: the stock image must trust the metadata-agent stash"
+              "config-eval: the stock image must trust platform-authorized provisioning input"
               (lib.throwIfNot signedModeRequiresSignature
-                "config-eval: signed policy must verify the complete provisioning input in initrd"
-                (lib.throwIfNot stage2UsesAcceptedBinding
-                  "config-eval: stage 2 must verify the initrd-accepted host binding without repeating host-only signature verification"
-                  (lib.throwIfNot stage2InvalidatesStaleEvidenceBeforeVerification
-                    "config-eval: stage 2 must invalidate stale runtime evidence before binding verification can fail"
-                    (lib.throwIfNot signedModeWithoutKeyThrows
-                      "config-eval: signed policy without a trust anchor must fail evaluation"
-                      true)))))))));
+                "config-eval: signed policy must project exact trust anchors into the typed authorization request"
+                (lib.throwIfNot stage2UsesRetainedManifest
+                  "config-eval: stage 2 must consume retained manifest inputs without an ambient metadata path"
+                  (lib.throwIfNot signedModeWithoutKeyThrows
+                    "config-eval: signed policy without a trust anchor must fail evaluation"
+                    true))))))));
 in
   pkgs.mkDerivation {
     pname = "config-eval-check";

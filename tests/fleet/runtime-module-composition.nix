@@ -667,8 +667,11 @@ in {
       boot_initrd_identity_before = actual_boot_initrd_identity(
           expected_boot_initrd
       )
+      retained_host_path = runtime.succeed(
+          f"{JQ} -er '.inputs.host_nix.store_path' /run/aos/manifest.json"
+      ).strip()
       platform_hash = runtime.succeed(
-          f"{SHA256SUM} /run/aos-metadata/host.nix"
+          f"{SHA256SUM} {retained_host_path}"
       ).split()[0]
       initial = current_generation()
       initial_manifest = json.loads(runtime.succeed(
@@ -969,7 +972,7 @@ in {
       assert manifest["inputs"]["host_nix"] == platform_host_input
       assert manifest["inputs"]["instance_facts"] == platform_facts_input
       assert runtime.succeed(
-          f"{SHA256SUM} /run/aos-metadata/host.nix"
+          f"{SHA256SUM} {retained_host_path}"
       ).split()[0] == platform_hash
 
       # Select the production configuration publication from the checked plan,

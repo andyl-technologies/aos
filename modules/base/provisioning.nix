@@ -82,14 +82,6 @@
   });
 in {
   options.aos.provisioning = {
-    stateDir = lib.mkOption {
-      type = lib.types.str;
-      default = "/var/lib/aos-provisioning";
-      internal = true;
-      readOnly = true;
-      description = "Durable provisioning evidence and manual definition state.";
-    };
-
     storage.partitions = lib.mkOption {
       type = lib.types.attrsOf partitionType;
       default = {};

@@ -16,14 +16,11 @@
           };
           aos.packageRuntime.configurationEvaluation = {
             enable = enabled;
-            hostNix = "/run/aos-metadata/host.nix";
             baseLib = "/aos-toplevel/base-lib";
             moduleAbi = 7;
             desired = "/etc/aos/packages.d/desired.toml";
             manifest = "/run/aos/manifest.json";
             evalRoot = "/run/aos-eval";
-            provisioningState = "/var/lib/aos-provisioning";
-            imageVersion = "2026.09";
             inherit measuredBoot pcrPublicKey;
           };
         }
@@ -94,8 +91,6 @@ in
         entry_point = "bin/aos-package-runtime";
         arguments = [
           "__eval-service"
-          "--host-nix"
-          "/run/aos-metadata/host.nix"
           "--base-lib"
           "/aos-toplevel/base-lib"
           "--module-abi"
@@ -106,10 +101,6 @@ in
           "/run/aos/manifest.json"
           "--eval-root"
           "/run/aos-eval"
-          "--provisioning-state"
-          "/var/lib/aos-provisioning"
-          "--image-version"
-          "2026.09"
         ];
       };
       ignore_failure = false;

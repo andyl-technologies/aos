@@ -327,11 +327,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: TokenCmd,
     },
-    /// Cross-cloud metadata agent (initrd user-data fetch)
-    Metadata {
-        #[command(subcommand)]
-        command: aos_package::metadata::MetadataCommand,
-    },
     /// Binary cache client (push, pull, prefetch, list)
     Cache {
         #[command(subcommand)]

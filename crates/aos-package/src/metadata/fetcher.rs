@@ -196,7 +196,7 @@ pub struct MacIface {
 ///
 /// Normalized from OpenStack `network_data.json`, NoCloud netplan
 /// `network-config`, or a DigitalOcean IMDS interface document, and rendered
-/// to a single `10-aos-seed.network` ([`crate::metadata::staticnet`]).
+/// to the typed network bootstrap value ([`crate::metadata::staticnet`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StaticNetwork {

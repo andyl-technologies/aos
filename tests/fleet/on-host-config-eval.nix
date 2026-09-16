@@ -139,9 +139,8 @@ in {
           except Exception:
               for unit in (
                   "multi-user.target",
-                  "aos-provisioning-persist.service",
                   "aos-firstboot-reeval.service",
-                  "aos-host-config-restore.service",
+                  "aos-ability-host-receiver.service",
                   "aos-nix-db.service",
                   "aos-seed-baked-packages.service",
                   "aos-eval.service",
@@ -202,7 +201,7 @@ in {
 
 
       wait_for_activation(image_default)
-      image_default.succeed("test ! -e /run/aos-metadata/host.nix")
+      image_default.succeed("test ! -e /run/aos-metadata")
       default_preview = json.loads(image_default.succeed(f"""
           {APM} --json switch --dry-run \
             --eval-root /run/runtime-config-image-default-preview
@@ -348,19 +347,21 @@ in {
             if [ "$key" = AOS_MODULE_ABI ]; then module_abi="$value"; fi
           done < /aos-toplevel/os-release
           test -n "$module_abi"
+          host_nix=$({JQ} -er '.inputs.host_nix.store_path' /run/aos/manifest.json)
+          facts=$({JQ} -er '.inputs.instance_facts.store_path' /run/aos/manifest.json)
           rm -rf /run/runtime-config-eval-one /run/runtime-config-eval-two
           mkdir -p /run/runtime-config-eval-one /run/runtime-config-eval-two
           {APM} __eval \
-            --host-nix /run/aos-metadata/host.nix \
+            --host-nix "$host_nix" \
             --base-lib "$base_lib" \
-            --facts /run/aos-metadata/facts.json \
+            --facts "$facts" \
             --module-abi "$module_abi" \
             --out /run/runtime-config-eval-one/manifest.json \
             --eval-root /run/runtime-config-eval-one
           {APM} __eval \
-            --host-nix /run/aos-metadata/host.nix \
+            --host-nix "$host_nix" \
             --base-lib "$base_lib" \
-            --facts /run/aos-metadata/facts.json \
+            --facts "$facts" \
             --module-abi "$module_abi" \
             --out /run/runtime-config-eval-two/manifest.json \
             --eval-root /run/runtime-config-eval-two
@@ -490,19 +491,14 @@ in {
       assert current_generation() == first
       assert_live("one")
 
-      # Fail-closed cache-loss regression: a machine that has committed a
-      # non-empty operator host input must never silently substitute `{}` and
-      # activate a base-only generation when both metadata and its durable cache
-      # disappear. Either eval may fail or the graph may no-op; the committed
-      # pointer and live policy must remain unchanged.
-      runtime.succeed("rm -f /run/aos-metadata/host.nix")
-      runtime.succeed("rm -f /var/lib/aos-provisioning/current/host.nix")
+      # Removing ephemeral evaluation products must recover from the retained,
+      # content-addressed manifest inputs without recreating a metadata stash.
       runtime.succeed("rm -f /run/aos/manifest.json /run/aos/graph.json")
-      runtime.fail("systemctl restart aos-host-config-restore.service")
-      runtime.fail("systemctl restart aos-eval.service")
+      runtime.succeed("systemctl restart aos-eval.service")
       runtime.succeed("systemctl restart aos-graph-compile.service")
-      runtime.fail("test -e /run/aos/manifest.json")
-      runtime.fail("test -e /run/aos/graph.json")
+      runtime.succeed("test -s /run/aos/manifest.json")
+      runtime.succeed("test -s /run/aos/graph.json")
+      runtime.succeed("test ! -e /run/aos-metadata")
       assert current_generation() == first
       assert_live("one")
     '';

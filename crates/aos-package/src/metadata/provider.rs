@@ -468,7 +468,6 @@ async fn authorize(
         stash.write_platform_env(&environment)?;
         run_fetch(&FetchOptions {
             stash_dir: stash_dir.clone(),
-            var_etc_root: None,
         })
         .await?;
         let (facts, network_bootstrap) = read_observed_instance_facts(&stash_dir)?;
