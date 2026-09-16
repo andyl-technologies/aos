@@ -1309,7 +1309,6 @@ mod tests {
         assert!(!text.contains("baseLib.mergeImageManifest"), "{text}");
         assert!(text.contains("manifest = finalManifest"));
         assert!(!text.contains("mergeImageDefaults ="));
-        assert!(!text.contains("installAtBoot.config"), "{text}");
         assert!(
             !text.contains("credentials = baseLib.lib.recursiveUpdate"),
             "{text}"

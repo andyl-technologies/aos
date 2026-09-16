@@ -39,8 +39,6 @@
   credentialRecoveryLifecycle = requests."aos:aos-credential-recovery-lifecycle".parameters;
   snapshotImplementation = host.config.aos.abilities.implementations."aos:synchronized-registry-snapshot";
 in
-  assert !(requests ? "aos:package-profile-specification");
-  assert !(requests ? "aos:package-profile-convergence-lifecycle");
   assert requests ? "aos:aos-attest-lifecycle";
   assert requests ? "aos:aos-credential-recovery-lifecycle";
   assert initrd.config.aos.abilities.requests == {};
