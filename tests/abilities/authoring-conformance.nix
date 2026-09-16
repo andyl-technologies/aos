@@ -1309,6 +1309,125 @@
     _type = "aos-package-output-selector";
     inherit package output;
   };
+  selectedManagerModule = import ../../modules/base/_manager-contributions.nix;
+  selectedManagerProjection = {
+    _type = "aos-selected-manager";
+    name = "test-manager";
+    package = pkgs.systemd;
+    configuration = {
+      buildInitrd = _: {
+        artifact = pkgs.systemd;
+        sourceStageBundle = pkgs.systemd;
+        staticAbilityContract = pkgs.systemd;
+      };
+      buildOutput = _: pkgs.systemd;
+      executableScripts.activate = {
+        mode = "0755";
+        name = "activate";
+        text = "exit 0";
+      };
+      filesystemEntries."manager.conf" = {
+        kind = "text";
+        mode = "0644";
+        text = "[Manager]";
+      };
+      ownership = {
+        executableScripts.activate = "test-manager";
+        filesystemEntries."manager.conf" = "test-manager";
+      };
+      rootfs = {
+        closureRoots = [pkgs.systemd];
+        initExecutable = "${pkgs.systemd}/lib/systemd/systemd";
+        trees = [
+          {
+            collision = "reject";
+            destination = "/usr/lib/test-manager";
+            source = "manager-tree";
+          }
+        ];
+      };
+    };
+  };
+  evaluateSelectedManager = value:
+    (lib.evalModules {
+      modules = [
+        selectedManagerModule
+        {config.aos.manager.selected = value;}
+      ];
+    })
+    .config
+    .aos
+    .manager
+    .selected;
+  rejectsSelectedManager = value:
+    !(builtins.tryEval (builtins.deepSeq (evaluateSelectedManager value) true)).success;
+  selectedManagerUnknownFieldRejections = [
+    (selectedManagerProjection // {unknown = true;})
+    (selectedManagerProjection // {
+      configuration = selectedManagerProjection.configuration // {unknown = true;};
+    })
+    (selectedManagerProjection // {
+      configuration = selectedManagerProjection.configuration // {
+        executableScripts.activate = selectedManagerProjection.configuration.executableScripts.activate // {unknown = true;};
+      };
+    })
+    (selectedManagerProjection // {
+      configuration = selectedManagerProjection.configuration // {
+        filesystemEntries."manager.conf" = selectedManagerProjection.configuration.filesystemEntries."manager.conf" // {unknown = true;};
+      };
+    })
+    (selectedManagerProjection // {
+      configuration = selectedManagerProjection.configuration // {
+        ownership = selectedManagerProjection.configuration.ownership // {unknown = true;};
+      };
+    })
+    (selectedManagerProjection // {
+      configuration = selectedManagerProjection.configuration // {
+        rootfs = selectedManagerProjection.configuration.rootfs // {unknown = true;};
+      };
+    })
+    (selectedManagerProjection // {
+      configuration = selectedManagerProjection.configuration // {
+        rootfs = selectedManagerProjection.configuration.rootfs // {
+          trees = [
+            ((builtins.head selectedManagerProjection.configuration.rootfs.trees) // {unknown = true;})
+          ];
+        };
+      };
+    })
+  ];
+  managerSelection = {
+    bindingsForImplementation = implementation:
+      if implementation == "system-manager"
+      then [{binding.request = "system:manager";}]
+      else [];
+  };
+  evaluateSystemdUsers = abilitySelection:
+    (lib.evalModules {
+      modules = [
+        {
+          options.aos.users = {
+            users = lib.mkOption {
+              type = lib.types.attrs;
+              default = {};
+            };
+            groups = lib.mkOption {
+              type = lib.types.attrs;
+              default = {};
+            };
+          };
+        }
+        (args:
+          import ../../pkgs/system/_systemd-abilities/platform/users.nix (
+            args // {inherit abilitySelection;}
+          ))
+      ];
+    })
+    .config
+    .aos
+    .users;
+  selectedSystemdUsers = evaluateSystemdUsers managerSelection;
+  unselectedSystemdUsers = evaluateSystemdUsers null;
   handlerImplementation = artifact: entryPoint: {
     inherit (implementation) description interface methods guarantees requirements artifacts desiredType requiredFeatures;
     artifact = artifact;
@@ -1646,6 +1765,22 @@ in
   assert !(taggedUnionEvaluation.config.test.settings ? _module);
   assert !invalidDecodedRecord.success;
   assert !invalidResourceReference.success;
+  assert !(evaluateSelectedManager selectedManagerProjection ? _module);
+  assert !((evaluateSelectedManager selectedManagerProjection).configuration ? _module);
+  assert builtins.all rejectsSelectedManager selectedManagerUnknownFieldRejections;
+  assert builtins.attrNames selectedSystemdUsers.users == [
+    "systemd-coredump"
+    "systemd-journal"
+    "systemd-network"
+    "systemd-oom"
+    "systemd-resolve"
+    "systemd-timesync"
+  ];
+  assert builtins.attrNames selectedSystemdUsers.groups == builtins.attrNames selectedSystemdUsers.users;
+  assert unselectedSystemdUsers == {
+    groups = {};
+    users = {};
+  };
   assert validExecutableRequest.config.aos.abilities.requests."authoring:executable".parameters.executable.entry_point == "bin/server";
   assert !(authoredGuarantee ? descriptor);
   assert builtins.removeAttrs

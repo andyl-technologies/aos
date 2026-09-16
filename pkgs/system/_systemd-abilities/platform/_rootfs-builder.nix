@@ -311,26 +311,6 @@ in
               done < store-paths
               echo ""
 
-              # Merge dependency-provided udev rules into the conventional
-              # vendor directory. The Nix store keeps each package isolated,
-              # but udev does not discover rule directories through PATH.
-              # In particular, device-mapper's rules publish /dev/mapper/*
-              # nodes after dm-verity and dm-crypt activation.
-              mkdir -p rootfs/usr/lib/udev/rules.d
-              for rules_dir in rootfs/nix.lower/store/*/lib/udev/rules.d; do
-                [ -d "$rules_dir" ] || continue
-                for rule in "$rules_dir"/*.rules; do
-                  [ -e "$rule" ] || continue
-                  name=$(basename "$rule")
-                  target="/nix/store/''${rule#rootfs/nix.lower/store/}"
-                  if [ -e "rootfs/usr/lib/udev/rules.d/$name" ]; then
-                    echo "rootfs-builder: duplicate udev rule $name" >&2
-                    exit 1
-                  fi
-                  ln -s "$target" "rootfs/usr/lib/udev/rules.d/$name"
-                done
-              done
-
               # ── 3. Selected init and compat symlinks ────────────────────────
               ${managerInitScript}
               ln -sfn "$AOS_BASH/bin/bash" rootfs/usr/bin/bash

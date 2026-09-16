@@ -339,6 +339,28 @@ in rec {
       else last.value;
   };
 
+  ## A function whose result is merged through the supplied result type.
+  ## Multiple definitions remain composable: each function receives the same
+  ## argument and the result type owns conflict handling for their outputs.
+  ## # Type
+  ## `type -> type`
+  functionTo = resultType: {
+    name = "functionTo(${resultType.name})";
+    description = "function returning ${resultType.description}";
+    check = builtins.isFunction;
+    merge = loc: defs: argument:
+      resultType.merge
+      (loc ++ ["<function result>"])
+      (builtins.map (definition:
+        definition
+        // {value = definition.value argument;})
+      defs);
+    _aosDocType = {
+      kind = "opaque";
+      signature = "function returning ${resultType.description}";
+    };
+  };
+
   ## # Network types
 
   port = {

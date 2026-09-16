@@ -1,6 +1,7 @@
 ##! Exact package-selected system manager projection.
 {lib, ...}: let
   textEntryType = lib.types.submodule {
+    config._module.strict = true;
     options = {
       kind = lib.mkOption {
         type = lib.types.enum ["text"];
@@ -17,6 +18,7 @@
     };
   };
   symlinkEntryType = lib.types.submodule {
+    config._module.strict = true;
     options = {
       kind = lib.mkOption {
         type = lib.types.enum ["symlink"];
@@ -30,6 +32,7 @@
   };
   filesystemEntryType = lib.types.either textEntryType symlinkEntryType;
   executableScriptType = lib.types.submodule {
+    config._module.strict = true;
     options = {
       mode = lib.mkOption {
         type = lib.types.strMatching "[0-7]{3,4}";
@@ -46,6 +49,7 @@
     };
   };
   ownershipType = lib.types.submodule {
+    config._module.strict = true;
     options = {
       executableScripts = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
@@ -58,6 +62,7 @@
     };
   };
   initrdBuildResultType = lib.types.submodule {
+    config._module.strict = true;
     options = {
       artifact = lib.mkOption {
         type = lib.types.package;
@@ -96,7 +101,7 @@
     && builtins.substring 0 1 value == "/"
     && builtins.all (component: component != "" && component != "." && component != "..") (builtins.tail components);
   treeType = lib.types.submodule {
-    _module.strict = true;
+    config._module.strict = true;
     options = {
       collision = lib.mkOption {
         type = lib.types.enum ["reject" "replace"];
@@ -128,7 +133,7 @@
       && destinationsAreDisjoint rest;
   rootfsType =
     lib.types.addCheck (lib.types.submodule {
-      _module.strict = true;
+      config._module.strict = true;
       options = {
         closureRoots = lib.mkOption {
           type = lib.types.listOf lib.types.pathInStore;
@@ -147,6 +152,7 @@
       destinationsAreDisjoint (builtins.map (tree: tree.destination) value.trees));
   configurationType =
     lib.types.addCheck (lib.types.submodule {
+      config._module.strict = true;
       options = {
         buildInitrd = lib.mkOption {
           type = lib.types.functionTo initrdBuildResultType;
@@ -179,6 +185,7 @@
       && builtins.attrNames value.executableScripts
       == builtins.attrNames value.ownership.executableScripts);
   selectedManagerType = lib.types.submodule {
+    config._module.strict = true;
     options = {
       _type = lib.mkOption {
         type = lib.types.enum ["aos-selected-manager"];
