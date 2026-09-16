@@ -6,6 +6,7 @@
 }: let
   alias = "storage-provisioning";
   interface = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
+  contentObject = lib.abilities.interfaces.contentAddressedArtifacts;
   networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
   emptyResult = {
     requests = {};
@@ -40,6 +41,11 @@
   in
     emptyResult
     // {
+      requests = builtins.foldl' (
+        requests: entry:
+          requests
+          // authorizedInputChildRequests entry.binding.slot entry.parameters
+      ) {} entries;
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
           value.readiness-resource = reference instance entry.binding.slot;
@@ -64,6 +70,28 @@
     inherit requirement parameters;
     scope = [key requirement];
     slot = key;
+  };
+  authorizedInputObject = key: parameters: {
+    name = "authorized-provisioning-input-${key}";
+    media_type = "application/vnd.aos.metadata.authorized-provisioning-input+json;version=1";
+    prerequisites = parameters.prerequisites;
+  };
+  authorizedInputChildRequests = key: parameters: let
+    objectKey = "authorized-provisioning-input-${key}";
+    objectRequest = authorizedInputObject key parameters;
+  in {
+    "authorized-input-object-${key}" = {
+      requirement = "authorized-input-object";
+      scope = [key "authorized-input-object"];
+      slot = objectKey;
+      parameters = objectRequest;
+    };
+    "authorized-input-object-operations-${key}" = {
+      requirement = "authorized-input-object-operations";
+      scope = [key "authorized-input-object-operations"];
+      slot = "${objectKey}-provisioning-operations";
+      parameters = objectRequest;
+    };
   };
   childRequests = key: resource: {
     "${key}" = childRequest "effects" key resource.value;
@@ -123,6 +151,15 @@
       if builtins.length matches == 1
       then builtins.head matches
       else throw "storage provisioning requires one exact desired revision for ${change.resource.key}";
+    revisionForResource = resource: kind: let
+      matches = builtins.filter (revision:
+        revision.resource == resource
+        && revision.kind == kind)
+      context.after.resources;
+    in
+      if builtins.length matches == 1
+      then builtins.head matches
+      else throw "storage provisioning requires one exact ${kind} revision";
     selectedBinding = change: requestPrefix: method: access: let
       requestKey =
         if requestPrefix == ""
@@ -277,6 +314,7 @@
       planKey = "observe-plan-${resourceKey}";
       networkApplyKey = "apply-network-bootstrap-${resourceKey}";
       commitKey = "commit-${resourceKey}";
+      authorizedInputCommitKey = "commit-authorized-input-${resourceKey}";
       detectBinding = selectedBinding change "detect-platform" "detect" "read";
       authorizationBinding = selectedBinding change "authorize-input" "authorize" "exclusive-write";
       planBinding = selectedBinding change "observe-plan" "observe" "exclusive-write";
@@ -297,6 +335,35 @@
         && builtins.elem "apply" permission.operations)
       networkEffectsBinding.caller_grant.resources;
       hostNetworkResource = (builtins.head networkEffectsPermissions).resource;
+      contentOwnerEntry = selectedExternalBinding change "authorized-input-object" "observe" "read";
+      contentOwnerBinding = contentOwnerEntry.binding;
+      contentOwnerPermissions = builtins.filter (permission:
+        permission.access == "read"
+        && builtins.elem "observe" permission.operations)
+      contentOwnerBinding.caller_grant.resources;
+      contentResource =
+        if contentOwnerBinding.interface == contentObject.identity
+        && builtins.length contentOwnerPermissions == 1
+        then (builtins.head contentOwnerPermissions).resource
+        else throw "storage provisioning requires one exact authorized-input content owner";
+      contentRevision = revisionForResource contentResource contentObject.identity.name;
+      contentRequest = authorizedInputObject resourceKey desired.value;
+      checkedContentRequest =
+        if contentRevision.value == contentRequest
+        then contentRevision.value
+        else throw "storage provisioning authorized-input content request differs from its desired revision";
+      contentOperationsEntry = selectedExternalBinding change "authorized-input-object-operations" "commit" "exclusive-write";
+      contentOperationsBinding = contentOperationsEntry.binding;
+      contentOperationsPermissions = builtins.filter (permission:
+        permission.resource == contentResource
+        && permission.access == "exclusive-write"
+        && builtins.elem "commit" permission.operations)
+      contentOperationsBinding.caller_grant.resources;
+      checkedContentResource =
+        if contentOperationsBinding.interface == contentObject.operationInterface.identity
+        && builtins.length contentOperationsPermissions == 1
+        then (builtins.head contentOperationsPermissions).resource
+        else throw "storage provisioning requires one exact authorized-input content operation resource";
       hostNetworkRevisions = builtins.filter (revision:
         revision.resource == hostNetworkResource
         && revision.kind == networkConfiguration.identity.name)
@@ -405,6 +472,22 @@
         access = "exclusive-write";
         controller = controllerIdentity;
       };
+      authorizedInputCommitOperation = operation {
+        key = authorizedInputCommitKey;
+        binding = contentOperationsBinding;
+        method = "commit";
+        phase = "converging";
+        inputPhase = "runtime";
+        targetInterface = contentObject.identity;
+        targetResource = checkedContentResource;
+        targetLifetime = "persistent";
+        inputs = object {
+          request = literal checkedContentRequest;
+          blob = result "merge" authorizationMergeKey "authorized-input-blob";
+        };
+        access = "exclusive-write";
+        controller = controllerFor contentResource;
+      };
     in {
       operations = [
         detectOperation
@@ -413,6 +496,7 @@
         (authorize onlineAuthorizationKey "online")
         planOperation
         networkApplyOperation
+        authorizedInputCommitOperation
         commitOperation
       ];
       decisions = [
@@ -461,6 +545,13 @@
                 online = (result "operation" onlineAuthorizationKey "network-bootstrap").reference;
               };
             };
+            authorized-input-blob = {
+              descriptor = methodOutput "aos.metadata.storage-provisioning-input-authorization" "authorize" "authorized-input-blob";
+              alternatives = {
+                offline = (result "operation" offlineAuthorizationKey "authorized-input-blob").reference;
+                online = (result "operation" onlineAuthorizationKey "authorized-input-blob").reference;
+              };
+            };
           };
         }
       ];
@@ -473,6 +564,8 @@
         (edge "operation" offlineAuthorizationKey "merge" authorizationMergeKey "branch-merge")
         (edge "operation" onlineAuthorizationKey "merge" authorizationMergeKey "branch-merge")
         (edge "merge" authorizationMergeKey "operation" planKey "data")
+        (edge "merge" authorizationMergeKey "operation" authorizedInputCommitKey "data")
+        (edge "operation" authorizedInputCommitKey "operation" commitKey "readiness")
         (edge "operation" planKey "operation" commitKey "data")
       ]
       ++ bootstrapEdges;

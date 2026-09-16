@@ -12,6 +12,7 @@
   selectedPoolProvider = selectedProvider pkgs.aos-zfs-provider "storage-pool";
   selectedDatasetProvider = selectedProvider pkgs.aos-zfs-provider "storage-dataset";
   selectedProvisioningProvider = selectedProvider pkgs.aos-storage-provisioning-provider "storage-provisioning";
+  selectedContentProvider = selectedProvider pkgs.aos-nix-store-provider "content-addressed-object";
   systemdSelector = lib.abilities.packageOutput {};
   selectedNetworkProvider = import ./_selected-package-provider.nix {
     inherit lib;
@@ -49,6 +50,9 @@
   provisioningPlan = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "observe-plan-provisioning";
   provisioningNetwork = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "network-readiness-provisioning";
   provisioningNetworkEffects = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "network-configuration-effects-provisioning";
+  provisioningContent = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "authorized-input-object-provisioning";
+  provisioningContentOperations = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "authorized-input-object-operations-provisioning";
+  contentEffects = controllerKey "aos-nix-store-provider:content-addressed-object" "aos-nix-store-provider:manager" "authorized-provisioning-input-provisioning";
   networkEffects = controllerKey "systemd:network-configuration" "systemd:manager" "host-network";
   evaluated = lib.evalModules {
     inherit lib;
@@ -66,6 +70,7 @@
             "aos-cryptsetup-provider:manager" = {};
             "aos-storage-format-provider:manager" = {};
             "aos-storage-provisioning-provider:manager" = {};
+            "aos-nix-store-provider:manager" = {};
             "aos-zfs-provider:manager" = {};
             "network-provider:manager" = {};
             "systemd:manager" = {};
@@ -172,6 +177,24 @@
               implementation = "systemd:network-configuration-effects";
               providerInstance = "systemd:manager";
               slot = "host-network";
+            };
+            "test:provisioning-content" = {
+              request = provisioningContent;
+              implementation = "aos-nix-store-provider:content-addressed-object";
+              providerInstance = "aos-nix-store-provider:manager";
+              slot = "authorized-provisioning-input-provisioning";
+            };
+            "test:content-effects" = {
+              request = contentEffects;
+              implementation = "aos-nix-store-provider:content-addressed-object-operations";
+              providerInstance = "aos-nix-store-provider:manager";
+              slot = "authorized-provisioning-input-provisioning";
+            };
+            "test:provisioning-content-operations" = {
+              request = provisioningContentOperations;
+              implementation = "aos-nix-store-provider:content-addressed-object-operations";
+              providerInstance = "aos-nix-store-provider:manager";
+              slot = "authorized-provisioning-input-provisioning-provisioning-operations";
             };
           };
         };
@@ -340,6 +363,11 @@
         module = pkgs.aos-zfs-provider.module + "/module.nix";
       }
       {
+        name = "aos-nix-store-provider";
+        inherit (pkgs.aos-nix-store-provider) version;
+        module = pkgs.aos-nix-store-provider.module + "/module.nix";
+      }
+      {
         name = "aos-storage-provisioning-provider";
         inherit (pkgs.aos-storage-provisioning-provider) version;
         module = pkgs.aos-storage-provisioning-provider.module + "/module.nix";
@@ -356,6 +384,7 @@
       selectedPoolProvider
       selectedDatasetProvider
       selectedProvisioningProvider
+      selectedContentProvider
       selectedNetworkProvider
     ];
     specialArgs = {
@@ -375,6 +404,7 @@
   pool = resourceByKind "aos.storage.pool";
   dataset = resourceByKind "aos.storage.dataset";
   provisioning = resourceByKind "aos.storage.provisioning";
+  authorizedInputObject = resourceByKind "aos.artifact.content-addressed-object";
   hostNetwork = resourceByKind "aos.network.configuration";
   interfaceIdentity = name: let
     matches = builtins.filter (entry: entry.name == name) (builtins.attrValues abilities.interfaces);
@@ -442,6 +472,22 @@
           access = "exclusive-write";
         })
         (authorizedBinding {
+          id = "authorized-input-object";
+          request = "authorized-input-object-${provisioning.resource.key}";
+          interface = lib.abilities.interfaces.contentAddressedArtifacts.identity;
+          method = "observe";
+          resource = authorizedInputObject.resource;
+          access = "read";
+        })
+        (authorizedBinding {
+          id = "authorized-input-object-operations";
+          request = "authorized-input-object-operations-${provisioning.resource.key}";
+          interface = lib.abilities.interfaces.contentAddressedArtifacts.operationInterface.identity;
+          method = "commit";
+          resource = authorizedInputObject.resource;
+          access = "exclusive-write";
+        })
+        (authorizedBinding {
           id = "observe-plan";
           request = "observe-plan-${provisioning.resource.key}";
           interface = interfaceIdentity "aos.metadata.storage-provisioning-plan";
@@ -485,6 +531,13 @@
             group = "storage-provisioning";
           };
         }
+        {
+          inherit (authorizedInputObject) resource;
+          controller = {
+            provider = authorizedInputObject.resource.provider;
+            group = "content-addressed-object";
+          };
+        }
       ];
     };
   imageTransition = transitionFor "image";
@@ -493,6 +546,7 @@
     builtins.head (builtins.filter (operation: operation.key.key == key) transitionFragment.operations);
   imageNetworkApply = operationByKey imageTransition "apply-network-bootstrap-${provisioning.resource.key}";
   operatorNetworkApply = operationByKey operatorTransition "apply-network-bootstrap-${provisioning.resource.key}";
+  authorizedInputCommit = operationByKey imageTransition "commit-authorized-input-${provisioning.resource.key}";
   bootstrapEdge = edge:
     edge.from.kind
     == "merge"
@@ -501,7 +555,11 @@
     && edge.to.key.key == "apply-network-bootstrap-${provisioning.resource.key}"
     && edge.kind == "data";
 in
-  assert builtins.length resources == 6;
+  assert builtins.length resources == 7;
+  assert lib.abilities.interfaces.contentAddressedArtifacts.declaration.aggregation.rejectSlotCollisions;
+  assert lib.abilities.interfaces.contentAddressedArtifacts.operationInterface.declaration.aggregation.rejectSlotCollisions;
+  assert lib.abilities.interfaces.contentAddressedArtifacts.declaration.aggregation.controllerGroup != lib.abilities.interfaces.contentAddressedArtifacts.operationInterface.declaration.aggregation.controllerGroup;
+  assert abilities.bindings."test:provisioning-content".slot != abilities.bindings."test:provisioning-content-operations".slot;
   assert abilities.compositionRequests.${mappingEffects}.parameters == mapping.value;
   assert abilities.compositionRequests.${formatEffects}.parameters == format.value;
   assert mapping.realization.schema == "aos.storage.encrypted-block-mapping-realization/v1";
@@ -537,6 +595,21 @@ in
     value = null;
   };
   assert builtins.length (builtins.filter bootstrapEdge operatorTransition.edges) == 0;
+  assert authorizedInputCommit.target.resource == authorizedInputObject.resource;
+  assert authorizedInputCommit.target.interface == lib.abilities.interfaces.contentAddressedArtifacts.identity;
+  assert authorizedInputCommit.inputs.fields.blob == {
+    source = "operation-result";
+    reference = {
+      producer = {
+        kind = "merge";
+        key = {
+          scope = ["storage-provisioning"];
+          key = "authorized-input-${provisioning.resource.key}";
+        };
+      };
+      output = "authorized-input-blob";
+    };
+  };
   assert provisioning.realization.systemd_repart.entry_point == "bin/systemd-repart";
   assert provisioning.realization.sfdisk.entry_point == "sbin/sfdisk";
   assert storageTypes.storageDevice.check "/dev/sda";
