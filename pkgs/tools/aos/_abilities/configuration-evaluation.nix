@@ -35,6 +35,10 @@
   multiUser = producer "multi-user" interfaces.systemMilestoneReadiness {
     milestone = "multi-user";
   };
+  hostStageReceived = producer "host-stage-received" interfaces.systemMilestoneReadiness {
+    milestone = "host-stage-received";
+  };
+  hostStageReceivedReadiness = resultOf "host-stage-received" "readiness-resource";
   storeDatabase = {
     requirementTemplates.nix-store-database =
       lib.abilities.interfaceSelector {
@@ -430,12 +434,14 @@
           storeViewResource
         ];
         after = [
+          hostStageReceivedReadiness
           (resultOf "local-filesystems" "readiness-resource")
           (resultOf "network-readiness" "readiness-resource")
           registryReadiness
         ];
         before = [(resultOf "user-sessions-ready" "readiness-resource")];
         requires = [
+          hostStageReceivedReadiness
           (resultOf "local-filesystems" "readiness-resource")
         ];
         wants = [
@@ -535,6 +541,7 @@
     networkReadiness
     userSessions
     multiUser
+    hostStageReceived
     registrySynchronization
     service
     bootCommit

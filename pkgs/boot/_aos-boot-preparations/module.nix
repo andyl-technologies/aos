@@ -65,6 +65,8 @@
   initrdStageExecution = systemMilestone "initrd-stage" "initrd-stage-executed";
   bootIdentity = systemMilestone "boot-identity" "boot-identity-validated";
   bootStorageUnlocked = systemMilestone "boot-storage-unlocked" "boot-storage-unlocked";
+  localFilesystems = systemMilestone "local-filesystems" "local-filesystems";
+  hostStageReceived = systemMilestone "host-stage-received" "host-stage-received";
   switchRootReadiness = resultOf "switch-root" "readiness-resource";
   sysrootReadiness = resultOf "sysroot" "readiness-resource";
   varReadiness = resultOf "var" "readiness-resource";
@@ -77,6 +79,8 @@
   initrdStageReadiness = resultOf "initrd-stage" "readiness-resource";
   bootIdentityReadiness = resultOf "boot-identity" "readiness-resource";
   bootStorageUnlockedReadiness = resultOf "boot-storage-unlocked" "readiness-resource";
+  localFilesystemsReadiness = resultOf "local-filesystems" "readiness-resource";
+  hostStageReceivedReadiness = resultOf "host-stage-received" "readiness-resource";
   service = {
     key,
     description,
@@ -170,7 +174,6 @@
     implicit_dependencies = false;
   };
   serviceResource = key: resultOf "${key}-lifecycle" "service-resource";
-  externalServiceResource = request: resultOf request "service-resource";
   handoffCommand = arguments: {
     executable = {
       artifact = runtimeArtifact;
@@ -236,7 +239,7 @@
       // {
         after = [
           sysrootReadiness
-          (externalServiceResource "aos-boot-storage:aos-boot-transaction-storage-lifecycle")
+          initrdStageReadiness
         ];
         before = [
           (serviceResource "mount-var")
@@ -245,7 +248,7 @@
         ];
         requires = [
           sysrootReadiness
-          (externalServiceResource "aos-boot-storage:aos-boot-transaction-storage-lifecycle")
+          initrdStageReadiness
         ];
         required_by = [initrdFilesystemsReadiness];
         implicit_dependencies = false;
@@ -292,18 +295,10 @@
     dependencies =
       emptyDependencies
       // {
-        after = [(resultOf "aos:local-filesystems" "readiness-resource")];
-        before = [
-          (externalServiceResource "aos:configuration-evaluation-lifecycle")
-          (externalServiceResource "aos:aos-graph-compile-lifecycle")
-          (resultOf "aos:aos-config" "activation-resource")
-        ];
-        requires = [(resultOf "aos:local-filesystems" "readiness-resource")];
-        required_by = [
-          (externalServiceResource "aos:configuration-evaluation-lifecycle")
-          (externalServiceResource "aos:aos-graph-compile-lifecycle")
-          (resultOf "aos:aos-config" "activation-resource")
-        ];
+        after = [localFilesystemsReadiness];
+        before = [hostStageReceivedReadiness];
+        requires = [localFilesystemsReadiness];
+        required_by = [hostStageReceivedReadiness];
       };
   };
   substrateEnvironment = {
@@ -634,7 +629,7 @@
     networkWaitOnline
   ];
   handoffInitrdFragments = [initrdController initrdHandoffBarrier];
-  handoffHostFragments = [hostReceiver];
+  handoffHostFragments = [localFilesystems hostStageReceived hostReceiver];
   lifecycleResourceFor = fragment: let
     requests = (serviceManagement.splitContribution fragment).configured.requests or {};
     lifecycleRequests = builtins.filter
