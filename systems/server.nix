@@ -10,7 +10,10 @@
   pkgs,
   ...
 }: {
-  imports = [./_artifact-backend.nix];
+  imports = [
+    ./_artifact-backend.nix
+    ./_system-manager.nix
+  ];
 
   # Image capability: immutable root with writable state provisioned on /var.
   aos.filesystems.zfs.enable = lib.mkDefault false;

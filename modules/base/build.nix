@@ -7,10 +7,10 @@
 ##!   - system.build.kernel         — the kernel derivation
 ##!   - system.build.initrd         — the initrd derivation
 ##!
-##! systemd unit / timer / socket / etc. definitions now live in
-##! modules/systemd/system.nix under the typed `systemd.*` option tree.
-##! The toplevel links `system.build.systemdSystemUnits`, a thin builder-side
-##! materialization of the systemd entries in `system.build.configManifest`.
+##! The selected manager package projects its filesystem entries, executable
+##! scripts, ownership, and opaque build output through `aos.manager.selected`.
+##! This module incorporates that projection without importing the concrete
+##! manager renderer.
 {
   config,
   pkgs,
@@ -36,7 +36,10 @@
           value.source = "${selectedOutput entry.source.artifact}/${entry.source.path}";
         })
         treeContributions);
-  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
+  managerConfiguration = config.aos.manager.selected.configuration;
+  managerConfigurationOutput = managerConfiguration.buildOutput {
+    inherit (pkgs) runCommand;
+  };
   # --- composefs / EROFS inputs (spec v12 §5.3) ---
   #
   # Mirror the upstream nixpkgs etc.nix derivation set:
@@ -282,10 +285,7 @@ in {
       '';
     };
 
-    # `systemd.services` / `systemd.timers` and the rest of the
-    # typed systemd.* option tree live in modules/systemd/system.nix
-    # now (spec v3.1 stage 4). The stage-3 `systemdNew.*` alias has
-    # been renamed back to `systemd.*` in the same commit.
+    # Concrete manager packages own their typed configuration option trees.
 
     system.build = {
       ## The top-level system derivation (image builder entry point).
@@ -329,6 +329,7 @@ in {
       ## The initrd derivation providing initrd.img.
       initrd = lib.mkOption {
         type = lib.types.package;
+        contributable = true;
         description = "The initrd derivation providing initrd.img.";
       };
 
@@ -502,8 +503,9 @@ in {
                 ln -sfn ${config.system.build.etcMetadataImage} $out/etc-metadata.erofs
                 ln -sfn ${config.system.build.etcBasedir} $out/etc-basedir
                 ln -sfn ${config.system.build.etcDump} $out/etc-dump
-                ln -sfn ${config.system.build.systemdSystemUnits} $out/systemd-units
-                ln -sfn ${config.system.build.systemdSystemPresets} $out/systemd-presets
+                for managerEntry in ${managerConfigurationOutput}/*; do
+                  ln -sfn "$managerEntry" "$out/''${managerEntry##*/}"
+                done
                 ln -sfn ${config.environment.etc."os-release".source} $out/os-release
                 ln -sfn ${config.system.build.kernel} $out/kernel
                 ln -sfn ${config.system.build.initrd} $out/initrd
@@ -563,11 +565,10 @@ in {
 
     # --- aos.config-manifest/v1 (pure data) ----------------------------
     #
-    # The builder-side toplevel consumes these same systemd entries through the
-    # thin materializer in `lib/modules/systemd/lib.nix`; there is no parallel
-    # derivation-bearing unit assembly path.
+    # The builder-side toplevel consumes these same selected-manager entries;
+    # there is no parallel derivation-bearing assembly path.
     system.build.configManifest = let
-      jobScripts = config.system.build.systemdJobScripts;
+      jobScripts = managerConfiguration.executableScripts;
 
       isOctal = m: builtins.match "[0-7]{3,4}" m != null;
 
@@ -679,23 +680,20 @@ in {
       envEtcOwnership = builtins.listToAttrs (builtins.map (record:
         lib.nameValuePair record.path record.owner)
       envEtcRecords);
-      systemdEtcOwnership =
-        systemdLib.unitsToOwnership
-        config.system.build.systemdUnitBodies
-        config.system.build.systemdUnitOwners;
+      managerEtcOwnership = managerConfiguration.ownership.filesystemEntries;
 
       etcCollisions =
         builtins.filter
         (target:
           builtins.any
           (systemdTarget: pathsOverlap target systemdTarget)
-          (builtins.attrNames config.system.build.systemdEtcEntries))
+          (builtins.attrNames managerConfiguration.filesystemEntries))
         (builtins.attrNames envEtc);
       etc =
         if etcCollisions != []
-        then throw "environment.etc and systemd entries collide at final /etc target(s): ${lib.concatStringsSep ", " etcCollisions}"
-        else envEtc // config.system.build.systemdEtcEntries;
-      etcOwnership = envEtcOwnership // systemdEtcOwnership;
+        then throw "environment.etc and selected manager entries collide at final /etc target(s): ${lib.concatStringsSep ", " etcCollisions}"
+        else envEtc // managerConfiguration.filesystemEntries;
+      etcOwnership = envEtcOwnership // managerEtcOwnership;
 
       # Users from `aos.users.*` (best-effort; `or` fallbacks keep this
       # robust if the users module isn't imported by a given variant).
@@ -830,17 +828,7 @@ in {
       storeOwnership = builtins.listToAttrs (builtins.map (path:
         lib.nameValuePair path (storeOwner path))
       storePaths);
-      unitOwnership = config.system.build.systemdUnitOwners;
-      jobScriptOwner = key: let
-        matchingUnits =
-          builtins.filter
-          (unit: lib.hasPrefix "${unit}:" key)
-          (builtins.attrNames unitOwnership);
-      in
-        if builtins.length matchingUnits == 1
-        then unitOwnership.${builtins.head matchingUnits}
-        else throw "config manifest job-script key ${key} does not identify exactly one unit";
-      jobScriptOwnership = lib.mapAttrs (key: _: jobScriptOwner key) jobScripts;
+      jobScriptOwnership = managerConfiguration.ownership.executableScripts;
       hashIdentity = value: "sha256:${builtins.hashString "sha256" value}";
       baseLibPath = pathString config.aos.config.evalAtBoot.baseLib;
       # The private package runtime executes `__eval`; record the artifact that
@@ -917,14 +905,6 @@ in {
         inherit ownership;
       });
 
-    # Route builder-side systemd assembly through the emitted manifest. The
-    # systemd module's equivalent default exists only so its standalone test
-    # does not need to import this full base-build module.
-    system.build.systemdMaterializationData = {
-      etc = config.system.build.configManifest.etc;
-      jobScripts = config.system.build.configManifest.jobScripts;
-    };
-
     system.build.kernel = pkgs.linux;
     system.build.systemPath =
       "/run/wrappers/bin:"
@@ -945,7 +925,6 @@ in {
       pkgs.sed
       pkgs.gawk
       pkgs.util-linux
-      pkgs.systemd
       pkgs.kmod
       # The provider installs only libexec/module artifacts. Selecting it here
       # makes the four shared filesystem implementations available to the
@@ -1011,9 +990,7 @@ in {
       '';
     };
 
-    # `system.build.initrd` is set by modules/systemd/initrd.nix (tier ii):
-    # it renders `boot.initrd.systemd.*` into a gzip+cpio initramfs via
-    # modules/base/initrd-builder.nix.
+    # The exactly selected manager package contributes `system.build.initrd`.
     }
   ];
 }
