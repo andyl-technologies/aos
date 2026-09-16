@@ -190,6 +190,262 @@ pub(super) struct GuardianEffectHandoffV1 {
     publication: GuardianCheckpointPublicationV1,
 }
 
+/// Names the protected Guardian operation that selected an effect handoff.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DormantGuardianActionV1 {
+    /// Arms the first Guardian worker and Network lease gate.
+    Arm,
+    /// Renews an existing worker timer and Network lease gate.
+    Renew,
+    /// Requests best-effort payload freeze at the early deadline.
+    EarlyFreeze,
+    /// Contains an explicitly revoked assignment.
+    Revoke,
+    /// Contains an assignment at its hard deadline.
+    Expire,
+    /// Contains an assignment after enforcement loss.
+    EnforcementLoss,
+    /// Replaces an exactly proved-dead Guardian worker.
+    ReplaceWorker,
+    /// Traverses and releases all managed resources.
+    Cleanup,
+    /// Restores enforcement before resuming payload execution.
+    Resume,
+}
+
+/// Names the sole external operation authorized by a Guardian handoff.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DormantGuardianEffectStepV1 {
+    /// Arms or renews the exact Network lease gate.
+    ProgramNetworkLeaseGate,
+    /// Restores default-drop on the exact Network objects.
+    DefaultDropNetwork,
+    /// Requests the exact Host payload freeze.
+    RequestPayloadFreeze,
+    /// Stops the exact Host payload.
+    StopPayload,
+    /// Verifies complete death of the prior Guardian worker.
+    VerifyOldWorkerDead,
+    /// Starts only the admitted replacement Guardian worker.
+    StartGuardianWorker,
+    /// Releases payload work after all enforcement is current.
+    ReleasePayload,
+    /// Reprograms the absolute BOOTTIME renewal timer.
+    ProgramRenewalTimer,
+    /// Traverses exact Host managed state.
+    TraverseHost,
+    /// Traverses exact Storage managed state.
+    TraverseStorage,
+    /// Traverses exact Mount managed state.
+    TraverseMount,
+    /// Traverses exact Network managed state.
+    TraverseNetwork,
+    /// Verifies the complete post-effect state twice.
+    VerifyCompleteState,
+}
+
+/// Carries one protected Guardian effect for a future controller adapter.
+///
+/// This move-only value is minted only after the reducer's ambiguity boundary
+/// and release watermark both survive exact protected readback. It contains no
+/// timer, kernel, controller, process, or service handle, so constructing it
+/// cannot activate an effect.
+#[must_use]
+pub struct DormantGuardianEffectHandoffV1<'owner> {
+    handoff: GuardianEffectHandoffV1,
+    _owner: std::marker::PhantomData<&'owner mut DormantGuardianProtectedOwnerV1>,
+}
+
+impl DormantGuardianEffectHandoffV1<'_> {
+    /// Returns the exact idempotency request identity.
+    #[must_use]
+    pub const fn request_id(&self) -> [u8; 16] {
+        self.handoff.plan.admission().request_id()
+    }
+
+    /// Returns the monotonic Guardian operation sequence.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.handoff.plan.admission().sequence()
+    }
+
+    /// Returns the closed Guardian action selecting the step.
+    #[must_use]
+    pub const fn action(&self) -> DormantGuardianActionV1 {
+        public_guardian_action(self.handoff.plan.admission().action())
+    }
+
+    /// Returns the sole protected-current-selected external step.
+    #[must_use]
+    pub const fn step(&self) -> DormantGuardianEffectStepV1 {
+        public_guardian_step(self.handoff.plan.step())
+    }
+
+    /// Returns the immutable admission commitment.
+    #[must_use]
+    pub const fn admission_digest(&self) -> ObjectDigest {
+        self.handoff.plan.admission().digest()
+    }
+
+    /// Returns the exact signed-and-durable authority commitment.
+    #[must_use]
+    pub const fn authority_digest(&self) -> ObjectDigest {
+        self.handoff.plan.admission().authority.digest()
+    }
+
+    /// Returns the accepted ownership-lease digest.
+    #[must_use]
+    pub const fn lease_digest(&self) -> ObjectDigest {
+        self.handoff.plan.admission().authority.lease_digest()
+    }
+
+    /// Returns the monotonic accepted ownership-lease generation.
+    #[must_use]
+    pub const fn lease_generation(&self) -> u64 {
+        self.handoff.plan.admission().authority.lease_generation()
+    }
+
+    /// Returns the host boot identity bound by the lease and timer.
+    #[must_use]
+    pub const fn host_boot_id(&self) -> [u8; 16] {
+        self.handoff.plan.admission().authority.host_boot_id()
+    }
+
+    /// Returns the exact admitted Network fence commitment.
+    #[must_use]
+    pub const fn network_fence_digest(&self) -> ObjectDigest {
+        self.handoff.plan.admission().network.digest()
+    }
+
+    /// Returns the Network currentness commitment retained through handoff.
+    #[must_use]
+    pub const fn network_currentness_digest(&self) -> ObjectDigest {
+        self.handoff.plan.admission().network.currentness_digest
+    }
+
+    /// Returns the protected local-session commitment retained by Network.
+    #[must_use]
+    pub const fn network_session_digest(&self) -> ObjectDigest {
+        self.handoff.plan.admission().network.session_digest
+    }
+
+    /// Returns the complete managed-state commitment at admission.
+    #[must_use]
+    pub const fn managed_snapshot_digest(&self) -> ObjectDigest {
+        self.handoff.plan.admission().managed.digest()
+    }
+
+    /// Returns the worker resource commitment reobserved before release.
+    #[must_use]
+    pub const fn worker_resource_digest(&self) -> ObjectDigest {
+        self.handoff.plan.release_current().worker_resource_digest
+    }
+
+    /// Returns the worker currentness commitment reobserved before release.
+    #[must_use]
+    pub const fn worker_currentness_digest(&self) -> ObjectDigest {
+        self.handoff
+            .plan
+            .release_current()
+            .worker_currentness_digest
+    }
+
+    /// Returns the fresh managed-state commitment reobserved before release.
+    #[must_use]
+    pub const fn release_managed_snapshot_digest(&self) -> ObjectDigest {
+        self.handoff.plan.release_current().managed_snapshot_digest
+    }
+
+    /// Returns the protected observation ordinal at the release edge.
+    #[must_use]
+    pub const fn release_observation_ordinal(&self) -> u64 {
+        self.handoff.plan.release_current().observation_ordinal
+    }
+
+    /// Returns the protected BOOTTIME observation at the release edge.
+    #[must_use]
+    pub const fn released_boottime_nanoseconds(&self) -> u64 {
+        self.handoff
+            .plan
+            .release_current()
+            .observed_boottime_nanoseconds
+    }
+
+    /// Returns the exclusive early-freeze BOOTTIME threshold.
+    #[must_use]
+    pub const fn early_freeze_boottime_nanoseconds(&self) -> u64 {
+        self.handoff
+            .plan
+            .admission()
+            .timer
+            .early_freeze_boottime_nanoseconds()
+    }
+
+    /// Returns the exclusive hard-stop BOOTTIME threshold.
+    #[must_use]
+    pub const fn hard_stop_boottime_nanoseconds(&self) -> u64 {
+        self.handoff
+            .plan
+            .admission()
+            .timer
+            .hard_stop_boottime_nanoseconds()
+    }
+
+    /// Returns the release watermark that the protected outcome must echo.
+    #[must_use]
+    pub const fn release_digest(&self) -> ObjectDigest {
+        self.handoff.plan.release_digest()
+    }
+
+    /// Returns the pre-release reducer recovery commitment.
+    #[must_use]
+    pub const fn recovery_digest(&self) -> ObjectDigest {
+        self.handoff.plan.recovery_digest()
+    }
+
+    /// Returns the protected journal head that authorized release.
+    #[must_use]
+    pub const fn protected_head(&self) -> ObjectDigest {
+        self.handoff.protected_head()
+    }
+}
+
+const fn public_guardian_action(action: super::GuardianReducerActionV1) -> DormantGuardianActionV1 {
+    use super::GuardianReducerActionV1 as Internal;
+
+    match action {
+        Internal::Arm => DormantGuardianActionV1::Arm,
+        Internal::Renew => DormantGuardianActionV1::Renew,
+        Internal::EarlyFreeze => DormantGuardianActionV1::EarlyFreeze,
+        Internal::Revoke => DormantGuardianActionV1::Revoke,
+        Internal::Expire => DormantGuardianActionV1::Expire,
+        Internal::EnforcementLoss => DormantGuardianActionV1::EnforcementLoss,
+        Internal::ReplaceWorker => DormantGuardianActionV1::ReplaceWorker,
+        Internal::Cleanup => DormantGuardianActionV1::Cleanup,
+        Internal::Resume => DormantGuardianActionV1::Resume,
+    }
+}
+
+const fn public_guardian_step(step: super::GuardianEffectStepV1) -> DormantGuardianEffectStepV1 {
+    use super::GuardianEffectStepV1 as Internal;
+
+    match step {
+        Internal::ProgramNetworkLeaseGate => DormantGuardianEffectStepV1::ProgramNetworkLeaseGate,
+        Internal::DefaultDropNetwork => DormantGuardianEffectStepV1::DefaultDropNetwork,
+        Internal::RequestPayloadFreeze => DormantGuardianEffectStepV1::RequestPayloadFreeze,
+        Internal::StopPayload => DormantGuardianEffectStepV1::StopPayload,
+        Internal::VerifyOldWorkerDead => DormantGuardianEffectStepV1::VerifyOldWorkerDead,
+        Internal::StartGuardianWorker => DormantGuardianEffectStepV1::StartGuardianWorker,
+        Internal::ReleasePayload => DormantGuardianEffectStepV1::ReleasePayload,
+        Internal::ProgramRenewalTimer => DormantGuardianEffectStepV1::ProgramRenewalTimer,
+        Internal::TraverseHost => DormantGuardianEffectStepV1::TraverseHost,
+        Internal::TraverseStorage => DormantGuardianEffectStepV1::TraverseStorage,
+        Internal::TraverseMount => DormantGuardianEffectStepV1::TraverseMount,
+        Internal::TraverseNetwork => DormantGuardianEffectStepV1::TraverseNetwork,
+        Internal::VerifyCompleteState => DormantGuardianEffectStepV1::VerifyCompleteState,
+    }
+}
+
 impl<'a> GuardianProtectedStoreSessionV1<'a> {
     /// Constructs a session from a child integration's authenticated store head.
     fn from_authenticated_backend(
@@ -429,7 +685,7 @@ impl GuardianEffectHandoffV1 {
     }
 
     /// Returns the durable protected head that preceded effect release.
-    pub(super) fn protected_head(&self) -> ObjectDigest {
+    pub(super) const fn protected_head(&self) -> ObjectDigest {
         self.publication.head
     }
 }
@@ -1000,6 +1256,96 @@ impl DormantGuardianProtectedOwnerV1 {
         resolve_guardian_commit(&mut self.recovered)
     }
 
+    /// Consumes one currentness-bound Guardian effect under live owner custody.
+    ///
+    /// Admission, effect ambiguity, and the release watermark are each
+    /// checkpointed and read back before the plan can leave this owner. A final
+    /// checkpoint records `PlanExposed` before the consumer is called, so cold
+    /// recovery can never classify the released plan as safely unexposed. The
+    /// owner loads and commits the sealed protected observation before return.
+    ///
+    /// This method registers no timer, service, or controller route. The
+    /// supplied closure is the sole explicit effect callsite and receives only
+    /// a temporary borrow of the move-only plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantGuardianProtectedOwnerErrorV1`] when a carrier is
+    /// malformed or stale, lease/timer/currentness validation fails, or exact
+    /// protected commit readback cannot be established.
+    pub fn consume_fixed_effect<F>(
+        &mut self,
+        consume: F,
+    ) -> Result<DormantGuardianProtectedCommitV1, DormantGuardianProtectedOwnerErrorV1>
+    where
+        F: for<'handoff> FnOnce(
+            DormantGuardianEffectHandoffV1<'handoff>,
+        ) -> Result<(), DormantGuardianProtectedOwnerErrorV1>,
+    {
+        let admission = load_fixed_guardian_admission(FIXED_ADMISSION_PATH)?;
+        self.recovered
+            .reducer_mut()
+            .begin(admission)
+            .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)?;
+        let _ = resolve_guardian_commit(&mut self.recovered)?;
+
+        let prepare_current = load_fixed_guardian_current(FIXED_PREPARE_CURRENT_PATH)?;
+        let effect = self
+            .recovered
+            .reducer_mut()
+            .prepare_effect(prepare_current)
+            .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)?;
+        let _ = resolve_guardian_commit(&mut self.recovered)?;
+
+        let freeze_current = load_fixed_guardian_current(FIXED_FREEZE_CURRENT_PATH)?;
+        let release = self
+            .recovered
+            .reducer_mut()
+            .freeze_release(effect, freeze_current)
+            .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)?;
+        let committed = resolve_guardian_publication(&mut self.recovered)?;
+
+        let release_current = load_fixed_guardian_current(FIXED_RELEASE_CURRENT_PATH)?;
+        let plan = self
+            .recovered
+            .reducer_mut()
+            .release_effect(release, release_current)
+            .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)?;
+        let handoff = committed
+            .into_publication()
+            .into_effect_handoff(plan)
+            .map_err(DormantGuardianProtectedOwnerErrorV1::from)?;
+
+        // Persist PlanExposed before the caller can observe the handoff.
+        let _ = resolve_guardian_commit(&mut self.recovered)?;
+        let handoff = bind_guardian_effect_handoff(&mut self.recovered, handoff);
+        consume(handoff)?;
+
+        let outcome = load_fixed_guardian_outcome(FIXED_OUTCOME_PATH)?;
+        self.recovered
+            .reducer_mut()
+            .observe(outcome)
+            .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)?;
+        let observation_commit = resolve_guardian_commit(&mut self.recovered)?;
+        match self
+            .recovered
+            .reducer()
+            .recovery_disposition()
+            .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)?
+        {
+            super::GuardianRecoveryDispositionV1::CommitObserved(_) => {}
+            super::GuardianRecoveryDispositionV1::RevalidateReissue(_) => {
+                return Ok(observation_commit);
+            }
+            _ => return Err(DormantGuardianProtectedOwnerErrorV1::InvalidState),
+        }
+        self.recovered
+            .reducer_mut()
+            .commit_observed()
+            .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)?;
+        resolve_guardian_commit(&mut self.recovered)
+    }
+
     /// Reduces one complete fixed protected observation chain.
     ///
     /// Separate root-owned canonical carriers provide admission (including
@@ -1209,6 +1555,16 @@ impl DormantGuardianProtectedOwnerV1 {
     }
 }
 
+fn bind_guardian_effect_handoff<'owner>(
+    _owner: &'owner mut RecoveredGuardianProtectedStateV1,
+    handoff: GuardianEffectHandoffV1,
+) -> DormantGuardianEffectHandoffV1<'owner> {
+    DormantGuardianEffectHandoffV1 {
+        handoff,
+        _owner: std::marker::PhantomData,
+    }
+}
+
 /// Reports whether a fixed-owner checkpoint was committed by direct receipt or recovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DormantGuardianProtectedCommitV1 {
@@ -1269,6 +1625,25 @@ fn resolve_guardian_commit(
     }?;
     recovered.compact_physical_if_needed()?;
     Ok(resolution)
+}
+
+fn resolve_guardian_publication(
+    recovered: &mut RecoveredGuardianProtectedStateV1,
+) -> Result<CommittedGuardianCheckpointV1, DormantGuardianProtectedOwnerErrorV1> {
+    match recovered.commit_current()? {
+        GuardianCheckpointCommitOutcomeV1::Committed(committed) => Ok(committed),
+        GuardianCheckpointCommitOutcomeV1::RecoveryRequired(recovery) => {
+            match recovered.resolve_ambiguous(recovery) {
+                GuardianCheckpointResolutionV1::Committed(committed) => Ok(committed),
+                GuardianCheckpointResolutionV1::NotCommitted => {
+                    Err(DormantGuardianProtectedOwnerErrorV1::NotCommitted)
+                }
+                GuardianCheckpointResolutionV1::RecoveryRequired { .. } => {
+                    Err(DormantGuardianProtectedOwnerErrorV1::RecoveryRequired)
+                }
+            }
+        }
+    }
 }
 
 fn load_fixed_genesis() -> Result<GuardianAuthorityReducerV1, DormantGuardianProtectedOwnerErrorV1>

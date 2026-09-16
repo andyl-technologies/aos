@@ -56,6 +56,10 @@ macro_rules! define_binding_commitment {
             pub const fn digest(self) -> ObjectDigest {
                 self.0
             }
+
+            pub(crate) const fn from_digest(digest: ObjectDigest) -> Self {
+                Self(digest)
+            }
         }
 
         impl fmt::Debug for $name {

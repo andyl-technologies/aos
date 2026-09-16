@@ -23,6 +23,8 @@ pub mod admission;
 pub mod catalog;
 mod controller_adapter;
 pub mod domain;
+#[cfg(target_os = "linux")]
+mod effect_owner;
 pub mod eviction;
 pub mod format;
 pub mod pin;
@@ -56,6 +58,19 @@ pub use domain::{
     CacheNodeIdV1, LookupAuthorityScopeV1, PhysicalPartitionId, ProtectedBackingIdentityV1,
     ResidencyEnforcementV1, VerifiedCacheCapabilityV1,
 };
+#[cfg(target_os = "linux")]
+pub use effect_owner::{
+    CacheEffectObservationV1, CacheLookupV1, CacheMaterializationOutcomeV1,
+    CacheMaterializationRecoveryFailureV1, CacheOrphanResolutionFailureV1,
+    CacheOrphanResolutionPendingV1, CacheOwnerAdmissionV1, CacheOwnerCurrentnessV1,
+    CacheOwnerErrorV1, CacheOwnerEvictionAdmissionV1, CacheOwnerLimitsV1,
+    CacheOwnerOutcomeUnknownV1, CacheOwnerPinActionV1, CacheOwnerPinAdmissionV1, CacheOwnerPinIdV1,
+    CacheOwnerRecoveryFailureV1, DormantCacheOwnerV1, EvictedCacheObjectV1,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use effect_owner::{
+    cache_lifecycle_availability_effect_v1, cache_owner_effect_commitment_v1,
+};
 pub use eviction::{
     AuthorizedUnlinkV1, EvictionCandidateStateV1, EvictionCandidateV1, EvictionError,
     EvictionProgressV1, EvictionRetryAuthorityV1, FrozenEvictionPlanV1, ReclamationEvidenceV1,
@@ -88,6 +103,7 @@ pub use protected_journal::{
 pub(crate) use protected_journal::{
     CacheResidencyReplayPartitionEvidenceV1, cache_residency_reducer_envelope_v1,
 };
+pub(crate) use protected_owner::CacheLifecycleBootInventoryV1;
 pub use protected_owner::{
     CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,
     CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,

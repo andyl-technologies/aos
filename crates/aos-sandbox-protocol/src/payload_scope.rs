@@ -19,6 +19,7 @@ use crate::semantics::host::runtime_handle_v1;
 use crate::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedAssignmentFence,
     ValidatedHeader, exact_nonzero, validate_fence, validate_request_header,
+    validate_request_header_static,
 };
 
 /// Bounds either protobuf body before decoding or allocating its fields.
@@ -117,6 +118,56 @@ pub fn decode_payload_scope_request(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
+    let fence = validate_fence(
+        request
+            .fence
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("fence"))?,
+    )?;
+    let runtime_handle = validate_runtime_handle(&fence, &request.runtime_handle)?;
+    Ok(ValidatedPayloadScopeRequest {
+        header,
+        fence,
+        runtime_handle,
+    })
+}
+
+/// Decodes an exact protected payload-scope replay without renewing its deadline.
+///
+/// This decoder is nonauthorizing. Callers must first prove that `bytes` are the
+/// byte-exact request retained by protected authenticated-session state. It
+/// preserves every time-independent peer, header, fence, handle, and allocation
+/// check while treating the original nonzero deadline only as historical data.
+///
+/// # Errors
+///
+/// Rejects oversized or malformed bodies, unknown fields, invalid static
+/// peer/header bindings, an absent original deadline, or inconsistent scope
+/// identity.
+#[doc(hidden)]
+pub fn decode_payload_scope_request_for_protected_replay(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+) -> Result<ValidatedPayloadScopeRequest, ProtocolValidationError> {
+    check_body_bound(bytes)?;
+    let request = ObservePayloadScopeRequest::decode_from_slice(bytes)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !request.__buffa_unknown_fields.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    let header = validate_request_header_static(
+        request
+            .header
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("header"))?,
+        peer,
+        policy,
+        ProtocolId::HostBroker,
+    )?;
+    if header.deadline_boottime_nanoseconds() == 0 {
+        return Err(ProtocolValidationError::DeadlineExpired);
+    }
     let fence = validate_fence(
         request
             .fence

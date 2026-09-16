@@ -355,6 +355,12 @@ impl<H> PreparedRuntime<H> {
         &self.plan
     }
 
+    /// Borrows the backend-private prepared handle for adapter validation.
+    #[must_use]
+    pub const fn handle(&self) -> &H {
+        &self.handle
+    }
+
     /// Separates the plan and opaque backend handle for an owning adapter.
     #[must_use]
     pub fn into_parts(self) -> (ResolvedRuntimePlanV1, H) {
@@ -379,6 +385,12 @@ impl<H> RunningRuntime<H> {
     #[must_use]
     pub const fn commitment(&self) -> &RuntimeHandleCommitmentV1 {
         &self.commitment
+    }
+
+    /// Borrows the backend-private running handle for protected staging.
+    #[must_use]
+    pub const fn handle(&self) -> &H {
+        &self.handle
     }
 
     /// Separates the commitment and opaque backend handle.
@@ -407,6 +419,12 @@ impl<H> FrozenRuntime<H> {
         &self.commitment
     }
 
+    /// Borrows the backend-private frozen handle for protected staging.
+    #[must_use]
+    pub const fn handle(&self) -> &H {
+        &self.handle
+    }
+
     /// Separates the commitment and opaque backend handle.
     #[must_use]
     pub fn into_parts(self) -> (RuntimeHandleCommitmentV1, H) {
@@ -431,6 +449,12 @@ impl<H> StoppedRuntime<H> {
     #[must_use]
     pub const fn commitment(&self) -> &RuntimeHandleCommitmentV1 {
         &self.commitment
+    }
+
+    /// Borrows the backend-private stopped handle for protected staging.
+    #[must_use]
+    pub const fn handle(&self) -> &H {
+        &self.handle
     }
 
     /// Separates the commitment and opaque backend handle.
@@ -469,19 +493,24 @@ impl<P, H> DestroyableRuntime<P, H> {
 
 /// Names one runtime lifecycle effect that may require process-crash recovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum BackendLifecycleOperationV1 {
     /// Resolves and prepares protected runtime resources.
-    Prepare,
+    Prepare = 1,
     /// Starts the exact prepared runtime.
-    Start,
+    Start = 2,
     /// Freezes the complete payload.
-    Freeze,
+    Freeze = 3,
     /// Thaws the complete payload.
-    Thaw,
+    Thaw = 4,
     /// Stops the complete payload.
-    Stop,
+    Stop = 5,
+    /// Forces complete-payload teardown after a protected stop deadline.
+    Kill = 8,
     /// Destroys resources after payload absence.
-    Destroy,
+    Destroy = 6,
+    /// Reads one exact runtime generation without mutation.
+    Inspect = 7,
 }
 
 /// Stores the protected binding for one crash-recoverable lifecycle effect.
@@ -519,7 +548,9 @@ impl BackendLifecycleRecoveryRecordV1 {
             | BackendLifecycleOperationV1::Destroy => true,
             BackendLifecycleOperationV1::Freeze
             | BackendLifecycleOperationV1::Thaw
-            | BackendLifecycleOperationV1::Stop => runtime_handle.is_some(),
+            | BackendLifecycleOperationV1::Stop
+            | BackendLifecycleOperationV1::Kill
+            | BackendLifecycleOperationV1::Inspect => runtime_handle.is_some(),
         };
         if authority_binding.as_bytes() == &[0; 32]
             || !handle_shape_is_valid
@@ -749,6 +780,15 @@ impl<H> RuntimeRecoveryToken<H> {
     #[must_use]
     pub const fn plan_commitment(&self) -> ObjectDigest {
         self.plan_commitment
+    }
+
+    /// Borrows backend-private recovery state without permitting extraction.
+    ///
+    /// Implementations use this to validate their own retained effect binding
+    /// while every nonterminal branch returns the original move-only token.
+    #[must_use]
+    pub const fn backend_handle(&self) -> &H {
+        &self.handle
     }
 
     /// Separates portable bindings and the backend-private recovery handle.
@@ -1019,6 +1059,10 @@ pub enum BackendExecutionPhaseV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BackendRuntimeInspectionV1 {
     authority_binding: ObjectDigest,
+    operation: BackendOperationIdV1,
+    operation_sequence: BackendOperationSequenceV1,
+    lifecycle_operation: BackendLifecycleOperationV1,
+    request_commitment: ObjectDigest,
     commitment: RuntimeHandleCommitmentV1,
     phase: BackendRuntimePhaseV1,
     sequence: ObservationSequence,
@@ -1028,12 +1072,17 @@ pub struct BackendRuntimeInspectionV1 {
 impl BackendRuntimeInspectionV1 {
     fn from_loaded(
         authority_binding: ObjectDigest,
+        operation: BackendOperationIdV1,
+        operation_sequence: BackendOperationSequenceV1,
+        lifecycle_operation: BackendLifecycleOperationV1,
+        request_commitment: ObjectDigest,
         commitment: RuntimeHandleCommitmentV1,
         phase: BackendRuntimePhaseV1,
         sequence: ObservationSequence,
         observation_commitment: ObjectDigest,
     ) -> Result<Self, RuntimeModelError> {
         if authority_binding.as_bytes() == &[0; 32]
+            || request_commitment.as_bytes() == &[0; 32]
             || sequence.get() == 0
             || observation_commitment.as_bytes() == &[0; 32]
         {
@@ -1041,6 +1090,10 @@ impl BackendRuntimeInspectionV1 {
         }
         Ok(Self {
             authority_binding,
+            operation,
+            operation_sequence,
+            lifecycle_operation,
+            request_commitment,
             commitment,
             phase,
             sequence,
@@ -1052,6 +1105,30 @@ impl BackendRuntimeInspectionV1 {
     #[must_use]
     pub const fn authority_binding(&self) -> ObjectDigest {
         self.authority_binding
+    }
+
+    /// Returns the exact lifecycle operation identity.
+    #[must_use]
+    pub const fn operation(&self) -> BackendOperationIdV1 {
+        self.operation
+    }
+
+    /// Returns the exact lifecycle operation sequence.
+    #[must_use]
+    pub const fn operation_sequence(&self) -> BackendOperationSequenceV1 {
+        self.operation_sequence
+    }
+
+    /// Returns the closed lifecycle action that produced this observation.
+    #[must_use]
+    pub const fn lifecycle_operation(&self) -> BackendLifecycleOperationV1 {
+        self.lifecycle_operation
+    }
+
+    /// Returns the exact normalized lifecycle-request commitment.
+    #[must_use]
+    pub const fn request_commitment(&self) -> ObjectDigest {
+        self.request_commitment
     }
 
     /// Returns the exact runtime commitment.
@@ -1083,6 +1160,14 @@ impl BackendRuntimeInspectionV1 {
 pub struct BackendRuntimeInspectionInputV1 {
     /// Expected protected evidence-verifier authority binding.
     pub authority_binding: ObjectDigest,
+    /// Exact lifecycle operation identity.
+    pub operation: BackendOperationIdV1,
+    /// Exact lifecycle operation sequence.
+    pub operation_sequence: BackendOperationSequenceV1,
+    /// Closed lifecycle action being observed.
+    pub lifecycle_operation: BackendLifecycleOperationV1,
+    /// Complete normalized lifecycle-request commitment.
+    pub request_commitment: ObjectDigest,
     /// Exact runtime handle commitment.
     pub commitment: RuntimeHandleCommitmentV1,
     /// Closed observed lifecycle phase.
@@ -1125,6 +1210,10 @@ pub fn load_backend_runtime_inspection_v1<L: BackendRuntimeInspectionLoaderV1>(
     let input = loader.load_authenticated_runtime_inspection()?;
     BackendRuntimeInspectionV1::from_loaded(
         input.authority_binding,
+        input.operation,
+        input.operation_sequence,
+        input.lifecycle_operation,
+        input.request_commitment,
         input.commitment,
         input.phase,
         input.sequence,

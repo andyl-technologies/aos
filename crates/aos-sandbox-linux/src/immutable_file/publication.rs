@@ -16,7 +16,9 @@ pub use naming::{
     AfterRenameFailure, AmbiguousNamedSealedFile, BeforeRenameFailure, DurablyNamedSealedFile,
     NoReplacePublicationError, RenamedSealedFile,
 };
-pub use observation::{ObserveSealedPublicationError, ObservedSealedPublicationFile};
+pub use observation::{
+    ObserveSealedPublicationError, ObservedRetainedPrivateArtifact, ObservedSealedPublicationFile,
+};
 
 use std::error::Error as StdError;
 use std::ffi::{CStr, CString, OsStr};
@@ -26,6 +28,7 @@ use std::io::Write as _;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::FileExt as _;
+use std::path::{Path, PathBuf};
 
 use super::{FsVerityDigest, is_kernel_verity_filesystem};
 use crate::Error;
@@ -284,6 +287,7 @@ pub struct SealedPrivateFile<'root> {
     name: PublicationName,
     root: &'root FsVerityPublicationRoot,
     identity: PrivateIdentity,
+    allocated_bytes: u64,
     verity: FsVerityDigest,
 }
 
@@ -304,6 +308,12 @@ impl SealedPrivateFile<'_> {
     #[must_use]
     pub const fn bytes(&self) -> u64 {
         self.identity.bytes
+    }
+
+    /// Returns the allocated resident bytes reported for the pinned inode.
+    #[must_use]
+    pub const fn allocated_bytes(&self) -> u64 {
+        self.allocated_bytes
     }
 
     /// Returns the session-local device number.
@@ -337,6 +347,7 @@ impl AsFd for SealedPrivateFile<'_> {
 pub struct FsVerityPublicationRoot {
     directory: OwnedFd,
     identity: RootIdentity,
+    protected_path: Option<PathBuf>,
 }
 
 impl FsVerityPublicationRoot {
@@ -369,7 +380,45 @@ impl FsVerityPublicationRoot {
         Ok(Self {
             directory,
             identity: before,
+            protected_path: None,
         })
+    }
+
+    /// Resolves and retains one exact absolute protected directory path.
+    ///
+    /// The kernel walk rejects symlinks, magic links, traversal, and mount
+    /// crossings. Every later effect reopens this path and compares the exact
+    /// device/inode and protection metadata to the retained head.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicationRootError`] for an invalid or unsafe path, or any
+    /// ordinary publication-root protection failure.
+    pub fn from_protected_absolute_path(path: &Path) -> Result<Self, PublicationRootError> {
+        let directory = open_protected_absolute_directory(path)?;
+        let mut root = Self::from_owned(directory)?;
+        root.protected_path = Some(path.to_path_buf());
+        root.recheck_protected_path()?;
+        Ok(root)
+    }
+
+    /// Reopens the retained protected path and proves its exact current head.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicationRootError::AdmissionRace`] when the namespace path
+    /// no longer resolves to the retained device/inode/protection identity.
+    pub fn recheck_protected_path(&self) -> Result<(), PublicationRootError> {
+        let Some(path) = self.protected_path.as_deref() else {
+            return Err(PublicationRootError::AdmissionRace);
+        };
+        let reopened = open_protected_absolute_directory(path)?;
+        if inspect_root(reopened.as_fd())? != self.identity
+            || !is_kernel_verity_filesystem(uapi::filesystem_type(reopened.as_fd())?)
+        {
+            return Err(PublicationRootError::AdmissionRace);
+        }
+        Ok(())
     }
 
     /// Returns the session-local device number of the retained directory.
@@ -632,6 +681,7 @@ impl FsVerityPublicationRoot {
         {
             return Err(MaterializationFailure::PrivateInodeInvariant);
         }
+        let allocated_bytes = inspect_allocated_bytes(reader.as_fd())?;
         self.recheck_root()?;
         uapi::fsync(self.directory.as_fd()).map_err(MaterializationFailure::Linux)?;
         retained.phase = RetainedPrivatePhase::Sealed;
@@ -644,6 +694,7 @@ impl FsVerityPublicationRoot {
             name: private_name,
             root: self,
             identity: reopened,
+            allocated_bytes,
             verity,
         })
     }
@@ -681,8 +732,40 @@ impl FsVerityPublicationRoot {
         {
             return Err(MaterializationFailure::RootChanged);
         }
+        if self.protected_path.is_some() {
+            self.recheck_protected_path()
+                .map_err(|_| MaterializationFailure::RootChanged)?;
+        }
         Ok(())
     }
+}
+
+fn open_protected_absolute_directory(path: &Path) -> Result<OwnedFd, PublicationRootError> {
+    let relative = path
+        .strip_prefix(Path::new("/"))
+        .map_err(|_| PublicationRootError::AdmissionRace)?;
+    if relative.as_os_str().is_empty() || relative.as_os_str().as_bytes().len() > 4096 {
+        return Err(PublicationRootError::AdmissionRace);
+    }
+    let path = CString::new(relative.as_os_str().as_bytes())
+        .map_err(|_| PublicationRootError::AdmissionRace)?;
+    let root: OwnedFd = File::open("/")
+        .map_err(|source| PublicationRootError::Linux(io_error("open root directory", source)))?
+        .into();
+    let flags = u64::try_from(
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NOCTTY,
+    )
+    .map_err(|_| PublicationRootError::AdmissionRace)?;
+    uapi::openat2(
+        root.as_fd(),
+        &path,
+        &OpenHow {
+            flags,
+            mode: 0,
+            resolve: RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+        },
+    )
+    .map_err(PublicationRootError::Linux)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -854,6 +937,16 @@ fn inspect_created<E: StdError + 'static>(
         inode: stat.st_ino,
         bytes: 0,
     })
+}
+
+pub(super) fn inspect_allocated_bytes<E: StdError + 'static>(
+    file: BorrowedFd<'_>,
+) -> Result<u64, MaterializationFailure<E>> {
+    let stat = uapi::fstat(file).map_err(MaterializationFailure::Linux)?;
+    u64::try_from(stat.st_blocks)
+        .ok()
+        .and_then(|blocks| blocks.checked_mul(512))
+        .ok_or(MaterializationFailure::PrivateInodeInvariant)
 }
 
 fn inspect_root(directory: BorrowedFd<'_>) -> Result<RootIdentity, PublicationRootError> {

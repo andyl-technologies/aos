@@ -8,9 +8,10 @@ use aos_sandbox_core::ObjectDescriptor;
 
 use super::{
     AdmissionDecisionStateV1, AdmissionDecisionV1, AdmissionError, ArtifactCommitmentV1,
-    AuthorityCheckpointV1, CapacityAccountV1, CatalogEvictionReceiptV1, ChallengeConsumptionV1,
-    CompletionPermitStateV1, CompletionPermitV1, CompletionReceiptV1,
-    RecoveryObservationKindCodeV1, RecoveryObservationReceiptV1, ReservationStateV1,
+    ArtifactPreparationIntentV1, AuthorityCheckpointV1, CapacityAccountV1,
+    CatalogEvictionReceiptV1, ChallengeConsumptionV1, CompletionPermitStateV1, CompletionPermitV1,
+    CompletionReceiptV1, RecoveryObservationKindCodeV1, RecoveryObservationReceiptV1,
+    ReservationStateV1,
 };
 
 pub(super) fn source_release_payload(release: &super::SourceReleaseV1) -> Vec<u8> {
@@ -33,6 +34,24 @@ pub(super) fn source_release_payload(release: &super::SourceReleaseV1) -> Vec<u8
         super::SourceReleaseStateV1::Active => 1,
         super::SourceReleaseStateV1::Revoked => 2,
     });
+    bytes
+}
+
+pub(super) fn preparation_intent_payload(intent: &ArtifactPreparationIntentV1) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(intent.operation.as_bytes());
+    bytes.extend_from_slice(intent.publisher_instance.as_bytes());
+    bytes.extend_from_slice(intent.decision_digest.as_bytes());
+    bytes.extend_from_slice(intent.root_record_digest.as_bytes());
+    bytes.extend_from_slice(&intent.root_generation.to_be_bytes());
+    bytes.extend_from_slice(intent.content.media_type().as_str().as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(intent.content.digest().as_bytes());
+    bytes.extend_from_slice(&intent.content.encoded_size().to_be_bytes());
+    bytes.extend_from_slice(intent.private_name_digest.as_bytes());
+    bytes.extend_from_slice(intent.final_name_digest.as_bytes());
+    bytes.extend_from_slice(&intent.maximum_allocated_bytes.to_be_bytes());
+    bytes.extend_from_slice(intent.intent_digest.as_bytes());
     bytes
 }
 
@@ -91,6 +110,7 @@ pub(super) fn artifact_payload(artifact: &ArtifactCommitmentV1) -> Vec<u8> {
     bytes.extend_from_slice(artifact.operation.as_bytes());
     bytes.extend_from_slice(artifact.publisher_instance.as_bytes());
     bytes.extend_from_slice(artifact.decision_digest.as_bytes());
+    bytes.extend_from_slice(artifact.preparation_intent_digest.as_bytes());
     bytes.extend_from_slice(&artifact.root_generation.to_be_bytes());
     bytes.extend_from_slice(artifact.content.media_type().as_str().as_bytes());
     bytes.push(0);

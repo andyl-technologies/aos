@@ -261,7 +261,7 @@ impl<'session, 'journal, 'authority, 'authorization>
             result_digest,
             empty_descriptor_set_commitment_v1(),
         )?;
-        let signed_status =
+        let (signed_status, completed_at_seconds) =
             self.session
                 .sign_current_response_status(self.journal, self.authorization, subject)?;
         let response = encode_typed_response(self.authorization.method, signed_status, None)?;
@@ -278,6 +278,7 @@ impl<'session, 'journal, 'authority, 'authorization>
                     .map(|(key, value)| (key.as_slice(), value.as_slice())),
                 response,
                 None,
+                completed_at_seconds,
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         prepare_finalized_builder(self.session, self.journal, self.authorization, finalized)
@@ -307,7 +308,7 @@ impl<'session, 'journal, 'authority, 'authorization>
             result_digest,
             empty_descriptor_set_commitment_v1(),
         )?;
-        let signed_status =
+        let (signed_status, completed_at_seconds) =
             self.session
                 .sign_current_response_status(self.journal, self.authorization, subject)?;
         let response = encode_typed_response(self.authorization.method, signed_status, None)?;
@@ -324,6 +325,7 @@ impl<'session, 'journal, 'authority, 'authorization>
                     .map(|(key, value)| (key.as_slice(), value.as_slice())),
                 response,
                 None,
+                completed_at_seconds,
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         prepare_finalized_builder(self.session, self.journal, self.authorization, finalized)
@@ -353,7 +355,7 @@ impl<'session, 'journal, 'authority, 'authorization>
             result_digest,
             empty_descriptor_set_commitment_v1(),
         )?;
-        let signed_status =
+        let (signed_status, completed_at_seconds) =
             self.session
                 .sign_current_response_status(self.journal, self.authorization, subject)?;
         let response = encode_typed_response(self.authorization.method, signed_status, None)?;
@@ -370,6 +372,7 @@ impl<'session, 'journal, 'authority, 'authorization>
                     .map(|(key, value)| (key.as_slice(), value.as_slice())),
                 response,
                 None,
+                completed_at_seconds,
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         prepare_finalized_builder(self.session, self.journal, self.authorization, finalized)
@@ -431,7 +434,7 @@ impl<'session, 'journal, 'authority, 'authorization>
             result_digest,
             facts.descriptor_commitment,
         )?;
-        let signed_status =
+        let (signed_status, completed_at_seconds) =
             self.session
                 .sign_current_response_status(self.journal, self.authorization, status)?;
         let response = encode_typed_response(
@@ -452,6 +455,7 @@ impl<'session, 'journal, 'authority, 'authorization>
                     .map(|(key, value)| (key.as_slice(), value.as_slice())),
                 response,
                 Some(signed_lease),
+                completed_at_seconds,
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         prepare_finalized_builder(self.session, self.journal, self.authorization, finalized)
@@ -488,7 +492,7 @@ impl<'session, 'journal, 'authority, 'authorization>
             result_digest,
             empty_descriptor_set_commitment_v1(),
         )?;
-        let signed_status =
+        let (signed_status, completed_at_seconds) =
             self.session
                 .sign_current_response_status(self.journal, self.authorization, status)?;
         let response =
@@ -506,6 +510,7 @@ impl<'session, 'journal, 'authority, 'authorization>
                     .map(|(key, value)| (key.as_slice(), value.as_slice())),
                 response,
                 None,
+                completed_at_seconds,
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         prepare_finalized_builder(self.session, self.journal, self.authorization, finalized)
@@ -542,7 +547,7 @@ impl<'session, 'journal, 'authority, 'authorization>
             result_digest,
             empty_descriptor_set_commitment_v1(),
         )?;
-        let signed_status =
+        let (signed_status, completed_at_seconds) =
             self.session
                 .sign_current_response_status(self.journal, self.authorization, status)?;
         let response = encode_typed_response(
@@ -563,6 +568,7 @@ impl<'session, 'journal, 'authority, 'authorization>
                     .map(|(key, value)| (key.as_slice(), value.as_slice())),
                 response,
                 None,
+                completed_at_seconds,
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         prepare_finalized_builder(self.session, self.journal, self.authorization, finalized)

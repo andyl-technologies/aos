@@ -455,6 +455,68 @@ impl StorageAdmissionCoordinator {
         self.transactions.requires_reopen()
     }
 
+    pub(crate) fn lifecycle_inventory_journal(
+        &self,
+    ) -> Result<crate::state::VerifiedStorageResolverJournalV1, StorageBrokerError> {
+        self.transactions
+            .verified_resolver_journal()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn atomic_dataset_snapshot_inventory(
+        &self,
+    ) -> Result<Vec<crate::state::AtomicDatasetSnapshotInventoryV1>, StorageBrokerError> {
+        self.transactions
+            .atomic_dataset_snapshot_inventory()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn prepare_atomic_dataset_snapshot(
+        &mut self,
+        program: crate::DormantAtomicDatasetSnapshotV1,
+    ) -> Result<(), StorageBrokerError> {
+        self.transactions
+            .prepare_atomic_dataset_snapshot(program)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn mark_atomic_dataset_snapshot_ambiguous(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+    ) -> Result<crate::DormantAtomicDatasetSnapshotV1, StorageBrokerError> {
+        self.transactions
+            .mark_atomic_dataset_snapshot_ambiguous(operation, program)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn atomic_dataset_snapshot_recovery(
+        &self,
+        operation: [u8; 16],
+    ) -> Result<
+        (
+            crate::state::AtomicDatasetSnapshotPhaseV1,
+            crate::DormantAtomicDatasetSnapshotV1,
+            Option<ObjectDigest>,
+        ),
+        StorageBrokerError,
+    > {
+        self.transactions
+            .atomic_dataset_snapshot_recovery(operation)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn commit_atomic_dataset_snapshot(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+        observation: ObjectDigest,
+    ) -> Result<(), StorageBrokerError> {
+        self.transactions
+            .commit_atomic_dataset_snapshot(operation, program, observation)
+            .map_err(Into::into)
+    }
+
     pub(crate) fn admit_trusted_resolver_policy(
         &mut self,
         binding: StorageResolverPolicyCatalogBindingV1,
@@ -2229,9 +2291,6 @@ impl StorageAdmissionCoordinator {
             current_clock.boottime_nanoseconds(),
         )
         .map_err(|_| StorageBrokerError::Request)?;
-        if matches!(semantics.operation(), StorageOperation::Snapshot { .. }) {
-            return Err(StorageBrokerError::Request);
-        }
         if publication_inputs.is_none() && semantics.operation().requires_workspace_metadata() {
             return Err(StorageBrokerError::Request);
         }

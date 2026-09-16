@@ -108,6 +108,61 @@ pub struct HostState {
     fences: BTreeMap<[u8; 16], DurableFence>,
     requests: BTreeMap<[u8; 16], RequestRecord>,
     observation_sequences: BTreeMap<[u8; 16], u64>,
+    scope_replays: BTreeMap<[u8; 32], DurableScopeReplay>,
+}
+
+/// Exact Host-authenticated identity of one descriptor-bearing scope replay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HostScopeReplayBindingV1 {
+    pub(crate) method: i32,
+    pub(crate) request_id: [u8; 16],
+    pub(crate) request_body_digest: [u8; 32],
+    pub(crate) signed_request_digest: [u8; 32],
+    pub(crate) session_binding: [u8; 32],
+    pub(crate) response_body_digest: [u8; 32],
+    pub(crate) terminal_verifier_commitment: [u8; 32],
+    pub(crate) terminal_reservation_locator: [u8; 32],
+    pub(crate) signed_outcome_digest: [u8; 32],
+    pub(crate) protected_generation: u64,
+    pub(crate) protected_head: [u8; 32],
+    pub(crate) artifact_commitment: [u8; 32],
+    pub(crate) peer_uid: u32,
+    pub(crate) peer_gid: u32,
+    pub(crate) peer_pid: u32,
+    pub(crate) policy_uid: u32,
+    pub(crate) policy_gid: u32,
+    pub(crate) policy_audience: i32,
+    pub(crate) protocol_major: u16,
+    pub(crate) protocol_minor: u16,
+    pub(crate) protected_boot_id: [u8; 16],
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DurableScopeReplay {
+    locator: [u8; 32],
+    method: i32,
+    request_id: [u8; 16],
+    request_body_digest: [u8; 32],
+    signed_request_digest: [u8; 32],
+    session_binding: [u8; 32],
+    response_body_digest: [u8; 32],
+    terminal_verifier_commitment: [u8; 32],
+    terminal_reservation_locator: [u8; 32],
+    signed_outcome_digest: [u8; 32],
+    protected_generation: u64,
+    protected_head: [u8; 32],
+    artifact_commitment: [u8; 32],
+    peer_uid: u32,
+    peer_gid: u32,
+    peer_pid: u32,
+    policy_uid: u32,
+    policy_gid: u32,
+    policy_audience: i32,
+    protocol_major: u16,
+    protocol_minor: u16,
+    protected_boot_id: [u8; 16],
+    authentication: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -141,6 +196,8 @@ struct StateWire {
     fences: Vec<DurableFence>,
     requests: Vec<RequestRecord>,
     observation_sequences: Vec<ObservationSequence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scope_replays: Vec<DurableScopeReplay>,
 }
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -233,6 +290,27 @@ impl HostState {
         }
         for request in self.requests.values() {
             ensure_live_execution_enabled(&request.execution)?;
+        }
+        for (locator, replay) in &self.scope_replays {
+            if replay.locator != *locator {
+                return Err(HostError::State(
+                    "Host scope replay index contradicts its record".to_owned(),
+                ));
+            }
+            let binding = replay.binding();
+            let payload = encode_scope_replay_binding(&binding);
+            if scope_replay_locator(&payload) != *locator
+                || authority
+                    .terminal_verifier_commitment()
+                    .map_err(|error| HostError::State(error.to_string()))?
+                    != binding.terminal_verifier_commitment
+                || authority.open_execution_record(&binding.request_id, &replay.authentication)?
+                    != payload
+            {
+                return Err(HostError::State(
+                    "Host scope replay authentication is invalid".to_owned(),
+                ));
+            }
         }
         Ok(())
     }
@@ -1097,6 +1175,137 @@ impl HostState {
         Ok(*sequence)
     }
 
+    pub(crate) fn retain_scope_replay(
+        &mut self,
+        binding: HostScopeReplayBindingV1,
+        authority: &HostAuthorityV1,
+    ) -> Result<[u8; 32]> {
+        if authority
+            .terminal_verifier_commitment()
+            .map_err(|error| HostError::State(error.to_string()))?
+            != binding.terminal_verifier_commitment
+        {
+            return Err(HostError::State(
+                "Host scope replay verifier does not match fixed authority".to_owned(),
+            ));
+        }
+        let payload = encode_scope_replay_binding(&binding);
+        let locator = scope_replay_locator(&payload);
+        let authentication = authority.seal_execution_record(&binding.request_id, &payload)?;
+        let replay = DurableScopeReplay::new(locator, binding, authentication);
+
+        if let Some(current) = self.scope_replays.get(&locator) {
+            if current != &replay {
+                return Err(HostError::State(
+                    "Host scope replay locator was reused".to_owned(),
+                ));
+            }
+            return Ok(locator);
+        }
+        if self.scope_replays.len() >= MAXIMUM_REQUESTS {
+            return Err(HostError::State(
+                "durable Host scope replay table exceeds its fixed bound".to_owned(),
+            ));
+        }
+        self.scope_replays.insert(locator, replay);
+        Ok(locator)
+    }
+
+    pub(crate) fn revalidate_scope_replay(
+        &self,
+        retained_locator: Option<[u8; 32]>,
+        expected: &HostScopeReplayBindingV1,
+        authority: &HostAuthorityV1,
+    ) -> Result<[u8; 32]> {
+        let payload = encode_scope_replay_binding(expected);
+        let locator = scope_replay_locator(&payload);
+        if retained_locator.is_some_and(|retained| retained != locator) {
+            return Err(HostError::State(
+                "Host scope replay locator does not match protected custody".to_owned(),
+            ));
+        }
+        let replay = self.scope_replays.get(&locator).ok_or_else(|| {
+            HostError::State("Host scope replay authority is not retained".to_owned())
+        })?;
+        if scope_replay_locator(&payload) != locator
+            || replay.binding() != *expected
+            || authority
+                .terminal_verifier_commitment()
+                .map_err(|error| HostError::State(error.to_string()))?
+                != expected.terminal_verifier_commitment
+            || authority.open_execution_record(&expected.request_id, &replay.authentication)?
+                != payload
+        {
+            return Err(HostError::State(
+                "Host scope replay authority does not match the protected request".to_owned(),
+            ));
+        }
+        Ok(locator)
+    }
+
+    pub(crate) fn finalize_scope_replay(
+        &mut self,
+        receipt: &aos_sandbox_protocol::BrokerTerminalCommitReceiptV1,
+        authority: &HostAuthorityV1,
+    ) -> Result<[u8; 32]> {
+        let receipt_binding = receipt.binding();
+        let retained_locator = receipt_binding.reservation_locator();
+        let Some(retained) = self.scope_replays.get(&retained_locator) else {
+            let mut exact_finalized = None;
+            for (locator, retained) in &self.scope_replays {
+                let finalized = retained.binding();
+                if finalized.terminal_reservation_locator != retained_locator {
+                    continue;
+                }
+                self.revalidate_scope_replay(Some(*locator), &finalized, authority)?;
+                if !scope_replay_receipt_matches(receipt, retained_locator, &finalized) {
+                    return Err(HostError::State(
+                        "Host finalized scope replay contradicts its receipt".to_owned(),
+                    ));
+                }
+                if exact_finalized.replace(*locator).is_some() {
+                    return Err(HostError::State(
+                        "Host scope replay has multiple finalized successors".to_owned(),
+                    ));
+                }
+            }
+            return exact_finalized.ok_or_else(|| {
+                HostError::State("Host scope replay reservation is not retained".to_owned())
+            });
+        };
+        let reservation = retained.binding();
+        self.revalidate_scope_replay(Some(retained_locator), &reservation, authority)?;
+        if reservation.terminal_reservation_locator != [0; 32]
+            || !scope_replay_receipt_matches(receipt, retained_locator, &reservation)
+        {
+            return Err(HostError::State(
+                "Host scope terminal replay receipt is invalid".to_owned(),
+            ));
+        }
+
+        let mut terminal = reservation;
+        terminal.terminal_reservation_locator = retained_locator;
+        terminal.signed_outcome_digest = receipt_binding.signed_outcome_digest();
+        terminal.protected_generation = receipt_binding.protected_generation();
+        terminal.protected_head = receipt_binding.protected_head();
+        let payload = encode_scope_replay_binding(&terminal);
+        let locator = scope_replay_locator(&payload);
+        let authentication = authority.seal_execution_record(&terminal.request_id, &payload)?;
+        let finalized = DurableScopeReplay::new(locator, terminal, authentication);
+        if self
+            .scope_replays
+            .get(&locator)
+            .is_some_and(|current| current != &finalized)
+        {
+            return Err(HostError::State(
+                "Host scope terminal replay locator was reused".to_owned(),
+            ));
+        }
+        self.scope_replays.remove(&retained_locator);
+        self.scope_replays.insert(locator, finalized);
+        Ok(locator)
+    }
+
     fn encode(&self) -> Result<Vec<u8>> {
         let wire = StateWire {
             fences: self.fences.values().cloned().collect(),
@@ -1109,6 +1318,7 @@ impl HostState {
                     sequence: *sequence,
                 })
                 .collect(),
+            scope_replays: self.scope_replays.values().cloned().collect(),
         };
         serde_json::to_vec(&wire).map_err(|error| HostError::State(error.to_string()))
     }
@@ -1119,6 +1329,11 @@ impl HostState {
         if wire.requests.len() > MAXIMUM_REQUESTS {
             return Err(HostError::State(
                 "durable host request table exceeds its fixed bound".to_owned(),
+            ));
+        }
+        if wire.scope_replays.len() > MAXIMUM_REQUESTS {
+            return Err(HostError::State(
+                "durable Host scope replay table exceeds its fixed bound".to_owned(),
             ));
         }
         let mut state = Self::default();
@@ -1149,9 +1364,189 @@ impl HostState {
                 ));
             }
         }
+        for replay in wire.scope_replays {
+            validate_scope_replay(&replay)?;
+            if state.scope_replays.insert(replay.locator, replay).is_some() {
+                return Err(HostError::State(
+                    "duplicate durable Host scope replay locator".to_owned(),
+                ));
+            }
+        }
         state.validate_execution_links()?;
         Ok(state)
     }
+}
+
+impl DurableScopeReplay {
+    fn new(locator: [u8; 32], binding: HostScopeReplayBindingV1, authentication: Vec<u8>) -> Self {
+        Self {
+            locator,
+            method: binding.method,
+            request_id: binding.request_id,
+            request_body_digest: binding.request_body_digest,
+            signed_request_digest: binding.signed_request_digest,
+            session_binding: binding.session_binding,
+            response_body_digest: binding.response_body_digest,
+            terminal_verifier_commitment: binding.terminal_verifier_commitment,
+            terminal_reservation_locator: binding.terminal_reservation_locator,
+            signed_outcome_digest: binding.signed_outcome_digest,
+            protected_generation: binding.protected_generation,
+            protected_head: binding.protected_head,
+            artifact_commitment: binding.artifact_commitment,
+            peer_uid: binding.peer_uid,
+            peer_gid: binding.peer_gid,
+            peer_pid: binding.peer_pid,
+            policy_uid: binding.policy_uid,
+            policy_gid: binding.policy_gid,
+            policy_audience: binding.policy_audience,
+            protocol_major: binding.protocol_major,
+            protocol_minor: binding.protocol_minor,
+            protected_boot_id: binding.protected_boot_id,
+            authentication,
+        }
+    }
+
+    fn binding(&self) -> HostScopeReplayBindingV1 {
+        HostScopeReplayBindingV1 {
+            method: self.method,
+            request_id: self.request_id,
+            request_body_digest: self.request_body_digest,
+            signed_request_digest: self.signed_request_digest,
+            session_binding: self.session_binding,
+            response_body_digest: self.response_body_digest,
+            terminal_verifier_commitment: self.terminal_verifier_commitment,
+            terminal_reservation_locator: self.terminal_reservation_locator,
+            signed_outcome_digest: self.signed_outcome_digest,
+            protected_generation: self.protected_generation,
+            protected_head: self.protected_head,
+            artifact_commitment: self.artifact_commitment,
+            peer_uid: self.peer_uid,
+            peer_gid: self.peer_gid,
+            peer_pid: self.peer_pid,
+            policy_uid: self.policy_uid,
+            policy_gid: self.policy_gid,
+            policy_audience: self.policy_audience,
+            protocol_major: self.protocol_major,
+            protocol_minor: self.protocol_minor,
+            protected_boot_id: self.protected_boot_id,
+        }
+    }
+}
+
+fn encode_scope_replay_binding(binding: &HostScopeReplayBindingV1) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(298);
+    encoded.extend_from_slice(b"aos.sandbox.host.scope-replay.v1\0");
+    encoded.extend_from_slice(&binding.method.to_be_bytes());
+    encoded.extend_from_slice(&binding.request_id);
+    encoded.extend_from_slice(&binding.request_body_digest);
+    encoded.extend_from_slice(&binding.signed_request_digest);
+    encoded.extend_from_slice(&binding.session_binding);
+    encoded.extend_from_slice(&binding.response_body_digest);
+    encoded.extend_from_slice(&binding.terminal_verifier_commitment);
+    encoded.extend_from_slice(&binding.terminal_reservation_locator);
+    encoded.extend_from_slice(&binding.signed_outcome_digest);
+    encoded.extend_from_slice(&binding.protected_generation.to_be_bytes());
+    encoded.extend_from_slice(&binding.protected_head);
+    encoded.extend_from_slice(&binding.artifact_commitment);
+    encoded.extend_from_slice(&binding.peer_uid.to_be_bytes());
+    encoded.extend_from_slice(&binding.peer_gid.to_be_bytes());
+    encoded.extend_from_slice(&binding.peer_pid.to_be_bytes());
+    encoded.extend_from_slice(&binding.policy_uid.to_be_bytes());
+    encoded.extend_from_slice(&binding.policy_gid.to_be_bytes());
+    encoded.extend_from_slice(&binding.policy_audience.to_be_bytes());
+    encoded.extend_from_slice(&binding.protocol_major.to_be_bytes());
+    encoded.extend_from_slice(&binding.protocol_minor.to_be_bytes());
+    encoded.extend_from_slice(&binding.protected_boot_id);
+    encoded
+}
+
+fn scope_replay_locator(payload: &[u8]) -> [u8; 32] {
+    Sha256::digest(payload).into()
+}
+
+pub(crate) fn scope_replay_reservation_locator(binding: &HostScopeReplayBindingV1) -> [u8; 32] {
+    scope_replay_locator(&encode_scope_replay_binding(binding))
+}
+
+fn scope_replay_receipt_matches(
+    receipt: &aos_sandbox_protocol::BrokerTerminalCommitReceiptV1,
+    reservation_locator: [u8; 32],
+    binding: &HostScopeReplayBindingV1,
+) -> bool {
+    let receipt_binding = receipt.binding();
+    let terminal_matches = if binding.terminal_reservation_locator == [0; 32] {
+        binding.signed_outcome_digest == [0; 32]
+            && binding.protected_generation == 0
+            && binding.protected_head == [0; 32]
+    } else {
+        binding.terminal_reservation_locator == reservation_locator
+            && binding.signed_outcome_digest == receipt_binding.signed_outcome_digest()
+            && binding.protected_generation == receipt_binding.protected_generation()
+            && binding.protected_head == receipt_binding.protected_head()
+    };
+    let expected = aos_proto::aos::sandbox::local::v1::BrokerMethod::try_from(binding.method)
+        .ok()
+        .and_then(|method| {
+            aos_sandbox_protocol::BrokerTerminalCommitBindingV1::new(
+                reservation_locator,
+                method,
+                binding.request_id,
+                binding.signed_request_digest,
+                binding.session_binding,
+                receipt_binding.signed_outcome_digest(),
+                receipt_binding.protected_generation(),
+                receipt_binding.protected_head(),
+            )
+        });
+    terminal_matches
+        && scope_replay_terminal_lineage_is_valid(binding)
+        && expected.as_ref().is_some_and(|expected| {
+            receipt.verify_pinned_commitment(expected, binding.terminal_verifier_commitment)
+        })
+}
+
+fn scope_replay_terminal_lineage_is_valid(binding: &HostScopeReplayBindingV1) -> bool {
+    if binding.terminal_reservation_locator == [0; 32] {
+        return true;
+    }
+    let mut reservation = binding.clone();
+    reservation.terminal_reservation_locator = [0; 32];
+    reservation.signed_outcome_digest = [0; 32];
+    reservation.protected_generation = 0;
+    reservation.protected_head = [0; 32];
+    scope_replay_reservation_locator(&reservation) == binding.terminal_reservation_locator
+}
+
+fn validate_scope_replay(replay: &DurableScopeReplay) -> Result<()> {
+    let binding = replay.binding();
+    let payload = encode_scope_replay_binding(&binding);
+    if replay.locator == [0; 32]
+        || replay.request_id == [0; 16]
+        || replay.request_body_digest == [0; 32]
+        || replay.signed_request_digest == [0; 32]
+        || replay.session_binding == [0; 32]
+        || replay.response_body_digest == [0; 32]
+        || replay.terminal_verifier_commitment == [0; 32]
+        || replay.artifact_commitment == [0; 32]
+        || replay.protected_boot_id == [0; 16]
+        || replay.authentication.is_empty()
+        || replay.authentication.len() > MAXIMUM_EXECUTION_AUTHENTICATION_BYTES
+        || scope_replay_locator(&payload) != replay.locator
+        || !scope_replay_terminal_lineage_is_valid(&binding)
+        || ((replay.terminal_reservation_locator == [0; 32]
+            || replay.signed_outcome_digest == [0; 32]
+            || replay.protected_generation == 0
+            || replay.protected_head == [0; 32])
+            && (replay.terminal_reservation_locator != [0; 32]
+                || replay.signed_outcome_digest != [0; 32]
+                || replay.protected_generation != 0
+                || replay.protected_head != [0; 32]))
+    {
+        return Err(HostError::State(
+            "durable Host scope replay record is invalid".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_opened_fence(

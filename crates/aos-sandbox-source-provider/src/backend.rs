@@ -10,6 +10,7 @@ use aos_sandbox::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     SourceProviderProofV1, SourceResourceV1, SourceRootObservationV1,
+    source_root_descriptor_commitment_v1,
 };
 use rustix::fs::{FileType, OFlags};
 use rustix::io::FdFlags;
@@ -52,6 +53,10 @@ impl ProviderPhysicalSourceRootV1 {
         )
     }
 
+    pub(crate) fn descriptor_commitment(&self) -> ObjectDigest {
+        source_root_descriptor_commitment_v1(&self.observation)
+    }
+
     pub(crate) fn into_security_handoff(
         self,
     ) -> Result<
@@ -85,7 +90,7 @@ impl AcquirePlanV1 {
     /// Returns [`crate::ProviderLedgerError`] if kernel boot, descriptor,
     /// mount-ID, namespace, directory, `O_PATH`, `CLOEXEC`, or read-only facts
     /// cannot be established twice without drift.
-    pub fn observe_source_root(
+    pub(crate) fn observe_source_root(
         &self,
         descriptor: OwnedFd,
     ) -> Result<ProviderPhysicalSourceRootV1, crate::ProviderLedgerError> {
@@ -145,7 +150,7 @@ impl AcquirePlanV1 {
     /// The returned observation is nonauthorizing by itself and can complete
     /// only alongside the original move-only reservation permit.
     #[allow(clippy::too_many_arguments)]
-    pub fn seal_observed_acquisition(
+    pub(crate) fn seal_observed_acquisition(
         &self,
         physical_root: ProviderPhysicalSourceRootV1,
         resource: SourceResourceV1,
@@ -215,6 +220,7 @@ pub struct ReleasePlanV1 {
     pub(crate) lease_id: [u8; 16],
     pub(crate) lease_digest: ObjectDigest,
     pub(crate) backend_id: [u8; 32],
+    pub(crate) acquired_evidence: BackendEvidenceV1,
 }
 
 impl ReleasePlanV1 {
@@ -272,23 +278,62 @@ impl ReleasePlanV1 {
         self.backend_id
     }
 
+    /// Returns the protected acquired-evidence class being released.
+    #[must_use]
+    pub const fn evidence_class(&self) -> BackendEvidenceClassV1 {
+        self.acquired_evidence.class()
+    }
+
+    /// Returns the exact protected acquired evidence being released.
+    #[must_use]
+    pub const fn acquired_evidence(&self) -> &BackendEvidenceV1 {
+        &self.acquired_evidence
+    }
+
     /// Seals an already-completed release observation to this exact plan.
     ///
     /// # Errors
     ///
     /// Returns [`crate::ProviderLedgerError`] when the physical observation
     /// is not bound to this exact durable acquisition plan.
-    pub fn seal_observed_release(
+    pub(crate) fn seal_observed_release(
         &self,
         evidence: BackendEvidenceV1,
         backend_id: [u8; 32],
     ) -> Result<ObservedBackendReleaseV1, crate::ProviderLedgerError> {
+        if backend_id != self.backend_id {
+            return Err(crate::ProviderLedgerError::BackendConflict);
+        }
+        self.validate_released_evidence(&evidence)?;
+
         Ok(ObservedBackendReleaseV1 {
             lineage_digest: self.lineage_digest(),
             evidence,
             released_seconds: current_unix_seconds()?,
             backend_id,
         })
+    }
+
+    pub(crate) fn validate_released_evidence(
+        &self,
+        evidence: &BackendEvidenceV1,
+    ) -> Result<(), crate::ProviderLedgerError> {
+        if self.acquired_evidence.state() != BackendEvidenceStateV1::Acquired
+            || evidence.state() != BackendEvidenceStateV1::Released
+            || evidence.class() != self.acquired_evidence.class()
+            || evidence.backend_authority_id() != self.acquired_evidence.backend_authority_id()
+            || evidence.backend_generation() != self.acquired_evidence.backend_generation()
+            || evidence.backend_digest() != self.acquired_evidence.backend_digest()
+            || evidence.observation_generation() <= self.acquired_evidence.observation_generation()
+            || evidence.predecessor_observation_generation()?
+                != self.acquired_evidence.observation_generation()
+            || evidence.predecessor_observation_digest()?
+                != self.acquired_evidence.observation_digest()
+        {
+            return Err(crate::ProviderLedgerError::BackendConflict);
+        }
+
+        Ok(())
     }
 
     pub(crate) fn lineage_digest(&self) -> ObjectDigest {
@@ -319,7 +364,22 @@ impl ReleasePlanV1 {
             && self.lease_id == release.lease_id
             && self.lease_digest == release.lease_digest
             && self.backend_id == release.backend_id
+            && self.acquired_evidence.state() == BackendEvidenceStateV1::Acquired
+            && acquisition.backend_evidence.as_ref() == Some(&self.acquired_evidence)
     }
+}
+
+pub(crate) fn acquired_evidence(
+    acquisition: &crate::model::AcquisitionRecordV1,
+) -> Result<BackendEvidenceV1, crate::ProviderLedgerError> {
+    acquisition
+        .backend_evidence
+        .as_ref()
+        .filter(|evidence| evidence.state() == BackendEvidenceStateV1::Acquired)
+        .cloned()
+        .ok_or(crate::ProviderLedgerError::Corrupt(
+            "missing acquired backend evidence",
+        ))
 }
 
 /// Describes one active acquisition for fresh exact reopen observation.
@@ -357,7 +417,7 @@ impl ActiveAcquisitionSnapshotV1 {
     ///
     /// Returns [`crate::ProviderLedgerError`] if physical kernel facts cannot
     /// be established without drift or do not match the retained root.
-    pub fn observe_reopened_source_root(
+    pub(crate) fn observe_reopened_source_root(
         &self,
         descriptor: OwnedFd,
     ) -> Result<ProviderPhysicalSourceRootV1, crate::ProviderLedgerError> {
@@ -424,7 +484,7 @@ impl ActiveAcquisitionSnapshotV1 {
     }
 
     /// Seals a freshly reopened descriptor to this retained acquisition.
-    pub fn seal_reopened_source_root(
+    pub(crate) fn seal_reopened_source_root(
         &self,
         physical_root: ProviderPhysicalSourceRootV1,
     ) -> Result<ReopenedSourceRootV1, crate::ProviderLedgerError> {
@@ -909,18 +969,30 @@ pub enum ReopenObservationV1 {
 
 /// Defines the provider-owned backend adapter boundary.
 ///
-/// Implementations cannot mint journal, signing, reply, or replay authority.
-/// Effect methods receive the move-only durable permit and must return it with
-/// output sealed through [`DurableAcquireEffectPermitV1::seal_execution`] or
+/// This trait is sealed. Its sole implementation is constructed by the fixed
+/// owner with protected class-verifier custody, so an external transport cannot
+/// replace evidence authentication with an unconditional success path. Effect
+/// methods receive the move-only durable permit and must return it with output
+/// sealed through [`DurableAcquireEffectPermitV1::seal_execution`] or
 /// [`DurableReleaseEffectPermitV1::seal_execution`].
-pub trait SourceProviderBackendV1 {
+pub trait SourceProviderBackendV1: sealed::SealedBackendV1 {
     /// Observes whether an acquisition reservation was already applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ProviderLedgerError`] when transport, protected
+    /// verifier, descriptor, or retained backend facts cannot be validated.
     fn observe_acquire(
         &mut self,
         plan: &AcquirePlanV1,
     ) -> Result<AcquireObservationV1, crate::ProviderLedgerError>;
 
     /// Consumes a durable permit to execute one acquisition effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ProviderLedgerError`] when execution or its protected
+    /// class-specific evidence cannot be completed and sealed.
     fn execute_acquire(
         &mut self,
         permit: DurableAcquireEffectPermitV1,
@@ -930,20 +1002,45 @@ pub trait SourceProviderBackendV1 {
     >;
 
     /// Reopens and revalidates one exact active source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ProviderLedgerError`] when the retained source cannot
+    /// be classified or its descriptor and verifier attestations do not match.
     fn reopen_active(
         &mut self,
         acquisition: &ActiveAcquisitionSnapshotV1,
     ) -> Result<ReopenObservationV1, crate::ProviderLedgerError>;
 
     /// Observes whether a release reservation was already applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ProviderLedgerError`] when transport or protected
+    /// class-specific readback verification cannot complete.
     fn observe_release(
         &mut self,
         plan: &ReleasePlanV1,
     ) -> Result<ReleaseObservationV1, crate::ProviderLedgerError>;
 
     /// Consumes a durable permit to execute one release effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ProviderLedgerError`] when execution or its protected
+    /// terminal evidence cannot be completed and sealed.
     fn execute_release(
         &mut self,
         permit: DurableReleaseEffectPermitV1,
     ) -> Result<(DurableReleaseEffectPermitV1, ObservedBackendReleaseV1), crate::ProviderLedgerError>;
+}
+
+impl<Transport: crate::backend_adapter::SourceProviderBackendTransportV1 + ?Sized>
+    sealed::SealedBackendV1
+    for crate::backend_adapter::FixedSourceProviderBackendV1<'_, Transport>
+{
+}
+
+mod sealed {
+    pub trait SealedBackendV1 {}
 }

@@ -9,8 +9,9 @@
 //! bind their registration to the original live process without granting effects.
 //! [`client_state`], [`cli_model`], and [`controller_query`] provide dormant pure
 //! client and observation projections. [`environment`], [`git`], [`hierarchy`],
-//! [`lifecycle`], [`policy_compiler`], and [`publisher_admission`] own inert
-//! RFC-0021 domain models and protected-journal seams. [`publisher_roots`] owns
+//! [`lifecycle`], [`multi_node`], [`policy_compiler`], and
+//! [`publisher_admission`] own inert RFC-0021 domain models and
+//! protected-journal seams. [`publisher_roots`] owns
 //! the portable root registry and retains live root custody only on Linux,
 //! without activating it.
 //! Raw Linux syscalls and
@@ -69,6 +70,7 @@ pub mod mount_observation_state;
 pub mod mount_preparation;
 #[cfg(target_os = "linux")]
 pub mod mount_source_acquisition_inventory;
+pub mod multi_node;
 pub mod ownership_authority;
 pub mod ownership_resume;
 pub mod ownership_service;

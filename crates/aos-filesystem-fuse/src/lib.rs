@@ -5,10 +5,15 @@
 //! kernel parsing and reply publication; Rust owns metadata decisions and handle
 //! state. File data and extended attributes remain disabled in the installed profile.
 //! The private ABI and callback modules contain the audited pointer boundary.
-//! [`file_callbacks`] defines the dormant typed OPEN/READ/RELEASE sequencing
-//! contract for a later ABI revision; it is not installed in the C operations table.
-//! [`operations`] joins those paths with GETXATTR/LISTXATTR sizing and errno
-//! semantics, while remaining absent from [`run_metadata`].
+//! Internal callback reducers define the dormant typed OPEN/READ/RELEASE
+//! sequencing contract for a later ABI revision; they are not installed in the
+//! C operations table. [`dormant_libfuse`] joins those reducers with
+//! GETXATTR/LISTXATTR sizing and errno semantics. The private session context
+//! can construct a dormant adapter for
+//! OPEN, READ, RELEASE, GETXATTR, and LISTXATTR, including protected broker
+//! receipt and durable registration handoffs. Its clock, cancellation, and
+//! publication authority remain bound to that session. No installer is registered and
+//! [`run_metadata`] remains unchanged.
 //!
 //! Each connection has exactly one runner. Its descriptors must refer to a
 //! broker-prepared mount with independently qualified permission policy. A
@@ -27,8 +32,9 @@ use aos_filesystem_view::{
 mod abi;
 mod callbacks;
 mod control;
-pub mod file_callbacks;
-pub mod operations;
+pub mod dormant_libfuse;
+mod file_callbacks;
+mod operations;
 
 /// Configures the independently bounded C transport buffers and reply policy.
 #[derive(Clone, Copy, Debug)]

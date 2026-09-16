@@ -644,6 +644,7 @@ pub(crate) fn reserve_release(
                     lease_id: release.lease_id,
                     lease_digest: release.lease_digest,
                     backend_id: release.backend_id,
+                    acquired_evidence: crate::backend::acquired_evidence(acquisition)?,
                 };
                 if !plan.matches_effect_release(acquisition, &release) {
                     return Err(ProviderLedgerError::Corrupt(
@@ -814,6 +815,7 @@ pub(crate) fn reserve_release(
         lease_id: request.lease_id(),
         lease_digest: request.lease_digest(),
         backend_id: acquisition.backend_id,
+        acquired_evidence: crate::backend::acquired_evidence(&acquisition)?,
     };
     let release = ReleaseRecordV1 {
         revision: 1,
@@ -1099,6 +1101,7 @@ fn reserve_release_continuation(
         lease_id: release.lease_id,
         lease_digest: release.lease_digest,
         backend_id: release.backend_id,
+        acquired_evidence: crate::backend::acquired_evidence(&acquisition)?,
     };
     if effect_plan.lineage_digest() != release.backend_lineage_digest
         || !effect_plan.matches_effect_release(&acquisition, &release)

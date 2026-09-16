@@ -377,7 +377,7 @@ fn source_acquisition_negotiated(features: &[FeatureRef]) -> bool {
 /// Callers invoke this function again after durable admission and immediately
 /// before an effect, preventing an earlier transport timestamp from becoming
 /// executable authority.
-fn trusted_paired_clock_sample() -> Result<RawPairedClockSample> {
+pub(crate) fn trusted_paired_clock_sample() -> Result<RawPairedClockSample> {
     let wall = clock_gettime(ClockId::Realtime);
     let boottime = clock_gettime(ClockId::Boottime);
     let wall_seconds = wall.tv_sec;

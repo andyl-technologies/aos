@@ -141,7 +141,7 @@ impl OperationError {
 }
 
 /// Owns all bounded dormant operation state for one exact connection generation.
-pub struct ImmutableOperations {
+pub(crate) struct ImmutableOperations {
     connection_binding: [u8; 32],
     worker_brand: u64,
     limits: ImmutableOperationLimits,
@@ -203,7 +203,7 @@ impl ImmutableOperations {
     /// Returns [`OperationError`] for foreign connection state, unsupported
     /// flags, exhausted handles, worker admission, or unavailable realization.
     #[allow(clippy::too_many_arguments)]
-    pub fn prepare_open<'index>(
+    pub(crate) fn prepare_open<'index>(
         &mut self,
         connection: &mut aos_filesystem_view::MetadataConnection<'_, 'index, '_, '_>,
         data_plane: &DataPlane,
@@ -229,7 +229,7 @@ impl ImmutableOperations {
     ///
     /// Returns [`OpenFinishFailure`] with the still-owned pending token when the
     /// failure is recoverable, or a terminal outcome after ambiguous publication.
-    pub fn finish_open<'index>(
+    pub(crate) fn finish_open<'index>(
         &mut self,
         connection: &mut aos_filesystem_view::MetadataConnection<'_, 'index, '_, '_>,
         pending: PendingCallbackOpen<'index>,
@@ -243,7 +243,7 @@ impl ImmutableOperations {
     /// # Errors
     ///
     /// Returns [`OperationError`] for stale pending state or mismatched broker receipt.
-    pub fn record_backing_opened(
+    pub(crate) fn record_backing_opened(
         &mut self,
         pending: &mut PendingCallbackOpen<'_>,
         receipt: BackingOpenReceipt,
@@ -257,7 +257,7 @@ impl ImmutableOperations {
     ///
     /// Returns [`OperationError`] unless the cleanup token, close receipt,
     /// connection generation, operation, and selector all match.
-    pub fn record_rejected_backing_closed<'index>(
+    pub(crate) fn record_rejected_backing_closed<'index>(
         &mut self,
         cleanup: RejectedOpenCleanup<'index>,
         receipt: BackingCloseReceipt,
@@ -272,7 +272,7 @@ impl ImmutableOperations {
     /// # Errors
     ///
     /// Returns [`OperationError`] for a foreign cleanup token or stale worker state.
-    pub fn finish_rejected_open_cleanup<'index>(
+    pub(crate) fn finish_rejected_open_cleanup<'index>(
         &mut self,
         connection: &mut aos_filesystem_view::MetadataConnection<'_, 'index, '_, '_>,
         cleanup: RejectedWorkerCleanup<'index>,
@@ -289,7 +289,7 @@ impl ImmutableOperations {
     ///
     /// Returns [`OperationError`] unless the token remains in the exact durable
     /// closing phase for this connection generation.
-    pub fn retry_rejected_open_close(
+    pub(crate) fn retry_rejected_open_close(
         &self,
         cleanup: &RejectedOpenCleanup<'_>,
     ) -> Result<ReleasePlan, OperationError> {
@@ -302,7 +302,7 @@ impl ImmutableOperations {
     ///
     /// Always returns the terminal ambiguity error after exact validation, or a
     /// stale error without accepting mismatched state.
-    pub fn record_rejected_close_ambiguity(
+    pub(crate) fn record_rejected_close_ambiguity(
         &mut self,
         connection: &mut aos_filesystem_view::MetadataConnection<'_, '_, '_, '_>,
         cleanup: RejectedOpenCleanup<'_>,
@@ -368,7 +368,7 @@ impl ImmutableOperations {
     ///
     /// Returns [`OperationError`] for unsupported release flags, stale or
     /// generation-mismatched handles, or an inconsistent backing registration.
-    pub fn prepare_release(
+    pub(crate) fn prepare_release(
         &mut self,
         connection: &aos_filesystem_view::MetadataConnection<'_, '_, '_, '_>,
         data_plane: &DataPlane,
@@ -387,7 +387,7 @@ impl ImmutableOperations {
     ///
     /// Returns [`OperationError`] unless the inode/handle pair and durable
     /// registration remain in their pending-release generation.
-    pub fn retry_release(
+    pub(crate) fn retry_release(
         &self,
         connection: &aos_filesystem_view::MetadataConnection<'_, '_, '_, '_>,
         file: FileHandleRequest,
@@ -405,7 +405,7 @@ impl ImmutableOperations {
     ///
     /// Returns [`OperationError`] unless the receipt matches the exact
     /// pending handle, connection generation, and durable close operation.
-    pub fn record_backing_closed(
+    pub(crate) fn record_backing_closed(
         &mut self,
         file: FileHandleRequest,
         receipt: BackingCloseReceipt,
@@ -422,7 +422,7 @@ impl ImmutableOperations {
     ///
     /// Returns [`OperationError`] for stale state or a missing/mismatched final
     /// close permit. Cleanup remains identity-checked after lease expiry.
-    pub fn finish_release(
+    pub(crate) fn finish_release(
         &mut self,
         connection: &mut aos_filesystem_view::MetadataConnection<'_, '_, '_, '_>,
         file: FileHandleRequest,
@@ -441,7 +441,7 @@ impl ImmutableOperations {
     ///
     /// Always returns the terminal ambiguity error after exact validation, or a
     /// stale error without consuming a mismatched handle.
-    pub fn record_close_ambiguity(
+    pub(crate) fn record_close_ambiguity(
         &mut self,
         connection: &mut aos_filesystem_view::MetadataConnection<'_, '_, '_, '_>,
         file: FileHandleRequest,

@@ -38,6 +38,7 @@ const SIGNER_SET_DOMAIN: &[u8] = b"aos-sandbox-broker-session-signer-set-v1\0";
 const SIGNED_CLIENT_HELLO_DIGEST_DOMAIN: &[u8] =
     b"aos-sandbox-broker-session-signed-client-hello-v1\0";
 const SIGNED_REQUEST_DIGEST_DOMAIN: &[u8] = b"aos-sandbox-broker-session-signed-request-v1\0";
+const SIGNED_OUTCOME_DIGEST_DOMAIN: &[u8] = b"aos-sandbox-broker-session-signed-outcome-v1\0";
 pub(crate) const SESSION_BINDING_DOMAIN: &[u8] = b"aos-sandbox-broker-session-binding-v1\0";
 
 /// Stores exact Ed25519 signature bytes without a library-native wire layout.
@@ -186,6 +187,16 @@ pub fn complete_signed_client_hello_digest_v1(value: &SignedBrokerClientHelloV1)
 #[must_use]
 pub fn complete_signed_request_digest_v1(value: &SignedBrokerRequestV1) -> [u8; 32] {
     length_prefixed_digest(SIGNED_REQUEST_DIGEST_DOMAIN, &value.to_canonical_bytes())
+}
+
+/// Digests the complete signed BrokerOutcome artifact under its independent domain.
+#[must_use]
+pub fn complete_signed_outcome_digest_v1(value: &SignedBrokerOutcomeV1) -> [u8; 32] {
+    complete_signed_outcome_bytes_digest_v1(&value.to_canonical_bytes())
+}
+
+pub(crate) fn complete_signed_outcome_bytes_digest_v1(bytes: &[u8]) -> [u8; 32] {
+    length_prefixed_digest(SIGNED_OUTCOME_DIGEST_DOMAIN, bytes)
 }
 
 /// Signs a ClientHello with the dedicated ClientHello key.

@@ -98,16 +98,20 @@ pub(super) fn validate_inventory_floor(
             "SourceProvider Inventory floor has incomplete presence",
         ));
     }
-    let terminal_inventory_attempts = table
+    let retained_inventory_attempts = table
         .provider_attempts
         .values()
         .filter(|attempt| {
             attempt.scope == head.scope
                 && attempt.method == ProviderMethodV2::Inventory
-                && attempt_is_terminal(&attempt.state)
+                && (attempt_is_terminal(&attempt.state)
+                    || matches!(
+                        attempt.state,
+                        ProviderAttemptStateV2::SupersededIndeterminate { .. }
+                    ))
         })
         .collect::<Vec<_>>();
-    let complete_inventory_count = terminal_inventory_attempts
+    let complete_inventory_count = retained_inventory_attempts
         .iter()
         .filter(|attempt| is_complete(attempt))
         .count();
@@ -119,7 +123,7 @@ pub(super) fn validate_inventory_floor(
             "provider Inventory ordinal does not equal its Complete history",
         ));
     }
-    if head.last_inventory_attempt.is_some() != !terminal_inventory_attempts.is_empty() {
+    if head.last_inventory_attempt.is_some() != !retained_inventory_attempts.is_empty() {
         return Err(state_error(
             "last provider Inventory attempt has incomplete presence",
         ));
@@ -128,13 +132,17 @@ pub(super) fn validate_inventory_floor(
         let last = exact_attempt(table, reference)?;
         if last.method != ProviderMethodV2::Inventory
             || last.scope != head.scope
-            || !attempt_is_terminal(&last.state)
+            || !(attempt_is_terminal(&last.state)
+                || matches!(
+                    last.state,
+                    ProviderAttemptStateV2::SupersededIndeterminate { .. }
+                ))
         {
             return Err(state_error(
                 "last provider Inventory attempt is not a terminal Inventory",
             ));
         }
-        for earlier in terminal_inventory_attempts {
+        for earlier in retained_inventory_attempts {
             if earlier.attempt_id != last.attempt_id
                 && !attempt_happens_after(table, earlier, last)?
             {

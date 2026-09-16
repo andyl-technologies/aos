@@ -3,6 +3,68 @@
 use super::*;
 
 impl CurrentProviderIngressSessionV1 {
+    /// Captures the exact predecessor identity before one fallible receive.
+    ///
+    /// The move-only checkpoint grants no carrier or signing authority. It may
+    /// only seed an explicit fixed recovery handshake if this session is later
+    /// fatally closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] if current protected custody or
+    /// peer execution is already stale.
+    #[doc(hidden)]
+    pub fn prepare_ingress_reopen_checkpoint(
+        &mut self,
+    ) -> Result<ProviderIngressReopenCheckpointV1, SourceProviderSecurityError> {
+        Ok(ProviderIngressReopenCheckpointV1 {
+            predecessor: self.current_projection()?,
+        })
+    }
+
+    /// Receives one descriptor-free request from the authenticated Root-Mount peer.
+    ///
+    /// `Ok(None)` retains the live session when the nonblocking carrier has no
+    /// complete packet. Returned bytes are the exact packet observed on the
+    /// authenticated session and are the only bytes the provider ledger should
+    /// admit for this exchange.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] and poisons the session for a
+    /// fatal carrier failure or a peer-execution change.
+    #[doc(hidden)]
+    pub fn receive_current_request_packet(
+        &mut self,
+    ) -> Result<Option<Vec<u8>>, SourceProviderSecurityError> {
+        self.revalidate()?;
+        let received = match self.carrier.receive_zero_descriptors(MAXIMUM_FRAME_BYTES) {
+            Ok(received) => received,
+            Err(CarrierFailureV1::Retryable) => return Ok(None),
+            Err(CarrierFailureV1::Fatal(error)) => {
+                return Err(poison_and_close(
+                    &mut self.custody,
+                    &mut self.carrier,
+                    error,
+                ));
+            }
+        };
+        let crate::carrier::ReceivedSourceProviderRecordV1 {
+            payload,
+            descriptors,
+            execution,
+        } = received;
+        if !descriptors.is_empty() || !execution.has_same_execution(&self.root_mount_execution) {
+            return Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            ));
+        }
+        self.revalidate()?;
+        Ok(Some(payload))
+    }
+
     /// Returns the retained session binding without granting transport authority.
     #[must_use]
     #[doc(hidden)]
@@ -361,6 +423,69 @@ impl CurrentProviderIngressSessionV1 {
             session_binding: response_identity.0,
             response,
             has_source_root,
+        })
+    }
+
+    /// Authorizes deadline-independent Mount recovery of one persisted response.
+    ///
+    /// The protected Provider attempt must be exactly Completed, retain the
+    /// supplied canonical response and artifact, and prove that its request was
+    /// admitted before the exclusive deadline. The returned value carries no
+    /// send or signing authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] for stale custody or journal,
+    /// another attempt state, response substitution, or invalid deadline facts.
+    #[doc(hidden)]
+    pub fn authorize_persisted_mount_outcome(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+        attempt_key: &[u8],
+        response: &[u8],
+    ) -> Result<crate::PersistedProviderOutcomeV1, SourceProviderSecurityError> {
+        self.revalidate()?;
+        journal
+            .validate_source_provider_authority_snapshot(snapshot)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        let attempt_bytes = journal
+            .get(attempt_key)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let attempt = match aos_sandbox_source_provider_ledger::ledger::format::decode_record(
+            attempt_key,
+            attempt_bytes,
+        ) {
+            Ok(aos_sandbox_source_provider_ledger::ledger::model::DecodedRecordV1::Attempt(
+                attempt,
+            )) => attempt,
+            _ => return Err(SourceProviderSecurityError::SessionContinuity),
+        };
+        let response_digest =
+            aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
+                attempt.method,
+                response,
+            );
+        if attempt.state != aos_sandbox_source_provider_ledger::ProviderAttemptStateV1::Completed
+            || attempt.completed_response != response
+            || attempt.response_digest != Some(response_digest)
+            || attempt.completed_at_seconds.is_none_or(|completed| {
+                completed < attempt.verified_at_seconds || completed >= attempt.deadline_seconds
+            })
+            || !journal_retains_exact_artifact(journal, response)?
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        self.revalidate()?;
+        Ok(crate::PersistedProviderOutcomeV1 {
+            method: attempt.method,
+            signed_request_digest: *attempt.signed_request_digest.as_bytes(),
+            response_digest: *response_digest.as_bytes(),
+            completed_at_seconds: attempt
+                .completed_at_seconds
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?,
+            deadline_seconds: attempt.deadline_seconds,
         })
     }
 
@@ -781,13 +906,14 @@ impl CurrentProviderIngressSessionV1 {
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         status: SourceProviderResponseStatusV1,
-    ) -> Result<SignedSourceProviderStatusV1, SourceProviderSecurityError> {
+    ) -> Result<(SignedSourceProviderStatusV1, i64), SourceProviderSecurityError> {
         validate_authorization_journal(journal, authorization)?;
         self.revalidate()?;
         let now_seconds = current_unix_seconds()
             .map_err(|error| poison_and_close(&mut self.custody, &mut self.carrier, error))?;
         if status.method() != authorization.method
             || !authorization_authority_is_current(authorization, now_seconds)
+            || now_seconds >= authorization.request_deadline_seconds
             || status.request_id() != authorization.request_id
             || status.signed_request_digest() != authorization.signed_request_digest
             || status.session_binding() != authorization.session_binding
@@ -811,6 +937,7 @@ impl CurrentProviderIngressSessionV1 {
             )
         };
         self.finish_signature(signed)
+            .map(|signed| (signed, now_seconds))
     }
 
     /// Verifies one request against freshly revalidated custody and execution.

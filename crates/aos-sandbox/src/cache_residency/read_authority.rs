@@ -174,6 +174,29 @@ impl CurrentReadAuthorityV1 {
         }
         Ok(())
     }
+
+    pub(crate) fn revalidate_cache_lookup(
+        &self,
+        owner: &CacheAuthorityOwner<'_, '_>,
+        capability: &VerifiedCacheCapabilityV1,
+        now: u64,
+    ) -> Result<
+        (
+            PhysicalPartitionId,
+            &ObjectDescriptor,
+            AuthorizedLookupKey,
+            u64,
+        ),
+        ReadAuthorityError,
+    > {
+        self.validate_current(owner, capability, now)?;
+        Ok((
+            self.partition,
+            &self.descriptor,
+            self.lookup_key,
+            self.valid_until,
+        ))
+    }
 }
 
 /// Captures fresh physical facts immediately before descriptor handoff.

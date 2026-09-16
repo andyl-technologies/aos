@@ -7,6 +7,118 @@
 use super::*;
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    /// Reconstructs terminal Released evidence from one exact protected row.
+    ///
+    /// This recovery creates no descriptor or effect authority. It only proves
+    /// that the complete protected graph still contains the exact Released row
+    /// and its manager-negative commitment under the current Root-Mount session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] and poisons the session unless
+    /// the snapshot, record, acquisition lineage, and terminal projection agree.
+    pub fn recover_released_mount_source_root_v2(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        acquisition_key: Vec<u8>,
+        acquisition_record: Vec<u8>,
+    ) -> Result<crate::ReleasedMountSourceRootV2, SourceProviderSecurityError> {
+        use aos_sandbox_protocol::mount_source_acquisition_state::{
+            ProviderAttemptStateV2, ProviderStatusV2, SourceAcquisitionPhaseV2, StoredRecordV2,
+            decode_mount_source_state_record_v2,
+        };
+
+        self.revalidate()?;
+        let graph = validated_mount_state(journal).map_err(|error| self.poison(error))?;
+        let row = match decode_mount_source_state_record_v2(&acquisition_key, &acquisition_record) {
+            Ok(StoredRecordV2::Acquisition { value }) => value,
+            _ => return Err(self.poison(SourceProviderSecurityError::SessionContinuity)),
+        };
+        let now = super::current_unix_seconds()?;
+        let current_projection =
+            super::capture_session_projection(self, now).map_err(|error| self.poison(error))?;
+        let current_session = graph
+            .provider_sessions
+            .values()
+            .find(|session| {
+                super::stored_mount_session_matches_projection(session, &current_projection)
+            })
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let current_head = graph
+            .provider_heads
+            .get(&(
+                row.scope.holder_authority_id,
+                row.scope.provider_authority_id,
+            ))
+            .filter(|head| {
+                head.scope == row.scope && head.current_session_id == current_session.session_id
+            })
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let negative_custody_digest = row
+            .negative_custody_digest
+            .filter(|digest| digest != &[0; 32])
+            .map(ObjectDigest::from_bytes)
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let evidence = row
+            .evidence
+            .as_ref()
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let acquire_attempt = graph
+            .provider_attempts
+            .get(&evidence.acquire_attempt.id)
+            .filter(|attempt| {
+                attempt.revision == evidence.acquire_attempt.revision
+                    && attempt.record_digest == evidence.acquire_attempt.record_digest
+                    && matches!(
+                        attempt.state,
+                        ProviderAttemptStateV2::DispositionConsumed {
+                            status: ProviderStatusV2::Complete,
+                            ..
+                        }
+                    )
+            })
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let acquire_session = graph
+            .provider_sessions
+            .get(&acquire_attempt.session_id)
+            .filter(|session| session.record_digest == acquire_attempt.session_record_digest)
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let signed_outcome_digest = acquire_response_artifact_digest(acquire_attempt)
+            .map_err(|error| self.poison(error))?;
+        let projection = crate::descriptor::durable_lifecycle_projection(
+            &row,
+            ObjectDigest::from_bytes(acquire_session.session_binding),
+            signed_outcome_digest,
+            4,
+        )
+        .map_err(|error| self.poison(error))?;
+        if row.phase != SourceAcquisitionPhaseV2::Released
+            || row.release_proof.is_none()
+            || current_head.scope != row.scope
+            || graph.acquisitions.get(&row.acquisition_id) != Some(&row)
+            || journal
+                .validate_mount_source_acquisition_snapshot(&journal_snapshot)
+                .is_err()
+            || journal.get(&acquisition_key).ok().flatten() != Some(acquisition_record.as_slice())
+            || super::outcome::helpers::validate_lifecycle_row_in_graph(
+                &graph,
+                &acquisition_key,
+                &acquisition_record,
+                &projection,
+                super::outcome::helpers::LifecycleStageV2::Released(negative_custody_digest),
+            )
+            .is_err()
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        self.revalidate()?;
+        Ok(crate::ReleasedMountSourceRootV2 {
+            projection,
+            negative_custody_digest,
+        })
+    }
+
     /// Recovers one exact provider outcome from protected Mount history.
     ///
     /// The verifier revalidates current custody, the namespace-40 snapshot,
@@ -29,10 +141,15 @@ impl CurrentRootMountSourceProviderSessionV1 {
         attempt_record: Vec<u8>,
         session_key: Vec<u8>,
         session_record: Vec<u8>,
-        canonical_signed_status: Vec<u8>,
-        canonical_signed_result: Vec<u8>,
-        reopened_source_root: Option<crate::ProviderSourceRootHandoffV1>,
+        captured: CapturedMountProviderRecoveryOutcomeV2,
     ) -> Result<RecoveredMountProviderOutcomeV2, SourceProviderSecurityError> {
+        let CapturedMountProviderRecoveryOutcomeV2 {
+            method: captured_method,
+            canonical_signed_status,
+            canonical_signed_result,
+            source_root: reopened_source_root,
+            persisted,
+        } = captured;
         self.revalidate()?;
         use aos_sandbox_protocol::mount_source_acquisition_state::{
             ProviderAttemptStateV2, ProviderIntentV2, ProviderMethodV2, ProviderQueryOwnerV2,
@@ -67,7 +184,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
             ProviderAttemptStateV2::Reserved if head.pending_attempt == Some(attempt_reference) => {
                 (
                     head.next_response_sequence,
-                    OutcomeDeadlinePolicyV2::Fresh,
+                    if persisted.is_some() {
+                        OutcomeDeadlinePolicyV2::RetainedReplay
+                    } else {
+                        OutcomeDeadlinePolicyV2::Fresh
+                    },
                     None,
                 )
             }
@@ -169,6 +290,40 @@ impl CurrentRootMountSourceProviderSessionV1 {
                     )
                 }
             };
+        if captured_method != method {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        let verification_anchor = match (verification_anchor, persisted.as_ref()) {
+            (Some(anchor), _) => Some(anchor),
+            (None, Some(persisted)) => {
+                if persisted.method != method
+                    || persisted.signed_request_digest != attempt.signed_request_digest
+                    || persisted.deadline_seconds != deadline_seconds
+                    || persisted.completed_at_seconds < 0
+                    || persisted.completed_at_seconds >= deadline_seconds
+                {
+                    return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+                }
+                let mut anchor = aos_sandbox_protocol::mount_source_acquisition_state::OutcomeVerificationAnchorV2 {
+                    verification_started_seconds: persisted.completed_at_seconds,
+                    verification_completed_seconds: persisted.completed_at_seconds,
+                    kernel_boot_id: retained_session.kernel_boot_id,
+                    trusted_clock_evidence_digest:
+                        retained_session.trusted_clock_evidence_digest,
+                    anchor_digest: [0; 32],
+                };
+                anchor.anchor_digest = aos_sandbox_protocol::mount_source_acquisition_state::outcome_verification_anchor_digest_v2(
+                    &anchor,
+                    attempt.session_id,
+                    attempt.attempt_id,
+                    request_sequence,
+                    recovered_response_sequence,
+                    persisted.response_digest,
+                );
+                Some(anchor)
+            }
+            (None, None) => None,
+        };
         let (catalog_floor, selection_floor, current_catalog_head_commitment) = match (
             &attempt.method,
             &attempt.acquire_verification_floor,
@@ -385,6 +540,16 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
             }
         };
+        if persisted.as_ref().is_some_and(|persisted| {
+            persisted.response_digest
+                != *aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
+                    method,
+                    &canonical_response,
+                )
+                .as_bytes()
+        }) {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
         let source_observation = reopened_source_root
             .as_ref()
             .map(crate::ProviderSourceRootHandoffV1::observation)
@@ -1184,6 +1349,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         Ok(crate::PreparedReleasedMountSourceRootV2 {
             projection: custody,
             negative_custody_digest,
+            fresh_recovery: None,
         })
     }
 }

@@ -144,10 +144,18 @@ impl BackendEvidenceVerifierV1 {
     pub fn verify_runtime_inspection(
         &self,
         expected_authority_binding: ObjectDigest,
+        expected_operation: super::BackendOperationIdV1,
+        expected_operation_sequence: super::BackendOperationSequenceV1,
+        expected_lifecycle_operation: super::BackendLifecycleOperationV1,
+        expected_request_commitment: ObjectDigest,
         expected: &RuntimeHandleCommitmentV1,
         mut envelope: SignedBackendRuntimeInspectionV1,
     ) -> Result<BackendRuntimeInspectionV1, BackendEvidenceVerificationError> {
         if self.authority_binding != expected_authority_binding
+            || envelope.input.operation != expected_operation
+            || envelope.input.operation_sequence != expected_operation_sequence
+            || envelope.input.lifecycle_operation != expected_lifecycle_operation
+            || envelope.input.request_commitment != expected_request_commitment
             || &envelope.input.commitment != expected
         {
             return Err(BackendEvidenceVerificationError::BindingMismatch);
@@ -545,6 +553,10 @@ fn runtime_message(
     input: &BackendRuntimeInspectionInputV1,
 ) -> [u8; 32] {
     let mut digest = envelope_prefix(verifier, RUNTIME_DOMAIN);
+    digest.update(input.operation.as_bytes());
+    digest.update(input.operation_sequence.get().to_be_bytes());
+    digest.update([lifecycle_code(input.lifecycle_operation)]);
+    digest.update(input.request_commitment.as_bytes());
     update_runtime_handle(&mut digest, &input.commitment);
     digest.update([runtime_phase_code(input.phase)]);
     digest.update(input.sequence.get().to_be_bytes());
@@ -652,6 +664,8 @@ const fn lifecycle_code(operation: BackendLifecycleOperationV1) -> u8 {
         BackendLifecycleOperationV1::Thaw => 4,
         BackendLifecycleOperationV1::Stop => 5,
         BackendLifecycleOperationV1::Destroy => 6,
+        BackendLifecycleOperationV1::Inspect => 7,
+        BackendLifecycleOperationV1::Kill => 8,
     }
 }
 

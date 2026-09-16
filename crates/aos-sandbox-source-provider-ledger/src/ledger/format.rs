@@ -1,15 +1,15 @@
 //! Canonical AOSSPL01 record envelopes, keys, and bodies.
 //!
 //! ```text
-//! AOSSPL01 | version:u16be=3 | kind:u8 | state:u8 | flags:u16be |
+//! AOSSPL01 | version:u16be=4 | kind:u8 | state:u8 | flags:u16be |
 //! reserved:u16be | body_len:u32be | reserved:u32be | revision:u64be |
 //! record_digest[32] | body[body_len]
 //! ```
 //!
-//! Version 3 is the only accepted family member. Version 2 is not decoded or
-//! upgraded in place: opening a namespace containing it fails before graph
+//! Version 4 is the only accepted family member. Older versions are not decoded or
+//! upgraded in place: opening a namespace containing them fails before graph
 //! allocation with an explicit offline-migration error. This prevents an
-//! ambiguous dual interpretation of unshipped v2 and v3 records.
+//! ambiguous dual interpretation of records without protected completion time.
 //!
 //! The seven closed bodies use these exact semantic orders; `authority` is a
 //! 56-byte authority tuple, `signer` is the protocol's canonical 120-byte
@@ -31,9 +31,9 @@
 //! lengths/digests, root-hello, provider-hello
 //! SessionHistory(1232+hellos): exact immutable HolderHead body keyed by its
 //! session binding; state is historical rather than current-head
-//! Attempt(952+frames): provider, holder, root-record-signer, method/status,
+//! Attempt(960+frames): provider, holder, root-record-signer, method/status,
 //! request-id, request/typed/intent/attempt digests, session/request-response sequences/deadline,
-//! verification/current-validity, negotiated policy, processes, signer-set,
+//! verification/completion/current-validity, negotiated policy, processes, signer-set,
 //! optional old-attempt/session/fence recovery bridge including fence class
 //! and authenticated current revocation head, frame lengths/digests,
 //! descriptor/result, response catalog, signed-request/completed-response
@@ -82,9 +82,9 @@ use crate::limits::{
 };
 
 const MAGIC: &[u8; 8] = b"AOSSPL01";
-// Version 3 adds holder-scoped acquisition identity floors and sequences to
-// version 2's fixed ceilings, session floors, and immutable effect attempts.
-const VERSION: u16 = 3;
+// Version 4 binds the protected response-completion time into each terminal
+// attempt so historical replay never substitutes request-admission time.
+const VERSION: u16 = 4;
 const ENVELOPE_BYTES: usize = 64;
 const HEADER_BYTES: usize = 32;
 
@@ -100,13 +100,13 @@ const AUTHORITY_BODY_BYTES: usize = 632;
 const CATALOG_FIXED_BYTES: usize = 476;
 const MAXIMUM_CATALOG_PUBLICATION_BYTES: usize = 520;
 const SESSION_FIXED_BYTES: usize = 1_232;
-const ATTEMPT_FIXED_BYTES: usize = 952;
+const ATTEMPT_FIXED_BYTES: usize = 960;
 const ACQUISITION_FIXED_BYTES: usize = 792;
 const LEASE_LINEAGE_BYTES: usize = 88;
 const RELEASE_FIXED_BYTES: usize = 464;
 const AUTHORITY_SEMANTIC_BYTES: usize = 592;
 const SESSION_SEMANTIC_BYTES: usize = 1_232;
-const ATTEMPT_SEMANTIC_BYTES: usize = 856;
+const ATTEMPT_SEMANTIC_BYTES: usize = 864;
 const ACQUISITION_SEMANTIC_BYTES: usize = 788;
 const RELEASE_SEMANTIC_BYTES: usize = 464;
 const ATTEMPT_RESERVED_BYTES: usize = ATTEMPT_FIXED_BYTES - ATTEMPT_SEMANTIC_BYTES;
@@ -139,7 +139,7 @@ const _: () =
     assert!(ACQUISITION_SEMANTIC_BYTES + ACQUISITION_RESERVED_BYTES == ACQUISITION_FIXED_BYTES);
 const _: () = assert!(RELEASE_SEMANTIC_BYTES == RELEASE_FIXED_BYTES);
 const _: () = assert!(SESSION_RECORD_MAXIMUM_BYTES == 9_488);
-const _: () = assert!(ATTEMPT_RECORD_MAXIMUM_BYTES == 2_098_168);
+const _: () = assert!(ATTEMPT_RECORD_MAXIMUM_BYTES == 2_098_176);
 const _: () = assert!(ACQUISITION_RECORD_MAXIMUM_BYTES == 487_020);
 const _: () = assert!(8 + 16 + 32 + 32 == LEASE_LINEAGE_BYTES);
 const _: () = assert!(RELEASE_RECORD_MAXIMUM_BYTES == 131_720);
@@ -323,6 +323,7 @@ pub fn encode_attempt(value: &AttemptRecordV1) -> Vec<u8> {
     body.u64(value.response_sequence.unwrap_or(0));
     body.i64(value.deadline_seconds);
     body.i64(value.verified_at_seconds);
+    body.i64(value.completed_at_seconds.unwrap_or(0));
     body.i64(value.current_valid_until_seconds);
     body.u8(value.proof_class_capabilities);
     body.u8(u8::from(value.supports_recursive));
@@ -956,6 +957,10 @@ fn decode_attempt_body(envelope: Envelope<'_>) -> Result<AttemptRecordV1, Ledger
         },
         deadline_seconds: body.nonnegative_i64()?,
         verified_at_seconds: body.nonnegative_i64()?,
+        completed_at_seconds: match body.nonnegative_i64()? {
+            0 => None,
+            value => Some(value),
+        },
         current_valid_until_seconds: body.nonnegative_i64()?,
         proof_class_capabilities: body.nonzero_u8()?,
         supports_recursive: body.boolean()?,
@@ -1024,6 +1029,9 @@ fn decode_attempt_body(envelope: Envelope<'_>) -> Result<AttemptRecordV1, Ledger
                 value.request_id,
             )
         || value.verified_at_seconds > value.deadline_seconds
+        || value.completed_at_seconds.is_some_and(|completed| {
+            completed < value.verified_at_seconds || completed >= value.deadline_seconds
+        })
         || value.deadline_seconds > value.current_valid_until_seconds
         || value.proof_class_capabilities == 0
         || value.proof_class_capabilities & !0x0f != 0
@@ -1086,20 +1094,24 @@ fn decode_attempt_body(envelope: Envelope<'_>) -> Result<AttemptRecordV1, Ledger
                 && value.response_sequence.is_none()
                 && value.response_digest.is_none()
                 && value.result_digest.is_none()
+                && value.completed_at_seconds.is_none()
                 && value.completed_response.is_empty()
                 && !value.signed_request.is_empty() => {}
         ProviderAttemptStateV1::Completed
             if completed_shape
                 && value.response_sequence.is_some()
+                && value.completed_at_seconds.is_some()
                 && !value.signed_request.is_empty() => {}
         ProviderAttemptStateV1::Retired
             if (status.is_some()
                 && value.response_sequence.is_some()
                 && value.response_digest.is_some()
+                && value.completed_at_seconds.is_some()
                 && value.result_digest.is_some())
                 || (status.is_none()
                     && value.response_sequence.is_none()
                     && value.response_digest.is_none()
+                    && value.completed_at_seconds.is_none()
                     && value.result_digest.is_none()
                     && value.completed_response.is_empty()
                     && !value.signed_request.is_empty()) => {}

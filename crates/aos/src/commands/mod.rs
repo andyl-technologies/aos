@@ -27,6 +27,7 @@ pub mod prefetch;
 pub mod profile;
 pub mod release;
 pub mod repl;
+pub mod sandbox;
 pub mod serve;
 pub mod show;
 pub mod system;

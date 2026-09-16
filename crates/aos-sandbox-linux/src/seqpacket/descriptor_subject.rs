@@ -559,6 +559,13 @@ pub struct ConnectionBoundReceivedDescriptorRecord<'socket> {
 }
 
 impl<'socket> ConnectionBoundReceivedDescriptorRecord<'socket> {
+    pub(super) fn new(
+        record: ReceivedDescriptorRecord,
+        peer: &'socket ConnectionPeerIdentity,
+    ) -> Self {
+        Self { record, peer }
+    }
+
     /// Returns the exact received payload.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
@@ -599,6 +606,27 @@ impl<'socket> ConnectionBoundReceivedDescriptorRecord<'socket> {
 }
 
 impl ReceivedDescriptorRecord {
+    pub(super) fn from_parts(
+        payload: Vec<u8>,
+        subject: KernelAuthorizedRecordSubject,
+        descriptors: Vec<OwnedFd>,
+        origin: ReceivedSocketOrigin,
+    ) -> Self {
+        Self {
+            payload,
+            subject,
+            descriptors,
+            origin,
+        }
+    }
+
+    pub(super) fn require_origin(
+        &self,
+        binding: super::socket_binding::ConnectedSocketBinding,
+    ) -> Result<(), super::RecordBindingError> {
+        self.origin.require_binding(binding)
+    }
+
     /// Borrows the packet bytes without asserting application authority.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
@@ -624,7 +652,7 @@ impl ReceivedDescriptorRecord {
     }
 }
 
-fn validate_ancillary(
+pub(super) fn validate_ancillary(
     ancillary: Vec<RawAncillary>,
     expected: usize,
     allow_empty: bool,

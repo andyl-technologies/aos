@@ -164,6 +164,26 @@ impl LifecycleCancellationRecordV1 {
         operation: LifecycleOperationV1,
         outcome: LifecycleCancelOutcomeV1,
     ) -> Result<Self, LifecycleModelError> {
+        let encoded = encode_operation_record_v1(&operation)?;
+        let operation_record = super::format::record_digest(&encoded)?;
+        Self::new_with_record(request, operation, outcome, operation_record)
+    }
+
+    pub(super) fn from_stored(
+        request: LifecycleCancelRequestV1,
+        operation: LifecycleOperationV1,
+        outcome: LifecycleCancelOutcomeV1,
+        operation_record: super::LifecycleRecordDigestV1,
+    ) -> Result<Self, LifecycleModelError> {
+        Self::new_with_record(request, operation, outcome, operation_record)
+    }
+
+    fn new_with_record(
+        request: LifecycleCancelRequestV1,
+        operation: LifecycleOperationV1,
+        outcome: LifecycleCancelOutcomeV1,
+        operation_record: super::LifecycleRecordDigestV1,
+    ) -> Result<Self, LifecycleModelError> {
         let operation_matches = request.operation_id() == operation.operation_id()
             && request.project() == operation.project()
             && request.requested_at() >= operation.accepted_at();
@@ -183,14 +203,12 @@ impl LifecycleCancellationRecordV1 {
             }
             LifecycleCancelOutcomeV1::AlreadyCommitted(commit) => {
                 operation.record_revision() == request.expected_revision()
-                    && super::format::record_digest(&encode_operation_record_v1(&operation)?)?
-                        == request.expected_record()
+                    && operation_record == request.expected_record()
                     && operation.method_semantic_commit() == Some(commit)
             }
             LifecycleCancelOutcomeV1::AlreadyTerminal(terminal) => {
                 operation.record_revision() == request.expected_revision()
-                    && super::format::record_digest(&encode_operation_record_v1(&operation)?)?
-                        == request.expected_record()
+                    && operation_record == request.expected_record()
                     && operation.terminal_result() == Some(*terminal)
             }
             LifecycleCancelOutcomeV1::Conflict => false,

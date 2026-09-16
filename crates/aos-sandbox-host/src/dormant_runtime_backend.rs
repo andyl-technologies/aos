@@ -8,7 +8,8 @@
 
 use aos_proto::aos::sandbox::local::v1::RuntimeAction;
 use aos_sandbox_core::runtime_backend::{
-    RequiredBackendCapabilitiesV1, ResolvedRuntimePlanV1, RuntimeCurrentnessV1, RuntimeModelError,
+    BackendStopDeadlineV1, RequiredBackendCapabilitiesV1, ResolvedRuntimePlanV1,
+    RuntimeCurrentnessV1, RuntimeModelError,
 };
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, NodeId, ObjectDigest,
@@ -16,10 +17,19 @@ use aos_sandbox_core::{
 };
 use aos_sandbox_protocol::ValidatedRuntimeRequest;
 
-pub mod agent_session;
-pub(crate) mod protected_agent_peer;
-pub use protected_agent_peer::{
-    DormantHostAgentPeerClaimV1, DormantHostAgentPeerOwnerV1, DormantProtectedAgentPeerErrorV1,
+mod backend;
+mod composition;
+pub use backend::{
+    DormantAgentExecutionHandoffV1, DormantBackendHandoffErrorV1, DormantExecutionHandleV1,
+    DormantExecutionRecoveryHandleV1, DormantForcedKillHandoffV1, DormantKillEscalationErrorV1,
+    DormantKillStopOutcomeV1, DormantLifecycleRecoveryHandleV1, DormantPendingKillV1,
+    DormantPreparedHandleV1, DormantProtectedRuntimeBackendV1,
+    DormantRuntimeBackendReadinessEvidenceV1, DormantRuntimeHandleV1, SignedAgentOutcomeV1,
+    SignedDormantKillDeadlineObservationV1, dormant_kill_deadline_signing_message_v1,
+};
+pub use composition::{
+    DormantComposedRuntimeBackendV1, DormantRuntimeBackendCompositionErrorV1,
+    DormantRuntimeBackendCompositionV1,
 };
 
 /// Supplies commitments resolved from protected Host/controller state.
@@ -43,6 +53,8 @@ pub struct DormantResolvedRuntimeInputsV1 {
     pub network: ObjectDigest,
     /// Protected commitment to the exact runtime enforcement profile.
     pub runtime_profile: ObjectDigest,
+    /// Protected relative deadline for Stop and pre-escalation Kill handling.
+    pub termination_deadline: BackendStopDeadlineV1,
 }
 
 /// Names the backend-neutral operation represented by a Host 1.0 action.
@@ -56,6 +68,29 @@ pub enum DormantHostBackendActionV1 {
     Thaw,
     /// Stops the exact running or frozen runtime.
     Stop,
+    /// Stops then forcibly tears down the exact runtime after a fixed deadline.
+    Kill,
+}
+
+/// Describes the closed Stop/Kill termination contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DormantHostTerminationContractV1 {
+    deadline: BackendStopDeadlineV1,
+    force_after_deadline: bool,
+}
+
+impl DormantHostTerminationContractV1 {
+    /// Returns the protected relative termination deadline.
+    #[must_use]
+    pub const fn deadline(self) -> BackendStopDeadlineV1 {
+        self.deadline
+    }
+
+    /// Reports whether expiry authorizes forced complete-payload teardown.
+    #[must_use]
+    pub const fn force_after_deadline(self) -> bool {
+        self.force_after_deadline
+    }
 }
 
 /// Carries one validated dormant projection without authorizing dispatch.
@@ -64,6 +99,7 @@ pub struct DormantHostBackendProjectionV1 {
     action: DormantHostBackendActionV1,
     plan: Option<ResolvedRuntimePlanV1>,
     currentness: RuntimeCurrentnessV1,
+    termination: Option<DormantHostTerminationContractV1>,
 }
 
 impl DormantHostBackendProjectionV1 {
@@ -84,6 +120,12 @@ impl DormantHostBackendProjectionV1 {
     pub const fn currentness(&self) -> &RuntimeCurrentnessV1 {
         &self.currentness
     }
+
+    /// Returns the exact termination contract for Stop or Kill.
+    #[must_use]
+    pub const fn termination(&self) -> Option<DormantHostTerminationContractV1> {
+        self.termination
+    }
 }
 
 /// Projects a fully protocol-validated Host request into the portable seam.
@@ -95,8 +137,8 @@ impl DormantHostBackendProjectionV1 {
 ///
 /// # Errors
 ///
-/// Returns [`DormantHostProjectionError`] for the unspecified or legacy Kill
-/// action, missing/unexpected launch plan, sentinel protected input, or a
+/// Returns [`DormantHostProjectionError`] for the unspecified action,
+/// missing/unexpected launch plan, sentinel protected input, or a
 /// backend-neutral model invariant violation.
 pub fn project_validated_host_request_v1(
     request: &ValidatedRuntimeRequest,
@@ -131,6 +173,7 @@ pub fn project_validated_host_request_v1(
                 action: DormantHostBackendActionV1::PrepareThenStart,
                 plan: Some(plan),
                 currentness,
+                termination: None,
             })
         }
         RuntimeAction::RUNTIME_ACTION_FREEZE => {
@@ -139,12 +182,20 @@ pub fn project_validated_host_request_v1(
         RuntimeAction::RUNTIME_ACTION_THAW => {
             no_plan(request, currentness, DormantHostBackendActionV1::Thaw)
         }
-        RuntimeAction::RUNTIME_ACTION_STOP => {
-            no_plan(request, currentness, DormantHostBackendActionV1::Stop)
-        }
-        RuntimeAction::RUNTIME_ACTION_KILL => {
-            Err(DormantHostProjectionError::KillRequiresSeparateContract)
-        }
+        RuntimeAction::RUNTIME_ACTION_STOP => termination(
+            request,
+            currentness,
+            DormantHostBackendActionV1::Stop,
+            resolved.termination_deadline,
+            false,
+        ),
+        RuntimeAction::RUNTIME_ACTION_KILL => termination(
+            request,
+            currentness,
+            DormantHostBackendActionV1::Kill,
+            resolved.termination_deadline,
+            true,
+        ),
         RuntimeAction::RUNTIME_ACTION_UNSPECIFIED => {
             Err(DormantHostProjectionError::UnspecifiedAction)
         }
@@ -182,6 +233,28 @@ fn no_plan(
         action,
         plan: None,
         currentness,
+        termination: None,
+    })
+}
+
+fn termination(
+    request: &ValidatedRuntimeRequest,
+    currentness: RuntimeCurrentnessV1,
+    action: DormantHostBackendActionV1,
+    deadline: BackendStopDeadlineV1,
+    force_after_deadline: bool,
+) -> Result<DormantHostBackendProjectionV1, DormantHostProjectionError> {
+    if request.launch_plan().is_some() {
+        return Err(DormantHostProjectionError::LaunchPlanShape);
+    }
+    Ok(DormantHostBackendProjectionV1 {
+        action,
+        plan: None,
+        currentness,
+        termination: Some(DormantHostTerminationContractV1 {
+            deadline,
+            force_after_deadline,
+        }),
     })
 }
 
@@ -197,9 +270,6 @@ pub enum DormantHostProjectionError {
     /// Launch-plan presence does not match the closed action.
     #[error("Host runtime launch-plan shape is invalid")]
     LaunchPlanShape,
-    /// Legacy Kill has no backend-neutral portable operation in this tranche.
-    #[error("Host Kill requires a separately admitted stop escalation contract")]
-    KillRequiresSeparateContract,
     /// A portable runtime-model invariant failed.
     #[error("Host runtime projection is invalid: {0}")]
     Runtime(#[from] RuntimeModelError),

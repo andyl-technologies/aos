@@ -10,7 +10,7 @@
 //! `GetNodeCapabilities` diagnostic RPC to root on a local Unix socket.
 //! UID 0 is trusted here as the local administrator, not as another node
 //! service role; the response contains no catalog rows, resources, credentials,
-//! operation state, or mutation surface.
+//! operation state, mutation surface, or dormant source-contract advertisement.
 //! Assignment compilation, Guardian plan signing, and every broker Apply path
 //! return explicit unavailable results; their absence can never be mistaken
 //! for mutation authority.
@@ -42,6 +42,7 @@ use rustix::net::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::controller::DormantControllerCompositionV1;
 use crate::host_catalog_publication::{
     HostCatalogPublicationClient, HostCatalogPublicationError, HostCatalogServiceIdentity,
 };
@@ -84,6 +85,35 @@ const PRODUCTION_MAXIMUM_TRANSACTIONS: usize = 65_536;
 const PRODUCTION_MAXIMUM_MATERIALIZED_RECORDS: usize = 131_072;
 
 type ProductionController = NodeController<UnavailableCompiler, UnavailableExecutor>;
+
+/// Composes explicitly supplied controller and public-client dependencies without activation.
+///
+/// This factory does not register a service, bind a socket, start a worker, or
+/// alter [`run_from_environment`]. Production therefore retains its fail-closed
+/// unavailable compiler and executor until a separately qualified activation
+/// change selects concrete dependencies.
+#[must_use]
+pub fn dormant_controller_composition<C, E, T>(
+    scope: ControllerRequestScopeV1,
+    limits: NodeControllerLimits,
+    journal: Journal,
+    compiler: C,
+    executor: E,
+    public_api_transport: T,
+) -> DormantControllerCompositionV1<C, E, T>
+where
+    C: ActivatedOperationCompiler,
+    E: SingleNodeEffectExecutor,
+{
+    DormantControllerCompositionV1::new(
+        scope,
+        limits,
+        journal,
+        compiler,
+        executor,
+        public_api_transport,
+    )
+}
 
 /// Runs the controller from systemd's protected runtime environment.
 ///
@@ -860,8 +890,6 @@ impl CapabilityState {
                 node_id: self.node_id.to_vec(),
                 resource_version: resource_version.to_vec(),
                 capability_generation: self.capability_generation,
-                // No ownership-namespaced feature with a checked-in
-                // conformance fixture is implemented by this read-only tranche.
                 capabilities: Vec::new(),
                 observed_at: Some(observed_at).into(),
                 ..Default::default()

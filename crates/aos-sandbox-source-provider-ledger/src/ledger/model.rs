@@ -305,6 +305,7 @@ pub struct AttemptRecordV1 {
     pub response_sequence: Option<u64>,
     pub deadline_seconds: i64,
     pub verified_at_seconds: i64,
+    pub completed_at_seconds: Option<i64>,
     pub current_valid_until_seconds: i64,
     pub proof_class_capabilities: u8,
     pub supports_recursive: bool,

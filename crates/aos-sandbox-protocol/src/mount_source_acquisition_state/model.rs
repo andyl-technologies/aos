@@ -535,6 +535,11 @@ pub enum ProviderAttemptStateV2 {
         outcome_may_exist: bool,
         resolution: Option<RecoveryResolutionV2>,
     },
+    SupersededIndeterminate {
+        successor_session_id: [u8; 32],
+        recovery_root_attempt_id: [u8; 32],
+        outcome_may_exist: bool,
+    },
 }
 
 /// Stores one immutable SourceProvider query attempt and its terminal evidence.

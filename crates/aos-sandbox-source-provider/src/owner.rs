@@ -1,11 +1,13 @@
 //! Fixed-root dormant SourceProvider journal and live-session ownership.
 //!
 //! The owner is the public construction boundary for provider runtime state.
-//! It fixes both protected paths and the namespace, retains the journal lock,
-//! drives one caller-supplied connected socket through the sealed security
-//! handshake, and lends the resulting ledger only under the same live claim.
+//! It fixes protected custody, journal, and backend-verifier paths and the
+//! namespace, retains the journal lock, drives one caller-supplied connected
+//! socket through the sealed security handshake, and lends the resulting
+//! ledger only under the same live claim.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use aos_sandbox::{Journal, JournalLimits, RecordNamespace, RecoveryReport};
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
@@ -44,6 +46,113 @@ pub struct FixedProviderOpenReportV1 {
     pub journal: RecoveryReport,
 }
 
+/// Classifies one exact replay-validated Mount request after joint restart.
+#[must_use = "cold request readback must be consumed"]
+#[derive(Debug)]
+pub enum FixedProviderRequestReadbackV1 {
+    /// Mount must issue a fresh current-session retry for the exact request.
+    RetryAuthorized(ProtectedProviderMountRetryAuthorityV1),
+    /// An exact historical descriptor-free outcome can be reauthenticated.
+    HistoricalOutcome(FixedProviderHistoricalOutcomeV1),
+    /// An exact completed Acquire must reopen its active SourceRoot first.
+    AcquireReopen(FixedProviderAcquireReopenV1),
+    /// Provider durably retains effect/recovery work for the request.
+    RecoveryPending,
+}
+
+/// Owns one replay-validated historical outcome and optional reopened root.
+///
+/// The value has no public constructor. Its bytes and descriptor are not
+/// authoritative until Mount reauthenticates them against the exact protected
+/// attempt and historical session records.
+pub struct FixedProviderHistoricalOutcomeV1 {
+    pub(crate) response: Vec<u8>,
+    pub(crate) source_root: Option<crate::ProviderPhysicalSourceRootV1>,
+    pub(crate) persisted: aos_sandbox_source_provider_security::PersistedProviderOutcomeV1,
+}
+
+impl core::fmt::Debug for FixedProviderHistoricalOutcomeV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("FixedProviderHistoricalOutcomeV1([protected outcome])")
+    }
+}
+
+impl FixedProviderHistoricalOutcomeV1 {
+    /// Consumes the outcome into Mount's protected historical verifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an included SourceRoot no longer has the exact
+    /// protected physical identity captured by Provider.
+    #[doc(hidden)]
+    pub fn into_security_parts(
+        self,
+    ) -> Result<
+        (
+            Vec<u8>,
+            Option<aos_sandbox_source_provider_security::ProviderSourceRootHandoffV1>,
+            aos_sandbox_source_provider_security::PersistedProviderOutcomeV1,
+        ),
+        ProviderLedgerError,
+    > {
+        let source_root = self
+            .source_root
+            .map(crate::ProviderPhysicalSourceRootV1::into_security_handoff)
+            .transpose()?;
+        Ok((self.response, source_root, self.persisted))
+    }
+}
+
+/// Authorizes one demand-driven reopen of an exact completed Acquire.
+///
+/// This value is move-only and has no public constructor. Only the fixed
+/// backend session can consume it.
+pub struct FixedProviderAcquireReopenV1 {
+    pub(crate) replay: crate::DurableAcquireReplayV1,
+    pub(crate) persisted: aos_sandbox_source_provider_security::PersistedProviderOutcomeV1,
+}
+
+impl core::fmt::Debug for FixedProviderAcquireReopenV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("FixedProviderAcquireReopenV1([protected replay])")
+    }
+}
+
+/// Authorizes Mount to retry one exact provider recovery or proven-absent request.
+///
+/// The type has no public constructor and is consumed by Mount's protected
+/// AOSMSA02 transition. It carries identity only; effect and signing authority
+/// remain in their fixed owners.
+pub struct ProtectedProviderMountRetryAuthorityV1 {
+    method: aos_sandbox_source_provider_protocol::SourceProviderMethod,
+    provider_acquisition_id: Option<[u8; 32]>,
+    signed_request_digest: [u8; 32],
+}
+
+impl core::fmt::Debug for ProtectedProviderMountRetryAuthorityV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("ProtectedProviderMountRetryAuthorityV1([protected selection])")
+    }
+}
+
+impl ProtectedProviderMountRetryAuthorityV1 {
+    /// Consumes the authority into its exact nonauthorizing identity projection.
+    #[doc(hidden)]
+    pub fn into_identity(
+        self,
+    ) -> (
+        aos_sandbox_source_provider_protocol::SourceProviderMethod,
+        Option<[u8; 32]>,
+        [u8; 32],
+    ) {
+        (
+            self.method,
+            self.provider_acquisition_id,
+            self.signed_request_digest,
+        )
+    }
+}
+
 /// Reports whether the fixed provider owner is ready to lend its ledger.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FixedProviderOwnerStatusV1 {
@@ -75,11 +184,27 @@ pub enum FixedMountStateMigrationRecoveryOutcomeV2 {
 ///
 /// This dormant type creates no listener, socket path, backend, route
 /// advertisement, feature activation, or dispatch loop. The caller supplies an
-/// already-connected descriptor-subject socket, while protected custody and
-/// journal locations are compiled in and cannot be redirected.
+/// already-connected descriptor-subject socket, while protected custody,
+/// journal, and backend-verifier locations are compiled in and cannot be
+/// redirected.
 pub struct FixedProviderOwnerV1 {
     journal: Option<Journal>,
     state: Option<FixedProviderOwnerStateV1>,
+    backend_verifier: Arc<crate::backend_verifier::ProtectedBackendVerifierV1>,
+    recovery_handshake: Option<(
+        ProviderSourceProviderOwnerV1,
+        DetachedProviderLedgerV1,
+        Option<aos_sandbox_source_provider_security::DeadProviderExecutionV1>,
+    )>,
+    ingress_reopen: Option<(
+        aos_sandbox_source_provider_security::ProviderIngressReopenCheckpointV1,
+        DetachedProviderLedgerV1,
+        Option<aos_sandbox_source_provider_security::DeadProviderExecutionV1>,
+    )>,
+    pub(crate) pending_backend_recovery:
+        Vec<crate::backend_adapter::FixedProviderBackendRecoveryV1>,
+    pub(crate) priority_mount_retry_digest: Option<[u8; 32]>,
+    pub(crate) priority_mount_retry_rearm_digest: Option<[u8; 32]>,
 }
 
 impl core::fmt::Debug for FixedProviderOwnerV1 {
@@ -98,7 +223,8 @@ impl FixedProviderOwnerV1 {
     /// # Errors
     ///
     /// Returns [`ProviderLedgerError`] for an unsafe or locked fixed journal,
-    /// invalid fixed provider custody, or an invalid connected socket.
+    /// invalid fixed provider custody or verifier manifest, or an invalid
+    /// connected socket.
     pub fn open_fixed(
         socket: DescriptorSubjectSocket,
         canonical_catalog_publication: &[u8],
@@ -113,6 +239,8 @@ impl FixedProviderOwnerV1 {
             FIXED_PROVIDER_JOURNAL,
             provider_journal_limits(),
         )?;
+        let backend_verifier =
+            Arc::new(crate::backend_verifier::ProtectedBackendVerifierV1::load_fixed()?);
         let security = ProviderSourceProviderOwnerV1::open_fixed(socket)?;
         Ok((
             Self {
@@ -121,6 +249,12 @@ impl FixedProviderOwnerV1 {
                     security,
                     canonical_catalog_publication: canonical_catalog_publication.to_vec(),
                 }),
+                backend_verifier,
+                recovery_handshake: None,
+                ingress_reopen: None,
+                pending_backend_recovery: Vec::new(),
+                priority_mount_retry_digest: None,
+                priority_mount_retry_rearm_digest: None,
             },
             FixedProviderOpenReportV1 { journal: recovery },
         ))
@@ -245,7 +379,10 @@ impl FixedProviderOwnerV1 {
             }
         };
         ledger.install_current_session(session)?;
-        self.state = Some(FixedProviderOwnerStateV1::Ready(ledger.detach()));
+        let detached = ledger.detach();
+        self.pending_backend_recovery =
+            crate::backend_adapter::rehydrate_backend_recovery(&detached)?;
+        self.state = Some(FixedProviderOwnerStateV1::Ready(detached));
         Ok(FixedProviderOwnerStatusV1::Ready)
     }
 
@@ -314,6 +451,529 @@ impl FixedProviderOwnerV1 {
         let result = operation(&mut ledger);
         self.state = Some(FixedProviderOwnerStateV1::Ready(ledger.detach()));
         result
+    }
+
+    pub(crate) fn backend_verifier(
+        &self,
+    ) -> Arc<crate::backend_verifier::ProtectedBackendVerifierV1> {
+        Arc::clone(&self.backend_verifier)
+    }
+
+    /// Begins a same-carrier successor handshake for retained backend recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless exactly one unresolved recovery owns the fixed
+    /// ingress session and has not yet accepted a fresh request.
+    #[doc(hidden)]
+    pub fn begin_recovery_successor_handshake(&mut self) -> Result<(), ProviderLedgerError> {
+        let retained_recovery_is_not_ready =
+            self.pending_backend_recovery
+                .first()
+                .is_some_and(|recovery| {
+                    recovery.has_fresh_request() || recovery.successor_session_ready()
+                });
+        if self.recovery_handshake.is_some()
+            || self.ingress_reopen.is_some()
+            || (self.pending_backend_recovery.is_empty()
+                && self.priority_mount_retry_rearm_digest.is_none())
+            || retained_recovery_is_not_ready
+        {
+            return Err(ProviderLedgerError::InvalidTransition(
+                "provider recovery successor handshake is not ready",
+            ));
+        }
+        let state = self
+            .state
+            .take()
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        let mut detached = match state {
+            FixedProviderOwnerStateV1::Ready(detached) => detached,
+            state => {
+                self.state = Some(state);
+                return Err(ProviderLedgerError::InvalidTransition(
+                    "fixed provider ledger is not ready for recovery rotation",
+                ));
+            }
+        };
+        let (session, recovered_execution_death) = match detached.take_fixed_current_session() {
+            Ok(session) => session,
+            Err(error) => {
+                self.state = Some(FixedProviderOwnerStateV1::Ready(detached));
+                return Err(error);
+            }
+        };
+        let security = session.into_successor_owner()?;
+        self.recovery_handshake = Some((security, detached, recovered_execution_death));
+        Ok(())
+    }
+
+    pub(crate) fn retain_failed_ingress(
+        &mut self,
+        checkpoint: aos_sandbox_source_provider_security::ProviderIngressReopenCheckpointV1,
+    ) -> Result<(), ProviderLedgerError> {
+        if self.ingress_reopen.is_some() || self.recovery_handshake.is_some() {
+            return Err(ProviderLedgerError::InvalidTransition(
+                "provider ingress reopen custody is already retained",
+            ));
+        }
+        let state = self
+            .state
+            .take()
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        let mut detached = match state {
+            FixedProviderOwnerStateV1::Ready(detached) => detached,
+            state => {
+                self.state = Some(state);
+                return Err(ProviderLedgerError::InvalidTransition(
+                    "fixed provider ledger is not ready for ingress reopen",
+                ));
+            }
+        };
+        let (poisoned, recovered_execution_death) = detached.take_fixed_current_session()?;
+        drop(poisoned);
+        self.ingress_reopen = Some((checkpoint, detached, recovered_execution_death));
+        Ok(())
+    }
+
+    /// Installs a connected replacement carrier for retained fatal ingress custody.
+    ///
+    /// This starts only the dormant authenticated successor handshake. It does
+    /// not create a socket, listener, service, or readiness signal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless fatal ingress custody is retained and the fixed
+    /// protected Provider owner admits the connected replacement socket.
+    #[doc(hidden)]
+    pub fn reopen_failed_ingress(
+        &mut self,
+        socket: DescriptorSubjectSocket,
+    ) -> Result<(), ProviderLedgerError> {
+        if self.recovery_handshake.is_some() {
+            return Err(ProviderLedgerError::InvalidTransition(
+                "provider recovery handshake is already pending",
+            ));
+        }
+        let (checkpoint, detached, recovered_execution_death) =
+            self.ingress_reopen
+                .take()
+                .ok_or(ProviderLedgerError::InvalidTransition(
+                    "provider fatal ingress reopen custody is absent",
+                ))?;
+        match ProviderSourceProviderOwnerV1::open_fixed_recovery(socket, checkpoint) {
+            Ok(security) => {
+                self.recovery_handshake = Some((security, detached, recovered_execution_death));
+                Ok(())
+            }
+            Err((error, checkpoint)) => {
+                self.ingress_reopen = Some((checkpoint, detached, recovered_execution_death));
+                Err(error.into())
+            }
+        }
+    }
+
+    /// Reports whether fatal ingress requires an explicit replacement socket.
+    #[must_use]
+    #[doc(hidden)]
+    pub const fn failed_ingress_reopen_required(&self) -> bool {
+        self.ingress_reopen.is_some()
+    }
+
+    /// Advances one retained same-carrier recovery handshake step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for absent recovery custody, failed authentication, or
+    /// inability to install the successor beneath the fixed journal claim.
+    #[doc(hidden)]
+    pub fn advance_recovery_successor_handshake(
+        &mut self,
+    ) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
+        let (mut security, detached, recovered_execution_death) = self
+            .recovery_handshake
+            .take()
+            .ok_or(ProviderLedgerError::InvalidTransition(
+                "provider recovery successor handshake is absent",
+            ))?;
+        if security.advance_handshake()? == ProviderSourceProviderHandshakeStatusV1::Pending {
+            self.recovery_handshake = Some((security, detached, recovered_execution_death));
+            return Ok(FixedProviderOwnerStatusV1::HandshakePending);
+        }
+
+        let authority = self
+            .journal
+            .as_mut()
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?
+            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+        authority.validate_fixed_source_provider_storage()?;
+        let handoff = authority.fixed_source_provider_session_handoff()?;
+        let (session, supersession) = security.into_fixed_recovery_ledger_session(handoff)?;
+        let mut ledger = ProviderLedgerV1::attach(authority, detached);
+        ledger.install_recovery_successor_session(
+            session,
+            supersession,
+            recovered_execution_death,
+        )?;
+        self.state = Some(FixedProviderOwnerStateV1::Ready(ledger.detach()));
+        if let Some(recovery) = self.pending_backend_recovery.first_mut() {
+            recovery.mark_successor_session_ready();
+        }
+        Ok(FixedProviderOwnerStatusV1::Ready)
+    }
+
+    /// Reports whether backend recovery currently owns the handshake carrier.
+    #[doc(hidden)]
+    pub fn recovery_successor_handshake_pending(&self) -> bool {
+        self.recovery_handshake.is_some()
+    }
+
+    /// Reports whether retained recovery still needs a fresh authenticated packet.
+    #[doc(hidden)]
+    pub fn backend_recovery_awaits_fresh_request(&self) -> bool {
+        !self.pending_backend_recovery.is_empty()
+            && !self.pending_backend_recovery[0].has_fresh_request()
+    }
+
+    /// Reports whether backend recovery excludes unrelated provider traffic.
+    #[doc(hidden)]
+    pub fn backend_recovery_active(&self) -> bool {
+        !self.pending_backend_recovery.is_empty()
+            || self.recovery_handshake.is_some()
+            || self.ingress_reopen.is_some()
+    }
+
+    /// Aligns Provider's recovery head with Mount's exact oldest request.
+    ///
+    /// All nonselected recovery work remains move-only in its original order.
+    /// A false result means Provider has no unresolved effect for this request;
+    /// fixed readback must classify it before Mount may retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if more than one retained work item claims the same
+    /// exact signed request.
+    #[doc(hidden)]
+    pub fn align_backend_recovery_with_mount_request(
+        &mut self,
+        signed_request: &aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1,
+    ) -> Result<bool, ProviderLedgerError> {
+        let matching = self
+            .pending_backend_recovery
+            .iter()
+            .enumerate()
+            .filter_map(|(index, recovery)| {
+                recovery
+                    .matches_signed_request(signed_request)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let [index] = matching.as_slice() else {
+            if matching.is_empty() {
+                return Ok(false);
+            }
+            return Err(ProviderLedgerError::Equivocation);
+        };
+        if *index != 0 {
+            let selected = self.pending_backend_recovery.remove(*index);
+            self.pending_backend_recovery.insert(0, selected);
+        }
+        Ok(true)
+    }
+
+    /// Reports whether one exact Mount retry owns ingress ahead of recovery work.
+    #[must_use]
+    #[doc(hidden)]
+    pub const fn mount_retry_priority_active(&self) -> bool {
+        self.priority_mount_retry_digest.is_some()
+    }
+
+    /// Reports whether a rejected priority packet requires exact session rotation.
+    #[must_use]
+    #[doc(hidden)]
+    pub const fn mount_retry_rearm_required(&self) -> bool {
+        self.priority_mount_retry_rearm_digest.is_some()
+    }
+
+    /// Retains an exact Mount retry after fatal ingress closed the carrier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless failed ingress reopen is pending and detached
+    /// state proves either no Provider reservation crossed the failed receive
+    /// or the sole reservation and retained backend-recovery head are this
+    /// exact uncompleted request. Only the no-reservation case arms the
+    /// pre-effect priority lane.
+    #[doc(hidden)]
+    pub fn arm_mount_retry_after_failed_ingress(
+        &mut self,
+        signed_request: aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1,
+    ) -> Result<(), ProviderLedgerError> {
+        if self.ingress_reopen.is_none() {
+            return Err(ProviderLedgerError::InvalidTransition(
+                "provider ingress is not awaiting reopen",
+            ));
+        }
+        let digest = *aos_sandbox_source_provider_protocol::digest_signed_request(&signed_request)
+            .as_bytes();
+        let detached = &self
+            .ingress_reopen
+            .as_ref()
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?
+            .1;
+        let reserved_attempts = detached
+            .recovered()
+            .attempts
+            .values()
+            .filter(|attempt| attempt.state == crate::ProviderAttemptStateV1::Reserved)
+            .collect::<Vec<_>>();
+        let matching_attempts = reserved_attempts
+            .iter()
+            .filter(|attempt| {
+                attempt.state == crate::ProviderAttemptStateV1::Reserved
+                    && attempt.signed_request_digest.as_bytes() == &digest
+                    && attempt.signed_request == signed_request.to_canonical_bytes()
+            })
+            .count();
+        // No retained reservation means the fatal record receive crossed no
+        // Provider effect. Otherwise the sole reservation must be this exact
+        // request; another outstanding attempt cannot be displaced.
+        if matching_attempts > 1
+            || (matching_attempts == 0 && !reserved_attempts.is_empty())
+            || (matching_attempts == 1 && reserved_attempts.len() != 1)
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+
+        if matching_attempts == 1 {
+            if self.priority_mount_retry_digest.is_some()
+                || self.priority_mount_retry_rearm_digest.is_some()
+                || !self.align_backend_recovery_with_mount_request(&signed_request)?
+            {
+                return Err(ProviderLedgerError::InvalidTransition(
+                    "reserved failed-ingress request lacks exact backend recovery custody",
+                ));
+            }
+            return Ok(());
+        }
+
+        self.priority_mount_retry_digest = None;
+        self.priority_mount_retry_rearm_digest = Some(digest);
+        Ok(())
+    }
+
+    /// Reads the exact durable disposition of one signed Mount request.
+    ///
+    /// Retry authority is returned only after replay validation under the fixed
+    /// journal claim. A completed descriptor-free response is returned as an
+    /// opaque historical outcome, while Complete Acquire returns a move-only
+    /// physical-reopen authority. Historical response bytes are never sent on a
+    /// successor session. A reserved request remains owned by recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for aliased request digests, corrupt retained response
+    /// state, or loss of fixed journal currentness.
+    #[doc(hidden)]
+    pub fn readback_mount_request(
+        &mut self,
+        signed_request: aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1,
+    ) -> Result<FixedProviderRequestReadbackV1, ProviderLedgerError> {
+        use aos_sandbox_source_provider_protocol::{
+            SourceProviderMethod, decode_acquire_request, decode_release_request,
+            digest_signed_request,
+        };
+
+        let signed_request_digest = *digest_signed_request(&signed_request).as_bytes();
+        let (method, provider_acquisition_id) = match signed_request.method() {
+            SourceProviderMethod::Acquire => (
+                SourceProviderMethod::Acquire,
+                Some(
+                    *decode_acquire_request(signed_request.subject())
+                        .map_err(|_| ProviderLedgerError::Equivocation)?
+                        .acquisition_id()
+                        .as_bytes(),
+                ),
+            ),
+            SourceProviderMethod::Release => (
+                SourceProviderMethod::Release,
+                Some(
+                    *decode_release_request(signed_request.subject())
+                        .map_err(|_| ProviderLedgerError::Equivocation)?
+                        .acquisition_id()
+                        .as_bytes(),
+                ),
+            ),
+            SourceProviderMethod::Inventory => {
+                aos_sandbox_source_provider_protocol::decode_inventory_request(
+                    signed_request.subject(),
+                )
+                .map_err(|_| ProviderLedgerError::Equivocation)?;
+                (SourceProviderMethod::Inventory, None)
+            }
+            SourceProviderMethod::Hello => {
+                return Err(ProviderLedgerError::InvalidTransition(
+                    "Mount request readback cannot select Hello",
+                ));
+            }
+        };
+        let canonical_request = signed_request.to_canonical_bytes();
+        let readback = self.with_ledger(|ledger| {
+            let mut matching_digest = ledger.recovered.attempts.iter().filter(|(_, attempt)| {
+                attempt.signed_request_digest.as_bytes() == &signed_request_digest
+            });
+            let Some((attempt_key, attempt)) = matching_digest.next() else {
+                return Ok(FixedProviderRequestReadbackV1::RetryAuthorized(
+                    ProtectedProviderMountRetryAuthorityV1 {
+                        method,
+                        provider_acquisition_id,
+                        signed_request_digest,
+                    },
+                ));
+            };
+            if matching_digest.next().is_some() || attempt.signed_request != canonical_request {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            match attempt.state {
+                crate::ProviderAttemptStateV1::Reserved => {
+                    Ok(FixedProviderRequestReadbackV1::RecoveryPending)
+                }
+                crate::ProviderAttemptStateV1::Completed => {
+                    if attempt.completed_response.is_empty() {
+                        return Err(ProviderLedgerError::Corrupt(
+                            "completed cold request lacks its response",
+                        ));
+                    }
+                    let attempt_key_bytes = crate::format::attempt_key(attempt_key);
+                    let journal_snapshot = ledger.journal.snapshot()?;
+                    let persisted = ledger
+                        .current_sessions
+                        .values_mut()
+                        .next()
+                        .ok_or(ProviderLedgerError::InvalidTransition(
+                            "completed readback has no current Provider session",
+                        ))?
+                        .session
+                        .authorize_persisted_mount_outcome(
+                            &ledger.journal,
+                            &journal_snapshot,
+                            &attempt_key_bytes,
+                            &attempt.completed_response,
+                        )?;
+                    if method == SourceProviderMethod::Acquire {
+                        let response =
+                            aos_sandbox_source_provider_protocol::decode_acquire_response(
+                                &attempt.completed_response,
+                            )
+                            .map_err(|_| {
+                                ProviderLedgerError::Corrupt("completed Acquire response")
+                            })?;
+                        if response.status()
+                            == aos_sandbox_source_provider_protocol::SourceProviderStatus::Complete
+                        {
+                            let acquisition_id = provider_acquisition_id.ok_or(
+                                ProviderLedgerError::Corrupt("completed Acquire identity"),
+                            )?;
+                            let receipt_acquisition_id = response
+                                .signed_receipt()
+                                .and_then(|bytes| {
+                                    aos_sandbox_source_provider_protocol::SignedSourceProviderReceiptV1::from_canonical_bytes(bytes).ok()
+                                })
+                                .map(|receipt| *receipt.subject().acquisition_id().as_bytes())
+                                .ok_or(ProviderLedgerError::Corrupt(
+                                    "completed Acquire receipt identity",
+                                ))?;
+                            if receipt_acquisition_id != acquisition_id {
+                                return Err(ProviderLedgerError::Equivocation);
+                            }
+                            return Ok(FixedProviderRequestReadbackV1::AcquireReopen(
+                                FixedProviderAcquireReopenV1 {
+                                    replay: crate::DurableAcquireReplayV1 {
+                                        acquisition_id: aos_sandbox_core::ObjectDigest::from_bytes(
+                                            acquisition_id,
+                                        ),
+                                        attempt_key: attempt_key_bytes,
+                                        response: attempt.completed_response.clone(),
+                                        journal_snapshot,
+                                    },
+                                    persisted,
+                                },
+                            ));
+                        }
+                    }
+                    Ok(FixedProviderRequestReadbackV1::HistoricalOutcome(
+                        FixedProviderHistoricalOutcomeV1 {
+                            response: attempt.completed_response.clone(),
+                            source_root: None,
+                            persisted,
+                        },
+                    ))
+                }
+                crate::ProviderAttemptStateV1::Retired => Err(
+                    ProviderLedgerError::InvalidTransition("cold request attempt is retired"),
+                ),
+            }
+        })?;
+        if matches!(readback, FixedProviderRequestReadbackV1::RetryAuthorized(_)) {
+            self.priority_mount_retry_digest = Some(signed_request_digest);
+            if self.priority_mount_retry_rearm_digest == Some(signed_request_digest) {
+                self.priority_mount_retry_rearm_digest = None;
+            }
+        }
+        Ok(readback)
+    }
+
+    /// Projects the method and stable provider acquisition owned by recovery.
+    ///
+    /// The projection grants no request, session, effect, replay, or completion
+    /// authority. It exists only so the paired Mount reducer can select and
+    /// advance the same durable lineage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless protected recovery retains a current work item.
+    #[doc(hidden)]
+    pub fn backend_recovery_mount_retry_authority(
+        &self,
+    ) -> Result<ProtectedProviderMountRetryAuthorityV1, ProviderLedgerError> {
+        if self.pending_backend_recovery.is_empty() {
+            return Err(ProviderLedgerError::InvalidTransition(
+                "provider recovery semantic identity is unavailable",
+            ));
+        }
+        let (method, provider_acquisition_id) =
+            self.pending_backend_recovery[0].semantic_identity();
+        let signed_request_digest = self.pending_backend_recovery[0].signed_request_digest();
+        Ok(ProtectedProviderMountRetryAuthorityV1 {
+            method,
+            provider_acquisition_id,
+            signed_request_digest,
+        })
+    }
+
+    /// Reports whether retained work needs another authenticated successor.
+    #[doc(hidden)]
+    pub fn backend_recovery_requires_successor_handshake(&self) -> bool {
+        !self.pending_backend_recovery.is_empty()
+            && !self.pending_backend_recovery[0].has_fresh_request()
+            && !self.pending_backend_recovery[0].successor_session_ready()
+            && self.recovery_handshake.is_none()
+            && self.ingress_reopen.is_none()
+    }
+
+    /// Records that the fixed Root-Mount carrier accepted the fresh packet.
+    #[doc(hidden)]
+    pub fn mark_backend_recovery_request_in_flight(&mut self) -> Result<(), ProviderLedgerError> {
+        if self.pending_backend_recovery.is_empty()
+            || self.pending_backend_recovery[0].has_fresh_request()
+            || !self.pending_backend_recovery[0].successor_session_ready()
+        {
+            return Err(ProviderLedgerError::InvalidTransition(
+                "provider recovery cannot mark another fresh packet in flight",
+            ));
+        }
+        self.pending_backend_recovery[0].mark_fresh_request_in_flight();
+        Ok(())
     }
 
     /// Authenticates and installs the exact retained legacy provider ledger.

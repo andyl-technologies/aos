@@ -293,6 +293,7 @@ impl<'a> ProviderLedgerV1<'a> {
                     lease_id: release.lease_id,
                     lease_digest: release.lease_digest,
                     backend_id: release.backend_id,
+                    acquired_evidence: crate::backend::acquired_evidence(acquisition)?,
                 };
                 let backend_observation = backend.observe_release(&plan);
                 match self.poison_backend_result(acquisition_id, backend_observation)? {
@@ -478,35 +479,34 @@ impl<'a> ProviderLedgerV1<'a> {
                 effect_attempt.session_binding,
             ))
             .ok_or(ProviderLedgerError::Corrupt("recovery acquire session"))?;
-        let installed = self
+        let death_matches = self
             .current_sessions
-            .get_mut(&acquisition.holder.authority_id())
+            .get(&acquisition.holder.authority_id())
             .ok_or(ProviderLedgerError::InvalidTransition(
                 "fresh quarantined recovery session required",
-            ))?;
-        let death = installed.recovered_execution_death.take().ok_or(
-            ProviderLedgerError::InvalidTransition("predecessor execution death is not proven"),
-        )?;
+            ))?
+            .recovered_execution_death
+            .as_ref()
+            .is_some_and(|death| {
+                death.matches(
+                    session.boot_id,
+                    session.provider_process_id,
+                    session.provider_start_time_ticks,
+                    session.provider_process_instance,
+                )
+            });
         if acquisition.state != crate::ProviderAcquisitionStateV1::Applying
             || acquisition.effect_id != absent.effect_id
             || attempt.state != crate::ProviderAttemptStateV1::Reserved
-            || !death.matches(
-                session.boot_id,
-                session.provider_process_id,
-                session.provider_start_time_ticks,
-                session.provider_process_instance,
-            )
+            || !death_matches
+            || !self
+                .recovery_authorizations
+                .contains_key(&attempt.attempt_digest)
         {
             return Err(ProviderLedgerError::InvalidTransition(
                 "recovered acquire is not exclusively reissuable",
             ));
         }
-        let authorization = self
-            .recovery_authorizations
-            .remove(&attempt.attempt_digest)
-            .ok_or(ProviderLedgerError::InvalidTransition(
-                "fresh authenticated replay authorization required",
-            ))?;
         let reservation_digest = recovery_effect_digest(
             b"reissue-acquire",
             acquisition.acquisition_id,
@@ -522,6 +522,10 @@ impl<'a> ProviderLedgerV1<'a> {
         let snapshot = self.journal.snapshot()?;
         self.journal
             .validate_source_provider_authority_snapshot(&snapshot)?;
+        let authorization = self
+            .recovery_authorizations
+            .remove(&attempt.attempt_digest)
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
         Ok(crate::DurableAcquireEffectPermitV1 {
             plan: crate::AcquirePlanV1 {
                 provider_id: acquisition.provider.authority_id(),
@@ -598,37 +602,36 @@ impl<'a> ProviderLedgerV1<'a> {
                 effect_attempt.session_binding,
             ))
             .ok_or(ProviderLedgerError::Corrupt("recovery release session"))?;
-        let installed = self
+        let death_matches = self
             .current_sessions
-            .get_mut(&acquisition.holder.authority_id())
+            .get(&acquisition.holder.authority_id())
             .ok_or(ProviderLedgerError::InvalidTransition(
                 "fresh quarantined recovery session required",
-            ))?;
-        let death = installed.recovered_execution_death.take().ok_or(
-            ProviderLedgerError::InvalidTransition("predecessor execution death is not proven"),
-        )?;
+            ))?
+            .recovered_execution_death
+            .as_ref()
+            .is_some_and(|death| {
+                death.matches(
+                    session.boot_id,
+                    session.provider_process_id,
+                    session.provider_start_time_ticks,
+                    session.provider_process_instance,
+                )
+            });
         if acquisition.state != crate::ProviderAcquisitionStateV1::Releasing
             || release.state != crate::ProviderReleaseStateV1::Intent
             || release.effect_id != present.effect_id
             || acquisition.release_effect_id != Some(present.effect_id)
             || attempt.state != crate::ProviderAttemptStateV1::Reserved
-            || !death.matches(
-                session.boot_id,
-                session.provider_process_id,
-                session.provider_start_time_ticks,
-                session.provider_process_instance,
-            )
+            || !death_matches
+            || !self
+                .recovery_authorizations
+                .contains_key(&attempt.attempt_digest)
         {
             return Err(ProviderLedgerError::InvalidTransition(
                 "recovered release is not exclusively reissuable",
             ));
         }
-        let authorization = self
-            .recovery_authorizations
-            .remove(&attempt.attempt_digest)
-            .ok_or(ProviderLedgerError::InvalidTransition(
-                "fresh authenticated replay authorization required",
-            ))?;
         let reservation_digest = recovery_effect_digest(
             b"reissue-release",
             acquisition.acquisition_id,
@@ -644,6 +647,11 @@ impl<'a> ProviderLedgerV1<'a> {
         let snapshot = self.journal.snapshot()?;
         self.journal
             .validate_source_provider_authority_snapshot(&snapshot)?;
+        let acquired_evidence = crate::backend::acquired_evidence(&acquisition)?;
+        let authorization = self
+            .recovery_authorizations
+            .remove(&attempt.attempt_digest)
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
         Ok(crate::DurableReleaseEffectPermitV1 {
             plan: crate::ReleasePlanV1 {
                 provider_id: acquisition.provider.authority_id(),
@@ -655,6 +663,7 @@ impl<'a> ProviderLedgerV1<'a> {
                 lease_id: release.lease_id,
                 lease_digest: release.lease_digest,
                 backend_id: release.backend_id,
+                acquired_evidence,
             },
             completion_session_binding: attempt.session_binding,
             completion_attempt_digest: attempt.attempt_digest,
@@ -663,6 +672,19 @@ impl<'a> ProviderLedgerV1<'a> {
             completion_capacity,
             signing_authorization: authorization,
         })
+    }
+
+    pub(crate) fn consume_recovered_execution_death(
+        &mut self,
+        holder_id: [u8; 16],
+    ) -> Result<(), ProviderLedgerError> {
+        self.current_sessions
+            .get_mut(&holder_id)
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?
+            .recovered_execution_death
+            .take()
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        Ok(())
     }
 
     /// Resumes an exact recovered Inventory reservation without effect authority.
@@ -712,16 +734,12 @@ impl<'a> ProviderLedgerV1<'a> {
             || attempt.holder.authority_id() != holder_id
             || session.session_binding != attempt.session_binding
             || session.pending_attempt_digest != Some(attempt_digest)
+            || !self.recovery_authorizations.contains_key(&attempt_digest)
         {
             return Err(ProviderLedgerError::Corrupt(
                 "recovery Inventory reservation graph",
             ));
         }
-        let authorization = self.recovery_authorizations.remove(&attempt_digest).ok_or(
-            ProviderLedgerError::InvalidTransition(
-                "fresh authenticated replay authorization required",
-            ),
-        )?;
         let reservation_digest = recovery_effect_digest(
             b"resume-inventory",
             attempt.operation_intent_digest,
@@ -737,6 +755,10 @@ impl<'a> ProviderLedgerV1<'a> {
         let snapshot = self.journal.snapshot()?;
         self.journal
             .validate_source_provider_authority_snapshot(&snapshot)?;
+        let authorization = self
+            .recovery_authorizations
+            .remove(&attempt_digest)
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
         Ok(crate::DurableInventoryPermitV1 {
             holder_id,
             session_binding: attempt.session_binding,
@@ -837,12 +859,14 @@ impl<'a> ProviderLedgerV1<'a> {
             crate::acquire::validate_backend_selection(self, &acquisition, &attempt, &observed);
         self.poison_backend_result(acquisition_id, selection)?;
         self.poison_backend_result(acquisition_id, observed.revalidate_physical())?;
-        let authorization = self
+        if !self
             .recovery_authorizations
-            .remove(&attempt.attempt_digest)
-            .ok_or(ProviderLedgerError::InvalidTransition(
+            .contains_key(&attempt.attempt_digest)
+        {
+            return Err(ProviderLedgerError::InvalidTransition(
                 "fresh authenticated replay authorization required",
-            ))?;
+            ));
+        }
         let reservation_digest = recovery_effect_digest(
             b"complete-observed-acquire",
             acquisition_id,
@@ -858,6 +882,10 @@ impl<'a> ProviderLedgerV1<'a> {
         let snapshot = self.journal.snapshot()?;
         self.journal
             .validate_source_provider_authority_snapshot(&snapshot)?;
+        let authorization = self
+            .recovery_authorizations
+            .remove(&attempt.attempt_digest)
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
         let permit = crate::DurableAcquireEffectPermitV1 {
             plan,
             completion_session_binding: attempt.session_binding,
@@ -969,6 +997,7 @@ impl<'a> ProviderLedgerV1<'a> {
             lease_id: release.lease_id,
             lease_digest: release.lease_digest,
             backend_id: release.backend_id,
+            acquired_evidence: crate::backend::acquired_evidence(&acquisition)?,
         };
         let backend_observation = backend.observe_release(&plan);
         let observed = match self.poison_backend_result(acquisition_id, backend_observation)? {
@@ -981,12 +1010,14 @@ impl<'a> ProviderLedgerV1<'a> {
                 return Err(ProviderLedgerError::BackendConflict);
             }
         };
-        let authorization = self
+        if !self
             .recovery_authorizations
-            .remove(&attempt.attempt_digest)
-            .ok_or(ProviderLedgerError::InvalidTransition(
+            .contains_key(&attempt.attempt_digest)
+        {
+            return Err(ProviderLedgerError::InvalidTransition(
                 "fresh authenticated replay authorization required",
-            ))?;
+            ));
+        }
         let reservation_digest = recovery_effect_digest(
             b"complete-observed-release",
             acquisition_id,
@@ -1002,6 +1033,10 @@ impl<'a> ProviderLedgerV1<'a> {
         let snapshot = self.journal.snapshot()?;
         self.journal
             .validate_source_provider_authority_snapshot(&snapshot)?;
+        let authorization = self
+            .recovery_authorizations
+            .remove(&attempt.attempt_digest)
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
         let permit = crate::DurableReleaseEffectPermitV1 {
             plan,
             completion_session_binding: attempt.session_binding,

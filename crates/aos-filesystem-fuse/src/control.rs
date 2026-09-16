@@ -1,6 +1,8 @@
 //! Cooperative callback deadlines and borrowed cancellation descriptor polling.
 
-use aos_filesystem_view::{RequestCheckpoint, RequestControl, RequestControlState};
+use aos_filesystem_view::{
+    DataError, MonotonicClock, RequestCheckpoint, RequestControl, RequestControlState,
+};
 
 pub(crate) struct Control {
     cancellation: libc::c_int,
@@ -8,10 +10,26 @@ pub(crate) struct Control {
 }
 
 impl Control {
-    pub fn new(cancellation: libc::c_int, timeout_seconds: u16) -> std::io::Result<Self> {
+    pub(crate) fn new(cancellation: libc::c_int, timeout_seconds: u16) -> std::io::Result<Self> {
+        let deadline_ns = boottime_ns()?
+            .checked_add(u128::from(timeout_seconds) * 1_000_000_000)
+            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EOVERFLOW))?;
         Ok(Self {
             cancellation,
-            deadline_ns: boottime_ns()? + u128::from(timeout_seconds) * 1_000_000_000,
+            deadline_ns,
+        })
+    }
+
+    pub(crate) fn from_absolute_deadline(
+        cancellation: libc::c_int,
+        deadline_ns: u64,
+    ) -> std::io::Result<Self> {
+        if cancellation < 0 || deadline_ns == 0 || boottime_ns()? >= u128::from(deadline_ns) {
+            return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));
+        }
+        Ok(Self {
+            cancellation,
+            deadline_ns: u128::from(deadline_ns),
         })
     }
 }
@@ -38,6 +56,64 @@ impl RequestControl for Control {
         boottime_ns()
             .ok()
             .and_then(|value| u64::try_from(value).ok())
+    }
+}
+
+impl MonotonicClock for Control {
+    fn now_ns(&self) -> u64 {
+        boottime_ns()
+            .ok()
+            .and_then(|value| u64::try_from(value).ok())
+            .unwrap_or(u64::MAX)
+    }
+
+    fn wait_until(
+        &self,
+        ready_at_ns: u64,
+        deadline_ns: u64,
+        control: &dyn RequestControl,
+    ) -> Result<(), DataError> {
+        if ready_at_ns > deadline_ns {
+            return Err(DataError::InvalidRequest);
+        }
+
+        loop {
+            match control.state(RequestCheckpoint::DuringReadOnlyWork) {
+                RequestControlState::Continue => {}
+                RequestControlState::Cancelled => return Err(DataError::Cancelled),
+                RequestControlState::DeadlineExpired => return Err(DataError::DeadlineExpired),
+            }
+            let now = control
+                .monotonic_now_ns()
+                .ok_or(DataError::DeadlineExpired)?;
+            if now >= ready_at_ns {
+                return Ok(());
+            }
+            if now >= deadline_ns {
+                return Err(DataError::DeadlineExpired);
+            }
+
+            let remaining_ns = ready_at_ns.min(deadline_ns).saturating_sub(now);
+            let wait_ms = remaining_ns.div_ceil(1_000_000).min(50);
+            let timeout = libc::c_int::try_from(wait_ms).map_err(|_| DataError::InvalidRequest)?;
+            let mut descriptor = libc::pollfd {
+                fd: self.cancellation,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: One initialized pollfd is writable for this bounded call.
+            let result = unsafe { libc::poll(&mut descriptor, 1, timeout) };
+            if result < 0 {
+                let source = std::io::Error::last_os_error();
+                if source.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(DataError::Cancelled);
+            }
+            if descriptor.revents != 0 {
+                return Err(DataError::Cancelled);
+            }
+        }
     }
 }
 

@@ -7,9 +7,11 @@
 //! [`ReadinessConfirmedGuardian`] can acknowledge readiness or wait on the absolute
 //! `CLOCK_BOOTTIME` deadline.
 //!
-//! This foundation deliberately owns no network listener, capability, storage
-//! handle, or general systemd API. Early freeze, kernel default-drop, renewal,
-//! and controller delivery are separate work.
+//! This crate deliberately owns no network listener, capability, storage
+//! handle, or general systemd API. A dormant fixed protected owner models
+//! early freeze, kernel default-drop, renewal, expiry, and move-only controller
+//! handoff; production timers, kernel effects, and controller delivery remain
+//! separate work.
 
 mod authority;
 mod runtime;
@@ -17,6 +19,7 @@ mod state;
 
 pub use aos_sandbox_core::GuardianPlanBinding;
 pub use authority::{
+    DormantGuardianActionV1, DormantGuardianEffectHandoffV1, DormantGuardianEffectStepV1,
     DormantGuardianProtectedCommitV1, DormantGuardianProtectedOwnerErrorV1,
     DormantGuardianProtectedOwnerV1, GuardianArtifacts, GuardianAuthority, GuardianAuthorityError,
     PendingGuardianState, ReadinessConfirmedGuardian,

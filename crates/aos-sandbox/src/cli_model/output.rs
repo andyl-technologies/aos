@@ -20,7 +20,7 @@ pub const MAXIMUM_CLI_OUTPUT_PAGE_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum unescaped public text accepted for diagnostic rendering.
 pub const MAXIMUM_PUBLIC_TEXT_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 /// States structured response schemas still required before CLI activation.
-pub const OUTPUT_PROTO_INTEGRATION_REQUIRED: &str = "add established public feature-registry, cache-status, and execution-control responses plus a closed policy-plan reason registry before enabling structured output for those commands";
+pub const OUTPUT_PROTO_INTEGRATION_REQUIRED: &str = "structured output contracts are source-complete; transport activation and qualification remain deliberately deferred";
 
 /// Selects the requested CLI renderer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,14 +55,7 @@ impl CliOutputPlanV1 {
     ) -> Result<Self, InvalidOutputPlan> {
         let compatible = match (mode, schema) {
             (CliOutputModeV1::Human, _) => true,
-            (
-                CliOutputModeV1::Json,
-                StructuredOutputSchemaV1::CompletionScript
-                | StructuredOutputSchemaV1::PublicFeatureRegistryText
-                | StructuredOutputSchemaV1::CacheStatusText
-                | StructuredOutputSchemaV1::PolicyPlanText
-                | StructuredOutputSchemaV1::ExecutionControlResultText,
-            ) => false,
+            (CliOutputModeV1::Json, StructuredOutputSchemaV1::CompletionScript) => false,
             (CliOutputModeV1::Json, _) => true,
             (CliOutputModeV1::JsonLines, schema) => matches!(
                 schema,
@@ -75,6 +68,7 @@ impl CliOutputPlanV1 {
                     | StructuredOutputSchemaV1::Capability
                     | StructuredOutputSchemaV1::NodeCapabilities
                     | StructuredOutputSchemaV1::Event
+                    | StructuredOutputSchemaV1::SandboxTree
             ),
             _ => false,
         };
@@ -126,7 +120,7 @@ fn command_output_schema(
         SandboxCommandV1::Create(CreateCommandV1 {
             mode: CreateModeV1::DryRun,
             ..
-        }) => S::PolicyPlanText,
+        }) => S::PolicyPlan,
         SandboxCommandV1::Create(CreateCommandV1 {
             mode: CreateModeV1::Apply(control),
             ..
@@ -139,18 +133,19 @@ fn command_output_schema(
                 S::SandboxList
             }
         }
-        SandboxCommandV1::Tree(_) => {
-            if mode == CliOutputModeV1::JsonLines {
-                S::Sandbox
-            } else {
-                S::DescendantsList
-            }
-        }
+        SandboxCommandV1::Tree(_) => S::SandboxTree,
         SandboxCommandV1::Children(_) => {
             if mode == CliOutputModeV1::JsonLines {
                 S::Sandbox
             } else {
                 S::ChildrenList
+            }
+        }
+        SandboxCommandV1::Ancestors(_) => {
+            if mode == CliOutputModeV1::JsonLines {
+                S::Sandbox
+            } else {
+                S::AncestorsList
             }
         }
         SandboxCommandV1::Lifecycle { target, .. } => wait_schema(target.control.wait, S::Sandbox),
@@ -163,10 +158,12 @@ fn command_output_schema(
         SandboxCommandV1::AttachExec(_) => return None,
         SandboxCommandV1::CancelExec(_) => S::Operation,
         SandboxCommandV1::Snapshot(value) => wait_schema(value.source.control.wait, S::Snapshot),
+        SandboxCommandV1::DeleteSnapshot(value) => wait_schema(value.control.wait, S::Snapshot),
         SandboxCommandV1::Restore(value) | SandboxCommandV1::Fork(value) => {
             wait_schema(value.control.wait, S::Sandbox)
         }
         SandboxCommandV1::Delete(value) => wait_schema(value.target.control.wait, S::Sandbox),
+        SandboxCommandV1::CancelOperation(value) => wait_schema(value.control.wait, S::Operation),
         SandboxCommandV1::Events(_) => S::Event,
         SandboxCommandV1::View(ViewCommandV1::List(_)) => {
             if mode == CliOutputModeV1::JsonLines {
@@ -185,13 +182,13 @@ fn command_output_schema(
         | SandboxCommandV1::View(ViewCommandV1::Detach(attachment)) => {
             wait_schema(attachment.control.wait, S::Attachment)
         }
-        SandboxCommandV1::Cache(CacheCommandV1::Status(_)) => S::CacheStatusText,
+        SandboxCommandV1::Cache(CacheCommandV1::Status(_)) => S::CacheStatus,
         SandboxCommandV1::Cache(CacheCommandV1::Pin { control, .. })
         | SandboxCommandV1::Cache(CacheCommandV1::Unpin { control, .. }) => {
             wait_schema(control.wait, S::Operation)
         }
         SandboxCommandV1::Capabilities(CapabilitiesCommandV1::PublicApiRegistry) => {
-            S::PublicFeatureRegistryText
+            S::PublicFeatureRegistry
         }
         SandboxCommandV1::Capabilities(CapabilitiesCommandV1::NodeBackend(_)) => {
             S::NodeCapabilities
@@ -206,18 +203,19 @@ fn command_output_schema(
             }
         },
         SandboxCommandV1::Completions(_) => S::CompletionScript,
+        SandboxCommandV1::OperatorRecovery(_) => S::Operation,
     };
 
-    if mode == CliOutputModeV1::JsonLines
-        && !matches!(
-            command,
-            SandboxCommandV1::List(_)
-                | SandboxCommandV1::Tree(_)
-                | SandboxCommandV1::Children(_)
-                | SandboxCommandV1::Events(_)
-                | SandboxCommandV1::View(ViewCommandV1::List(_))
-        )
-    {
+    let supports_json_lines = matches!(
+        command,
+        SandboxCommandV1::List(_)
+            | SandboxCommandV1::Tree(_)
+            | SandboxCommandV1::Children(_)
+            | SandboxCommandV1::Ancestors(_)
+            | SandboxCommandV1::Events(_)
+            | SandboxCommandV1::View(ViewCommandV1::List(_))
+    );
+    if mode == CliOutputModeV1::JsonLines && !supports_json_lines {
         None
     } else {
         Some(schema)
@@ -254,7 +252,7 @@ fn mutation_output_schema(value: &ResolvedPublicMutationV1) -> StructuredOutputS
         return if control.returns_operation() {
             S::Operation
         } else {
-            S::ExecutionControlResultText
+            S::ExecutionControlResult
         };
     }
 
@@ -270,7 +268,7 @@ fn mutation_output_schema(value: &ResolvedPublicMutationV1) -> StructuredOutputS
         M::AttachView { .. } | M::ReplaceAttachment { .. } | M::DetachView { .. } => S::Attachment,
         M::CreateSnapshot { .. } | M::DeleteSnapshot { .. } => S::Snapshot,
         M::Capability(_) => S::Capability,
-        M::CachePin { .. } | M::CacheUnpin { .. } => S::Operation,
+        M::CachePin { .. } | M::CacheUnpin { .. } | M::CancelOperation { .. } => S::Operation,
     };
     value
         .client_wait()

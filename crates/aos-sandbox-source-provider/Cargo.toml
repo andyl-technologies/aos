@@ -4,16 +4,17 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 aos-sandbox.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 aos-sandbox-source-provider-ledger.workspace = true
 aos-sandbox-source-provider-security.workspace = true
+ed25519-dalek.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-rustix = { workspace = true, features = ["fs"] }
+rustix = { workspace = true, features = ["fs", "process", "rand", "time"] }
 
 [lints]
 workspace = true

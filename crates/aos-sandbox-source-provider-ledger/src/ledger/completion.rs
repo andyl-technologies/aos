@@ -406,6 +406,7 @@ macro_rules! response_plan {
                 current_records: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
                 canonical_response: Vec<u8>,
                 signed_lease: Option<SignedSourceExportLeaseV1>,
+                completed_at_seconds: i64,
             ) -> Result<FinalizedCompletionV1, LedgerFormatErrorV1> {
                 if !self.0.permits_response(self.0.method, $artifact) {
                     return Err(LedgerFormatErrorV1::Corrupt("completion plan class"));
@@ -415,6 +416,7 @@ macro_rules! response_plan {
                     self.0,
                     canonical_response,
                     signed_lease,
+                    completed_at_seconds,
                 )
             }
         }
@@ -633,6 +635,7 @@ fn finalize_response_completion<'record>(
     plan: CompletionMutationPlanV1,
     canonical_response: Vec<u8>,
     signed_lease: Option<SignedSourceExportLeaseV1>,
+    completed_at_seconds: i64,
 ) -> Result<FinalizedCompletionV1, LedgerFormatErrorV1> {
     let purpose = plan.purpose.clone();
     let (signed_status, method) = decode_response(&canonical_response)?;
@@ -650,6 +653,8 @@ fn finalize_response_completion<'record>(
         || status.signed_request_digest() != attempt.signed_request_digest
         || status.provider_process_instance() != attempt.provider_process_instance
         || status.session_binding() != attempt.session_binding
+        || completed_at_seconds < attempt.verified_at_seconds
+        || completed_at_seconds >= attempt.deadline_seconds
     {
         return Err(LedgerFormatErrorV1::Corrupt("completion attempt binding"));
     }
@@ -660,6 +665,7 @@ fn finalize_response_completion<'record>(
     attempt.state = ProviderAttemptStateV1::Completed;
     attempt.status = Some(status.status());
     attempt.response_sequence = Some(status.response_sequence());
+    attempt.completed_at_seconds = Some(completed_at_seconds);
     attempt.response_digest = Some(provider_response_artifact_digest_v1(
         method,
         &canonical_response,

@@ -5,14 +5,20 @@
 //! plans bounded immutable reads and extended-attribute replies, and builds a
 //! replaceable architecture-neutral structural index. Pure worker lifecycle
 //! reducers cover restart, quarantine, repair, and attachment reconciliation.
-//! The crate owns no mount, network, cache, OS descriptor, or publication effect;
-//! privileged realization remains separate.
+//! The crate activates no mount, network, cache, service, or publication
+//! effect. It does expose explicit dormant effect-owner seams for a future
+//! immutable transport, worker supervisor, and Linux fs-verity mmap index
+//! catalog. Its portable worker API is unconditional; Linux descriptor
+//! ownership and protected FUSE qualification compile only on Linux.
 
 mod graph;
 mod index;
+#[cfg(target_os = "linux")]
+mod index_owner;
 mod inode;
 mod limits;
 mod presentation;
+mod remote_source;
 mod source;
 mod view_projection;
 mod worker;
@@ -39,6 +45,11 @@ pub use presentation::{
     PresentationPlan, PresentedAclEntries, PresentedAclRange, PresentedInodeAttributes,
     PresentedMetadata,
 };
+pub use remote_source::{
+    DormantRemoteSource, FetchAmbiguity, FetchAttempt, FetchBeginPoll, FetchControl,
+    FetchControlState, FetchLimits, FetchRead, FetchReceipt, FetchRecovery, FetchRecoveryError,
+    FetchRecoveryPoll, ImmutableFetchTransport, RemoteFetchError,
+};
 pub use source::{ExactObject, ObjectSource, SourceError, load_exact};
 pub use view_projection::{
     ProjectedNode, ProjectedNodeKind, ProjectionError, ProjectionLimits, ProjectionProfile,
@@ -48,21 +59,33 @@ pub use worker::{
     AttachmentHealth, AuthenticatedConnectionJoin, BackingDisposition, BackingIdentity,
     CallbackReducerBinding, CallbackReducerBrand, ConnectionAuthorityError, ConnectionLease,
     ConsumerEvidence, DataError, DataOpenPolicy, DataPlane, DataPlaneLimits, DataReadRequest,
-    DataReadResult, DataReadScratch, DormantFilesystemWorkerPreparation, DurableLifecycleEvent,
-    DurableRegistrationRecord, DurableStateCodec, DurableStateError, DurableStateLimits,
-    ExtendedAttributeError, ExtendedAttributeLimits, ExtendedAttributeReply,
-    ExtendedAttributeScratch, ExtendedAttributeSize, ExtendedAttributeState, FileAccessMode,
-    FileContentAuthority, FileOpenRequest, FrozenFeatureSet, FuseCapabilities, InitReply,
-    InitRequest, InventoryEvidence, LifecycleError, LookupReply, MetadataConnection,
-    MonotonicClock, MountPolicy, ObjectReadRequest, ObjectReadResult, OpenDirectoryReply,
-    OpenFileReply, PassthroughRegistrations, PendingDirectoryReply, PendingFileReply,
-    PendingFuseConnectionQualification, PreparedDataOpen, PreparedFuseConnection, ProcessEvidence,
-    ProtectedFuseConnectionQualification, PublicationHealth, QualificationAdmission,
-    QualificationError, ReadDirEntry, ReadDirPage, ReadDirPageEntries, ReadSegment, ReadlinkReply,
-    ReconciliationAction, RegistrationAction, RegistrationLimits, RegistrationOperation,
-    RegistrationPhase, RejectedOperation, ReleaseDisposition, RepairEvidence, ReplyScratch,
-    RequestBudget, RequestCheckpoint, RequestControl, RequestControlState, TeardownSummary,
-    Uninterrupted, UserNamespaceIdentity, VerifiedBackingEvidence, VerifiedObjectReader,
-    WorkerAttributes, WorkerError, WorkerLifecycle, WorkerLifecycleSnapshot, WorkerLimits,
-    WorkerPhase, admit_fuse_connection_qualification,
+    DataReadResult, DataReadScratch, DurableLifecycleEvent, DurableRegistrationRecord,
+    DurableStateCodec, DurableStateError, DurableStateLimits, ExtendedAttributeError,
+    ExtendedAttributeLimits, ExtendedAttributeReply, ExtendedAttributeScratch,
+    ExtendedAttributeSize, ExtendedAttributeState, FileAccessMode, FileContentAuthority,
+    FileOpenRequest, FrozenFeatureSet, FuseCapabilities, InitReply, InitRequest, InventoryEvidence,
+    LifecycleError, LookupReply, MetadataConnection, MonotonicClock, MountPolicy,
+    ObjectReadRequest, ObjectReadResult, OpenDirectoryReply, OpenFileReply,
+    PassthroughRegistrations, PendingDirectoryReply, PendingFileReply, PreparedDataOpen,
+    PreparedFuseConnection, ProcessEvidence, PublicationHealth, ReadDirEntry, ReadDirPage,
+    ReadDirPageEntries, ReadSegment, ReadlinkReply, ReconciliationAction, RegistrationAction,
+    RegistrationLimits, RegistrationOperation, RegistrationPhase, RejectedOperation,
+    ReleaseDisposition, RepairEvidence, ReplyScratch, RequestBudget, RequestCheckpoint,
+    RequestControl, RequestControlState, TeardownSummary, Uninterrupted, UserNamespaceIdentity,
+    VerifiedBackingEvidence, VerifiedObjectReader, WorkerAttributes, WorkerError, WorkerLifecycle,
+    WorkerLifecycleSnapshot, WorkerLimits, WorkerPhase,
+};
+
+#[cfg(target_os = "linux")]
+pub use index_owner::{
+    AmbiguousIndexReplacement, DormantIndexOwner, IndexCurrentness, IndexOwnerError,
+    IndexPublication, IndexRecoveryFailure,
+};
+#[cfg(target_os = "linux")]
+pub use worker::{
+    DormantFilesystemWorkerPreparation, DormantReconciliationAdapter,
+    PendingFuseConnectionQualification, ProtectedFuseConnectionQualification,
+    ProtectedFuseKernelClockV1, QualificationAdmission, QualificationError, ReapEffectResult,
+    ReconciliationAdapterError, ReconciliationEffectExecutor, ReconciliationObservation,
+    SealedEffectReceipt, admit_fuse_connection_qualification,
 };

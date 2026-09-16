@@ -25,6 +25,7 @@ pub mod activation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+mod dormant_broker_session;
 /// Source-only RFC-0021 adapters that are not connected to service dispatch.
 pub mod dormant_runtime_backend;
 #[cfg(test)]
@@ -36,6 +37,12 @@ pub mod service;
 pub mod state;
 pub mod transport;
 pub mod worker;
+
+pub use dormant_broker_session::{
+    DormantHostBrokerCallErrorV1, DormantHostBrokerCallsiteV1, DormantHostBrokerCompositionV1,
+    DormantHostBrokerObservationV1, DormantHostScopeReplayReservationV1,
+    DormantHostScopeReplayTicketV1,
+};
 
 pub(crate) const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 

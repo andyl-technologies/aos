@@ -10,11 +10,22 @@ use std::ffi::{c_int, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use aos_filesystem_view::{
-    ForgetRequest, IndexNodeKind, LookupReply, MetadataConnection, ReplyScratch, RequestBudget,
-    RequestCheckpoint, RequestControl, RequestControlState, WorkerAttributes, WorkerError,
+    DurableStateLimits, ForgetRequest, IndexNodeKind, LookupReply, MetadataConnection,
+    RegistrationLimits, ReplyScratch, RequestBudget, RequestCheckpoint, RequestControl,
+    RequestControlState, WorkerAttributes, WorkerError,
 };
 
-use crate::{TransportLimits, abi, control::Control};
+use crate::{
+    TransportLimits, abi,
+    control::Control,
+    dormant_libfuse::{
+        DormantAuthorizedOpenPlanV2, DormantLibfuseCallbackErrorV2,
+        DormantLibfuseOperationsAdapterV2, DormantOpenPublicationReceiptV2, DormantPendingOpenV2,
+        ProtectedFuseRegistrationOwnerV2,
+    },
+    file_callbacks::OpenPublication,
+    operations::{ImmutableOperationLimits, OperationError},
+};
 
 const FATAL: c_int = -1;
 
@@ -70,6 +81,51 @@ impl<'scratch, 'prepared, 'index, 'bytes, 'plan>
     fn control(&self) -> Result<Control, Failure> {
         Control::new(self.cancellation, self.limits.request_timeout_seconds)
             .map_err(|_| Failure::Fatal)
+    }
+
+    /// Creates the dormant data/xattr adapter from this live session transport.
+    ///
+    /// No public constructor can substitute a cancellation descriptor, clock,
+    /// or connection binding. This method does not install any callbacks.
+    pub(crate) fn prepare_dormant_operations(
+        &mut self,
+        registration_owner: &mut ProtectedFuseRegistrationOwnerV2,
+        durable_limits: DurableStateLimits,
+        registration_limits: RegistrationLimits,
+        operation_limits: ImmutableOperationLimits,
+    ) -> Result<DormantLibfuseOperationsAdapterV2, OperationError> {
+        let (registration_head, prior_reducer_commitment, records) = registration_owner
+            .load_current_registration_state(&self.connection, durable_limits)
+            .map_err(|_| OperationError::Integrity)?;
+        let registrations = self
+            .connection
+            .restore_inert_passthrough_registrations(
+                registration_limits,
+                prior_reducer_commitment,
+                &records,
+            )
+            .map_err(|_| OperationError::Integrity)?;
+        let cancellation = self.cancellation;
+        let timeout_seconds = self.limits.request_timeout_seconds;
+        DormantLibfuseOperationsAdapterV2::from_session_transport(
+            &mut self.connection,
+            registrations,
+            operation_limits,
+            registration_head,
+            cancellation,
+            timeout_seconds,
+        )
+    }
+
+    /// Binds an actual dormant OPEN reply observation to protected worker state.
+    pub(crate) fn observe_dormant_open_publication<'owner>(
+        &self,
+        adapter: &mut DormantLibfuseOperationsAdapterV2,
+        pending: &DormantPendingOpenV2<'_>,
+        publication: OpenPublication,
+        authorization: DormantAuthorizedOpenPlanV2<'owner>,
+    ) -> Result<DormantOpenPublicationReceiptV2<'owner>, DormantLibfuseCallbackErrorV2> {
+        adapter.observe_open_publication(&self.connection, pending, publication, authorization)
     }
 }
 

@@ -26,6 +26,12 @@ mod sealed {
     pub trait Sealed {}
 }
 
+mod dormant_transport;
+pub use dormant_transport::{
+    DormantAuthenticatedCoordinatorNodeTransportV1, DormantCoordinatorNodeEncodingV1,
+    DormantOutboundExchangeV1, DormantOutboundResponseV1, DormantTransportHandshakeV1,
+};
+
 const ASSIGNMENT_CARRIER_DOMAIN: &[u8] = b"aos.sandbox.multi-node.assignment-carrier.v1\0";
 const MAXIMUM_ASSIGNMENT_SIGNATURE_BYTES: usize = 64 * 1024;
 
@@ -562,6 +568,10 @@ impl AuthenticatedFrameSealV1 {
 }
 
 impl CarrierResponseGrantV1 {
+    pub(super) const fn context(&self) -> AuthenticatedEvidenceContextV1 {
+        self.context
+    }
+
     pub(super) fn into_parts(
         self,
     ) -> (
@@ -695,6 +705,42 @@ fn issue_response_once(
             body_digest: frame.body_digest(),
             frame_digest: frame.frame_digest(),
             frame_bytes: canonical_bytes,
+            replay_fence,
+        },
+    })
+}
+
+fn issue_generated_response_once(
+    session: AuthenticatedNodeSessionV1,
+    kind: super::protocol::CanonicalNodeFrameKindV1,
+    body_digest: ObjectDigest,
+    carrier_digest: ObjectDigest,
+    carrier_bytes: u32,
+    verified_at_unix_seconds: u64,
+) -> Result<CarrierResponseGrantV1, InvalidMultiNodeProtocol> {
+    if body_digest.as_bytes() == &[0; 32]
+        || carrier_digest.as_bytes() == &[0; 32]
+        || carrier_bytes == 0
+        || carrier_bytes > session.maximum_response_bytes()
+    {
+        return Err(InvalidMultiNodeProtocol::SessionMismatch);
+    }
+    let context = issue_evidence_once(
+        &session,
+        carrier_digest,
+        carrier_bytes,
+        verified_at_unix_seconds,
+    )
+    .map_err(|_| InvalidMultiNodeProtocol::SessionMismatch)?;
+    let replay_fence = session.replay_fence();
+    Ok(CarrierResponseGrantV1 {
+        session,
+        context,
+        frame_seal: AuthenticatedFrameSealV1 {
+            kind,
+            body_digest,
+            frame_digest: carrier_digest,
+            frame_bytes: carrier_bytes,
             replay_fence,
         },
     })

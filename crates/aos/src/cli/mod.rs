@@ -48,6 +48,8 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
+pub mod sandbox;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum ProgressChoice {
     /// Select terminal or stable-line rendering automatically.

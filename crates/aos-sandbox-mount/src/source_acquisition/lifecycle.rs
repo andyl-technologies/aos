@@ -6,8 +6,7 @@
 
 use aos_sandbox::journal::{JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox::mount_manager_startup::{
-    FreshManagerSourcePresenceV1, FreshManagerSourceRemovalReceiptV1, LostMountSourceCustodyV1,
-    StartupManagerSourcePresenceV1, TerminalMountSourceAbsenceV1,
+    LostMountSourceCustodyV1, StartupManagerSourcePresenceV1, TerminalMountSourceAbsenceV1,
 };
 use aos_sandbox_broker::BrokerEffectStatusV1;
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb, ObjectDigest};
@@ -15,12 +14,10 @@ use aos_sandbox_protocol::ValidatedMountRequest;
 use aos_sandbox_protocol::mount_source_acquisition_state::validate_mount_source_state_graph_v2;
 use aos_sandbox_protocol::semantics::project_final_mount_create_semantics_v1;
 use aos_sandbox_source_provider_security::{
-    CommittedReopenedMountSourceRootV2, CommittedSourceRootV1,
     CurrentRootMountSourceProviderSessionV1, MountSourceReleaseAuthorityV2,
     MountSourceRemovalPreparationV2, MountSourceRootCustodyV2, NegativeCustodyPostcommitOutcomeV2,
     NegativeCustodyPostcommitRecoveryV2, PreparedMountSourceConsumptionV2,
-    PreparedMountSourceRootCustodyV2, ReleasedMountSourceRootV2,
-    RetainedMountSourceReleaseForRemovalV2, SourceRootPostcommitOutcomeV2,
+    PreparedMountSourceRootCustodyV2, ReleasedMountSourceRootV2, SourceRootPostcommitOutcomeV2,
     SourceRootPostcommitRecoveryV2, SourceRootPostcommitSuccessV2, VerifiedMountProviderOutcomeV2,
 };
 use sha2::{Digest as _, Sha256};
@@ -97,6 +94,24 @@ pub(crate) struct SourceAcquisitionPostcommitRecoveryV2 {
     retained: SourceAcquisitionPostcommitRetainedV2,
 }
 
+/// Retains both manager and SourceRoot authority before the postcommit boundary.
+pub(crate) enum ManagerSourceCustodyPreparationV2 {
+    Pending(aos_sandbox_source_provider_security::PendingMountSourceRootCustodyV2),
+    Prepared(PreparedMountSourceRootCustodyV2),
+}
+
+/// Returns exact manager/SourceRoot custody after descriptor precommit failure.
+pub(crate) struct ManagerSourceCustodyPreparationFailureV2 {
+    error: crate::MountError,
+    retained: ManagerSourceCustodyPreparationV2,
+}
+
+impl ManagerSourceCustodyPreparationFailureV2 {
+    pub(super) fn into_parts(self) -> (crate::MountError, ManagerSourceCustodyPreparationV2) {
+        (self.error, self.retained)
+    }
+}
+
 enum SourceAcquisitionPostcommitRetainedV2 {
     Security(SourceRootPostcommitRecoveryV2),
     Sealed(SourceRootPostcommitSuccessV2),
@@ -135,6 +150,22 @@ pub(crate) enum SourceAcquisitionNegativeCustodyOutcomeV2 {
 /// Retains an exact prospective table until negative custody resealing succeeds.
 pub(crate) struct SourceAcquisitionNegativeCustodyRecoveryV2 {
     retained: SourceAcquisitionNegativeCustodyRetainedV2,
+}
+
+pub(crate) enum ReleaseFinishPreparationV2 {
+    Pending(aos_sandbox_source_provider_security::PendingReleasedMountSourceRootV2),
+    Prepared(aos_sandbox_source_provider_security::PreparedReleasedMountSourceRootV2),
+}
+
+pub(crate) struct ReleaseFinishPreparationFailureV2 {
+    error: crate::MountError,
+    retained: ReleaseFinishPreparationV2,
+}
+
+impl ReleaseFinishPreparationFailureV2 {
+    pub(super) fn into_parts(self) -> (crate::MountError, ReleaseFinishPreparationV2) {
+        (self.error, self.retained)
+    }
 }
 
 enum SourceAcquisitionNegativeCustodyRetainedV2 {
@@ -465,82 +496,82 @@ impl SourceAcquisitionTableV2 {
         acquisition_id: [u8; 32],
         expected_revision: u64,
         expected_digest: [u8; 32],
-        committed_source_root: CommittedSourceRootV1,
-        manager_presence: FreshManagerSourcePresenceV1,
-    ) -> Result<SourceAcquisitionPostcommitOutcomeV2> {
-        let current = self.current_for_cas(acquisition_id, expected_revision, expected_digest)?;
-        let evidence = current
-            .evidence
-            .as_ref()
-            .ok_or_else(|| state_error("descriptor custody has no Complete Acquire evidence"))?;
-        let owner_reference = current
-            .acquire_terminal_attempt
-            .ok_or_else(|| state_error("descriptor custody has no terminal Acquire attempt"))?;
-        let owner_attempt = self
-            .provider_attempts
-            .get(&owner_reference.id)
-            .ok_or_else(|| state_error("descriptor custody owner attempt is absent"))?;
-        let owner_session = self
-            .provider_sessions
-            .get(&owner_attempt.session_id)
-            .ok_or_else(|| state_error("descriptor custody owner session is absent"))?;
-        let prepared = committed_source_root
-            .prepare_mount_custody(current, owner_attempt, owner_session, manager_presence)
-            .map_err(|_| state_error("SourceRoot custody preparation failed"))?;
-        self.record_prepared_descriptor_custody_v2(
-            journal,
-            session,
+        retained: ManagerSourceCustodyPreparationV2,
+    ) -> std::result::Result<
+        SourceAcquisitionPostcommitOutcomeV2,
+        ManagerSourceCustodyPreparationFailureV2,
+    > {
+        let prepared = match self.prepare_manager_source_custody_v2(
             acquisition_id,
             expected_revision,
             expected_digest,
-            prepared,
-        )
+            retained,
+        ) {
+            Ok(prepared) => prepared,
+            Err(failure) => return Err(failure),
+        };
+        let transaction = match self.prepare_descriptor_custody_transaction_v2(
+            acquisition_id,
+            expected_revision,
+            expected_digest,
+            &prepared,
+        ) {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                return Err(ManagerSourceCustodyPreparationFailureV2 {
+                    error,
+                    retained: ManagerSourceCustodyPreparationV2::Prepared(prepared),
+                });
+            }
+        };
+        let outcome = session.commit_mount_source_root_custody_v2(journal, transaction, prepared);
+        Ok(self.retain_source_root_postcommit(journal, outcome))
     }
 
-    /// Records PID 1 custody for an exact post-crash reopened SourceRoot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale state, mismatched reopened custody, an
-    /// outstanding query, or journal/postcommit failure.
-    #[doc(hidden)]
-    pub(crate) fn record_reopened_descriptor_custody_v2(
-        &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
-        session: &mut CurrentRootMountSourceProviderSessionV1,
+    fn prepare_manager_source_custody_v2(
+        &self,
         acquisition_id: [u8; 32],
         expected_revision: u64,
         expected_digest: [u8; 32],
-        committed_source_root: CommittedReopenedMountSourceRootV2,
-        manager_presence: FreshManagerSourcePresenceV1,
-    ) -> Result<SourceAcquisitionPostcommitOutcomeV2> {
-        let current = self.current_for_cas(acquisition_id, expected_revision, expected_digest)?;
-        let evidence = current
-            .evidence
-            .as_ref()
-            .ok_or_else(|| state_error("reopened custody has no Complete Acquire evidence"))?;
-        let owner_reference = current
-            .acquire_terminal_attempt
-            .ok_or_else(|| state_error("reopened custody has no terminal Acquire attempt"))?;
-        let owner_attempt = self
-            .provider_attempts
-            .get(&owner_reference.id)
-            .ok_or_else(|| state_error("reopened custody owner attempt is absent"))?;
-        let owner_session = self
-            .provider_sessions
-            .get(&owner_attempt.session_id)
-            .ok_or_else(|| state_error("reopened custody owner session is absent"))?;
-        let prepared = committed_source_root
-            .prepare_mount_custody(current, owner_attempt, owner_session, manager_presence)
-            .map_err(|_| state_error("reopened SourceRoot custody preparation failed"))?;
-        self.record_prepared_descriptor_custody_v2(
-            journal,
-            session,
-            acquisition_id,
-            expected_revision,
-            expected_digest,
-            prepared,
-        )
+        retained: ManagerSourceCustodyPreparationV2,
+    ) -> std::result::Result<
+        PreparedMountSourceRootCustodyV2,
+        ManagerSourceCustodyPreparationFailureV2,
+    > {
+        let validated = (|| -> Result<_> {
+            let current =
+                self.current_for_cas(acquisition_id, expected_revision, expected_digest)?;
+            current.evidence.as_ref().ok_or_else(|| {
+                state_error("descriptor custody has no Complete Acquire evidence")
+            })?;
+            let owner_reference = current
+                .acquire_terminal_attempt
+                .ok_or_else(|| state_error("descriptor custody has no terminal Acquire attempt"))?;
+            let owner_attempt = self
+                .provider_attempts
+                .get(&owner_reference.id)
+                .ok_or_else(|| state_error("descriptor custody owner attempt is absent"))?;
+            let owner_session = self
+                .provider_sessions
+                .get(&owner_attempt.session_id)
+                .ok_or_else(|| state_error("descriptor custody owner session is absent"))?;
+            Ok((current, owner_attempt, owner_session))
+        })();
+        let (current, owner_attempt, owner_session) = match validated {
+            Ok(validated) => validated,
+            Err(error) => {
+                return Err(ManagerSourceCustodyPreparationFailureV2 { error, retained });
+            }
+        };
+        match retained {
+            ManagerSourceCustodyPreparationV2::Pending(pending) => pending
+                .prepare_mount_custody(current, owner_attempt, owner_session)
+                .map_err(|(_, pending)| ManagerSourceCustodyPreparationFailureV2 {
+                    error: state_error("SourceRoot custody preparation failed"),
+                    retained: ManagerSourceCustodyPreparationV2::Pending(pending),
+                }),
+            ManagerSourceCustodyPreparationV2::Prepared(prepared) => Ok(prepared),
+        }
     }
 
     /// Adopts an exact startup-captured SourceRoot into descriptor custody.
@@ -629,6 +660,23 @@ impl SourceAcquisitionTableV2 {
         expected_digest: [u8; 32],
         prepared: PreparedMountSourceRootCustodyV2,
     ) -> Result<SourceAcquisitionPostcommitOutcomeV2> {
+        let transaction = self.prepare_descriptor_custody_transaction_v2(
+            acquisition_id,
+            expected_revision,
+            expected_digest,
+            &prepared,
+        )?;
+        let outcome = session.commit_mount_source_root_custody_v2(journal, transaction, prepared);
+        Ok(self.retain_source_root_postcommit(journal, outcome))
+    }
+
+    fn prepare_descriptor_custody_transaction_v2(
+        &mut self,
+        acquisition_id: [u8; 32],
+        expected_revision: u64,
+        expected_digest: [u8; 32],
+        prepared: &PreparedMountSourceRootCustodyV2,
+    ) -> Result<aos_sandbox::JournalTransaction> {
         let current = self.current_for_cas(acquisition_id, expected_revision, expected_digest)?;
         let evidence = current
             .evidence
@@ -668,8 +716,7 @@ impl SourceAcquisitionTableV2 {
         next.descriptor_custody_digest = Some(*projection.lifecycle_commitment().as_bytes());
         let (transaction, _tentative) =
             self.prepare_row_only_transition(MutationTagV2::Custody, next)?;
-        let outcome = session.commit_mount_source_root_custody_v2(journal, transaction, prepared);
-        Ok(self.retain_source_root_postcommit(journal, outcome))
+        Ok(transaction)
     }
 
     /// Activates a custodied source after authoritative positive readback.
@@ -932,19 +979,28 @@ impl SourceAcquisitionTableV2 {
         acquisition_id: [u8; 32],
         expected_revision: u64,
         expected_digest: [u8; 32],
-        retained_release: RetainedMountSourceReleaseForRemovalV2,
-        terminal_outcome: VerifiedMountProviderOutcomeV2,
-        removal: FreshManagerSourceRemovalReceiptV1,
-    ) -> Result<SourceAcquisitionNegativeCustodyOutcomeV2> {
-        let current = self.current_for_cas(acquisition_id, expected_revision, expected_digest)?;
+        retained: ReleaseFinishPreparationV2,
+    ) -> std::result::Result<
+        SourceAcquisitionNegativeCustodyOutcomeV2,
+        ReleaseFinishPreparationFailureV2,
+    > {
+        let current = match self.current_for_cas(acquisition_id, expected_revision, expected_digest)
+        {
+            Ok(current) => current,
+            Err(error) => return Err(ReleaseFinishPreparationFailureV2 { error, retained }),
+        };
         let evidence = current
             .evidence
             .as_ref()
-            .ok_or_else(|| state_error("release has no provider evidence"))?;
-        let prepared = retained_release
-            .prepare_negative_custody(journal, session, terminal_outcome, removal)
-            .map_err(|_| state_error("manager-negative SourceRoot preparation failed"))?;
-        let projection = prepared.projection();
+            .ok_or_else(|| state_error("release has no provider evidence"));
+        let evidence = match evidence {
+            Ok(evidence) => evidence,
+            Err(error) => return Err(ReleaseFinishPreparationFailureV2 { error, retained }),
+        };
+        let projection = match &retained {
+            ReleaseFinishPreparationV2::Pending(pending) => pending.projection(),
+            ReleaseFinishPreparationV2::Prepared(prepared) => prepared.projection(),
+        };
         let is_releasing = current.phase == SourceAcquisitionPhaseV2::Releasing
             || (current.phase == SourceAcquisitionPhaseV2::Faulted
                 && current.faulted_from == Some(SourceAcquisitionPhaseV2::Releasing));
@@ -958,23 +1014,51 @@ impl SourceAcquisitionTableV2 {
                     evidence.provider_acquisition.acquisition_sequence,
                 )
             || projection.descriptor_commitment().as_bytes() != &evidence.descriptor_commitment
-            || prepared.negative_custody_digest().as_bytes() == &[0; 32]
         {
-            return Err(state_error("release custody evidence differs"));
+            return Err(ReleaseFinishPreparationFailureV2 {
+                error: state_error("release custody evidence differs"),
+                retained,
+            });
         }
-
-        let mut next = current.clone();
-        next.revision = next_revision(current.revision)?;
-        next.phase = SourceAcquisitionPhaseV2::Released;
-        next.negative_custody_digest = Some(*prepared.negative_custody_digest().as_bytes());
-        if current.phase == SourceAcquisitionPhaseV2::Faulted {
-            next.retained_faulted_from = current.faulted_from;
-            next.retained_fault_digest = current.fault_digest;
-            next.faulted_from = None;
-            next.fault_digest = None;
-        }
-        let (transaction, _tentative) =
-            self.prepare_row_only_transition(MutationTagV2::FinishRelease, next)?;
+        let prepared = match retained {
+            ReleaseFinishPreparationV2::Pending(pending) => {
+                match pending.prepare_negative_custody(journal, session) {
+                    Ok(prepared) => prepared,
+                    Err((_, pending)) => {
+                        return Err(ReleaseFinishPreparationFailureV2 {
+                            error: state_error("manager-negative SourceRoot preparation failed"),
+                            retained: ReleaseFinishPreparationV2::Pending(pending),
+                        });
+                    }
+                }
+            }
+            ReleaseFinishPreparationV2::Prepared(prepared) => prepared,
+        };
+        let transaction = match (|| -> Result<_> {
+            if prepared.negative_custody_digest().as_bytes() == &[0; 32] {
+                return Err(state_error("negative custody digest is sentinel"));
+            }
+            let mut next = current.clone();
+            next.revision = next_revision(current.revision)?;
+            next.phase = SourceAcquisitionPhaseV2::Released;
+            next.negative_custody_digest = Some(*prepared.negative_custody_digest().as_bytes());
+            if current.phase == SourceAcquisitionPhaseV2::Faulted {
+                next.retained_faulted_from = current.faulted_from;
+                next.retained_fault_digest = current.fault_digest;
+                next.faulted_from = None;
+                next.fault_digest = None;
+            }
+            self.prepare_row_only_transition(MutationTagV2::FinishRelease, next)
+                .map(|(transaction, _)| transaction)
+        })() {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                return Err(ReleaseFinishPreparationFailureV2 {
+                    error,
+                    retained: ReleaseFinishPreparationV2::Prepared(prepared),
+                });
+            }
+        };
         let outcome = session.commit_released_mount_source_root_v2(journal, transaction, prepared);
         Ok(self.retain_negative_custody_postcommit(journal, outcome))
     }

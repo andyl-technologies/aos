@@ -5,6 +5,7 @@
 //! contains canonical policy inputs and durable recovery commitments, but no
 //! descriptor, socket, kernel authority, clock, or worker implementation.
 
+use aos_sandbox::ProtectedJournalAuthority;
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
@@ -12,6 +13,7 @@ use super::replacement::{
     AdvancedNetworkRecoveryCompanionsV1, AdvancedNetworkRecoveryRecordV1,
     NetworkPolicyReplacementPhaseV1, NetworkPolicyReplacementStateV1,
 };
+use super::source_authority::BrokerAssignmentLeaseProofV1;
 use super::{AdvancedNetworkPolicyError, CompiledAdvancedNetworkPolicyV1};
 
 const HANDOFF_MAGIC: &[u8; 8] = b"AOSANWH1";
@@ -33,7 +35,7 @@ pub enum AdvancedNetworkPolicyWorkerOperationV1 {
 /// Construction remains crate-private so portable callers cannot turn an
 /// in-memory reducer value into effect authority.
 #[must_use]
-struct DurablyCommittedAdvancedNetworkPolicyV1 {
+pub(super) struct DurablyCommittedAdvancedNetworkPolicyV1 {
     state: NetworkPolicyReplacementStateV1,
     index: AdvancedNetworkRecoveryRecordV1,
     companions: AdvancedNetworkRecoveryCompanionsV1,
@@ -45,7 +47,7 @@ struct DurablyCommittedAdvancedNetworkPolicyV1 {
 /// This move-only value is intentionally not wired to a process, service, or
 /// kernel mutator in the source-only tranche.
 #[must_use]
-pub struct AdvancedNetworkPolicyWorkerHandoffV1 {
+pub struct AdvancedNetworkPolicyWorkerHandoffV1<'owner, 'broker> {
     operation: AdvancedNetworkPolicyWorkerOperationV1,
     generation: u64,
     policy: CompiledAdvancedNetworkPolicyV1,
@@ -53,6 +55,27 @@ pub struct AdvancedNetworkPolicyWorkerHandoffV1 {
     protected_transaction_digest: ObjectDigest,
     checkpoint_digest: ObjectDigest,
     canonical_bytes: Vec<u8>,
+    broker_currentness: BrokerAssignmentLeaseProofV1<'broker>,
+    protected_owner: core::marker::PhantomData<&'owner ()>,
+}
+
+/// Carries one exact policy-worker decision to a future kernel-effect adapter.
+///
+/// This move-only value preserves the protected-owner lifetime and does not
+/// contain a descriptor, socket, namespace handle, or mutation callback. It is
+/// therefore constructible for dormant integration without activating any
+/// kernel path.
+#[must_use]
+pub struct AdvancedNetworkKernelEffectHandoffV1<'owner, 'broker> {
+    operation: AdvancedNetworkPolicyWorkerOperationV1,
+    generation: u64,
+    policy: CompiledAdvancedNetworkPolicyV1,
+    policy_digest: ObjectDigest,
+    protected_transaction_digest: ObjectDigest,
+    checkpoint_digest: ObjectDigest,
+    worker_payload_digest: ObjectDigest,
+    broker_currentness: BrokerAssignmentLeaseProofV1<'broker>,
+    protected_owner: core::marker::PhantomData<&'owner ()>,
 }
 
 impl DurablyCommittedAdvancedNetworkPolicyV1 {
@@ -66,7 +89,7 @@ impl DurablyCommittedAdvancedNetworkPolicyV1 {
     ///
     /// Returns [`AdvancedNetworkPolicyError`] when the complete state cannot be
     /// represented by the bounded canonical recovery format.
-    fn from_protected_readback(
+    pub(super) fn from_protected_readback(
         state: NetworkPolicyReplacementStateV1,
     ) -> Result<Self, AdvancedNetworkPolicyError> {
         let index = AdvancedNetworkRecoveryRecordV1::encode(&state);
@@ -86,9 +109,12 @@ impl DurablyCommittedAdvancedNetworkPolicyV1 {
     ///
     /// Returns [`AdvancedNetworkPolicyError::InvalidTransition`] unless the
     /// protected state is exactly `EffectReleased` or `RecoveryEffectReleased`.
-    fn into_worker_handoff(
+    pub(super) fn into_worker_handoff<'owner, 'broker>(
         self,
-    ) -> Result<AdvancedNetworkPolicyWorkerHandoffV1, AdvancedNetworkPolicyError> {
+        _authority: &'owner ProtectedJournalAuthority<'_>,
+        broker_currentness: BrokerAssignmentLeaseProofV1<'broker>,
+    ) -> Result<AdvancedNetworkPolicyWorkerHandoffV1<'owner, 'broker>, AdvancedNetworkPolicyError>
+    {
         let (operation, policy) = match self.state.phase() {
             NetworkPolicyReplacementPhaseV1::EffectReleased => (
                 AdvancedNetworkPolicyWorkerOperationV1::ApplyCandidate,
@@ -102,6 +128,16 @@ impl DurablyCommittedAdvancedNetworkPolicyV1 {
             ),
             _ => return Err(AdvancedNetworkPolicyError::InvalidTransition),
         };
+        broker_currentness.revalidate_current()?;
+        let controlling_assignment = self
+            .state
+            .candidate()
+            .unwrap_or_else(|| self.state.active())
+            .identity()
+            .assignment();
+        if controlling_assignment != broker_currentness.assignment() {
+            return Err(AdvancedNetworkPolicyError::StaleAuthority);
+        }
         encode_handoff(
             operation,
             self.state.generation(),
@@ -110,11 +146,12 @@ impl DurablyCommittedAdvancedNetworkPolicyV1 {
             self.checkpoint_digest,
             &self.index,
             &self.companions,
+            broker_currentness,
         )
     }
 }
 
-impl AdvancedNetworkPolicyWorkerHandoffV1 {
+impl<'owner, 'broker> AdvancedNetworkPolicyWorkerHandoffV1<'owner, 'broker> {
     /// Returns the closed worker operation.
     #[must_use]
     pub const fn operation(&self) -> AdvancedNetworkPolicyWorkerOperationV1 {
@@ -156,10 +193,96 @@ impl AdvancedNetworkPolicyWorkerHandoffV1 {
     pub fn as_bytes(&self) -> &[u8] {
         &self.canonical_bytes
     }
+
+    /// Consumes the worker handoff into the dormant kernel-effect boundary.
+    ///
+    /// No effect is executed. A future fixed worker must pass this value to a
+    /// separately authenticated kernel adapter while the protected-owner
+    /// authority borrow remains live.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdvancedNetworkPolicyError::StaleAuthority`] if the broker
+    /// lease expired, the host rebooted, or BOOTTIME moved backwards.
+    pub fn into_kernel_effect_handoff(
+        self,
+    ) -> Result<AdvancedNetworkKernelEffectHandoffV1<'owner, 'broker>, AdvancedNetworkPolicyError>
+    {
+        self.broker_currentness.revalidate_current()?;
+        let worker_payload_digest = handoff_digest(&self.canonical_bytes);
+        Ok(AdvancedNetworkKernelEffectHandoffV1 {
+            operation: self.operation,
+            generation: self.generation,
+            policy: self.policy,
+            policy_digest: self.policy_digest,
+            protected_transaction_digest: self.protected_transaction_digest,
+            checkpoint_digest: self.checkpoint_digest,
+            worker_payload_digest,
+            broker_currentness: self.broker_currentness,
+            protected_owner: core::marker::PhantomData,
+        })
+    }
+}
+
+impl AdvancedNetworkKernelEffectHandoffV1<'_, '_> {
+    /// Revalidates broker assignment, lease, boot, and BOOTTIME currentness.
+    ///
+    /// A future fixed kernel adapter must call this immediately before its
+    /// mutation. This dormant handoff deliberately exposes no mutation method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdvancedNetworkPolicyError::StaleAuthority`] after lease
+    /// expiry, boot rollover, clock rollback, or broker assignment change.
+    pub fn validate_current(&self) -> Result<(), AdvancedNetworkPolicyError> {
+        self.broker_currentness.revalidate_current()
+    }
+
+    /// Returns the only kernel operation selected by durable policy state.
+    #[must_use]
+    pub const fn operation(&self) -> AdvancedNetworkPolicyWorkerOperationV1 {
+        self.operation
+    }
+
+    /// Returns the exact durable reducer generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the exact compiled policy selected for the kernel adapter.
+    #[must_use]
+    pub const fn policy(&self) -> &CompiledAdvancedNetworkPolicyV1 {
+        &self.policy
+    }
+
+    /// Returns the exact compiled policy commitment.
+    #[must_use]
+    pub const fn policy_digest(&self) -> ObjectDigest {
+        self.policy_digest
+    }
+
+    /// Returns the protected registry/quota transaction commitment.
+    #[must_use]
+    pub const fn protected_transaction_digest(&self) -> ObjectDigest {
+        self.protected_transaction_digest
+    }
+
+    /// Returns the durable owner checkpoint commitment.
+    #[must_use]
+    pub const fn checkpoint_digest(&self) -> ObjectDigest {
+        self.checkpoint_digest
+    }
+
+    /// Returns the exact policy-worker payload commitment.
+    #[must_use]
+    pub const fn worker_payload_digest(&self) -> ObjectDigest {
+        self.worker_payload_digest
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn encode_handoff(
+fn encode_handoff<'owner, 'broker>(
     operation: AdvancedNetworkPolicyWorkerOperationV1,
     generation: u64,
     policy: &CompiledAdvancedNetworkPolicyV1,
@@ -167,7 +290,8 @@ fn encode_handoff(
     checkpoint_digest: ObjectDigest,
     index: &AdvancedNetworkRecoveryRecordV1,
     companions: &AdvancedNetworkRecoveryCompanionsV1,
-) -> Result<AdvancedNetworkPolicyWorkerHandoffV1, AdvancedNetworkPolicyError> {
+    broker_currentness: BrokerAssignmentLeaseProofV1<'broker>,
+) -> Result<AdvancedNetworkPolicyWorkerHandoffV1<'owner, 'broker>, AdvancedNetworkPolicyError> {
     let policy_bytes = policy.encode_recovery();
     let policy_length =
         u32::try_from(policy_bytes.len()).map_err(|_| AdvancedNetworkPolicyError::NonCanonical)?;
@@ -180,7 +304,7 @@ fn encode_handoff(
     let total_length = 8usize
         .checked_add(2)
         .and_then(|value| value.checked_add(1 + 1 + 4 + 8))
-        .and_then(|value| value.checked_add(32 * 4))
+        .and_then(|value| value.checked_add(32 * 5))
         .and_then(|value| value.checked_add(AdvancedNetworkRecoveryRecordV1::ENCODED_LEN))
         .and_then(|value| value.checked_add(4 + policy_bytes.len()))
         .and_then(|value| value.checked_add(4 + companions.as_bytes().len()))
@@ -204,6 +328,7 @@ fn encode_handoff(
     bytes.extend_from_slice(protected_transaction_digest.as_bytes());
     bytes.extend_from_slice(checkpoint_digest.as_bytes());
     bytes.extend_from_slice(companion_digest.as_bytes());
+    bytes.extend_from_slice(broker_currentness.binding().as_bytes());
     bytes.extend_from_slice(index.as_bytes());
     bytes.extend_from_slice(&policy_length.to_be_bytes());
     bytes.extend_from_slice(&policy_bytes);
@@ -223,6 +348,8 @@ fn encode_handoff(
         protected_transaction_digest,
         checkpoint_digest,
         canonical_bytes: bytes,
+        broker_currentness,
+        protected_owner: core::marker::PhantomData,
     })
 }
 

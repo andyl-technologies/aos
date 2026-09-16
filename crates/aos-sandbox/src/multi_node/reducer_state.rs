@@ -166,6 +166,58 @@ impl CapabilityJournalStateV1 {
     pub const fn evidence(&self) -> DurableEvidenceBindingV1 {
         self.evidence
     }
+
+    /// Projects one carrier-authenticated observation into durable state.
+    pub(super) fn from_authenticated_observation(
+        observation: &super::capability::CarrierValidatedCapabilityObservationV1,
+    ) -> Result<Self, InvalidMultiNodeJournal> {
+        let snapshot = observation.snapshot().clone();
+        let evidence = DurableEvidenceBindingV1::new(
+            snapshot.node(),
+            snapshot.lineage(),
+            observation.audience_digest(),
+            observation.disclosure_domain_digest(),
+            observation.carrier_binding_digest(),
+            observation.canonical_observation_digest(),
+            observation.canonical_frame_bytes(),
+            observation.coordinator_epoch(),
+            observation.authenticated_at_unix_seconds(),
+            observation.valid_until_unix_seconds(),
+            observation.replay_fence(),
+        )?;
+        Self::new(snapshot, evidence)
+    }
+
+    /// Checks the closed capability reducer's advancing-successor rules.
+    pub(super) fn admits_successor(&self, next: &Self) -> bool {
+        let current = self.snapshot();
+        let successor = next.snapshot();
+        let current_evidence = self.evidence();
+        let successor_evidence = next.evidence();
+        if successor.node() != current.node()
+            || successor_evidence.coordinator_epoch < current_evidence.coordinator_epoch
+            || (successor_evidence.coordinator_epoch == current_evidence.coordinator_epoch
+                && (successor_evidence.audience_digest != current_evidence.audience_digest
+                    || successor_evidence.disclosure_domain_digest
+                        != current_evidence.disclosure_domain_digest
+                    || successor_evidence.carrier_binding_digest
+                        != current_evidence.carrier_binding_digest))
+            || successor.boot_generation() < current.boot_generation()
+        {
+            return false;
+        }
+        if successor_evidence.coordinator_epoch > current_evidence.coordinator_epoch
+            && successor == current
+        {
+            return true;
+        }
+        if successor.boot_generation() > current.boot_generation() {
+            return successor
+                .lineage()
+                .is_direct_successor_of(current.lineage());
+        }
+        successor.lineage() == current.lineage() && successor.sequence() > current.sequence()
+    }
 }
 
 /// Stores one raw assignment observation without recreating owner authority.
@@ -485,6 +537,24 @@ impl DurableDrainObservationV1 {
         &self.assignments
     }
 
+    /// Returns the exact monotonic observation sequence.
+    #[must_use]
+    pub const fn sequence(&self) -> ObservationSequence {
+        self.sequence
+    }
+
+    /// Returns the durable node-wide drain phase.
+    #[must_use]
+    pub const fn phase(&self) -> DrainPhaseV1 {
+        self.phase
+    }
+
+    /// Returns the authenticated observation time retained for replay.
+    #[must_use]
+    pub const fn observed_at_unix_seconds(&self) -> u64 {
+        self.observed_at_unix_seconds
+    }
+
     /// Returns historical carrier binding data requiring fresh revalidation.
     #[must_use]
     pub const fn evidence(&self) -> DurableEvidenceBindingV1 {
@@ -794,6 +864,8 @@ pub struct DurableWatchEventV1 {
     pub sequence: u64,
     /// Protected-object receipt for the retained canonical event bytes.
     pub protected_event_receipt: ObjectDigest,
+    /// Authenticated response frame that carried the semantic payload.
+    pub carrier_frame_digest: ObjectDigest,
 }
 
 /// Stores complete watch binding, cursor, floor, and retained history.
@@ -802,6 +874,7 @@ pub struct WatchJournalStateV1 {
     binding: NodeWatchBindingV1,
     cursor: NodeWatchCursorV1,
     bootstrap_inventory_digest: ObjectDigest,
+    bootstrap_inventory_receipt: ObjectDigest,
     events: Vec<DurableWatchEventV1>,
 }
 
@@ -816,10 +889,12 @@ impl WatchJournalStateV1 {
         binding: NodeWatchBindingV1,
         cursor: NodeWatchCursorV1,
         bootstrap_inventory_digest: ObjectDigest,
+        bootstrap_inventory_receipt: ObjectDigest,
         events: Vec<DurableWatchEventV1>,
     ) -> Result<Self, InvalidMultiNodeJournal> {
         if cursor.binding() != binding
             || bootstrap_inventory_digest.as_bytes() == &[0; 32]
+            || bootstrap_inventory_receipt.as_bytes() == &[0; 32]
             || events.len() > super::protocol::MAX_WATCH_EVENTS
             || (events.is_empty()
                 && (cursor.event_sequence() != binding.bootstrap_watermark()
@@ -854,6 +929,7 @@ impl WatchJournalStateV1 {
                     || event.canonical_event_bytes > super::protocol::MAX_NODE_RESPONSE_BYTES
                     || event.canonical_event_digest.as_bytes() == &[0; 32]
                     || event.protected_event_receipt.as_bytes() == &[0; 32]
+                    || event.carrier_frame_digest.as_bytes() == &[0; 32]
                     || event.event_uid
                         != stable_watch_event_uid(
                             binding,
@@ -870,6 +946,7 @@ impl WatchJournalStateV1 {
             binding,
             cursor,
             bootstrap_inventory_digest,
+            bootstrap_inventory_receipt,
             events,
         })
     }
@@ -896,6 +973,12 @@ impl WatchJournalStateV1 {
     #[must_use]
     pub const fn bootstrap_inventory_digest(&self) -> ObjectDigest {
         self.bootstrap_inventory_digest
+    }
+
+    /// Returns the protected artifact receipt for the complete inventory body.
+    #[must_use]
+    pub const fn bootstrap_inventory_receipt(&self) -> ObjectDigest {
+        self.bootstrap_inventory_receipt
     }
 }
 
@@ -1024,6 +1107,7 @@ struct WatchWire {
     authorization_digest: ObjectDigest,
     audience_digest: ObjectDigest,
     bootstrap_inventory_digest: ObjectDigest,
+    bootstrap_inventory_receipt: ObjectDigest,
     bootstrap_watermark: u64,
     coordinator_epoch: u64,
     cursor_event_sequence: u64,
@@ -1254,6 +1338,7 @@ pub(super) fn encode_state(
                 authorization_digest: b.authorization_digest(),
                 audience_digest: b.audience_digest(),
                 bootstrap_inventory_digest: s.bootstrap_inventory_digest,
+                bootstrap_inventory_receipt: s.bootstrap_inventory_receipt,
                 bootstrap_watermark: b.bootstrap_watermark(),
                 coordinator_epoch: b.coordinator_epoch(),
                 cursor_event_sequence: c.event_sequence(),
@@ -1274,6 +1359,64 @@ pub(super) fn encode_state(
     }
     .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
     Ok(bytes)
+}
+
+/// Encodes one immutable manifest for the fixed protected transfer inbox.
+pub(super) fn encode_snapshot_manifest_seed(
+    manifest: &SnapshotTransferManifestV1,
+) -> Result<Vec<u8>, InvalidMultiNodeJournal> {
+    let body = canonical_json(&manifest_wire(manifest))
+        .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
+    if body.is_empty() || body.len() > MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES {
+        return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
+    }
+    let mut bytes = Vec::with_capacity(body.len().saturating_add(44));
+    bytes.extend_from_slice(b"AOSMSS01");
+    bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&body);
+    let digest: [u8; 32] = Sha256::digest(&body).into();
+    bytes.extend_from_slice(&digest);
+    Ok(bytes)
+}
+
+/// Decodes and byte-roundtrips one fixed protected transfer-inbox manifest.
+pub(super) fn decode_snapshot_manifest_seed(
+    bytes: &[u8],
+) -> Result<SnapshotTransferManifestV1, InvalidMultiNodeJournal> {
+    if bytes.len() < 44
+        || bytes.len() > MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES.saturating_add(44)
+        || bytes.get(..8) != Some(b"AOSMSS01")
+    {
+        return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
+    }
+    let length = u32::from_be_bytes(
+        bytes
+            .get(8..12)
+            .and_then(|slice| slice.try_into().ok())
+            .ok_or(InvalidMultiNodeJournal::NonCanonicalPayload)?,
+    ) as usize;
+    let body_end = 12_usize
+        .checked_add(length)
+        .ok_or(InvalidMultiNodeJournal::NonCanonicalPayload)?;
+    let body = bytes
+        .get(12..body_end)
+        .ok_or(InvalidMultiNodeJournal::NonCanonicalPayload)?;
+    let digest = bytes
+        .get(body_end..)
+        .filter(|digest| digest.len() == 32)
+        .ok_or(InvalidMultiNodeJournal::NonCanonicalPayload)?;
+    let expected_digest: [u8; 32] = Sha256::digest(body).into();
+    if expected_digest.as_slice() != digest {
+        return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
+    }
+    let wire: SnapshotManifestWire =
+        serde_json::from_slice(body).map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
+    let manifest =
+        manifest_model(wire).map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
+    if encode_snapshot_manifest_seed(&manifest)?.as_slice() != bytes {
+        return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
+    }
+    Ok(manifest)
 }
 
 fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
@@ -1417,6 +1560,7 @@ pub(super) fn decode_state(
                 binding,
                 cursor,
                 w.bootstrap_inventory_digest,
+                w.bootstrap_inventory_receipt,
                 w.events,
             )?)
         }

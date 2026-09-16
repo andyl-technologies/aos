@@ -21,7 +21,7 @@ where
     ///
     /// Rejects stale reconciliation or assignment authority, missing canonical
     /// state, a non-effect action, or an invalid Mount protocol 2.0 request.
-    pub fn prepare_current_destination_slot<T>(
+    pub(crate) fn prepare_current_destination_slot<T>(
         &mut self,
         reconciliation: crate::CurrentDestinationSlotReconciliationV1,
         target: crate::runtime_scope::CurrentAssignmentTarget,
@@ -47,7 +47,7 @@ where
     ///
     /// Rejects changed logical, inventory, specification, assignment, or
     /// deadline state.
-    pub fn recheck_current_destination_slot_preparation<T>(
+    pub(crate) fn recheck_current_destination_slot_preparation<T>(
         &mut self,
         prepared: &crate::PreparedCurrentDestinationSlotV1,
         clock: &mut T,
@@ -67,7 +67,7 @@ where
     ///
     /// Rejects stale preparation, a plan for another assignment or version, an
     /// absent exact semantic grant, invalid signature, or expired authority.
-    pub fn bind_current_destination_slot_plan<T>(
+    pub(crate) fn bind_current_destination_slot_plan<T>(
         &mut self,
         prepared: crate::PreparedCurrentDestinationSlotV1,
         signed_plan: crate::SignedBrokerPlan,
@@ -92,7 +92,7 @@ where
     /// # Errors
     ///
     /// Rejects changed request inputs, signed plan, live assignment, or deadline.
-    pub fn recheck_current_destination_slot_dispatch<T>(
+    pub(crate) fn recheck_current_destination_slot_dispatch<T>(
         &mut self,
         prepared: &crate::PreparedCurrentDestinationSlotDispatchV1,
         clock: &mut T,
@@ -115,7 +115,7 @@ where
     ///
     /// Rejects stale authority, an unsafe deadline, request-ID conflict, corrupt
     /// cross-references, capacity exhaustion, or a failed protected commit.
-    pub fn admit_current_destination_slot_attempt<T>(
+    pub(crate) fn admit_current_destination_slot_attempt<T>(
         &mut self,
         prepared: crate::PreparedCurrentDestinationSlotDispatchV1,
         deadline_boottime_nanoseconds: u64,
@@ -144,7 +144,7 @@ where
     ///
     /// Rejects missing or completed attempts, non-pending reconciliation, stale
     /// live authority, changed broker correlations, or expired original work.
-    pub fn prepare_current_destination_slot_resume<T>(
+    pub(crate) fn prepare_current_destination_slot_resume<T>(
         &mut self,
         reconciliation: crate::CurrentDestinationSlotReconciliationV1,
         target: crate::runtime_scope::CurrentAssignmentTarget,
@@ -169,7 +169,7 @@ where
     /// # Errors
     ///
     /// Rejects changed inventory, attempt bytes, logical state, or live authority.
-    pub fn recheck_current_destination_slot_resume<T>(
+    pub(crate) fn recheck_current_destination_slot_resume<T>(
         &mut self,
         prepared: &crate::PreparedCurrentDestinationSlotResumeV1,
         clock: &mut T,
@@ -191,7 +191,7 @@ where
     /// # Errors
     ///
     /// Rejects plan substitution, stale recovery evidence, or invalid authority.
-    pub fn bind_current_destination_slot_resume_plan<T>(
+    pub(crate) fn bind_current_destination_slot_resume_plan<T>(
         &mut self,
         prepared: crate::PreparedCurrentDestinationSlotResumeV1,
         signed_plan: crate::SignedBrokerPlan,
@@ -219,7 +219,7 @@ where
     /// # Errors
     ///
     /// Rejects any changed plan, attempt, inventory, or live authority input.
-    pub fn recheck_current_destination_slot_resume_dispatch<T>(
+    pub(crate) fn recheck_current_destination_slot_resume_dispatch<T>(
         &mut self,
         prepared: &crate::PreparedCurrentDestinationSlotResumeDispatchV1,
         clock: &mut T,
@@ -239,7 +239,7 @@ where
     ///
     /// Rejects changed immutable bytes, non-monotonic lease authority, stale
     /// inventory, or an elapsed original deadline.
-    pub fn resume_current_destination_slot_attempt<T>(
+    pub(crate) fn resume_current_destination_slot_attempt<T>(
         &mut self,
         prepared: crate::PreparedCurrentDestinationSlotResumeDispatchV1,
         clock: &mut T,
@@ -263,7 +263,7 @@ where
     ///
     /// Rejects stale logical or assignment authority, substituted durable bytes,
     /// changed signed authority, or an elapsed deadline.
-    pub fn recheck_current_destination_slot_attempt<T>(
+    pub(crate) fn recheck_current_destination_slot_attempt<T>(
         &mut self,
         attempt: &crate::DurableCurrentDestinationSlotAttemptV1,
         clock: &mut T,
@@ -289,7 +289,7 @@ where
     ///
     /// Rejects stale authority, service substitution, protocol mismatch, a
     /// non-terminal or cross-resource result, conflicting replay, or journal failure.
-    pub fn dispatch_current_destination_slot_attempt<T>(
+    pub(crate) fn dispatch_current_destination_slot_attempt<T>(
         &mut self,
         attempt: crate::DurableCurrentDestinationSlotAttemptV1,
         client: crate::DestinationSlotDispatchClient,

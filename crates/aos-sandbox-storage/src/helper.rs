@@ -6,9 +6,13 @@
 //! independently recompiles argv before invoking its fixed executable. ZFS
 //! observations remain a separate backend and never trust child output.
 
+use std::fs::File;
+use std::io::Read as _;
+use std::os::fd::OwnedFd;
 use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
+use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 
 use crate::broker::FreshStorageEffectAuthority;
 use crate::process::{SystemdZfsExecutor, WorkerObservationOutcome, ZfsWorkerError};
@@ -22,6 +26,8 @@ use crate::{
 const MAXIMUM_STDOUT_BYTES: usize = 64 * 1024;
 const MAXIMUM_STDERR_BYTES: usize = 64 * 1024;
 const PROCESS_TREE_TIMEOUT: Duration = Duration::from_secs(30);
+const FIXED_SNAPSHOT_METADATA_DIRECTORY: &str = "/var/lib/aos/sandbox-storage/snapshot-metadata";
+const SNAPSHOT_METADATA_RECORD_BYTES: usize = 384;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ZfsHelperError {
@@ -92,12 +98,30 @@ pub(crate) trait ZfsProcessBackend {
         program: &SealedZfsProgram<'_>,
     ) -> Result<ZfsProcessOutput, ZfsHelperError>;
 
+    fn atomic_snapshot_once(
+        &mut self,
+        _contract: &ZfsHelperContract,
+        _program: &crate::DormantAtomicDatasetSnapshotV1,
+        _mutate: bool,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        Err(ZfsHelperError::ProcessContract)
+    }
+
     fn observe_postcondition(
         &mut self,
         program: &SealedZfsProgram<'_>,
         expected: &PostconditionPolicyV1,
         expected_ancestor: Option<&ProjectAncestorPolicyV1>,
     ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError>;
+
+    /// Reads protected whole-tree identity metadata for one Snapshot commit.
+    fn snapshot_metadata(
+        &mut self,
+        _operation_id: [u8; 16],
+    ) -> Result<Option<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1>, ZfsHelperError>
+    {
+        Ok(None)
+    }
 }
 
 impl<T: ZfsProcessBackend + ?Sized> ZfsProcessBackend for Box<T> {
@@ -116,6 +140,15 @@ impl<T: ZfsProcessBackend + ?Sized> ZfsProcessBackend for Box<T> {
         (**self).execute_once(program)
     }
 
+    fn atomic_snapshot_once(
+        &mut self,
+        contract: &ZfsHelperContract,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        (**self).atomic_snapshot_once(contract, program, mutate)
+    }
+
     fn observe_postcondition(
         &mut self,
         program: &SealedZfsProgram<'_>,
@@ -124,15 +157,37 @@ impl<T: ZfsProcessBackend + ?Sized> ZfsProcessBackend for Box<T> {
     ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
         (**self).observe_postcondition(program, expected, expected_ancestor)
     }
+
+    fn snapshot_metadata(
+        &mut self,
+        operation_id: [u8; 16],
+    ) -> Result<Option<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1>, ZfsHelperError>
+    {
+        (**self).snapshot_metadata(operation_id)
+    }
 }
 
 pub(crate) struct SystemdZfsProcessBackend {
     executor: SystemdZfsExecutor,
+    snapshot_metadata: Option<ProtectedSnapshotMetadataDirectoryV1>,
 }
 
 impl SystemdZfsProcessBackend {
     pub(crate) fn new(executor: SystemdZfsExecutor) -> Self {
-        Self { executor }
+        Self {
+            executor,
+            snapshot_metadata: None,
+        }
+    }
+
+    /// Opens the fixed protected Snapshot metadata owner for dormant Apply.
+    pub(crate) fn with_protected_snapshot_metadata(
+        executor: SystemdZfsExecutor,
+    ) -> Result<Self, ZfsHelperError> {
+        Ok(Self {
+            executor,
+            snapshot_metadata: Some(ProtectedSnapshotMetadataDirectoryV1::open_fixed()?),
+        })
     }
 }
 
@@ -165,6 +220,23 @@ impl ZfsProcessBackend for SystemdZfsProcessBackend {
         let output = self
             .executor
             .execute_once(&contract, program.operation, program.catalog)?;
+        Ok(ZfsProcessOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            success: output.success,
+            timed_out: output.timed_out,
+        })
+    }
+
+    fn atomic_snapshot_once(
+        &mut self,
+        contract: &ZfsHelperContract,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        let output = self
+            .executor
+            .atomic_snapshot_once(contract, program, mutate)?;
         Ok(ZfsProcessOutput {
             stdout: output.stdout,
             stderr: output.stderr,
@@ -207,6 +279,97 @@ impl ZfsProcessBackend for SystemdZfsProcessBackend {
             WorkerObservationOutcome::Mismatch => Err(ZfsHelperError::PostconditionMismatch),
         }
     }
+
+    fn snapshot_metadata(
+        &mut self,
+        operation_id: [u8; 16],
+    ) -> Result<Option<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1>, ZfsHelperError>
+    {
+        self.snapshot_metadata
+            .as_ref()
+            .map(|owner| owner.read(operation_id))
+            .transpose()
+    }
+}
+
+/// Retains the fixed root-owned directory containing exact AOSSMT01 records.
+struct ProtectedSnapshotMetadataDirectoryV1 {
+    directory: OwnedFd,
+}
+
+impl ProtectedSnapshotMetadataDirectoryV1 {
+    fn open_fixed() -> Result<Self, ZfsHelperError> {
+        let directory = open(
+            FIXED_SNAPSHOT_METADATA_DIRECTORY,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| ZfsHelperError::ProcessContract)?;
+        let metadata = fstat(&directory).map_err(|_| ZfsHelperError::ProcessContract)?;
+        if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
+            || metadata.st_uid != 0
+            || !matches!(metadata.st_mode & 0o7777, 0o500 | 0o700)
+        {
+            return Err(ZfsHelperError::ProcessContract);
+        }
+        Ok(Self { directory })
+    }
+
+    fn read(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1, ZfsHelperError> {
+        let name = snapshot_metadata_name(operation_id);
+        let descriptor = openat(
+            &self.directory,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| ZfsHelperError::ProcessContract)?;
+        let before = fstat(&descriptor).map_err(|_| ZfsHelperError::ProcessContract)?;
+        if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
+            || before.st_uid != 0
+            || before.st_nlink != 1
+            || before.st_mode & 0o7777 != 0o400
+            || before.st_size != SNAPSHOT_METADATA_RECORD_BYTES as i64
+        {
+            return Err(ZfsHelperError::ProcessContract);
+        }
+
+        let mut file = File::from(descriptor);
+        let mut bytes = Vec::with_capacity(SNAPSHOT_METADATA_RECORD_BYTES);
+        (&mut file)
+            .take((SNAPSHOT_METADATA_RECORD_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| ZfsHelperError::ProcessContract)?;
+        if bytes.len() != SNAPSHOT_METADATA_RECORD_BYTES {
+            return Err(ZfsHelperError::ProcessContract);
+        }
+        let after = fstat(&file).map_err(|_| ZfsHelperError::ProcessContract)?;
+        if before.st_dev != after.st_dev
+            || before.st_ino != after.st_ino
+            || before.st_size != after.st_size
+            || before.st_mtime != after.st_mtime
+            || before.st_mtime_nsec != after.st_mtime_nsec
+        {
+            return Err(ZfsHelperError::ProcessContract);
+        }
+        crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1::from_canonical_bytes(&bytes)
+            .map_err(|_| ZfsHelperError::ProcessContract)
+    }
+}
+
+fn snapshot_metadata_name(operation_id: [u8; 16]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut name = String::with_capacity(41);
+    for byte in operation_id {
+        name.push(char::from(HEX[(byte >> 4) as usize]));
+        name.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    name.push_str(".aossmt01");
+    name
 }
 
 pub(crate) struct StorageMutationHelper<B> {
@@ -255,6 +418,31 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
             contract: self.contract,
             backend: Box::new(self.backend),
         }
+    }
+
+    pub(crate) fn atomic_snapshot_once(
+        &mut self,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+    ) -> Result<ObjectDigest, ZfsHelperError> {
+        let output = self
+            .backend
+            .atomic_snapshot_once(&self.contract, program, mutate)?;
+        if output.timed_out
+            || !output.success
+            || output.stdout.len() != 32
+            || !output.stderr.is_empty()
+        {
+            return Err(ZfsHelperError::PostconditionMismatch);
+        }
+        let digest: [u8; 32] = output
+            .stdout
+            .try_into()
+            .map_err(|_| ZfsHelperError::PostconditionMismatch)?;
+        if digest == [0; 32] {
+            return Err(ZfsHelperError::PostconditionMismatch);
+        }
+        Ok(ObjectDigest::from_bytes(digest))
     }
 
     /// Observes exact preconditions for the current persisted Prepared entry.
@@ -370,6 +558,15 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         {
             return Err(ZfsHelperError::PostconditionMismatch);
         }
+        let supplement = match context.catalog.plan() {
+            crate::CatalogPlanV1::Snapshot { .. } => self
+                .backend
+                .snapshot_metadata(context.entry.operation_id())?
+                .map(crate::snapshot_metadata::SnapshotCommitEvidenceV1::from_checked_record)
+                .map(crate::snapshot_metadata::CatalogCommitSupplementV1::Snapshot)
+                .ok_or(ZfsHelperError::PostconditionMismatch)?,
+            _ => crate::snapshot_metadata::CatalogCommitSupplementV1::None,
+        };
         let result = store.commit_observed(
             context.entry.operation_id(),
             context.entry.mutation_digest(),
@@ -377,7 +574,7 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
             &observation.observed,
             observation.object_guid,
             observation.digest,
-            crate::snapshot_metadata::CatalogCommitSupplementV1::None,
+            supplement,
         )?;
         Ok(ZfsHelperOutcome::Committed(result))
     }

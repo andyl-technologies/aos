@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     AssignmentEpoch, AttachmentSlotId, FeatureRef, IncarnationId, IssuerId, NetworkEndpointId,
-    ObjectDescriptor, ObjectDigest, ResourceId, RestoreScopeId, SandboxId, SecretId, ServiceId,
+    ObjectDescriptor, ObjectDigest, RestoreScopeId, SandboxId, SecretId, ServiceId,
 };
 
 use super::ViewMutation;
@@ -493,7 +493,6 @@ impl Snapshot {
         validate_strict_set(&required_restore_features)?;
         validate_unique(&retention_claims)?;
         validate_unique(&external_dependencies)?;
-
         let evidence_matches = matches!(
             (consistency, &quiesce_evidence),
             (SnapshotConsistency::CrashConsistent, QuiesceEvidence::None)

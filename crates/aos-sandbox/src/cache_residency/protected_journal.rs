@@ -25,6 +25,8 @@ use crate::lifecycle::protected_journal_adapter::{
     decode_reducer_payload_with_validator, encode_reducer_payload_with_validator,
 };
 
+#[cfg(target_os = "linux")]
+use super::ImmutableAdmissionPlanV1;
 use super::{
     CacheAtomicObjectPayloadV1, CacheAuthorityOwner, CacheAuthorityPurposeV1,
     CacheAuthorityScopeV1, CacheDurableRecordV1, CacheHistoryFloorV1, CacheNodeIdV1,
@@ -792,12 +794,14 @@ type RawCacheResidencyPostcommitCapabilityV1 =
 /// Composite cache authority released after exact transaction readback.
 #[must_use = "cache authority must be revalidated against its exact journal"]
 pub struct CacheResidencyPostcommitCapabilityV1 {
+    kind: CacheResidencyTransactionKindV1,
     inner: RawCacheResidencyPostcommitCapabilityV1,
 }
 
 /// Carries one fully revalidated cache transaction.
 #[must_use = "validated cache authority must be handed to one dormant consumer"]
 pub struct ValidatedCacheResidencyPostcommitV1<'current> {
+    kind: CacheResidencyTransactionKindV1,
     inner: ValidatedDomainPostcommitV1<'current, CacheResidencyProtectedJournalSchemaV1>,
 }
 
@@ -851,6 +855,7 @@ impl AppliedCacheResidencyTransactionV1 {
             return None;
         }
         Some(CacheResidencyPostcommitCapabilityV1 {
+            kind: self.kind,
             inner: self.inner.take_postcommit()?,
         })
     }
@@ -1262,7 +1267,10 @@ impl CacheResidencyPostcommitCapabilityV1 {
     {
         authority.replay()?;
         let inner = self.inner.consume(&authority.inner)?;
-        Ok(ValidatedCacheResidencyPostcommitV1 { inner })
+        Ok(ValidatedCacheResidencyPostcommitV1 {
+            kind: self.kind,
+            inner,
+        })
     }
 }
 
@@ -1279,7 +1287,8 @@ impl CacheResidencyColdObservationV1 {
     {
         authority.replay()?;
         let inner = self.inner.consume(&authority.inner)?;
-        Ok(ValidatedCacheResidencyPostcommitV1 { inner })
+        let kind = transaction_kind_from_records(inner.records())?;
+        Ok(ValidatedCacheResidencyPostcommitV1 { kind, inner })
     }
 }
 
@@ -1288,6 +1297,176 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
     #[must_use]
     pub const fn transaction_digest(&self) -> ObjectDigest {
         self.inner.transaction_digest()
+    }
+
+    /// Confirms that this exact protected transaction carries the supplied
+    /// still-reserved immutable admission. This check is intentionally
+    /// crate-private: only the fixed Linux effect owner consumes it.
+    pub(crate) fn authorizes_reserved_admission(
+        &self,
+        plan: &super::ImmutableAdmissionPlanV1,
+        reservation: &super::CacheReservationV1,
+        limits: CacheRecoveryLimitsV1,
+    ) -> bool {
+        if reservation.state != super::ReservationStateV1::Reserved
+            || reservation.plan_digest != plan.digest
+            || reservation.id != plan.reservation
+            || reservation.descriptor != plan.descriptor
+            || reservation.partition != plan.partition
+            || reservation.reserved_bytes < plan.descriptor.encoded_size()
+            || plan.reserved_bytes < plan.descriptor.encoded_size()
+        {
+            return false;
+        }
+
+        self.inner.records().iter().any(|record| {
+            if !record.is_effect() {
+                return false;
+            }
+            let body = record.envelope().payload();
+            let descriptor_end = 8 + PARTITION_DESCRIPTOR_BYTES;
+            if body.len() <= descriptor_end
+                || decode_partition_descriptor(&body[8..descriptor_end]) != Some(plan.partition)
+            {
+                return false;
+            }
+            decode_atomic_object_record(plan.partition, &body[descriptor_end..], limits)
+                .is_ok_and(|payload| payload.plan == *plan && payload.reservation == *reservation)
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ValidatedCacheResidencyPostcommitV1<'_> {
+    /// Issues one single-use physical admission from an exact reserved record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheResidencyProtectedJournalErrorV1::StaleAuthority`] unless
+    /// this transaction contains the byte-exact reserved plan and reservation.
+    pub fn into_cache_owner_admission(
+        self,
+        plan: ImmutableAdmissionPlanV1,
+        reservation: super::CacheReservationV1,
+        limits: CacheRecoveryLimitsV1,
+    ) -> Result<super::CacheOwnerAdmissionV1, CacheResidencyProtectedJournalErrorV1> {
+        if !self.authorizes_reserved_admission(&plan, &reservation, limits) {
+            return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority);
+        }
+        Ok(super::CacheOwnerAdmissionV1::from_verified(
+            self,
+            plan,
+            reservation,
+        ))
+    }
+
+    /// Consumes current protected postcommit authority into one pin transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns stale authority unless the committed transaction is a pin change.
+    pub fn into_cache_owner_pin_admission(
+        self,
+        action: super::CacheOwnerPinActionV1,
+        id: super::CacheOwnerPinIdV1,
+        partition: PhysicalPartitionId,
+        descriptor: ObjectDescriptor,
+        owner: &super::DormantCacheOwnerV1,
+        limits: CacheRecoveryLimitsV1,
+    ) -> Result<super::CacheOwnerPinAdmissionV1, CacheResidencyProtectedJournalErrorV1> {
+        let exact_pin = self.inner.records().iter().any(|record| {
+            let body = record.envelope().payload();
+            let descriptor_end = 8 + PARTITION_DESCRIPTOR_BYTES;
+            if record.envelope().key().kind() != CacheResidencyProtectedRecordKindV1::Pin
+                || body.len() <= descriptor_end
+                || decode_partition_descriptor(&body[8..descriptor_end]) != Some(partition)
+            {
+                return false;
+            }
+            decode_atomic_object_record(partition, &body[descriptor_end..], limits).is_ok_and(
+                |payload| match action {
+                    super::CacheOwnerPinActionV1::Acquire => payload.pins.iter().any(|pin| {
+                        pin.id.as_bytes() == id.as_bytes()
+                            && pin.partition == partition
+                            && pin.object == descriptor
+                    }),
+                    super::CacheOwnerPinActionV1::Release => {
+                        payload.released_pins.iter().any(|released| {
+                            released.pin.id.as_bytes() == id.as_bytes()
+                                && released.pin.partition == partition
+                                && released.pin.object == descriptor
+                        })
+                    }
+                },
+            )
+        });
+        let (predecessor, maximum_pins, maximum_pinned_bytes) = owner.pin_grant_context();
+        if self.kind != CacheResidencyTransactionKindV1::PinChange
+            || !exact_pin
+            || maximum_pins == 0
+            || maximum_pinned_bytes < descriptor.encoded_size()
+        {
+            return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority);
+        }
+        Ok(super::CacheOwnerPinAdmissionV1::from_verified(
+            self.transaction_digest(),
+            action,
+            id,
+            partition,
+            descriptor,
+            predecessor,
+            maximum_pins,
+            maximum_pinned_bytes,
+        ))
+    }
+
+    /// Consumes current protected postcommit authority into one eviction pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns stale authority unless the transaction durably prepared eviction.
+    pub fn into_cache_owner_eviction_admission(
+        self,
+        plan: super::FrozenEvictionPlanV1,
+        owner: &super::DormantCacheOwnerV1,
+        limits: CacheRecoveryLimitsV1,
+    ) -> Result<super::CacheOwnerEvictionAdmissionV1, CacheResidencyProtectedJournalErrorV1> {
+        let exact_plan = self.inner.records().iter().any(|record| {
+            let body = record.envelope().payload();
+            let descriptor_end = 8 + PARTITION_DESCRIPTOR_BYTES;
+            if record.envelope().key().kind() != CacheResidencyProtectedRecordKindV1::Eviction
+                || body.len() <= descriptor_end
+                || decode_partition_descriptor(&body[8..descriptor_end]) != Some(plan.partition)
+            {
+                return false;
+            }
+            decode_atomic_object_record(plan.partition, &body[descriptor_end..], limits)
+                .is_ok_and(|payload| payload.eviction_plan.as_ref() == Some(&plan))
+        });
+        if self.kind != CacheResidencyTransactionKindV1::EvictionPrepare || !exact_plan {
+            return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority);
+        }
+        let victims = plan
+            .candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    plan.partition,
+                    candidate.descriptor.clone(),
+                    candidate.physical_bytes,
+                    candidate.last_use_generation,
+                    candidate.canonical_name,
+                    candidate.root_custody,
+                )
+            })
+            .collect();
+        let predecessor = owner.eviction_grant_predecessor();
+        Ok(super::CacheOwnerEvictionAdmissionV1::from_verified(
+            self.transaction_digest(),
+            predecessor,
+            plan.target_reclaim_bytes,
+            victims,
+        ))
     }
 }
 
@@ -1886,6 +2065,42 @@ fn decode_cache_body(
         return None;
     }
     Some(Some(payload.record))
+}
+
+pub(crate) fn decode_cache_payload_for_lifecycle(
+    envelope: &CacheResidencyProtectedJournalEnvelopeV1,
+    validator: &CacheResidencyReplayValidatorV1,
+) -> Result<Option<CacheAtomicObjectPayloadV1>, CacheResidencyProtectedJournalErrorV1> {
+    let kind = envelope.key().kind();
+    if matches!(
+        kind,
+        CacheResidencyProtectedRecordKindV1::Checkpoint
+            | CacheResidencyProtectedRecordKindV1::EffectObservation
+    ) {
+        return Ok(None);
+    }
+    let reducer = decode_reducer_payload_with_validator::<CacheResidencyProtectedJournalSchemaV1>(
+        envelope.key(),
+        envelope.payload(),
+        validator,
+    )?;
+    let body = reducer.body();
+    if body.len() <= 8 + PARTITION_DESCRIPTOR_BYTES || body[..8] != cache_body_magic(kind) {
+        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+    }
+    let descriptor_end = 8 + PARTITION_DESCRIPTOR_BYTES;
+    let partition = decode_partition_descriptor(&body[8..descriptor_end])
+        .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+    let payload = decode_atomic_object_record(partition, &body[descriptor_end..], validator.limits)
+        .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+    if encode_atomic_object_record(&payload, validator.limits)
+        .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?
+        .as_slice()
+        != &body[descriptor_end..]
+    {
+        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+    }
+    Ok(Some(payload))
 }
 
 fn encode_partition_descriptor(partition: PhysicalPartitionId) -> [u8; PARTITION_DESCRIPTOR_BYTES] {

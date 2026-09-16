@@ -51,6 +51,7 @@ mod codec;
 mod execution;
 mod reducer;
 pub use reducer::{
+    DormantNetworkLifecycleEffectHandoffV1, DormantNetworkLifecycleEffectStepV1,
     DormantNetworkLifecycleOwnerErrorV1, DormantNetworkLifecycleProtectedCommitV1,
     DormantNetworkLifecycleProtectedOwnerV1,
 };

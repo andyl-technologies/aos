@@ -8,21 +8,24 @@
 
 use std::path::Path;
 
+use aos_proto::aos::sandbox::local::v1::{BrokerRequestEnvelope, BrokerResponseEnvelope};
 use aos_sandbox_broker_session_protocol::{
-    BrokerClientHelloSubjectV1, BrokerHelloSubjectV1, CanonicalBrokerClientHelloV1,
+    BrokerClientHelloSubjectV1, BrokerHelloSubjectV1, BrokerOutcomeSubjectV1,
+    BrokerRequestSubjectV1, CanonicalBrokerClientHelloV1,
     ProtectedBrokerSessionVerificationContextV1, UntrustedBrokerSessionEndpointPublicationV1,
     client_hello_fields_digest_v1, complete_signed_client_hello_digest_v1,
-    encode_signed_client_hello_packet_v1, encode_signed_server_hello_packet_v1,
+    encode_signed_client_hello_packet_v1, encode_signed_request_packet_v1,
+    encode_signed_response_packet_v1, encode_signed_server_hello_packet_v1,
     hello_message::{BrokerClientHello, BrokerMethod, BrokerServerHello},
-    server_hello_fields_digest_v1, sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1,
-    sign_request_v1,
+    outcome_fields_digest_v1, request_fields_digest_v1, server_hello_fields_digest_v1,
+    sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1, sign_request_v1,
 };
 use aos_sandbox_protocol::authenticated_session::{
     AuthenticatedBrokerSessionStateV1, AuthenticatedNetworkInventoryOutcomeSigningPlanV1,
     PreparedAuthenticatedNetworkInventoryOutcomeV1, PreparedAuthenticatedNetworkInventoryRequestV1,
 };
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer as _, SigningKey};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::BrokerSessionSecurityError;
@@ -317,6 +320,76 @@ impl core::fmt::Debug for ProtectedBrokerSessionClientV1 {
 }
 
 impl ProtectedBrokerSessionClientV1 {
+    pub(crate) fn sign_lifecycle_bootstrap_attestation(
+        &mut self,
+        message: &[u8; 32],
+    ) -> Result<[u8; 64], BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let signature = SigningKey::from_bytes(self.inner.files.client_record_seed()?)
+            .sign(message)
+            .to_bytes();
+        if let Err(error) = self.inner.revalidate_after() {
+            return self.inner.poison(error);
+        }
+        Ok(signature)
+    }
+
+    pub(crate) fn fresh_method_request_id(
+        &mut self,
+    ) -> Result<[u8; 16], BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let request_id = nonzero_random::<16, _>(&mut KernelEntropy)
+            .map_err(|error| self.inner.poison(error))?;
+        if let Err(error) = self.inner.revalidate_after() {
+            return self.inner.poison(error);
+        }
+        Ok(request_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finalize_method_request(
+        &mut self,
+        message: BrokerRequestEnvelope,
+        method: BrokerMethod,
+        session_binding: [u8; 32],
+        client_process: [u8; 16],
+        sequence: u64,
+        request_id: [u8; 16],
+    ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let result = (|| {
+            if client_process != self.inner.process_execution_id
+                || message.method.as_known() != Some(method)
+                || !message.signed_session_request.is_empty()
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            let subject = BrokerRequestSubjectV1::new(
+                session_binding,
+                client_process,
+                sequence,
+                request_id,
+                request_fields_digest_v1(&message)
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?,
+            )
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let pin = &self.inner.files.manifest().key_pins()[2];
+            let key = SigningKey::from_bytes(self.inner.files.client_record_seed()?);
+            let signed = sign_request_v1(method, subject, pin.signer().clone(), &key)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            encode_signed_request_packet_v1(message, &signed)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)
+        })();
+        let packet = match result {
+            Ok(packet) => packet,
+            Err(error) => return self.inner.poison(error),
+        };
+        if let Err(error) = self.inner.revalidate_after() {
+            return self.inner.poison(error);
+        }
+        Ok(packet)
+    }
+
     /// Loads and exclusively pins one protected client endpoint directory.
     ///
     /// # Errors
@@ -506,6 +579,86 @@ impl core::fmt::Debug for ProtectedBrokerSessionBrokerV1 {
 }
 
 impl ProtectedBrokerSessionBrokerV1 {
+    pub(crate) fn broker_outcome_verifier(
+        &mut self,
+    ) -> Result<aos_sandbox_protocol::BrokerTerminalCommitVerifierV1, BrokerSessionSecurityError>
+    {
+        self.inner.revalidate_before()?;
+        let pin = &self.inner.files.manifest().key_pins()[3];
+        let verifier = aos_sandbox_protocol::BrokerTerminalCommitVerifierV1::new(
+            pin.signer().clone(),
+            *pin.public_key(),
+        )
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+        self.inner.revalidate_after()?;
+        Ok(verifier)
+    }
+
+    pub(crate) fn sign_terminal_commit_receipt(
+        &mut self,
+        binding: aos_sandbox_protocol::BrokerTerminalCommitBindingV1,
+    ) -> Result<aos_sandbox_protocol::BrokerTerminalCommitReceiptV1, BrokerSessionSecurityError>
+    {
+        self.inner.revalidate_before()?;
+        let pin = &self.inner.files.manifest().key_pins()[3];
+        let key = SigningKey::from_bytes(self.inner.files.broker_outcome_seed()?);
+        let receipt = aos_sandbox_protocol::BrokerTerminalCommitReceiptV1::sign(
+            binding,
+            pin.signer().clone(),
+            &key,
+        )
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+        self.inner.revalidate_after()?;
+        Ok(receipt)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finalize_method_outcome(
+        &mut self,
+        message: BrokerResponseEnvelope,
+        method: BrokerMethod,
+        session_binding: [u8; 32],
+        broker_process: [u8; 16],
+        sequence: u64,
+        request_id: [u8; 16],
+        signed_request_digest: [u8; 32],
+    ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let result = (|| {
+            if broker_process != self.inner.process_execution_id
+                || message.method.as_known() != Some(method)
+                || message.request_id.as_slice() != request_id
+                || !message.signed_session_outcome.is_empty()
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            let subject = BrokerOutcomeSubjectV1::new(
+                session_binding,
+                broker_process,
+                sequence,
+                request_id,
+                signed_request_digest,
+                outcome_fields_digest_v1(&message)
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?,
+            )
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let pin = &self.inner.files.manifest().key_pins()[3];
+            let key = SigningKey::from_bytes(self.inner.files.broker_outcome_seed()?);
+            let signed = sign_outcome_v1(method, subject, pin.signer().clone(), &key)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            encode_signed_response_packet_v1(message, &signed)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)
+        })();
+        let packet = match result {
+            Ok(packet) => packet,
+            Err(error) => return self.inner.poison(error),
+        };
+        if let Err(error) = self.inner.revalidate_after() {
+            return self.inner.poison(error);
+        }
+        Ok(packet)
+    }
+
     /// Loads and exclusively pins one protected broker endpoint directory.
     ///
     /// # Errors

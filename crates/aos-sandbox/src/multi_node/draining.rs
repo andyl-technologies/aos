@@ -15,7 +15,10 @@ use aos_sandbox_core::{
     OperationId, SandboxId, SnapshotId,
 };
 
-use super::assignment::{AssignmentIntentV1, SnapshotTransferCompletionV1};
+use super::assignment::{
+    AssignmentIntentV1, SnapshotTransferCompletionV1, VerifiedAssignmentAuthorityV1,
+    VerifiedGuardianStateV1,
+};
 use super::capability::{NodeBootId, NodeBootLineageV1};
 use super::evidence::AuthenticatedEvidenceContextV1;
 use super::evidence_authority::VerifierEvidenceGrantV1;
@@ -440,7 +443,7 @@ impl DrainDirectiveReducerV1 {
     }
 }
 
-fn drain_directive_digest(directive: &DrainDirectiveV1) -> ObjectDigest {
+pub(super) fn drain_directive_digest(directive: &DrainDirectiveV1) -> ObjectDigest {
     let mut hasher = Sha256::new();
     hasher.update(b"aos.drain-directive.v1\0");
     hasher.update(directive.operation().as_bytes());
@@ -1183,6 +1186,109 @@ pub struct DrainObservationV1 {
 }
 
 impl DrainObservationV1 {
+    /// Rebuilds a complete drain observation from protected opaque evidence.
+    pub(super) fn from_protected_owner(
+        directive: &DrainDirectiveV1,
+        reported: &Self,
+        snapshot_completion: Option<SnapshotTransferCompletionV1>,
+        snapshot_authority: VerifiedAssignmentAuthorityV1,
+        containment_authority: VerifiedAssignmentAuthorityV1,
+        verified_at_unix_seconds: u64,
+    ) -> Result<Self, InvalidDrainModel> {
+        if directive.assignments().len() != 1
+            || reported.assignments().len() != 1
+            || !reported.matches(directive)
+            || !reported.context().is_current_at(verified_at_unix_seconds)
+        {
+            return Err(InvalidDrainModel::ObservationCoverageMismatch);
+        }
+        let plan = directive.assignments()[0];
+        let raw = &reported.assignments()[0];
+        if !snapshot_authority.matches_drain_plan(
+            plan,
+            reported.context(),
+            verified_at_unix_seconds,
+        ) || !containment_authority.matches_drain_plan(
+            plan,
+            reported.context(),
+            verified_at_unix_seconds,
+        ) {
+            return Err(InvalidDrainModel::EvidenceMismatch);
+        }
+        let snapshot_guardian =
+            protected_drain_guardian(snapshot_authority, plan, DrainGuardianStateV1::Armed)?;
+        let containment_guardian = protected_drain_guardian(
+            containment_authority,
+            plan,
+            DrainGuardianStateV1::ExplicitlyContained,
+        )?;
+        let snapshot_evidence = snapshot_completion
+            .map(|completion| {
+                if completion.identity().sandbox() != plan.sandbox()
+                    || completion.identity().incarnation() != plan.incarnation()
+                    || completion.identity().assignment_epoch() != plan.epoch()
+                    || completion.identity().desired_generation() != plan.desired_generation()
+                    || completion.identity().assignment_digest() != plan.assignment_digest()
+                    || completion.identity().source_node() != reported.node()
+                {
+                    return Err(InvalidDrainModel::EvidenceMismatch);
+                }
+                Ok(DrainSnapshotEvidenceV1 {
+                    context: reported.context(),
+                    guardian: snapshot_guardian,
+                    sandbox: plan.sandbox(),
+                    incarnation: plan.incarnation(),
+                    epoch: plan.epoch(),
+                    desired_generation: plan.desired_generation(),
+                    assignment_digest: plan.assignment_digest(),
+                    completion,
+                })
+            })
+            .transpose()?;
+        let needs_containment = matches!(
+            raw.progress(),
+            DrainAssignmentProgressV1::Contained | DrainAssignmentProgressV1::Released
+        );
+        let containment_evidence = needs_containment.then(|| DrainContainmentEvidenceV1 {
+            assignment_digest: plan.assignment_digest(),
+            payload_stopped: true,
+            network_default_drop: true,
+            guardian: containment_guardian,
+            evidence_digest: protected_drain_containment_digest(
+                plan,
+                containment_guardian,
+                reported,
+            ),
+        });
+        let release_evidence = (raw.progress() == DrainAssignmentProgressV1::Released).then(|| {
+            DrainReleaseEvidenceV1 {
+                context: reported.context(),
+                assignment_digest: plan.assignment_digest(),
+                containment_digest: containment_evidence
+                    .map(DrainContainmentEvidenceV1::evidence_digest)
+                    .unwrap_or_else(|| {
+                        protected_drain_containment_digest(plan, containment_guardian, reported)
+                    }),
+                released_inventory_digest: protected_drain_release_digest(plan, reported),
+            }
+        });
+        let assignment = DrainAssignmentObservationV1::from_authenticated_node(
+            plan,
+            raw.progress(),
+            snapshot_evidence,
+            containment_evidence,
+            release_evidence,
+        )?;
+        Self::from_authenticated_node(
+            directive,
+            reported.context(),
+            reported.sequence(),
+            reported.phase(),
+            vec![assignment],
+            reported.observed_at_unix_seconds(),
+        )
+    }
+
     /// Reconstructs one raw carrier report for watch/history decoding.
     ///
     /// This path deliberately cannot attach drain evidence or derive
@@ -1437,6 +1543,61 @@ impl DrainObservationV1 {
                 .zip(directive.assignments())
                 .all(|(observed, planned)| observed.matches(*planned))
     }
+}
+
+fn protected_drain_guardian(
+    authority: VerifiedAssignmentAuthorityV1,
+    plan: DrainAssignmentPlanV1,
+    required: DrainGuardianStateV1,
+) -> Result<DrainGuardianEvidenceV1, InvalidDrainModel> {
+    let state = match authority.guardian_state() {
+        VerifiedGuardianStateV1::Armed => DrainGuardianStateV1::Armed,
+        VerifiedGuardianStateV1::Contained => DrainGuardianStateV1::ExplicitlyContained,
+        VerifiedGuardianStateV1::ExpiredAndContained => DrainGuardianStateV1::ExpiredAndContained,
+    };
+    if state != required {
+        return Err(InvalidDrainModel::EvidenceMismatch);
+    }
+    Ok(DrainGuardianEvidenceV1 {
+        context: authority.context(),
+        assignment_digest: plan.assignment_digest(),
+        lease_generation: authority.lease_generation(),
+        lease_digest: authority.lease_digest(),
+        state,
+        evidence_digest: authority.guardian_digest(),
+    })
+}
+
+fn protected_drain_containment_digest(
+    plan: DrainAssignmentPlanV1,
+    guardian: DrainGuardianEvidenceV1,
+    observation: &DrainObservationV1,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.drain.protected-containment.v1\0")
+            .chain_update(plan.assignment_digest().as_bytes())
+            .chain_update(guardian.evidence_digest().as_bytes())
+            .chain_update(observation.sequence().get().to_be_bytes())
+            .chain_update(observation.context().canonical_frame_digest().as_bytes())
+            .finalize()
+            .into(),
+    )
+}
+
+fn protected_drain_release_digest(
+    plan: DrainAssignmentPlanV1,
+    observation: &DrainObservationV1,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.drain.protected-release.v1\0")
+            .chain_update(plan.assignment_digest().as_bytes())
+            .chain_update(observation.sequence().get().to_be_bytes())
+            .chain_update(observation.context().canonical_frame_digest().as_bytes())
+            .finalize()
+            .into(),
+    )
 }
 
 pub(super) fn observation_phase_consistent(

@@ -25,7 +25,9 @@
 //! adds source-only compilation, replacement recovery, and a durable worker
 //! handoff without activating a worker. Public Apply remains unadvertised
 //! pending production service/controller composition, protected retention
-//! authorization, lifecycle effects, and P0-06/MAC/VM qualification.
+//! authorization, effect activation, and P0-06/MAC/VM qualification. The
+//! dormant fixed owner can now release move-only Arm, Renew, Disarm, and
+//! Destroy effect handoffs after exact protected checkpoint readback.
 
 pub mod activation;
 #[allow(
@@ -37,6 +39,7 @@ pub mod allocation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+mod dormant_broker_session;
 pub mod kernel_mutator;
 pub mod kernel_observation;
 pub mod kernel_plan;
@@ -93,6 +96,11 @@ pub use catalog::{
     AuthenticatedNetworkPreparationV1, NetworkCatalogBindingV1, ResolvedEndpointV1,
     ResolvedNetworkPreparationV1,
 };
+pub use dormant_broker_session::{
+    DormantNetworkBrokerAdmissionV1, DormantNetworkBrokerCallErrorV1,
+    DormantNetworkBrokerCallsiteV1, DormantNetworkBrokerCompositionV1,
+    DormantNetworkBrokerObservationV1,
+};
 pub use kernel_observation::{
     ExpectedAddressPairV1, ExpectedRouteV1, ExpectedVethV1, NetworkKernelExpectationV1,
     NetworkKernelObservationError, NetworkKernelObservationV1, ObservedAddressV1,
@@ -116,10 +124,13 @@ pub use lifecycle_state::{
     NetworkLifecycleRecoveryEntryV1, NetworkLifecycleStateError, NetworkLifecycleStateStore,
 };
 pub use lifecycle_worker_protocol::{
-    AuthenticatedNetworkLifecycleWorkerDispatchV1, MAXIMUM_NETWORK_LIFECYCLE_WORKER_REQUEST_BYTES,
-    NetworkLifecycleAuthorizedStepV1, NetworkLifecycleDescriptorRoleV1,
-    NetworkLifecycleExecutionAuthorizationV1, NetworkLifecycleExecutionStepV1,
-    NetworkLifecycleWorkerDispatchV1, NetworkLifecycleWorkerRoleV1,
+    AuthenticatedNetworkLifecycleWorkerDispatchV1, DormantNetworkLifecycleEffectHandoffV1,
+    DormantNetworkLifecycleEffectStepV1, DormantNetworkLifecycleOwnerErrorV1,
+    DormantNetworkLifecycleProtectedCommitV1, DormantNetworkLifecycleProtectedOwnerV1,
+    MAXIMUM_NETWORK_LIFECYCLE_WORKER_REQUEST_BYTES, NetworkLifecycleAuthorizedStepV1,
+    NetworkLifecycleDescriptorRoleV1, NetworkLifecycleExecutionAuthorizationV1,
+    NetworkLifecycleExecutionStepV1, NetworkLifecycleWorkerDispatchV1,
+    NetworkLifecycleWorkerRoleV1,
 };
 pub use lifecycle_worker_runtime::{
     AdmittedNetworkLifecycleWorkerV1, NetworkLifecycleWorkerRuntimeError,

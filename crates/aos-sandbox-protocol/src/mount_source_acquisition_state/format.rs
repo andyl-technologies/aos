@@ -367,6 +367,7 @@ pub enum MutationTagV2 {
     FinishRelease = 12,
     Fault = 13,
     StartupCustodyRebind = 14,
+    BackendRecoveryReplacement = 15,
 }
 
 pub(crate) fn state_error(message: &'static str) -> MountSourceAcquisitionStateError {

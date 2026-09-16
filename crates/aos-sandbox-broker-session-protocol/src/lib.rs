@@ -45,9 +45,9 @@ pub mod hello_message {
 pub use artifact::{
     BrokerSessionArtifactError, BrokerSessionSignature, SignedBrokerClientHelloV1,
     SignedBrokerHelloV1, SignedBrokerOutcomeV1, SignedBrokerRequestV1,
-    complete_signed_client_hello_digest_v1, complete_signed_request_digest_v1,
-    sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1, sign_request_v1,
-    signer_set_digest_v1,
+    complete_signed_client_hello_digest_v1, complete_signed_outcome_digest_v1,
+    complete_signed_request_digest_v1, sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1,
+    sign_request_v1, signer_set_digest_v1,
 };
 pub use checkpoint::{
     BROKER_SESSION_OUTCOME_COMPANION_BYTES, BROKER_SESSION_REQUEST_COMPANION_BYTES,

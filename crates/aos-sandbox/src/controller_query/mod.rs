@@ -12,6 +12,7 @@ mod client_state_sealed {
     pub trait Sealed {}
 }
 pub mod model;
+pub mod observability;
 pub mod observation;
 pub mod operator;
 pub mod portable;
@@ -43,6 +44,7 @@ pub use model::{
     ObservationSchemaDigestV1, QueryBindingV1, QueryFilterDigestV1, QueryPrincipalDigestV1,
     QuerySortDigestV1, QueryVisibilityDigestV1, WatchRequestCommitmentV1,
 };
+pub use observability::*;
 pub use observation::{
     ActiveExecutionSetV1, AdditiveControllerObservationV1, AttachmentGenerationSetV1,
     AttachmentGenerationStatusV1, AttachmentHealthV1, AuditEventCursorV1, CacheDomainIdentityV1,
@@ -72,6 +74,17 @@ pub use redaction::{
     OperatorOperationProjectionV1, OperatorSandboxProjectionV1, PlacementAuthorityStateV1,
     project_operation_for_operator, project_sandbox_for_operator, redact_operation_for_public,
     redact_sandbox_for_public,
+};
+pub use registry::{
+    ATTACHMENT_NOEXEC_FEATURE_V1, BASE_V1_FEATURE_REGISTRY_ENTRIES,
+    EXECUTION_DETACHED_CAPTURE_FEATURE_V1, EXECUTION_PTY_FEATURE_V1,
+    EXECUTION_SANDBOX_SHELL_FEATURE_V1, EXECUTION_STREAM_FEATURE_V1, EXECUTION_TIMEOUT_FEATURE_V1,
+    FORCE_DELETE_FEATURE_V1, PublicPolicyReasonCodeV1, canonical_feature_fixture_v1,
+    contains_semantic_features_v1, public_feature_registry_v1, semantic_feature_v1,
+};
+pub(crate) use registry::{
+    base_feature_registry_entry_v1, feature_conformance_digest_v1,
+    public_feature_registry_digest_v1,
 };
 pub use resource::{
     CheckedConditionV1, CheckedOperationPhaseV1, CheckedOperationResourceV1, CheckedPlacementV1,

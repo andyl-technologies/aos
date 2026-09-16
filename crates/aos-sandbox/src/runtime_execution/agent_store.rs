@@ -10,19 +10,31 @@
 //! || reservation_sequence:u64be || recovered:u8 || recovery_provenance[32]
 //! || request_frame_length:u32be || AOSAGE01_request
 //! || outcome_frame_length:u32be || optional_AOSAGE01_outcome
+//!
+//! AOSAGS01 || request_frame_length:u32be || AOSAGE01_handshake_request
+//! || response_frame_length:u32be || AOSAGE01_handshake_response
 //! ```
 
 use aos_sandbox_agent::{
-    AgentCheckpointCandidateV1, AgentCheckpointError, AgentDurableCheckpointV1,
-    AgentDurableHistoryRecordV1, AgentExecutionOutcomeV1, AgentFrameV1, AgentOperationCas,
-    AgentOperationCasError, AgentOperationIdV1, AgentOperationRecoveryCas, AgentOperationRequestV1,
-    AgentOperationReservationV1, AgentOperationSequenceV1, AgentProvisioningV1,
-    AgentRecoveredOperationV1, AgentRecoveredReservationV1, AgentReducerError,
-    AgentReservationDispositionV1, AgentReservationRecoveryTokenV1,
-    AgentReservationStoreTransitionV1, AgentSessionBindingV1, AuthenticatedRecoveredAgentOutcomeV1,
-    GuestAgentReducerV1, decode_frame_v1, encode_frame_v1, validate_agent_checkpoint_history_v1,
+    AgentExecutionOutcomeV1, AgentFrameV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1,
+    AgentOperationIdV1, AgentOperationRequestV1, AgentOperationSequenceV1, AgentSessionBindingV1,
+    decode_frame_v1, encode_frame_v1,
 };
+use ed25519_dalek::{Signature, VerifyingKey};
 use std::collections::{BTreeMap, BTreeSet};
+
+use super::agent_checkpoint::{
+    AgentCheckpointCandidateV1, AgentCheckpointError, AgentDurableCheckpointV1,
+    decode_checkpoint_v1,
+};
+use super::agent_reducer::{
+    AgentDurableHistoryRecordV1, AgentOperationCasError, AgentOperationReservationV1,
+    AgentOutcomeRecoveryTokenV1, AgentOutcomeStoreTransitionV1, AgentProvisioningV1,
+    AgentRecoveredOperationV1, AgentRecoveredOutcomeCommitV1, AgentRecoveredReservationV1,
+    AgentReducerError, AgentReservationDispositionV1, AgentReservationRecoveryTokenV1,
+    AgentReservationStoreTransitionV1, AuthenticatedRecoveredAgentOutcomeV1, GuestAgentReducerV1,
+    agent_handshake_signing_message_v1, validate_agent_checkpoint_history_v1,
+};
 
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
@@ -34,9 +46,11 @@ use crate::journal::{
 
 const OWNER_KEY: &[u8] = b"agent-durable-owner-v1";
 const CHECKPOINT_KEY: &[u8] = b"agent-checkpoint-current-v1";
+const SESSION_KEY: &[u8] = b"agent-session-current-v1";
 const OPERATION_PREFIX: u8 = b'o';
 const HEAD_PREFIX: u8 = b'h';
 const OPERATION_MAGIC: &[u8; 8] = b"AOSAGO02";
+const SESSION_MAGIC: &[u8; 8] = b"AOSAGS01";
 const MAXIMUM_AGENT_STORE_RECORDS: usize = 16_384;
 
 /// Owns a dedicated protected journal for dormant agent durable state.
@@ -44,6 +58,7 @@ pub(crate) struct DormantJournalAgentStoreV1<'journal> {
     authority: ProtectedJournalAuthority<'journal>,
     store_binding: ObjectDigest,
     recovery_authority_binding: ObjectDigest,
+    agent_public_key: [u8; 32],
 }
 
 /// Owns one canonical checkpoint authenticated by the concrete protected journal.
@@ -82,7 +97,7 @@ impl AuthenticatedJournalAgentCheckpointV1 {
     ///
     /// Returns [`AgentReducerError`] when provisioning or retained canonical
     /// reducer state does not match the protected checkpoint.
-    pub fn restore(
+    pub(super) fn restore(
         self,
         provisioning: AgentProvisioningV1,
     ) -> Result<GuestAgentReducerV1, AgentReducerError> {
@@ -105,8 +120,11 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
         journal: &'journal mut Journal,
         store_binding: ObjectDigest,
         recovery_authority_binding: ObjectDigest,
+        agent_public_key: [u8; 32],
     ) -> Result<Self, JournalAgentStoreError> {
-        if store_binding.as_bytes() == &[0; 32] || recovery_authority_binding.as_bytes() == &[0; 32]
+        if store_binding.as_bytes() == &[0; 32]
+            || recovery_authority_binding.as_bytes() == &[0; 32]
+            || agent_public_key == [0; 32]
         {
             return Err(JournalAgentStoreError::InvalidBinding);
         }
@@ -129,6 +147,7 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
             authority,
             store_binding,
             recovery_authority_binding,
+            agent_public_key,
         })
     }
 
@@ -143,8 +162,11 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
         journal: &'journal mut Journal,
         store_binding: ObjectDigest,
         recovery_authority_binding: ObjectDigest,
+        agent_public_key: [u8; 32],
     ) -> Result<Self, JournalAgentStoreError> {
-        if store_binding.as_bytes() == &[0; 32] || recovery_authority_binding.as_bytes() == &[0; 32]
+        if store_binding.as_bytes() == &[0; 32]
+            || recovery_authority_binding.as_bytes() == &[0; 32]
+            || agent_public_key == [0; 32]
         {
             return Err(JournalAgentStoreError::InvalidBinding);
         }
@@ -155,11 +177,13 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
             &expected_owner,
             store_binding,
             recovery_authority_binding,
+            agent_public_key,
         )?;
         Ok(Self {
             authority,
             store_binding,
             recovery_authority_binding,
+            agent_public_key,
         })
     }
 
@@ -169,11 +193,19 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
     ///
     /// Returns [`JournalAgentStoreError`] when protected state is unavailable
     /// or the journal sequence cannot advance.
-    pub fn next_checkpoint_sequence(&self) -> Result<u64, JournalAgentStoreError> {
+    pub(super) fn next_checkpoint_sequence(&self) -> Result<u64, JournalAgentStoreError> {
         self.authority
             .snapshot()?
             .sequence()
             .checked_add(2)
+            .ok_or(JournalAgentStoreError::SequenceExhausted)
+    }
+
+    pub(super) fn next_handshake_checkpoint_sequence(&self) -> Result<u64, JournalAgentStoreError> {
+        self.authority
+            .snapshot()?
+            .sequence()
+            .checked_add(3)
             .ok_or(JournalAgentStoreError::SequenceExhausted)
     }
 
@@ -198,6 +230,71 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
             .map_err(map_cas_journal_error)?
             .map(decode_operation)
             .transpose()
+    }
+
+    pub(super) fn load_uncheckpointed_reservation(
+        &self,
+    ) -> Result<
+        Option<(AgentOperationRequestV1, AgentOperationReservationV1)>,
+        AgentOperationCasError,
+    > {
+        let checkpoint = self
+            .authority
+            .get(CHECKPOINT_KEY)
+            .map_err(map_cas_journal_error)?
+            .ok_or(AgentOperationCasError::InvalidReceipt)
+            .and_then(|bytes| {
+                decode_checkpoint_v1(bytes).map_err(|_| AgentOperationCasError::InvalidReceipt)
+            })?;
+        let session_record = self
+            .authority
+            .get(SESSION_KEY)
+            .map_err(map_cas_journal_error)?
+            .ok_or(AgentOperationCasError::InvalidReceipt)
+            .and_then(|bytes| {
+                decode_session_record(bytes).map_err(|_| AgentOperationCasError::InvalidReceipt)
+            })?;
+        validate_session_record(&session_record, &self.agent_public_key)
+            .map_err(|_| AgentOperationCasError::InvalidReceipt)?;
+        let classification = validate_checkpoint_projection(
+            &self.authority,
+            &checkpoint,
+            self.store_binding,
+            self.recovery_authority_binding,
+            Some(&session_record),
+        )
+        .map_err(|_| AgentOperationCasError::InvalidReceipt)?;
+        let AgentCheckpointProjectionV1::ReservationAhead {
+            session,
+            sequence,
+            request_commitment,
+            store_commitment,
+        } = classification
+        else {
+            return Ok(None);
+        };
+        let stored = self
+            .load_operation(session, sequence)?
+            .ok_or(AgentOperationCasError::InvalidReceipt)?;
+        if stored.phase != StoredOperationPhase::Reserved || stored.outcome.is_some() {
+            return Err(AgentOperationCasError::Equivocation);
+        }
+        if stored.request_commitment != request_commitment
+            || stored.store_commitment != store_commitment
+            || stored.request.session() != session
+            || stored.request.sequence() != sequence
+        {
+            return Err(AgentOperationCasError::Equivocation);
+        }
+        let reservation = AgentOperationReservationV1::new(
+            stored.session,
+            stored.sequence,
+            stored.operation,
+            stored.request_commitment,
+            stored.store_commitment,
+            AgentReservationDispositionV1::ExactReplay,
+        )?;
+        Ok(Some((stored.request, reservation)))
     }
 
     fn validate_head_for_reservation(
@@ -288,7 +385,7 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
         reservation: &AgentOperationReservationV1,
         outcome: &AgentExecutionOutcomeV1,
         recovery_provenance: Option<ObjectDigest>,
-    ) -> Result<ObjectDigest, AgentOperationCasError> {
+    ) -> Result<AgentOutcomeStoreTransitionV1, AgentOperationCasError> {
         self.validate_exact_head(
             reservation.session(),
             reservation.sequence(),
@@ -313,11 +410,21 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
         }
         if let Some(existing) = stored.outcome.as_ref() {
             return if existing == outcome && stored.recovery_provenance == recovery_provenance {
-                Ok(existing.outcome_commitment())
+                Ok(AgentOutcomeStoreTransitionV1::Committed(
+                    existing.outcome_commitment(),
+                ))
             } else {
                 Err(AgentOperationCasError::Equivocation)
             };
         }
+        let predecessor_commitment = operation_state_commitment(&encode_operation(&stored));
+        let recovery_binding = outcome_recovery_binding(
+            self.store_binding,
+            self.recovery_authority_binding,
+            reservation,
+            outcome.outcome_commitment(),
+            predecessor_commitment,
+        );
         let completed = StoredAgentOperationV1 {
             phase: StoredOperationPhase::Complete,
             outcome: Some(outcome.clone()),
@@ -345,14 +452,20 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
         )
         .map_err(map_cas_journal_error)?;
         match self.commit_records(transaction) {
-            Ok(_) => Ok(outcome.outcome_commitment()),
-            Err(_) => Err(AgentOperationCasError::RecoveryRequired),
+            Ok(_) => Ok(AgentOutcomeStoreTransitionV1::Committed(
+                outcome.outcome_commitment(),
+            )),
+            Err(_) => Ok(AgentOutcomeStoreTransitionV1::RecoveryRequired {
+                outcome_commitment: outcome.outcome_commitment(),
+                predecessor_commitment,
+                recovery_binding,
+            }),
         }
     }
 }
 
-impl AgentOperationCas for DormantJournalAgentStoreV1<'_> {
-    fn reserve_operation(
+impl DormantJournalAgentStoreV1<'_> {
+    pub(super) fn reserve_operation(
         &mut self,
         request: &AgentOperationRequestV1,
     ) -> Result<AgentReservationStoreTransitionV1, AgentOperationCasError> {
@@ -460,17 +573,17 @@ impl AgentOperationCas for DormantJournalAgentStoreV1<'_> {
         }
     }
 
-    fn commit_operation_outcome(
+    pub(super) fn commit_operation_outcome(
         &mut self,
         reservation: &AgentOperationReservationV1,
         outcome: &AgentExecutionOutcomeV1,
-    ) -> Result<ObjectDigest, AgentOperationCasError> {
+    ) -> Result<AgentOutcomeStoreTransitionV1, AgentOperationCasError> {
         self.commit_bound_outcome(reservation, outcome, None)
     }
 }
 
-impl AgentOperationRecoveryCas for DormantJournalAgentStoreV1<'_> {
-    fn recover_reservation(
+impl DormantJournalAgentStoreV1<'_> {
+    pub(super) fn recover_reservation(
         &mut self,
         token: &AgentReservationRecoveryTokenV1,
         request: &AgentOperationRequestV1,
@@ -529,7 +642,7 @@ impl AgentOperationRecoveryCas for DormantJournalAgentStoreV1<'_> {
         }
     }
 
-    fn recover_operation(
+    pub(super) fn recover_operation(
         &mut self,
         reservation: &AgentOperationReservationV1,
         request: &AgentOperationRequestV1,
@@ -557,12 +670,58 @@ impl AgentOperationRecoveryCas for DormantJournalAgentStoreV1<'_> {
         }
     }
 
-    fn resolve_reserved_operation(
+    pub(super) fn recover_outcome_commit(
+        &mut self,
+        token: &AgentOutcomeRecoveryTokenV1,
+        reservation: &AgentOperationReservationV1,
+        outcome: &AgentExecutionOutcomeV1,
+    ) -> Result<AgentRecoveredOutcomeCommitV1, AgentOperationCasError> {
+        if token.session() != reservation.session()
+            || token.sequence() != reservation.sequence()
+            || token.operation_id() != reservation.operation_id()
+            || token.request_commitment() != reservation.request_commitment()
+            || token.store_commitment() != reservation.store_commitment()
+            || token.outcome_commitment() != outcome.outcome_commitment()
+            || token.recovery_binding()
+                != outcome_recovery_binding(
+                    self.store_binding,
+                    self.recovery_authority_binding,
+                    reservation,
+                    token.outcome_commitment(),
+                    token.predecessor_commitment(),
+                )
+        {
+            return Err(AgentOperationCasError::Equivocation);
+        }
+        let stored = self
+            .load_operation(reservation.session(), reservation.sequence())?
+            .ok_or(AgentOperationCasError::Equivocation)?;
+        if stored.operation != reservation.operation_id()
+            || stored.request_commitment != reservation.request_commitment()
+            || stored.store_commitment != reservation.store_commitment()
+        {
+            return Err(AgentOperationCasError::Equivocation);
+        }
+        match stored.outcome.as_ref() {
+            Some(committed) if committed == outcome => Ok(
+                AgentRecoveredOutcomeCommitV1::Committed(committed.outcome_commitment()),
+            ),
+            Some(_) => Err(AgentOperationCasError::Equivocation),
+            None if operation_state_commitment(&encode_operation(&stored))
+                == token.predecessor_commitment() =>
+            {
+                Ok(AgentRecoveredOutcomeCommitV1::Absent)
+            }
+            None => Err(AgentOperationCasError::Equivocation),
+        }
+    }
+
+    pub(super) fn resolve_reserved_operation(
         &mut self,
         reservation: &AgentOperationReservationV1,
         request: &AgentOperationRequestV1,
         authenticated: AuthenticatedRecoveredAgentOutcomeV1,
-    ) -> Result<ObjectDigest, AgentOperationCasError> {
+    ) -> Result<AgentOutcomeStoreTransitionV1, AgentOperationCasError> {
         if request.session() != reservation.session()
             || request.sequence() != reservation.sequence()
             || request.operation_id() != reservation.operation_id()
@@ -587,13 +746,72 @@ impl AgentOperationRecoveryCas for DormantJournalAgentStoreV1<'_> {
 }
 
 impl DormantJournalAgentStoreV1<'_> {
+    pub(super) fn commit_handshake_checkpoint(
+        &mut self,
+        request: &AgentHandshakeRequestV1,
+        response: &AgentHandshakeResponseV1,
+        candidate: &AgentCheckpointCandidateV1,
+    ) -> Result<AuthenticatedJournalAgentCheckpointV1, AgentCheckpointError> {
+        let session = StoredAgentSessionV1 {
+            request: request.clone(),
+            response: response.clone(),
+        };
+        validate_session_record(&session, &self.agent_public_key)
+            .map_err(|_| AgentCheckpointError::Unauthenticated)?;
+        validate_checkpoint_projection(
+            &self.authority,
+            candidate.checkpoint(),
+            self.store_binding,
+            self.recovery_authority_binding,
+            Some(&session),
+        )
+        .map_err(|_| AgentCheckpointError::Unauthenticated)?;
+        let expected = self
+            .next_handshake_checkpoint_sequence()
+            .map_err(|_| AgentCheckpointError::StoreUnavailable)?;
+        if candidate.checkpoint().sequence() != expected {
+            return Err(AgentCheckpointError::Unauthenticated);
+        }
+        let transaction = JournalTransaction::new(
+            transaction_id(
+                b"agent-handshake-checkpoint",
+                candidate.checkpoint().checkpoint_commitment(),
+            ),
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    SESSION_KEY.to_vec(),
+                    encode_session_record(&session),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    CHECKPOINT_KEY.to_vec(),
+                    candidate.checkpoint().as_bytes().to_vec(),
+                ),
+            ],
+        )
+        .map_err(|_| AgentCheckpointError::StoreUnavailable)?;
+        let committed = self
+            .commit_records(transaction)
+            .map_err(|_| AgentCheckpointError::StoreUnavailable)?;
+        if committed != candidate.checkpoint().sequence() {
+            return Err(AgentCheckpointError::Unauthenticated);
+        }
+        Ok(authenticated_checkpoint(
+            candidate.checkpoint().clone(),
+            committed,
+            self.store_binding,
+            self.recovery_authority_binding,
+        ))
+    }
+
     /// Commits a canonical checkpoint and returns concrete protected authority.
     ///
     /// # Errors
     ///
     /// Returns [`AgentCheckpointError`] for sequence mismatch, conflict,
     /// unavailable protected storage, or ambiguous durability.
-    pub fn commit_checkpoint(
+    pub(super) fn commit_checkpoint(
         &mut self,
         candidate: &AgentCheckpointCandidateV1,
     ) -> Result<AuthenticatedJournalAgentCheckpointV1, AgentCheckpointError> {
@@ -603,6 +821,7 @@ impl DormantJournalAgentStoreV1<'_> {
             checkpoint,
             self.store_binding,
             self.recovery_authority_binding,
+            None,
         )
         .map_err(|_| AgentCheckpointError::Unauthenticated)?;
         if let Some(existing) = self
@@ -610,7 +829,7 @@ impl DormantJournalAgentStoreV1<'_> {
             .get(CHECKPOINT_KEY)
             .map_err(|_| AgentCheckpointError::StoreUnavailable)?
         {
-            let existing = aos_sandbox_agent::decode_checkpoint_v1(existing)?;
+            let existing = decode_checkpoint_v1(existing)?;
             if existing.sequence() == checkpoint.sequence()
                 && existing.checkpoint_commitment() == checkpoint.checkpoint_commitment()
             {
@@ -668,7 +887,7 @@ impl DormantJournalAgentStoreV1<'_> {
     ///
     /// Returns [`AgentCheckpointError`] for malformed, unavailable, rolled-back,
     /// or unauthenticated protected state.
-    pub fn load_checkpoint(
+    pub(super) fn load_checkpoint(
         &mut self,
     ) -> Result<Option<AuthenticatedJournalAgentCheckpointV1>, AgentCheckpointError> {
         let Some(bytes) = self
@@ -678,7 +897,7 @@ impl DormantJournalAgentStoreV1<'_> {
         else {
             return Ok(None);
         };
-        let checkpoint = aos_sandbox_agent::decode_checkpoint_v1(bytes)?;
+        let checkpoint = decode_checkpoint_v1(bytes)?;
         Ok(Some(AuthenticatedJournalAgentCheckpointV1 {
             store_sequence: checkpoint.sequence(),
             provenance: checkpoint_provenance(
@@ -690,6 +909,98 @@ impl DormantJournalAgentStoreV1<'_> {
             checkpoint,
         }))
     }
+}
+
+struct StoredAgentSessionV1 {
+    request: AgentHandshakeRequestV1,
+    response: AgentHandshakeResponseV1,
+}
+
+fn encode_session_record(session: &StoredAgentSessionV1) -> Vec<u8> {
+    let request = encode_frame_v1(&AgentFrameV1::HandshakeRequest(session.request.clone()));
+    let response = encode_frame_v1(&AgentFrameV1::HandshakeResponse(session.response.clone()));
+    let mut bytes = Vec::with_capacity(8 + 4 + request.len() + 4 + response.len());
+    bytes.extend_from_slice(SESSION_MAGIC);
+    bytes.extend_from_slice(&(request.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&request);
+    bytes.extend_from_slice(&(response.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&response);
+    bytes
+}
+
+fn decode_session_record(bytes: &[u8]) -> Result<StoredAgentSessionV1, JournalAgentStoreError> {
+    if bytes.len() < 16 || bytes.get(..8) != Some(SESSION_MAGIC.as_slice()) {
+        return Err(JournalAgentStoreError::CorruptRecord);
+    }
+    let request_length = usize::try_from(u32::from_be_bytes(
+        bytes[8..12]
+            .try_into()
+            .map_err(|_| JournalAgentStoreError::CorruptRecord)?,
+    ))
+    .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+    let request_end = 12_usize
+        .checked_add(request_length)
+        .ok_or(JournalAgentStoreError::CorruptRecord)?;
+    let response_length_end = request_end
+        .checked_add(4)
+        .ok_or(JournalAgentStoreError::CorruptRecord)?;
+    if request_length == 0 || response_length_end > bytes.len() {
+        return Err(JournalAgentStoreError::CorruptRecord);
+    }
+    let AgentFrameV1::HandshakeRequest(request) = decode_frame_v1(&bytes[12..request_end])
+        .map_err(|_| JournalAgentStoreError::CorruptRecord)?
+    else {
+        return Err(JournalAgentStoreError::CorruptRecord);
+    };
+    let response_length = usize::try_from(u32::from_be_bytes(
+        bytes[request_end..response_length_end]
+            .try_into()
+            .map_err(|_| JournalAgentStoreError::CorruptRecord)?,
+    ))
+    .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+    let response_end = response_length_end
+        .checked_add(response_length)
+        .ok_or(JournalAgentStoreError::CorruptRecord)?;
+    if response_length == 0 || response_end != bytes.len() {
+        return Err(JournalAgentStoreError::CorruptRecord);
+    }
+    let AgentFrameV1::HandshakeResponse(response) =
+        decode_frame_v1(&bytes[response_length_end..response_end])
+            .map_err(|_| JournalAgentStoreError::CorruptRecord)?
+    else {
+        return Err(JournalAgentStoreError::CorruptRecord);
+    };
+    let session = StoredAgentSessionV1 { request, response };
+    if encode_session_record(&session) != bytes {
+        return Err(JournalAgentStoreError::CorruptRecord);
+    }
+    Ok(session)
+}
+
+fn validate_session_record(
+    session: &StoredAgentSessionV1,
+    agent_public_key: &[u8; 32],
+) -> Result<(), JournalAgentStoreError> {
+    let binding =
+        AgentSessionBindingV1::derive(&session.request, session.response.agent_instance())
+            .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+    if binding != session.response.session_binding() {
+        return Err(JournalAgentStoreError::CorruptRecord);
+    }
+    let signing_message = agent_handshake_signing_message_v1(
+        &session.request,
+        binding,
+        session.response.agent_instance(),
+        session.response.features(),
+    );
+    let verifying_key = VerifyingKey::from_bytes(agent_public_key)
+        .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+    verifying_key
+        .verify_strict(
+            &signing_message,
+            &Signature::from_bytes(session.response.challenge_signature()),
+        )
+        .map_err(|_| JournalAgentStoreError::CorruptRecord)
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -902,6 +1213,7 @@ fn encode_head(
 fn owned_key(key: &[u8]) -> bool {
     key == OWNER_KEY
         || key == CHECKPOINT_KEY
+        || key == SESSION_KEY
         || matches!(key, [OPERATION_PREFIX, ..] if key.len() == 41)
         || matches!(key, [HEAD_PREFIX, ..] if key.len() == 33)
 }
@@ -911,10 +1223,12 @@ fn validate_agent_store_replay(
     expected_owner: &[u8],
     store_binding: ObjectDigest,
     recovery_authority_binding: ObjectDigest,
+    agent_public_key: [u8; 32],
 ) -> Result<(), JournalAgentStoreError> {
     let protected_sequence = authority.snapshot()?.sequence();
     let mut owner_seen = false;
     let mut checkpoint = None;
+    let mut session = None;
     let mut operations = BTreeMap::new();
     let mut heads = BTreeMap::new();
     let mut operation_ids = BTreeSet::new();
@@ -941,8 +1255,8 @@ fn validate_agent_store_replay(
             if checkpoint.is_some() {
                 return Err(JournalAgentStoreError::CorruptRecord);
             }
-            let decoded = aos_sandbox_agent::decode_checkpoint_v1(value)
-                .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+            let decoded =
+                decode_checkpoint_v1(value).map_err(|_| JournalAgentStoreError::CorruptRecord)?;
             if decoded.as_bytes() != value
                 || decoded.sequence() == 0
                 || decoded.sequence() > protected_sequence
@@ -950,6 +1264,15 @@ fn validate_agent_store_replay(
                 return Err(JournalAgentStoreError::CorruptRecord);
             }
             checkpoint = Some(decoded);
+            continue;
+        }
+        if key == SESSION_KEY {
+            if session.is_some() {
+                return Err(JournalAgentStoreError::CorruptRecord);
+            }
+            let decoded = decode_session_record(value)?;
+            validate_session_record(&decoded, &agent_public_key)?;
+            session = Some(decoded);
             continue;
         }
 
@@ -1044,8 +1367,16 @@ fn validate_agent_store_replay(
         }
     }
     if let Some(checkpoint) = checkpoint.as_ref() {
-        validate_checkpoint_projection_from_operations(checkpoint, operations.values())?;
+        validate_checkpoint_projection_from_operations(
+            checkpoint,
+            operations.values(),
+            session.as_ref(),
+            recovery_authority_binding,
+        )?;
     } else if !operations.is_empty() {
+        return Err(JournalAgentStoreError::CorruptRecord);
+    }
+    if checkpoint.is_some() != session.is_some() {
         return Err(JournalAgentStoreError::CorruptRecord);
     }
     Ok(())
@@ -1056,10 +1387,16 @@ fn validate_checkpoint_projection(
     checkpoint: &AgentDurableCheckpointV1,
     store_binding: ObjectDigest,
     recovery_authority_binding: ObjectDigest,
-) -> Result<(), JournalAgentStoreError> {
+    session_override: Option<&StoredAgentSessionV1>,
+) -> Result<AgentCheckpointProjectionV1, JournalAgentStoreError> {
     let protected_sequence = authority.snapshot()?.sequence();
     let mut operations = Vec::new();
+    let mut stored_session = None;
     for (key, value) in authority.records()? {
+        if key == SESSION_KEY {
+            stored_session = Some(decode_session_record(value)?);
+            continue;
+        }
         if matches!(key, [OPERATION_PREFIX, ..] if key.len() == 41) {
             let stored =
                 decode_operation(value).map_err(|_| JournalAgentStoreError::CorruptRecord)?;
@@ -1080,22 +1417,38 @@ fn validate_checkpoint_projection(
             operations.push(stored);
         }
     }
-    validate_checkpoint_projection_from_operations(checkpoint, operations.iter())
+    let session = session_override.or(stored_session.as_ref());
+    validate_checkpoint_projection_from_operations(
+        checkpoint,
+        operations.iter(),
+        session,
+        recovery_authority_binding,
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AgentCheckpointProjectionV1 {
+    Exact,
+    ReservationAhead {
+        session: AgentSessionBindingV1,
+        sequence: AgentOperationSequenceV1,
+        request_commitment: ObjectDigest,
+        store_commitment: ObjectDigest,
+    },
+    TerminalAhead,
 }
 
 fn validate_checkpoint_projection_from_operations<'operation>(
     checkpoint: &AgentDurableCheckpointV1,
     operations: impl Iterator<Item = &'operation StoredAgentOperationV1>,
-) -> Result<(), JournalAgentStoreError> {
+    authenticated_session: Option<&StoredAgentSessionV1>,
+    recovery_authority_binding: ObjectDigest,
+) -> Result<AgentCheckpointProjectionV1, JournalAgentStoreError> {
+    let authenticated_binding =
+        authenticated_session.map(|record| record.response.session_binding());
     let mut operations: Vec<_> = operations.collect();
     operations.sort_by_key(|operation| operation.reservation_sequence);
-    if operations
-        .last()
-        .is_some_and(|operation| operation.reservation_sequence >= checkpoint.sequence())
-    {
-        return Err(JournalAgentStoreError::CorruptRecord);
-    }
-    let rows: Vec<_> = operations
+    let exact_rows: Vec<_> = operations
         .iter()
         .map(|operation| {
             AgentDurableHistoryRecordV1::new(
@@ -1105,8 +1458,93 @@ fn validate_checkpoint_projection_from_operations<'operation>(
             )
         })
         .collect();
-    validate_agent_checkpoint_history_v1(checkpoint, &rows)
-        .map_err(|_| JournalAgentStoreError::CorruptRecord)
+    if operations
+        .iter()
+        .all(|operation| operation.reservation_sequence < checkpoint.sequence())
+        && validate_agent_checkpoint_history_v1(checkpoint, &exact_rows, authenticated_binding)
+            .is_ok()
+    {
+        return Ok(AgentCheckpointProjectionV1::Exact);
+    }
+
+    // The only accepted lag is the single protected transition that can win
+    // immediately before its matching checkpoint append.
+    if let Some(latest) = operations.last() {
+        if latest.outcome.is_some() {
+            let reserved_rows: Vec<_> = operations
+                .iter()
+                .map(|operation| {
+                    AgentDurableHistoryRecordV1::new(
+                        &operation.request,
+                        operation.store_commitment,
+                        if std::ptr::eq(*operation, *latest) {
+                            None
+                        } else {
+                            operation.outcome.as_ref()
+                        },
+                    )
+                })
+                .collect();
+            if operations
+                .iter()
+                .all(|operation| operation.reservation_sequence < checkpoint.sequence())
+                && validate_agent_checkpoint_history_v1(
+                    checkpoint,
+                    &reserved_rows,
+                    authenticated_binding,
+                )
+                .is_ok()
+            {
+                return Ok(AgentCheckpointProjectionV1::TerminalAhead);
+            }
+        }
+        let prior_rows: Vec<_> = operations[..operations.len() - 1]
+            .iter()
+            .map(|operation| {
+                AgentDurableHistoryRecordV1::new(
+                    &operation.request,
+                    operation.store_commitment,
+                    operation.outcome.as_ref(),
+                )
+            })
+            .collect();
+        let reservation_is_authenticated_successor = || {
+            let session = authenticated_session.ok_or(JournalAgentStoreError::CorruptRecord)?;
+            if latest.session != session.response.session_binding() {
+                return Err(JournalAgentStoreError::CorruptRecord);
+            }
+            let provisioning = AgentProvisioningV1::new(
+                session.request.runtime().clone(),
+                session.request.host_channel_binding(),
+                *session.response.agent_instance(),
+                session.response.features().clone(),
+                recovery_authority_binding,
+            )
+            .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+            let reducer = GuestAgentReducerV1::restore_checkpoint(provisioning, checkpoint.clone())
+                .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+            reducer
+                .validate_unreserved_successor(&latest.request)
+                .map_err(|_| JournalAgentStoreError::CorruptRecord)
+        };
+        if latest.outcome.is_none()
+            && latest.reservation_sequence >= checkpoint.sequence()
+            && operations[..operations.len() - 1]
+                .iter()
+                .all(|operation| operation.reservation_sequence < checkpoint.sequence())
+            && validate_agent_checkpoint_history_v1(checkpoint, &prior_rows, authenticated_binding)
+                .is_ok()
+            && reservation_is_authenticated_successor().is_ok()
+        {
+            return Ok(AgentCheckpointProjectionV1::ReservationAhead {
+                session: latest.session,
+                sequence: latest.sequence,
+                request_commitment: latest.request_commitment,
+                store_commitment: latest.store_commitment,
+            });
+        }
+    }
+    Err(JournalAgentStoreError::CorruptRecord)
 }
 
 struct StoredAgentHeadV1 {
@@ -1212,10 +1650,39 @@ fn reservation_recovery_binding(
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
+fn operation_state_commitment(bytes: &[u8]) -> ObjectDigest {
+    let mut digest = Sha256::new();
+    digest.update(b"aos-sandbox-agent-operation-state-v1\0");
+    digest.update((bytes.len() as u64).to_be_bytes());
+    digest.update(bytes);
+    ObjectDigest::from_bytes(digest.finalize().into())
+}
+
+fn outcome_recovery_binding(
+    binding: ObjectDigest,
+    recovery_authority_binding: ObjectDigest,
+    reservation: &AgentOperationReservationV1,
+    outcome_commitment: ObjectDigest,
+    predecessor_commitment: ObjectDigest,
+) -> ObjectDigest {
+    let mut digest = Sha256::new();
+    digest.update(b"aos-sandbox-agent-outcome-recovery-v1\0");
+    digest.update(binding.as_bytes());
+    digest.update(recovery_authority_binding.as_bytes());
+    digest.update(reservation.session().digest().as_bytes());
+    digest.update(reservation.sequence().get().to_be_bytes());
+    digest.update(reservation.operation_id().as_bytes());
+    digest.update(reservation.request_commitment().as_bytes());
+    digest.update(reservation.store_commitment().as_bytes());
+    digest.update(outcome_commitment.as_bytes());
+    digest.update(predecessor_commitment.as_bytes());
+    ObjectDigest::from_bytes(digest.finalize().into())
+}
+
 fn checkpoint_provenance(
     binding: ObjectDigest,
     recovery_authority_binding: ObjectDigest,
-    checkpoint: &aos_sandbox_agent::AgentDurableCheckpointV1,
+    checkpoint: &AgentDurableCheckpointV1,
 ) -> ObjectDigest {
     let mut digest = Sha256::new();
     digest.update(b"aos-sandbox-agent-checkpoint-store-v1\0");
@@ -1224,6 +1691,20 @@ fn checkpoint_provenance(
     digest.update(checkpoint.sequence().to_be_bytes());
     digest.update(checkpoint.checkpoint_commitment().as_bytes());
     ObjectDigest::from_bytes(digest.finalize().into())
+}
+
+fn authenticated_checkpoint(
+    checkpoint: AgentDurableCheckpointV1,
+    store_sequence: u64,
+    store_binding: ObjectDigest,
+    recovery_authority_binding: ObjectDigest,
+) -> AuthenticatedJournalAgentCheckpointV1 {
+    AuthenticatedJournalAgentCheckpointV1 {
+        provenance: checkpoint_provenance(store_binding, recovery_authority_binding, &checkpoint),
+        checkpoint,
+        store_sequence,
+        recovery_authority_binding,
+    }
 }
 
 fn transaction_id(domain: &[u8], commitment: ObjectDigest) -> [u8; 16] {

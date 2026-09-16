@@ -17,6 +17,7 @@ use crate::namespace_catalog::{
 mod codec;
 mod protected_store;
 pub use protected_store::{
+    DormantNetworkLifecycleEffectHandoffV1, DormantNetworkLifecycleEffectStepV1,
     DormantNetworkLifecycleOwnerErrorV1, DormantNetworkLifecycleProtectedCommitV1,
     DormantNetworkLifecycleProtectedOwnerV1,
 };
@@ -372,7 +373,7 @@ impl NetworkLifecycleIntentV1 {
 /// Construction is crate-sealed in the dormant fixed protected-store owner;
 /// reducer validation binds the journal, session, lease, clock, namespace, and
 /// kernel observations rather than trusting request bytes.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProtectedNetworkLifecycleCurrentV1 {
     intent_digest: ObjectDigest,
     durable_reducer_digest: ObjectDigest,
@@ -596,6 +597,7 @@ pub(crate) struct NetworkLifecycleReleasePreflightV1 {
 pub(crate) struct NetworkLifecycleEffectPlanV1 {
     intent: NetworkLifecycleIntentV1,
     step: NetworkLifecycleEffectStepV1,
+    release_current: ProtectedNetworkLifecycleCurrentV1,
     step_attempt_digest: ObjectDigest,
     released_boottime_nanoseconds: u64,
     released_observation_ordinal: u64,
@@ -612,6 +614,11 @@ impl NetworkLifecycleEffectPlanV1 {
     /// Returns the sole observation-selected effect step.
     pub(crate) const fn step(&self) -> NetworkLifecycleEffectStepV1 {
         self.step
+    }
+
+    /// Returns the fresh protected currentness that authorized release.
+    pub(crate) const fn release_current(&self) -> ProtectedNetworkLifecycleCurrentV1 {
+        self.release_current
     }
 
     /// Returns the exact plan-release watermark the observation must echo.
@@ -1555,6 +1562,7 @@ impl NetworkLifecycleReducerV1 {
         Ok(NetworkLifecycleEffectPlanV1 {
             intent: pending.intent,
             step: attempt.step,
+            release_current: current,
             step_attempt_digest: attempt.digest,
             released_boottime_nanoseconds: attempt
                 .released_boottime_nanoseconds

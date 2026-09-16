@@ -393,20 +393,18 @@ impl CurrentProtectedCliAuthorizationV1 {
     ///
     /// Returns [`CliAuthorizationAdapterError::ProtectedAuthorizationRejected`]
     /// when protected lookup, currentness checks, or grant evaluation fails.
-    pub(crate) fn from_current_protected_capability<T>(
+    pub(crate) fn from_current_protected_capability(
         journal: &mut Journal,
         capability_limits: PublisherAuthorityLimits,
         policy_limits: PublisherPolicyLimits,
         capability_id: CapabilityId,
-        protected_clock: &mut T,
+        protected_clock: &mut crate::controller::ControllerProtectedClockV1,
         decoded: &DecodedAuthenticatedCliRequestV1,
         identity: &AuthenticatedCliIdentityEvidenceV1,
         channel: &AuthenticatedCliChannelEvidenceV1,
-    ) -> Result<Self, CliAuthorizationAdapterError>
-    where
-        T: FnMut() -> Result<RawPairedClockSample, crate::ProtectedOwnershipClockError>,
-    {
-        let clock = protected_clock()
+    ) -> Result<Self, CliAuthorizationAdapterError> {
+        let clock = protected_clock
+            .sample()
             .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
         let time_floor = advance_protected_time_floor(journal, clock)?;
         let trusted_now = clock.wall_seconds();
@@ -590,6 +588,27 @@ impl DormantAuthenticatedCliRequestV1 {
             .map_err(Into::into)
     }
 
+    /// Consumes exact mutation-surface authorization for operator recovery.
+    pub(crate) fn authorize_operator_recovery(
+        self,
+        request: super::observation_adapter::OperatorRecoveryRequestV1,
+    ) -> Result<
+        super::observation_adapter::AuthorizedOperatorRecoveryV1,
+        CliAuthorizationAdapterError,
+    > {
+        if self.decoded.surface != CliAuthorizedSurfaceV1::Mutation
+            || self.decoded.mutation_identity_fence != Some(request.authority_binding())
+        {
+            return Err(CliAuthorizationAdapterError::MutationBindingMismatch);
+        }
+        Ok(
+            super::observation_adapter::AuthorizedOperatorRecoveryV1::from_authenticated(
+                request,
+                self.provenance,
+            ),
+        )
+    }
+
     /// Consumes the binding to mint one audit-read authority.
     ///
     /// # Errors
@@ -710,9 +729,9 @@ fn advance_protected_time_floor(
         ],
     )
     .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-    journal
-        .commit(&transaction)
-        .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    // A journal error can be an acknowledgement loss after durable append.
+    // Exact readback below is therefore the sole success criterion.
+    let _commit_outcome = journal.commit(&transaction);
 
     let committed_revision = journal.get(
         RecordNamespace::CliAuthorizationTime,

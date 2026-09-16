@@ -250,7 +250,6 @@ impl ProviderLedgerV1<'_> {
                         }) =>
                 {
                     installed.supersession = None;
-                    installed.recovered_execution_death = None;
                     Ok(disposition)
                 }
                 Ok(_) => Err(ProviderLedgerError::Equivocation),
@@ -900,6 +899,7 @@ pub(crate) fn reserved_attempt(
         response_sequence: None,
         deadline_seconds,
         verified_at_seconds,
+        completed_at_seconds: None,
         current_valid_until_seconds,
         proof_class_capabilities,
         supports_recursive,

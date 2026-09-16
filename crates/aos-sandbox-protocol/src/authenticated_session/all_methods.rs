@@ -7,7 +7,9 @@
 //! body bytes plus a method-separated semantic commitment. It does not invoke
 //! a service, consume descriptors, authorize an effect, or write durable state.
 
-use aos_proto::aos::sandbox::local::v1::{BrokerMethod, InventoryNetworksRequest};
+use aos_proto::aos::sandbox::local::v1::{
+    BrokerMethod, BrokerRequestEnvelope, InventoryNetworksRequest,
+};
 use aos_sandbox_broker_session_protocol::{
     BrokerOutcomeAdmissionV1, BrokerRequestAdmissionV1, BrokerSessionMethodProfileV1,
     BrokerSessionReplayEvidenceV1, BrokerSessionSequenceError, BrokerSessionTrafficStateV1,
@@ -122,6 +124,84 @@ impl AuthenticatedBrokerSemanticBindingsV1 {
             storage_catalog,
             mount_catalog,
         }
+    }
+}
+
+/// Derives the sole method-specific semantic bindings from a signed envelope.
+///
+/// The returned values remain nonauthorizing compiler inputs. Their authority
+/// comes only from subsequent fixed broker-domain verification. This parser
+/// rejects aliases: Storage Apply requires exactly its generation/digest pair,
+/// Mount Apply permits only its digest, and all other methods forbid bindings.
+///
+/// # Errors
+///
+/// Returns [`AuthenticatedBrokerMethodErrorV1`] for missing, extra, zero,
+/// malformed, or unknown binding fields.
+pub fn authenticated_semantic_bindings_from_envelope_v1(
+    envelope: &BrokerRequestEnvelope,
+    method: BrokerMethod,
+) -> Result<AuthenticatedBrokerSemanticBindingsV1, AuthenticatedBrokerMethodErrorV1> {
+    let binding = envelope.semantic_bindings.as_option();
+    if binding.is_some_and(|binding| !binding.__buffa_unknown_fields.is_empty()) {
+        return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+    }
+    match method {
+        BrokerMethod::BROKER_METHOD_STORAGE_APPLY => {
+            let binding = binding.ok_or(AuthenticatedBrokerMethodErrorV1::MissingCatalogBinding)?;
+            let digest: [u8; 32] = binding
+                .storage_catalog_digest
+                .as_slice()
+                .try_into()
+                .map_err(|_| AuthenticatedBrokerMethodErrorV1::MissingCatalogBinding)?;
+            if binding.storage_catalog_generation == 0
+                || digest == [0; 32]
+                || !binding.mount_catalog_digest.is_empty()
+            {
+                return Err(AuthenticatedBrokerMethodErrorV1::MissingCatalogBinding);
+            }
+            let storage = CatalogBindingV1::from_publisher(
+                binding.storage_catalog_generation,
+                aos_sandbox_core::ObjectDigest::from_bytes(digest),
+            )
+            .map_err(|_| AuthenticatedBrokerMethodErrorV1::MissingCatalogBinding)?;
+            Ok(AuthenticatedBrokerSemanticBindingsV1::new(
+                Some(storage),
+                None,
+            ))
+        }
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY => {
+            let mount = match binding {
+                None => None,
+                Some(binding) => {
+                    if binding.storage_catalog_generation != 0
+                        || !binding.storage_catalog_digest.is_empty()
+                    {
+                        return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+                    }
+                    if binding.mount_catalog_digest.is_empty() {
+                        return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+                    }
+                    let digest: [u8; 32] = binding
+                        .mount_catalog_digest
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| AuthenticatedBrokerMethodErrorV1::MissingCatalogBinding)?;
+                    Some(
+                        MountCatalogBindingV1::from_verified_digest(
+                            aos_sandbox_core::ObjectDigest::from_bytes(digest),
+                        )
+                        .map_err(|_| AuthenticatedBrokerMethodErrorV1::MissingCatalogBinding)?,
+                    )
+                }
+            };
+            Ok(AuthenticatedBrokerSemanticBindingsV1::new(None, mount))
+        }
+        BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
+            Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod)
+        }
+        _ if binding.is_none() => Ok(AuthenticatedBrokerSemanticBindingsV1::default()),
+        _ => Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink),
     }
 }
 
@@ -406,6 +486,14 @@ impl AuthenticatedBrokerMethodRequestV1 {
         self.deadline_boottime_nanoseconds
     }
 
+    /// Returns the semantically validated authorization quartet, when required.
+    #[must_use]
+    pub const fn authorization(
+        &self,
+    ) -> Option<&crate::session::ValidatedUntrustedAuthorizationArtifacts> {
+        self.envelope.authorization()
+    }
+
     /// Returns the digest of the complete signed ClientRecord artifact.
     #[must_use]
     pub const fn signed_request_digest(&self) -> [u8; 32] {
@@ -604,6 +692,40 @@ fn admit_authenticated_broker_method_request_v1(
         actual_descriptor_count,
     )?;
     validate_request_against_profile(&envelope, &profile)?;
+
+    // A byte-exact request retained by the protected owner is classified by
+    // the authenticated traffic state before any live deadline check. The
+    // retained semantic object was admitted when it was fresh; replay may be
+    // needed after that deadline solely to recover its exact terminal result.
+    if let Some(retained) = retained_replay.filter(|retained| {
+        retained.canonical_packet() == bytes
+            && retained.direction() == direction
+            && retained.method() == method
+            && retained.semantics() == adapter.semantics()
+            && retained.exact_body() == envelope.body()
+            && retained.peer() == peer
+            && retained.peer_policy() == policy
+            && retained.session_binding() == traffic.transcript().session_binding()
+    }) {
+        let admission = traffic.admit_request(
+            &canonical,
+            retained.request_id(),
+            retained.maximum_response_bytes(),
+            context,
+        )?;
+        return match admission {
+            BrokerRequestAdmissionV1::ExactReplay(replay) => {
+                validate_exact_authenticated_request_replay_v1(&replay, retained, bytes)?;
+                Ok(AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(
+                    replay,
+                ))
+            }
+            BrokerRequestAdmissionV1::New { .. } => {
+                Err(AuthenticatedBrokerMethodErrorV1::ReplayEquivocation)
+            }
+        };
+    }
+
     let semantic = validate_request_semantics(
         method,
         envelope.body(),

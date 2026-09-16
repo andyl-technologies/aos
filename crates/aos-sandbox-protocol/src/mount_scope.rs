@@ -24,6 +24,7 @@ use crate::payload_scope::{
 use crate::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedAssignmentFence,
     ValidatedHeader, exact_nonzero, validate_fence, validate_request_header,
+    validate_request_header_static,
 };
 
 /// Fixes the complete successful RootMount response descriptor order.
@@ -105,6 +106,67 @@ pub fn decode_mount_scope_request(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
+    let fence = validate_fence(
+        request
+            .fence
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("fence"))?,
+    )?;
+    let runtime_handle = validate_runtime_handle(&fence, &request.runtime_handle)?;
+    let payload_scope_handle =
+        exact_nonzero::<32>(&request.payload_scope_handle, "payload_scope_handle")?;
+
+    Ok(ValidatedMountScopeRequest {
+        header,
+        fence,
+        runtime_handle,
+        payload_scope_handle,
+    })
+}
+
+/// Decodes an exact protected mount-scope replay without renewing its deadline.
+///
+/// This decoder is nonauthorizing. Callers must first prove that `bytes` are the
+/// byte-exact request retained by protected authenticated-session state. It
+/// preserves every time-independent RootMount, header, fence, and handle check
+/// while treating the original nonzero deadline only as historical data.
+///
+/// # Errors
+///
+/// Rejects oversized or malformed bodies, unknown fields, invalid static
+/// RootMount/header bindings, an absent original deadline, or inconsistent
+/// scope identity.
+#[doc(hidden)]
+pub fn decode_mount_scope_request_for_protected_replay(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+) -> Result<ValidatedMountScopeRequest, ProtocolValidationError> {
+    if bytes.len() > MAXIMUM_PAYLOAD_SCOPE_BODY_BYTES {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+    if policy.audience != Audience::AUDIENCE_ROOT_MOUNT || policy.uid != 0 || peer.uid != 0 {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
+
+    let request = ObserveMountScopeRequest::decode_from_slice(bytes)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !request.__buffa_unknown_fields.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+
+    let header = validate_request_header_static(
+        request
+            .header
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("header"))?,
+        peer,
+        policy,
+        ProtocolId::HostBroker,
+    )?;
+    if header.deadline_boottime_nanoseconds() == 0 {
+        return Err(ProtocolValidationError::DeadlineExpired);
+    }
     let fence = validate_fence(
         request
             .fence

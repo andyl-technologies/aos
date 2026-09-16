@@ -9,9 +9,9 @@ use sha2::{Digest as _, Sha256};
 use super::{
     LifecycleBootInventoryV1, LifecycleCoordinationPhaseV1, LifecycleCoordinationTransactionV1,
     LifecycleDatasetTransactionDigestV1, LifecycleIntentV1, LifecycleModelError,
-    LifecycleQuiesceDigestV1, LifecycleRetentionLedgerV1, LifecycleSuspendObservationV1,
-    LifecycleThawCompensationDigestV1, LifecycleTimeV1, LifecycleTransactionIdV1,
-    LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1,
+    LifecycleQuiesceDigestV1, LifecycleRetentionLedgerV1, LifecycleSnapshotManifestDigestV1,
+    LifecycleSuspendObservationV1, LifecycleThawCompensationDigestV1, LifecycleTimeV1,
+    LifecycleTransactionIdV1, LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1,
 };
 
 macro_rules! evidence_digest {
@@ -134,6 +134,8 @@ pub struct LifecycleCoordinationCommitFactV1 {
     writer_fence: Option<LifecycleWriterFenceDigestV1>,
     dataset_transaction: Option<LifecycleDatasetTransactionDigestV1>,
     thaw_compensation: LifecycleThawCompensationDigestV1,
+    manifest: Option<LifecycleSnapshotManifestDigestV1>,
+    retention_ledger: Option<LifecycleRetentionLedgerDigestV1>,
     record: LifecycleCoordinationRecordDigestV1,
 }
 
@@ -150,6 +152,8 @@ impl LifecycleCoordinationCommitFactV1 {
             writer_fence: value.writer_fence(),
             dataset_transaction: value.dataset_transaction(),
             thaw_compensation: value.thaw_compensation(),
+            manifest: Some(value.manifest()),
+            retention_ledger: Some(value.retention_ledger()),
             record: coordination_digest(value),
         }
     }
@@ -163,6 +167,8 @@ impl LifecycleCoordinationCommitFactV1 {
         writer_fence: Option<LifecycleWriterFenceDigestV1>,
         dataset_transaction: Option<LifecycleDatasetTransactionDigestV1>,
         thaw_compensation: LifecycleThawCompensationDigestV1,
+        manifest: Option<LifecycleSnapshotManifestDigestV1>,
+        retention_ledger: Option<LifecycleRetentionLedgerDigestV1>,
         record: LifecycleCoordinationRecordDigestV1,
     ) -> Self {
         Self {
@@ -174,6 +180,8 @@ impl LifecycleCoordinationCommitFactV1 {
             writer_fence,
             dataset_transaction,
             thaw_compensation,
+            manifest,
+            retention_ledger,
             record,
         }
     }
@@ -218,6 +226,16 @@ impl LifecycleCoordinationCommitFactV1 {
     pub const fn thaw_compensation(self) -> LifecycleThawCompensationDigestV1 {
         self.thaw_compensation
     }
+    /// Returns the exact protected snapshot-manifest commitment when encoded.
+    #[must_use]
+    pub const fn manifest(self) -> Option<LifecycleSnapshotManifestDigestV1> {
+        self.manifest
+    }
+    /// Returns the exact protected post-effect retention ledger when encoded.
+    #[must_use]
+    pub const fn retention_ledger(self) -> Option<LifecycleRetentionLedgerDigestV1> {
+        self.retention_ledger
+    }
     /// Returns the complete record commitment.
     #[must_use]
     pub const fn record(self) -> LifecycleCoordinationRecordDigestV1 {
@@ -227,7 +245,22 @@ impl LifecycleCoordinationCommitFactV1 {
     /// Revalidates this decoded fact against an authoritative replay handle.
     #[must_use]
     pub fn is_bound_to(self, protected: &LifecycleProtectedCoordinationV1) -> bool {
-        self == Self::from_transaction(protected.transaction())
+        let current = Self::from_transaction(protected.transaction());
+        self.transaction == current.transaction
+            && self.sandbox == current.sandbox
+            && self.fence == current.fence
+            && self.phase == current.phase
+            && self.quiesce == current.quiesce
+            && self.writer_fence == current.writer_fence
+            && self.dataset_transaction == current.dataset_transaction
+            && self.thaw_compensation == current.thaw_compensation
+            && self.record == current.record
+            && self
+                .manifest
+                .map_or(true, |manifest| Some(manifest) == current.manifest)
+            && self
+                .retention_ledger
+                .map_or(true, |ledger| Some(ledger) == current.retention_ledger)
     }
 }
 

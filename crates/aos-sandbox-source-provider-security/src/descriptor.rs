@@ -189,6 +189,22 @@ pub struct PreparedMountSourceRootCustodyV2 {
     pub(crate) manager_presence: Option<ManagerPresenceAuthorityV2>,
 }
 
+/// Retains an uncommitted SourceRoot and fresh manager-presence proof together.
+///
+/// This opaque value is the only retry input for descriptor-custody
+/// preparation. Validation failure returns the same value without exposing or
+/// duplicating either move-only authority.
+#[must_use = "prepare descriptor custody or retain this exact retry authority"]
+pub struct PendingMountSourceRootCustodyV2 {
+    committed: PendingCommittedSourceRootV2,
+    manager_presence: FreshManagerSourcePresenceV1,
+}
+
+enum PendingCommittedSourceRootV2 {
+    Received(CommittedSourceRootV1),
+    Reopened(crate::CommittedReopenedMountSourceRootV2),
+}
+
 /// Retains one startup-captured SourceRoot while its current held phase is rebound.
 pub struct PreparedStartupMountSourceAdoptionV2 {
     pub(crate) observed: RetainedMountSourceRootV2,
@@ -282,6 +298,15 @@ pub struct CommittedMountSourceReleaseV2 {
 pub struct PreparedReleasedMountSourceRootV2 {
     pub(crate) projection: MountSourceRootCustodyProjectionV2,
     pub(crate) negative_custody_digest: ObjectDigest,
+    pub(crate) fresh_recovery: Option<PendingReleasedMountSourceRootV2>,
+}
+
+/// Retains manager-held SourceRoot, terminal provider proof, and removal receipt.
+#[must_use = "prepare or retain exact negative-custody completion authority"]
+pub struct PendingReleasedMountSourceRootV2 {
+    retained: RetainedMountSourceReleaseForRemovalV2,
+    outcome: crate::VerifiedMountProviderOutcomeV2,
+    removal: FreshManagerSourceRemovalReceiptV1,
 }
 
 /// Proves this manager no longer retains the exact released SourceRoot descriptor.
@@ -764,27 +789,71 @@ impl CommittedSourceRootV1 {
         Ok(Self { observed })
     }
 
-    /// Consumes committed response custody into a descriptor-custody plan.
+    /// Retains committed response custody with its manager-presence proof.
+    #[must_use]
+    pub fn retain_manager_presence(
+        self,
+        manager_presence: FreshManagerSourcePresenceV1,
+    ) -> PendingMountSourceRootCustodyV2 {
+        PendingMountSourceRootCustodyV2 {
+            committed: PendingCommittedSourceRootV2::Received(self),
+            manager_presence,
+        }
+    }
+}
+
+impl crate::CommittedReopenedMountSourceRootV2 {
+    /// Retains reopened response custody with its manager-presence proof.
+    #[must_use]
+    pub fn retain_manager_presence(
+        self,
+        manager_presence: FreshManagerSourcePresenceV1,
+    ) -> PendingMountSourceRootCustodyV2 {
+        PendingMountSourceRootCustodyV2 {
+            committed: PendingCommittedSourceRootV2::Reopened(self),
+            manager_presence,
+        }
+    }
+}
+
+impl PendingMountSourceRootCustodyV2 {
+    /// Prepares descriptor custody while retaining both inputs on failure.
     ///
     /// # Errors
     ///
-    /// Returns [`SourceProviderSecurityError`] for a sentinel Mount row or
-    /// source-realization identity.
+    /// Returns [`SourceProviderSecurityError`] together with this unchanged
+    /// retry authority for a sentinel or inconsistent Mount row, provider
+    /// attempt, provider session, manager proof, or realization identity.
     #[must_use]
     pub fn prepare_mount_custody(
         self,
         row: &SourceAcquisitionRowV2,
         owner_attempt: &SourceProviderQueryAttemptV2,
         owner_session: &SourceProviderSessionV2,
-        manager_presence: FreshManagerSourcePresenceV1,
-    ) -> Result<PreparedMountSourceRootCustodyV2, SourceProviderSecurityError> {
-        let observed = RetainedMountSourceRootV2::Received(self.observed);
-        let manager_custody =
-            fresh_manager_custody_evidence(row, owner_attempt, owner_session, &manager_presence)?;
-        let evidence = row
-            .evidence
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    ) -> Result<
+        PreparedMountSourceRootCustodyV2,
+        (SourceProviderSecurityError, PendingMountSourceRootCustodyV2),
+    > {
+        let manager_custody = match fresh_manager_custody_evidence(
+            row,
+            owner_attempt,
+            owner_session,
+            &self.manager_presence,
+        ) {
+            Ok(custody) => custody,
+            Err(error) => return Err((error, self)),
+        };
+        let Some(evidence) = row.evidence.as_ref() else {
+            return Err((SourceProviderSecurityError::SessionContinuity, self));
+        };
+        let observed = match self.committed {
+            PendingCommittedSourceRootV2::Received(committed) => {
+                RetainedMountSourceRootV2::Received(committed.observed)
+            }
+            PendingCommittedSourceRootV2::Reopened(committed) => {
+                RetainedMountSourceRootV2::Reopened(committed.reopened)
+            }
+        };
         let projection = lifecycle_projection(
             &observed,
             Some(row.acquisition_id),
@@ -795,43 +864,7 @@ impl CommittedSourceRootV1 {
         Ok(PreparedMountSourceRootCustodyV2 {
             observed,
             projection,
-            manager_presence: Some(ManagerPresenceAuthorityV2::Fresh(manager_presence)),
-        })
-    }
-}
-
-impl crate::CommittedReopenedMountSourceRootV2 {
-    /// Consumes recovered response custody into the common descriptor-custody plan.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SourceProviderSecurityError`] for a sentinel Mount row or
-    /// source-realization identity.
-    pub fn prepare_mount_custody(
-        self,
-        row: &SourceAcquisitionRowV2,
-        owner_attempt: &SourceProviderQueryAttemptV2,
-        owner_session: &SourceProviderSessionV2,
-        manager_presence: FreshManagerSourcePresenceV1,
-    ) -> Result<PreparedMountSourceRootCustodyV2, SourceProviderSecurityError> {
-        let observed = RetainedMountSourceRootV2::Reopened(self.reopened);
-        let manager_custody =
-            fresh_manager_custody_evidence(row, owner_attempt, owner_session, &manager_presence)?;
-        let evidence = row
-            .evidence
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let projection = lifecycle_projection(
-            &observed,
-            Some(row.acquisition_id),
-            Some(evidence.source_realization_handle),
-            1,
-            Some(manager_custody),
-        );
-        Ok(PreparedMountSourceRootCustodyV2 {
-            observed,
-            projection,
-            manager_presence: Some(ManagerPresenceAuthorityV2::Fresh(manager_presence)),
+            manager_presence: Some(ManagerPresenceAuthorityV2::Fresh(self.manager_presence)),
         })
     }
 }
@@ -1573,6 +1606,7 @@ impl MountSourceReleaseAuthorityV2 {
         Ok(PreparedReleasedMountSourceRootV2 {
             projection: self.projection,
             negative_custody_digest,
+            fresh_recovery: None,
         })
     }
 }
@@ -1584,7 +1618,29 @@ impl RetainedMountSourceReleaseForRemovalV2 {
         &self.projection
     }
 
-    /// Closes the retained FD only after signed removal and negative readback.
+    /// Retains the exact terminal and removal proofs before negative custody.
+    #[must_use]
+    pub fn retain_negative_custody(
+        self,
+        outcome: crate::VerifiedMountProviderOutcomeV2,
+        removal: FreshManagerSourceRemovalReceiptV1,
+    ) -> PendingReleasedMountSourceRootV2 {
+        PendingReleasedMountSourceRootV2 {
+            retained: self,
+            outcome,
+            removal,
+        }
+    }
+}
+
+impl PendingReleasedMountSourceRootV2 {
+    /// Borrows the exact Release lineage retained for manager removal.
+    #[must_use]
+    pub const fn projection(&self) -> &MountSourceRootCustodyProjectionV2 {
+        &self.retained.projection
+    }
+
+    /// Validates negative custody while returning exact inputs on failure.
     ///
     /// # Errors
     ///
@@ -1595,41 +1651,60 @@ impl RetainedMountSourceReleaseForRemovalV2 {
         self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
-        outcome: crate::VerifiedMountProviderOutcomeV2,
-        removal: FreshManagerSourceRemovalReceiptV1,
-    ) -> Result<PreparedReleasedMountSourceRootV2, SourceProviderSecurityError> {
-        session.revalidate()?;
-        removal
-            .validate_current(journal)
-            .map_err(|_| session.poison(SourceProviderSecurityError::SessionContinuity))?;
-        if removal.projection().prior_presence != self.expected_presence {
-            return Err(session.poison(SourceProviderSecurityError::SessionContinuity));
+    ) -> Result<
+        PreparedReleasedMountSourceRootV2,
+        (
+            SourceProviderSecurityError,
+            PendingReleasedMountSourceRootV2,
+        ),
+    > {
+        if let Err(error) = session.revalidate() {
+            return Err((error, self));
         }
-        self.observed
-            .revalidate_retained()
-            .map_err(|error| session.poison(error))?;
-        session.revalidate()?;
-        let (acquisition_id, acquisition_sequence) = self.projection.provider_acquisition();
-        let (lease_id, lease_digest) = self.projection.lease();
-        if !outcome.authorizes_negative_custody(
+        if self.removal.validate_current(journal).is_err() {
+            return Err((
+                session.poison(SourceProviderSecurityError::SessionContinuity),
+                self,
+            ));
+        }
+        if self.removal.projection().prior_presence != self.retained.expected_presence {
+            return Err((
+                session.poison(SourceProviderSecurityError::SessionContinuity),
+                self,
+            ));
+        }
+        if let Err(error) = self.retained.observed.revalidate_retained() {
+            return Err((session.poison(error), self));
+        }
+        if let Err(error) = session.revalidate() {
+            return Err((error, self));
+        }
+        let (acquisition_id, acquisition_sequence) =
+            self.retained.projection.provider_acquisition();
+        let (lease_id, lease_digest) = self.retained.projection.lease();
+        if !self.outcome.authorizes_negative_custody(
             ObjectDigest::from_bytes(acquisition_id),
             acquisition_sequence,
             lease_id,
             lease_digest,
         ) {
-            return Err(session.poison(SourceProviderSecurityError::SessionContinuity));
+            return Err((
+                session.poison(SourceProviderSecurityError::SessionContinuity),
+                self,
+            ));
         }
         let mut hasher = Sha256::new();
         hasher.update(b"aos.sandbox.mount.source-root-negative-custody.v2\0");
-        hasher.update(self.projection.lifecycle_commitment().as_bytes());
-        hasher.update(outcome.commitments().0.as_bytes());
-        hasher.update(outcome.response_identity().1.to_be_bytes());
-        hasher.update(removal.projection().removal_commitment);
+        hasher.update(self.retained.projection.lifecycle_commitment().as_bytes());
+        hasher.update(self.outcome.commitments().0.as_bytes());
+        hasher.update(self.outcome.response_identity().1.to_be_bytes());
+        hasher.update(self.removal.projection().removal_commitment);
         let negative_custody_digest = ObjectDigest::from_bytes(hasher.finalize().into());
-        drop(self.observed);
+        let projection = self.retained.projection.clone();
         Ok(PreparedReleasedMountSourceRootV2 {
-            projection: self.projection,
+            projection,
             negative_custody_digest,
+            fresh_recovery: Some(self),
         })
     }
 }

@@ -14,12 +14,15 @@
 use aos_sandbox_core::{ExecutionId, ObjectDigest};
 use sha2::{Digest as _, Sha256};
 
-use crate::{
+use aos_sandbox_agent::{
     AgentExecutionOutcomeV1, AgentExecutionPhaseV1, AgentFrameV1, AgentOperationIdV1,
-    AgentOperationRequestV1, AgentOperationReservationV1, AgentOperationSequenceV1,
-    AgentProvisioningV1, AgentReducerError, AgentReservationDispositionV1,
-    AgentReservationRecoveryTokenV1, AgentSessionBindingV1, GuestAgentReducerV1, decode_frame_v1,
-    encode_frame_v1,
+    AgentOperationRequestV1, AgentOperationSequenceV1, AgentProtocolError, AgentSessionBindingV1,
+    InvalidAgentModel, decode_frame_v1, encode_frame_v1,
+};
+
+use super::agent_reducer::{
+    AgentOperationCasError, AgentOperationReservationV1, AgentProvisioningV1, AgentReducerError,
+    AgentReservationDispositionV1, AgentReservationRecoveryTokenV1, GuestAgentReducerV1,
 };
 
 const MAGIC: &[u8; 8] = b"AOSAGC01";
@@ -565,11 +568,11 @@ pub enum AgentCheckpointError {
     StoreUnavailable,
     /// Embedded `AOSAGE01` framing is invalid.
     #[error("agent checkpoint protocol failed: {0}")]
-    Protocol(#[from] crate::AgentProtocolError),
+    Protocol(#[from] AgentProtocolError),
     /// Embedded model state is invalid.
     #[error("agent checkpoint model failed: {0}")]
-    Model(#[from] crate::InvalidAgentModel),
+    Model(#[from] InvalidAgentModel),
     /// Embedded CAS receipt is invalid.
     #[error("agent checkpoint reservation failed: {0}")]
-    Reservation(#[from] crate::AgentOperationCasError),
+    Reservation(#[from] AgentOperationCasError),
 }

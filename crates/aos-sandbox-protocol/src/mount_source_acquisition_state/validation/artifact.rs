@@ -265,6 +265,7 @@ pub(super) fn validate_attempt_revision(attempt: &SourceProviderQueryAttemptV2) 
                 2
             }
         }
+        ProviderAttemptStateV2::SupersededIndeterminate { .. } => 2,
     };
     if attempt.revision != expected {
         return Err(state_error(
@@ -504,10 +505,34 @@ pub(super) fn inventory_attempt_floor(
     ))
 }
 
-pub(super) fn validate_abandoned_attempt(
+pub(super) fn validate_indeterminate_attempt(
     attempt: &SourceProviderQueryAttemptV2,
     table: &SourceAcquisitionTableV2,
 ) -> Result<()> {
+    if let ProviderAttemptStateV2::SupersededIndeterminate {
+        successor_session_id,
+        recovery_root_attempt_id,
+        outcome_may_exist,
+    } = &attempt.state
+    {
+        let old = exact_session(table, attempt.session_id, attempt.session_record_digest)?;
+        let successor = table
+            .provider_sessions
+            .get(successor_session_id)
+            .ok_or_else(|| state_error("superseded attempt successor session is missing"))?;
+        if !*outcome_may_exist
+            || *recovery_root_attempt_id != attempt.lineage_root_attempt_id
+            || successor.predecessor_session_id != Some(old.session_id)
+            || successor.scope != old.scope
+            || successor.session_id == old.session_id
+        {
+            return Err(state_error(
+                "superseded provider attempt graph is inconsistent",
+            ));
+        }
+        return Ok(());
+    }
+
     let ProviderAttemptStateV2::AbandonedIndeterminate {
         dead_execution,
         successor_session_id,

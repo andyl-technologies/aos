@@ -187,6 +187,7 @@ impl LifecycleAuxiliaryHistoryV1 {
                     operation,
                     boot.step(),
                     boot.fence(),
+                    boot.host_boot(),
                     boot.domains(),
                     resources,
                     boot.observed_at(),
@@ -213,6 +214,7 @@ impl LifecycleAuxiliaryHistoryV1 {
                     && super::LifecycleSuspendObservationV1::from_operation(
                         operation,
                         observation.fence(),
+                        observation.host_boot(),
                         observation.observation(),
                         observation.observed_at(),
                     )
@@ -316,20 +318,47 @@ impl LifecycleAuxiliaryHistoryV1 {
             }
         }
         let facts_match = match commit.facts() {
-            LifecycleSemanticCommitFactV1::Snapshot { retention, .. } => {
-                retention.iter().all(|acknowledgement| {
-                    self.records.values().any(|record| {
-                        record.project() == project
-                            && self
-                                .protected_retention_ledger(
-                                    project,
-                                    record.lineage(),
-                                    acknowledgement.revision(),
-                                    acknowledgement.ledger(),
-                                )
-                                .is_some_and(|protected| acknowledgement.is_bound_to(&protected))
+            LifecycleSemanticCommitFactV1::Snapshot {
+                manifest,
+                retention,
+                ..
+            } => {
+                let coordination_matches = self.records.values().any(|record| {
+                    let LifecycleAuxiliaryPayloadV1::Coordination(transaction) = record.payload()
+                    else {
+                        return false;
+                    };
+                    let protected =
+                        LifecycleProtectedCoordinationV1::from_authoritative(transaction.clone());
+                    record.project() == project
+                        && commit.evidence().coordination().is_some_and(|fact| {
+                            fact.is_bound_to(&protected)
+                                && fact.manifest().map_or(true, |binding| binding == *manifest)
+                                && fact.retention_ledger().map_or(true, |binding| {
+                                    retention.iter().all(|ack| ack.ledger() == binding)
+                                })
+                        })
+                        && transaction.manifest() == *manifest
+                        && retention
+                            .iter()
+                            .all(|ack| ack.ledger() == transaction.retention_ledger())
+                });
+                coordination_matches
+                    && retention.iter().all(|acknowledgement| {
+                        self.records.values().any(|record| {
+                            record.project() == project
+                                && self
+                                    .protected_retention_ledger(
+                                        project,
+                                        record.lineage(),
+                                        acknowledgement.revision(),
+                                        acknowledgement.ledger(),
+                                    )
+                                    .is_some_and(|protected| {
+                                        acknowledgement.is_bound_to(&protected)
+                                    })
+                        })
                     })
-                })
             }
             LifecycleSemanticCommitFactV1::DeleteSnapshot {
                 retention_release, ..

@@ -65,6 +65,10 @@ const RESOLVER_POLICY_FLOOR_KEY: &[u8] = b"current";
 const PUBLICATION_INTENT_DOMAIN: &[u8] = b"aos.sandbox.storage.publication-intent.v1\0";
 const PUBLICATION_INTENT_MAGIC: &[u8; 8] = b"AOSSPI01";
 const PUBLICATION_INTENT_VERSION: u16 = 1;
+const ATOMIC_SNAPSHOT_MAGIC: &[u8; 8] = b"AOSASR01";
+const ATOMIC_SNAPSHOT_VERSION: u16 = 1;
+const ATOMIC_SNAPSHOT_DOMAIN: &[u8] = b"aos.sandbox.storage.atomic-snapshot-state.v1\0";
+const ATOMIC_SNAPSHOT_KEY_PREFIX: &[u8; 16] = b"atomic-snapshot/";
 const MAXIMUM_RECORD_BYTES: usize = 64 * 1024;
 const MAXIMUM_PREPARATION_RECORD_BYTES: usize = 128 * 1024;
 pub(crate) const MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES: usize =
@@ -194,6 +198,40 @@ pub enum DurableStoragePhase {
     Committed,
     /// The inactive intent was durably retired before any mutation was attempted.
     Aborted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AtomicDatasetSnapshotPhaseV1 {
+    Prepared = 1,
+    Ambiguous = 2,
+    Committed = 3,
+}
+
+#[derive(Clone)]
+struct AtomicDatasetSnapshotRecordV1 {
+    phase: AtomicDatasetSnapshotPhaseV1,
+    program: crate::DormantAtomicDatasetSnapshotV1,
+    observation: Option<ObjectDigest>,
+}
+
+pub(crate) struct AtomicDatasetSnapshotInventoryV1 {
+    phase: AtomicDatasetSnapshotPhaseV1,
+    program: crate::DormantAtomicDatasetSnapshotV1,
+    observation: Option<ObjectDigest>,
+}
+
+impl AtomicDatasetSnapshotInventoryV1 {
+    pub(crate) const fn phase(&self) -> AtomicDatasetSnapshotPhaseV1 {
+        self.phase
+    }
+
+    pub(crate) const fn program(&self) -> &crate::DormantAtomicDatasetSnapshotV1 {
+        &self.program
+    }
+
+    pub(crate) const fn observation(&self) -> Option<ObjectDigest> {
+        self.observation
+    }
 }
 
 /// Carries an authenticated committed storage result.
@@ -463,6 +501,8 @@ pub(crate) struct VerifiedStorageResolverJournalV1 {
 pub(crate) struct VerifiedStorageResolverOperationV1 {
     catalog: ResolvedCatalogCommitmentV1,
     result: CommittedStorageResultV1,
+    sandbox_id: [u8; 16],
+    request_digest: ObjectDigest,
 }
 
 impl VerifiedStorageResolverJournalV1 {
@@ -476,6 +516,12 @@ impl VerifiedStorageResolverJournalV1 {
     ) -> Option<&VerifiedStorageResolverOperationV1> {
         self.records.get(operation_id)
     }
+
+    pub(crate) fn operations(
+        &self,
+    ) -> impl Iterator<Item = (&[u8; 16], &VerifiedStorageResolverOperationV1)> {
+        self.records.iter()
+    }
 }
 
 impl VerifiedStorageResolverOperationV1 {
@@ -485,6 +531,14 @@ impl VerifiedStorageResolverOperationV1 {
 
     pub(crate) const fn result(&self) -> CommittedStorageResultV1 {
         self.result
+    }
+
+    pub(crate) const fn sandbox_id(&self) -> [u8; 16] {
+        self.sandbox_id
+    }
+
+    pub(crate) const fn request_digest(&self) -> ObjectDigest {
+        self.request_digest
     }
 }
 
@@ -567,6 +621,7 @@ pub struct StorageTransactionStore {
     publication_intents: BTreeMap<[u8; 16], StorageWorkspacePublicationIntentV1>,
     pin_attempts: BTreeMap<[u8; 16], WorkspacePinAttemptV1>,
     repair_intents: BTreeMap<[u8; 16], StorageWorkspacePinRepairIntentV1>,
+    atomic_snapshots: BTreeMap<[u8; 16], AtomicDatasetSnapshotRecordV1>,
     commit_failed: bool,
     #[cfg(test)]
     fail_after_next_journal_commit: bool,
@@ -575,6 +630,151 @@ pub struct StorageTransactionStore {
 type CatalogPreparationRecord = ([u8; 16], Vec<u8>);
 
 impl StorageTransactionStore {
+    pub(crate) fn atomic_dataset_snapshot_inventory(
+        &self,
+    ) -> Result<Vec<AtomicDatasetSnapshotInventoryV1>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self
+            .atomic_snapshots
+            .values()
+            .map(|record| AtomicDatasetSnapshotInventoryV1 {
+                phase: record.phase,
+                program: record.program.clone(),
+                observation: record.observation,
+            })
+            .collect())
+    }
+
+    pub(crate) fn prepare_atomic_dataset_snapshot(
+        &mut self,
+        program: crate::DormantAtomicDatasetSnapshotV1,
+    ) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
+        let operation = program.operation();
+        let supplied_bytes = program
+            .canonical_bytes()
+            .map_err(|_| StorageStateError::InvalidValue)?;
+        if let Some(current) = self.atomic_snapshots.get(&operation) {
+            return if current.phase == AtomicDatasetSnapshotPhaseV1::Prepared
+                && current.program.commitment() == program.commitment()
+                && current
+                    .program
+                    .canonical_bytes()
+                    .map_err(|_| StorageStateError::CorruptRecord)?
+                    == supplied_bytes
+                && current.observation.is_none()
+            {
+                Ok(())
+            } else {
+                Err(StorageStateError::Equivocation)
+            };
+        }
+        let record = AtomicDatasetSnapshotRecordV1 {
+            phase: AtomicDatasetSnapshotPhaseV1::Prepared,
+            program,
+            observation: None,
+        };
+        let ambiguous = AtomicDatasetSnapshotRecordV1 {
+            phase: AtomicDatasetSnapshotPhaseV1::Ambiguous,
+            ..record.clone()
+        };
+        let committed = AtomicDatasetSnapshotRecordV1 {
+            phase: AtomicDatasetSnapshotPhaseV1::Committed,
+            observation: Some(ObjectDigest::from_bytes([1; 32])),
+            ..record.clone()
+        };
+        self.journal.preflight_transactions(&[
+            atomic_snapshot_transaction(&record, &self.key)?,
+            atomic_snapshot_transaction(&ambiguous, &self.key)?,
+            atomic_snapshot_transaction(&committed, &self.key)?,
+        ])?;
+        self.publish_atomic_snapshot(&record)?;
+        self.atomic_snapshots.insert(operation, record);
+        Ok(())
+    }
+
+    pub(crate) fn mark_atomic_dataset_snapshot_ambiguous(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+    ) -> Result<crate::DormantAtomicDatasetSnapshotV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let current = self
+            .atomic_snapshots
+            .get(&operation)
+            .filter(|record| {
+                record.phase == AtomicDatasetSnapshotPhaseV1::Prepared
+                    && record.program.commitment() == program
+                    && record.observation.is_none()
+            })
+            .cloned()
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let record = AtomicDatasetSnapshotRecordV1 {
+            phase: AtomicDatasetSnapshotPhaseV1::Ambiguous,
+            ..current
+        };
+        self.publish_atomic_snapshot(&record)?;
+        self.atomic_snapshots.insert(operation, record.clone());
+        Ok(record.program)
+    }
+
+    pub(crate) fn atomic_dataset_snapshot_recovery(
+        &self,
+        operation: [u8; 16],
+    ) -> Result<
+        (
+            AtomicDatasetSnapshotPhaseV1,
+            crate::DormantAtomicDatasetSnapshotV1,
+            Option<ObjectDigest>,
+        ),
+        StorageStateError,
+    > {
+        self.ensure_authority_readable()?;
+        let record = self
+            .atomic_snapshots
+            .get(&operation)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        Ok((record.phase, record.program.clone(), record.observation))
+    }
+
+    pub(crate) fn commit_atomic_dataset_snapshot(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+        observation: ObjectDigest,
+    ) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
+        if observation.as_bytes() == &[0; 32] {
+            return Err(StorageStateError::InvalidValue);
+        }
+        let current = self
+            .atomic_snapshots
+            .get(&operation)
+            .filter(|record| {
+                record.phase == AtomicDatasetSnapshotPhaseV1::Ambiguous
+                    && record.program.commitment() == program
+                    && record.observation.is_none()
+            })
+            .cloned()
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let record = AtomicDatasetSnapshotRecordV1 {
+            phase: AtomicDatasetSnapshotPhaseV1::Committed,
+            observation: Some(observation),
+            ..current
+        };
+        self.publish_atomic_snapshot(&record)?;
+        self.atomic_snapshots.insert(operation, record);
+        Ok(())
+    }
+
+    fn publish_atomic_snapshot(
+        &mut self,
+        record: &AtomicDatasetSnapshotRecordV1,
+    ) -> Result<(), StorageStateError> {
+        let transaction = atomic_snapshot_transaction(record, &self.key)?;
+        self.commit_journal(&transaction)
+    }
+
     /// Opens a root-owned protected directory and exclusively locks its journal.
     ///
     /// `directory` must be an absolute path whose complete ancestry satisfies
@@ -693,6 +893,7 @@ impl StorageTransactionStore {
         let publication_intents = load_publication_intents(&journal, &key)?;
         let pin_attempts = load_attempts(&journal, key.key_id, &key.secret)?;
         let repair_intents = load_repair_intents(&journal, key.key_id, &key.secret)?;
+        let atomic_snapshots = load_atomic_snapshot_records(&journal, &key)?;
         let catalog_transitions =
             StorageCatalogTransitionProvider::load(&journal, key.key_id, &key.secret)?;
         let latest_generation = latest_generation(&records).max(
@@ -723,6 +924,7 @@ impl StorageTransactionStore {
             publication_intents,
             pin_attempts,
             repair_intents,
+            atomic_snapshots,
             commit_failed: false,
             #[cfg(test)]
             fail_after_next_journal_commit: false,
@@ -798,6 +1000,7 @@ impl StorageTransactionStore {
             && self.resolver_policy_floor.is_none()
             && self.publication_intents.is_empty()
             && self.pin_attempts.is_empty()
+            && self.atomic_snapshots.is_empty()
             && self.journal.is_materialized_empty()
             && self.journal.snapshot_sequence() == 1
     }
@@ -2303,10 +2506,7 @@ impl StorageTransactionStore {
         catalog: &ResolvedCatalogCommitmentV1,
     ) -> Result<PreparedRecord, StorageStateError> {
         self.ensure_authority_readable()?;
-        if operation_id == [0; 16]
-            || request_digest.as_bytes() == &[0; 32]
-            || matches!(catalog.plan(), CatalogPlanV1::Snapshot { .. })
-        {
+        if operation_id == [0; 16] || request_digest.as_bytes() == &[0; 32] {
             return Err(StorageStateError::InvalidValue);
         }
         let mutation_digest = mutation_digest(operation_id, request_digest, catalog.binding());
@@ -2412,7 +2612,12 @@ impl StorageTransactionStore {
                 .map_err(|_| StorageStateError::CorruptRecord)?;
             records.insert(
                 record.operation_id,
-                VerifiedStorageResolverOperationV1 { catalog, result },
+                VerifiedStorageResolverOperationV1 {
+                    catalog,
+                    result,
+                    sandbox_id: record.sandbox_id,
+                    request_digest: record.request_digest,
+                },
             );
         }
         Ok(VerifiedStorageResolverJournalV1 { physical, records })
@@ -3523,6 +3728,169 @@ fn load_durable_records(
     Ok(records)
 }
 
+fn atomic_snapshot_record_key(operation: [u8; 16]) -> Vec<u8> {
+    [ATOMIC_SNAPSHOT_KEY_PREFIX.as_slice(), operation.as_slice()].concat()
+}
+
+fn atomic_snapshot_transaction_id(
+    operation: [u8; 16],
+    phase: AtomicDatasetSnapshotPhaseV1,
+) -> [u8; 16] {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.storage.atomic-snapshot-transaction.v1\0")
+        .chain_update(operation)
+        .chain_update([phase as u8])
+        .finalize()
+        .into();
+    let mut transaction = [0; 16];
+    transaction.copy_from_slice(&digest[..16]);
+    if transaction == [0; 16] {
+        transaction[15] = 1;
+    }
+    transaction
+}
+
+fn atomic_snapshot_transaction(
+    record: &AtomicDatasetSnapshotRecordV1,
+    key: &StorageStateKey,
+) -> Result<JournalTransaction, StorageStateError> {
+    let operation = record.program.operation();
+    JournalTransaction::new(
+        atomic_snapshot_transaction_id(operation, record.phase),
+        vec![JournalRecord::put(
+            RecordNamespace::Effect,
+            atomic_snapshot_record_key(operation),
+            encode_atomic_snapshot_record(record, key)?,
+        )],
+    )
+    .map_err(Into::into)
+}
+
+fn encode_atomic_snapshot_record(
+    record: &AtomicDatasetSnapshotRecordV1,
+    key: &StorageStateKey,
+) -> Result<Vec<u8>, StorageStateError> {
+    let program = record
+        .program
+        .canonical_bytes()
+        .map_err(|_| StorageStateError::InvalidValue)?;
+    let program_length =
+        u32::try_from(program.len()).map_err(|_| StorageStateError::InvalidValue)?;
+    let mut bytes = Vec::with_capacity(64 + program.len());
+    bytes.extend_from_slice(ATOMIC_SNAPSHOT_MAGIC);
+    bytes.extend_from_slice(&ATOMIC_SNAPSHOT_VERSION.to_be_bytes());
+    bytes.push(record.phase as u8);
+    bytes.extend_from_slice(&key.key_id);
+    bytes.extend_from_slice(&program_length.to_be_bytes());
+    bytes.extend_from_slice(&program);
+    bytes.extend_from_slice(
+        record
+            .observation
+            .unwrap_or(ObjectDigest::from_bytes([0; 32]))
+            .as_bytes(),
+    );
+    let mut mac =
+        HmacSha256::new_from_slice(&key.secret).map_err(|_| StorageStateError::InvalidValue)?;
+    mac.update(ATOMIC_SNAPSHOT_DOMAIN);
+    mac.update(&record.program.operation());
+    mac.update(&bytes);
+    bytes.extend_from_slice(&mac.finalize().into_bytes());
+    Ok(bytes)
+}
+
+fn decode_atomic_snapshot_record(
+    operation: [u8; 16],
+    encoded: &[u8],
+    key: &StorageStateKey,
+) -> Result<AtomicDatasetSnapshotRecordV1, StorageStateError> {
+    let body_length = encoded
+        .len()
+        .checked_sub(MAC_BYTES)
+        .ok_or(StorageStateError::CorruptRecord)?;
+    let (body, tag) = encoded.split_at(body_length);
+    let mut mac =
+        HmacSha256::new_from_slice(&key.secret).map_err(|_| StorageStateError::InvalidValue)?;
+    mac.update(ATOMIC_SNAPSHOT_DOMAIN);
+    mac.update(&operation);
+    mac.update(body);
+    mac.verify_slice(tag)
+        .map_err(|_| StorageStateError::CorruptRecord)?;
+    let mut body = body;
+    if take(&mut body, 8)? != ATOMIC_SNAPSHOT_MAGIC
+        || u16::from_be_bytes(take_array(&mut body)?) != ATOMIC_SNAPSHOT_VERSION
+    {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let phase = match take(&mut body, 1)?[0] {
+        1 => AtomicDatasetSnapshotPhaseV1::Prepared,
+        2 => AtomicDatasetSnapshotPhaseV1::Ambiguous,
+        3 => AtomicDatasetSnapshotPhaseV1::Committed,
+        _ => return Err(StorageStateError::CorruptRecord),
+    };
+    if take(&mut body, 16)? != key.key_id {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let program_length = usize::try_from(u32::from_be_bytes(take_array(&mut body)?))
+        .map_err(|_| StorageStateError::CorruptRecord)?;
+    let program = crate::DormantAtomicDatasetSnapshotV1::from_canonical_bytes(take(
+        &mut body,
+        program_length,
+    )?)
+    .map_err(|_| StorageStateError::CorruptRecord)?;
+    let observation = ObjectDigest::from_bytes(take_array(&mut body)?);
+    if !body.is_empty() || program.operation() != operation {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let observation = match (phase, observation.as_bytes() == &[0; 32]) {
+        (AtomicDatasetSnapshotPhaseV1::Committed, false) => Some(observation),
+        (
+            AtomicDatasetSnapshotPhaseV1::Prepared | AtomicDatasetSnapshotPhaseV1::Ambiguous,
+            true,
+        ) => None,
+        _ => return Err(StorageStateError::CorruptRecord),
+    };
+    Ok(AtomicDatasetSnapshotRecordV1 {
+        phase,
+        program,
+        observation,
+    })
+}
+
+fn load_atomic_snapshot_records(
+    journal: &Journal,
+    key: &StorageStateKey,
+) -> Result<BTreeMap<[u8; 16], AtomicDatasetSnapshotRecordV1>, StorageStateError> {
+    let mut records = BTreeMap::new();
+    for (record_key, bytes) in journal.records(RecordNamespace::Effect) {
+        let Some(operation) = record_key
+            .strip_prefix(ATOMIC_SNAPSHOT_KEY_PREFIX)
+            .and_then(|value| <[u8; 16]>::try_from(value).ok())
+        else {
+            continue;
+        };
+        let record = decode_atomic_snapshot_record(operation, bytes, key)?;
+        if records.insert(operation, record).is_some() {
+            return Err(StorageStateError::CorruptRecord);
+        }
+    }
+    Ok(records)
+}
+
+fn take<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8], StorageStateError> {
+    if bytes.len() < length {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let (value, rest) = bytes.split_at(length);
+    *bytes = rest;
+    Ok(value)
+}
+
+fn take_array<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], StorageStateError> {
+    take(bytes, N)?
+        .try_into()
+        .map_err(|_| StorageStateError::CorruptRecord)
+}
+
 fn validate_durable_records(
     records: &BTreeMap<[u8; 16], DurableRecord>,
     catalog_transitions: &StorageCatalogTransitionProvider,
@@ -4149,11 +4517,11 @@ const fn journal_limits() -> JournalLimits {
         maximum_materialized_bytes: MAXIMUM_JOURNAL_RECORD_BYTES
             * (MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
                 + MAXIMUM_OPERATIONS * MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE as usize
-                + MAXIMUM_OPERATIONS
+                + MAXIMUM_OPERATIONS * 2
                 + GLOBAL_MATERIALIZED_RECORDS),
         maximum_materialized_records: MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
             + MAXIMUM_OPERATIONS * MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE as usize
-            + MAXIMUM_OPERATIONS
+            + MAXIMUM_OPERATIONS * 2
             + GLOBAL_MATERIALIZED_RECORDS,
     }
 }

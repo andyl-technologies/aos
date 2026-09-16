@@ -35,6 +35,7 @@ pub mod session;
 mod source_binding;
 mod source_realization;
 pub mod storage_inventory;
+pub mod terminal_commit;
 
 pub use authenticated_session::{
     AuthenticatedBrokerSessionError, AuthenticatedBrokerSessionStateV1,
@@ -98,6 +99,10 @@ pub use storage_inventory::{
     MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS, ValidatedStorageInventory,
     ValidatedStorageWorkspace, decode_storage_resource_inventory_request,
     decode_storage_resource_inventory_response,
+};
+pub use terminal_commit::{
+    BROKER_TERMINAL_COMMIT_VERIFIER_BYTES, BrokerTerminalCommitBindingV1,
+    BrokerTerminalCommitReceiptV1, BrokerTerminalCommitVerifierV1,
 };
 
 mod runtime_template;

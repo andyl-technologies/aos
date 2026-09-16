@@ -1,6 +1,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     verify_sandbox_compatibility()?;
     verify_sandbox_local_compatibility()?;
+    verify_sandbox_coordinator_compatibility()?;
 
     connectrpc_build::Config::new()
         .files(&[
@@ -11,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "src/proto/aos/hub/v1/hub.proto",
             "src/proto/aos/sandbox/v1/sandbox.proto",
             "src/proto/aos/sandbox/local/v1/brokers.proto",
+            "src/proto/aos/sandbox/coordinator/v1/coordinator.proto",
         ])
         .includes(&["src/proto/"])
         .include_file("_connectrpc.rs")
@@ -18,8 +20,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn verify_sandbox_coordinator_compatibility() -> Result<(), Box<dyn std::error::Error>> {
+    let source = include_str!("src/proto/aos/sandbox/coordinator/v1/coordinator.proto");
+    // This fingerprint covers the complete comment-free schema, including
+    // syntax/package declarations, every message and enum field's spelling,
+    // type, cardinality, number, oneof membership, and every RPC signature.
+    // A V1 compatibility edit therefore requires an explicit baseline review.
+    const EXPECTED_COORDINATOR_V1_FINGERPRINT: u64 = 0xd99c_ce9e_ffb7_be9e;
+    let actual = complete_schema_fingerprint(source);
+    if actual != EXPECTED_COORDINATOR_V1_FINGERPRINT {
+        return Err(std::io::Error::other(format!(
+            "sandbox coordinator v1 compatibility fingerprint changed: expected \
+             {EXPECTED_COORDINATOR_V1_FINGERPRINT:#018x}, found {actual:#018x}"
+        ))
+        .into());
+    }
+    println!("cargo:rerun-if-changed=src/proto/aos/sandbox/coordinator/v1/coordinator.proto");
+    Ok(())
+}
+
+fn complete_schema_fingerprint(source: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut fingerprint = FNV_OFFSET;
+    let mut first = true;
+    for declaration in source
+        .lines()
+        .filter_map(|line| line.split("//").next())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if !first {
+            fingerprint ^= u64::from(b'\n');
+            fingerprint = fingerprint.wrapping_mul(FNV_PRIME);
+        }
+        for byte in declaration.bytes() {
+            fingerprint ^= u64::from(byte);
+            fingerprint = fingerprint.wrapping_mul(FNV_PRIME);
+        }
+        first = false;
+    }
+    fingerprint
+}
+
 fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>> {
     let source = include_str!("src/proto/aos/sandbox/local/v1/brokers.proto");
+    // This covers the complete comment-free V1 schema rather than a sample of
+    // declarations: all 22 method tags, every enum value, message field/type/
+    // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xd281_6fe3_3423_9abc;
+    let actual = complete_schema_fingerprint(source);
+    if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
+        return Err(std::io::Error::other(format!(
+            "sandbox local v1 compatibility fingerprint changed: expected \
+             {EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT:#018x}, found {actual:#018x}"
+        ))
+        .into());
+    }
     let fixture = include_str!("src/proto/aos/sandbox/local/v1/compatibility-v1.txt");
     let source_declarations = source
         .lines()
@@ -85,9 +142,12 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     verify_scoped_declarations(
         &source_declarations,
         "service HostBroker {",
-        &["rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectResponse);"],
+        &[
+            "rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectResponse);",
+        ],
     )?;
     println!("cargo:rerun-if-changed=src/proto/aos/sandbox/local/v1/compatibility-v1.txt");
+    println!("cargo:rerun-if-changed=src/proto/aos/sandbox/local/v1/brokers.proto");
     Ok(())
 }
 
@@ -122,9 +182,37 @@ fn verify_scoped_declarations(
 fn verify_sandbox_compatibility() -> Result<(), Box<dyn std::error::Error>> {
     let source = include_str!("src/proto/aos/sandbox/v1/sandbox.proto");
     let fixture = include_str!("src/proto/aos/sandbox/v1/compatibility-v1.txt");
+    let source_declarations = source.lines().map(str::trim).collect::<Vec<_>>();
+    let mut service_scope = None;
     for (index, line) in fixture.lines().enumerate() {
         let required = line.trim();
         if required.is_empty() || required.starts_with('#') {
+            continue;
+        }
+        if required.starts_with("service ") && required.ends_with(" {") {
+            service_scope = Some(required);
+            verify_scoped_declarations(&source_declarations, required, &[])?;
+            continue;
+        }
+        if required.starts_with("rpc ") {
+            let service = service_scope.ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "sandbox v1 compatibility RPC has no service scope at line {}: {required}",
+                    index + 1
+                ))
+            })?;
+            verify_scoped_declarations(&source_declarations, service, &[required]).map_err(
+                |_| {
+                    std::io::Error::other(format!(
+                        "sandbox v1 compatibility RPC is absent from aos.sandbox.v1.{} at line {}: {required}",
+                        service
+                            .strip_prefix("service ")
+                            .and_then(|value| value.strip_suffix(" {"))
+                            .unwrap_or(service),
+                        index + 1
+                    ))
+                },
+            )?;
             continue;
         }
         if !source.contains(required) {
@@ -135,6 +223,25 @@ fn verify_sandbox_compatibility() -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
     }
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ExecutionControlRequest {",
+        &["MutationContext mutation = 6;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ExecutionControlResult {",
+        &["Operation operation = 4;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ForkSnapshotRequest {",
+        &[
+            "repeated Feature required_features = 7;",
+            "bytes expected_project_resource_version = 8;",
+            "Duration operation_timeout = 9;",
+        ],
+    )?;
     println!("cargo:rerun-if-changed=src/proto/aos/sandbox/v1/compatibility-v1.txt");
     Ok(())
 }

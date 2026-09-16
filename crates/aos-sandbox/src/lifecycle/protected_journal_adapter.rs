@@ -896,6 +896,34 @@ pub enum DomainRecoveryV1<S: ProtectedDomainSchemaV1> {
     Diverged(DomainOutcomeUnknownV1<S>),
 }
 
+/// Retains a prepared transaction when commit preflight fails before mutation.
+#[must_use]
+pub enum DomainRetainedCommitV1<S: ProtectedDomainSchemaV1> {
+    /// Commit reached its ordinary applied or outcome-unknown classification.
+    Outcome(DomainCommitOutcomeV1<S>),
+    /// Preflight failed without consuming the exact prepared transaction.
+    Retryable {
+        /// Exact transaction remains move-only retry custody.
+        prepared: PreparedDomainTransactionV1<S>,
+        /// Fail-closed preflight diagnostic.
+        error: ProtectedDomainJournalErrorV1,
+    },
+}
+
+/// Retains an outcome-unknown token when cold recovery cannot be evaluated.
+#[must_use]
+pub enum DomainRetainedRecoveryV1<S: ProtectedDomainSchemaV1> {
+    /// Recovery reached its ordinary applied, retry, or diverged classification.
+    Outcome(DomainRecoveryV1<S>),
+    /// Reopen validation failed before consuming the opaque pending token.
+    Retryable {
+        /// Exact pending transaction remains available for another cold reopen.
+        pending: DomainOutcomeUnknownV1<S>,
+        /// Fail-closed protected replay diagnostic.
+        error: ProtectedDomainJournalErrorV1,
+    },
+}
+
 /// Distinguishes capacity-reserved admission success from ambiguous durability.
 #[must_use = "ambiguous capacity admissions must retain their recovery token"]
 pub enum DomainCapacityAdmissionCommitOutcomeV1<S: ProtectedDomainSchemaV1> {
@@ -1876,6 +1904,72 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         self.applied(prepared).map(DomainCommitOutcomeV1::Applied)
     }
 
+    /// Commits while retaining the exact prepared token on preflight failure.
+    pub fn commit_retaining(
+        &mut self,
+        mut prepared: PreparedDomainTransactionV1<S>,
+    ) -> DomainRetainedCommitV1<S> {
+        if self.validate_snapshot(&prepared.snapshot).is_err() {
+            if let Err(error) = self.replay() {
+                return DomainRetainedCommitV1::Retryable { prepared, error };
+            }
+            if values_match(self.journal, &prepared, true) {
+                return match self.applied_retaining(prepared) {
+                    Ok(applied) => {
+                        DomainRetainedCommitV1::Outcome(DomainCommitOutcomeV1::Applied(applied))
+                    }
+                    Err((prepared, _)) => {
+                        DomainRetainedCommitV1::Outcome(DomainCommitOutcomeV1::OutcomeUnknown {
+                            pending: DomainOutcomeUnknownV1 { prepared },
+                            cause: JournalError::AuthorityPreflightMismatch,
+                        })
+                    }
+                };
+            }
+            if !values_match(self.journal, &prepared, false) {
+                return DomainRetainedCommitV1::Retryable {
+                    prepared,
+                    error: ProtectedDomainJournalErrorV1::CompareAndSwapFailed,
+                };
+            }
+            prepared.snapshot = match self.snapshot() {
+                Ok(snapshot) => snapshot,
+                Err(error) => return DomainRetainedCommitV1::Retryable { prepared, error },
+            };
+        }
+        if let Err(error) = validate_expected_values(self.journal, &prepared, false) {
+            return DomainRetainedCommitV1::Retryable { prepared, error };
+        }
+        if let Err(error) = self
+            .journal
+            .preflight_transactions(std::slice::from_ref(&prepared.transaction))
+            .map_err(ProtectedDomainJournalErrorV1::from)
+        {
+            return DomainRetainedCommitV1::Retryable { prepared, error };
+        }
+        if let Err(cause) = self.journal.commit(&prepared.transaction) {
+            return DomainRetainedCommitV1::Outcome(DomainCommitOutcomeV1::OutcomeUnknown {
+                pending: DomainOutcomeUnknownV1 { prepared },
+                cause,
+            });
+        }
+        if validate_expected_values(self.journal, &prepared, true).is_err() {
+            return DomainRetainedCommitV1::Outcome(DomainCommitOutcomeV1::OutcomeUnknown {
+                pending: DomainOutcomeUnknownV1 { prepared },
+                cause: JournalError::AuthorityPreflightMismatch,
+            });
+        }
+        match self.applied_retaining(prepared) {
+            Ok(applied) => DomainRetainedCommitV1::Outcome(DomainCommitOutcomeV1::Applied(applied)),
+            Err((prepared, _)) => {
+                DomainRetainedCommitV1::Outcome(DomainCommitOutcomeV1::OutcomeUnknown {
+                    pending: DomainOutcomeUnknownV1 { prepared },
+                    cause: JournalError::AuthorityPreflightMismatch,
+                })
+            }
+        }
+    }
+
     /// Resolves an ambiguous transaction after protected reopen.
     ///
     /// # Errors
@@ -1905,6 +1999,56 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         }))
     }
 
+    /// Recovers while retaining the opaque pending token on transient failure.
+    pub fn recover_retaining(
+        &self,
+        pending: DomainOutcomeUnknownV1<S>,
+    ) -> DomainRetainedRecoveryV1<S> {
+        if let Err(error) = self.replay() {
+            return DomainRetainedRecoveryV1::Retryable { pending, error };
+        }
+        let prepared = pending.prepared;
+        let before = values_match(self.journal, &prepared, false);
+        let after = values_match(self.journal, &prepared, true);
+        if after {
+            return match self.applied_retaining(prepared) {
+                Ok(applied) => {
+                    DomainRetainedRecoveryV1::Outcome(DomainRecoveryV1::Applied(applied))
+                }
+                Err((prepared, error)) => DomainRetainedRecoveryV1::Retryable {
+                    pending: DomainOutcomeUnknownV1 { prepared },
+                    error,
+                },
+            };
+        }
+        if before {
+            let mut prepared = prepared;
+            prepared.snapshot = match self.snapshot() {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    return DomainRetainedRecoveryV1::Retryable {
+                        pending: DomainOutcomeUnknownV1 { prepared },
+                        error,
+                    };
+                }
+            };
+            if let Err(error) = self
+                .journal
+                .preflight_transactions(std::slice::from_ref(&prepared.transaction))
+                .map_err(ProtectedDomainJournalErrorV1::from)
+            {
+                return DomainRetainedRecoveryV1::Retryable {
+                    pending: DomainOutcomeUnknownV1 { prepared },
+                    error,
+                };
+            }
+            return DomainRetainedRecoveryV1::Outcome(DomainRecoveryV1::Retry(prepared));
+        }
+        DomainRetainedRecoveryV1::Outcome(DomainRecoveryV1::Diverged(DomainOutcomeUnknownV1 {
+            prepared,
+        }))
+    }
+
     fn validate_snapshot(
         &self,
         snapshot: &ProtectedDomainSnapshotV1<S>,
@@ -1925,6 +2069,40 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
     ) -> Result<AppliedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
         let snapshot = self.snapshot()?;
         let records = postcommit_records(&prepared, &self.validator)?;
+        let capability = Some(DomainPostcommitCapabilityV1 {
+            instance: Arc::clone(&self.instance),
+            transaction: prepared.digest,
+            set_digest: prepared.set_digest,
+            sequence: snapshot.sequence,
+            root: snapshot.root,
+            records,
+            marker: PhantomData,
+        });
+        Ok(AppliedDomainTransactionV1 {
+            transaction: prepared.digest,
+            snapshot,
+            capability,
+        })
+    }
+
+    fn applied_retaining(
+        &self,
+        prepared: PreparedDomainTransactionV1<S>,
+    ) -> Result<
+        AppliedDomainTransactionV1<S>,
+        (
+            PreparedDomainTransactionV1<S>,
+            ProtectedDomainJournalErrorV1,
+        ),
+    > {
+        let snapshot = match self.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Err((prepared, error)),
+        };
+        let records = match postcommit_records(&prepared, &self.validator) {
+            Ok(records) => records,
+            Err(error) => return Err((prepared, error)),
+        };
         let capability = Some(DomainPostcommitCapabilityV1 {
             instance: Arc::clone(&self.instance),
             transaction: prepared.digest,

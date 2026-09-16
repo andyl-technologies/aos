@@ -52,7 +52,7 @@ pub(crate) struct PublisherCapacityProtectedStoreSettlementV1<'authority, 'journ
 }
 
 impl PublisherCapacityProtectedStoreSettlementV1<'_, '_> {
-    fn reclaim_unsettled_capacity(mut self) -> PublisherCompletionCapacityV1 {
+    pub(crate) fn reclaim_unsettled_capacity(mut self) -> PublisherCompletionCapacityV1 {
         if self.settled {
             fatal_settlement();
         }
@@ -136,6 +136,112 @@ impl<'journal> PublisherProtectedJournalOwnerV1<'journal> {
             )?,
             capacities: BTreeMap::new(),
         })
+    }
+
+    /// Replays the complete typed authority owned by this protected journal.
+    pub(crate) fn replay_authority(
+        &self,
+    ) -> Result<Option<super::ProtectedLedgerReplayV1>, PublisherProtectedJournalOwnerErrorV1> {
+        Ok(self.authority.replay_authority()?)
+    }
+
+    /// Commits one state-only reducer successor with exact ambiguity recovery.
+    pub(crate) fn commit_state_branch(
+        &mut self,
+        transaction_id: [u8; 16],
+        branch: &ProtectedMutationBranchV1,
+    ) -> Result<ProtectedStoreCommitToken, PublisherProtectedJournalOwnerErrorV1> {
+        let mut prepared = self.authority.plan_branch(transaction_id, branch)?;
+        loop {
+            match self.authority.commit(prepared) {
+                Ok(PublisherAdmissionCommitOutcomeV1::Applied(applied)) => {
+                    return Ok(applied_acknowledgement(applied));
+                }
+                Ok(PublisherAdmissionCommitOutcomeV1::OutcomeUnknown { pending, cause: _ }) => {
+                    match self.authority.recover(pending) {
+                        Ok(PublisherAdmissionJournalRecoveryV1::Applied(applied)) => {
+                            return Ok(applied_acknowledgement(applied));
+                        }
+                        Ok(PublisherAdmissionJournalRecoveryV1::Retry(retry)) => prepared = retry,
+                        Ok(PublisherAdmissionJournalRecoveryV1::Diverged(_)) | Err(_) => {
+                            fatal_settlement();
+                        }
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    /// Borrows the exact retained capacity for one completion effect.
+    pub(crate) fn completion_store(
+        &mut self,
+        operation: OperationId,
+    ) -> Result<
+        PublisherCapacityProtectedStoreSettlementV1<'_, 'journal>,
+        PublisherProtectedJournalOwnerErrorV1,
+    > {
+        let capacity = self.take_capacity(operation)?;
+        Ok(self.authority.protected_store_capacity_settlement(capacity))
+    }
+
+    /// Restores capacity after a reducer rejected work before any effect began.
+    pub(crate) fn restore_completion_capacity(
+        &mut self,
+        capacity: PublisherCompletionCapacityV1,
+    ) -> Result<(), PublisherProtectedJournalOwnerErrorV1> {
+        self.retain_capacity(capacity)
+    }
+
+    /// Ensures cold replay retained the exact issuance capacity before completion.
+    pub(crate) fn ensure_completion_capacity(
+        &mut self,
+        admission_transaction_id: [u8; 16],
+        operation: OperationId,
+    ) -> Result<(), PublisherProtectedJournalOwnerErrorV1> {
+        if self.capacities.contains_key(operation.as_bytes()) {
+            return Ok(());
+        }
+        self.recover_completion_capacity(admission_transaction_id)
+    }
+
+    /// Recovers exact capacity when a distinct recovery request closes a permit.
+    pub(crate) fn ensure_recovery_capacity(
+        &mut self,
+        operation: OperationId,
+    ) -> Result<(), PublisherProtectedJournalOwnerErrorV1> {
+        if self.capacities.contains_key(operation.as_bytes()) {
+            return Ok(());
+        }
+        let observation = match self.authority.recover_current_operation(operation)? {
+            PublisherAdmissionColdRecoveryV1::ObservePending(observation) => observation,
+            PublisherAdmissionColdRecoveryV1::StateOnly
+            | PublisherAdmissionColdRecoveryV1::Terminal(_) => {
+                return Err(PublisherProtectedJournalOwnerErrorV1::Capacity);
+            }
+        };
+        let mut validated = observation.consume(&self.authority)?;
+        let capacity = validated
+            .take_completion_capacity()
+            .ok_or(PublisherProtectedJournalOwnerErrorV1::Capacity)?;
+        drop(validated);
+        self.retain_capacity(capacity)
+    }
+
+    /// Commits one recovery terminal while atomically releasing exact capacity.
+    pub(crate) fn commit_recovery_capacity_branch(
+        &mut self,
+        transaction_id: [u8; 16],
+        operation: OperationId,
+        branch: &ProtectedMutationBranchV1,
+    ) -> Result<ProtectedStoreCommitToken, PublisherProtectedJournalOwnerErrorV1> {
+        let capacity = self.take_capacity(operation)?;
+        Ok(settle_completion_capacity(
+            &mut self.authority,
+            transaction_id,
+            branch,
+            capacity,
+        ))
     }
 
     /// Commits one permit-issuance branch and retains its exact capacity.

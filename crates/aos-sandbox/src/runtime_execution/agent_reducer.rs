@@ -7,10 +7,16 @@ use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_core::{ExecutionId, ObjectDigest};
 
-use crate::{
+use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentExecutionPhaseV1, AgentFeatureSetV1,
-    AgentHandshakeRequestV1, AgentHandshakeResponseV1, AgentOperationIdV1, AgentOperationRequestV1,
-    AgentOperationSequenceV1, AgentRuntimeBindingV1, AgentSessionBindingV1, InvalidAgentModel,
+    AgentFeatureV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1, AgentOperationIdV1,
+    AgentOperationRequestV1, AgentOperationSequenceV1, AgentRuntimeBindingV1,
+    AgentSessionBindingV1, InvalidAgentModel,
+};
+
+use super::agent_checkpoint::{
+    AgentCheckpointCandidateV1, AgentDurableCheckpointV1, OutstandingCheckpointState,
+    ReducerCheckpointState, SessionCheckpointState, checkpoint_from_reducer, reopen_reducer,
 };
 
 const HANDSHAKE_SIGNATURE_DOMAIN: &[u8] = b"aos-sandbox-agent-handshake-signature-v1\0";
@@ -183,7 +189,7 @@ impl AgentOperationReservationV1 {
 }
 
 /// Owns atomic sequence reservation and outcome completion for the agent session.
-pub trait AgentOperationCas {
+pub(super) trait AgentOperationCas {
     /// Atomically reserves the exact next sequence and request binding.
     ///
     /// # Errors
@@ -207,7 +213,7 @@ pub trait AgentOperationCas {
         &mut self,
         reservation: &AgentOperationReservationV1,
         outcome: &AgentExecutionOutcomeV1,
-    ) -> Result<ObjectDigest, AgentOperationCasError>;
+    ) -> Result<AgentOutcomeStoreTransitionV1, AgentOperationCasError>;
 }
 
 /// Borrows one canonical protected-store history row for reducer replay.
@@ -243,6 +249,22 @@ pub enum AgentReservationStoreTransitionV1 {
         /// Predicted exact reservation-store commitment.
         store_commitment: ObjectDigest,
         /// Commitment to the exact predecessor sequence head.
+        predecessor_commitment: ObjectDigest,
+        /// Store-authenticated binding of the ambiguity metadata.
+        recovery_binding: ObjectDigest,
+    },
+}
+
+/// Reports a committed terminal outcome or exact store ambiguity metadata.
+#[must_use]
+pub enum AgentOutcomeStoreTransitionV1 {
+    /// The exact terminal outcome is durably committed.
+    Committed(ObjectDigest),
+    /// The outcome append may have committed and must be cold-reopened.
+    RecoveryRequired {
+        /// Commitment to the exact terminal outcome.
+        outcome_commitment: ObjectDigest,
+        /// Commitment to the reservation record preceding the append.
         predecessor_commitment: ObjectDigest,
         /// Store-authenticated binding of the ambiguity metadata.
         recovery_binding: ObjectDigest,
@@ -328,6 +350,94 @@ impl AgentReservationRecoveryTokenV1 {
     }
 }
 
+/// Retains one exact may-have-committed terminal outcome across cold reopen.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AgentOutcomeRecoveryTokenV1 {
+    session: AgentSessionBindingV1,
+    sequence: AgentOperationSequenceV1,
+    operation_id: AgentOperationIdV1,
+    request_commitment: ObjectDigest,
+    store_commitment: ObjectDigest,
+    outcome_commitment: ObjectDigest,
+    predecessor_commitment: ObjectDigest,
+    recovery_binding: ObjectDigest,
+}
+
+impl AgentOutcomeRecoveryTokenV1 {
+    fn from_store_ambiguity(
+        reservation: &AgentOperationReservationV1,
+        outcome: &AgentExecutionOutcomeV1,
+        outcome_commitment: ObjectDigest,
+        predecessor_commitment: ObjectDigest,
+        recovery_binding: ObjectDigest,
+    ) -> Result<Self, AgentOperationCasError> {
+        if outcome_commitment != outcome.outcome_commitment()
+            || predecessor_commitment.as_bytes() == &[0; 32]
+            || recovery_binding.as_bytes() == &[0; 32]
+        {
+            return Err(AgentOperationCasError::InvalidReceipt);
+        }
+        Ok(Self {
+            session: reservation.session(),
+            sequence: reservation.sequence(),
+            operation_id: reservation.operation_id(),
+            request_commitment: reservation.request_commitment(),
+            store_commitment: reservation.store_commitment(),
+            outcome_commitment,
+            predecessor_commitment,
+            recovery_binding,
+        })
+    }
+
+    /// Returns the exact session binding.
+    #[must_use]
+    pub const fn session(&self) -> AgentSessionBindingV1 {
+        self.session
+    }
+
+    /// Returns the exact operation sequence.
+    #[must_use]
+    pub const fn sequence(&self) -> AgentOperationSequenceV1 {
+        self.sequence
+    }
+
+    /// Returns the exact operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> AgentOperationIdV1 {
+        self.operation_id
+    }
+
+    /// Returns the exact request commitment.
+    #[must_use]
+    pub const fn request_commitment(&self) -> ObjectDigest {
+        self.request_commitment
+    }
+
+    /// Returns the protected reservation commitment.
+    #[must_use]
+    pub const fn store_commitment(&self) -> ObjectDigest {
+        self.store_commitment
+    }
+
+    /// Returns the exact terminal outcome commitment.
+    #[must_use]
+    pub const fn outcome_commitment(&self) -> ObjectDigest {
+        self.outcome_commitment
+    }
+
+    /// Returns the exact pre-append record commitment.
+    #[must_use]
+    pub const fn predecessor_commitment(&self) -> ObjectDigest {
+        self.predecessor_commitment
+    }
+
+    /// Returns the protected store's ambiguity binding.
+    #[must_use]
+    pub const fn recovery_binding(&self) -> ObjectDigest {
+        self.recovery_binding
+    }
+}
+
 /// Reports protected recovery of a may-have-committed reservation.
 #[must_use]
 pub enum AgentRecoveredReservationV1 {
@@ -399,9 +509,10 @@ impl SignedRecoveredAgentOutcomeV1 {
 pub fn verify_signed_recovered_agent_outcome_v1(
     request: &AgentOperationRequestV1,
     public_key: &[u8; 32],
+    authority_binding: ObjectDigest,
     signed: SignedRecoveredAgentOutcomeV1,
 ) -> Result<AuthenticatedRecoveredAgentOutcomeV1, AgentOperationCasError> {
-    if public_key == &[0; 32] {
+    if public_key == &[0; 32] || authority_binding.as_bytes() == &[0; 32] {
         return Err(AgentOperationCasError::InvalidReceipt);
     }
     let outcome = signed.outcome;
@@ -420,7 +531,6 @@ pub fn verify_signed_recovered_agent_outcome_v1(
         .verify_strict(&message, &Signature::from_bytes(&signed.signature))
         .map_err(|_| AgentOperationCasError::InvalidReceipt)?;
     let provenance = recovered_outcome_provenance(public_key, &message, &signed.signature);
-    let authority_binding = agent_recovery_authority_binding_v1(*public_key);
     Ok(AuthenticatedRecoveredAgentOutcomeV1 {
         outcome,
         provenance,
@@ -442,15 +552,6 @@ pub fn recovered_agent_outcome_signing_message_v1(
     digest.update(request.request_commitment().as_bytes());
     digest.update(outcome.outcome_commitment().as_bytes());
     digest.finalize().into()
-}
-
-/// Derives the key identity retained by protected agent provisioning and storage.
-#[must_use]
-pub fn agent_recovery_authority_binding_v1(public_key: [u8; 32]) -> ObjectDigest {
-    let mut digest = Sha256::new();
-    digest.update(b"aos-sandbox-agent-recovery-authority-v1\0");
-    digest.update(public_key);
-    ObjectDigest::from_bytes(digest.finalize().into())
 }
 
 fn recovered_outcome_provenance(
@@ -497,7 +598,7 @@ fn recovered_outcome_shape_is_terminal(
 }
 
 /// Authenticates outstanding operation state after reopening a checkpoint.
-pub trait AgentOperationRecoveryCas {
+pub(super) trait AgentOperationRecoveryCas {
     /// Resolves an ambiguous reservation without creating another transaction.
     ///
     /// # Errors
@@ -522,6 +623,19 @@ pub trait AgentOperationRecoveryCas {
         request: &AgentOperationRequestV1,
     ) -> Result<AgentRecoveredOperationV1, AgentOperationCasError>;
 
+    /// Resolves one ambiguous terminal append without writing or redispatching.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgentOperationCasError`] for a foreign token, substituted
+    /// outcome, corrupt predecessor state, or unavailable protected storage.
+    fn recover_outcome_commit(
+        &mut self,
+        token: &AgentOutcomeRecoveryTokenV1,
+        reservation: &AgentOperationReservationV1,
+        outcome: &AgentExecutionOutcomeV1,
+    ) -> Result<AgentRecoveredOutcomeCommitV1, AgentOperationCasError>;
+
     /// Resolves a Reserved record only from authenticated process observation.
     ///
     /// # Errors
@@ -533,7 +647,16 @@ pub trait AgentOperationRecoveryCas {
         reservation: &AgentOperationReservationV1,
         request: &AgentOperationRequestV1,
         authenticated: AuthenticatedRecoveredAgentOutcomeV1,
-    ) -> Result<ObjectDigest, AgentOperationCasError>;
+    ) -> Result<AgentOutcomeStoreTransitionV1, AgentOperationCasError>;
+}
+
+/// Reports the cold-reopened result of one ambiguous terminal append.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentRecoveredOutcomeCommitV1 {
+    /// The exact terminal outcome is present and authenticated.
+    Committed(ObjectDigest),
+    /// The exact predecessor remains present, proving the append absent.
+    Absent,
 }
 
 /// Names the guest-local action authorized by a prepared operation.
@@ -604,7 +727,7 @@ pub enum AgentReplayDispositionV1 {
     /// The byte-identical outstanding request must be resolved, not reissued.
     OutstandingExact,
     /// Reservation durability is ambiguous and is retained for checkpoint recovery.
-    ReservationRecoveryRequired,
+    ReservationRecoveryRequired(AgentReservationRecoveryTokenV1),
 }
 
 struct SessionState {
@@ -651,6 +774,78 @@ pub struct GuestAgentReducerV1 {
 }
 
 impl GuestAgentReducerV1 {
+    pub(super) fn recovery_cursor(
+        &self,
+    ) -> Result<(AgentSessionBindingV1, AgentOperationSequenceV1), AgentReducerError> {
+        let session = self.session.as_ref().ok_or(AgentReducerError::NoSession)?;
+        Ok((session.binding, session.next_sequence))
+    }
+
+    pub(super) fn outstanding_for_reopen(
+        &self,
+    ) -> Option<(&AgentOperationReservationV1, &AgentOperationRequestV1)> {
+        self.session
+            .as_ref()
+            .and_then(|session| session.outstanding.as_ref())
+            .and_then(|outstanding| match outstanding {
+                OutstandingOperation::Reserved {
+                    reservation,
+                    request,
+                } => Some((reservation, request)),
+                OutstandingOperation::ReservationRecovery { .. } => None,
+            })
+    }
+
+    pub(super) fn checkpointed_prepared(
+        &self,
+        request: &AgentOperationRequestV1,
+    ) -> Result<PreparedAgentOperationV1, AgentReducerError> {
+        let (reservation, retained) = self
+            .outstanding_for_reopen()
+            .ok_or(AgentReducerError::OutstandingRecordMissing)?;
+        if retained != request {
+            return Err(AgentReducerError::CasReceiptMismatch);
+        }
+        Ok(PreparedAgentOperationV1 {
+            request: retained.clone(),
+            reservation: *reservation,
+            decision: self.validate_decision(retained)?,
+        })
+    }
+
+    pub(super) fn checkpointed_outstanding_prepared(
+        &self,
+    ) -> Result<PreparedAgentOperationV1, AgentReducerError> {
+        let request = self
+            .outstanding_for_reopen()
+            .map(|(_, request)| request.clone())
+            .ok_or(AgentReducerError::OutstandingRecordMissing)?;
+        self.checkpointed_prepared(&request)
+    }
+
+    pub(super) fn validate_unreserved_successor(
+        &self,
+        request: &AgentOperationRequestV1,
+    ) -> Result<(), AgentReducerError> {
+        let session = self.session.as_ref().ok_or(AgentReducerError::NoSession)?;
+        if session.poisoned || session.outstanding.is_some() {
+            return Err(AgentReducerError::SessionRecoveryRequired);
+        }
+        if request.session() != session.binding || request.sequence() != session.next_sequence {
+            return Err(AgentReducerError::SequenceConflict);
+        }
+        self.validate_decision(request).map(|_| ())
+    }
+
+    pub(super) fn contains_completed_outcome(&self, outcome: &AgentExecutionOutcomeV1) -> bool {
+        self.session.as_ref().is_some_and(|session| {
+            session
+                .completed_history
+                .iter()
+                .any(|retained| retained == outcome)
+        })
+    }
+
     /// Creates an unbound reducer for exact process-local provisioning.
     #[must_use]
     pub fn new(provisioning: AgentProvisioningV1) -> Self {
@@ -721,7 +916,7 @@ impl GuestAgentReducerV1 {
     /// Returns [`AgentReducerError`] for absent/superseded session, sequence
     /// gap/rollback/equivocation, another outstanding request, invalid state,
     /// missing feature, or durable CAS failure.
-    pub fn prepare_operation<C: AgentOperationCas>(
+    pub(super) fn prepare_operation<C: AgentOperationCas>(
         &mut self,
         request: AgentOperationRequestV1,
         cas: &mut C,
@@ -785,7 +980,7 @@ impl GuestAgentReducerV1 {
                 session.outstanding =
                     Some(OutstandingOperation::ReservationRecovery { token, request });
                 session.poisoned = true;
-                return Ok(AgentReplayDispositionV1::ReservationRecoveryRequired);
+                return Ok(AgentReplayDispositionV1::ReservationRecoveryRequired(token));
             }
             Err(error) => return Err(error.into()),
         };
@@ -816,13 +1011,46 @@ impl GuestAgentReducerV1 {
         ))
     }
 
+    pub(super) fn install_cold_recovered_reservation(
+        &mut self,
+        request: AgentOperationRequestV1,
+        reservation: AgentOperationReservationV1,
+    ) -> Result<PreparedAgentOperationV1, AgentReducerError> {
+        let session = self.session.as_ref().ok_or(AgentReducerError::NoSession)?;
+        if session.poisoned || session.outstanding.is_some() {
+            return Err(AgentReducerError::SessionRecoveryRequired);
+        }
+        if request.session() != session.binding
+            || request.sequence() != session.next_sequence
+            || reservation.session() != request.session()
+            || reservation.sequence() != request.sequence()
+            || reservation.operation_id() != request.operation_id()
+            || reservation.request_commitment() != request.request_commitment()
+            || reservation.disposition() != AgentReservationDispositionV1::ExactReplay
+        {
+            return Err(AgentReducerError::CasReceiptMismatch);
+        }
+        let decision = self.validate_decision(&request)?;
+        let prepared = PreparedAgentOperationV1 {
+            request: request.clone(),
+            reservation,
+            decision,
+        };
+        let session = self.session.as_mut().ok_or(AgentReducerError::NoSession)?;
+        session.outstanding = Some(OutstandingOperation::Reserved {
+            reservation,
+            request,
+        });
+        Ok(prepared)
+    }
+
     /// Commits an effect outcome and only then advances volatile reducer state.
     ///
     /// # Errors
     ///
     /// Returns [`AgentReducerError`] for reservation mismatch, invalid state
     /// transition, malformed result, or ambiguous durable outcome commit.
-    pub fn complete_operation<C: AgentOperationCas>(
+    pub(super) fn complete_operation<C: AgentOperationCas>(
         &mut self,
         prepared: &PreparedAgentOperationV1,
         phase: AgentExecutionPhaseV1,
@@ -853,18 +1081,27 @@ impl GuestAgentReducerV1 {
         )?;
         let outcome =
             AgentExecutionOutcomeV1::new(&prepared.request, phase, result_bytes.to_vec())?;
-        let outcome_commitment = match cas.commit_operation_outcome(&prepared.reservation, &outcome)
-        {
-            Ok(commitment) => commitment,
-            Err(error) => {
-                if error == AgentOperationCasError::RecoveryRequired {
+        let outcome_commitment =
+            match cas.commit_operation_outcome(&prepared.reservation, &outcome)? {
+                AgentOutcomeStoreTransitionV1::Committed(commitment) => commitment,
+                AgentOutcomeStoreTransitionV1::RecoveryRequired {
+                    outcome_commitment,
+                    predecessor_commitment,
+                    recovery_binding,
+                } => {
+                    let token = AgentOutcomeRecoveryTokenV1::from_store_ambiguity(
+                        &prepared.reservation,
+                        &outcome,
+                        outcome_commitment,
+                        predecessor_commitment,
+                        recovery_binding,
+                    )?;
                     if let Some(session) = self.session.as_mut() {
                         session.poisoned = true;
                     }
+                    return Err(AgentReducerError::OutcomeRecoveryRequired(token));
                 }
-                return Err(error.into());
-            }
-        };
+            };
         if outcome_commitment != outcome.outcome_commitment() {
             if let Some(session) = self.session.as_mut() {
                 session.poisoned = true;
@@ -903,8 +1140,8 @@ impl GuestAgentReducerV1 {
     pub fn checkpoint(
         &self,
         checkpoint_sequence: u64,
-    ) -> Result<crate::AgentCheckpointCandidateV1, AgentReducerError> {
-        crate::checkpoint::checkpoint_from_reducer(self, checkpoint_sequence)
+    ) -> Result<AgentCheckpointCandidateV1, AgentReducerError> {
+        checkpoint_from_reducer(self, checkpoint_sequence)
     }
 
     /// Restores a reducer from canonical checkpoint data.
@@ -919,9 +1156,9 @@ impl GuestAgentReducerV1 {
     /// bytes are corrupt, or retained state violates reducer bounds.
     pub fn restore_checkpoint(
         provisioning: AgentProvisioningV1,
-        checkpoint: crate::AgentDurableCheckpointV1,
+        checkpoint: AgentDurableCheckpointV1,
     ) -> Result<Self, AgentReducerError> {
-        crate::checkpoint::reopen_reducer(provisioning, checkpoint)
+        reopen_reducer(provisioning, checkpoint)
     }
 
     /// Reconciles a checkpointed outstanding operation without reissuing it.
@@ -930,7 +1167,7 @@ impl GuestAgentReducerV1 {
     ///
     /// Returns [`AgentReducerError`] for absent/conflicting durable state or a
     /// completion that does not match the checkpointed exact request.
-    pub fn reconcile_outstanding<C: AgentOperationRecoveryCas>(
+    pub(super) fn reconcile_outstanding<C: AgentOperationRecoveryCas>(
         &mut self,
         cas: &mut C,
     ) -> Result<(), AgentReducerError> {
@@ -1012,11 +1249,11 @@ impl GuestAgentReducerV1 {
     ///
     /// Returns [`AgentReducerError`] for missing outstanding state, evidence
     /// substitution, ambiguous durability, or an invalid recovered phase.
-    pub fn resolve_reserved_outstanding<C: AgentOperationRecoveryCas>(
+    pub(super) fn resolve_reserved_outstanding<C: AgentOperationRecoveryCas>(
         &mut self,
         cas: &mut C,
         authenticated: AuthenticatedRecoveredAgentOutcomeV1,
-    ) -> Result<(), AgentReducerError> {
+    ) -> Result<AgentExecutionOutcomeV1, AgentReducerError> {
         if authenticated.authority_binding() != self.provisioning.recovery_authority_binding() {
             return Err(AgentReducerError::CasReceiptMismatch);
         }
@@ -1043,12 +1280,37 @@ impl GuestAgentReducerV1 {
             self.quiesced,
             authenticated.outcome().phase(),
         )?;
-        let expected = authenticated.outcome().outcome_commitment();
-        let committed = cas.resolve_reserved_operation(&reservation, &request, authenticated)?;
+        let outcome = authenticated.outcome().clone();
+        let expected = outcome.outcome_commitment();
+        let committed =
+            match cas.resolve_reserved_operation(&reservation, &request, authenticated)? {
+                AgentOutcomeStoreTransitionV1::Committed(commitment) => commitment,
+                AgentOutcomeStoreTransitionV1::RecoveryRequired {
+                    outcome_commitment,
+                    predecessor_commitment,
+                    recovery_binding,
+                } => {
+                    let token = AgentOutcomeRecoveryTokenV1::from_store_ambiguity(
+                        &reservation,
+                        &outcome,
+                        outcome_commitment,
+                        predecessor_commitment,
+                        recovery_binding,
+                    )?;
+                    if let Some(session) = self.session.as_mut() {
+                        session.poisoned = true;
+                    }
+                    return Err(AgentReducerError::OutcomeRecoveryRequired(token));
+                }
+            };
         if committed != expected {
+            if let Some(session) = self.session.as_mut() {
+                session.poisoned = true;
+            }
             return Err(AgentReducerError::CasReceiptMismatch);
         }
-        self.reconcile_outstanding(cas)
+        self.reconcile_outstanding(cas)?;
+        Ok(outcome)
     }
 
     fn validate_decision(
@@ -1068,7 +1330,7 @@ impl GuestAgentReducerV1 {
                 }
                 require_feature(
                     self.provisioning.features(),
-                    crate::AgentFeatureV1::ExecutionHandoff,
+                    AgentFeatureV1::ExecutionHandoff,
                 )?;
                 validate_authorized_target(request.operation(), self.provisioning.runtime())?;
                 Ok(AgentDecisionV1::HandoffExecution(*execution))
@@ -1082,10 +1344,7 @@ impl GuestAgentReducerV1 {
                     self.executions.get(execution),
                     &[AgentExecutionPhaseV1::Running],
                 )?;
-                require_feature(
-                    self.provisioning.features(),
-                    crate::AgentFeatureV1::TerminalResize,
-                )?;
+                require_feature(self.provisioning.features(), AgentFeatureV1::TerminalResize)?;
                 Ok(AgentDecisionV1::ResizeTerminal {
                     execution: *execution,
                     rows: *rows,
@@ -1105,7 +1364,7 @@ impl GuestAgentReducerV1 {
                 )?;
                 require_feature(
                     self.provisioning.features(),
-                    crate::AgentFeatureV1::ExecutionSignal,
+                    AgentFeatureV1::ExecutionSignal,
                 )?;
                 Ok(AgentDecisionV1::Signal {
                     execution: *execution,
@@ -1138,7 +1397,7 @@ impl GuestAgentReducerV1 {
                 )?;
                 require_feature(
                     self.provisioning.features(),
-                    crate::AgentFeatureV1::ExecutionObservation,
+                    AgentFeatureV1::ExecutionObservation,
                 )?;
                 Ok(AgentDecisionV1::Observe(*execution))
             }
@@ -1146,14 +1405,14 @@ impl GuestAgentReducerV1 {
                 if self.quiesced {
                     return Err(AgentReducerError::QuiesceConflict);
                 }
-                require_feature(self.provisioning.features(), crate::AgentFeatureV1::Quiesce)?;
+                require_feature(self.provisioning.features(), AgentFeatureV1::Quiesce)?;
                 Ok(AgentDecisionV1::BeginQuiesce)
             }
             AgentExecutionOperationV1::EndQuiesce => {
                 if !self.quiesced {
                     return Err(AgentReducerError::QuiesceConflict);
                 }
-                require_feature(self.provisioning.features(), crate::AgentFeatureV1::Quiesce)?;
+                require_feature(self.provisioning.features(), AgentFeatureV1::Quiesce)?;
                 Ok(AgentDecisionV1::EndQuiesce)
             }
         }
@@ -1190,34 +1449,32 @@ impl GuestAgentReducerV1 {
         &self.provisioning
     }
 
-    pub(crate) fn checkpoint_state(&self) -> crate::checkpoint::ReducerCheckpointState {
-        let session =
-            self.session
+    pub(crate) fn checkpoint_state(&self) -> ReducerCheckpointState {
+        let session = self.session.as_ref().map(|session| SessionCheckpointState {
+            binding: session.binding,
+            next_sequence: session.next_sequence,
+            outstanding: session
+                .outstanding
                 .as_ref()
-                .map(|session| crate::checkpoint::SessionCheckpointState {
-                    binding: session.binding,
-                    next_sequence: session.next_sequence,
-                    outstanding: session.outstanding.as_ref().map(
-                        |outstanding| match outstanding {
-                            OutstandingOperation::Reserved {
-                                reservation,
-                                request,
-                            } => crate::checkpoint::OutstandingCheckpointState::Reserved {
-                                reservation: *reservation,
-                                request: request.clone(),
-                            },
-                            OutstandingOperation::ReservationRecovery { token, request } => {
-                                crate::checkpoint::OutstandingCheckpointState::ReservationRecovery {
-                                    token: *token,
-                                    request: request.clone(),
-                                }
-                            }
-                        },
-                    ),
-                    completed_history: session.completed_history.clone(),
-                    poisoned: session.poisoned,
-                });
-        crate::checkpoint::ReducerCheckpointState {
+                .map(|outstanding| match outstanding {
+                    OutstandingOperation::Reserved {
+                        reservation,
+                        request,
+                    } => OutstandingCheckpointState::Reserved {
+                        reservation: *reservation,
+                        request: request.clone(),
+                    },
+                    OutstandingOperation::ReservationRecovery { token, request } => {
+                        OutstandingCheckpointState::ReservationRecovery {
+                            token: *token,
+                            request: request.clone(),
+                        }
+                    }
+                }),
+            completed_history: session.completed_history.clone(),
+            poisoned: session.poisoned,
+        });
+        ReducerCheckpointState {
             session,
             executions: self
                 .executions
@@ -1230,7 +1487,7 @@ impl GuestAgentReducerV1 {
 
     pub(crate) fn from_checkpoint_state(
         provisioning: AgentProvisioningV1,
-        state: crate::checkpoint::ReducerCheckpointState,
+        state: ReducerCheckpointState,
     ) -> Result<Self, AgentReducerError> {
         if state.executions.len() > MAX_ACTIVE_EXECUTIONS {
             return Err(AgentReducerError::InvalidCheckpoint);
@@ -1248,14 +1505,14 @@ impl GuestAgentReducerV1 {
                 if let Some(outstanding) = &checkpoint.outstanding {
                     if matches!(
                         outstanding,
-                        crate::checkpoint::OutstandingCheckpointState::ReservationRecovery { .. }
+                        OutstandingCheckpointState::ReservationRecovery { .. }
                     ) && !checkpoint.poisoned
                     {
                         return Err(AgentReducerError::InvalidCheckpoint);
                     }
                     let (session, sequence, operation, request_commitment, request) =
                         match outstanding {
-                            crate::checkpoint::OutstandingCheckpointState::Reserved {
+                            OutstandingCheckpointState::Reserved {
                                 reservation,
                                 request,
                             } => (
@@ -1265,10 +1522,7 @@ impl GuestAgentReducerV1 {
                                 reservation.request_commitment(),
                                 request,
                             ),
-                            crate::checkpoint::OutstandingCheckpointState::ReservationRecovery {
-                                token,
-                                request,
-                            } => (
+                            OutstandingCheckpointState::ReservationRecovery { token, request } => (
                                 token.session(),
                                 token.sequence(),
                                 token.operation_id(),
@@ -1293,17 +1547,16 @@ impl GuestAgentReducerV1 {
                     }
                 }
                 let outstanding = checkpoint.outstanding.map(|outstanding| match outstanding {
-                    crate::checkpoint::OutstandingCheckpointState::Reserved {
+                    OutstandingCheckpointState::Reserved {
                         reservation,
                         request,
                     } => OutstandingOperation::Reserved {
                         reservation,
                         request,
                     },
-                    crate::checkpoint::OutstandingCheckpointState::ReservationRecovery {
-                        token,
-                        request,
-                    } => OutstandingOperation::ReservationRecovery { token, request },
+                    OutstandingCheckpointState::ReservationRecovery { token, request } => {
+                        OutstandingOperation::ReservationRecovery { token, request }
+                    }
                 });
                 Ok(SessionState {
                     binding: checkpoint.binding,
@@ -1335,8 +1588,9 @@ impl GuestAgentReducerV1 {
 /// session overlap, invalid operation transition, mismatched outcome, or a
 /// checkpoint that differs from the complete retained projection.
 pub fn validate_agent_checkpoint_history_v1(
-    checkpoint: &crate::AgentDurableCheckpointV1,
+    checkpoint: &AgentDurableCheckpointV1,
     records: &[AgentDurableHistoryRecordV1<'_>],
+    authenticated_session: Option<AgentSessionBindingV1>,
 ) -> Result<(), AgentReducerError> {
     let mut executions = BTreeMap::new();
     let mut quiesced = false;
@@ -1405,16 +1659,28 @@ pub fn validate_agent_checkpoint_history_v1(
         return Err(AgentReducerError::InvalidCheckpoint);
     }
     let Some(session) = state.session.as_ref() else {
-        return if records.is_empty() {
+        return if records.is_empty() && authenticated_session.is_none() {
             Ok(())
         } else {
             Err(AgentReducerError::InvalidCheckpoint)
         };
     };
-    if current_session != Some(session.binding)
-        || next_sequence != Some(session.next_sequence)
+    if authenticated_session != Some(session.binding) || session.poisoned {
+        return Err(AgentReducerError::InvalidCheckpoint);
+    }
+    if current_session != Some(session.binding) {
+        return if outstanding.is_none()
+            && session.next_sequence.get() == 1
+            && session.outstanding.is_none()
+            && session.completed_history.is_empty()
+        {
+            Ok(())
+        } else {
+            Err(AgentReducerError::InvalidCheckpoint)
+        };
+    }
+    if next_sequence != Some(session.next_sequence)
         || session.completed_history != completed_history
-        || session.poisoned
     {
         return Err(AgentReducerError::InvalidCheckpoint);
     }
@@ -1422,7 +1688,7 @@ pub fn validate_agent_checkpoint_history_v1(
         (None, None) => Ok(()),
         (
             Some(record),
-            Some(crate::checkpoint::OutstandingCheckpointState::Reserved {
+            Some(OutstandingCheckpointState::Reserved {
                 reservation,
                 request,
             }),
@@ -1593,7 +1859,7 @@ fn require_phase(
 
 fn require_feature(
     features: &AgentFeatureSetV1,
-    feature: crate::AgentFeatureV1,
+    feature: AgentFeatureV1,
 ) -> Result<(), AgentReducerError> {
     if features.contains(feature) {
         Ok(())
@@ -1654,9 +1920,6 @@ pub enum AgentOperationCasError {
     /// The same sequence or operation identity binds different bytes.
     #[error("agent operation CAS detected equivocation")]
     Equivocation,
-    /// Store durability is ambiguous and the session must remain poisoned.
-    #[error("agent operation CAS requires recovery")]
-    RecoveryRequired,
     /// A store receipt is zero or malformed.
     #[error("agent operation CAS receipt is invalid")]
     InvalidReceipt,
@@ -1731,6 +1994,9 @@ pub enum AgentReducerError {
     /// Durable sequence reservation or completion failed.
     #[error("agent operation CAS failed: {0}")]
     Cas(#[from] AgentOperationCasError),
+    /// A terminal append may have committed and requires cold reopen.
+    #[error("agent terminal outcome commit requires cold reopen")]
+    OutcomeRecoveryRequired(AgentOutcomeRecoveryTokenV1),
 }
 
 fn validate_authorized_target(

@@ -1,6 +1,7 @@
 # Exact source declarations that form the aos.sandbox.v1 compatibility floor.
 # Additive fields and RPCs are allowed. Removing, renaming, or renumbering any
 # line below requires a new API package rather than an edit to this fixture.
+# Each RPC is scoped to its closest preceding service declaration.
 
 package aos.sandbox.v1;
 message MutationContext {
@@ -24,6 +25,7 @@ uint64 sequence = 2;
 bytes resume_cursor = 9;
 bytes bootstrap_watermark = 10;
 service SandboxService {
+rpc PlanCreate(PlanCreateSandboxRequest) returns (PlanCreateSandboxResponse);
 rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
 rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
 rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
@@ -41,10 +43,16 @@ service ExecutionService {
 rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
 rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
 rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+rpc ControlExecution(ExecutionControlRequest) returns (ExecutionControlResult);
+message ExecutionControlRequest {
+MutationContext mutation = 6;
+message ExecutionControlResult {
+Operation operation = 4;
 rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
 service FilesystemViewService {
 rpc CreateView(CreateViewRequest) returns (CreateViewResponse);
 rpc GetView(GetViewRequest) returns (GetViewResponse);
+rpc GetAttachment(GetAttachmentRequest) returns (GetAttachmentResponse);
 rpc ListViews(ListViewsRequest) returns (ListViewsResponse);
 rpc AttachView(AttachViewRequest) returns (AttachViewResponse);
 rpc ReplaceAttachment(ReplaceAttachmentRequest) returns (ReplaceAttachmentResponse);
@@ -56,12 +64,25 @@ rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
 rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
 rpc RestoreSnapshot(RestoreSnapshotRequest) returns (RestoreSnapshotResponse);
 rpc ForkSnapshot(ForkSnapshotRequest) returns (ForkSnapshotResponse);
+message ForkSnapshotRequest {
+repeated Feature required_features = 7;
+bytes expected_project_resource_version = 8;
+Duration operation_timeout = 9;
 rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
 service CapabilityService {
 rpc Attenuate(AttenuateCapabilityRequest) returns (AttenuateCapabilityResponse);
 rpc Inspect(InspectCapabilityRequest) returns (InspectCapabilityResponse);
 rpc Renew(RenewCapabilityRequest) returns (RenewCapabilityResponse);
 rpc Revoke(RevokeCapabilityRequest) returns (RevokeCapabilityResponse);
+service CacheService {
+rpc GetStatus(GetCacheStatusRequest) returns (GetCacheStatusResponse);
+rpc PinObject(PinCacheObjectRequest) returns (PinCacheObjectResponse);
+rpc UnpinObject(UnpinCacheObjectRequest) returns (UnpinCacheObjectResponse);
+service DiscoveryService {
+rpc GetPublicFeatureRegistry(GetPublicFeatureRegistryRequest) returns (GetPublicFeatureRegistryResponse);
+rpc GetNodeCapabilities(GetNodeCapabilitiesRequest) returns (GetNodeCapabilitiesResponse);
+service OperatorService {
+rpc Recover(OperatorRecoveryRequest) returns (OperatorRecoveryResponse);
 service OperationService {
 rpc GetOperation(GetOperationRequest) returns (GetOperationResponse);
 rpc CancelOperation(CancelOperationRequest) returns (CancelOperationResponse);

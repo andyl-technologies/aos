@@ -4,8 +4,9 @@
 //! complete nested shape. They are render projections, not another wire schema.
 
 use aos_proto::aos::sandbox::v1::{
-    Attachment, AttachmentPhase, Capability, Execution, ExecutionPhase, FilesystemView,
-    NodeCapabilities, Snapshot, SnapshotAvailability, SnapshotPhase, ViewMutation, ViewPhase,
+    Attachment, AttachmentPhase, Capability, Execution, ExecutionIoMode, ExecutionPhase,
+    ExecutionSignal, ExecutionTerminationKind, FilesystemView, NodeCapabilities, Snapshot,
+    SnapshotAvailability, SnapshotPhase, ViewMutation, ViewPhase,
 };
 use buffa::Message as _;
 
@@ -154,6 +155,32 @@ impl TryFrom<Execution> for CheckedExecutionResourceV1 {
                     .as_option()
                     .ok_or(InvalidPublicResource::Unspecified)?,
             )?;
+            let termination_kind = result
+                .termination_kind
+                .as_known()
+                .filter(|kind| {
+                    *kind != ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_UNSPECIFIED
+                })
+                .ok_or(InvalidPublicResource::UnknownRegistryValue)?;
+            let signal = result.signal.as_known();
+            let terminal_shape_is_valid = match termination_kind {
+                ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_EXIT_CODE => {
+                    result.signal == 0
+                }
+                ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_SIGNAL => {
+                    result.exit_code == 0
+                        && signal.is_some_and(|signal| {
+                            signal != ExecutionSignal::EXECUTION_SIGNAL_UNSPECIFIED
+                        })
+                }
+                ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_LOST => {
+                    result.exit_code == 0 && result.signal == 0
+                }
+                ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_UNSPECIFIED => false,
+            };
+            if !terminal_shape_is_valid {
+                return Err(InvalidPublicResource::InvalidOperationState);
+            }
         }
         let conditions = checked_conditions(&value.conditions)?;
         super::proto_observation::checked_condition_observations(
@@ -429,11 +456,10 @@ impl TryFrom<NodeCapabilities> for CheckedNodeCapabilitiesV1 {
                 .as_option()
                 .ok_or(InvalidPublicResource::Unspecified)?;
             validate_features(std::slice::from_ref(feature))?;
-            if capability.conformance_fixture_digest.len() != 32
-                || capability
-                    .conformance_fixture_digest
-                    .iter()
-                    .all(|byte| *byte == 0)
+            if feature.namespace == crate::git::CHEAP_SANITIZED_GIT_FORK_FEATURE_NAMESPACE_V1
+                || capability.conformance_fixture_digest
+                    != super::registry::feature_conformance_digest_v1(feature)
+                        .ok_or(InvalidPublicResource::InvalidCode)?
                 || (capability.available && !capability.unavailable_reason.is_empty())
                 || (!capability.available
                     && !safe_text(&capability.unavailable_reason, MAXIMUM_SAFE_MESSAGE_BYTES))
@@ -474,9 +500,16 @@ fn checked_version(value: &[u8]) -> Result<(), InvalidPublicResource> {
 fn validate_command(
     command: &aos_proto::aos::sandbox::v1::Command,
 ) -> Result<(), InvalidPublicResource> {
-    if command.arguments.first().is_none_or(Vec::is_empty)
-        || command.arguments.len() > MAXIMUM_COMMAND_ARGUMENTS
-    {
+    let direct = command
+        .arguments
+        .first()
+        .is_some_and(|argument| !argument.is_empty())
+        && command.sandbox_shell.is_empty();
+    let shell = command.arguments.is_empty()
+        && !command.sandbox_shell.is_empty()
+        && !command.sandbox_shell.contains(&0)
+        && command.sandbox_shell.len() <= MAXIMUM_COMMAND_ARGUMENT_BYTES;
+    if (!direct && !shell) || command.arguments.len() > MAXIMUM_COMMAND_ARGUMENTS {
         return Err(InvalidPublicResource::CollectionNotCanonical);
     }
     let argument_bytes = command
@@ -515,6 +548,40 @@ fn validate_command(
     {
         return Err(InvalidPublicResource::InvalidScalar);
     }
+    let timeout_is_valid = command
+        .execution_timeout
+        .as_option()
+        .is_some_and(|timeout| timeout.nanoseconds > 0);
+    let io = command
+        .io_mode
+        .as_known()
+        .filter(|io| *io != ExecutionIoMode::EXECUTION_IO_MODE_UNSPECIFIED)
+        .ok_or(InvalidPublicResource::UnknownRegistryValue)?;
+    let io_is_valid = match io {
+        ExecutionIoMode::EXECUTION_IO_MODE_STREAM => {
+            !command.allocate_terminal
+                && command.terminal_rows == 0
+                && command.terminal_columns == 0
+                && command.detached_capture_bytes == 0
+        }
+        ExecutionIoMode::EXECUTION_IO_MODE_PTY => {
+            command.allocate_terminal
+                && command.terminal_rows > 0
+                && command.terminal_columns > 0
+                && command.detached_capture_bytes == 0
+        }
+        ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE => {
+            !command.allocate_terminal
+                && command.terminal_rows == 0
+                && command.terminal_columns == 0
+                && command.detached_capture_bytes > 0
+        }
+        ExecutionIoMode::EXECUTION_IO_MODE_UNSPECIFIED => false,
+    };
+    if !timeout_is_valid || !io_is_valid {
+        return Err(InvalidPublicResource::InvalidScalar);
+    }
+    validate_features(&command.stream_features)?;
     Ok(())
 }
 

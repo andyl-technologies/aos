@@ -16,7 +16,7 @@ use aos_sandbox_broker_session_protocol::{
     BrokerSessionDurableRecordV1, BrokerSessionPeerBindingV1, BrokerSessionProtectedBindingsV1,
     BrokerSessionProtocolV1, BrokerSessionReplayEvidenceV1, BrokerSessionTrafficStateV1,
     CanonicalBrokerResponseEnvelopeV1, ProtectedBrokerSessionVerificationContextV1,
-    VerifiedBrokerSessionTranscriptV1, authenticated_broker_method_profile_v1,
+    VerifiedBrokerSessionTranscriptV1, complete_signed_outcome_digest_v1,
     complete_signed_request_digest_v1, decode_canonical_request_v1, decode_canonical_response_v1,
     hello_message::BrokerMethod, mount_qualification_outcome_projection_v1,
 };
@@ -26,7 +26,12 @@ use aos_sandbox_protocol::authenticated_session::all_methods::checkpoint::{
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodOutcomeV1,
-    AuthenticatedBrokerMethodRequestV1, AuthenticatedBrokerRequestDirectionV1,
+    AuthenticatedBrokerMethodRequestAdmissionV1, AuthenticatedBrokerMethodRequestV1,
+    AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerRequestDirectionV1,
+    AuthenticatedBrokerSemanticBindingsV1,
+    admit_client_received_authenticated_broker_method_outcome_v1,
+    admit_server_received_authenticated_broker_method_request_v1,
+    prepare_client_sent_authenticated_broker_method_request_v1,
     prepare_server_sent_authenticated_broker_method_outcome_v1,
 };
 use sha2::{Digest as _, Sha256};
@@ -35,12 +40,15 @@ use crate::BrokerSessionSecurityError;
 
 mod journal;
 
-pub(crate) use journal::ProtectedBrokerSessionJournalV1;
+pub(crate) use journal::{FixedEndpointCustodyV1, ProtectedBrokerSessionJournalV1};
 pub use journal::{
     ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
     ProtectedBrokerRequestCommitRecoveryV1, ProtectedBrokerRequestCommitResultV1,
+    ProtectedBrokerSessionFixedCustodyV1, ProtectedBrokerSessionFixedEndpointV1,
     ProtectedBrokerSessionInitializationRecoveryV1, ProtectedBrokerSessionInitializationResultV1,
-    ProtectedMountBrokerSessionOwnerV1, ProtectedMountBrokerSessionRoleV1,
+};
+pub(crate) use journal::{
+    ProtectedBrokerReceivedRequestAdmissionV1, ProtectedBrokerSessionOwnerV1,
 };
 
 const PEER_BINDING_DOMAIN: &[u8] = b"aos-sandbox-broker-session-peer-binding-v1\0";
@@ -270,7 +278,16 @@ impl ProtectedBrokerRequestWriteV1 {
         let traffic = reconstruct_traffic(&history, transcript, context)?;
         let terminal = history.head().map_err(map_durable)?.clone();
         let current_bindings = before.protected_bindings(context)?;
-        require_request_catalog(request, current_bindings)?;
+        let request_catalog = request
+            .catalog_binding()
+            .unwrap_or_else(|| current_bindings.current_catalog());
+        let successor_bindings = BrokerSessionProtectedBindingsV1::new(
+            current_bindings.protected_context(),
+            current_bindings.endpoint_publication(),
+            request_catalog,
+        )
+        .map_err(map_durable)?;
+        require_request_catalog(request, successor_bindings)?;
         let peer_binding = peer.binding(terminal.endpoint(), transcript, context)?;
         if terminal.phase() != BrokerSessionDurablePhaseV1::Terminal
             || terminal.protected_bindings().protected_context()
@@ -283,9 +300,13 @@ impl ProtectedBrokerRequestWriteV1 {
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
-        let record =
-            derive_successor_request_record_v1(&terminal, request, peer_binding, current_bindings)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let record = derive_successor_request_record_v1(
+            &terminal,
+            request,
+            peer_binding,
+            successor_bindings,
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let mut records = history.records().to_vec();
         records.push(record);
         let history = BrokerSessionDurableHistoryV1::from_records(records).map_err(map_durable)?;
@@ -301,6 +322,14 @@ impl ProtectedBrokerRequestWriteV1 {
     /// Returns the canonical full-history replacement bytes.
     pub(crate) fn encode(&self) -> Result<Vec<u8>, BrokerSessionSecurityError> {
         self.history.encode().map_err(map_durable)
+    }
+
+    /// Returns the protected catalog head retained by this exact successor.
+    pub(crate) fn current_catalog(&self) -> Result<[u8; 32], BrokerSessionSecurityError> {
+        self.history
+            .head()
+            .map(|record| record.protected_bindings().current_catalog())
+            .map_err(map_durable)
     }
 
     /// Returns the exact protected journal generation expected by the write.
@@ -334,7 +363,8 @@ struct ProtectedBrokerOutcomeCurrentnessV1 {
 /// This gate has no public constructor. The security owner mints it only after
 /// re-reading the authoritative full history, re-verifying every retained
 /// signature, recomputing the peer binding, and completing a protected-state
-/// currentness sandwich. It is restricted to a broker-owned Mount request.
+/// currentness sandwich. Mount qualification adds a narrower method-specific
+/// admission on top of this all-method broker-owned gate.
 #[must_use = "the protected broker request still requires an outcome decision"]
 pub struct ProtectedBrokerOutcomeAdmissionGateV1 {
     history: BrokerSessionDurableHistoryV1,
@@ -443,9 +473,14 @@ impl ProtectedBrokerOutcomePendingAdvancementV1 {
         {
             return Err((BrokerSessionSecurityError::Currentness, self));
         }
+        let signed_outcome_digest =
+            match decode_canonical_response_v1(self.outcome.canonical_packet()) {
+                Ok(outcome) => complete_signed_outcome_digest_v1(outcome.signed_artifact()),
+                Err(_) => return Err((BrokerSessionSecurityError::Currentness, self)),
+            };
         let currentness_owner = ProtectedBrokerOutcomeCurrentnessOwnerV1 {
             request: self.outcome.request().clone(),
-            outcome_packet: self.outcome.canonical_packet().to_vec(),
+            outcome: self.outcome.clone(),
             context: self.context,
             transcript: self.transcript,
             protected_generation: readback.confirmed_generation,
@@ -471,6 +506,8 @@ impl ProtectedBrokerOutcomePendingAdvancementV1 {
             replacement_head: self.durable_cas.replacement_head,
             admission_commitment: self.admission_commitment,
             qualification_record_commitment: self.qualification_record_commitment,
+            signed_outcome_digest,
+            exact_packet: self.outcome.canonical_packet().to_vec(),
             currentness_owner,
         })
     }
@@ -587,10 +624,32 @@ pub struct ProtectedBrokerOutcomeCommittedAdvancementV1 {
     replacement_head: [u8; 32],
     admission_commitment: [u8; 32],
     qualification_record_commitment: Option<[u8; 32]>,
+    signed_outcome_digest: [u8; 32],
+    exact_packet: Vec<u8>,
     currentness_owner: ProtectedBrokerOutcomeCurrentnessOwnerV1,
 }
 
 impl ProtectedBrokerOutcomeCommittedAdvancementV1 {
+    pub(crate) fn response_descriptor_roles(
+        &self,
+    ) -> Result<
+        &'static [aos_proto::aos::sandbox::local::v1::BrokerDescriptorRole],
+        BrokerSessionSecurityError,
+    > {
+        let profile = aos_sandbox_broker_session_protocol::authenticated_broker_method_profile_v1(
+            self.method,
+        )
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+        Ok(match self.currentness_owner.outcome.result() {
+            AuthenticatedBrokerMethodResultV1::Success { .. } => {
+                profile.success_response_descriptor_roles()
+            }
+            AuthenticatedBrokerMethodResultV1::Error(_) => {
+                profile.error_response_descriptor_roles()
+            }
+        })
+    }
+
     /// Returns the exact admitted method.
     #[must_use]
     pub const fn method(&self) -> BrokerMethod {
@@ -687,10 +746,34 @@ impl ProtectedBrokerOutcomeCommittedAdvancementV1 {
         self.qualification_record_commitment
     }
 
+    /// Returns the exact domain-separated digest of the signed outcome artifact.
+    #[must_use]
+    pub const fn signed_outcome_digest(&self) -> [u8; 32] {
+        self.signed_outcome_digest
+    }
+
+    /// Returns the exact signed terminal packet confirmed by protected readback.
+    #[must_use]
+    pub fn exact_packet(&self) -> &[u8] {
+        &self.exact_packet
+    }
+
     /// Consumes the advancement into exact terminal-head currentness authority.
     #[must_use]
     pub fn into_currentness_owner(self) -> ProtectedBrokerOutcomeCurrentnessOwnerV1 {
         self.currentness_owner
+    }
+
+    /// Consumes the advancement into its authenticated outcome and currentness owner.
+    #[must_use]
+    pub fn into_outcome_and_currentness(
+        self,
+    ) -> (
+        AuthenticatedBrokerMethodOutcomeV1,
+        ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) {
+        let outcome = self.currentness_owner.outcome.clone();
+        (outcome, self.currentness_owner)
     }
 }
 
@@ -714,7 +797,39 @@ pub struct ProtectedBrokerOutcomeReplayV1 {
 }
 
 impl ProtectedBrokerOutcomeReplayV1 {
-    /// Returns the exact replayed Mount method.
+    pub(crate) fn request(&self) -> &AuthenticatedBrokerMethodRequestV1 {
+        &self.currentness_owner.request
+    }
+
+    pub(crate) fn outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        &self.currentness_owner.outcome
+    }
+
+    pub(crate) fn verification_context(&self) -> &ProtectedBrokerSessionVerificationContextV1 {
+        &self.currentness_owner.context
+    }
+
+    pub(crate) fn response_descriptor_roles(
+        &self,
+    ) -> Result<
+        &'static [aos_proto::aos::sandbox::local::v1::BrokerDescriptorRole],
+        BrokerSessionSecurityError,
+    > {
+        let profile = aos_sandbox_broker_session_protocol::authenticated_broker_method_profile_v1(
+            self.method,
+        )
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+        Ok(match self.currentness_owner.outcome.result() {
+            AuthenticatedBrokerMethodResultV1::Success { .. } => {
+                profile.success_response_descriptor_roles()
+            }
+            AuthenticatedBrokerMethodResultV1::Error(_) => {
+                profile.error_response_descriptor_roles()
+            }
+        })
+    }
+
+    /// Returns the exact replayed broker method.
     #[must_use]
     pub const fn method(&self) -> BrokerMethod {
         self.method
@@ -797,16 +912,28 @@ impl ProtectedBrokerOutcomeReplayV1 {
     pub fn into_currentness_owner(self) -> ProtectedBrokerOutcomeCurrentnessOwnerV1 {
         self.currentness_owner
     }
+
+    /// Consumes replay evidence into its authenticated outcome and currentness owner.
+    #[must_use]
+    pub fn into_outcome_and_currentness(
+        self,
+    ) -> (
+        AuthenticatedBrokerMethodOutcomeV1,
+        ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) {
+        let outcome = self.currentness_owner.outcome.clone();
+        (outcome, self.currentness_owner)
+    }
 }
 
-/// Owns the protected artifacts needed to revalidate one terminal Mount head.
+/// Owns the protected artifacts needed to revalidate one terminal broker head.
 ///
 /// This move-only value has no public constructor. New and exact-replay
 /// admissions mint it only from fully authenticated protected journal state.
 #[must_use = "revalidate protected terminal currentness immediately before the effect handoff"]
 pub struct ProtectedBrokerOutcomeCurrentnessOwnerV1 {
     pub(super) request: AuthenticatedBrokerMethodRequestV1,
-    pub(super) outcome_packet: Vec<u8>,
+    pub(super) outcome: AuthenticatedBrokerMethodOutcomeV1,
     pub(super) context: ProtectedBrokerSessionVerificationContextV1,
     pub(super) transcript: VerifiedBrokerSessionTranscriptV1,
     pub(super) protected_generation: u64,
@@ -822,10 +949,33 @@ pub struct ProtectedBrokerOutcomeCurrentnessOwnerV1 {
 /// the associated effect-authority construction.
 #[must_use = "retain protected currentness through the effect-authority handoff"]
 pub struct ProtectedBrokerOutcomeCurrentV1<'authority> {
-    pub(super) _authority: &'authority mut ProtectedBrokerSessionJournalV1,
+    pub(super) authority: &'authority mut ProtectedBrokerSessionJournalV1,
+    pub(super) connection_peer: &'authority ConnectionPeerIdentity,
+    pub(super) owner: ProtectedBrokerOutcomeCurrentnessOwnerV1,
 }
 
-/// Move-only protected recovery of a broker-side Mount outcome gate.
+impl ProtectedBrokerOutcomeCurrentV1<'_> {
+    pub(crate) const fn authenticated_outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        &self.owner.outcome
+    }
+
+    pub(crate) fn into_currentness_owner(self) -> ProtectedBrokerOutcomeCurrentnessOwnerV1 {
+        self.owner
+    }
+
+    /// Revalidates the retained terminal head and live kernel peer in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the protected journal, endpoint context,
+    /// transcript, terminal packet, and pidfd-backed peer remain exact.
+    pub(crate) fn revalidate(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.authority
+            .validate_broker_outcome(&self.owner, self.connection_peer)
+    }
+}
+
+/// Move-only protected recovery of one broker-side outcome gate.
 #[must_use = "the recovered broker request still requires an outcome decision"]
 pub(crate) struct ProtectedBrokerOutcomeGateRecoveryV1 {
     history: BrokerSessionDurableHistoryV1,
@@ -833,8 +983,8 @@ pub(crate) struct ProtectedBrokerOutcomeGateRecoveryV1 {
 }
 
 impl ProtectedBrokerOutcomeGateRecoveryV1 {
-    /// Reopens a broker Mount head and reconstructs its new-or-replay outcome gate.
-    pub(crate) fn reopen_mount_outcome(
+    /// Reopens a broker head and reconstructs its new-or-replay outcome gate.
+    pub(crate) fn reopen_broker_outcome(
         authority: &mut ProtectedBrokerSessionJournalV1,
         request: &AuthenticatedBrokerMethodRequestV1,
         transcript: &VerifiedBrokerSessionTranscriptV1,
@@ -844,8 +994,6 @@ impl ProtectedBrokerOutcomeGateRecoveryV1 {
         let (history, traffic, current) = reopen_current(authority, transcript, context, peer)?;
         let head = history.head().map_err(map_durable)?;
         if head.endpoint() != BrokerSessionDurableEndpointV1::Broker
-            || authenticated_broker_method_profile_v1(head.method())
-                .is_none_or(|profile| profile.protocol() != BrokerSessionProtocolV1::Mount)
             || !request_matches_head(
                 request,
                 head,
@@ -904,7 +1052,11 @@ impl ProtectedBrokerOutcomeGateRecoveryV1 {
 }
 
 impl ProtectedBrokerOutcomeAdmissionGateV1 {
-    /// Returns the exact pending or completed Mount method.
+    pub(crate) fn verification_context(&self) -> ProtectedBrokerSessionVerificationContextV1 {
+        self.context.clone()
+    }
+
+    /// Returns the exact pending or completed broker method.
     #[must_use]
     pub const fn method(&self) -> BrokerMethod {
         self.request.method()
@@ -989,6 +1141,14 @@ impl ProtectedBrokerOutcomeAdmissionGateV1 {
         self.admit_outcome_inner(outcome, None)
     }
 
+    pub(crate) fn admit_outcome_with_descriptor_count(
+        self,
+        outcome: &CanonicalBrokerResponseEnvelopeV1,
+        descriptor_count: usize,
+    ) -> Result<ProtectedBrokerOutcomeAdmissionV1, BrokerSessionSecurityError> {
+        self.admit_outcome_inner_with_descriptor_count(outcome, None, descriptor_count)
+    }
+
     /// Authenticates a Mount outcome that commits one complete qualification record.
     ///
     /// The expected commitment must occur in the signed, canonically validated
@@ -1025,15 +1185,38 @@ impl ProtectedBrokerOutcomeAdmissionGateV1 {
         outcome: &CanonicalBrokerResponseEnvelopeV1,
         qualification_record_commitment: Option<[u8; 32]>,
     ) -> Result<ProtectedBrokerOutcomeAdmissionV1, BrokerSessionSecurityError> {
+        self.admit_outcome_inner_with_descriptor_count(outcome, qualification_record_commitment, 0)
+    }
+
+    fn admit_outcome_inner_with_descriptor_count(
+        self,
+        outcome: &CanonicalBrokerResponseEnvelopeV1,
+        qualification_record_commitment: Option<[u8; 32]>,
+        descriptor_count: usize,
+    ) -> Result<ProtectedBrokerOutcomeAdmissionV1, BrokerSessionSecurityError> {
         let packet = outcome.encoded_bytes();
-        let admission = prepare_server_sent_authenticated_broker_method_outcome_v1(
-            &self.traffic,
-            &self.request,
-            packet,
-            self.retained_outcome.as_ref(),
-            0,
-            &self.context,
-        )
+        let admission = match self.request.direction() {
+            AuthenticatedBrokerRequestDirectionV1::ClientSend => {
+                admit_client_received_authenticated_broker_method_outcome_v1(
+                    &self.traffic,
+                    &self.request,
+                    packet,
+                    self.retained_outcome.as_ref(),
+                    descriptor_count,
+                    &self.context,
+                )
+            }
+            AuthenticatedBrokerRequestDirectionV1::ServerReceive => {
+                prepare_server_sent_authenticated_broker_method_outcome_v1(
+                    &self.traffic,
+                    &self.request,
+                    packet,
+                    self.retained_outcome.as_ref(),
+                    descriptor_count,
+                    &self.context,
+                )
+            }
+        }
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
 
         match admission {
@@ -1093,7 +1276,7 @@ impl ProtectedBrokerOutcomeAdmissionGateV1 {
         let peer_binding = self.history.head().map_err(map_durable)?.peer_binding();
         let currentness_owner = ProtectedBrokerOutcomeCurrentnessOwnerV1 {
             request: self.request.clone(),
-            outcome_packet: packet.to_vec(),
+            outcome: retained.clone(),
             context: self.context,
             transcript: self.transcript,
             protected_generation: self.currentness.generation,
@@ -1143,19 +1326,28 @@ fn prepare_pending_outcome_advancement(
     {
         return Err(BrokerSessionSecurityError::Currentness);
     }
+    let terminal_catalog = match outcome.result() {
+        AuthenticatedBrokerMethodResultV1::Success { .. } => request
+            .published_catalog_binding()
+            .unwrap_or_else(|| currentness.protected_bindings.current_catalog()),
+        AuthenticatedBrokerMethodResultV1::Error(_) => {
+            currentness.protected_bindings.current_catalog()
+        }
+    };
+    let terminal_bindings = BrokerSessionProtectedBindingsV1::new(
+        currentness.protected_bindings.protected_context(),
+        currentness.protected_bindings.endpoint_publication(),
+        terminal_catalog,
+    )
+    .map_err(map_durable)?;
     let revision = pending
         .revision()
         .checked_add(1)
         .ok_or(BrokerSessionSecurityError::Currentness)?;
     let predecessor = pending.commitment().map_err(map_durable)?;
-    let terminal = derive_terminal_record_v1(
-        pending,
-        &outcome,
-        revision,
-        predecessor,
-        currentness.protected_bindings,
-    )
-    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    let terminal =
+        derive_terminal_record_v1(pending, &outcome, revision, predecessor, terminal_bindings)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
     let mut records = history.records().to_vec();
     records.push(terminal);
     let replacement = BrokerSessionDurableHistoryV1::from_records(records).map_err(map_durable)?;
@@ -1172,7 +1364,7 @@ fn prepare_pending_outcome_advancement(
         &request,
         &outcome,
         currentness.peer_binding,
-        currentness.protected_bindings,
+        terminal_bindings,
         &durable_cas,
         &replacement_history,
     )?;
@@ -1185,7 +1377,7 @@ fn prepare_pending_outcome_advancement(
         broker_sequence: outcome.broker_sequence(),
         session_binding: request.session_binding(),
         peer_binding: currentness.peer_binding,
-        protected_bindings: currentness.protected_bindings,
+        protected_bindings: terminal_bindings,
         next_traffic,
         outcome,
         replacement_history,
@@ -1360,14 +1552,33 @@ fn reconstruct_terminal_semantics(
         .map_err(map_durable)?
         .outcome_packet()
         .ok_or(BrokerSessionSecurityError::Currentness)?;
-    let admission = prepare_server_sent_authenticated_broker_method_outcome_v1(
-        &prior_traffic,
-        request,
-        packet,
-        None,
-        0,
-        context,
-    )
+    let declared_descriptor_count = decode_canonical_response_v1(packet)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?
+        .message()
+        .descriptors
+        .len();
+    let admission = match request.direction() {
+        AuthenticatedBrokerRequestDirectionV1::ClientSend => {
+            admit_client_received_authenticated_broker_method_outcome_v1(
+                &prior_traffic,
+                request,
+                packet,
+                None,
+                0,
+                context,
+            )
+        }
+        AuthenticatedBrokerRequestDirectionV1::ServerReceive => {
+            prepare_server_sent_authenticated_broker_method_outcome_v1(
+                &prior_traffic,
+                request,
+                packet,
+                None,
+                declared_descriptor_count,
+                context,
+            )
+        }
+    }
     .map_err(|_| BrokerSessionSecurityError::Currentness)?;
     match admission {
         AuthenticatedBrokerMethodOutcomeAdmissionV1::New {

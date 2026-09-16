@@ -147,6 +147,7 @@ impl ProtectedLedgerReplayV1 {
             projection.challenges,
             projection.decisions,
             projection.accounts,
+            projection.preparation_intents,
             projection.artifacts,
             projection.permits,
             projection.receipts,
@@ -344,6 +345,7 @@ impl ProtectedLedgerReplayV1 {
                         .insert(*decision.operation.as_bytes(), head);
                 }
                 DecodedPublisherPayloadV1::Challenge(_)
+                | DecodedPublisherPayloadV1::PreparationIntent(_)
                 | DecodedPublisherPayloadV1::Artifact(_)
                 | DecodedPublisherPayloadV1::Permit(_)
                 | DecodedPublisherPayloadV1::Receipt(_)
@@ -683,6 +685,7 @@ struct ReplayProjection {
     challenges: Vec<ChallengeConsumptionV1>,
     decisions: Vec<super::AdmissionDecisionV1>,
     accounts: Vec<CapacityAccountV1>,
+    preparation_intents: Vec<super::ArtifactPreparationIntentV1>,
     artifacts: Vec<super::ArtifactCommitmentV1>,
     permits: Vec<CompletionPermitV1>,
     receipts: Vec<CompletionReceiptV1>,
@@ -746,10 +749,30 @@ impl ReplayProjection {
                     .decisions
                     .iter()
                     .any(|decision| decision.operation == value.operation)
+                    || !self.preparation_intents.iter().any(|intent| {
+                        intent.operation == value.operation
+                            && intent.intent_digest == value.preparation_intent_digest
+                    })
                 {
                     return Err(AdmissionError::ArtifactMismatch);
                 }
                 self.artifacts.push(value.clone());
+            }
+            DecodedPublisherPayloadV1::PreparationIntent(value) => {
+                if !self
+                    .decisions
+                    .iter()
+                    .any(|decision| decision.operation == value.operation)
+                    || self
+                        .preparation_intents
+                        .iter()
+                        .any(|prior| prior.operation == value.operation && prior != value)
+                {
+                    return Err(AdmissionError::ArtifactMismatch);
+                }
+                if !self.preparation_intents.iter().any(|prior| prior == value) {
+                    self.preparation_intents.push(value.clone());
+                }
             }
             DecodedPublisherPayloadV1::Permit(value) => {
                 let initial = !self
@@ -859,6 +882,9 @@ impl ReplayProjection {
             DecodedPublisherPayloadV1::Challenge(value) => self.challenges.push(value.clone()),
             DecodedPublisherPayloadV1::Decision(value) => self.decisions.push(value.clone()),
             DecodedPublisherPayloadV1::Account(value) => self.accounts.push(value.clone()),
+            DecodedPublisherPayloadV1::PreparationIntent(value) => {
+                self.preparation_intents.push(value.clone());
+            }
             DecodedPublisherPayloadV1::Artifact(value) => self.artifacts.push(value.clone()),
             DecodedPublisherPayloadV1::Permit(value) => self.permits.push(value.clone()),
             DecodedPublisherPayloadV1::Receipt(value) => self.receipts.push(value.clone()),
@@ -1038,6 +1064,7 @@ fn ledger_from_projection(
         projection.challenges,
         projection.decisions,
         projection.accounts,
+        projection.preparation_intents,
         projection.artifacts,
         projection.permits,
         projection.receipts,
@@ -1076,6 +1103,9 @@ fn decode_payload(
         ),
         ProtectedRecordKindV1::PreparedArtifact => DecodedPublisherPayloadV1::Artifact(
             super::payload_decode::decode_artifact(&record.payload)?,
+        ),
+        ProtectedRecordKindV1::PreparationIntent => DecodedPublisherPayloadV1::PreparationIntent(
+            super::payload_decode::decode_preparation_intent(&record.payload)?,
         ),
         ProtectedRecordKindV1::CompletionPermit => DecodedPublisherPayloadV1::Permit(
             super::payload_decode::decode_permit(&record.payload)?,
@@ -1126,6 +1156,9 @@ fn canonical_payload(payload: &DecodedPublisherPayloadV1) -> Result<Vec<u8>, Adm
         DecodedPublisherPayloadV1::Decision(value) => super::payload::decision_payload(value),
         DecodedPublisherPayloadV1::Account(value) => super::payload::accounting_payload(value),
         DecodedPublisherPayloadV1::Artifact(value) => super::payload::artifact_payload(value),
+        DecodedPublisherPayloadV1::PreparationIntent(value) => {
+            super::payload::preparation_intent_payload(value)
+        }
         DecodedPublisherPayloadV1::Permit(value) => super::payload::permit_payload(value),
         DecodedPublisherPayloadV1::Receipt(value) => super::payload::receipt_payload(value),
         DecodedPublisherPayloadV1::Eviction(value) => super::payload::eviction_payload(value),
@@ -1160,6 +1193,9 @@ fn key_matches(record: &DecodedProtectedRecordV1, payload: &DecodedPublisherPayl
         DecodedPublisherPayloadV1::Decision(value) => record.key == value.operation.as_bytes(),
         DecodedPublisherPayloadV1::Account(value) => record.key == value.reservation.as_bytes(),
         DecodedPublisherPayloadV1::Artifact(value) => record.key == value.operation.as_bytes(),
+        DecodedPublisherPayloadV1::PreparationIntent(value) => {
+            record.key == value.operation.as_bytes()
+        }
         DecodedPublisherPayloadV1::Permit(value) => record.key == value.permit.as_bytes(),
         DecodedPublisherPayloadV1::Receipt(value) => record.key == value.operation.as_bytes(),
         DecodedPublisherPayloadV1::Eviction(value) => record.key == value.operation.as_bytes(),

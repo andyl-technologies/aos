@@ -191,6 +191,204 @@ pub(super) struct NetworkLifecycleEffectHandoffV1 {
     publication: NetworkLifecycleCheckpointPublicationV1,
 }
 
+/// Names the sole kernel operation authorized by a dormant lifecycle handoff.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DormantNetworkLifecycleEffectStepV1 {
+    /// Confirms exact links remain down.
+    EnsureLinksDown,
+    /// Programs the exact admitted ownership lease gate.
+    ProgramLeaseGate,
+    /// Configures the exact admitted address pairs.
+    ConfigureExactAddressPairs,
+    /// Configures the exact admitted routes.
+    ConfigureExactRoutes,
+    /// Configures the exact admitted permanent-neighbor set.
+    ConfigureExactPermanentNeighbors,
+    /// Revalidates the complete kernel plan before link activation.
+    VerifyExactPlanConfiguration,
+    /// Raises the exact admitted links.
+    RaiseLinks,
+    /// Lowers the exact admitted links.
+    LowerLinks,
+    /// Restores default-drop before cleanup.
+    ProgramDefaultDrop,
+    /// Detaches every exact tc-BPF lease gate.
+    DetachTcGate,
+    /// Removes every exact bpffs pin.
+    RemoveBpffsPins,
+    /// Removes the exact admitted links.
+    RemoveLinks,
+    /// Requests broker authorization for namespace-pin teardown.
+    AuthorizeNamespacePinTeardown,
+    /// Removes only the broker-authorized exact namespace pin.
+    RemoveNamespacePin,
+}
+
+/// Carries one reducer-issued Network effect after protected exact readback.
+///
+/// The value is move-only. It contains no executable, descriptor, socket, or
+/// service handle and therefore cannot itself perform or activate an effect.
+/// Its projections let a future dormant worker adapter bind execution and
+/// readback to the exact lifecycle request, namespace, lease, and protected
+/// checkpoint that authorized the step.
+#[must_use]
+pub struct DormantNetworkLifecycleEffectHandoffV1<'owner> {
+    handoff: NetworkLifecycleEffectHandoffV1,
+    _owner: std::marker::PhantomData<&'owner mut DormantNetworkLifecycleProtectedOwnerV1>,
+}
+
+impl DormantNetworkLifecycleEffectHandoffV1<'_> {
+    /// Returns the exact request idempotency identity.
+    #[must_use]
+    pub const fn request_id(&self) -> [u8; 16] {
+        self.handoff.plan.intent().request_id()
+    }
+
+    /// Returns the monotonic operation sequence.
+    #[must_use]
+    pub const fn operation_sequence(&self) -> u64 {
+        self.handoff.plan.intent().operation_sequence()
+    }
+
+    /// Returns the closed lifecycle action admitted for this step.
+    #[must_use]
+    pub const fn action(&self) -> crate::NetworkNamespaceLifecycleActionV1 {
+        self.handoff.plan.intent().action()
+    }
+
+    /// Returns the exact physical namespace identity.
+    #[must_use]
+    pub const fn namespace(&self) -> crate::NetworkNamespaceIdentityV1 {
+        self.handoff.plan.intent().kernel().namespace()
+    }
+
+    /// Returns the sole effect step selected from protected currentness.
+    #[must_use]
+    pub const fn step(&self) -> DormantNetworkLifecycleEffectStepV1 {
+        public_network_step(self.handoff.plan.step())
+    }
+
+    /// Returns the immutable lifecycle intent commitment.
+    #[must_use]
+    pub const fn intent_digest(&self) -> ObjectDigest {
+        self.handoff.plan.intent().digest()
+    }
+
+    /// Returns the exact ownership-lease digest retained by the authority fence.
+    #[must_use]
+    pub const fn ownership_lease_digest(&self) -> ObjectDigest {
+        self.handoff.plan.intent().fence().ownership_lease_digest()
+    }
+
+    /// Returns the monotonic ownership-lease generation.
+    #[must_use]
+    pub const fn lease_generation(&self) -> u64 {
+        self.handoff.plan.intent().fence().lease_generation()
+    }
+
+    /// Returns the exclusive BOOTTIME fail-stop deadline.
+    #[must_use]
+    pub const fn fail_stop_boottime_nanoseconds(&self) -> u64 {
+        self.handoff
+            .plan
+            .intent()
+            .fence()
+            .fail_stop_boottime_nanoseconds()
+    }
+
+    /// Returns the exact protected-current commitment.
+    #[must_use]
+    pub const fn currentness_digest(&self) -> ObjectDigest {
+        self.handoff.plan.intent().fence().currentness_digest()
+    }
+
+    /// Returns the resource commitment reobserved immediately before release.
+    #[must_use]
+    pub const fn release_resource_digest(&self) -> ObjectDigest {
+        self.handoff.plan.release_current().residual.resource_digest
+    }
+
+    /// Returns the catalog commitment reobserved immediately before release.
+    #[must_use]
+    pub const fn release_catalog_digest(&self) -> ObjectDigest {
+        self.handoff.plan.release_current().residual.catalog_digest
+    }
+
+    /// Returns the fresh currentness commitment reobserved before release.
+    #[must_use]
+    pub const fn release_currentness_digest(&self) -> ObjectDigest {
+        self.handoff
+            .plan
+            .release_current()
+            .residual
+            .currentness_digest
+    }
+
+    /// Returns the protected observation ordinal at the release edge.
+    #[must_use]
+    pub const fn release_observation_ordinal(&self) -> u64 {
+        self.handoff.plan.release_current().observation_ordinal
+    }
+
+    /// Returns the protected BOOTTIME observation at the release edge.
+    #[must_use]
+    pub const fn released_boottime_nanoseconds(&self) -> u64 {
+        self.handoff
+            .plan
+            .release_current()
+            .observed_boottime_nanoseconds
+    }
+
+    /// Returns the durable release watermark the outcome must echo.
+    #[must_use]
+    pub const fn release_digest(&self) -> ObjectDigest {
+        self.handoff.plan.release_digest()
+    }
+
+    /// Returns the durable reducer recovery commitment preceding release.
+    #[must_use]
+    pub const fn recovery_digest(&self) -> ObjectDigest {
+        self.handoff.plan.recovery_digest()
+    }
+
+    /// Returns the protected journal head that authorized release.
+    #[must_use]
+    pub const fn protected_head(&self) -> ObjectDigest {
+        self.handoff.protected_head()
+    }
+}
+
+const fn public_network_step(
+    step: super::NetworkLifecycleEffectStepV1,
+) -> DormantNetworkLifecycleEffectStepV1 {
+    use super::NetworkLifecycleEffectStepV1 as Internal;
+
+    match step {
+        Internal::EnsureLinksDown => DormantNetworkLifecycleEffectStepV1::EnsureLinksDown,
+        Internal::ProgramLeaseGate => DormantNetworkLifecycleEffectStepV1::ProgramLeaseGate,
+        Internal::ConfigureExactAddressPairs => {
+            DormantNetworkLifecycleEffectStepV1::ConfigureExactAddressPairs
+        }
+        Internal::ConfigureExactRoutes => DormantNetworkLifecycleEffectStepV1::ConfigureExactRoutes,
+        Internal::ConfigureExactPermanentNeighbors => {
+            DormantNetworkLifecycleEffectStepV1::ConfigureExactPermanentNeighbors
+        }
+        Internal::VerifyExactPlanConfiguration => {
+            DormantNetworkLifecycleEffectStepV1::VerifyExactPlanConfiguration
+        }
+        Internal::RaiseLinks => DormantNetworkLifecycleEffectStepV1::RaiseLinks,
+        Internal::LowerLinks => DormantNetworkLifecycleEffectStepV1::LowerLinks,
+        Internal::ProgramDefaultDrop => DormantNetworkLifecycleEffectStepV1::ProgramDefaultDrop,
+        Internal::DetachTcGate => DormantNetworkLifecycleEffectStepV1::DetachTcGate,
+        Internal::RemoveBpffsPins => DormantNetworkLifecycleEffectStepV1::RemoveBpffsPins,
+        Internal::RemoveLinks => DormantNetworkLifecycleEffectStepV1::RemoveLinks,
+        Internal::AuthorizeNamespacePinTeardown => {
+            DormantNetworkLifecycleEffectStepV1::AuthorizeNamespacePinTeardown
+        }
+        Internal::RemoveNamespacePin => DormantNetworkLifecycleEffectStepV1::RemoveNamespacePin,
+    }
+}
+
 impl<'a> NetworkLifecycleProtectedStoreSessionV1<'a> {
     /// Constructs a session from an authenticated protected-store head.
     fn from_authenticated_backend(
@@ -435,7 +633,7 @@ impl NetworkLifecycleEffectHandoffV1 {
     }
 
     /// Returns the durable protected head preceding worker handoff.
-    pub(super) fn protected_head(&self) -> ObjectDigest {
+    pub(super) const fn protected_head(&self) -> ObjectDigest {
         self.publication.head
     }
 }
@@ -606,6 +804,90 @@ impl DormantNetworkLifecycleProtectedOwnerV1 {
         resolve_network_commit(&mut self.recovered)
     }
 
+    /// Consumes one protected lifecycle step under this owner's live custody.
+    ///
+    /// The fixed intent is restricted by the reducer to Arm, Renew, Disarm,
+    /// or Destroy and must match the reducer's protected catalog-derived head.
+    /// Three independently loaded current observations bracket the ambiguity
+    /// and release boundaries. The supplied dormant consumer sees the plan only
+    /// for the duration of this call. The owner then loads the sealed protected
+    /// observation itself and commits it before returning.
+    ///
+    /// This method registers no worker or service. The consumer is the sole
+    /// explicit effect callsite; it cannot manufacture the subsequently loaded
+    /// protected observation from the handoff's public scalar projections.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantNetworkLifecycleOwnerErrorV1`] for malformed or stale
+    /// fixed carriers, an illegal lifecycle action, failed currentness or lease
+    /// checks, and unresolved protected durability.
+    pub fn consume_fixed_effect<F>(
+        &mut self,
+        consume: F,
+    ) -> Result<DormantNetworkLifecycleProtectedCommitV1, DormantNetworkLifecycleOwnerErrorV1>
+    where
+        F: for<'handoff> FnOnce(
+            DormantNetworkLifecycleEffectHandoffV1<'handoff>,
+        ) -> Result<(), DormantNetworkLifecycleOwnerErrorV1>,
+    {
+        let intent = load_fixed_network_intent(FIXED_INTENT_PATH)?;
+        self.recovered
+            .reducer_mut()
+            .begin(intent)
+            .map_err(|_| DormantNetworkLifecycleOwnerErrorV1::InvalidState)?;
+        let _ = resolve_network_commit(&mut self.recovered)?;
+
+        let prepare_current = load_fixed_network_current(FIXED_PREPARE_CURRENT_PATH)?;
+        let effect = self
+            .recovered
+            .reducer_mut()
+            .prepare_effect(prepare_current)
+            .map_err(|_| DormantNetworkLifecycleOwnerErrorV1::InvalidState)?;
+        let _ = resolve_network_commit(&mut self.recovered)?;
+
+        let freeze_current = load_fixed_network_current(FIXED_FREEZE_CURRENT_PATH)?;
+        let release = self
+            .recovered
+            .reducer_mut()
+            .freeze_release(effect, freeze_current)
+            .map_err(|_| DormantNetworkLifecycleOwnerErrorV1::InvalidState)?;
+        let committed = resolve_network_publication(&mut self.recovered)?;
+
+        let release_current = load_fixed_network_current(FIXED_RELEASE_CURRENT_PATH)?;
+        let plan = self
+            .recovered
+            .reducer()
+            .release_effect(release, release_current)
+            .map_err(|_| DormantNetworkLifecycleOwnerErrorV1::InvalidState)?;
+        let handoff = committed
+            .into_publication()
+            .into_effect_handoff(plan)
+            .map_err(DormantNetworkLifecycleOwnerErrorV1::from)?;
+
+        let handoff = bind_network_effect_handoff(&mut self.recovered, handoff);
+        consume(handoff)?;
+
+        let observation = load_fixed_network_observation(FIXED_OBSERVATION_PATH)?;
+        let observed = self
+            .recovered
+            .reducer_mut()
+            .observe(observation)
+            .map_err(|_| DormantNetworkLifecycleOwnerErrorV1::InvalidState)?;
+        let observation_commit = resolve_network_commit(&mut self.recovered)?;
+        if matches!(
+            observed,
+            super::NetworkLifecycleObserveOutcomeV1::Continue(_)
+        ) {
+            return Ok(observation_commit);
+        }
+        self.recovered
+            .reducer_mut()
+            .commit_observed()
+            .map_err(|_| DormantNetworkLifecycleOwnerErrorV1::InvalidState)?;
+        resolve_network_commit(&mut self.recovered)
+    }
+
     /// Reduces one complete fixed protected lifecycle observation chain.
     ///
     /// Root-owned typed carriers provide the Intent, three exact Current and
@@ -744,6 +1026,16 @@ impl DormantNetworkLifecycleProtectedOwnerV1 {
     }
 }
 
+fn bind_network_effect_handoff<'owner>(
+    _owner: &'owner mut RecoveredNetworkLifecycleProtectedStateV1,
+    handoff: NetworkLifecycleEffectHandoffV1,
+) -> DormantNetworkLifecycleEffectHandoffV1<'owner> {
+    DormantNetworkLifecycleEffectHandoffV1 {
+        handoff,
+        _owner: std::marker::PhantomData,
+    }
+}
+
 /// Reports whether a Network checkpoint committed directly or through recovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DormantNetworkLifecycleProtectedCommitV1 {
@@ -804,6 +1096,25 @@ fn resolve_network_commit(
     }?;
     recovered.compact_physical_if_needed()?;
     Ok(resolution)
+}
+
+fn resolve_network_publication(
+    recovered: &mut RecoveredNetworkLifecycleProtectedStateV1,
+) -> Result<CommittedNetworkLifecycleCheckpointV1, DormantNetworkLifecycleOwnerErrorV1> {
+    match recovered.commit_current()? {
+        NetworkLifecycleCheckpointCommitOutcomeV1::Committed(committed) => Ok(committed),
+        NetworkLifecycleCheckpointCommitOutcomeV1::RecoveryRequired(recovery) => {
+            match recovered.resolve_ambiguous(recovery) {
+                NetworkLifecycleCheckpointResolutionV1::Committed(committed) => Ok(committed),
+                NetworkLifecycleCheckpointResolutionV1::NotCommitted => {
+                    Err(DormantNetworkLifecycleOwnerErrorV1::NotCommitted)
+                }
+                NetworkLifecycleCheckpointResolutionV1::RecoveryRequired { .. } => {
+                    Err(DormantNetworkLifecycleOwnerErrorV1::RecoveryRequired)
+                }
+            }
+        }
+    }
 }
 
 fn load_fixed_genesis() -> Result<NetworkLifecycleReducerV1, DormantNetworkLifecycleOwnerErrorV1> {

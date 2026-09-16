@@ -1,7 +1,8 @@
 //! Authoritative Storage workspace-inventory validation.
 //!
-//! Storage reports only current, launchable workspace roots. Each row binds an
-//! exact assignment and portable
+//! Storage reports current launchable workspace roots plus an optional complete
+//! lifecycle catalog extension produced by the protected Storage runtime. Each
+//! launch row binds an exact assignment and portable
 //! root image to a current-boot root pin, ZFS dataset GUID, subordinate identity
 //! range, and broker observation digest. Paths are derived locally from opaque
 //! handles:
@@ -10,13 +11,16 @@
 //! /run/aos/sandbox-pins/workspaces/<64 lowercase hexadecimal digits>
 //! ```
 //!
-//! The complete snapshot is bounded and strictly handle ordered. Identity
-//! ranges, physical pins, and dataset GUIDs must be unique across the snapshot.
+//! The complete response is bounded. Launch rows are strictly handle ordered;
+//! lifecycle rows and transitions have their own strict canonical order.
+//! Identity ranges, physical pins, and dataset GUIDs must be unique across the
+//! launch snapshot.
 
 use std::collections::BTreeSet;
 
 use aos_proto::aos::sandbox::local::v1::{
-    InventoryStorageRequest, InventoryStorageResourcesResponse, StorageWorkspaceInventoryRecord,
+    InventoryStorageRequest, InventoryStorageResourcesResponse, StorageLifecycleInventoryRecord,
+    StorageLifecycleTransitionRecord, StorageWorkspaceInventoryRecord,
 };
 use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ProtocolId, ProtocolVersion};
 use buffa::Message as _;
@@ -194,13 +198,13 @@ pub fn decode_storage_resource_inventory_request(
     Ok(header)
 }
 
-/// Decodes and validates one complete Storage workspace snapshot.
+/// Decodes and validates one complete Storage resource snapshot.
 ///
 /// # Errors
 ///
 /// Returns [`ProtocolValidationError`] when bounds, protobuf structure,
-/// snapshot metadata, row fields, ordering, boot identity, physical identity,
-/// dataset identity, or subordinate-range isolation is invalid.
+/// snapshot metadata, launch or lifecycle row fields, ordering, boot identity,
+/// physical identity, dataset identity, or subordinate-range isolation is invalid.
 pub fn decode_storage_resource_inventory_response(
     bytes: &[u8],
     maximum_response_bytes: u32,
@@ -226,6 +230,7 @@ pub fn decode_storage_resource_inventory_response(
     let broker_instance_id =
         exact_nonzero::<16>(&response.broker_instance_id, "broker_instance_id")?;
     let workspaces = validate_workspaces(&response.workspaces, kernel_boot_id)?;
+    validate_lifecycle_inventory(&response)?;
 
     Ok(ValidatedStorageInventory {
         kernel_boot_id,
@@ -234,6 +239,103 @@ pub fn decode_storage_resource_inventory_response(
         catalog_generation: response.catalog_generation,
         workspaces,
     })
+}
+
+fn validate_lifecycle_inventory(
+    response: &InventoryStorageResourcesResponse,
+) -> Result<(), ProtocolValidationError> {
+    let absent = response.lifecycle_source.is_empty()
+        && response.lifecycle_resources.is_empty()
+        && response.lifecycle_transitions.is_empty();
+    if absent {
+        return Ok(());
+    }
+    exact_nonzero::<32>(&response.lifecycle_source, "storage lifecycle source")?;
+    if response.lifecycle_resources.len() > MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS
+        || response.lifecycle_transitions.len() > MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS
+    {
+        return Err(ProtocolValidationError::TooManyEntries {
+            field: "storage lifecycle inventory",
+            maximum: MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS,
+        });
+    }
+    if !response
+        .lifecycle_resources
+        .windows(2)
+        .all(|pair| lifecycle_resource_key(&pair[0]) < lifecycle_resource_key(&pair[1]))
+        || !response
+            .lifecycle_transitions
+            .windows(2)
+            .all(|pair| lifecycle_transition_key(&pair[0]) < lifecycle_transition_key(&pair[1]))
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "storage lifecycle inventory order",
+        ));
+    }
+    for record in &response.lifecycle_resources {
+        validate_lifecycle_resource(record)?;
+    }
+    for record in &response.lifecycle_transitions {
+        validate_lifecycle_transition(record)?;
+    }
+    Ok(())
+}
+
+fn validate_lifecycle_resource(
+    record: &StorageLifecycleInventoryRecord,
+) -> Result<(), ProtocolValidationError> {
+    if !(1..=5).contains(&record.kind) || !(1..=9).contains(&record.resource_kind) {
+        return Err(ProtocolValidationError::InvalidField(
+            "storage lifecycle resource kind",
+        ));
+    }
+    exact_nonzero::<16>(&record.resource_id, "storage lifecycle resource")?;
+    exact_nonzero::<32>(&record.effect_subject, "storage lifecycle effect subject")?;
+    exact_nonzero::<32>(&record.effect_request, "storage lifecycle effect request")?;
+    exact_nonzero::<32>(&record.identity, "storage lifecycle identity")?;
+    optional_nonzero::<16>(&record.lifecycle_operation, "storage lifecycle operation")?;
+    optional_nonzero::<16>(&record.hold_id, "storage lifecycle hold")?;
+    reject_unknown(&record.__buffa_unknown_fields)
+}
+
+fn validate_lifecycle_transition(
+    record: &StorageLifecycleTransitionRecord,
+) -> Result<(), ProtocolValidationError> {
+    if !(1..=8).contains(&record.kind) || !(1..=9).contains(&record.resource_kind) {
+        return Err(ProtocolValidationError::InvalidField(
+            "storage lifecycle transition kind",
+        ));
+    }
+    exact_nonzero::<16>(&record.resource_id, "storage lifecycle transition resource")?;
+    exact_nonzero::<32>(
+        &record.effect_subject,
+        "storage lifecycle transition subject",
+    )?;
+    exact_nonzero::<32>(
+        &record.effect_request,
+        "storage lifecycle transition request",
+    )?;
+    exact_nonzero::<32>(&record.identity, "storage lifecycle transition identity")?;
+    optional_nonzero::<16>(&record.hold_id, "storage lifecycle transition hold")?;
+    reject_unknown(&record.__buffa_unknown_fields)
+}
+
+fn optional_nonzero<const N: usize>(
+    bytes: &[u8],
+    field: &'static str,
+) -> Result<(), ProtocolValidationError> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    exact_nonzero::<N>(bytes, field).map(|_| ())
+}
+
+fn lifecycle_resource_key(record: &StorageLifecycleInventoryRecord) -> (u32, &[u8], &[u8]) {
+    (record.kind, &record.resource_id, &record.identity)
+}
+
+fn lifecycle_transition_key(record: &StorageLifecycleTransitionRecord) -> (u32, &[u8], &[u8]) {
+    (record.kind, &record.resource_id, &record.identity)
 }
 
 fn validate_workspaces(

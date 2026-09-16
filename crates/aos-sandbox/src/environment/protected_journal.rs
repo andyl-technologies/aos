@@ -4,7 +4,7 @@
 //! publication, then checkpoint. This preserves pending-before-effect and
 //! generation-before-current publication without wiring a Nix or mount service.
 
-use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, SandboxId};
+use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, Revision, SandboxId};
 
 use crate::journal::{Journal, RecordNamespace};
 use crate::lifecycle::protected_journal_adapter::{
@@ -36,6 +36,10 @@ pub enum EnvironmentProtectedRecordKindV1 {
     Current = 3,
     /// Publishes a verified environment replay checkpoint without compaction authority.
     Checkpoint = 4,
+    /// Stores one exact constrained-build transaction before an external effect.
+    BuildEffect = 5,
+    /// Publishes one protected-observed terminal constrained-build outcome.
+    BuildTerminal = 6,
 }
 
 /// Defines the closed environment adapter schema.
@@ -62,14 +66,18 @@ impl ProtectedDomainSchemaV1 for EnvironmentProtectedJournalSchemaV1 {
             2 => Some(Self::Kind::LeaseEffect),
             3 => Some(Self::Kind::Current),
             4 => Some(Self::Kind::Checkpoint),
+            5 => Some(Self::Kind::BuildEffect),
+            6 => Some(Self::Kind::BuildTerminal),
             _ => None,
         }
     }
 
     fn namespace(kind: Self::Kind) -> RecordNamespace {
         match kind {
-            Self::Kind::Generation | Self::Kind::Current => RecordNamespace::DesiredState,
-            Self::Kind::LeaseEffect => RecordNamespace::Effect,
+            Self::Kind::Generation | Self::Kind::Current | Self::Kind::BuildTerminal => {
+                RecordNamespace::DesiredState
+            }
+            Self::Kind::LeaseEffect | Self::Kind::BuildEffect => RecordNamespace::Effect,
             Self::Kind::Checkpoint => RecordNamespace::RuntimeGeneration,
         }
     }
@@ -77,17 +85,21 @@ impl ProtectedDomainSchemaV1 for EnvironmentProtectedJournalSchemaV1 {
     fn order(kind: Self::Kind) -> u8 {
         match kind {
             Self::Kind::Generation => 1,
-            Self::Kind::LeaseEffect => 2,
-            Self::Kind::Current => 3,
-            Self::Kind::Checkpoint => 4,
+            Self::Kind::BuildEffect => 2,
+            Self::Kind::BuildTerminal => 3,
+            Self::Kind::LeaseEffect => 4,
+            Self::Kind::Current => 5,
+            Self::Kind::Checkpoint => 6,
         }
     }
 
     fn role(kind: Self::Kind) -> ProtectedRecordRoleV1 {
         match kind {
             Self::Kind::Generation => ProtectedRecordRoleV1::State,
-            Self::Kind::LeaseEffect => ProtectedRecordRoleV1::Effect,
-            Self::Kind::Current | Self::Kind::Checkpoint => ProtectedRecordRoleV1::Publication,
+            Self::Kind::LeaseEffect | Self::Kind::BuildEffect => ProtectedRecordRoleV1::Effect,
+            Self::Kind::Current | Self::Kind::Checkpoint | Self::Kind::BuildTerminal => {
+                ProtectedRecordRoleV1::Publication
+            }
         }
     }
 
@@ -146,6 +158,26 @@ impl ProtectedDomainSchemaV1 for EnvironmentProtectedJournalSchemaV1 {
                     _ => None,
                 }
             }
+            Self::Kind::BuildEffect | Self::Kind::BuildTerminal => {
+                let selector = selector_for_build_body(manifests, identity, body)?;
+                let record =
+                    super::execution::decode_nix_build_journal_record_v1(body, &selector).ok()?;
+                if super::execution::encode_nix_build_journal_record_v1(&record).as_slice() != body
+                    || record.state().request().operation().as_bytes() != &identity[32..48]
+                {
+                    return None;
+                }
+                match (kind, record.state().phase()) {
+                    (Self::Kind::BuildEffect, super::NixBuildPhaseV1::Prepared) => {
+                        Some(ProtectedReducerPhaseV1::Prepared)
+                    }
+                    (
+                        Self::Kind::BuildTerminal,
+                        super::NixBuildPhaseV1::Completed | super::NixBuildPhaseV1::Rejected,
+                    ) => Some(ProtectedReducerPhaseV1::Terminal),
+                    _ => None,
+                }
+            }
             Self::Kind::Generation | Self::Kind::Checkpoint => None,
         }
     }
@@ -168,6 +200,8 @@ pub(crate) enum EnvironmentReducerRecordV1<'record> {
     Generation(&'record EnvironmentGenerationManifestV1),
     /// Encodes one activation phase into effect or current-state storage.
     Activation(&'record EnvironmentActivationTransactionV1),
+    /// Encodes one canonical constrained-build phase.
+    Build(&'record super::execution::NixBuildJournalRecordV1),
 }
 
 /// Canonical environment shared-journal key.
@@ -287,7 +321,39 @@ pub(crate) fn environment_reducer_envelope_v1(
         {
             encode_environment_activation_v1(activation)
         }
-        EnvironmentReducerRecordV1::Generation(_) | EnvironmentReducerRecordV1::Activation(_) => {
+        EnvironmentReducerRecordV1::Build(build)
+            if matches!(
+                (key.kind(), build.state().phase()),
+                (
+                    EnvironmentProtectedRecordKindV1::BuildEffect,
+                    super::NixBuildPhaseV1::Prepared
+                ) | (
+                    EnvironmentProtectedRecordKindV1::BuildTerminal,
+                    super::NixBuildPhaseV1::Completed | super::NixBuildPhaseV1::Rejected
+                )
+            ) && build
+                .state()
+                .request()
+                .selector()
+                .manifest_record()
+                .project()
+                .as_bytes()
+                == &key.identity()[..16]
+                && build
+                    .state()
+                    .request()
+                    .selector()
+                    .manifest_record()
+                    .sandbox()
+                    .as_bytes()
+                    == &key.identity()[16..32]
+                && build.state().request().operation().as_bytes() == &key.identity()[32..48] =>
+        {
+            Ok(super::execution::encode_nix_build_journal_record_v1(build))
+        }
+        EnvironmentReducerRecordV1::Generation(_)
+        | EnvironmentReducerRecordV1::Activation(_)
+        | EnvironmentReducerRecordV1::Build(_) => {
             return Err(EnvironmentProtectedJournalErrorV1::NonCanonicalRecord);
         }
     }
@@ -302,4 +368,26 @@ pub(crate) fn environment_reducer_envelope_v1(
         payload,
         manifests,
     )
+}
+
+fn selector_for_build_body(
+    manifests: &EnvironmentGenerationHistoryV1,
+    identity: &[u8],
+    body: &[u8],
+) -> Option<super::EnvironmentSelectorV1> {
+    if body.len() != 336 || identity.len() != 48 {
+        return None;
+    }
+    let generation = u64::from_be_bytes(body.get(64..72)?.try_into().ok()?);
+    let manifest_digest = body.get(72..104)?;
+    let sandbox = SandboxId::from_bytes(identity.get(16..32)?.try_into().ok()?);
+    let (manifest, digest) = manifests
+        .generations
+        .get(&(sandbox, Revision::new(generation)))?;
+    if manifest.project().as_bytes() != &identity[..16]
+        || digest.digest().as_bytes() != manifest_digest
+    {
+        return None;
+    }
+    super::EnvironmentSelectorV1::from_manifest(manifest).ok()
 }

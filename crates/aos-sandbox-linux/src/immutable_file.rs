@@ -28,9 +28,9 @@ pub use publication::{
     AfterRenameFailure, AmbiguousNamedSealedFile, BeforeRenameFailure, DurablyNamedSealedFile,
     FsVerityPublicationRoot, InvalidPublicationName, MaterializationCallbacks,
     MaterializationError, MaterializationFailure, NoReplacePublicationError,
-    ObserveSealedPublicationError, ObservedSealedPublicationFile, PublicationName,
-    PublicationRootError, RenamedSealedFile, RetainedPrivateArtifact, RetainedPrivatePhase,
-    SealedPrivateFile,
+    ObserveSealedPublicationError, ObservedRetainedPrivateArtifact, ObservedSealedPublicationFile,
+    PublicationName, PublicationRootError, RenamedSealedFile, RetainedPrivateArtifact,
+    RetainedPrivatePhase, SealedPrivateFile,
 };
 
 use std::marker::PhantomData;
@@ -204,6 +204,36 @@ impl SealedMemfdMapping {
 pub struct FsVerityMapping;
 
 impl FsVerityMapping {
+    /// Opens and returns the same descriptor whose identity, size, and verity are checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImmutableFileError`] for unsafe resolution, non-regular or
+    /// mismatched identity, size, filesystem, or fs-verity measurement.
+    pub fn open_verified_beneath(
+        root: &BeneathRoot,
+        relative: &Path,
+        expected_verity: FsVerityDigest,
+        expected_bytes: u64,
+    ) -> Result<OwnedFd, ImmutableFileError> {
+        let file = root.open_regular(relative)?.into_owned_fd();
+        let before = inspect(file.as_fd())?;
+        if before.file_type != libc::S_IFREG {
+            return Err(ImmutableFileError::NotRegular);
+        }
+        if before.bytes != expected_bytes {
+            return Err(ImmutableFileError::SizeMismatch);
+        }
+        if !measurement_matches(file.as_fd(), expected_verity)? {
+            return Err(ImmutableFileError::VerityMeasurementMismatch);
+        }
+        let after = inspect(file.as_fd())?;
+        if before != after || !measurement_matches(file.as_fd(), expected_verity)? {
+            return Err(ImmutableFileError::AdmissionRace);
+        }
+        Ok(file)
+    }
+
     /// Opens one catalog descendant and runs a callback with its exact bytes.
     ///
     /// The file is opened once with beneath, no-magic-link, no-symlink, and

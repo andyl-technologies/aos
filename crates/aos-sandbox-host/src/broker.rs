@@ -1245,6 +1245,52 @@ where
         }
     }
 
+    pub(crate) fn retain_scope_replay_authority(
+        &mut self,
+        binding: crate::state::HostScopeReplayBindingV1,
+    ) -> Result<[u8; 32]> {
+        self.ensure_healthy()?;
+        let mut proposed = self.state.clone();
+        let locator = proposed.retain_scope_replay(binding, &self.authority)?;
+        self.commit_state(&proposed)?;
+        Ok(locator)
+    }
+
+    pub(crate) fn terminal_verifier_commitment(&self) -> Result<[u8; 32]> {
+        self.authority
+            .terminal_verifier_commitment()
+            .map_err(|error| HostError::State(error.to_string()))
+    }
+
+    pub(crate) fn revalidate_scope_replay_authority(
+        &self,
+        retained_locator: Option<[u8; 32]>,
+        binding: &crate::state::HostScopeReplayBindingV1,
+    ) -> Result<[u8; 32]> {
+        self.ensure_healthy()?;
+        self.state
+            .revalidate_scope_replay(retained_locator, binding, &self.authority)
+    }
+
+    pub(crate) fn finalize_scope_replay_authority(
+        &mut self,
+        receipt: &aos_sandbox_protocol::BrokerTerminalCommitReceiptV1,
+    ) -> Result<[u8; 32]> {
+        if !self.state_healthy {
+            let recovered = self.store.load()?;
+            recovered.validate_authenticated(&self.authority)?;
+            self.state = recovered;
+            self.state_healthy = true;
+        }
+        let mut proposed = self.state.clone();
+        let locator = proposed.finalize_scope_replay(receipt, &self.authority)?;
+        if proposed == self.state {
+            return Ok(locator);
+        }
+        self.commit_state(&proposed)?;
+        Ok(locator)
+    }
+
     fn commit_state(&mut self, proposed: &HostState) -> Result<()> {
         self.state_healthy = false;
         self.store.commit(proposed)?;

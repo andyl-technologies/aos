@@ -268,6 +268,22 @@ impl VerifiedAssignmentAuthorityV1 {
     pub(super) const fn context(self) -> AuthenticatedEvidenceContextV1 {
         self.context
     }
+
+    pub(super) fn matches_drain_plan(
+        self,
+        plan: super::draining::DrainAssignmentPlanV1,
+        context: AuthenticatedEvidenceContextV1,
+        coordinator_unix_seconds: u64,
+    ) -> bool {
+        self.node == context.node()
+            && self.context == context
+            && self.sandbox == plan.sandbox()
+            && self.incarnation == plan.incarnation()
+            && self.epoch == plan.epoch()
+            && self.desired_generation == plan.desired_generation()
+            && self.assignment_digest == plan.assignment_digest()
+            && self.is_current_at(coordinator_unix_seconds)
+    }
 }
 
 /// Classifies a bounded node-side reason without accepting arbitrary text.
@@ -3513,10 +3529,13 @@ pub struct SnapshotRestoreAdmissionV1 {
 }
 
 impl SnapshotRestoreAdmissionV1 {
-    /// Evaluates destination capability, dependencies, and reauthorization evidence.
+    /// Evaluates evidence issued by the protected destination owner.
     ///
-    /// This creates admission evidence only. It is not an ownership lease,
-    /// assignment, restore command, or permission to mutate destination state.
+    /// The only production callsite is the fixed destination authority owner,
+    /// which supplies its independently authenticated capability, journal,
+    /// publication, dependency, and reauthorization evidence. This creates
+    /// admission evidence only. It is not an ownership lease, assignment,
+    /// restore command, or permission to mutate destination state.
     ///
     /// # Errors
     ///
@@ -3743,7 +3762,7 @@ fn validate_transfer_chunks(
     Ok(())
 }
 
-fn staged_prefix_commitment(
+pub(super) fn staged_prefix_commitment(
     identity: SnapshotTransferIdentityV1,
     checkpoint: SnapshotTransferResumeV1,
     staged_prefix: &[u8],

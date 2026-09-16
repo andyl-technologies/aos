@@ -38,14 +38,16 @@ use super::accounting::{AccountingError, CapacityPolicyV1, PublicationAccounting
 use super::format::encode_protected_record_v1;
 use super::model::{
     AdmissionDecisionStateV1, AdmissionDecisionV1, AdmissionLimits, ArtifactCommitmentV1,
-    ChallengeConsumptionV1, CompletionPermitStateV1, CompletionPermitV1, CompletionReceiptV1,
-    LedgerMutation, ProtectedRecordKindV1, PublicationAuthorityEpoch, PublicationPermitId,
-    RecoveryObservationReceiptV1, digest_parts, validate_nonzero,
+    ArtifactPreparationIntentV1, ChallengeConsumptionV1, CompletionPermitStateV1,
+    CompletionPermitV1, CompletionReceiptV1, LedgerMutation, ProtectedRecordKindV1,
+    PublicationAuthorityEpoch, PublicationPermitId, RecoveryObservationReceiptV1, digest_parts,
+    validate_nonzero,
 };
 use super::payload::{
     accounting_payload, artifact_payload, challenge_key_bytes, challenge_payload,
     checkpoint_payload, decision_payload, decode_plan_content, eviction_payload, permit_payload,
-    receipt_payload, recovery_observation_payload, source_release_payload,
+    preparation_intent_payload, receipt_payload, recovery_observation_payload,
+    source_release_payload,
 };
 use super::source::{AuthorizedSourceRelease, SourceReleaseError};
 
@@ -53,6 +55,7 @@ const DECISION_DOMAIN: &[u8] = b"aos.sandbox.publisher.admission-decision.v1\0";
 #[cfg(target_os = "linux")]
 const RUNTIME_DOMAIN: &[u8] = b"aos.sandbox.publisher.runtime-join.v1\0";
 const ARTIFACT_DOMAIN: &[u8] = b"aos.sandbox.publisher.prepared-artifact.v1\0";
+const PREPARATION_INTENT_DOMAIN: &[u8] = b"aos.sandbox.publisher.preparation-intent.v1\0";
 const PERMIT_DOMAIN: &[u8] = b"aos.sandbox.publisher.completion-permit.v1\0";
 const RECEIPT_DOMAIN: &[u8] = b"aos.sandbox.publisher.completion-receipt.v1\0";
 const EVICTION_DOMAIN: &[u8] = b"aos.sandbox.publisher.catalog-eviction.v1\0";
@@ -220,6 +223,21 @@ impl<'authority, 'request> AdmittedPublisherPlan<'authority, 'request> {
 pub struct ArtifactPreparation {
     artifact: ArtifactCommitmentV1,
     origin_frontier: CommittedAdmissionFrontier,
+}
+
+/// Retains a deterministic pre-inode intent until its protected commit.
+#[derive(Debug)]
+pub struct ArtifactPreparationIntent {
+    intent: ArtifactPreparationIntentV1,
+    origin_frontier: CommittedAdmissionFrontier,
+}
+
+/// Joins one durably committed intent to freshly rechecked live authority.
+#[derive(Debug)]
+#[cfg(target_os = "linux")]
+pub struct CommittedArtifactPreparationIntent<'authority, 'request> {
+    intent: ArtifactPreparationIntentV1,
+    _authority: MaterializationAuthority<'authority, 'request>,
 }
 
 /// Carries one fresh verify-and-seal observation from immutable-file mechanics.
@@ -408,8 +426,31 @@ impl ArtifactPreparation {
     /// Returns [`AdmissionError`] for sentinel/mismatched facts, wrong size or
     /// content, equal names, or a non-SHA-256 seal sentinel.
     #[cfg(target_os = "linux")]
-    pub(crate) fn for_authority(
-        authority: &MaterializationAuthority<'_, '_>,
+    pub(crate) fn for_committed_intent(
+        committed: &CommittedArtifactPreparationIntent<'_, '_>,
+        observation: FreshSealedArtifactObservation,
+    ) -> Result<Self, AdmissionError> {
+        Self::for_intent_record(
+            &committed.intent,
+            &committed._authority.committed,
+            observation,
+        )
+    }
+
+    /// Reconstructs preparation from a protected cold intent and exact Linux observation.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn for_cold_recovery(
+        intent: &ArtifactPreparationIntentV1,
+        committed: &CommittedAdmissionFrontier,
+        observation: FreshSealedArtifactObservation,
+    ) -> Result<Self, AdmissionError> {
+        Self::for_intent_record(intent, committed, observation)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn for_intent_record(
+        intent: &ArtifactPreparationIntentV1,
+        committed: &CommittedAdmissionFrontier,
         observation: FreshSealedArtifactObservation,
     ) -> Result<Self, AdmissionError> {
         let FreshSealedArtifactObservation {
@@ -428,29 +469,23 @@ impl ArtifactPreparation {
         if private_name_digest == final_name_digest {
             return Err(AdmissionError::ArtifactMismatch);
         }
-        let requested_content = decode_plan_content(authority.decision)?;
-        if content != requested_content
+        if content != intent.content
             || bytes != content.encoded_size()
             || allocated_bytes < bytes
-            || allocated_bytes
-                > aos_sandbox_core::format::decode_publisher_domain_plan(
-                    &authority.decision.canonical_plan,
-                    aos_sandbox_core::DecodeLimits::default(),
-                )
-                .map_err(|_| AdmissionError::ArtifactMismatch)?
-                .fields()
-                .request
-                .maximum_bytes
+            || allocated_bytes > intent.maximum_allocated_bytes
+            || private_name_digest != intent.private_name_digest
+            || final_name_digest != intent.final_name_digest
         {
             return Err(AdmissionError::ArtifactMismatch);
         }
         let artifact_digest = digest_parts(
             ARTIFACT_DOMAIN,
             &[
-                authority.decision.operation.as_bytes(),
-                authority.decision.publisher_instance.as_bytes(),
-                authority.decision.decision_digest.as_bytes(),
-                &authority.decision.selected_root_generation.to_be_bytes(),
+                intent.operation.as_bytes(),
+                intent.publisher_instance.as_bytes(),
+                intent.decision_digest.as_bytes(),
+                intent.intent_digest.as_bytes(),
+                &intent.root_generation.to_be_bytes(),
                 content.media_type().as_str().as_bytes(),
                 content.digest().as_bytes(),
                 &content.encoded_size().to_be_bytes(),
@@ -463,10 +498,11 @@ impl ArtifactPreparation {
         );
         Ok(Self {
             artifact: ArtifactCommitmentV1 {
-                operation: authority.decision.operation,
-                publisher_instance: authority.decision.publisher_instance,
-                decision_digest: authority.decision.decision_digest,
-                root_generation: authority.decision.selected_root_generation,
+                operation: intent.operation,
+                publisher_instance: intent.publisher_instance,
+                decision_digest: intent.decision_digest,
+                preparation_intent_digest: intent.intent_digest,
+                root_generation: intent.root_generation,
                 content,
                 verity_sha256,
                 private_name_digest,
@@ -475,7 +511,7 @@ impl ArtifactPreparation {
                 allocated_bytes,
                 artifact_digest,
             },
-            origin_frontier: authority.committed.clone(),
+            origin_frontier: committed.clone(),
         })
     }
 
@@ -483,6 +519,104 @@ impl ArtifactPreparation {
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
         self.artifact.artifact_digest
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ArtifactPreparationIntent {
+    /// Binds deterministic names and the allocation ceiling before inode creation.
+    pub(crate) fn for_authority(
+        authority: &MaterializationAuthority<'_, '_>,
+        content: aos_sandbox_core::ObjectDescriptor,
+        private_name_digest: ObjectDigest,
+        final_name_digest: ObjectDigest,
+    ) -> Result<Self, AdmissionError> {
+        let requested_content = decode_plan_content(authority.decision)?;
+        let plan = aos_sandbox_core::format::decode_publisher_domain_plan(
+            &authority.decision.canonical_plan,
+            aos_sandbox_core::DecodeLimits::default(),
+        )
+        .map_err(|_| AdmissionError::ArtifactMismatch)?;
+        let maximum_allocated_bytes = plan.fields().request.maximum_bytes;
+        if content != requested_content
+            || maximum_allocated_bytes < content.encoded_size()
+            || private_name_digest == final_name_digest
+        {
+            return Err(AdmissionError::ArtifactMismatch);
+        }
+        validate_nonzero(&[
+            ("private name", private_name_digest.as_bytes()),
+            ("final name", final_name_digest.as_bytes()),
+        ])?;
+        let root_record_digest = authority._root.root().record_digest();
+        let intent_digest = digest_parts(
+            PREPARATION_INTENT_DOMAIN,
+            &[
+                authority.decision.operation.as_bytes(),
+                authority.decision.publisher_instance.as_bytes(),
+                authority.decision.decision_digest.as_bytes(),
+                root_record_digest.as_bytes(),
+                &authority.decision.selected_root_generation.to_be_bytes(),
+                content.media_type().as_str().as_bytes(),
+                content.digest().as_bytes(),
+                &content.encoded_size().to_be_bytes(),
+                private_name_digest.as_bytes(),
+                final_name_digest.as_bytes(),
+                &maximum_allocated_bytes.to_be_bytes(),
+            ],
+        );
+        Ok(Self {
+            intent: ArtifactPreparationIntentV1 {
+                operation: authority.decision.operation,
+                publisher_instance: authority.decision.publisher_instance,
+                decision_digest: authority.decision.decision_digest,
+                root_record_digest,
+                root_generation: authority.decision.selected_root_generation,
+                content,
+                private_name_digest,
+                final_name_digest,
+                maximum_allocated_bytes,
+                intent_digest,
+            },
+            origin_frontier: authority.committed.clone(),
+        })
+    }
+
+    /// Returns the durable intent commitment.
+    #[must_use]
+    pub const fn digest(&self) -> ObjectDigest {
+        self.intent.intent_digest
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl CommittedArtifactPreparationIntent<'_, '_> {
+    pub(crate) const fn intent_digest(&self) -> ObjectDigest {
+        self.intent.intent_digest
+    }
+
+    pub(crate) const fn operation(&self) -> OperationId {
+        self.intent.operation
+    }
+
+    pub(crate) const fn content(&self) -> &aos_sandbox_core::ObjectDescriptor {
+        &self.intent.content
+    }
+
+    pub(crate) const fn root_record_digest(&self) -> ObjectDigest {
+        self.intent.root_record_digest
+    }
+
+    pub(crate) const fn private_name_digest(&self) -> ObjectDigest {
+        self.intent.private_name_digest
+    }
+
+    pub(crate) const fn final_name_digest(&self) -> ObjectDigest {
+        self.intent.final_name_digest
+    }
+
+    pub(crate) const fn maximum_allocated_bytes(&self) -> u64 {
+        self.intent.maximum_allocated_bytes
     }
 }
 
@@ -1143,6 +1277,12 @@ pub struct CommittedAdmissionFrontier {
     checkpoint: AuthorityCheckpointV1,
 }
 
+impl CommittedAdmissionFrontier {
+    pub(crate) const fn head(&self) -> ObjectDigest {
+        self.head
+    }
+}
+
 /// Carries one opaque synchronized protected-store acknowledgement.
 ///
 /// Only the protected-store adapter can construct this token after atomically
@@ -1372,6 +1512,7 @@ pub struct AdmissionLedger {
     authority_epoch: PublicationAuthorityEpoch,
     decisions: BTreeMap<[u8; 16], AdmissionDecisionV1>,
     challenges: BTreeMap<([u8; 16], [u8; 32]), ChallengeConsumptionV1>,
+    preparation_intents: BTreeMap<[u8; 16], ArtifactPreparationIntentV1>,
     artifacts: BTreeMap<[u8; 16], ArtifactCommitmentV1>,
     permits: BTreeMap<[u8; 16], CompletionPermitV1>,
     receipts: BTreeMap<[u8; 16], CompletionReceiptV1>,
@@ -1400,6 +1541,7 @@ impl AdmissionLedger {
         challenges: Vec<ChallengeConsumptionV1>,
         decisions: Vec<AdmissionDecisionV1>,
         accounts: Vec<super::CapacityAccountV1>,
+        preparation_intents: Vec<ArtifactPreparationIntentV1>,
         artifacts: Vec<ArtifactCommitmentV1>,
         permits: Vec<CompletionPermitV1>,
         receipts: Vec<CompletionReceiptV1>,
@@ -1441,6 +1583,7 @@ impl AdmissionLedger {
             authority_epoch,
             decisions: BTreeMap::new(),
             challenges: BTreeMap::new(),
+            preparation_intents: BTreeMap::new(),
             artifacts: BTreeMap::new(),
             permits: BTreeMap::new(),
             receipts: BTreeMap::new(),
@@ -1465,6 +1608,15 @@ impl AdmissionLedger {
                 *challenge.challenge.as_bytes(),
             );
             if ledger.challenges.insert(key, challenge).is_some() {
+                return Err(AdmissionError::IdentityConflict);
+            }
+        }
+        for intent in preparation_intents {
+            if ledger
+                .preparation_intents
+                .insert(*intent.operation.as_bytes(), intent)
+                .is_some()
+            {
                 return Err(AdmissionError::IdentityConflict);
             }
         }
@@ -1707,10 +1859,21 @@ impl AdmissionLedger {
                 return Err(AdmissionError::Poisoned);
             }
             if let Some(artifact) = self.artifacts.get(decision.operation.as_bytes()) {
+                let intent = self
+                    .preparation_intents
+                    .get(decision.operation.as_bytes())
+                    .ok_or(AdmissionError::Poisoned)?;
                 if artifact.decision_digest != decision.decision_digest
                     || artifact.publisher_instance != decision.publisher_instance
+                    || artifact.preparation_intent_digest != intent.intent_digest
                     || artifact.root_generation != decision.selected_root_generation
                     || artifact.content != fields.request.content
+                    || artifact.content != intent.content
+                    || intent.root_record_digest != decision.selected_root_digest
+                    || intent.root_generation != decision.selected_root_generation
+                    || intent.private_name_digest != artifact.private_name_digest
+                    || intent.final_name_digest != artifact.final_name_digest
+                    || artifact.allocated_bytes > intent.maximum_allocated_bytes
                     || artifact.bytes != artifact.content.encoded_size()
                     || artifact.allocated_bytes < artifact.bytes
                     || artifact.verity_sha256 == [0; 32]
@@ -1827,6 +1990,10 @@ impl AdmissionLedger {
         if self.challenges.len() != self.decisions.len()
             || self.accounting.accounts().count() != self.decisions.len()
             || self
+                .preparation_intents
+                .keys()
+                .any(|operation| !self.decisions.contains_key(operation))
+            || self
                 .artifacts
                 .keys()
                 .any(|operation| !self.decisions.contains_key(operation))
@@ -1872,6 +2039,7 @@ impl AdmissionLedger {
             authority_epoch,
             decisions: BTreeMap::new(),
             challenges: BTreeMap::new(),
+            preparation_intents: BTreeMap::new(),
             artifacts: BTreeMap::new(),
             permits: BTreeMap::new(),
             receipts: BTreeMap::new(),
@@ -2282,10 +2450,20 @@ impl AdmissionLedger {
             .decisions
             .get(operation.as_bytes())
             .ok_or(AdmissionError::OperationAbsent)?;
+        let intent = self
+            .preparation_intents
+            .get(operation.as_bytes())
+            .ok_or(AdmissionError::ArtifactMismatch)?;
         if decision.state != AdmissionDecisionStateV1::Admitted
             || decision.decision_digest != preparation.artifact.decision_digest
             || decision.publisher_instance != preparation.artifact.publisher_instance
             || decision.selected_root_generation != preparation.artifact.root_generation
+            || decision.selected_root_digest != intent.root_record_digest
+            || preparation.artifact.preparation_intent_digest != intent.intent_digest
+            || preparation.artifact.content != intent.content
+            || preparation.artifact.private_name_digest != intent.private_name_digest
+            || preparation.artifact.final_name_digest != intent.final_name_digest
+            || preparation.artifact.allocated_bytes > intent.maximum_allocated_bytes
         {
             return Err(AdmissionError::ArtifactMismatch);
         }
@@ -2301,6 +2479,81 @@ impl AdmissionLedger {
         self.artifacts
             .insert(*operation.as_bytes(), preparation.artifact);
         Ok(Some(mutation))
+    }
+
+    /// Commits one exact deterministic materialization intent before inode creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdmissionError`] for stale authority, a conflicting retry,
+    /// mismatched admission/root facts, or protected-record exhaustion.
+    pub fn record_preparation_intent(
+        &mut self,
+        preparation: ArtifactPreparationIntent,
+    ) -> Result<Option<LedgerMutation>, AdmissionError> {
+        self.ensure_healthy()?;
+        self.require_committed(&preparation.origin_frontier)?;
+        let intent = preparation.intent;
+        if let Some(existing) = self.preparation_intents.get(intent.operation.as_bytes()) {
+            return if existing == &intent {
+                Ok(None)
+            } else {
+                Err(AdmissionError::IdentityConflict)
+            };
+        }
+        let decision = self
+            .decisions
+            .get(intent.operation.as_bytes())
+            .ok_or(AdmissionError::OperationAbsent)?;
+        if decision.state != AdmissionDecisionStateV1::Admitted
+            || decision.publisher_instance != intent.publisher_instance
+            || decision.decision_digest != intent.decision_digest
+            || decision.selected_root_digest != intent.root_record_digest
+            || decision.selected_root_generation != intent.root_generation
+        {
+            return Err(AdmissionError::ArtifactMismatch);
+        }
+        self.ensure_record_capacity(1)?;
+        let mutation = self.append(
+            ProtectedRecordKindV1::PreparationIntent,
+            intent.operation.as_bytes().to_vec(),
+            preparation_intent_payload(&intent),
+        )?;
+        self.preparation_intents
+            .insert(*intent.operation.as_bytes(), intent);
+        Ok(Some(mutation))
+    }
+
+    /// Rejoins a durable intent to freshly rechecked live materialization authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdmissionError`] unless the intent is present at the exact
+    /// committed frontier and matches the current execution, decision, and root.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn authorize_committed_preparation<'authority, 'request>(
+        &self,
+        committed: &CommittedAdmissionFrontier,
+        authority: MaterializationAuthority<'authority, 'request>,
+        intent_digest: ObjectDigest,
+    ) -> Result<CommittedArtifactPreparationIntent<'authority, 'request>, AdmissionError> {
+        self.require_committed(committed)?;
+        let intent = self
+            .preparation_intents
+            .get(authority.decision.operation.as_bytes())
+            .ok_or(AdmissionError::ArtifactMismatch)?;
+        if intent.intent_digest != intent_digest
+            || intent.publisher_instance != authority.decision.publisher_instance
+            || intent.decision_digest != authority.decision.decision_digest
+            || intent.root_record_digest != authority._root.root().record_digest()
+            || intent.root_generation != authority.decision.selected_root_generation
+        {
+            return Err(AdmissionError::ArtifactMismatch);
+        }
+        Ok(CommittedArtifactPreparationIntent {
+            intent: intent.clone(),
+            _authority: authority,
+        })
     }
 
     /// Issues or exactly replays one artifact-bound completion permit.
@@ -3409,6 +3662,62 @@ impl AdmissionLedger {
         self.artifacts.get(operation.as_bytes())
     }
 
+    pub(super) fn preparation_intent(
+        &self,
+        operation: OperationId,
+    ) -> Option<&ArtifactPreparationIntentV1> {
+        self.preparation_intents.get(operation.as_bytes())
+    }
+
+    pub(super) fn selected_root_record(
+        &self,
+        operation: OperationId,
+    ) -> Option<&crate::publisher_roots::PublicationRootRecordV1> {
+        let decision = self.decisions.get(operation.as_bytes())?;
+        self.root_records
+            .get(decision.selected_root_digest.as_bytes())
+    }
+
+    /// Derives the sole catalog entry allowed for one prepared artifact.
+    pub(crate) fn intended_catalog_entry(
+        &self,
+        operation: OperationId,
+        artifact_digest: ObjectDigest,
+    ) -> Result<super::CommittedReadEntryV1, AdmissionError> {
+        let artifact = self
+            .artifacts
+            .get(operation.as_bytes())
+            .ok_or(AdmissionError::ArtifactMismatch)?;
+        let decision = self
+            .decisions
+            .get(operation.as_bytes())
+            .ok_or(AdmissionError::OperationAbsent)?;
+        let request = aos_sandbox_core::format::decode_publisher_admission_request_v1(
+            &decision.canonical_request,
+            aos_sandbox_core::DecodeLimits::default(),
+        )
+        .map_err(|_| AdmissionError::CompletionMismatch)?;
+        let root = self
+            .root_records
+            .get(decision.selected_root_digest.as_bytes())
+            .ok_or(AdmissionError::CompletionMismatch)?;
+        if artifact.artifact_digest != artifact_digest {
+            return Err(AdmissionError::ArtifactMismatch);
+        }
+        super::CommittedReadEntryV1::committed(
+            artifact.content.clone(),
+            request.plan().fields().target.project,
+            request.cache_resource(),
+            request.plan().fields().target.cache_domain,
+            root.root_id,
+            decision.selected_root_digest,
+            decision.selected_root_generation,
+            ObjectDigest::from_bytes(artifact.verity_sha256),
+            artifact.allocated_bytes,
+        )
+        .map_err(|_| AdmissionError::CompletionMismatch)
+    }
+
     pub(super) fn receipt(&self, operation: OperationId) -> Option<&CompletionReceiptV1> {
         self.receipts.get(operation.as_bytes())
     }
@@ -3559,6 +3868,9 @@ impl AdmissionLedger {
         for account in self.accounts() {
             values.push(accounting_payload(account));
         }
+        for intent in self.preparation_intents.values() {
+            values.push(preparation_intent_payload(intent));
+        }
         for artifact in self.artifacts.values() {
             values.push(artifact_payload(artifact));
         }
@@ -3626,6 +3938,7 @@ impl AdmissionLedger {
             .and_then(|value| value.checked_add(self.challenges.len()))
             .and_then(|value| value.checked_add(self.decisions.len()))
             .and_then(|value| value.checked_add(self.accounting.accounts().count()))
+            .and_then(|value| value.checked_add(self.preparation_intents.len()))
             .and_then(|value| value.checked_add(self.artifacts.len()))
             .and_then(|value| value.checked_add(self.permits.len()))
             .and_then(|value| value.checked_add(self.receipts.len()))

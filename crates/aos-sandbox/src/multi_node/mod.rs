@@ -1,14 +1,15 @@
 //! Pure coordinator-to-node scheduling and reconciliation models.
 //!
-//! This module contains no transport, lease-signing, or privileged effect
-//! implementation. Capability reports and node observations remain
+//! This module contains no production transport, service activation, or
+//! privileged effect implementation. Capability reports and node observations remain
 //! untrusted until an authenticated carrier and the relevant durable controller
 //! state validate them. In particular, an assignment or reconciliation value
 //! from this module never confers, renews, releases, or transfers ownership
 //! authority. Private sealed adapters bind authenticated peer, epoch, lease,
 //! signature, and replay facts to exact protected journal transactions; they
-//! expose no transport, signer, or production activation. Its dormant fixed
-//! owner only samples the host clock through a protected monotonic floor.
+//! expose no production activation. Dormant transport, lease authority, storage,
+//! and watch adapters are constructible only from explicit authenticated inputs
+//! and remain disconnected from listeners, routers, readiness, and dispatch.
 
 pub mod assignment;
 pub mod capability;
@@ -17,10 +18,13 @@ pub mod draining;
 pub mod evidence;
 mod evidence_authority;
 pub mod journal;
+mod lease_authority;
 pub mod placement;
+mod protected_artifact_store;
 pub mod protocol;
 mod reducer_state;
 mod store_authority;
+pub mod watch_service;
 
 pub use assignment::{
     AssignmentAcceptanceApplyOutcomeV1, AssignmentAcceptanceReducerV1, AssignmentIntentV1,
@@ -47,6 +51,10 @@ pub use capability::{
     NodeCapabilitySnapshotV1, NodeProbeEvidenceV1, NodeProtocolOfferV1, NodeProtocolV1,
     hard_feature_fact_requirements_v1_0,
 };
+pub use carrier_authority::{
+    DormantAuthenticatedCoordinatorNodeTransportV1, DormantCoordinatorNodeEncodingV1,
+    DormantOutboundExchangeV1, DormantOutboundResponseV1, DormantTransportHandshakeV1,
+};
 pub use draining::{
     DrainAssignmentObservationV1, DrainAssignmentPlanV1, DrainAssignmentProgressV1,
     DrainAssignmentStrategyV1, DrainBlockReasonV1, DrainContainmentEvidenceV1,
@@ -65,6 +73,10 @@ pub use journal::{
     MAX_WATCH_JOURNAL_STATE_BYTES, MultiNodeJournalCheckpointV1, MultiNodeJournalDomainV1,
     MultiNodeJournalRecordV1, MultiNodeJournalReducerV1, PartialEffectRecoveryV1,
     ProtectedJournalCheckpointV1, ProtectedJournalRecordV1,
+};
+pub use lease_authority::{
+    ProtectedCommittedLeaseV1, ProtectedFixedMultiNodeLeaseOwnerV1, ProtectedLeaseAuthorityErrorV1,
+    ProtectedLeaseIssueOutcomeV1, ProtectedLeaseRecoveryV1,
 };
 pub use placement::{
     AffinityPlacementV1, CandidateRejectionReasonV1, CandidateRejectionV1, InvalidPlacementInput,
@@ -93,8 +105,20 @@ pub use store_authority::{
     ProtectedAssignmentEffectReadyV1, ProtectedAssignmentRecoveryRequiredV1,
     ProtectedAssignmentStoreCommitV1, ProtectedAssignmentWriteErrorV1,
     ProtectedAssignmentWriteOutcomeV1, ProtectedAssignmentWriteResolutionV1,
-    ProtectedCheckpointCommitOutcomeV1, ProtectedMultiNodeAuthorityOpenErrorV1,
-    ProtectedMultiNodeAuthorityOwnerV1, ProtectedMultiNodeCurrentRecordV1,
-    ProtectedMultiNodeEvidenceSessionV1, ProtectedRecordCommitOutcomeV1,
-    ProtectedStoreRecoveryOutcomeV1, ProtectedStoreRecoveryRequiredV1,
+    ProtectedCheckpointCommitOutcomeV1, ProtectedDestinationAssignmentRestoreV1,
+    ProtectedMultiNodeAuthorityOpenErrorV1, ProtectedMultiNodeAuthorityOwnerV1,
+    ProtectedMultiNodeCurrentRecordV1, ProtectedMultiNodeEvidenceSessionV1,
+    ProtectedMultiNodeUpdateErrorV1, ProtectedOutboundNodeRequestV1,
+    ProtectedRecordCommitOutcomeV1, ProtectedSnapshotArtifactRecoveryV1,
+    ProtectedSnapshotChunkCommitOutcomeV1, ProtectedSnapshotDependencyCommitOutcomeV1,
+    ProtectedSnapshotDependencyRecoveryV1, ProtectedSnapshotDestinationAuthorityOwnerV1,
+    ProtectedSnapshotResumeReadyV1, ProtectedSnapshotSourceAdmissionV1,
+    ProtectedSnapshotTransferRolesV1, ProtectedStoreRecoveryOutcomeV1,
+    ProtectedStoreRecoveryRequiredV1, ProtectedWatchArtifactRecoveryOutcomeV1,
+    ProtectedWatchArtifactRecoveryV1, ProtectedWatchBootstrapCommitOutcomeV1,
+    ProtectedWatchCommitOutcomeV1, ProtectedWatchResyncRequiredV1,
+};
+pub use watch_service::{
+    DormantOrderedWatchClientV1, DormantOrderedWatchServiceV1, DormantWatchClientOutcomeV1,
+    DormantWatchReadOutcomeV1, MAX_DORMANT_WATCH_HISTORY,
 };

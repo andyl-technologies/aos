@@ -1,17 +1,22 @@
-//! Closed canonical JSON schema for every version-one node method.
+//! Legacy canonical JSON compatibility for coordinator/node semantics.
 //!
-//! This module is deliberately concrete: every frame kind has an explicit
-//! body projection, every nested object rejects unknown fields, and decoding
-//! reconstructs validated domain models through their constructors. Version
-//! one never ignores fields; additive evolution requires a negotiated schema.
+//! Current version-one traffic uses the typed protobuf conversion at the end
+//! of this module. The JSON projection remains only for an explicit legacy
+//! decode branch and is never emitted as a current protobuf field.
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use aos_sandbox_core::state::{AssignmentPhase, DesiredSandboxState};
+use aos_proto::aos::sandbox::coordinator::v1 as protobuf;
+use aos_sandbox_core::model::{
+    AssignmentManifestV1, MAX_ANCESTRY_DEPTH, MAX_ASSIGNMENT_REQUIRED_FEATURES,
+    MAX_ASSIGNMENT_SOURCE_COMMITMENTS, SandboxAncestry,
+};
+use aos_sandbox_core::state::{AssignmentPhase, DesiredSandboxState, SuspensionMode};
 use aos_sandbox_core::{
     AssignmentEpoch, CanonicalAssignmentManifestV1, DecodeLimits, DesiredGeneration, FeatureRef,
-    IncarnationId, NodeId, ObjectDescriptor, ObjectDigest, ObservationSequence, OperationId,
-    ProjectId, ProtocolVersion, ResourceVector, SandboxId, SnapshotId,
+    IncarnationId, MediaType, NamespaceGeneration, NodeId, ObjectDescriptor, ObjectDigest,
+    ObservationSequence, OperationId, ProjectId, ProtocolVersion, ResourceDimension,
+    ResourceVector, SandboxId, SnapshotId,
 };
 
 use super::{
@@ -1634,6 +1639,84 @@ pub(super) fn encode_watch_event_body(
         ),
     }
 }
+
+pub(super) fn decode_watch_event_body(
+    bytes: &[u8],
+    context: AuthenticatedEvidenceContextV1,
+) -> Result<NodeWatchEventBodyV1, InvalidMultiNodeProtocol> {
+    let envelope: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+    let kind = envelope
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+    let body = match kind {
+        "watch_capability_event" => {
+            let decoded: EnvelopeOwned<CapBody> = serde_json::from_slice(bytes)
+                .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+            if decoded.schema != SCHEMA || decoded.kind != kind {
+                return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
+            }
+            NodeWatchEventBodyV1::Capability(Box::new(capability_model(decoded.body.snapshot)?))
+        }
+        "watch_assignment_event" => {
+            let decoded: EnvelopeOwned<AssignmentBody> = serde_json::from_slice(bytes)
+                .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+            if decoded.schema != SCHEMA || decoded.kind != kind {
+                return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
+            }
+            NodeWatchEventBodyV1::Assignment(Box::new(assignment_observation_model(
+                decoded.body.observation,
+                context,
+            )?))
+        }
+        "watch_drain_event" => {
+            let decoded: EnvelopeOwned<DrainBody> = serde_json::from_slice(bytes)
+                .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+            if decoded.schema != SCHEMA || decoded.kind != kind {
+                return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
+            }
+            NodeWatchEventBodyV1::Drain(Box::new(drain_observation_model(
+                decoded.body.observation,
+                context,
+            )?))
+        }
+        _ => return Err(InvalidMultiNodeProtocol::NonCanonicalFrame),
+    };
+    if encode_watch_event_body(&body)?.as_slice() != bytes {
+        return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
+    }
+    Ok(body)
+}
+
+pub(super) fn encode_watch_inventory(
+    inventory: &ResyncInventoryV1,
+) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
+    encode_response(&NodeResponseBodyV1::AssignmentInventory(Box::new(
+        inventory.clone(),
+    )))
+}
+
+pub(super) fn decode_watch_inventory(
+    bytes: &[u8],
+    context: AuthenticatedEvidenceContextV1,
+    codec: &CanonicalNodeSemanticCodecV1,
+) -> Result<ResyncInventoryV1, InvalidMultiNodeProtocol> {
+    let body = decode_response(
+        context,
+        CanonicalNodeFrameKindV1::RelistAssignmentsResponse,
+        bytes,
+        context.verified_at_unix_seconds(),
+        codec,
+    )?;
+    let NodeResponseBodyV1::AssignmentInventory(inventory) = body else {
+        return Err(InvalidMultiNodeProtocol::MethodMismatch);
+    };
+    if encode_watch_inventory(&inventory)?.as_slice() != bytes {
+        return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
+    }
+    Ok(*inventory)
+}
 fn encode_watch<T: Serialize>(
     kind: &'static str,
     body: &T,
@@ -1645,4 +1728,1409 @@ fn encode_watch<T: Serialize>(
     })
     .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
     serde_json::to_vec(&value).map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)
+}
+
+// Current protobuf 1.0 conversion. JSON above is retained only for decoding
+// explicitly selected legacy schema bytes; current envelopes never carry it.
+
+fn invalid() -> InvalidMultiNodeProtocol {
+    InvalidMultiNodeProtocol::NonCanonicalFrame
+}
+
+fn parse<T: std::str::FromStr>(value: &str) -> Result<T, InvalidMultiNodeProtocol> {
+    value.parse().map_err(|_| invalid())
+}
+
+fn required<T>(value: Option<T>) -> Result<T, InvalidMultiNodeProtocol> {
+    value.ok_or_else(invalid)
+}
+
+fn pb_version(value: VersionWire) -> protobuf::Version {
+    protobuf::Version {
+        major: u32::from(value.major),
+        minor: u32::from(value.minor),
+    }
+}
+
+fn wire_version(value: protobuf::Version) -> Result<VersionWire, InvalidMultiNodeProtocol> {
+    Ok(VersionWire {
+        major: u16::try_from(value.major).map_err(|_| invalid())?,
+        minor: u16::try_from(value.minor).map_err(|_| invalid())?,
+    })
+}
+
+fn pb_feature(value: &FeatureRef) -> protobuf::Feature {
+    protobuf::Feature {
+        namespace: value.namespace().to_owned(),
+        major: value.major(),
+        minor: value.minor(),
+    }
+}
+
+fn wire_feature(value: protobuf::Feature) -> Result<FeatureRef, InvalidMultiNodeProtocol> {
+    FeatureRef::new(value.namespace, value.major, value.minor).map_err(|_| invalid())
+}
+
+fn pb_descriptor(value: &ObjectDescriptor) -> protobuf::Descriptor {
+    protobuf::Descriptor {
+        media_type: value.media_type().as_str().to_owned(),
+        digest: value.digest().to_string(),
+        encoded_size: value.encoded_size(),
+    }
+}
+
+fn wire_descriptor(
+    value: protobuf::Descriptor,
+) -> Result<ObjectDescriptor, InvalidMultiNodeProtocol> {
+    if value.encoded_size == 0 {
+        return Err(invalid());
+    }
+    Ok(ObjectDescriptor::new(
+        MediaType::new(value.media_type).map_err(|_| invalid())?,
+        parse(&value.digest)?,
+        value.encoded_size,
+    ))
+}
+
+fn pb_lineage(value: LineageWire) -> protobuf::Lineage {
+    protobuf::Lineage {
+        boot: value.boot.to_vec(),
+        digest: value.digest.to_string(),
+        generation: value.generation,
+        predecessor_boot: value.predecessor_boot.map_or_else(Vec::new, |v| v.to_vec()),
+        predecessor_digest: value.predecessor_digest.map(|v| v.to_string()),
+    }
+}
+
+fn wire_lineage(value: protobuf::Lineage) -> Result<LineageWire, InvalidMultiNodeProtocol> {
+    Ok(LineageWire {
+        boot: value.boot.try_into().map_err(|_| invalid())?,
+        digest: parse(&value.digest)?,
+        generation: value.generation,
+        predecessor_boot: if value.predecessor_boot.is_empty() {
+            None
+        } else {
+            Some(value.predecessor_boot.try_into().map_err(|_| invalid())?)
+        },
+        predecessor_digest: value.predecessor_digest.map(|v| parse(&v)).transpose()?,
+    })
+}
+
+fn pb_resources(value: ResourceVector) -> Vec<u64> {
+    ResourceDimension::ALL
+        .into_iter()
+        .map(|dimension| value.get(dimension))
+        .collect()
+}
+
+fn wire_resources(value: Vec<u64>) -> Result<ResourceVector, InvalidMultiNodeProtocol> {
+    let values: [u64; ResourceDimension::COUNT] = value.try_into().map_err(|_| invalid())?;
+    Ok(ResourceVector::new(values))
+}
+
+fn pb_fact(value: FactWire) -> protobuf::CapabilityFact {
+    let mut fact = protobuf::CapabilityFact::default();
+    match value {
+        FactWire::NspawnVersion {
+            major,
+            minor,
+            patch,
+        } => {
+            fact.kind = 1;
+            fact.major = Some(major);
+            fact.minor = Some(minor);
+            fact.patch = Some(patch);
+        }
+        FactWire::Fuse {
+            major,
+            minor,
+            passthrough,
+        } => {
+            fact.kind = 2;
+            fact.major = Some(major);
+            fact.minor = Some(minor);
+            fact.passthrough = Some(passthrough);
+        }
+        FactWire::MountObservation => fact.kind = 3,
+        FactWire::Kvm => fact.kind = 4,
+        FactWire::Seccomp => fact.kind = 5,
+        FactWire::UserNamespaces { digest } => {
+            fact.kind = 6;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::NewMountApi { digest } => {
+            fact.kind = 7;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::IdmappedMounts { digest } => {
+            fact.kind = 8;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::ZfsPool { digest } => {
+            fact.kind = 9;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::Overlay { digest } => {
+            fact.kind = 10;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::CgroupV2 { digest } => {
+            fact.kind = 11;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::SnapshotTransfer { digest } => {
+            fact.kind = 12;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::PosixAcl { digest } => {
+            fact.kind = 13;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::AbsoluteSymlink { digest } => {
+            fact.kind = 14;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::ParentEscapeSymlink { digest } => {
+            fact.kind = 15;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::BrokerLedger { digest } => {
+            fact.kind = 16;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::SignedPlanLease { digest } => {
+            fact.kind = 17;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::NodeBoundedSharedResidency { digest } => {
+            fact.kind = 18;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::HardIsolatedResidency { digest } => {
+            fact.kind = 19;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::GuestQuiesce { digest } => {
+            fact.kind = 20;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::StorageQuiesce { digest } => {
+            fact.kind = 21;
+            fact.digest = Some(digest.to_string());
+        }
+        FactWire::BrokerSession { digest } => {
+            fact.kind = 22;
+            fact.digest = Some(digest.to_string());
+        }
+    }
+    fact
+}
+
+fn wire_fact(value: protobuf::CapabilityFact) -> Result<FactWire, InvalidMultiNodeProtocol> {
+    let allowed_shape = match value.kind {
+        1 => {
+            value.digest.is_none()
+                && value.major.is_some()
+                && value.minor.is_some()
+                && value.patch.is_some()
+                && value.passthrough.is_none()
+        }
+        2 => {
+            value.digest.is_none()
+                && value.major.is_some()
+                && value.minor.is_some()
+                && value.patch.is_none()
+                && value.passthrough.is_some()
+        }
+        3..=5 => {
+            value.digest.is_none()
+                && value.major.is_none()
+                && value.minor.is_none()
+                && value.patch.is_none()
+                && value.passthrough.is_none()
+        }
+        6..=22 => {
+            value.digest.is_some()
+                && value.major.is_none()
+                && value.minor.is_none()
+                && value.patch.is_none()
+                && value.passthrough.is_none()
+        }
+        _ => false,
+    };
+    if !allowed_shape {
+        return Err(invalid());
+    }
+    let digest = || value.digest.as_deref().ok_or_else(invalid).and_then(parse);
+    Ok(match value.kind {
+        1 => FactWire::NspawnVersion {
+            major: required(value.major)?,
+            minor: required(value.minor)?,
+            patch: required(value.patch)?,
+        },
+        2 => FactWire::Fuse {
+            major: required(value.major)?,
+            minor: required(value.minor)?,
+            passthrough: required(value.passthrough)?,
+        },
+        3 => FactWire::MountObservation,
+        4 => FactWire::Kvm,
+        5 => FactWire::Seccomp,
+        6 => FactWire::UserNamespaces { digest: digest()? },
+        7 => FactWire::NewMountApi { digest: digest()? },
+        8 => FactWire::IdmappedMounts { digest: digest()? },
+        9 => FactWire::ZfsPool { digest: digest()? },
+        10 => FactWire::Overlay { digest: digest()? },
+        11 => FactWire::CgroupV2 { digest: digest()? },
+        12 => FactWire::SnapshotTransfer { digest: digest()? },
+        13 => FactWire::PosixAcl { digest: digest()? },
+        14 => FactWire::AbsoluteSymlink { digest: digest()? },
+        15 => FactWire::ParentEscapeSymlink { digest: digest()? },
+        16 => FactWire::BrokerLedger { digest: digest()? },
+        17 => FactWire::SignedPlanLease { digest: digest()? },
+        18 => FactWire::NodeBoundedSharedResidency { digest: digest()? },
+        19 => FactWire::HardIsolatedResidency { digest: digest()? },
+        20 => FactWire::GuestQuiesce { digest: digest()? },
+        21 => FactWire::StorageQuiesce { digest: digest()? },
+        22 => FactWire::BrokerSession { digest: digest()? },
+        _ => return Err(invalid()),
+    })
+}
+
+fn protocol_number(value: ProtocolWire) -> i32 {
+    match value {
+        ProtocolWire::CoordinatorNode => 1,
+        ProtocolWire::HostBroker => 2,
+        ProtocolWire::StorageBroker => 3,
+        ProtocolWire::MountBroker => 4,
+        ProtocolWire::NetworkBroker => 5,
+        ProtocolWire::Guardian => 6,
+        ProtocolWire::GuestAgent => 7,
+        ProtocolWire::SnapshotTransfer => 8,
+    }
+}
+fn wire_protocol(value: i32) -> Result<ProtocolWire, InvalidMultiNodeProtocol> {
+    Ok(match value {
+        1 => ProtocolWire::CoordinatorNode,
+        2 => ProtocolWire::HostBroker,
+        3 => ProtocolWire::StorageBroker,
+        4 => ProtocolWire::MountBroker,
+        5 => ProtocolWire::NetworkBroker,
+        6 => ProtocolWire::Guardian,
+        7 => ProtocolWire::GuestAgent,
+        8 => ProtocolWire::SnapshotTransfer,
+        _ => return Err(invalid()),
+    })
+}
+
+fn pb_capability(value: CapabilityWire) -> protobuf::CapabilitySnapshot {
+    protobuf::CapabilitySnapshot {
+        node: value.node.to_string(),
+        lineage: Some(pb_lineage(value.lineage)),
+        sequence: value.sequence.get(),
+        features: value.features.iter().map(pb_feature).collect(),
+        facts: value.facts.into_iter().map(pb_fact).collect(),
+        protocols: value
+            .protocols
+            .into_iter()
+            .map(|offer| protobuf::ProtocolOffer {
+                protocol: protocol_number(offer.protocol),
+                maximum_version: Some(pb_version(offer.maximum_version)),
+            })
+            .collect(),
+        allocatable: pb_resources(value.allocatable),
+        reserved: pb_resources(value.reserved),
+        admission: match value.admission {
+            AdmissionWire::Accepting => 1,
+            AdmissionWire::Cordoned => 2,
+            AdmissionWire::Draining => 3,
+        },
+        probe_evidence: Some(protobuf::ProbeEvidence {
+            probe_set_digest: value.probe_evidence.probe_set_digest.to_string(),
+            conformance_profile_digest: value.probe_evidence.conformance_profile_digest.to_string(),
+            conformance_version: Some(pb_version(value.probe_evidence.conformance_version)),
+            conformance_generation: value.probe_evidence.conformance_generation,
+        }),
+    }
+}
+
+fn wire_capability(
+    value: protobuf::CapabilitySnapshot,
+) -> Result<CapabilityWire, InvalidMultiNodeProtocol> {
+    if value.facts.len() > crate::multi_node::MAX_NODE_CAPABILITY_FACTS
+        || value.features.len() > crate::multi_node::MAX_NODE_FEATURES
+        || value.protocols.len() > crate::multi_node::MAX_NODE_PROTOCOL_OFFERS
+    {
+        return Err(invalid());
+    }
+    let probe = required(value.probe_evidence)?;
+    Ok(CapabilityWire {
+        node: parse(&value.node)?,
+        lineage: wire_lineage(required(value.lineage)?)?,
+        sequence: ObservationSequence::new(value.sequence),
+        features: value
+            .features
+            .into_iter()
+            .map(wire_feature)
+            .collect::<Result<_, _>>()?,
+        facts: value
+            .facts
+            .into_iter()
+            .map(wire_fact)
+            .collect::<Result<_, _>>()?,
+        protocols: value
+            .protocols
+            .into_iter()
+            .map(|offer| {
+                Ok(OfferWire {
+                    protocol: wire_protocol(offer.protocol)?,
+                    maximum_version: wire_version(required(offer.maximum_version)?)?,
+                })
+            })
+            .collect::<Result<_, InvalidMultiNodeProtocol>>()?,
+        allocatable: wire_resources(value.allocatable)?,
+        reserved: wire_resources(value.reserved)?,
+        admission: match value.admission {
+            1 => AdmissionWire::Accepting,
+            2 => AdmissionWire::Cordoned,
+            3 => AdmissionWire::Draining,
+            _ => return Err(invalid()),
+        },
+        probe_evidence: ProbeWire {
+            probe_set_digest: parse(&probe.probe_set_digest)?,
+            conformance_profile_digest: parse(&probe.conformance_profile_digest)?,
+            conformance_version: wire_version(required(probe.conformance_version)?)?,
+            conformance_generation: probe.conformance_generation,
+        },
+    })
+}
+
+fn pb_binding(value: BindingWire) -> protobuf::CapabilityBinding {
+    protobuf::CapabilityBinding {
+        node: value.node.to_string(),
+        lineage: Some(pb_lineage(value.lineage)),
+        sequence: value.sequence.get(),
+        evidence_binding_digest: value.evidence_binding_digest.to_string(),
+        canonical_frame_digest: value.canonical_frame_digest.to_string(),
+        canonical_frame_bytes: value.canonical_frame_bytes,
+        coordinator_epoch: value.coordinator_epoch,
+        authenticated_at_unix_seconds: value.authenticated_at_unix_seconds,
+        valid_until_unix_seconds: value.valid_until_unix_seconds,
+        audience_digest: value.audience_digest.to_string(),
+        disclosure_domain_digest: value.disclosure_domain_digest.to_string(),
+        carrier_binding_digest: value.carrier_binding_digest.to_string(),
+        replay_fence: value.replay_fence.to_string(),
+    }
+}
+fn wire_binding(
+    value: protobuf::CapabilityBinding,
+) -> Result<BindingWire, InvalidMultiNodeProtocol> {
+    Ok(BindingWire {
+        node: parse(&value.node)?,
+        lineage: wire_lineage(required(value.lineage)?)?,
+        sequence: ObservationSequence::new(value.sequence),
+        evidence_binding_digest: parse(&value.evidence_binding_digest)?,
+        canonical_frame_digest: parse(&value.canonical_frame_digest)?,
+        canonical_frame_bytes: value.canonical_frame_bytes,
+        coordinator_epoch: value.coordinator_epoch,
+        authenticated_at_unix_seconds: value.authenticated_at_unix_seconds,
+        valid_until_unix_seconds: value.valid_until_unix_seconds,
+        audience_digest: parse(&value.audience_digest)?,
+        disclosure_domain_digest: parse(&value.disclosure_domain_digest)?,
+        carrier_binding_digest: parse(&value.carrier_binding_digest)?,
+        replay_fence: parse(&value.replay_fence)?,
+    })
+}
+
+fn pb_lifecycle(value: DesiredSandboxState) -> i32 {
+    match value {
+        DesiredSandboxState::Running => 1,
+        DesiredSandboxState::Suspended(SuspensionMode::MemoryResident) => 2,
+        DesiredSandboxState::Suspended(SuspensionMode::Hibernate) => 3,
+        DesiredSandboxState::Stopped => 4,
+        DesiredSandboxState::Deleted => 5,
+    }
+}
+fn wire_lifecycle(value: i32) -> Result<DesiredSandboxState, InvalidMultiNodeProtocol> {
+    Ok(match value {
+        1 => DesiredSandboxState::Running,
+        2 => DesiredSandboxState::Suspended(SuspensionMode::MemoryResident),
+        3 => DesiredSandboxState::Suspended(SuspensionMode::Hibernate),
+        4 => DesiredSandboxState::Stopped,
+        5 => DesiredSandboxState::Deleted,
+        _ => return Err(invalid()),
+    })
+}
+
+fn pb_assignment_observation(value: AssignmentObservationWire) -> protobuf::AssignmentObservation {
+    protobuf::AssignmentObservation {
+        sandbox: value.sandbox.to_string(),
+        incarnation: value.incarnation.to_string(),
+        epoch: value.epoch.get(),
+        desired_generation: value.desired_generation.get(),
+        assignment_digest: value.assignment_digest.to_string(),
+        sequence: value.sequence.get(),
+        phase: match value.phase {
+            AssignmentPhase::Proposed => 1,
+            AssignmentPhase::Accepted => 2,
+            AssignmentPhase::Arming => 3,
+            AssignmentPhase::Active => 4,
+            AssignmentPhase::Draining => 5,
+            AssignmentPhase::Fenced => 6,
+            AssignmentPhase::Released => 7,
+            AssignmentPhase::Failed => 8,
+        },
+        realized_lifecycle: value.realized_lifecycle.map(pb_lifecycle),
+        reason: match value.reason {
+            ReasonWire::None => 1,
+            ReasonWire::AwaitingContent => 2,
+            ReasonWire::AwaitingCapacity => 3,
+            ReasonWire::CapabilityDrift => 4,
+            ReasonWire::AwaitingOwnershipAuthority => 5,
+            ReasonWire::AwaitingGuardian => 6,
+            ReasonWire::OwnershipFenced => 7,
+            ReasonWire::InventoryIncomplete => 8,
+            ReasonWire::ResidualState => 9,
+            ReasonWire::MissingDependency => 10,
+            ReasonWire::NodeOperationFailed => 11,
+        },
+        observed_at_unix_seconds: value.observed_at_unix_seconds,
+    }
+}
+fn wire_assignment_observation(
+    value: protobuf::AssignmentObservation,
+) -> Result<AssignmentObservationWire, InvalidMultiNodeProtocol> {
+    Ok(AssignmentObservationWire {
+        sandbox: parse(&value.sandbox)?,
+        incarnation: parse(&value.incarnation)?,
+        epoch: AssignmentEpoch::new(value.epoch),
+        desired_generation: DesiredGeneration::new(value.desired_generation),
+        assignment_digest: parse(&value.assignment_digest)?,
+        sequence: ObservationSequence::new(value.sequence),
+        phase: match value.phase {
+            1 => AssignmentPhase::Proposed,
+            2 => AssignmentPhase::Accepted,
+            3 => AssignmentPhase::Arming,
+            4 => AssignmentPhase::Active,
+            5 => AssignmentPhase::Draining,
+            6 => AssignmentPhase::Fenced,
+            7 => AssignmentPhase::Released,
+            8 => AssignmentPhase::Failed,
+            _ => return Err(invalid()),
+        },
+        realized_lifecycle: value.realized_lifecycle.map(wire_lifecycle).transpose()?,
+        reason: match value.reason {
+            1 => ReasonWire::None,
+            2 => ReasonWire::AwaitingContent,
+            3 => ReasonWire::AwaitingCapacity,
+            4 => ReasonWire::CapabilityDrift,
+            5 => ReasonWire::AwaitingOwnershipAuthority,
+            6 => ReasonWire::AwaitingGuardian,
+            7 => ReasonWire::OwnershipFenced,
+            8 => ReasonWire::InventoryIncomplete,
+            9 => ReasonWire::ResidualState,
+            10 => ReasonWire::MissingDependency,
+            11 => ReasonWire::NodeOperationFailed,
+            _ => return Err(invalid()),
+        },
+        observed_at_unix_seconds: value.observed_at_unix_seconds,
+    })
+}
+
+fn pb_watch_binding(value: WatchBindingWire) -> protobuf::WatchBinding {
+    protobuf::WatchBinding {
+        coordinator_epoch: value.coordinator_epoch,
+        history_floor_sequence: value.history_floor_sequence,
+        history_floor_event_uid: value.history_floor_event_uid.to_string(),
+        bootstrap_watermark: value.bootstrap_watermark,
+        query_digest: value.query_digest.to_string(),
+        authorization_digest: value.authorization_digest.to_string(),
+        audience_digest: value.audience_digest.to_string(),
+        disclosure_domain_digest: value.disclosure_domain_digest.to_string(),
+        schema_minimum: Some(pb_version(value.schema_minimum)),
+        schema_maximum: Some(pb_version(value.schema_maximum)),
+    }
+}
+fn wire_watch_binding(
+    value: protobuf::WatchBinding,
+) -> Result<WatchBindingWire, InvalidMultiNodeProtocol> {
+    Ok(WatchBindingWire {
+        coordinator_epoch: value.coordinator_epoch,
+        history_floor_sequence: value.history_floor_sequence,
+        history_floor_event_uid: parse(&value.history_floor_event_uid)?,
+        bootstrap_watermark: value.bootstrap_watermark,
+        query_digest: parse(&value.query_digest)?,
+        authorization_digest: parse(&value.authorization_digest)?,
+        audience_digest: parse(&value.audience_digest)?,
+        disclosure_domain_digest: parse(&value.disclosure_domain_digest)?,
+        schema_minimum: wire_version(required(value.schema_minimum)?)?,
+        schema_maximum: wire_version(required(value.schema_maximum)?)?,
+    })
+}
+fn pb_cursor(value: CursorWire) -> protobuf::WatchCursor {
+    protobuf::WatchCursor {
+        node: value.node.to_string(),
+        lineage: Some(pb_lineage(value.lineage)),
+        binding: Some(pb_watch_binding(value.binding)),
+        event_sequence: value.event_sequence,
+        last_event_uid: value.last_event_uid.to_string(),
+    }
+}
+fn wire_cursor(value: protobuf::WatchCursor) -> Result<CursorWire, InvalidMultiNodeProtocol> {
+    Ok(CursorWire {
+        node: parse(&value.node)?,
+        lineage: wire_lineage(required(value.lineage)?)?,
+        binding: wire_watch_binding(required(value.binding)?)?,
+        event_sequence: value.event_sequence,
+        last_event_uid: parse(&value.last_event_uid)?,
+    })
+}
+
+fn pb_identity(value: IdentityWire) -> protobuf::SnapshotIdentity {
+    protobuf::SnapshotIdentity {
+        operation: value.operation.to_string(),
+        project: value.project.to_string(),
+        sandbox: value.sandbox.to_string(),
+        incarnation: value.incarnation.to_string(),
+        assignment_epoch: value.assignment_epoch.get(),
+        desired_generation: value.desired_generation.get(),
+        assignment_digest: value.assignment_digest.to_string(),
+        snapshot: value.snapshot.to_string(),
+        source_node: value.source_node.to_string(),
+        destination_node: value.destination_node.to_string(),
+        storage_domain_digest: value.storage_domain_digest.to_string(),
+        audience_digest: value.audience_digest.to_string(),
+        disclosure_domain_digest: value.disclosure_domain_digest.to_string(),
+        manifest_digest: value.manifest_digest.to_string(),
+    }
+}
+fn wire_identity(
+    value: protobuf::SnapshotIdentity,
+) -> Result<IdentityWire, InvalidMultiNodeProtocol> {
+    Ok(IdentityWire {
+        operation: parse(&value.operation)?,
+        project: parse(&value.project)?,
+        sandbox: parse(&value.sandbox)?,
+        incarnation: parse(&value.incarnation)?,
+        assignment_epoch: AssignmentEpoch::new(value.assignment_epoch),
+        desired_generation: DesiredGeneration::new(value.desired_generation),
+        assignment_digest: parse(&value.assignment_digest)?,
+        snapshot: parse(&value.snapshot)?,
+        source_node: parse(&value.source_node)?,
+        destination_node: parse(&value.destination_node)?,
+        storage_domain_digest: parse(&value.storage_domain_digest)?,
+        audience_digest: parse(&value.audience_digest)?,
+        disclosure_domain_digest: parse(&value.disclosure_domain_digest)?,
+        manifest_digest: parse(&value.manifest_digest)?,
+    })
+}
+fn pb_chunk(value: ChunkWire) -> protobuf::SnapshotChunk {
+    protobuf::SnapshotChunk {
+        index: value.index,
+        offset: value.offset,
+        length: value.length,
+        digest: value.digest.to_string(),
+    }
+}
+fn wire_chunk(value: protobuf::SnapshotChunk) -> Result<ChunkWire, InvalidMultiNodeProtocol> {
+    Ok(ChunkWire {
+        index: value.index,
+        offset: value.offset,
+        length: value.length,
+        digest: parse(&value.digest)?,
+    })
+}
+fn pb_manifest(value: ManifestWire) -> protobuf::SnapshotManifest {
+    protobuf::SnapshotManifest {
+        identity: Some(pb_identity(value.identity)),
+        version: Some(pb_version(value.version)),
+        root: Some(pb_descriptor(&value.root)),
+        chunks: value.chunks.into_iter().map(pb_chunk).collect(),
+        dependencies: value.dependencies.iter().map(pb_descriptor).collect(),
+        required_features: value.required_features.iter().map(pb_feature).collect(),
+    }
+}
+fn wire_manifest(
+    value: protobuf::SnapshotManifest,
+) -> Result<ManifestWire, InvalidMultiNodeProtocol> {
+    if value.chunks.len() > crate::multi_node::MAX_SNAPSHOT_TRANSFER_CHUNKS
+        || value.dependencies.len() > crate::multi_node::MAX_SNAPSHOT_TRANSFER_DEPENDENCIES
+        || value.required_features.len() > crate::multi_node::MAX_NODE_FEATURES
+    {
+        return Err(invalid());
+    }
+    Ok(ManifestWire {
+        identity: wire_identity(required(value.identity)?)?,
+        version: wire_version(required(value.version)?)?,
+        root: wire_descriptor(required(value.root)?)?,
+        chunks: value
+            .chunks
+            .into_iter()
+            .map(wire_chunk)
+            .collect::<Result<_, _>>()?,
+        dependencies: value
+            .dependencies
+            .into_iter()
+            .map(wire_descriptor)
+            .collect::<Result<_, _>>()?,
+        required_features: value
+            .required_features
+            .into_iter()
+            .map(wire_feature)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn strategy_number(value: StrategyWire) -> i32 {
+    match value {
+        StrategyWire::SnapshotStopAndReplace => 1,
+        StrategyWire::StopAndReplace => 2,
+        StrategyWire::StopInPlace => 3,
+        StrategyWire::LeaveStopped => 4,
+    }
+}
+fn wire_strategy(value: i32) -> Result<StrategyWire, InvalidMultiNodeProtocol> {
+    Ok(match value {
+        1 => StrategyWire::SnapshotStopAndReplace,
+        2 => StrategyWire::StopAndReplace,
+        3 => StrategyWire::StopInPlace,
+        4 => StrategyWire::LeaveStopped,
+        _ => return Err(invalid()),
+    })
+}
+fn pb_drain_directive(value: DrainDirectiveWire) -> protobuf::DrainDirective {
+    protobuf::DrainDirective {
+        operation: value.operation.to_string(),
+        node: value.node.to_string(),
+        generation: value.generation,
+        mode: match value.mode {
+            DrainModeWire::CordonOnly => 1,
+            DrainModeWire::Evacuate => 2,
+            DrainModeWire::Decommission => 3,
+        },
+        accepted_at_unix_seconds: value.accepted_at_unix_seconds,
+        deadline_unix_seconds: value.deadline_unix_seconds,
+        assignments: value
+            .assignments
+            .into_iter()
+            .map(|row| protobuf::DrainAssignmentPlan {
+                sandbox: row.sandbox.to_string(),
+                incarnation: row.incarnation.to_string(),
+                epoch: row.epoch.get(),
+                desired_generation: row.desired_generation.get(),
+                assignment_digest: row.assignment_digest.to_string(),
+                strategy: strategy_number(row.strategy),
+            })
+            .collect(),
+    }
+}
+fn wire_drain_directive(
+    value: protobuf::DrainDirective,
+) -> Result<DrainDirectiveWire, InvalidMultiNodeProtocol> {
+    if value.assignments.len() > crate::multi_node::MAX_DRAIN_ASSIGNMENTS {
+        return Err(invalid());
+    }
+    Ok(DrainDirectiveWire {
+        operation: parse(&value.operation)?,
+        node: parse(&value.node)?,
+        generation: value.generation,
+        mode: match value.mode {
+            1 => DrainModeWire::CordonOnly,
+            2 => DrainModeWire::Evacuate,
+            3 => DrainModeWire::Decommission,
+            _ => return Err(invalid()),
+        },
+        accepted_at_unix_seconds: value.accepted_at_unix_seconds,
+        deadline_unix_seconds: value.deadline_unix_seconds,
+        assignments: value
+            .assignments
+            .into_iter()
+            .map(|row| {
+                Ok(DrainPlanWire {
+                    sandbox: parse(&row.sandbox)?,
+                    incarnation: parse(&row.incarnation)?,
+                    epoch: AssignmentEpoch::new(row.epoch),
+                    desired_generation: DesiredGeneration::new(row.desired_generation),
+                    assignment_digest: parse(&row.assignment_digest)?,
+                    strategy: wire_strategy(row.strategy)?,
+                })
+            })
+            .collect::<Result<_, InvalidMultiNodeProtocol>>()?,
+    })
+}
+fn progress_parts(value: ProgressWire) -> (i32, Option<i32>) {
+    match value {
+        ProgressWire::Pending => (1, None),
+        ProgressWire::Preparing => (2, None),
+        ProgressWire::Stopping => (3, None),
+        ProgressWire::Contained => (4, None),
+        ProgressWire::Released => (5, None),
+        ProgressWire::Blocked(reason) => (
+            6,
+            Some(match reason {
+                BlockWire::SnapshotUnavailable => 1,
+                BlockWire::MissingDependency => 2,
+                BlockWire::OwnershipAuthorityUnavailable => 3,
+                BlockWire::ContainmentUnconfirmed => 4,
+                BlockWire::ResidualState => 5,
+                BlockWire::DestinationUnavailable => 6,
+            }),
+        ),
+    }
+}
+fn wire_progress(
+    value: protobuf::DrainProgressValue,
+) -> Result<ProgressWire, InvalidMultiNodeProtocol> {
+    Ok(match (value.state, value.reason) {
+        (1, None) => ProgressWire::Pending,
+        (2, None) => ProgressWire::Preparing,
+        (3, None) => ProgressWire::Stopping,
+        (4, None) => ProgressWire::Contained,
+        (5, None) => ProgressWire::Released,
+        (6, Some(reason)) => ProgressWire::Blocked(match reason {
+            1 => BlockWire::SnapshotUnavailable,
+            2 => BlockWire::MissingDependency,
+            3 => BlockWire::OwnershipAuthorityUnavailable,
+            4 => BlockWire::ContainmentUnconfirmed,
+            5 => BlockWire::ResidualState,
+            6 => BlockWire::DestinationUnavailable,
+            _ => return Err(invalid()),
+        }),
+        _ => return Err(invalid()),
+    })
+}
+fn pb_drain_observation(value: DrainObservationWire) -> protobuf::DrainObservation {
+    protobuf::DrainObservation {
+        operation: value.operation.to_string(),
+        generation: value.generation,
+        sequence: value.sequence.get(),
+        phase: match value.phase {
+            DrainPhaseWire::Requested => 1,
+            DrainPhaseWire::Cordoned => 2,
+            DrainPhaseWire::Draining => 3,
+            DrainPhaseWire::Contained => 4,
+            DrainPhaseWire::ReadyForReassignment => 5,
+            DrainPhaseWire::Complete => 6,
+            DrainPhaseWire::Blocked => 7,
+        },
+        assignments: value
+            .assignments
+            .into_iter()
+            .map(|row| {
+                let (state, reason) = progress_parts(row.progress);
+                protobuf::DrainAssignmentObservation {
+                    sandbox: row.sandbox.to_string(),
+                    incarnation: row.incarnation.to_string(),
+                    epoch: row.epoch.get(),
+                    desired_generation: row.desired_generation.get(),
+                    assignment_digest: row.assignment_digest.to_string(),
+                    progress: Some(protobuf::DrainProgressValue { state, reason }),
+                }
+            })
+            .collect(),
+        observed_at_unix_seconds: value.observed_at_unix_seconds,
+    }
+}
+fn wire_drain_observation(
+    value: protobuf::DrainObservation,
+) -> Result<DrainObservationWire, InvalidMultiNodeProtocol> {
+    if value.assignments.len() > crate::multi_node::MAX_DRAIN_ASSIGNMENTS {
+        return Err(invalid());
+    }
+    Ok(DrainObservationWire {
+        operation: parse(&value.operation)?,
+        generation: value.generation,
+        sequence: ObservationSequence::new(value.sequence),
+        phase: match value.phase {
+            1 => DrainPhaseWire::Requested,
+            2 => DrainPhaseWire::Cordoned,
+            3 => DrainPhaseWire::Draining,
+            4 => DrainPhaseWire::Contained,
+            5 => DrainPhaseWire::ReadyForReassignment,
+            6 => DrainPhaseWire::Complete,
+            7 => DrainPhaseWire::Blocked,
+            _ => return Err(invalid()),
+        },
+        assignments: value
+            .assignments
+            .into_iter()
+            .map(|row| {
+                Ok(DrainAssignmentObservationWire {
+                    sandbox: parse(&row.sandbox)?,
+                    incarnation: parse(&row.incarnation)?,
+                    epoch: AssignmentEpoch::new(row.epoch),
+                    desired_generation: DesiredGeneration::new(row.desired_generation),
+                    assignment_digest: parse(&row.assignment_digest)?,
+                    progress: wire_progress(required(row.progress)?)?,
+                })
+            })
+            .collect::<Result<_, InvalidMultiNodeProtocol>>()?,
+        observed_at_unix_seconds: value.observed_at_unix_seconds,
+    })
+}
+
+fn pb_assignment(value: &CanonicalAssignmentManifestV1) -> protobuf::AssignmentManifest {
+    let manifest = value.manifest();
+    protobuf::AssignmentManifest {
+        sandbox: manifest.sandbox().to_string(),
+        project: manifest.project().to_string(),
+        ancestors: manifest
+            .ancestry()
+            .ancestors()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        incarnation: manifest.incarnation().to_string(),
+        node: manifest.node().to_string(),
+        epoch: manifest.epoch().get(),
+        desired_generation: manifest.desired_generation().get(),
+        namespace_generation: manifest.namespace_generation().get(),
+        sandbox_spec: Some(pb_descriptor(manifest.sandbox_spec())),
+        policy: Some(pb_descriptor(manifest.policy())),
+        environment: Some(pb_descriptor(manifest.environment())),
+        root_view: Some(pb_descriptor(manifest.root_view())),
+        source_commitments: manifest
+            .source_commitments()
+            .iter()
+            .map(pb_descriptor)
+            .collect(),
+        resource_commitment: manifest.resource_commitment().to_string(),
+        reservations: pb_resources(manifest.reservations()),
+        required_features: manifest
+            .required_features()
+            .iter()
+            .map(pb_feature)
+            .collect(),
+    }
+}
+
+fn wire_assignment(
+    value: protobuf::AssignmentManifest,
+) -> Result<CanonicalAssignmentManifestV1, InvalidMultiNodeProtocol> {
+    if value.ancestors.len() > MAX_ANCESTRY_DEPTH
+        || value.source_commitments.len() > MAX_ASSIGNMENT_SOURCE_COMMITMENTS
+        || value.required_features.len() > MAX_ASSIGNMENT_REQUIRED_FEATURES
+    {
+        return Err(invalid());
+    }
+    let sandbox = parse(&value.sandbox)?;
+    let ancestry = SandboxAncestry::new(
+        sandbox,
+        value
+            .ancestors
+            .into_iter()
+            .map(|identity| parse(&identity))
+            .collect::<Result<_, _>>()?,
+    )
+    .map_err(|_| invalid())?;
+    let manifest = AssignmentManifestV1::new(
+        sandbox,
+        parse(&value.project)?,
+        ancestry,
+        parse(&value.incarnation)?,
+        parse(&value.node)?,
+        AssignmentEpoch::new(value.epoch),
+        DesiredGeneration::new(value.desired_generation),
+        NamespaceGeneration::new(value.namespace_generation),
+        wire_descriptor(required(value.sandbox_spec)?)?,
+        wire_descriptor(required(value.policy)?)?,
+        wire_descriptor(required(value.environment)?)?,
+        wire_descriptor(required(value.root_view)?)?,
+        value
+            .source_commitments
+            .into_iter()
+            .map(wire_descriptor)
+            .collect::<Result<_, _>>()?,
+        parse(&value.resource_commitment)?,
+        wire_resources(value.reservations)?,
+        value
+            .required_features
+            .into_iter()
+            .map(wire_feature)
+            .collect::<Result<_, _>>()?,
+    )
+    .map_err(|_| invalid())?;
+    Ok(CanonicalAssignmentManifestV1::new(manifest))
+}
+
+pub(super) fn protobuf_request(
+    body: &NodeRequestBodyV1,
+) -> Result<protobuf::semantic_envelope::Body, InvalidMultiNodeProtocol> {
+    use protobuf::semantic_envelope::Body;
+
+    Ok(match body {
+        NodeRequestBodyV1::GetCapabilities => {
+            Body::GetCapabilitiesRequest(protobuf::GetCapabilitiesRequest {})
+        }
+        NodeRequestBodyV1::ReconcileAssignment(intent) => {
+            Body::ReconcileAssignmentRequest(protobuf::ReconcileAssignmentRequest {
+                intent: Some(protobuf::AssignmentIntent {
+                    assignment: Some(pb_assignment(intent.assignment())),
+                    desired_lifecycle: pb_lifecycle(intent.desired_lifecycle()),
+                    selected_capability: Some(pb_binding(
+                        intent.selected_capability_binding().into(),
+                    )),
+                    assignment_digest: intent.assignment_digest().to_string(),
+                }),
+            })
+        }
+        NodeRequestBodyV1::RelistAssignments { binding } => {
+            Body::RelistAssignmentsRequest(protobuf::RelistAssignmentsRequest {
+                binding: Some(pb_watch_binding((*binding).into())),
+            })
+        }
+        NodeRequestBodyV1::ReconcileDrain(directive) => {
+            Body::ReconcileDrainRequest(protobuf::ReconcileDrainRequest {
+                directive: Some(pb_drain_directive(drain_directive_wire(directive))),
+            })
+        }
+        NodeRequestBodyV1::BeginSnapshotTransfer { manifest, resume } => {
+            Body::BeginSnapshotTransferRequest(protobuf::BeginSnapshotTransferRequest {
+                manifest: Some(pb_manifest(manifest_wire(manifest))),
+                resume: resume.map(|resume| {
+                    let resume = resume_wire(resume);
+                    protobuf::SnapshotResume {
+                        identity: Some(pb_identity(resume.identity)),
+                        next_chunk: resume.next_chunk,
+                        verified_prefix_digest: resume.verified_prefix_digest.to_string(),
+                    }
+                }),
+            })
+        }
+        NodeRequestBodyV1::FetchSnapshotChunk { request } => {
+            Body::SnapshotChunkRequest(protobuf::SnapshotChunkRequest {
+                request: Some(protobuf::SnapshotChunkRange {
+                    identity: Some(pb_identity(request.identity().into())),
+                    chunk: Some(pb_chunk(request.chunk().into())),
+                }),
+            })
+        }
+        NodeRequestBodyV1::FetchSnapshotDependency { request } => {
+            Body::SnapshotDependencyRequest(protobuf::SnapshotDependencyRequest {
+                request: Some(protobuf::SnapshotDependencyRange {
+                    identity: Some(pb_identity(request.identity().into())),
+                    dependency: Some(pb_descriptor(request.dependency())),
+                    offset: request.offset(),
+                    length: request.length(),
+                }),
+            })
+        }
+        NodeRequestBodyV1::Watch {
+            after,
+            maximum_events,
+        } => Body::WatchRequest(protobuf::WatchRequest {
+            after: Some(pb_cursor((*after).into())),
+            maximum_events: u32::from(*maximum_events),
+        }),
+    })
+}
+
+pub(super) fn protobuf_request_model(
+    kind: CanonicalNodeFrameKindV1,
+    body: protobuf::semantic_envelope::Body,
+) -> Result<NodeRequestBodyV1, InvalidMultiNodeProtocol> {
+    use protobuf::semantic_envelope::Body;
+
+    Ok(match (kind, body) {
+        (CanonicalNodeFrameKindV1::GetCapabilitiesRequest, Body::GetCapabilitiesRequest(_)) => {
+            NodeRequestBodyV1::GetCapabilities
+        }
+        (
+            CanonicalNodeFrameKindV1::ReconcileAssignmentRequest,
+            Body::ReconcileAssignmentRequest(value),
+        ) => {
+            let value = required(value.intent)?;
+            let assignment = wire_assignment(required(value.assignment)?)?;
+            if value.assignment_digest != assignment.digest().to_string() {
+                return Err(invalid());
+            }
+            let intent = AssignmentIntentV1::from_canonical_binding(
+                assignment,
+                wire_lifecycle(value.desired_lifecycle)?,
+                wire_binding(required(value.selected_capability)?)?.model()?,
+            )
+            .map_err(|_| invalid())?;
+            NodeRequestBodyV1::ReconcileAssignment(Box::new(intent))
+        }
+        (
+            CanonicalNodeFrameKindV1::RelistAssignmentsRequest,
+            Body::RelistAssignmentsRequest(value),
+        ) => NodeRequestBodyV1::RelistAssignments {
+            binding: wire_watch_binding(required(value.binding)?)?.model()?,
+        },
+        (CanonicalNodeFrameKindV1::ReconcileDrainRequest, Body::ReconcileDrainRequest(value)) => {
+            NodeRequestBodyV1::ReconcileDrain(Box::new(drain_directive_model(
+                wire_drain_directive(required(value.directive)?)?,
+            )?))
+        }
+        (
+            CanonicalNodeFrameKindV1::BeginSnapshotTransferRequest,
+            Body::BeginSnapshotTransferRequest(value),
+        ) => {
+            let manifest = manifest_model(wire_manifest(required(value.manifest)?)?)?;
+            let resume = value
+                .resume
+                .map(|resume| {
+                    let identity = wire_identity(required(resume.identity)?)?.model()?;
+                    let model =
+                        SnapshotTransferResumeV1::new(&manifest, identity, resume.next_chunk)
+                            .map_err(|_| invalid())?;
+                    if model.verified_prefix_digest() != parse(&resume.verified_prefix_digest)? {
+                        return Err(invalid());
+                    }
+                    Ok(model)
+                })
+                .transpose()?;
+            NodeRequestBodyV1::BeginSnapshotTransfer {
+                manifest: Box::new(manifest),
+                resume,
+            }
+        }
+        (CanonicalNodeFrameKindV1::SnapshotChunkRequest, Body::SnapshotChunkRequest(value)) => {
+            let request = required(value.request)?;
+            NodeRequestBodyV1::FetchSnapshotChunk {
+                request: SnapshotTransferChunkRequestV1::from_exact_commitment(
+                    wire_identity(required(request.identity)?)?.model()?,
+                    wire_chunk(required(request.chunk)?)?.model()?,
+                ),
+            }
+        }
+        (
+            CanonicalNodeFrameKindV1::SnapshotDependencyRequest,
+            Body::SnapshotDependencyRequest(value),
+        ) => {
+            let request = required(value.request)?;
+            NodeRequestBodyV1::FetchSnapshotDependency {
+                request: SnapshotDependencyRangeV1::from_exact_commitment(
+                    wire_identity(required(request.identity)?)?.model()?,
+                    wire_descriptor(required(request.dependency)?)?,
+                    request.offset,
+                    request.length,
+                )
+                .map_err(|_| invalid())?,
+            }
+        }
+        (CanonicalNodeFrameKindV1::WatchRequest, Body::WatchRequest(value)) => {
+            let maximum_events = u16::try_from(value.maximum_events).map_err(|_| invalid())?;
+            if maximum_events == 0
+                || usize::from(maximum_events) > crate::multi_node::MAX_WATCH_EVENTS
+            {
+                return Err(invalid());
+            }
+            NodeRequestBodyV1::Watch {
+                after: wire_cursor(required(value.after)?)?.model()?,
+                maximum_events,
+            }
+        }
+        _ => return Err(InvalidMultiNodeProtocol::MethodMismatch),
+    })
+}
+
+fn pb_event_body(body: &NodeWatchEventBodyV1) -> protobuf::watch_event::Body {
+    use protobuf::watch_event::Body;
+    match body {
+        NodeWatchEventBodyV1::Capability(value) => {
+            Body::Capability(pb_capability(capability_wire(value)))
+        }
+        NodeWatchEventBodyV1::Assignment(value) => Body::Assignment(pb_assignment_observation(
+            assignment_observation_wire(value),
+        )),
+        NodeWatchEventBodyV1::Drain(value) => {
+            Body::Drain(pb_drain_observation(drain_observation_wire(value)))
+        }
+    }
+}
+
+fn protobuf_event(event: &NodeWatchEventV1) -> protobuf::WatchEvent {
+    protobuf::WatchEvent {
+        cursor: Some(pb_cursor(event.cursor().into())),
+        predecessor_event_uid: event.predecessor_event_uid().to_string(),
+        body: Some(pb_event_body(event.body())),
+    }
+}
+
+fn protobuf_event_model(
+    value: protobuf::WatchEvent,
+    context: AuthenticatedEvidenceContextV1,
+    codec: &CanonicalNodeSemanticCodecV1,
+) -> Result<NodeWatchEventV1, InvalidMultiNodeProtocol> {
+    use protobuf::watch_event::Body;
+    let body = match required(value.body)? {
+        Body::Capability(value) => {
+            NodeWatchEventBodyV1::Capability(Box::new(capability_model(wire_capability(value)?)?))
+        }
+        Body::Assignment(value) => NodeWatchEventBodyV1::Assignment(Box::new(
+            assignment_observation_model(wire_assignment_observation(value)?, context)?,
+        )),
+        Body::Drain(value) => NodeWatchEventBodyV1::Drain(Box::new(drain_observation_model(
+            wire_drain_observation(value)?,
+            context,
+        )?)),
+    };
+    NodeWatchEventV1::from_authenticated_history(
+        wire_cursor(required(value.cursor)?)?.model()?,
+        parse(&value.predecessor_event_uid)?,
+        body,
+        codec,
+    )
+}
+
+pub(super) fn protobuf_response(
+    body: &NodeResponseBodyV1,
+) -> Result<protobuf::semantic_envelope::Body, InvalidMultiNodeProtocol> {
+    use protobuf::semantic_envelope::Body;
+    Ok(match body {
+        NodeResponseBodyV1::Capabilities(value) => {
+            Body::GetCapabilitiesResponse(protobuf::GetCapabilitiesResponse {
+                snapshot: Some(pb_capability(capability_wire(value))),
+            })
+        }
+        NodeResponseBodyV1::Assignment(value) => {
+            Body::ReconcileAssignmentResponse(protobuf::ReconcileAssignmentResponse {
+                observation: Some(pb_assignment_observation(assignment_observation_wire(
+                    value,
+                ))),
+            })
+        }
+        NodeResponseBodyV1::AssignmentInventory(value) => {
+            Body::RelistAssignmentsResponse(protobuf::RelistAssignmentsResponse {
+                inventory: Some(protobuf_inventory(value)),
+            })
+        }
+        NodeResponseBodyV1::Drain(value) => {
+            Body::ReconcileDrainResponse(protobuf::ReconcileDrainResponse {
+                observation: Some(pb_drain_observation(drain_observation_wire(value))),
+            })
+        }
+        NodeResponseBodyV1::SnapshotTransferReady {
+            identity,
+            next_chunk,
+        } => Body::BeginSnapshotTransferResponse(protobuf::BeginSnapshotTransferResponse {
+            identity: Some(pb_identity((*identity).into())),
+            next_chunk: *next_chunk,
+        }),
+        NodeResponseBodyV1::SnapshotChunk {
+            identity,
+            index,
+            bytes,
+        } => {
+            if bytes.is_empty() || bytes.len() > crate::multi_node::MAX_NODE_RESPONSE_BYTES as usize
+            {
+                return Err(invalid());
+            }
+            Body::SnapshotChunkResponse(protobuf::SnapshotChunkResponse {
+                identity: Some(pb_identity((*identity).into())),
+                index: *index,
+                data: bytes.clone(),
+            })
+        }
+        NodeResponseBodyV1::SnapshotDependency {
+            identity,
+            dependency,
+            offset,
+            bytes,
+        } => {
+            if bytes.is_empty() || bytes.len() > crate::multi_node::MAX_NODE_RESPONSE_BYTES as usize
+            {
+                return Err(invalid());
+            }
+            Body::SnapshotDependencyResponse(protobuf::SnapshotDependencyResponse {
+                identity: Some(pb_identity((*identity).into())),
+                dependency: Some(pb_descriptor(dependency)),
+                offset: *offset,
+                data: bytes.clone(),
+            })
+        }
+        NodeResponseBodyV1::WatchBatch { events, cursor_gap } => {
+            if events.len() > crate::multi_node::MAX_WATCH_EVENTS {
+                return Err(invalid());
+            }
+            Body::WatchResponse(protobuf::WatchResponse {
+                events: events.iter().map(protobuf_event).collect(),
+                cursor_gap: cursor_gap.map(|value| pb_watch_binding(value.into())),
+            })
+        }
+    })
+}
+
+fn protobuf_inventory(value: &ResyncInventoryV1) -> protobuf::AssignmentInventory {
+    protobuf::AssignmentInventory {
+        cursor: Some(pb_cursor(value.cursor().into())),
+        capabilities: Some(pb_capability(capability_wire(value.capabilities()))),
+        observation_sequence: value.observation_sequence().get(),
+        assignments: value
+            .assignments()
+            .iter()
+            .map(|row| pb_assignment_observation(assignment_observation_wire(row)))
+            .collect(),
+    }
+}
+
+fn protobuf_inventory_model(
+    value: protobuf::AssignmentInventory,
+    context: AuthenticatedEvidenceContextV1,
+) -> Result<ResyncInventoryV1, InvalidMultiNodeProtocol> {
+    if value.assignments.len() > crate::multi_node::MAX_RESYNC_ASSIGNMENTS {
+        return Err(invalid());
+    }
+    ResyncInventoryV1::new(
+        wire_cursor(required(value.cursor)?)?.model()?,
+        capability_model(wire_capability(required(value.capabilities)?)?)?,
+        ObservationSequence::new(value.observation_sequence),
+        value
+            .assignments
+            .into_iter()
+            .map(|row| assignment_observation_model(wire_assignment_observation(row)?, context))
+            .collect::<Result<_, _>>()?,
+    )
+}
+
+pub(super) fn protobuf_response_model(
+    context: AuthenticatedEvidenceContextV1,
+    kind: CanonicalNodeFrameKindV1,
+    body: protobuf::semantic_envelope::Body,
+    codec: &CanonicalNodeSemanticCodecV1,
+) -> Result<NodeResponseBodyV1, InvalidMultiNodeProtocol> {
+    use protobuf::semantic_envelope::Body;
+    Ok(match (kind, body) {
+        (
+            CanonicalNodeFrameKindV1::GetCapabilitiesResponse,
+            Body::GetCapabilitiesResponse(value),
+        ) => NodeResponseBodyV1::Capabilities(Box::new(capability_model(wire_capability(
+            required(value.snapshot)?,
+        )?)?)),
+        (
+            CanonicalNodeFrameKindV1::ReconcileAssignmentResponse,
+            Body::ReconcileAssignmentResponse(value),
+        ) => NodeResponseBodyV1::Assignment(Box::new(assignment_observation_model(
+            wire_assignment_observation(required(value.observation)?)?,
+            context,
+        )?)),
+        (
+            CanonicalNodeFrameKindV1::RelistAssignmentsResponse,
+            Body::RelistAssignmentsResponse(value),
+        ) => NodeResponseBodyV1::AssignmentInventory(Box::new(protobuf_inventory_model(
+            required(value.inventory)?,
+            context,
+        )?)),
+        (CanonicalNodeFrameKindV1::ReconcileDrainResponse, Body::ReconcileDrainResponse(value)) => {
+            NodeResponseBodyV1::Drain(Box::new(drain_observation_model(
+                wire_drain_observation(required(value.observation)?)?,
+                context,
+            )?))
+        }
+        (
+            CanonicalNodeFrameKindV1::BeginSnapshotTransferResponse,
+            Body::BeginSnapshotTransferResponse(value),
+        ) => NodeResponseBodyV1::SnapshotTransferReady {
+            identity: wire_identity(required(value.identity)?)?.model()?,
+            next_chunk: value.next_chunk,
+        },
+        (CanonicalNodeFrameKindV1::SnapshotChunkResponse, Body::SnapshotChunkResponse(value)) => {
+            if value.data.is_empty()
+                || value.data.len() > crate::multi_node::MAX_NODE_RESPONSE_BYTES as usize
+            {
+                return Err(invalid());
+            }
+            NodeResponseBodyV1::SnapshotChunk {
+                identity: wire_identity(required(value.identity)?)?.model()?,
+                index: value.index,
+                bytes: value.data,
+            }
+        }
+        (
+            CanonicalNodeFrameKindV1::SnapshotDependencyResponse,
+            Body::SnapshotDependencyResponse(value),
+        ) => {
+            if value.data.is_empty()
+                || value.data.len() > crate::multi_node::MAX_NODE_RESPONSE_BYTES as usize
+            {
+                return Err(invalid());
+            }
+            NodeResponseBodyV1::SnapshotDependency {
+                identity: wire_identity(required(value.identity)?)?.model()?,
+                dependency: wire_descriptor(required(value.dependency)?)?,
+                offset: value.offset,
+                bytes: value.data,
+            }
+        }
+        (CanonicalNodeFrameKindV1::WatchResponse, Body::WatchResponse(value)) => {
+            if value.events.len() > crate::multi_node::MAX_WATCH_EVENTS {
+                return Err(invalid());
+            }
+            NodeResponseBodyV1::WatchBatch {
+                events: value
+                    .events
+                    .into_iter()
+                    .map(|event| protobuf_event_model(event, context, codec))
+                    .collect::<Result<_, _>>()?,
+                cursor_gap: value
+                    .cursor_gap
+                    .map(wire_watch_binding)
+                    .transpose()?
+                    .map(WatchBindingWire::model)
+                    .transpose()?,
+            }
+        }
+        _ => return Err(InvalidMultiNodeProtocol::MethodMismatch),
+    })
+}
+
+pub(super) fn protobuf_watch_event_body(body: &NodeWatchEventBodyV1) -> protobuf::WatchEvent {
+    protobuf::WatchEvent {
+        cursor: None,
+        predecessor_event_uid: String::new(),
+        body: Some(pb_event_body(body)),
+    }
+}
+
+pub(super) fn protobuf_watch_event_body_model(
+    value: protobuf::WatchEvent,
+    context: AuthenticatedEvidenceContextV1,
+) -> Result<NodeWatchEventBodyV1, InvalidMultiNodeProtocol> {
+    use protobuf::watch_event::Body;
+    if value.cursor.is_some() || !value.predecessor_event_uid.is_empty() {
+        return Err(invalid());
+    }
+    Ok(match required(value.body)? {
+        Body::Capability(value) => {
+            NodeWatchEventBodyV1::Capability(Box::new(capability_model(wire_capability(value)?)?))
+        }
+        Body::Assignment(value) => NodeWatchEventBodyV1::Assignment(Box::new(
+            assignment_observation_model(wire_assignment_observation(value)?, context)?,
+        )),
+        Body::Drain(value) => NodeWatchEventBodyV1::Drain(Box::new(drain_observation_model(
+            wire_drain_observation(value)?,
+            context,
+        )?)),
+    })
+}
+
+pub(in crate::multi_node) fn protobuf_cursor(value: NodeWatchCursorV1) -> protobuf::WatchCursor {
+    pb_cursor(value.into())
+}
+pub(in crate::multi_node) fn protobuf_cursor_model(
+    value: protobuf::WatchCursor,
+) -> Result<NodeWatchCursorV1, InvalidMultiNodeProtocol> {
+    wire_cursor(value)?.model()
+}
+pub(in crate::multi_node) fn protobuf_binding(value: NodeWatchBindingV1) -> protobuf::WatchBinding {
+    pb_watch_binding(value.into())
+}
+pub(in crate::multi_node) fn protobuf_binding_model(
+    value: protobuf::WatchBinding,
+) -> Result<NodeWatchBindingV1, InvalidMultiNodeProtocol> {
+    wire_watch_binding(value)?.model()
+}
+pub(in crate::multi_node) fn protobuf_ordered_event(
+    value: &NodeWatchEventV1,
+) -> protobuf::WatchEvent {
+    protobuf_event(value)
+}
+pub(in crate::multi_node) fn protobuf_ordered_event_model(
+    value: protobuf::WatchEvent,
+    context: AuthenticatedEvidenceContextV1,
+    codec: &CanonicalNodeSemanticCodecV1,
+) -> Result<NodeWatchEventV1, InvalidMultiNodeProtocol> {
+    protobuf_event_model(value, context, codec)
 }

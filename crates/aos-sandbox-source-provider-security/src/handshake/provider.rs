@@ -2,19 +2,20 @@
 
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
-    ProviderRequestSequenceExpectationV1, ProviderRequestVerificationContextV1,
-    SignedSourceExportLeaseV1, SignedSourceProviderHelloV1, SignedSourceProviderInventoryV1,
-    SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1, SignedSourceProviderStatusV1,
-    SignedSourceReleaseReceiptV1, SourceExportLeaseV1, SourceProviderAuthorityV1,
-    SourceProviderDescriptorRole, SourceProviderHelloV1, SourceProviderIngressSessionV1,
-    SourceProviderInventoryV1, SourceProviderMessageV1, SourceProviderMethod,
-    SourceProviderPeerRole, SourceProviderReceiptV1, SourceProviderResponseStatusV1,
-    SourceProviderStatus, SourceReleaseReceiptV1, decode_acquire_response,
-    decode_inventory_response, decode_message, decode_release_response, digest_signed_export_lease,
-    digest_signed_hello, empty_descriptor_set_commitment_v1, encode_acquire_response,
-    encode_inventory_response, encode_message, encode_release_response, response_result_digest_v1,
-    sign_export_lease, sign_hello, sign_inventory, sign_provider_receipt, sign_release_receipt,
-    sign_response_status, verify_hello, verify_provider_request,
+    MAXIMUM_FRAME_BYTES, ProviderRequestSequenceExpectationV1,
+    ProviderRequestVerificationContextV1, SignedSourceExportLeaseV1, SignedSourceProviderHelloV1,
+    SignedSourceProviderInventoryV1, SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1,
+    SignedSourceProviderStatusV1, SignedSourceReleaseReceiptV1, SourceExportLeaseV1,
+    SourceProviderAuthorityV1, SourceProviderDescriptorRole, SourceProviderHelloV1,
+    SourceProviderIngressSessionV1, SourceProviderInventoryV1, SourceProviderMessageV1,
+    SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
+    SourceProviderResponseStatusV1, SourceProviderStatus, SourceReleaseReceiptV1,
+    decode_acquire_response, decode_inventory_response, decode_message, decode_release_response,
+    digest_signed_export_lease, digest_signed_hello, empty_descriptor_set_commitment_v1,
+    encode_acquire_response, encode_inventory_response, encode_message, encode_release_response,
+    response_result_digest_v1, sign_export_lease, sign_hello, sign_inventory,
+    sign_provider_receipt, sign_release_receipt, sign_response_status, verify_hello,
+    verify_provider_request,
 };
 
 use super::{HandshakeTransitionV1, current_unix_seconds, process_identity};
@@ -78,6 +79,7 @@ enum ProviderSourceProviderOwnerStateV1 {
 /// route advertisement, or service loop.
 pub struct ProviderSourceProviderOwnerV1 {
     state: Option<ProviderSourceProviderOwnerStateV1>,
+    predecessor: Option<CurrentProviderSessionProjectionV1>,
 }
 
 /// Reports whether provider-side authenticated hello exchange is pending.
@@ -202,6 +204,20 @@ pub struct CurrentProviderSessionProjectionV1 {
     provider_process_instance: [u8; 16],
 }
 
+/// Retains a pre-receive predecessor identity for explicit ingress reopen.
+///
+/// The value is move-only and has no scalar projection. It can only seed a
+/// fresh fixed Provider handshake after the prior carrier was fatally closed.
+pub struct ProviderIngressReopenCheckpointV1 {
+    predecessor: CurrentProviderSessionProjectionV1,
+}
+
+impl core::fmt::Debug for ProviderIngressReopenCheckpointV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("ProviderIngressReopenCheckpointV1([protected predecessor])")
+    }
+}
+
 /// Proves that security custody consumed and closed a prior live session.
 ///
 /// The evidence is move-only and can be persisted only by the provider owner
@@ -318,6 +334,40 @@ impl ProviderSourceProviderOwnerV1 {
         let awaiting = AwaitingRootMountHelloV1::accept(custody, socket)?;
         Ok(Self {
             state: Some(ProviderSourceProviderOwnerStateV1::Awaiting(awaiting)),
+            predecessor: None,
+        })
+    }
+
+    /// Opens a fresh carrier as the successor of a fatally closed ingress.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] when fixed protected custody,
+    /// process identity, or the replacement channel cannot be authenticated.
+    #[doc(hidden)]
+    pub fn open_fixed_recovery(
+        socket: DescriptorSubjectSocket,
+        checkpoint: ProviderIngressReopenCheckpointV1,
+    ) -> Result<
+        Self,
+        (
+            SourceProviderSecurityError,
+            ProviderIngressReopenCheckpointV1,
+        ),
+    > {
+        let custody = match ProtectedProviderCustodyV1::load(std::path::Path::new(
+            FIXED_PROVIDER_SOURCE_PROVIDER_CUSTODY,
+        )) {
+            Ok(custody) => custody,
+            Err(error) => return Err((error, checkpoint)),
+        };
+        let awaiting = match AwaitingRootMountHelloV1::accept(custody, socket) {
+            Ok(awaiting) => awaiting,
+            Err(error) => return Err((error, checkpoint)),
+        };
+        Ok(Self {
+            state: Some(ProviderSourceProviderOwnerStateV1::Awaiting(awaiting)),
+            predecessor: Some(checkpoint.predecessor),
         })
     }
 
@@ -400,7 +450,85 @@ impl ProviderSourceProviderOwnerV1 {
             return Err(SourceProviderSecurityError::SessionContinuity);
         };
         current.revalidate()?;
+        if self.predecessor.is_some() {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
         Ok(current)
+    }
+
+    /// Consumes a completed same-carrier successor into session and supersession evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] unless the prior and successor
+    /// projections name the same fixed authorities and Root-Mount execution.
+    #[doc(hidden)]
+    pub fn into_fixed_recovery_ledger_session(
+        mut self,
+        journal: aos_sandbox::FixedSourceProviderJournalHandoffV1<'_, '_>,
+    ) -> Result<
+        (
+            CurrentProviderIngressSessionV1,
+            ProviderSessionSupersessionEvidenceV1,
+        ),
+        SourceProviderSecurityError,
+    > {
+        journal
+            .validate_current()
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        let predecessor = self
+            .predecessor
+            .take()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let state = self
+            .state
+            .take()
+            .ok_or(SourceProviderSecurityError::Poisoned)?;
+        let ProviderSourceProviderOwnerStateV1::Current(mut current) = state else {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        };
+        let successor = current.current_projection()?;
+        if predecessor.provider != successor.provider
+            || predecessor.holder != successor.holder
+            || predecessor.root_process_instance != successor.root_process_instance
+            || predecessor.session_binding == successor.session_binding
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        let evidence = ProviderSessionSupersessionEvidenceV1 {
+            provider_id: predecessor.provider.authority_id(),
+            holder_id: predecessor.holder.authority_id(),
+            prior_session_binding: predecessor.session_binding,
+            replacement_session_binding: successor.session_binding,
+            prior_root_process_instance: predecessor.root_process_instance,
+        };
+        Ok((current, evidence))
+    }
+}
+
+impl CurrentProviderIngressSessionV1 {
+    /// Reuses the protected connected carrier for a fresh successor transcript.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] unless the current provider
+    /// custody and peer execution remain live immediately before rotation.
+    #[doc(hidden)]
+    pub fn into_successor_owner(
+        mut self,
+    ) -> Result<ProviderSourceProviderOwnerV1, SourceProviderSecurityError> {
+        let predecessor = self.current_projection()?;
+        let Self {
+            custody,
+            carrier,
+            session: _,
+            root_mount_execution: _,
+        } = self;
+        let awaiting = AwaitingRootMountHelloV1::accept_carrier(custody, carrier)?;
+        Ok(ProviderSourceProviderOwnerV1 {
+            state: Some(ProviderSourceProviderOwnerStateV1::Awaiting(awaiting)),
+            predecessor: Some(predecessor),
+        })
     }
 }
 
@@ -412,10 +540,16 @@ impl core::fmt::Debug for ProviderOwnerSecurityFacadeV1<'_, '_, '_, '_> {
 
 impl AwaitingRootMountHelloV1 {
     pub(super) fn accept(
-        mut custody: ProtectedProviderCustodyV1,
+        custody: ProtectedProviderCustodyV1,
         socket: DescriptorSubjectSocket,
     ) -> Result<Self, SourceProviderSecurityError> {
-        let mut carrier = InertSourceProviderCarrierV1::adopt(socket)?;
+        Self::accept_carrier(custody, InertSourceProviderCarrierV1::adopt(socket)?)
+    }
+
+    fn accept_carrier(
+        mut custody: ProtectedProviderCustodyV1,
+        mut carrier: InertSourceProviderCarrierV1,
+    ) -> Result<Self, SourceProviderSecurityError> {
         let result = current_unix_seconds().and_then(|now| custody.inner_mut().revalidate_at(now));
         if let Err(error) = result {
             return Err(poison_and_close(&mut custody, &mut carrier, error));

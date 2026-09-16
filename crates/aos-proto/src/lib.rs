@@ -19,6 +19,8 @@
 //!   `aos-hub`.
 //! - `aos::sandbox::v1` — generic sandbox lifecycle, execution, filesystem
 //!   views, snapshots, capabilities, operations, and observations.
+//! - `aos::sandbox::coordinator::v1` — private coordinator/node transport,
+//!   compatibility, lease, snapshot-transfer, and ordered-watch messages.
 //!
 //! Message types are plain `prost` structs; each service additionally
 //! gets a typed ConnectRPC client (e.g. `CacheServiceClient`) and a
@@ -29,3 +31,6 @@
 //! To change the API surface, edit the `.proto` files and rebuild; never
 //! edit the generated output.
 include!(concat!(env!("OUT_DIR"), "/_connectrpc.rs"));
+
+/// Re-exports the protobuf message trait for consumers of generated messages.
+pub use prost::Message as ProstMessage;

@@ -4,10 +4,13 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[[bin]]
+name = "aos-sandbox-agent"
+path = "src/main.rs"
+
 [dependencies]
 aos-proto = { path = "../aos-proto" }
 aos-sandbox-core = { path = "../aos-sandbox-core" }
-ed25519-dalek.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 

@@ -49,6 +49,45 @@ use model::{HistoricalMountAcquisitionLineageV2, historical_acquisition_commitme
 use projection::*;
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    /// Returns the fixed holder/provider identities and current validity ceiling.
+    ///
+    /// The values are projections of freshly revalidated protected custody and
+    /// cannot select or replace either authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] and poisons the session when its
+    /// protected custody, peer execution, or trusted time is no longer current.
+    #[doc(hidden)]
+    pub fn current_authority_scope_v2(
+        &mut self,
+    ) -> Result<([u8; 16], [u8; 16], i64), SourceProviderSecurityError> {
+        self.revalidate()?;
+        let now = super::current_unix_seconds()?;
+        let projection =
+            capture_session_projection(self, now).map_err(|error| self.poison(error))?;
+        Ok((
+            projection.authority_trust[0].authority.authority_id(),
+            projection.authority_trust[1].authority.authority_id(),
+            projection.current_valid_until_seconds,
+        ))
+    }
+
+    /// Returns the exact current session identifier after protected revalidation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] and poisons the session when its
+    /// protected custody, peer execution, or trusted time is no longer current.
+    #[doc(hidden)]
+    pub fn current_session_id_v2(&mut self) -> Result<ObjectDigest, SourceProviderSecurityError> {
+        self.revalidate()?;
+        let now = super::current_unix_seconds()?;
+        let projection =
+            capture_session_projection(self, now).map_err(|error| self.poison(error))?;
+        Ok(ObjectDigest::from_bytes(projection.session_id))
+    }
+
     /// Proves one exact protected Mount session's provider execution is dead.
     ///
     /// The full AOSMSA02 process digest is derived inside security from the
@@ -302,6 +341,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             predecessor_session_id,
             predecessor_session_binding,
             None,
+            false,
             predecessor_request_sequence,
             predecessor_response_sequence,
         )
@@ -339,6 +379,39 @@ impl CurrentRootMountSourceProviderSessionV1 {
             predecessor_session_id,
             predecessor_session_binding,
             Some(predecessor_death),
+            false,
+            predecessor_request_sequence,
+            predecessor_response_sequence,
+        )
+    }
+
+    /// Captures a successor plan for an exact backend-recovery pending attempt.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn recovery_replacement_mount_provider_session_plan_v2(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        head_key: Vec<u8>,
+        head_record: Vec<u8>,
+        predecessor_session_key: Vec<u8>,
+        predecessor_session_record: Vec<u8>,
+        predecessor_session_id: ObjectDigest,
+        predecessor_session_binding: ObjectDigest,
+        predecessor_request_sequence: u64,
+        predecessor_response_sequence: u64,
+    ) -> Result<CurrentMountProviderSessionPlanV2, SourceProviderSecurityError> {
+        self.replacement_mount_provider_session_plan_inner(
+            journal,
+            journal_snapshot,
+            head_key,
+            head_record,
+            predecessor_session_key,
+            predecessor_session_record,
+            predecessor_session_id,
+            predecessor_session_binding,
+            None,
+            true,
             predecessor_request_sequence,
             predecessor_response_sequence,
         )
@@ -356,6 +429,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         predecessor_session_id: ObjectDigest,
         predecessor_session_binding: ObjectDigest,
         predecessor_death: Option<crate::DeadProviderExecutionProjectionV2>,
+        recovery_supersession: bool,
         predecessor_request_sequence: u64,
         predecessor_response_sequence: u64,
     ) -> Result<CurrentMountProviderSessionPlanV2, SourceProviderSecurityError> {
@@ -384,7 +458,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 .is_some_and(|stored| predecessor_death_matches_session(death, stored, now))
         });
         let predecessor_state_matches = retained_head.is_some_and(|head| {
-            if predecessor_death.is_some() {
+            if predecessor_death.is_some() || recovery_supersession {
                 head.pending_attempt.is_some()
             } else {
                 head.pending_attempt.is_none() && head.recovery_barrier.is_none()
@@ -497,66 +571,81 @@ impl CurrentRootMountSourceProviderSessionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`SourceProviderSecurityError`] and irreversibly poisons the
-    /// session for stale custody, a session mismatch, or any carrier failure.
+    /// Returns [`MountProviderRequestSendRecoveryV2`] with the exact reservation
+    /// for stale custody, a session mismatch, or any carrier failure. A
+    /// successful atomic send never recreates retry authority.
     pub fn send_reserved_mount_request_v2(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         reservation: ReservedMountProviderRequestV2,
-    ) -> Result<SentMountProviderRequestV2, SourceProviderSecurityError> {
-        self.revalidate()?;
-        let prepared_signed_request = SignedSourceProviderRequestV1::from_canonical_bytes(
+    ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
+        if self.revalidate().is_err() {
+            return Err(MountProviderRequestSendRecoveryV2 { reservation });
+        }
+        let prepared_signed_request = match SignedSourceProviderRequestV1::from_canonical_bytes(
             &reservation.prepared.signed_request,
-        )
-        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        ) {
+            Ok(request) => request,
+            Err(_) => {
+                self.poison(SourceProviderSecurityError::SessionContinuity);
+                return Err(MountProviderRequestSendRecoveryV2 { reservation });
+            }
+        };
         if reservation.prepared.projection.session_binding != self.session.binding()
             || reservation.prepared.outcome.session_binding != self.session.binding()
             || reservation.prepared.projection.signed_request_digest
                 != digest_signed_request(&prepared_signed_request)
             || self.carrier.socket().peer().credentials().pid().get() == 0
         {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+            self.poison(SourceProviderSecurityError::SessionContinuity);
+            return Err(MountProviderRequestSendRecoveryV2 { reservation });
         }
         // The opaque protected snapshot and exact records are retained until
         // the final pre-send currentness check, so no reservation witness can
         // be reused after the namespace advances.
-        let ReservedMountProviderRequestV2 {
-            prepared,
-            reservation_snapshot,
-            attempt_key,
-            attempt_record,
-            head_key,
-            head_record,
-        } = reservation;
-        let (signed_request, projection, outcome) = (
-            prepared.signed_request,
-            prepared.projection,
-            prepared.outcome,
-        );
-        let journal_current = attempt_key.len() == 75
-            && head_key.len() == 66
-            && !attempt_record.is_empty()
-            && !head_record.is_empty()
+        let journal_current = reservation.attempt_key.len() == 75
+            && reservation.head_key.len() == 66
+            && !reservation.attempt_record.is_empty()
+            && !reservation.head_record.is_empty()
             && journal
-                .validate_mount_source_acquisition_snapshot(&reservation_snapshot)
+                .validate_mount_source_acquisition_snapshot(&reservation.reservation_snapshot)
                 .is_ok()
-            && journal.get(&attempt_key).ok().flatten() == Some(attempt_record.as_slice())
-            && journal.get(&head_key).ok().flatten() == Some(head_record.as_slice());
+            && journal.get(&reservation.attempt_key).ok().flatten()
+                == Some(reservation.attempt_record.as_slice())
+            && journal.get(&reservation.head_key).ok().flatten()
+                == Some(reservation.head_record.as_slice());
         if !journal_current {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+            self.poison(SourceProviderSecurityError::SessionContinuity);
+            return Err(MountProviderRequestSendRecoveryV2 { reservation });
         }
-        if let Err(failure) = self.carrier.send(&signed_request) {
-            let error = match failure {
-                CarrierFailureV1::Retryable => SourceProviderSecurityError::SessionContinuity,
-                CarrierFailureV1::Fatal(error) => error,
-            };
-            return Err(self.poison(error));
+        if let Err(failure) = self.carrier.send(&reservation.prepared.signed_request) {
+            if let CarrierFailureV1::Fatal(error) = failure {
+                self.poison(error);
+            }
+            return Err(MountProviderRequestSendRecoveryV2 { reservation });
         }
-        self.revalidate()?;
+        // A successful sequenced-packet send is atomic. Outcome receive checks
+        // currentness again; bytes accepted by the kernel never recreate send
+        // authority.
+        let ReservedMountProviderRequestV2 { prepared, .. } = reservation;
         Ok(SentMountProviderRequestV2 {
-            projection,
-            outcome,
+            projection: prepared.projection,
+            outcome: prepared.outcome,
         })
+    }
+
+    /// Retries one exact retained send reservation without rebuilding its request.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same recovery custody when protected currentness, exact
+    /// journal readback, or the atomic carrier send is still unavailable.
+    pub fn retry_reserved_mount_request_v2(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        recovery: MountProviderRequestSendRecoveryV2,
+    ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
+        self.send_reserved_mount_request_v2(journal, recovery.reservation)
     }
 
     /// Authorizes one exact protected catalog and retained-selection floor.

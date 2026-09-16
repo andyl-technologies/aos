@@ -18,7 +18,9 @@
 //! emits the bounded authoritative inventory. Postcondition observation and
 //! the long-running storage service remain intentionally separate layers.
 //! [`process`] reaches ZFS only through a fixed, systemd-contained one-shot
-//! worker that recompiles typed catalog input.
+//! worker that recompiles typed catalog input. [`runtime`] also exposes an
+//! explicit dormant Apply constructor which retains protected Snapshot
+//! metadata; the production service continues to omit Apply advertisement.
 
 pub mod activation;
 pub mod authorization;
@@ -28,11 +30,14 @@ mod catalog_decode;
 pub mod catalog_preparation;
 mod catalog_transition;
 mod clone_identity;
+mod dormant_broker_session;
 #[allow(
     dead_code,
     reason = "sealed helper boundary is not wired until Apply readiness exists"
 )]
 mod helper;
+mod lifecycle_atomic_snapshot;
+mod lifecycle_inventory;
 mod observation;
 #[allow(
     dead_code,
@@ -86,6 +91,11 @@ pub use catalog_preparation::{
     ProtectedStorageCatalogResolverV1, StorageCatalogPreparationError,
     StorageCatalogPreparationOutcomeV1,
 };
+pub use dormant_broker_session::{
+    DormantStorageApplyCompositionV1, DormantStorageBrokerCallErrorV1,
+    DormantStorageBrokerCallsiteV1, DormantStorageBrokerObservationV1,
+};
+pub use lifecycle_atomic_snapshot::DormantAtomicDatasetSnapshotV1;
 pub use pin_worker_runtime::{
     run_inherited_workspace_pin_observer, run_inherited_workspace_pin_worker,
 };
@@ -97,8 +107,9 @@ pub use request::{
     StorageSemanticsError, decode_resolved,
 };
 pub use runtime::{
-    StorageApplyReadiness, StorageBrokerRuntime, StoragePrepareReadiness, StorageRuntimeError,
-    StorageRuntimeMutationOutcome, StorageRuntimeReadiness, WorkspacePinRepairExecutionOutcomeV1,
+    AtomicDatasetSnapshotMutationOutcomeV1, StorageApplyReadiness, StorageBrokerRuntime,
+    StoragePrepareReadiness, StorageRuntimeError, StorageRuntimeMutationOutcome,
+    StorageRuntimeReadiness, WorkspacePinRepairExecutionOutcomeV1,
 };
 pub use service::{
     StorageConnectionOutcome, StorageRpcRuntime, StorageService, StorageServiceError,

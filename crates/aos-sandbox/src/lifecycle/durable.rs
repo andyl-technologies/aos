@@ -1,7 +1,7 @@
 //! Canonical reconstructing replay records for lifecycle auxiliary projections.
 //!
 //! ```text
-//! AOSLIFA3 | version:1 | kind:1 | reserved:5 | project:16 | operation:16 |
+//! AOSLIFA4 | version:2 | kind:1 | reserved:5 | project:16 | operation:16 |
 //! operation-revision:8 | operation-record:32 | lineage:16 | revision:8 |
 //! predecessor:32 | atomic-join:16 | floor:8 | replay-authority:32 |
 //! declared-members:2 | declared-count:2 | reserved:4 | join-digest:32 |
@@ -19,8 +19,9 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, ResourceId, Revisio
 use sha2::{Digest as _, Sha256};
 
 use super::auxiliary_payload::{
-    LifecycleAuxiliaryPayloadV1, MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES,
-    decode_lifecycle_auxiliary_payload_v1, encode_lifecycle_auxiliary_payload_v1,
+    LifecycleAuxiliaryPayloadLayoutV1, LifecycleAuxiliaryPayloadV1,
+    MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES, decode_lifecycle_auxiliary_payload_with_layout_v1,
+    encode_lifecycle_auxiliary_payload_v1,
 };
 use super::{
     LifecycleCancelIdempotencyIndexV1, LifecycleCancelOutcomeV1, LifecycleCancelRequestV1,
@@ -29,10 +30,48 @@ use super::{
     MAXIMUM_LIFECYCLE_EXPECTATIONS, encode_operation_record_v1,
 };
 
-const MAGIC: &[u8; 8] = b"AOSLIFA3";
-const VERSION: u16 = 1;
+const LEGACY_MAGIC: &[u8; 8] = b"AOSLIFA3";
+const LEGACY_VERSION: u16 = 1;
+const CURRENT_MAGIC: &[u8; 8] = b"AOSLIFA4";
+const CURRENT_VERSION: u16 = 2;
 const HEADER_BYTES: usize = 244;
 const DIGEST_BYTES: usize = 32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LifecycleAuxiliaryEnvelopeFormatV1 {
+    Legacy,
+    Current,
+}
+
+impl LifecycleAuxiliaryEnvelopeFormatV1 {
+    const fn magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::Legacy => LEGACY_MAGIC,
+            Self::Current => CURRENT_MAGIC,
+        }
+    }
+
+    const fn version(self) -> u16 {
+        match self {
+            Self::Legacy => LEGACY_VERSION,
+            Self::Current => CURRENT_VERSION,
+        }
+    }
+
+    const fn payload_layout(self) -> LifecycleAuxiliaryPayloadLayoutV1 {
+        match self {
+            Self::Legacy => LifecycleAuxiliaryPayloadLayoutV1::LegacyWithoutHostBoot,
+            Self::Current => LifecycleAuxiliaryPayloadLayoutV1::Current,
+        }
+    }
+
+    const fn digest_domain(self) -> &'static [u8] {
+        match self {
+            Self::Legacy => b"aos.sandbox.lifecycle.auxiliary-record.v2\0",
+            Self::Current => b"aos.sandbox.lifecycle.auxiliary-record.v3\0",
+        }
+    }
+}
 
 /// Maximum auxiliary records retained by one replay window.
 pub const MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS: usize = 262_144;
@@ -86,6 +125,7 @@ impl LifecycleAtomicJoinDigestV1 {
 /// Binds one complete canonical payload to exact operation and lineage state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LifecycleAuxiliaryRecordV1 {
+    format: LifecycleAuxiliaryEnvelopeFormatV1,
     project: ProjectId,
     operation: OperationId,
     operation_revision: Revision,
@@ -145,6 +185,7 @@ impl LifecycleAuxiliaryRecordV1 {
         let encoded_payload_length =
             u32::try_from(encoded_payload.len()).map_err(|_| LifecycleModelError::InvalidModel)?;
         Ok(Self {
+            format: LifecycleAuxiliaryEnvelopeFormatV1::Current,
             project,
             operation,
             operation_revision,
@@ -180,6 +221,8 @@ impl LifecycleAuxiliaryRecordV1 {
         declared_members: u16,
         declared_count: u16,
         join_digest: LifecycleAtomicJoinDigestV1,
+        format: LifecycleAuxiliaryEnvelopeFormatV1,
+        encoded_payload: &[u8],
     ) -> Result<Self, LifecycleModelError> {
         let mut record = Self::proposal(
             project,
@@ -204,6 +247,10 @@ impl LifecycleAuxiliaryRecordV1 {
         record.declared_members = declared_members;
         record.declared_count = declared_count;
         record.join_digest = Some(join_digest);
+        record.format = format;
+        record.encoded_payload = encoded_payload.to_vec();
+        record.encoded_payload_length =
+            u32::try_from(encoded_payload.len()).map_err(|_| LifecycleModelError::InvalidModel)?;
         Ok(record)
     }
 
@@ -332,7 +379,7 @@ pub fn encode_lifecycle_auxiliary_record_v1(
     if encoded.len() != body_length {
         return Err(LifecycleModelError::InvalidModel);
     }
-    let digest = auxiliary_digest(&encoded);
+    let digest = auxiliary_digest(&encoded, record.format);
     encoded.extend_from_slice(digest.as_bytes());
     Ok(encoded)
 }
@@ -346,18 +393,43 @@ pub fn decode_lifecycle_auxiliary_record_v1(
     encoded: &[u8],
     verification: &LifecycleReplayVerificationV1,
 ) -> Result<LifecycleAuxiliaryRecordV1, LifecycleModelError> {
+    decode_lifecycle_auxiliary_record_inner_v1(encoded, verification, true)
+}
+
+/// Decodes bytes already authenticated by the protected outer journal.
+///
+/// The outer envelope supplies admission for a newly proposed inner record,
+/// so this path verifies every canonical field and the fixed replay authority
+/// without requiring the inner digest to pre-exist in the recovered allowlist.
+pub(crate) fn decode_lifecycle_auxiliary_record_from_protected_envelope_v1(
+    encoded: &[u8],
+    verification: &LifecycleReplayVerificationV1,
+) -> Result<LifecycleAuxiliaryRecordV1, LifecycleModelError> {
+    decode_lifecycle_auxiliary_record_inner_v1(encoded, verification, false)
+}
+
+fn decode_lifecycle_auxiliary_record_inner_v1(
+    encoded: &[u8],
+    verification: &LifecycleReplayVerificationV1,
+    require_previously_accepted_digest: bool,
+) -> Result<LifecycleAuxiliaryRecordV1, LifecycleModelError> {
     if encoded.len() < HEADER_BYTES + 1 + DIGEST_BYTES
         || encoded.len() > HEADER_BYTES + MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES + DIGEST_BYTES
     {
         return Err(LifecycleModelError::CorruptEncoding);
     }
     let (body, stored) = encoded.split_at(encoded.len() - DIGEST_BYTES);
-    let digest = auxiliary_digest(body);
-    if stored != digest.as_bytes() || !verification.accepts_record(digest) {
+    let format = envelope_format(body)?;
+    let digest = auxiliary_digest(body, format);
+    if stored != digest.as_bytes()
+        || (require_previously_accepted_digest && !verification.accepts_record(digest))
+    {
         return Err(LifecycleModelError::CorruptEncoding);
     }
     let mut bytes = body;
-    if take::<8>(&mut bytes)? != *MAGIC || u16::from_be_bytes(take(&mut bytes)?) != VERSION {
+    if take::<8>(&mut bytes)? != *format.magic()
+        || u16::from_be_bytes(take(&mut bytes)?) != format.version()
+    {
         return Err(LifecycleModelError::CorruptEncoding);
     }
     let kind = decode_kind(take::<1>(&mut bytes)?[0])?;
@@ -394,7 +466,11 @@ pub fn decode_lifecycle_auxiliary_record_v1(
     if !bytes.is_empty() {
         return Err(LifecycleModelError::CorruptEncoding);
     }
-    let payload = decode_lifecycle_auxiliary_payload_v1(kind, payload_bytes)?;
+    let payload = decode_lifecycle_auxiliary_payload_with_layout_v1(
+        kind,
+        payload_bytes,
+        format.payload_layout(),
+    )?;
     let record = LifecycleAuxiliaryRecordV1::from_stored(
         project,
         operation,
@@ -410,11 +486,10 @@ pub fn decode_lifecycle_auxiliary_record_v1(
         declared_members,
         declared_count,
         join_digest,
+        format,
+        payload_bytes,
     )
     .map_err(|_| LifecycleModelError::CorruptEncoding)?;
-    if record.encoded_payload != payload_bytes {
-        return Err(LifecycleModelError::CorruptEncoding);
-    }
     Ok(record)
 }
 
@@ -436,8 +511,18 @@ pub fn lifecycle_atomic_join_digest_v1(
     }
     let mut members = 0_u16;
     let mut previous_kind = None;
-    let mut hasher = Sha256::new()
-        .chain_update(b"aos.sandbox.lifecycle.atomic-join.v1\0")
+    let mut hasher = Sha256::new();
+    match first.format {
+        LifecycleAuxiliaryEnvelopeFormatV1::Legacy => {
+            hasher.update(b"aos.sandbox.lifecycle.atomic-join.v1\0");
+        }
+        LifecycleAuxiliaryEnvelopeFormatV1::Current => {
+            hasher.update(b"aos.sandbox.lifecycle.atomic-join.v2\0");
+            hasher.update(first.format.magic());
+            hasher.update(first.format.version().to_be_bytes());
+        }
+    }
+    hasher = hasher
         .chain_update(first.project.as_bytes())
         .chain_update(first.atomic_join.as_bytes())
         .chain_update(first.operation.as_bytes())
@@ -446,6 +531,7 @@ pub fn lifecycle_atomic_join_digest_v1(
         .chain_update(first.replay_authority.as_bytes());
     for record in records {
         if record.project != first.project
+            || record.format != first.format
             || record.atomic_join != first.atomic_join
             || record.operation != first.operation
             || record.operation_revision != first.operation_revision
@@ -993,8 +1079,7 @@ impl LifecycleAuxiliaryHistoryV1 {
             history.order.push(record_key);
 
             if let LifecycleAuxiliaryPayloadV1::Operation(operation) = record.payload() {
-                let encoded = encode_operation_record_v1(operation)?;
-                let digest = super::format::record_digest(&encoded)?;
+                let digest = auxiliary_operation_record_digest(&record)?;
                 if operation.project() != record.project
                     || operation.operation_id() != record.operation
                     || operation.record_revision() != record.operation_revision
@@ -1052,8 +1137,7 @@ impl LifecycleAuxiliaryHistoryV1 {
     /// revision, orphan operation, reused join, or divergent cancellation key.
     fn apply(&mut self, record: LifecycleAuxiliaryRecordV1) -> Result<(), LifecycleModelError> {
         if let LifecycleAuxiliaryPayloadV1::Operation(operation) = record.payload() {
-            let encoded = encode_operation_record_v1(operation)?;
-            let digest = super::format::record_digest(&encoded)?;
+            let digest = auxiliary_operation_record_digest(&record)?;
             if operation.project() != record.project
                 || operation.operation_id() != record.operation
                 || operation.record_revision() != record.operation_revision
@@ -1149,6 +1233,23 @@ impl LifecycleAuxiliaryHistoryV1 {
     }
 }
 
+fn auxiliary_operation_record_digest(
+    record: &LifecycleAuxiliaryRecordV1,
+) -> Result<LifecycleRecordDigestV1, LifecycleModelError> {
+    let payload = record.encoded_payload.as_slice();
+    let length = payload
+        .get(..4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u32::from_be_bytes)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(LifecycleModelError::CorruptEncoding)?;
+    let operation = payload
+        .get(4..)
+        .filter(|bytes| bytes.len() == length)
+        .ok_or(LifecycleModelError::CorruptEncoding)?;
+    super::format::record_digest(operation)
+}
+
 fn payload_may_follow(
     previous: &LifecycleAuxiliaryPayloadV1,
     successor: &LifecycleAuxiliaryPayloadV1,
@@ -1160,14 +1261,22 @@ fn payload_may_follow(
         (
             LifecycleAuxiliaryPayloadV1::Coordination(previous),
             LifecycleAuxiliaryPayloadV1::Coordination(successor),
-        ) => previous
-            .successor(
-                successor.quiesce(),
-                successor.writer_fence(),
-                successor.dataset_transaction(),
-                successor.phase(),
-            )
-            .is_ok_and(|derived| derived == *successor),
+        ) => {
+            previous
+                .successor(
+                    successor.quiesce(),
+                    successor.writer_fence(),
+                    successor.dataset_transaction(),
+                    successor.phase(),
+                )
+                .is_ok_and(|derived| derived == *successor)
+                || previous
+                    .retention_successor(successor.retention_ledger())
+                    .is_ok_and(|derived| derived == *successor)
+                || previous
+                    .manifest_successor(successor.manifest())
+                    .is_ok_and(|derived| derived == *successor)
+        }
         (
             LifecycleAuxiliaryPayloadV1::RetentionLedger(previous),
             LifecycleAuxiliaryPayloadV1::RetentionLedger(successor),
@@ -1183,13 +1292,28 @@ fn payload_may_follow(
                             .digest(),
                     )
         }
+        (
+            LifecycleAuxiliaryPayloadV1::BootInventory(previous),
+            LifecycleAuxiliaryPayloadV1::BootInventory(successor),
+        ) => {
+            successor.host_boot() != [0; 16]
+                && (previous.host_boot() == [0; 16]
+                    || successor.host_boot() == previous.host_boot())
+                && successor.operation() == previous.operation()
+                && successor.operation_revision() == previous.operation_revision()
+                && successor.operation_record() == previous.operation_record()
+                && successor.step() == previous.step()
+                && successor.step_result() == previous.step_result()
+                && successor.fence() == previous.fence()
+                && successor.observed_at() > previous.observed_at()
+        }
         _ => false,
     }
 }
 
 fn append_body(bytes: &mut Vec<u8>, record: &LifecycleAuxiliaryRecordV1) {
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&VERSION.to_be_bytes());
+    bytes.extend_from_slice(record.format.magic());
+    bytes.extend_from_slice(&record.format.version().to_be_bytes());
     bytes.push(record.kind() as u8);
     bytes.extend_from_slice(&[0; 5]);
     bytes.extend_from_slice(record.project.as_bytes());
@@ -1228,9 +1352,9 @@ fn auxiliary_record_digest(record: &LifecycleAuxiliaryRecordV1) -> ObjectDigest 
         .join_digest
         .map_or(ObjectDigest::from_bytes([0; 32]), |digest| digest.digest());
     let mut hasher = Sha256::new()
-        .chain_update(b"aos.sandbox.lifecycle.auxiliary-record.v2\0")
-        .chain_update(MAGIC)
-        .chain_update(VERSION.to_be_bytes())
+        .chain_update(record.format.digest_domain())
+        .chain_update(record.format.magic())
+        .chain_update(record.format.version().to_be_bytes())
         .chain_update([record.kind() as u8])
         .chain_update([0; 5])
         .chain_update(record.project.as_bytes())
@@ -1252,14 +1376,55 @@ fn auxiliary_record_digest(record: &LifecycleAuxiliaryRecordV1) -> ObjectDigest 
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
-fn auxiliary_digest(bytes: &[u8]) -> ObjectDigest {
+fn auxiliary_digest(bytes: &[u8], format: LifecycleAuxiliaryEnvelopeFormatV1) -> ObjectDigest {
     ObjectDigest::from_bytes(
         Sha256::new()
-            .chain_update(b"aos.sandbox.lifecycle.auxiliary-record.v2\0")
+            .chain_update(format.digest_domain())
             .chain_update(bytes)
             .finalize()
             .into(),
     )
+}
+
+fn envelope_format(body: &[u8]) -> Result<LifecycleAuxiliaryEnvelopeFormatV1, LifecycleModelError> {
+    let magic = body.get(..8).ok_or(LifecycleModelError::CorruptEncoding)?;
+    let version = u16::from_be_bytes(
+        body.get(8..10)
+            .and_then(|value| value.try_into().ok())
+            .ok_or(LifecycleModelError::CorruptEncoding)?,
+    );
+    match (magic, version) {
+        (value, LEGACY_VERSION) if value == LEGACY_MAGIC => {
+            Ok(LifecycleAuxiliaryEnvelopeFormatV1::Legacy)
+        }
+        (value, CURRENT_VERSION) if value == CURRENT_MAGIC => {
+            Ok(LifecycleAuxiliaryEnvelopeFormatV1::Current)
+        }
+        _ => Err(LifecycleModelError::CorruptEncoding),
+    }
+}
+
+/// Reads the replay-authority field from an outer-journal-authenticated body.
+///
+/// This bootstrap accessor does not authenticate standalone bytes. Its sole
+/// caller has already verified the fixed protected journal framing and uses
+/// the value only to retain the stable authority brand across reopen.
+pub(crate) fn lifecycle_auxiliary_replay_authority_v1(
+    encoded: &[u8],
+) -> Result<ObjectDigest, LifecycleModelError> {
+    if encoded.len() < HEADER_BYTES + 1 + DIGEST_BYTES {
+        return Err(LifecycleModelError::CorruptEncoding);
+    }
+    envelope_format(encoded)?;
+    let authority = encoded
+        .get(168..200)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(ObjectDigest::from_bytes)
+        .ok_or(LifecycleModelError::CorruptEncoding)?;
+    if authority.as_bytes() == &[0; 32] {
+        return Err(LifecycleModelError::CorruptEncoding);
+    }
+    Ok(authority)
 }
 
 fn decode_kind(value: u8) -> Result<LifecycleAuxiliaryKindV1, LifecycleModelError> {

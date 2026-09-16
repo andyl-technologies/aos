@@ -36,6 +36,7 @@ use super::carrier_authority::{
 use super::draining::{DrainDirectiveV1, DrainObservationV1};
 use super::evidence::AuthenticatedEvidenceContextV1;
 
+pub(super) mod protobuf_codec_v1;
 pub(super) mod semantic_codec_v1;
 
 /// Maximum semantic coordinator-to-node request frame.
@@ -749,23 +750,27 @@ pub enum NodeRequestBodyV1 {
     },
 }
 
-/// Enforces the exact version-one semantic envelope and byte-exact decoding.
+/// Enforces the exact version-one protobuf envelope and byte-exact decoding.
 ///
-/// Version one is canonical JSON with exactly three top-level fields:
-/// `body`, `kind`, and `schema`, in canonical key order. `schema` is exactly
-/// `aos.node.semantic.v1`; `kind` is the frame kind's fixed snake-case name.
-/// Unknown top-level fields, duplicate keys, alternate spellings, trailing
-/// data, and noncanonical JSON are rejected. The closed method-specific body
-/// decoder rejects unknown fields. Evolution therefore uses a new schema
-/// identifier and negotiated protocol version, never silently ignored fields.
+/// Protobuf carries an explicit schema, reader/writer compatibility window,
+/// and a generated oneof whose variant must match the outer compatibility
+/// frame's kind. Both layers require byte-exact re-encoding, so unknown,
+/// duplicate, reordered, trailing, or noncanonical fields fail closed.
+/// Evolution requires a negotiated version.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct CanonicalNodeSemanticCodecV1;
+pub struct CanonicalNodeSemanticCodecV1 {
+    legacy_json: bool,
+}
 
 impl CanonicalNodeSemanticCodecV1 {
     /// Constructs the sole closed version-one semantic codec.
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self { legacy_json: false }
+    }
+
+    pub(in crate::multi_node) const fn legacy_json() -> Self {
+        Self { legacy_json: true }
     }
 
     fn verify_bounded_bytes(
@@ -785,26 +790,37 @@ impl CanonicalNodeSemanticCodecV1 {
         coordinator_unix_seconds: u64,
     ) -> Result<NodeRequestBodyV1, InvalidMultiNodeProtocol> {
         Self::verify_bounded_bytes(frame.body(), session.maximum_request_bytes())?;
-        validate_semantic_envelope_v1(frame.body(), frame.kind())?;
-        let body = semantic_codec_v1::decode_request(
-            session,
-            frame.kind(),
-            frame.body(),
-            coordinator_unix_seconds,
-        )?;
-        if semantic_codec_v1::encode_request(&body)?.as_slice() != frame.body() {
+        let body = if self.legacy_json {
+            semantic_codec_v1::decode_request(
+                session,
+                frame.kind(),
+                frame.body(),
+                coordinator_unix_seconds,
+            )?
+        } else {
+            protobuf_codec_v1::decode_request(
+                session,
+                frame.kind(),
+                frame.body(),
+                coordinator_unix_seconds,
+            )?
+        };
+        if self.encode_request(&body)?.as_slice() != frame.body() {
             return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
         }
         Ok(body)
     }
 
-    fn encode_request(
+    pub(in crate::multi_node) fn encode_request(
         &self,
         body: &NodeRequestBodyV1,
     ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
-        let bytes = semantic_codec_v1::encode_request(body)?;
+        let bytes = if self.legacy_json {
+            semantic_codec_v1::encode_request(body)?
+        } else {
+            protobuf_codec_v1::encode_request(body)?
+        };
         Self::verify_bounded_bytes(&bytes, MAX_NODE_REQUEST_BYTES)?;
-        validate_semantic_envelope_v1(&bytes, body.frame_kind())?;
         Ok(bytes)
     }
 
@@ -815,15 +831,24 @@ impl CanonicalNodeSemanticCodecV1 {
         authenticated_at_unix_seconds: u64,
     ) -> Result<NodeResponseBodyV1, InvalidMultiNodeProtocol> {
         Self::verify_bounded_bytes(frame.body(), MAX_NODE_RESPONSE_BYTES)?;
-        validate_semantic_envelope_v1(frame.body(), frame.kind())?;
-        let body = semantic_codec_v1::decode_response(
-            context,
-            frame.kind(),
-            frame.body(),
-            authenticated_at_unix_seconds,
-            self,
-        )?;
-        if semantic_codec_v1::encode_response(&body)?.as_slice() != frame.body() {
+        let body = if self.legacy_json {
+            semantic_codec_v1::decode_response(
+                context,
+                frame.kind(),
+                frame.body(),
+                authenticated_at_unix_seconds,
+                self,
+            )?
+        } else {
+            protobuf_codec_v1::decode_response(
+                context,
+                frame.kind(),
+                frame.body(),
+                authenticated_at_unix_seconds,
+                self,
+            )?
+        };
+        if self.encode_response(&body)?.as_slice() != frame.body() {
             return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
         }
         Ok(body)
@@ -854,98 +879,77 @@ impl CanonicalNodeSemanticCodecV1 {
         }
     }
 
-    fn encode_response(
+    pub(in crate::multi_node) fn encode_response(
         &self,
         body: &NodeResponseBodyV1,
     ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
-        let bytes = semantic_codec_v1::encode_response(body)?;
+        let bytes = if self.legacy_json {
+            semantic_codec_v1::encode_response(body)?
+        } else {
+            protobuf_codec_v1::encode_response(body)?
+        };
         Self::verify_bounded_bytes(&bytes, MAX_NODE_RESPONSE_BYTES)?;
-        validate_semantic_envelope_v1(&bytes, body.frame_kind())?;
         Ok(bytes)
     }
 
-    fn encode_watch_event_body(
+    pub(super) fn encode_watch_event_body(
         &self,
         body: &NodeWatchEventBodyV1,
     ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
-        let bytes = semantic_codec_v1::encode_watch_event_body(body)?;
+        let bytes = if self.legacy_json {
+            semantic_codec_v1::encode_watch_event_body(body)?
+        } else {
+            protobuf_codec_v1::encode_watch_event_body(body)?
+        };
         Self::verify_bounded_bytes(&bytes, MAX_NODE_RESPONSE_BYTES)?;
-        validate_watch_semantic_envelope_v1(&bytes, body)?;
         Ok(bytes)
     }
-}
 
-fn validate_semantic_envelope_v1(
-    bytes: &[u8],
-    frame_kind: CanonicalNodeFrameKindV1,
-) -> Result<(), InvalidMultiNodeProtocol> {
-    validate_semantic_envelope_kind_v1(
-        bytes,
-        canonical_frame_kind_name_v1(frame_kind),
-        canonical_frame_body_keys_v1(frame_kind),
-    )
-}
-
-fn validate_watch_semantic_envelope_v1(
-    bytes: &[u8],
-    body: &NodeWatchEventBodyV1,
-) -> Result<(), InvalidMultiNodeProtocol> {
-    let (kind, keys): (&str, &[&str]) = match body {
-        NodeWatchEventBodyV1::Capability(_) => ("watch_capability_event", &["snapshot"]),
-        NodeWatchEventBodyV1::Assignment(_) => ("watch_assignment_event", &["observation"]),
-        NodeWatchEventBodyV1::Drain(_) => ("watch_drain_event", &["observation"]),
-    };
-    validate_semantic_envelope_kind_v1(bytes, kind, keys)
-}
-
-fn validate_semantic_envelope_kind_v1(
-    bytes: &[u8],
-    expected_kind: &str,
-    expected_body_keys: &[&str],
-) -> Result<(), InvalidMultiNodeProtocol> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
-    let object = value
-        .as_object()
-        .ok_or(InvalidMultiNodeProtocol::NonCanonicalFrame)?;
-    let body = object.get("body").and_then(serde_json::Value::as_object);
-    if object.len() != 3
-        || object.get("schema").and_then(serde_json::Value::as_str) != Some("aos.node.semantic.v1")
-        || object.get("kind").and_then(serde_json::Value::as_str) != Some(expected_kind)
-        || body.is_none_or(|body| {
-            body.len() != expected_body_keys.len()
-                || !expected_body_keys.iter().all(|key| body.contains_key(*key))
-        })
-        || serde_json::to_vec(&value)
-            .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?
-            .as_slice()
-            != bytes
-    {
-        return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
-    }
-    Ok(())
-}
-
-fn canonical_frame_body_keys_v1(kind: CanonicalNodeFrameKindV1) -> &'static [&'static str] {
-    match kind {
-        CanonicalNodeFrameKindV1::GetCapabilitiesRequest => &[],
-        CanonicalNodeFrameKindV1::GetCapabilitiesResponse => &["snapshot"],
-        CanonicalNodeFrameKindV1::ReconcileAssignmentRequest => &["intent"],
-        CanonicalNodeFrameKindV1::ReconcileAssignmentResponse => &["observation"],
-        CanonicalNodeFrameKindV1::RelistAssignmentsRequest => &["binding"],
-        CanonicalNodeFrameKindV1::RelistAssignmentsResponse => &["inventory"],
-        CanonicalNodeFrameKindV1::ReconcileDrainRequest => &["directive"],
-        CanonicalNodeFrameKindV1::ReconcileDrainResponse => &["observation"],
-        CanonicalNodeFrameKindV1::BeginSnapshotTransferRequest => &["manifest", "resume"],
-        CanonicalNodeFrameKindV1::BeginSnapshotTransferResponse => &["identity", "next_chunk"],
-        CanonicalNodeFrameKindV1::SnapshotChunkRequest => &["request"],
-        CanonicalNodeFrameKindV1::SnapshotChunkResponse => &["bytes", "identity", "index"],
-        CanonicalNodeFrameKindV1::SnapshotDependencyRequest => &["request"],
-        CanonicalNodeFrameKindV1::SnapshotDependencyResponse => {
-            &["bytes", "dependency", "identity", "offset"]
+    pub(super) fn decode_watch_event_body(
+        &self,
+        bytes: &[u8],
+        context: AuthenticatedEvidenceContextV1,
+    ) -> Result<NodeWatchEventBodyV1, InvalidMultiNodeProtocol> {
+        Self::verify_bounded_bytes(bytes, MAX_NODE_RESPONSE_BYTES)?;
+        let body = if self.legacy_json {
+            semantic_codec_v1::decode_watch_event_body(bytes, context)?
+        } else {
+            protobuf_codec_v1::decode_watch_event_body(bytes, context)?
+        };
+        if self.encode_watch_event_body(&body)?.as_slice() != bytes {
+            return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
         }
-        CanonicalNodeFrameKindV1::WatchRequest => &["after", "maximum_events"],
-        CanonicalNodeFrameKindV1::WatchResponse => &["cursor_gap", "events"],
+        Ok(body)
+    }
+
+    pub(super) fn encode_watch_inventory(
+        &self,
+        inventory: &ResyncInventoryV1,
+    ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
+        let bytes = if self.legacy_json {
+            semantic_codec_v1::encode_watch_inventory(inventory)?
+        } else {
+            protobuf_codec_v1::encode_watch_inventory(inventory)?
+        };
+        Self::verify_bounded_bytes(&bytes, MAX_NODE_RESPONSE_BYTES)?;
+        Ok(bytes)
+    }
+
+    pub(super) fn decode_watch_inventory(
+        &self,
+        bytes: &[u8],
+        context: AuthenticatedEvidenceContextV1,
+    ) -> Result<ResyncInventoryV1, InvalidMultiNodeProtocol> {
+        Self::verify_bounded_bytes(bytes, MAX_NODE_RESPONSE_BYTES)?;
+        let inventory = if self.legacy_json {
+            semantic_codec_v1::decode_watch_inventory(bytes, context, self)?
+        } else {
+            protobuf_codec_v1::decode_watch_inventory(bytes, context, self)?
+        };
+        if self.encode_watch_inventory(&inventory)?.as_slice() != bytes {
+            return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
+        }
+        Ok(inventory)
     }
 }
 
@@ -1111,6 +1115,38 @@ impl NodeRequestEnvelopeV1 {
         })
     }
 
+    pub(in crate::multi_node) fn from_generated_carrier(
+        session: &AuthenticatedNodeSessionV1,
+        request: OperationId,
+        body: NodeRequestBodyV1,
+        semantic_bytes: &[u8],
+        carrier_bytes: &[u8],
+        coordinator_unix_seconds: u64,
+    ) -> Result<Self, InvalidMultiNodeProtocol> {
+        let canonical_frame_bytes = u32::try_from(carrier_bytes.len())
+            .map_err(|_| InvalidMultiNodeProtocol::InvalidFrameLimits)?;
+        if request.as_bytes() == &[0; 16]
+            || semantic_bytes.is_empty()
+            || carrier_bytes.is_empty()
+            || canonical_frame_bytes > session.maximum_request_bytes()
+            || !session.is_current_at(coordinator_unix_seconds)
+            || !request_body_matches_session(session, &body)
+        {
+            return Err(InvalidMultiNodeProtocol::SessionMismatch);
+        }
+        Ok(Self {
+            binding: session.binding(),
+            node: session.node(),
+            request,
+            audience_digest: session.audience_digest(),
+            disclosure_domain_digest: session.disclosure_domain_digest(),
+            canonical_body_digest: ObjectDigest::from_bytes(Sha256::digest(semantic_bytes).into()),
+            canonical_frame_digest: ObjectDigest::from_bytes(Sha256::digest(carrier_bytes).into()),
+            canonical_frame_bytes,
+            body,
+        })
+    }
+
     /// Returns the authenticated session binding.
     #[must_use]
     pub const fn binding(&self) -> &[u8; 32] {
@@ -1163,6 +1199,60 @@ impl NodeRequestEnvelopeV1 {
     #[must_use]
     pub const fn body(&self) -> &NodeRequestBodyV1 {
         &self.body
+    }
+}
+
+fn request_body_matches_session(
+    session: &AuthenticatedNodeSessionV1,
+    body: &NodeRequestBodyV1,
+) -> bool {
+    match body {
+        NodeRequestBodyV1::ReconcileAssignment(intent) => intent.node() == session.node(),
+        NodeRequestBodyV1::ReconcileDrain(directive) => directive.node() == session.node(),
+        NodeRequestBodyV1::BeginSnapshotTransfer { manifest, resume } => {
+            manifest.identity().source_node() == session.node()
+                && manifest.identity().audience_digest() == session.audience_digest()
+                && manifest.identity().disclosure_domain_digest()
+                    == session.disclosure_domain_digest()
+                && resume.as_ref().is_none_or(|checkpoint| {
+                    checkpoint.identity() == manifest.identity()
+                        && manifest
+                            .prefix_commitment(checkpoint.next_chunk())
+                            .is_ok_and(|digest| digest == checkpoint.verified_prefix_digest())
+                })
+        }
+        NodeRequestBodyV1::FetchSnapshotChunk { request } => {
+            request.identity().source_node() == session.node()
+                && request.identity().audience_digest() == session.audience_digest()
+                && request.identity().disclosure_domain_digest()
+                    == session.disclosure_domain_digest()
+        }
+        NodeRequestBodyV1::FetchSnapshotDependency { request } => {
+            request.identity().source_node() == session.node()
+                && request.identity().audience_digest() == session.audience_digest()
+                && request.identity().disclosure_domain_digest()
+                    == session.disclosure_domain_digest()
+        }
+        NodeRequestBodyV1::Watch {
+            after,
+            maximum_events,
+        } => {
+            after.node() == session.node()
+                && after.lineage() == session.lineage()
+                && after.binding().coordinator_epoch() == session.coordinator_epoch()
+                && after.binding().audience_digest() == session.audience_digest()
+                && after.binding().disclosure_domain_digest() == session.disclosure_domain_digest()
+                && *maximum_events != 0
+                && usize::from(*maximum_events) <= MAX_WATCH_EVENTS
+                && after.binding().schema().admits(session.version())
+        }
+        NodeRequestBodyV1::RelistAssignments { binding } => {
+            binding.coordinator_epoch() == session.coordinator_epoch()
+                && binding.audience_digest() == session.audience_digest()
+                && binding.disclosure_domain_digest() == session.disclosure_domain_digest()
+                && binding.schema().admits(session.version())
+        }
+        NodeRequestBodyV1::GetCapabilities => true,
     }
 }
 
@@ -1440,6 +1530,58 @@ impl NodeResponseEnvelopeV1 {
         })
     }
 
+    pub(in crate::multi_node) fn from_authenticated_generated_carrier(
+        grant: CarrierResponseGrantV1,
+        request: &NodeRequestEnvelopeV1,
+        body: NodeResponseBodyV1,
+        body_digest: ObjectDigest,
+        carrier_digest: ObjectDigest,
+        carrier_bytes: u32,
+        authenticated_at_unix_seconds: u64,
+    ) -> Result<Self, InvalidMultiNodeProtocol> {
+        let (session, context, frame_seal) = grant.into_parts();
+        if request.binding() != &session.binding()
+            || request.node() != session.node()
+            || request.audience_digest() != session.audience_digest()
+            || request.disclosure_domain_digest() != session.disclosure_domain_digest()
+            || carrier_bytes == 0
+            || carrier_bytes > session.maximum_response_bytes()
+            || context.canonical_frame_digest() != carrier_digest
+            || context.canonical_frame_bytes() != carrier_bytes
+            || context.node() != session.node()
+            || context.lineage() != session.lineage()
+            || context.audience_digest() != session.audience_digest()
+            || context.disclosure_domain_digest() != session.disclosure_domain_digest()
+            || context.carrier_binding_digest() != session.binding_digest()
+            || context.replay_fence() != session.replay_fence()
+            || !context.is_current_at(authenticated_at_unix_seconds)
+            || !frame_seal.matches(body.frame_kind(), body_digest, context)
+        {
+            return Err(InvalidMultiNodeProtocol::SessionMismatch);
+        }
+        if request.body().method() != body.method() {
+            return Err(InvalidMultiNodeProtocol::MethodMismatch);
+        }
+        validate_response_body(&session, request.body(), &body)?;
+        Ok(Self {
+            context,
+            frame_seal,
+            binding: session.binding(),
+            node: session.node(),
+            lineage: session.lineage(),
+            request: request.request(),
+            audience_digest: session.audience_digest(),
+            disclosure_domain_digest: session.disclosure_domain_digest(),
+            canonical_body_digest: body_digest,
+            canonical_frame_digest: carrier_digest,
+            canonical_frame_bytes: carrier_bytes,
+            coordinator_epoch: session.coordinator_epoch(),
+            authenticated_at_unix_seconds,
+            valid_until_unix_seconds: session.valid_until_unix_seconds(),
+            body,
+        })
+    }
+
     /// Returns the authenticated session binding.
     #[must_use]
     pub const fn binding(&self) -> &[u8; 32] {
@@ -1468,6 +1610,24 @@ impl NodeResponseEnvelopeV1 {
     #[must_use]
     pub const fn canonical_body_digest(&self) -> ObjectDigest {
         self.canonical_body_digest
+    }
+
+    /// Returns the protected carrier context retained by this response.
+    #[must_use]
+    pub(super) const fn authenticated_context(&self) -> AuthenticatedEvidenceContextV1 {
+        self.context
+    }
+
+    /// Returns the exact authenticated response-frame commitment.
+    #[must_use]
+    pub(super) const fn canonical_frame_digest(&self) -> ObjectDigest {
+        self.canonical_frame_digest
+    }
+
+    /// Reports whether the response's authenticated interval covers `time`.
+    #[must_use]
+    pub(super) fn is_current_at(&self, time: u64) -> bool {
+        time >= self.authenticated_at_unix_seconds && time <= self.valid_until_unix_seconds
     }
 
     /// Extracts carrier-validated capability evidence from this response.
@@ -1648,7 +1808,7 @@ enum NodeMethodV1 {
     Watch,
 }
 
-fn validate_response_body(
+pub(in crate::multi_node) fn validate_response_body(
     session: &AuthenticatedNodeSessionV1,
     request: &NodeRequestBodyV1,
     response: &NodeResponseBodyV1,

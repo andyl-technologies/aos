@@ -17,19 +17,18 @@
 
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionKeyUsageV1, BrokerSessionProtocolV1, CanonicalBrokerResponseEnvelopeV1,
-    ProtectedBrokerSessionVerificationContextV1, hello_message::BrokerMethod,
+    hello_message::BrokerMethod,
 };
 use aos_sandbox_broker_session_security::{
-    BrokerSessionSecurityError, ProtectedBrokerOutcomeAdmissionGateV1,
+    BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,
+    DormantBrokerOutcomeVerificationV1, ProtectedBrokerOutcomeAdmissionGateV1,
     ProtectedBrokerOutcomeAdmissionV1, ProtectedBrokerOutcomeCommittedAdvancementV1,
     ProtectedBrokerOutcomeCurrentnessOwnerV1, ProtectedBrokerOutcomePendingAdvancementV1,
-    ProtectedMountBrokerSessionOwnerV1,
 };
 use aos_sandbox_core::model::{CacheDomain, CacheDomainKind};
 use aos_sandbox_core::{
     AssignmentEpoch, AttachmentId, CacheDomainId, IncarnationId, Revision, SandboxId, ViewId,
 };
-use aos_sandbox_linux::seqpacket::ConnectionPeerIdentity;
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
@@ -50,6 +49,9 @@ const SIGNATURE_DOMAIN: &[u8] = b"aos-filesystem-fuse-qualification-v1\0";
 /// Reports malformed qualification, stale protected currentness, or worker admission failure.
 #[derive(Debug, thiserror::Error)]
 pub enum QualificationError {
+    /// Kernel boot identity or monotonic time is unavailable or regressed.
+    #[error("protected FUSE kernel clock is unavailable")]
+    Clock,
     /// The fixed qualification record or its signature is invalid.
     #[error("protected FUSE qualification record is invalid")]
     InvalidRecord,
@@ -62,6 +64,41 @@ pub enum QualificationError {
     /// Exact connection authority admission failed.
     #[error("FUSE connection authority failed: {0}")]
     Authority(#[from] ConnectionAuthorityError),
+}
+
+/// Owns kernel boot identity and a nondecreasing `CLOCK_BOOTTIME` floor.
+///
+/// Callers can request no timestamp or boot identity. The owner samples both
+/// from fixed kernel interfaces and rejects cold replay from another boot.
+pub struct ProtectedFuseKernelClockV1 {
+    boot_id: [u8; 16],
+    floor_ns: u64,
+}
+
+impl ProtectedFuseKernelClockV1 {
+    /// Opens the fixed kernel clock owner without activating a worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QualificationError::Clock`] when the kernel boot identity or
+    /// initial `CLOCK_BOOTTIME` sample is unavailable or malformed.
+    pub fn open_fixed() -> Result<Self, QualificationError> {
+        let boot_id = read_kernel_boot_id()?;
+        let floor_ns = sample_kernel_boottime()?;
+        Ok(Self { boot_id, floor_ns })
+    }
+
+    fn sample_for_boot(&mut self, expected_boot_id: [u8; 16]) -> Result<u64, QualificationError> {
+        if expected_boot_id != self.boot_id || read_kernel_boot_id()? != self.boot_id {
+            return Err(QualificationError::Clock);
+        }
+        let now = sample_kernel_boottime()?;
+        if now < self.floor_ns {
+            return Err(QualificationError::Clock);
+        }
+        self.floor_ns = now;
+        Ok(now)
+    }
 }
 
 /// Opaque authority for one exact, protected, broker-qualified connection.
@@ -111,11 +148,11 @@ pub enum QualificationAdmission {
 /// a non-Mount-Apply gate, a failed signature, mismatched protected bindings, or
 /// protected outcome admission failure.
 pub fn admit_fuse_connection_qualification(
-    gate: ProtectedBrokerOutcomeAdmissionGateV1,
-    context: &ProtectedBrokerSessionVerificationContextV1,
+    verification: DormantBrokerOutcomeVerificationV1,
     canonical_record: &[u8],
     outcome: &CanonicalBrokerResponseEnvelopeV1,
 ) -> Result<QualificationAdmission, QualificationError> {
+    let (gate, context) = verification.into_parts();
     let signed = SignedQualification::decode(canonical_record)?;
     let qualification_record_commitment = qualification_record_commitment(canonical_record);
     let protected_context = context.protected_context_digest();
@@ -225,6 +262,7 @@ impl PendingFuseConnectionQualification {
 /// Retains exact prepared authority until a borrow-scoped worker is created.
 pub struct DormantFilesystemWorkerPreparation<
     'current,
+    'clock,
     'projection,
     'index,
     'bytes,
@@ -233,11 +271,20 @@ pub struct DormantFilesystemWorkerPreparation<
 > {
     _protected_current:
         aos_sandbox_broker_session_security::ProtectedBrokerOutcomeCurrentV1<'current>,
+    _kernel_clock: &'clock mut ProtectedFuseKernelClockV1,
     prepared: PreparedFuseConnection<'projection, 'index, 'bytes, 'presentation, 'plan>,
 }
 
-impl<'current, 'projection, 'index, 'bytes, 'presentation, 'plan>
-    DormantFilesystemWorkerPreparation<'current, 'projection, 'index, 'bytes, 'presentation, 'plan>
+impl<'current, 'clock, 'projection, 'index, 'bytes, 'presentation, 'plan>
+    DormantFilesystemWorkerPreparation<
+        'current,
+        'clock,
+        'projection,
+        'index,
+        'bytes,
+        'presentation,
+        'plan,
+    >
 {
     /// Consumes one protected qualification into exact prepared authority.
     ///
@@ -246,11 +293,10 @@ impl<'current, 'projection, 'index, 'bytes, 'presentation, 'plan>
     /// Returns [`QualificationError`] when the protected facts disagree with the
     /// projection, presentation, closed feature registry, lease, or mount policy.
     pub fn from_protected_qualification(
-        protected_owner: &'current mut ProtectedMountBrokerSessionOwnerV1,
-        connection_peer: &ConnectionPeerIdentity,
+        session: &'current mut DormantAuthenticatedBrokerSessionV1,
+        kernel_clock: &'clock mut ProtectedFuseKernelClockV1,
         projection: &'projection ValidatedViewProjection<'index, 'bytes>,
         presentation: &'presentation PreparedPresentation<'index, 'bytes, 'plan>,
-        monotonic_now_ns: u64,
         qualification: ProtectedFuseConnectionQualification,
     ) -> Result<Self, QualificationError> {
         let ProtectedFuseConnectionQualification {
@@ -258,8 +304,7 @@ impl<'current, 'projection, 'index, 'bytes, 'presentation, 'plan>
             record_commitment,
             currentness_owner,
         } = qualification;
-        let protected_current =
-            protected_owner.revalidate_mount_outcome(currentness_owner, connection_peer)?;
+        let protected_current = session.revalidate_broker_outcome(currentness_owner)?;
         let mut features = Vec::new();
         features.push(projection.view().identity_presentation().clone());
         features.extend(projection.view().required_features().iter().cloned());
@@ -330,14 +375,25 @@ impl<'current, 'projection, 'index, 'bytes, 'presentation, 'plan>
                 record_commitment,
             ),
         )?;
+        let before_prepare = kernel_clock.sample_for_boot(facts.kernel_boot_id)?;
+        if !lease.contains(before_prepare) {
+            return Err(QualificationError::Authority(
+                ConnectionAuthorityError::Lease,
+            ));
+        }
+        let prepared =
+            PreparedFuseConnection::prepare(projection, presentation, before_prepare, &authority)?;
+        let after_prepare = kernel_clock.sample_for_boot(facts.kernel_boot_id)?;
+        if !lease.contains(after_prepare) {
+            return Err(QualificationError::Authority(
+                ConnectionAuthorityError::Lease,
+            ));
+        }
+
         Ok(Self {
             _protected_current: protected_current,
-            prepared: PreparedFuseConnection::prepare(
-                projection,
-                presentation,
-                monotonic_now_ns,
-                &authority,
-            )?,
+            _kernel_clock: kernel_clock,
+            prepared,
         })
     }
 
@@ -699,4 +755,23 @@ fn qualified_inode_entropy(
     digest.update(trusted_inode_entropy);
     digest.update(record_commitment);
     digest.finalize().into()
+}
+
+fn read_kernel_boot_id() -> Result<[u8; 16], QualificationError> {
+    aos_sandbox_linux::boot::KernelBootId::current()
+        .map(aos_sandbox_linux::boot::KernelBootId::into_bytes)
+        .map_err(|_| QualificationError::Clock)
+}
+
+fn sample_kernel_boottime() -> Result<u64, QualificationError> {
+    let sample = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let seconds = u64::try_from(sample.tv_sec).map_err(|_| QualificationError::Clock)?;
+    let nanoseconds = u64::try_from(sample.tv_nsec).map_err(|_| QualificationError::Clock)?;
+    if nanoseconds >= 1_000_000_000 {
+        return Err(QualificationError::Clock);
+    }
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or(QualificationError::Clock)
 }

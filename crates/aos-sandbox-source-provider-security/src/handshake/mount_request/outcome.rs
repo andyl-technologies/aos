@@ -7,7 +7,7 @@
 use super::*;
 
 #[path = "outcome/helpers.rs"]
-mod helpers;
+pub(in crate::handshake::mount_request) mod helpers;
 use helpers::*;
 
 #[path = "outcome/receive.rs"]
@@ -1001,12 +1001,20 @@ impl CurrentRootMountSourceProviderSessionV1 {
             self.revalidate()
         })();
         match validated {
-            Ok(()) => crate::NegativeCustodyPostcommitOutcomeV2::Success(
-                crate::ReleasedMountSourceRootV2 {
-                    projection: prepared.projection,
-                    negative_custody_digest: prepared.negative_custody_digest,
-                },
-            ),
+            Ok(()) => {
+                let crate::PreparedReleasedMountSourceRootV2 {
+                    projection,
+                    negative_custody_digest,
+                    fresh_recovery,
+                } = prepared;
+                drop(fresh_recovery);
+                crate::NegativeCustodyPostcommitOutcomeV2::Success(
+                    crate::ReleasedMountSourceRootV2 {
+                        projection,
+                        negative_custody_digest,
+                    },
+                )
+            }
             Err(error) => crate::NegativeCustodyPostcommitOutcomeV2::RecoveryRequired(
                 crate::NegativeCustodyPostcommitRecoveryV2 {
                     error,

@@ -55,17 +55,22 @@ and activate no point-read, watch, audit, or mutation route.
 The portable runtime-backend module defines capability negotiation, move-only
 lifecycle states, durable execution admission and effect records, bounded
 codecs, and authenticated recovery inputs. A dormant Host 1.0 projection maps
-an already validated request into that model without invoking an effect. No
-concrete runtime backend implements the trait and no active Host service call
-site consumes the projection.
+an already validated request into that model without invoking an effect. A
+concrete dormant `RuntimeBackend` composition now binds that projection to the
+fixed-root protected runtime owner and real readiness evidence. No active Host
+service call site, listener, readiness advertisement, or production activation
+consumes it.
 
 The source-only guest-agent contract uses `AOSAGE01` frames for one exact
-incarnation handshake and a bounded stop-and-wait execution/quiesce stream. Its
-reducer owns sequence compare-and-swap, exact replay, closed transitions, and
-protected checkpoint recovery, while its broker adapter remains a
-nonauthorizing projection. There is no guest-local effect adapter, public
-execution data plane, nspawn activation, listener, readiness advertisement, or
-production service route in this source tranche.
+incarnation handshake and a bounded stop-and-wait execution/quiesce stream.
+Protected reducer, sequence reservation, checkpoint, terminal commit, and cold
+recovery authority live under `aos-sandbox::runtime_execution`, not in the
+portable agent crate. A dormant protected guest adapter and process supervisor
+cover credential, process, PTY, resize, and signal effects without accepting
+caller-forged observations; the protected owner separately reconciles signed
+restart readback. There is still no public execution data plane, nspawn
+activation, listener, readiness advertisement, or production service route in
+this source tranche.
 
 The initial method registry is explicit:
 
@@ -1056,32 +1061,39 @@ sequence, identical bytes at an equal sequence, unique query ID, live-row boot
 agreement, physical-alias exclusion, and equal-generation anti-equivocation
 across provider route/authority/key/resource/catalog/selection facts. This is a
 kernel-nominated, broker-returned observation, not authenticated broker-writer
-proof. Production use remains gated by `SBX-BPROTO-05` session authentication,
+proof. Production consumption requires `SBX-BPROTO-05` session authentication,
 MAC/confinement, protected key custody, and branded kernel evidence.
 
-This Stage 2B contract remains deliberately inert. No production feature
-advertisement, provider router/backend verifier, protected trust/route/key
-loader, process-exclusive CSPRNG, durable authenticated socket adapter,
-authoritative manager positive/negative query, controller acquisition
-integration, or Create enablement is installed. Private opaque seams prevent
-public scalar observations from activating, consuming, or releasing an
-acquisition. SourceProvider 1.0 and AOSMSP01 retain their exact wire and durable
-formats. Production Create therefore remains closed.
+This Stage 2B contract remains deliberately inert. The dormant fixed-root
+composition performs authenticated SourceProvider session establishment,
+durable-before-I/O Acquire and Release reservation, exact response and
+descriptor verification, postcommit readback recovery, and cold recovery of a
+durably pending provider attempt without rebuilding or redispatching its
+request. A fixed Mount-manager control session drives fresh descriptor handoff,
+positive presence readback, Release removal, negative absence readback, and the
+exact transition to Released. Fresh Release authority is derived only from
+retained or startup-recovered SourceRoot custody, and every precommit or
+ambiguous postcommit path retains its move-only retry evidence. No production
+feature advertisement, listener, provider route registration, controller
+Create enablement, or readiness change is installed. SourceProvider 1.0 and
+AOSMSP01 retain their exact wire and durable formats.
 
 ### SourceProvider ledger and Mount-manager startup state (source-only, inert)
 
 Namespace 41's current canonical SourceProvider owner format is `AOSSPL01`,
-version 3. It has exactly seven closed bodies: authority head, catalog head,
+version 4. It has exactly seven closed bodies: authority head, catalog head,
 current holder-session head, immutable session history, provider attempt,
 provider acquisition, and release lineage. Fixed per-artifact ceilings, a
 bounded record count, and a 512-MiB aggregate recovered-graph ceiling apply
-before graph allocation. A normal version-3 open rejects version-2 records
-before materializing the graph; version 2 is not a second accepted wire shape.
+before graph allocation. Version 4 durably binds the protected response
+completion time into terminal attempts. A normal open rejects older records
+before materializing the graph; they are not alternate accepted wire shapes.
 
-The separate pure version-2-to-version-3 planner first validates the complete,
+The separate pure legacy migration planner first validates the complete,
 sorted canonical version-2 graph and requires externally authenticated
 supplemental projections for every identity, sequence, trust-history, and floor
-fact that version 2 omitted. The security layer authenticates the fixed
+fact that version 2 omitted, plus a complete canonical current-format
+replacement graph. The security layer authenticates the fixed
 `AOSSPMG1` manifest against the exact current namespace-41 snapshot plus current
 trust, revocation, catalog, and protected-configuration heads. The provider
 layer then applies the whole replacement under one snapshot/CAS boundary and
@@ -1253,12 +1265,14 @@ profile: seven Host methods, eight Mount methods, four Storage methods, and
 three Network methods. It uses the existing method decoders, method-separated
 semantic commitments, required catalog bindings, exact header/request/budget
 cross-links, descriptor-role tables, errors, dispositions, and both endpoint
-directions. It retains canonical packets and replay evidence but invokes no
-service, consumes no descriptor, authorizes no effect, and writes no durable
-state. A future production composite must additionally derive and verify the
-actual ancillary descriptor identities and uses from the receiving kernel,
-recheck protected currentness, and join every effect reservation/outcome to its
-caller-owned atomic journal companions before dispatch or authority use.
+directions. The adopted-socket owner derives method-specific bindings and
+descriptor cardinality from the protected request and received `SCM_RIGHTS`,
+durably reserves the request, issues a move-only domain handoff, records the
+exact domain observation, commits the signed terminal outcome, and only then
+sends it. Host, Storage, Mount, and Network implementations cover every closed
+method, including observation and inventory. Ambiguous transport, effect, and
+commit boundaries retain exact recovery custody and never authorize blind
+redispatch.
 
 `AOSBSD01` is the method-neutral durable record for that complete profile. A
 request record and its terminal successor bind the endpoint, revision and
@@ -1274,30 +1288,111 @@ The sealed recovery layer accepts history only through the protected
 namespace-47 `AOSBSJ01` owner, sandwiches derivation or reopen with another
 protected read, replays every retained signature and method semantic through
 the traffic machine, and alone mints move-only resend or outstanding-outcome
-state. The public dormant Mount-session owner internally selects fixed
-controller-client or Mount-broker endpoint roots, the fixed `session.journal`
-basename, root-owned opening, and closed replay limits. Raw endpoint loaders,
-journal openers, paths, basenames, and limits are not public authority inputs.
-The owner adopts an already-connected peer for each operation and creates no
-listener, route, dispatcher, or background task, so production use remains
-dormant.
+state. Public dormant all-role custody internally selects fixed controller
+client or Host/Storage/Mount/Network broker endpoint roots, the fixed
+`session.journal` basename, root-owned opening, and closed replay limits. Raw
+endpoint loaders, journal openers, paths, basenames, and limits are not public
+authority inputs.
+Only completion of the adopted-socket handshake opens the protected journal.
+The resulting co-owner supplies its retained transcript and live socket peer to
+every initialization, replay, commit, recovery, and effect-handoff operation;
+there is no public raw journal owner plus detached peer path. It creates no
+listener, route, dispatcher, or background task, so production use remains dormant.
 
-This adds no descriptor-use permit, production advertisement/readiness,
-orchestration, SourceProvider/Mount acquisition change, Nix, or VM work. P0
-activation requires request sequence reservation
-atomically companion to owning effect intent and signed-outcome CAS atomically
-companion to effect result, including controller sides. A future helper may
-return records for a caller-owned transaction but must never own the journal;
-each method still needs its own atomic companion proof gate. An ambiguous
-request reservation or result commit must poison use until an exclusive
-authenticated reopen durably resolves it. Reconnect or session replacement
-must not erase or renumber outstanding or indeterminate effects: the owning
-journal must durably query, resolve, or replay them first. The production
-receive adapter must cap allocation before protobuf decode, and the full
-response body/error/descriptor/disposition contract must validate before the
-outcome head advances. Method semantics and every required signed-plan or
-feature condition are inseparable from traffic admission and must pass before
-reservation or dispatch.
+The same fixed custody can instead consume an already-connected ordinary
+sequenced-packet socket and enter the existing three-flight protected handshake.
+One explicit call advances one bounded flight or returns the complete state for
+retry. Completion opens the matching fixed journal and co-owns it with the
+socket, verified transcript, and retained kernel peer; narrow methods on that
+co-owned object are the only authority path. No descriptor-subject carrier is exported.
+
+The version-2 protected journal record stores a stable endpoint identity derived
+from protocol, role, and protected manifest separately from the process-specific
+endpoint publication. Reopen validates the stable identity across process
+restart. A fresh authenticated initial request may replace only a terminal
+old-process history under an exact generation/head/publication CAS; ambiguous
+replacement retains its exact recovery target, while nonterminal old-process
+state fails closed for operator reconciliation. This preserves current-session
+anti-replay without making every prior process identity permanently unopenable.
+
+The dormant FUSE operations adapter separately owns one fixed root-owned
+`registrations.journal` in namespace 50. Its canonical record commits the exact
+connection and reducer bindings, registration bytes and digest, monotone
+generation, and predecessor head/digest. OPEN/CLOSE broker admission and final
+worker cleanup consume one-shot exact-readback tokens that retain the fixed
+owner borrow. A rejected OPEN exposes only an opaque close-pending holder; its
+operation and selector become available solely through a fresh token minted
+after exact readback of the resulting `Closing` snapshot. Ambiguous protected
+CAS is reopened against its retained exact target before any such token exists,
+while an ambiguous broker effect consumes the token and faults the connection
+instead of authorizing a duplicate close. No caller-implementable byte store
+can mint these tokens.
+
+The broker-side gate admits new or byte-exact replay requests for all 22 closed
+methods. It derives actual descriptor identity and method bindings at receive,
+commits the authorized request before effect, and seals the domain observation
+before terminal signing. Host catalog publication additionally retains the
+request, descriptor, intended digest, byte count, and generation across an
+ambiguous rename/fsync boundary; fixed-root fsync and double readback classify
+the publication as exact, absent, or conflicting before terminalization or a
+safe retry. No generic caller-built success can bypass the domain handoff.
+
+Descriptor-bearing Host scope outcomes add a protected post-CAS receipt
+boundary. The Host authority, rather than the scope caller, pins the sole
+BrokerOutcome verifier from `broker-outcome-verifier-v1` in its protected
+credential directory. That file is a root-owned, single-link, mode-0400 regular
+file retained and repeatedly revalidated through its original descriptor. Its
+canonical `AOSBROKEROUTV001` record is exactly 160 bytes:
+
+```text
+magic[16] = "AOSBROKEROUTV001" ||
+authority-id[16] || authority-generation:u64be || authority-digest[32] ||
+key-id[16] || key-generation:u64be || public-key-digest[32] ||
+broker-outcome-ed25519-public-key[32]
+```
+
+The signer reference must select BrokerOutcome use, every identifier,
+generation, and digest must be nonzero, the public-key digest must match the
+raw strong Ed25519 key, and the credential must remain byte- and
+metadata-identical. A missing credential disables these dormant Host scope
+paths. A caller cannot substitute a verifier through the Host call surface.
+Before a live physical scope operation, the authenticated BSA endpoint's
+protected BrokerOutcome verifier commitment must equal this fixed Host pin.
+
+After the exact signed terminal outcome is durably committed and read back,
+the BSA owner signs a terminal-commit receipt with that protected
+BrokerOutcome key. The receipt binds the Host reservation locator, method,
+request ID, complete signed-request digest, session binding, domain-separated
+digest of the complete signed outcome artifact, committed journal generation,
+and committed history head. The signing API consumes or borrows the opaque
+committed advancement or protected replay evidence; it does not accept those
+fields as a caller-built binding. Host verifies the receipt against its fixed
+pin before converting the reservation into a finalized replay record. Only
+then may the already-committed response and its inseparable descriptor bundle
+enter transport.
+
+The Host replay index authenticates both stages. A reservation records the
+request, authorization artifacts, peer/policy, boot, response digest, and fixed
+verifier commitment with zero terminal fields. Its finalized successor adds
+the exact predecessor reservation locator, signed-outcome digest, protected
+generation, and protected head. The predecessor locator must recompute from
+the successor after clearing those terminal fields. If atomic rename persisted
+the successor but directory fsync reported failure, recovery reloads protected
+Host state and accepts only one authenticated successor whose predecessor and
+receipt match exactly. That classification performs no physical scope effect,
+does not reopen or replace the BSA-held descriptor bundle, and does not write
+the already-finalized record again. An absent, conflicting, multiply matching,
+or unauthenticated successor retains recovery custody and fails closed.
+
+These source paths include complete dormant effect and inventory dispatch, but
+add no listener, service registration, production advertisement/readiness,
+orchestration, Nix, or VM activation. Request reservation, effect handoff,
+protected observation, signed-outcome commit, and send remain explicitly
+ordered. Reconnect or session replacement cannot erase or renumber outstanding
+or indeterminate effects: the protected journal resolves or replays exact
+custody first. Allocation is capped before protobuf decode, and the full body,
+error, descriptor, and disposition contract validates before any outcome head
+advances.
 
 The initial specialized source-only layer composes this cryptographic state
 with the complete existing Network 1.0 `InventoryResources` semantics in
@@ -1313,10 +1408,13 @@ contract before exposing a candidate next state. A signed but semantically
 invalid outcome therefore cannot consume its sequence; a corrected outcome at
 the same sequence remains admissible. Exact latest-record replay and the
 retained N/N+1 bound behavior remain those of the pure cryptographic state.
-Static request semantics precede authenticated traffic classification, but the
-deadline freshness check applies only to `New`: an exact outstanding or latest
-completed no-write replay remains valid at and after its original deadline,
-subject to fresh protected-context, peer-policy, and kernel-execution rechecks.
+Authenticated traffic and the protected retained request classify an exact
+outstanding or latest-completed replay before live request semantics and
+deadline freshness run. Exact replay therefore remains valid at and after its
+original deadline, but only for the byte-identical retained request and its
+protected in-flight recovery or terminal response. Fresh protected-context,
+peer-policy, kernel-execution, journal-head, generation, and outcome checks
+still apply. Only `New` traffic enters live semantic and deadline admission.
 Inventory need only be in the broker's signed advertised/negotiated method set;
 it is not required to be in the client's required-method subset.
 
@@ -1407,21 +1505,22 @@ come directly from blocking `getrandom(2)` with empty flags, exact partial-fill
 handling, at most eight interrupted-call retries, a hard zero-progress rule,
 and at most eight complete all-zero retries. Each nonce privately retains the
 process ID, manifest binding, and checked nonzero issuance counter.
-Purpose-specific ClientHello and BrokerHello finalizers now consume those
-private values, but no finalizer, nonce bytes, process bytes, key, generic
-signer, or outbound signature API is public.
+Purpose-specific ClientHello and BrokerHello finalizers consume those private
+values. They are reachable only through the fixed-role adopted-socket handshake
+owner; no finalizer, nonce bytes, process bytes, key, generic signer, or outbound
+signature API is independently public.
 
-This foundation remains unused by Host, Storage, Mount, Network, and controller
-production code. Production peer-policy binding, external anti-rollback floors,
-protected deployment, production use of the sealed traffic/recovery plans,
-receive allocation, caller-owned atomic request/result companions, every
-service/controller integration, MAC policy, readiness, and Nix remain open.
-Real fork continuation, cgroup/procfs mutation,
-cross-process flock contention, cross-UID ownership, and MAC policy qualification
-remain VM and `SBX-P0-10` activation gates. The source-only `AOSBSJ01`
-namespace-47 owner and its fixed Mount roots remain unactivated; this section
-introduces no descriptor-use permit or production effect dispatch and does not
-close `SBX-BPROTO-04`, `SBX-BPROTO-05`, or `SBX-P0-10`.
+Host, Storage, Mount, Network, and controller production registration does not
+consume this foundation. The dormant source composition implements the complete
+closed-method authenticated exchange: protected request reservation, exact
+descriptor count and semantic bindings, move-only domain dispatch, signed
+terminal outcomes, ordered replay, and ambiguity recovery for every broker
+status. Fixed controller and Host/Storage/Mount/Network roots own the
+`AOSBSJ01` namespace-47 sessions. Real fork continuation, cgroup/procfs
+mutation, cross-process flock contention, cross-UID ownership, MAC policy,
+listener registration, readiness, and Nix activation are separate `SBX-P0-10`
+deployment gates; this source contract grants no production descriptor-use
+permit.
 
 ### Broker endpoint publication and sealed hello flights (source-only, inert)
 
@@ -1445,9 +1544,12 @@ context and hello semantics then run, and the existing pair verifier delegates
 through those same checks. The signed subjects, artifacts, protected-context
 digest, session binding, protobuf carriers, and golden vectors are unchanged.
 
-The security crate contains a sealed private typestate for exactly three
-flights on one retained sequenced-packet endpoint: broker publication,
-ClientHello, and BrokerHello. Both ordinary and descriptor-subject carriers
+The security crate contains a sealed typestate for exactly three flights on one
+retained sequenced-packet endpoint: broker publication, ClientHello, and
+BrokerHello. A public dormant owner can adopt an already-connected ordinary
+socket from any fixed controller-client or service-broker role and drive one
+bounded flight per explicit call. It creates no listener, route, service, or
+background task. Both ordinary and internal descriptor-subject carriers
 immediately consume and socket-bind each received record; the descriptor form
 requires exactly zero transferred descriptors. The state retains the
 connection peer and each record's independent nominated subject, including
@@ -1469,8 +1571,9 @@ and verification; retained peer/subject pidfds are rechecked at each transition.
 Prepared exact packets remain state-owned across nonblocking retry and are not
 re-signed or re-nonced. Invalid, duplicate, reordered, cross-channel, partial,
 or descriptor-bearing flights close the private handshake; local custody
-failure poisons custody. Completion exposes only a private non-authorizing
-Provisional transcript.
+failure poisons custody. Completion retains the verified transcript inside a
+non-extractable wrapper with the same adopted socket and fixed protected
+journal; a scoped callback is the only access to that co-owned state.
 
 The initial sealed bootstrap path requires the first traffic exchange to
 be Network 1.0 `InventoryResources`, NodeController, ClientRecord sequence 1,
@@ -1554,8 +1657,18 @@ descriptors in order: the retained payload leader pidfd and the retained
 payload-subtree cgroup `O_PATH` descriptor. Bodies are bounded at 8 KiB and the
 raw leader-cgroup hint at 4 KiB. The hint is only an empty exact-membership or
 strict descendant locator; it is not membership proof. Error responses carry
-no descriptors. The broker retains its proof through the atomic response send
-and rechecks kernel identity and the live query deadline immediately before it.
+no descriptors. Live admission checks the absolute query deadline before the
+Host effect. The Host then transfers the exact prepared descriptor bundle into
+opaque BSA custody before signed-outcome preparation/reservation, terminal CAS,
+Host receipt finalization, or transport; errors and ambiguity at those later
+boundaries retain that same inseparable bundle rather than reconstructing or
+substituting descriptors. Protected endpoint, journal-head, peer, and kernel
+evidence are revalidated around the later steps, but the live deadline is not
+renewed or reinterpreted immediately before send. A protected byte-exact
+terminal replay deliberately does not reapply that historical live deadline.
+It instead revalidates the fixed verifier, terminal head and receipt, current
+boot and fence, and fresh physical scope readback before reopening the exact
+role-ordered descriptors for the retained signed response.
 
 The controller checks the kernel-authorized nominated subject of the hello
 response against trusted host-service credentials and a retained service cgroup.

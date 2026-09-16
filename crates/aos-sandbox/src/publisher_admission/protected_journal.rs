@@ -39,7 +39,7 @@ use super::{
 const HEAD_MAGIC: &[u8; 8] = b"AOSPAH01";
 const MUTATION_MAGIC: &[u8; 8] = b"AOSPAM01";
 const MAXIMUM_BATCH_RECORDS: usize = 65_536;
-const COMPLETION_TERMINAL_RECORDS: u32 = 7;
+const COMPLETION_TERMINAL_RECORDS: u32 = 8;
 const COMPLETION_POISON_RECORDS: u32 = 5;
 const LEDGER_MEMBER_OVERHEAD_BYTES: u64 = 72 * 1024;
 const FIXED_TERMINAL_OVERHEAD_BYTES: u64 = 16 * 1024;
@@ -1022,6 +1022,78 @@ impl<'journal> PublisherAdmissionProtectedJournalV1<'journal> {
         )
     }
 
+    /// Recovers the unique active completion capacity for one operation.
+    ///
+    /// This operation-keyed path is used by a distinct recovery request whose
+    /// transaction identity cannot equal the earlier permit-issuance request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublisherAdmissionJournalErrorV1`] unless exactly one retained
+    /// completion effect and protected reservation match the active permit.
+    pub(crate) fn recover_current_operation(
+        &mut self,
+        operation: OperationId,
+    ) -> Result<PublisherAdmissionColdRecoveryV1, PublisherAdmissionJournalErrorV1> {
+        let projection = self.replay()?;
+        let mut retained = None;
+        for envelope in projection.records().iter().filter(|record| {
+            record.key().kind() == PublisherAdmissionJournalRecordKindV1::CompletionEffect
+        }) {
+            let effect = decode_effect_permit(publisher_body(envelope)?)?;
+            if effect.operation != *operation.as_bytes() {
+                continue;
+            }
+            if retained.replace(effect).is_some() {
+                return Err(PublisherAdmissionJournalErrorV1::InvalidMutationBatch);
+            }
+        }
+        let effect = retained.ok_or(PublisherAdmissionJournalErrorV1::InvalidMutationBatch)?;
+        let replay = reconstruct_semantic_projection(
+            &projection,
+            self.limits,
+            self.capacity,
+            self.maximum_source_releases,
+            self.maximum_root_records,
+        )?
+        .ok_or(PublisherAdmissionJournalErrorV1::InvalidMutationBatch)?;
+        let current = current_permit_for_effect(&replay, &effect)?;
+        if replay.checkpoint.poisoned
+            || matches!(
+                current.state,
+                CompletionPermitStateV1::Spent | CompletionPermitStateV1::RetiredWithoutEffect
+            )
+        {
+            return Ok(PublisherAdmissionColdRecoveryV1::StateOnly);
+        }
+        let recovery_binding = capacity_recovery_binding_from_effect(&effect, self.limits)?;
+        let reservation = self
+            .inner
+            .recover_unique_domain_capacity_reservation_by_binding(recovery_binding)?;
+        if reservation.admission_transaction_id() != effect.transaction {
+            return Err(PublisherAdmissionJournalErrorV1::InvalidMutationBatch);
+        }
+        let transaction_digest = reservation.owner_digest();
+        let effect_digest = effect_record_digest(&projection, effect.transaction, &effect)?;
+        let permit_record_digest = current_permit_record_digest(&projection, &effect, self.limits)?;
+        let current_digest = current_publication_digest(&projection)?;
+        Ok(PublisherAdmissionColdRecoveryV1::ObservePending(
+            PublisherAdmissionColdObservationV1 {
+                snapshot: self.inner.snapshot()?,
+                transaction_id: effect.transaction,
+                transaction_digest,
+                effect_digest,
+                permit_record_digest,
+                current_digest,
+                binding: effect,
+                capacity: Some(PublisherCompletionCapacityV1 {
+                    inner: reservation,
+                    binding: CompletionCapacityBindingV1::from_effect(&effect),
+                }),
+            },
+        ))
+    }
+
     /// Plans an immutable replay join without granting compaction authority.
     ///
     /// # Errors
@@ -1653,14 +1725,44 @@ fn validate_settlement_lineage_against_decoded(
 ) -> Result<(), PublisherAdmissionJournalErrorV1> {
     let count = |kind| entries.iter().filter(|record| record.kind == kind).count();
     let poisoned = count(ProtectedRecordKindV1::Poison) == 1;
-    let expected_shape = if poisoned {
-        entries.len() == 2 && count(ProtectedRecordKindV1::AuthorityCheckpoint) == 1
-    } else {
-        entries.len() == 4
-            && count(ProtectedRecordKindV1::CompletionPermit) == 1
-            && count(ProtectedRecordKindV1::Accounting) == 1
-            && count(ProtectedRecordKindV1::CompletionReceipt) == 1
-            && count(ProtectedRecordKindV1::AuthorityCheckpoint) == 1
+    let kinds = entries.iter().map(|record| record.kind).collect::<Vec<_>>();
+    let expected_shape = match lineage.disposition {
+        CapacitySettlementDispositionV1::Poison => {
+            poisoned
+                && kinds
+                    == [
+                        ProtectedRecordKindV1::Poison,
+                        ProtectedRecordKindV1::AuthorityCheckpoint,
+                    ]
+        }
+        CapacitySettlementDispositionV1::Spent => {
+            !poisoned
+                && (kinds
+                    == [
+                        ProtectedRecordKindV1::CompletionPermit,
+                        ProtectedRecordKindV1::Accounting,
+                        ProtectedRecordKindV1::CompletionReceipt,
+                        ProtectedRecordKindV1::AuthorityCheckpoint,
+                    ]
+                    || kinds
+                        == [
+                            ProtectedRecordKindV1::RecoveryObservation,
+                            ProtectedRecordKindV1::CompletionPermit,
+                            ProtectedRecordKindV1::Accounting,
+                            ProtectedRecordKindV1::CompletionReceipt,
+                            ProtectedRecordKindV1::AuthorityCheckpoint,
+                        ])
+        }
+        CapacitySettlementDispositionV1::RetiredWithoutEffect => {
+            !poisoned
+                && kinds
+                    == [
+                        ProtectedRecordKindV1::RecoveryObservation,
+                        ProtectedRecordKindV1::CompletionPermit,
+                        ProtectedRecordKindV1::Accounting,
+                        ProtectedRecordKindV1::AuthorityCheckpoint,
+                    ]
+        }
     };
     if !expected_shape {
         return Err(PublisherAdmissionJournalErrorV1::InvalidMutationBatch);
@@ -1670,23 +1772,50 @@ fn validate_settlement_lineage_against_decoded(
         .find(|record| record.kind == ProtectedRecordKindV1::CompletionPermit)
         .map(|record| super::payload_decode::decode_permit(&record.payload))
         .transpose()?;
-    match (lineage.disposition, terminal, poisoned) {
-        (CapacitySettlementDispositionV1::Poison, None, true) => Ok(()),
-        (CapacitySettlementDispositionV1::Spent, Some(permit), false)
+    let recovery = entries
+        .iter()
+        .find(|record| record.kind == ProtectedRecordKindV1::RecoveryObservation)
+        .map(|record| super::payload_decode::decode_recovery_observation(&record.payload))
+        .transpose()?;
+    let receipt = entries
+        .iter()
+        .find(|record| record.kind == ProtectedRecordKindV1::CompletionReceipt)
+        .map(|record| super::payload_decode::decode_receipt(&record.payload))
+        .transpose()?;
+    match (lineage.disposition, terminal, poisoned, recovery, receipt) {
+        (CapacitySettlementDispositionV1::Poison, None, true, None, None) => Ok(()),
+        (CapacitySettlementDispositionV1::Spent, Some(permit), false, recovery, Some(receipt))
             if permit.state == CompletionPermitStateV1::Spent
                 && permit.permit.as_bytes() == &lineage.permit
                 && permit.operation.as_bytes() == &lineage.operation
                 && permit.artifact_digest == lineage.artifact
-                && permit.permit_digest == lineage.permit_digest =>
+                && permit.permit_digest == lineage.permit_digest
+                && receipt.permit == permit.permit
+                && receipt.operation == permit.operation
+                && receipt.artifact_digest == permit.artifact_digest
+                && recovery.as_ref().is_none_or(|observation| {
+                    observation.outcome == super::RecoveryObservationKindCodeV1::Committed
+                        && observation.operation == permit.operation
+                        && observation.artifact_digest == Some(permit.artifact_digest)
+                        && observation.catalog_entry_digest == Some(receipt.catalog_entry_digest)
+                }) =>
         {
             Ok(())
         }
-        (CapacitySettlementDispositionV1::RetiredWithoutEffect, Some(permit), false)
-            if permit.state == CompletionPermitStateV1::RetiredWithoutEffect
-                && permit.permit.as_bytes() == &lineage.permit
-                && permit.operation.as_bytes() == &lineage.operation
-                && permit.artifact_digest == lineage.artifact
-                && permit.permit_digest == lineage.permit_digest =>
+        (
+            CapacitySettlementDispositionV1::RetiredWithoutEffect,
+            Some(permit),
+            false,
+            Some(recovery),
+            None,
+        ) if permit.state == CompletionPermitStateV1::RetiredWithoutEffect
+            && permit.permit.as_bytes() == &lineage.permit
+            && permit.operation.as_bytes() == &lineage.operation
+            && permit.artifact_digest == lineage.artifact
+            && permit.permit_digest == lineage.permit_digest
+            && recovery.outcome == super::RecoveryObservationKindCodeV1::AbsentAfterFence
+            && recovery.operation == permit.operation
+            && recovery.artifact_digest == Some(permit.artifact_digest) =>
         {
             Ok(())
         }
@@ -2127,9 +2256,9 @@ fn capacity_recovery_binding_from_effect(
 fn completion_capacity_budgets(
     limits: AdmissionLimits,
 ) -> Result<(u64, u64), PublisherAdmissionJournalErrorV1> {
-    // A successful completion writes permit, accounting, receipt, checkpoint,
-    // capacity lineage, current, and reservation deletion. Poison writes poison,
-    // checkpoint, capacity lineage, current, and deletion. This bound includes
+    // The largest successful/recovery terminal writes at least five ledger
+    // members plus capacity lineage, current, and reservation deletion. Poison
+    // writes poison, checkpoint, capacity lineage, current, and deletion. This includes
     // the largest legal protected record plus key, envelope, transaction, and
     // frame overhead per ledger member.
     let maximum_record = u64::try_from(limits.maximum_record_bytes)
@@ -2138,7 +2267,7 @@ fn completion_capacity_budgets(
         .checked_add(LEDGER_MEMBER_OVERHEAD_BYTES)
         .ok_or(PublisherAdmissionJournalErrorV1::InvalidMutationBatch)?;
     let terminal = ledger_member
-        .checked_mul(4)
+        .checked_mul(5)
         .and_then(|bytes| bytes.checked_add(FIXED_TERMINAL_OVERHEAD_BYTES))
         .ok_or(PublisherAdmissionJournalErrorV1::InvalidMutationBatch)?;
     let poison = ledger_member

@@ -11,15 +11,17 @@ use aos_sandbox_core::{
 };
 
 use super::{
-    AdmissionDecisionStateV1, AdmissionDecisionV1, ArtifactCommitmentV1, AuthorityCheckpointV1,
-    CapacityAccountV1, CatalogEvictionReceiptV1, ChallengeConsumptionV1, CompletionPermitStateV1,
-    CompletionPermitV1, CompletionReceiptV1, ProtectedRecordCodecError, PublicationAuthorityEpoch,
-    PublicationPermitId, RecoveryObservationKindCodeV1, RecoveryObservationReceiptV1,
-    ReservationStateV1, SourceReleaseStateV1, SourceReleaseV1, digest_parts,
+    AdmissionDecisionStateV1, AdmissionDecisionV1, ArtifactCommitmentV1,
+    ArtifactPreparationIntentV1, AuthorityCheckpointV1, CapacityAccountV1,
+    CatalogEvictionReceiptV1, ChallengeConsumptionV1, CompletionPermitStateV1, CompletionPermitV1,
+    CompletionReceiptV1, ProtectedRecordCodecError, PublicationAuthorityEpoch, PublicationPermitId,
+    RecoveryObservationKindCodeV1, RecoveryObservationReceiptV1, ReservationStateV1,
+    SourceReleaseStateV1, SourceReleaseV1, digest_parts,
 };
 
 const DECISION_DOMAIN: &[u8] = b"aos.sandbox.publisher.admission-decision.v1\0";
 const ARTIFACT_DOMAIN: &[u8] = b"aos.sandbox.publisher.prepared-artifact.v1\0";
+const PREPARATION_INTENT_DOMAIN: &[u8] = b"aos.sandbox.publisher.preparation-intent.v1\0";
 const PERMIT_DOMAIN: &[u8] = b"aos.sandbox.publisher.completion-permit.v1\0";
 const RECEIPT_DOMAIN: &[u8] = b"aos.sandbox.publisher.completion-receipt.v1\0";
 const EVICTION_DOMAIN: &[u8] = b"aos.sandbox.publisher.catalog-eviction.v1\0";
@@ -40,6 +42,8 @@ pub enum DecodedPublisherPayloadV1 {
     Account(CapacityAccountV1),
     /// Prepared artifact.
     Artifact(ArtifactCommitmentV1),
+    /// Durable pre-inode preparation intent.
+    PreparationIntent(ArtifactPreparationIntentV1),
     /// Completion-permit successor.
     Permit(CompletionPermitV1),
     /// Terminal completion receipt.
@@ -52,6 +56,57 @@ pub enum DecodedPublisherPayloadV1 {
     Checkpoint(AuthorityCheckpointV1),
     /// Poison evidence digest.
     Poison(ObjectDigest),
+}
+
+pub(super) fn decode_preparation_intent(
+    bytes: &[u8],
+) -> Result<ArtifactPreparationIntentV1, ProtectedRecordCodecError> {
+    let mut cursor = Cursor::new(bytes);
+    let operation = OperationId::from_bytes(cursor.array()?);
+    let publisher_instance = PublisherInstanceId::from_bytes(cursor.array()?);
+    let decision_digest = cursor.digest()?;
+    let root_record_digest = cursor.digest()?;
+    let root_generation = cursor.u64()?;
+    let content = cursor.object_until_nul()?;
+    let private_name_digest = cursor.digest()?;
+    let final_name_digest = cursor.digest()?;
+    let maximum_allocated_bytes = cursor.u64()?;
+    let intent_digest = cursor.digest()?;
+    cursor.finish()?;
+    let derived = digest_parts(
+        PREPARATION_INTENT_DOMAIN,
+        &[
+            operation.as_bytes(),
+            publisher_instance.as_bytes(),
+            decision_digest.as_bytes(),
+            root_record_digest.as_bytes(),
+            &root_generation.to_be_bytes(),
+            content.media_type().as_str().as_bytes(),
+            content.digest().as_bytes(),
+            &content.encoded_size().to_be_bytes(),
+            private_name_digest.as_bytes(),
+            final_name_digest.as_bytes(),
+            &maximum_allocated_bytes.to_be_bytes(),
+        ],
+    );
+    if derived != intent_digest
+        || private_name_digest == final_name_digest
+        || maximum_allocated_bytes < content.encoded_size()
+    {
+        return Err(ProtectedRecordCodecError::DigestMismatch);
+    }
+    Ok(ArtifactPreparationIntentV1 {
+        operation,
+        publisher_instance,
+        decision_digest,
+        root_record_digest,
+        root_generation,
+        content,
+        private_name_digest,
+        final_name_digest,
+        maximum_allocated_bytes,
+        intent_digest,
+    })
 }
 
 pub(super) fn decode_source(bytes: &[u8]) -> Result<SourceReleaseV1, ProtectedRecordCodecError> {
@@ -219,6 +274,7 @@ pub(super) fn decode_artifact(
     let operation = OperationId::from_bytes(cursor.array()?);
     let publisher_instance = PublisherInstanceId::from_bytes(cursor.array()?);
     let decision_digest = cursor.digest()?;
+    let preparation_intent_digest = cursor.digest()?;
     let root_generation = cursor.u64()?;
     let content = cursor.object_until_nul()?;
     let verity_sha256 = cursor.array()?;
@@ -234,6 +290,7 @@ pub(super) fn decode_artifact(
             operation.as_bytes(),
             publisher_instance.as_bytes(),
             decision_digest.as_bytes(),
+            preparation_intent_digest.as_bytes(),
             &root_generation.to_be_bytes(),
             content.media_type().as_str().as_bytes(),
             content.digest().as_bytes(),
@@ -252,6 +309,7 @@ pub(super) fn decode_artifact(
         operation,
         publisher_instance,
         decision_digest,
+        preparation_intent_digest,
         root_generation,
         content,
         verity_sha256,

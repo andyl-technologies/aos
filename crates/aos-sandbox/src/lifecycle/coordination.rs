@@ -3,7 +3,7 @@
 //! These records preserve transaction inputs and observations. They contain no
 //! live handle, credential, effect request, or permission to contact a guest.
 
-use aos_sandbox_core::{ObjectDigest, OperationId, ResourceId, Revision, SandboxId};
+use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, ResourceId, Revision, SandboxId};
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -103,7 +103,7 @@ impl LifecycleBootInventoryDomainsV1 {
     ///
     /// Returns [`LifecycleModelError::InvalidModel`] if any required domain
     /// lacks a nonzero complete-inventory commitment.
-    pub fn new(
+    pub(super) fn new(
         runtime: ObjectDigest,
         mounts: ObjectDigest,
         storage: ObjectDigest,
@@ -166,6 +166,7 @@ impl LifecycleBootInventoryDomainsV1 {
     fn inventory_digest(
         self,
         fence: LiveRuntimeFenceV1,
+        host_boot: [u8; 16],
         resources: &[LifecycleResourceV1],
     ) -> LifecycleBootInventoryDigestV1 {
         let desired = fence.desired();
@@ -179,7 +180,8 @@ impl LifecycleBootInventoryDomainsV1 {
             .chain_update(desired.resource_state().digest().as_bytes())
             .chain_update(fence.incarnation().as_bytes())
             .chain_update(fence.assignment_epoch().get().to_be_bytes())
-            .chain_update(fence.namespace_generation().get().to_be_bytes());
+            .chain_update(fence.namespace_generation().get().to_be_bytes())
+            .chain_update(host_boot);
         for digest in [
             self.runtime,
             self.mounts,
@@ -212,7 +214,7 @@ pub enum LifecycleCoordinationPhaseV1 {
     DatasetCommitted = 3,
     /// Writers were thawed after semantic commit.
     Thawed = 4,
-    /// Pre-commit failure completed the exact thaw compensation.
+    /// A post-freeze failure completed the exact mandatory thaw compensation.
     Compensated = 5,
 }
 
@@ -515,6 +517,9 @@ impl LifecycleCoordinationTransactionV1 {
                 LifecycleCoordinationPhaseV1::Compensated
             ) | (
                 LifecycleCoordinationPhaseV1::DatasetCommitted,
+                LifecycleCoordinationPhaseV1::Compensated
+            ) | (
+                LifecycleCoordinationPhaseV1::DatasetCommitted,
                 LifecycleCoordinationPhaseV1::Thawed
             )
         );
@@ -546,6 +551,77 @@ impl LifecycleCoordinationTransactionV1 {
         )
         .map_err(|_| LifecycleModelError::InvalidTransition)
     }
+
+    pub(crate) fn retention_successor(
+        &self,
+        retention_ledger: LifecycleRetentionLedgerDigestV1,
+    ) -> Result<Self, LifecycleModelError> {
+        if self.phase != LifecycleCoordinationPhaseV1::DatasetCommitted
+            || retention_ledger == self.retention_ledger
+        {
+            return Err(LifecycleModelError::InvalidTransition);
+        }
+        Self::from_stored(
+            self.transaction,
+            self.sandbox,
+            self.live_fence,
+            self.dependencies.clone(),
+            self.dependency_edges.clone(),
+            self.postorder.clone(),
+            controller_dependency_snapshot_digest(
+                self.sandbox,
+                self.live_fence,
+                self.manifest,
+                retention_ledger,
+                &self.dependencies,
+                &self.dependency_edges,
+                &self.postorder,
+            ),
+            self.manifest,
+            retention_ledger,
+            self.quiesce,
+            self.writer_fence,
+            self.dataset_transaction,
+            self.thaw_compensation,
+            self.phase,
+        )
+        .map_err(|_| LifecycleModelError::InvalidTransition)
+    }
+
+    pub(crate) fn manifest_successor(
+        &self,
+        manifest: LifecycleSnapshotManifestDigestV1,
+    ) -> Result<Self, LifecycleModelError> {
+        if self.phase != LifecycleCoordinationPhaseV1::DatasetCommitted || manifest == self.manifest
+        {
+            return Err(LifecycleModelError::InvalidTransition);
+        }
+        Self::from_stored(
+            self.transaction,
+            self.sandbox,
+            self.live_fence,
+            self.dependencies.clone(),
+            self.dependency_edges.clone(),
+            self.postorder.clone(),
+            controller_dependency_snapshot_digest(
+                self.sandbox,
+                self.live_fence,
+                manifest,
+                self.retention_ledger,
+                &self.dependencies,
+                &self.dependency_edges,
+                &self.postorder,
+            ),
+            manifest,
+            self.retention_ledger,
+            self.quiesce,
+            self.writer_fence,
+            self.dataset_transaction,
+            self.thaw_compensation,
+            self.phase,
+        )
+        .map_err(|_| LifecycleModelError::InvalidTransition)
+    }
 }
 
 /// Selects why a controller retention-ledger entry exists.
@@ -558,6 +634,103 @@ pub enum LifecycleRetentionPurposeV1 {
     Cascade = 2,
     /// Retains an object while an external transfer is incomplete.
     Transfer = 3,
+}
+
+/// Carries one provider-owned, current acknowledgement into ledger closure.
+///
+/// Fields are private and construction is restricted to authenticated lower-
+/// domain adapters. The value is deliberately move-only so one acknowledgement
+/// cannot be reused across two ledger publications.
+pub struct LifecycleProtectedRetentionAcknowledgementV1 {
+    operation: OperationId,
+    project: ProjectId,
+    projection_root: ObjectDigest,
+    resource: LifecycleResourceV1,
+    holder: ResourceId,
+    provider: u8,
+    generation: u64,
+    result: ObjectDigest,
+    currentness: ObjectDigest,
+    receipt: ObjectDigest,
+}
+
+impl LifecycleProtectedRetentionAcknowledgementV1 {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_authenticated_provider(
+        operation: OperationId,
+        project: ProjectId,
+        projection_root: ObjectDigest,
+        resource: LifecycleResourceV1,
+        holder: ResourceId,
+        provider: u8,
+        generation: u64,
+        result: ObjectDigest,
+        currentness: ObjectDigest,
+        receipt: ObjectDigest,
+    ) -> Result<Self, LifecycleModelError> {
+        if operation.as_bytes() == &[0; 16]
+            || project.as_bytes() == &[0; 16]
+            || projection_root.as_bytes() == &[0; 32]
+            || resource.as_bytes() == &[0; 16]
+            || holder.as_bytes() == &[0; 16]
+            || provider == 0
+            || generation == 0
+            || result.as_bytes() == &[0; 32]
+            || currentness.as_bytes() == &[0; 32]
+            || receipt.as_bytes() == &[0; 32]
+        {
+            return Err(LifecycleModelError::InvalidModel);
+        }
+        Ok(Self {
+            operation,
+            project,
+            projection_root,
+            resource,
+            holder,
+            provider,
+            generation,
+            result,
+            currentness,
+            receipt,
+        })
+    }
+
+    pub(super) const fn binding(
+        &self,
+    ) -> (
+        OperationId,
+        ProjectId,
+        ObjectDigest,
+        LifecycleResourceV1,
+        ResourceId,
+    ) {
+        (
+            self.operation,
+            self.project,
+            self.projection_root,
+            self.resource,
+            self.holder,
+        )
+    }
+
+    pub(super) fn ledger_receipt(&self) -> ObjectDigest {
+        ObjectDigest::from_bytes(
+            Sha256::new()
+                .chain_update(b"aos.sandbox.lifecycle.provider-retention-ack.v1\0")
+                .chain_update(self.operation.as_bytes())
+                .chain_update(self.project.as_bytes())
+                .chain_update(self.projection_root.as_bytes())
+                .chain_update([self.resource.code(), self.provider])
+                .chain_update(self.resource.as_bytes())
+                .chain_update(self.holder.as_bytes())
+                .chain_update(self.generation.to_be_bytes())
+                .chain_update(self.result.as_bytes())
+                .chain_update(self.currentness.as_bytes())
+                .chain_update(self.receipt.as_bytes())
+                .finalize()
+                .into(),
+        )
+    }
 }
 
 /// Retains one exact purpose-scoped dependency hold in the controller ledger.
@@ -718,6 +891,7 @@ pub struct LifecycleSuspendObservationV1 {
     operation_revision: Revision,
     operation_record: LifecycleRecordDigestV1,
     fence: LiveRuntimeFenceV1,
+    host_boot: [u8; 16],
     observation: LifecycleSuspendObservationDigestV1,
     observed_at: LifecycleTimeV1,
 }
@@ -732,6 +906,7 @@ impl LifecycleSuspendObservationV1 {
     pub fn from_operation(
         operation: &super::LifecycleOperationV1,
         fence: LiveRuntimeFenceV1,
+        host_boot: [u8; 16],
         observation: LifecycleSuspendObservationDigestV1,
         observed_at: LifecycleTimeV1,
     ) -> Result<Self, LifecycleModelError> {
@@ -741,6 +916,7 @@ impl LifecycleSuspendObservationV1 {
         ) || operation.phase() != super::LifecyclePhaseV1::Terminal
             || operation.terminal_result() != Some(super::LifecycleTerminalResultV1::Succeeded)
             || operation.finished_at() != Some(observed_at)
+            || host_boot == [0; 16]
         {
             return Err(LifecycleModelError::InvalidModel);
         }
@@ -751,12 +927,45 @@ impl LifecycleSuspendObservationV1 {
             operation_revision: operation.record_revision(),
             operation_record,
             fence,
+            host_boot,
             observation,
             observed_at,
         })
     }
 
     pub(super) fn from_stored(
+        operation: OperationId,
+        operation_revision: Revision,
+        operation_record: LifecycleRecordDigestV1,
+        fence: LiveRuntimeFenceV1,
+        host_boot: [u8; 16],
+        observation: LifecycleSuspendObservationDigestV1,
+        observed_at: LifecycleTimeV1,
+    ) -> Result<Self, LifecycleModelError> {
+        if operation.as_bytes() == &[0; 16]
+            || operation_revision.get() == 0
+            || operation_revision.get() == u64::MAX
+            || host_boot == [0; 16]
+        {
+            return Err(LifecycleModelError::CorruptEncoding);
+        }
+        Ok(Self {
+            operation,
+            operation_revision,
+            operation_record,
+            fence,
+            host_boot,
+            observation,
+            observed_at,
+        })
+    }
+
+    /// Reconstructs the pre-host-boot auxiliary layout for compatibility.
+    ///
+    /// The zero boot value is an explicit legacy sentinel. It can be replayed
+    /// for lineage continuity but never satisfies a live boot-currentness
+    /// check, so migration fails closed until a fresh observation is written.
+    pub(super) fn from_legacy_stored(
         operation: OperationId,
         operation_revision: Revision,
         operation_record: LifecycleRecordDigestV1,
@@ -775,6 +984,7 @@ impl LifecycleSuspendObservationV1 {
             operation_revision,
             operation_record,
             fence,
+            host_boot: [0; 16],
             observation,
             observed_at,
         })
@@ -804,6 +1014,12 @@ impl LifecycleSuspendObservationV1 {
         self.fence
     }
 
+    /// Returns the protected host boot in which suspension was observed.
+    #[must_use]
+    pub const fn host_boot(self) -> [u8; 16] {
+        self.host_boot
+    }
+
     /// Returns the suspended-state observation commitment.
     #[must_use]
     pub const fn observation(self) -> LifecycleSuspendObservationDigestV1 {
@@ -826,6 +1042,7 @@ pub struct LifecycleBootInventoryV1 {
     step: u32,
     step_result: LifecycleStepResultDigestV1,
     fence: LiveRuntimeFenceV1,
+    host_boot: [u8; 16],
     domains: LifecycleBootInventoryDomainsV1,
     resources: Vec<LifecycleResourceV1>,
     inventory: LifecycleBootInventoryDigestV1,
@@ -843,6 +1060,7 @@ impl LifecycleBootInventoryV1 {
         operation: &super::LifecycleOperationV1,
         step: u32,
         fence: LiveRuntimeFenceV1,
+        host_boot: [u8; 16],
         domains: LifecycleBootInventoryDomainsV1,
         resources: Vec<LifecycleResourceV1>,
         observed_at: LifecycleTimeV1,
@@ -871,7 +1089,7 @@ impl LifecycleBootInventoryV1 {
         }
         let encoded = super::encode_operation_record_v1(operation)?;
         let operation_record = super::format::record_digest(&encoded)?;
-        let inventory = domains.inventory_digest(fence, &resources);
+        let inventory = domains.inventory_digest(fence, host_boot, &resources);
         Self::new(
             operation.operation_id(),
             operation.record_revision(),
@@ -879,6 +1097,7 @@ impl LifecycleBootInventoryV1 {
             step,
             step_result,
             fence,
+            host_boot,
             domains,
             resources,
             inventory,
@@ -899,6 +1118,7 @@ impl LifecycleBootInventoryV1 {
         step: u32,
         step_result: LifecycleStepResultDigestV1,
         fence: LiveRuntimeFenceV1,
+        host_boot: [u8; 16],
         domains: LifecycleBootInventoryDomainsV1,
         resources: Vec<LifecycleResourceV1>,
         inventory: LifecycleBootInventoryDigestV1,
@@ -910,7 +1130,8 @@ impl LifecycleBootInventoryV1 {
             || resources.is_empty()
             || resources.len() > MAXIMUM_LIFECYCLE_EXPECTATIONS
             || !resources.windows(2).all(|pair| pair[0] < pair[1])
-            || inventory != domains.inventory_digest(fence, &resources)
+            || host_boot == [0; 16]
+            || inventory != domains.inventory_digest(fence, host_boot, &resources)
         {
             return Err(LifecycleModelError::InvalidModel);
         }
@@ -921,6 +1142,48 @@ impl LifecycleBootInventoryV1 {
             step,
             step_result,
             fence,
+            host_boot,
+            domains,
+            resources,
+            inventory,
+            observed_at,
+        })
+    }
+
+    /// Reconstructs a pre-host-boot boot inventory for compatibility.
+    ///
+    /// Its zero boot sentinel preserves the authenticated historical payload
+    /// while ensuring it cannot be reused as current host evidence.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_legacy_stored(
+        operation: OperationId,
+        operation_revision: Revision,
+        operation_record: LifecycleRecordDigestV1,
+        step: u32,
+        step_result: LifecycleStepResultDigestV1,
+        fence: LiveRuntimeFenceV1,
+        domains: LifecycleBootInventoryDomainsV1,
+        resources: Vec<LifecycleResourceV1>,
+        inventory: LifecycleBootInventoryDigestV1,
+        observed_at: LifecycleTimeV1,
+    ) -> Result<Self, LifecycleModelError> {
+        if operation.as_bytes() == &[0; 16]
+            || operation_revision.get() == 0
+            || operation_revision.get() == u64::MAX
+            || resources.is_empty()
+            || resources.len() > MAXIMUM_LIFECYCLE_EXPECTATIONS
+            || !resources.windows(2).all(|pair| pair[0] < pair[1])
+        {
+            return Err(LifecycleModelError::CorruptEncoding);
+        }
+        Ok(Self {
+            operation,
+            operation_revision,
+            operation_record,
+            step,
+            step_result,
+            fence,
+            host_boot: [0; 16],
             domains,
             resources,
             inventory,
@@ -974,6 +1237,12 @@ impl LifecycleBootInventoryV1 {
     #[must_use]
     pub const fn fence(&self) -> LiveRuntimeFenceV1 {
         self.fence
+    }
+
+    /// Returns the protected host boot in which liveness was observed.
+    #[must_use]
+    pub const fn host_boot(&self) -> [u8; 16] {
+        self.host_boot
     }
 
     /// Returns the complete inventory commitment.

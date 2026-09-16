@@ -14,13 +14,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_core::runtime_backend::{
     AdmissionCommitDispositionV1, AdmissionCommitError, AdmissionCurrentnessV1,
-    AdmissionStoreCommitV1, AdmittedExecutionV1, BackendExecutionRequestV1,
-    DurableAdmissionCommitV1, DurableExecutionEffectV1, EffectCommitDispositionV1,
-    EffectCommitError, EffectCompletionV1, EffectPhaseV1, EffectStoreCommitV1,
-    EffectStoreTransitionV1, ExecutionAdmissionDraftV1, ExecutionAdmissionStore,
-    ExecutionEffectStore, RuntimeModelError, decode_durable_execution_admission_v1,
-    decode_durable_execution_effect_v1, encode_durable_execution_admission_v1,
-    encode_durable_execution_effect_v1,
+    AdmissionStoreCommitV1, AdmittedExecutionV1, DurableAdmissionCommitV1,
+    DurableExecutionEffectV1, EffectCommitDispositionV1, EffectCommitError, EffectCompletionV1,
+    EffectPhaseV1, EffectStoreCommitV1, EffectStoreTransitionV1, ExecutionAdmissionDraftV1,
+    ExecutionAdmissionStore, ExecutionEffectStore, RuntimeModelError,
+    decode_durable_execution_admission_v1, decode_durable_execution_effect_v1,
+    encode_durable_execution_admission_v1, encode_durable_execution_effect_v1,
 };
 use aos_sandbox_core::{ExecutionId, ObjectDigest};
 use sha2::{Digest as _, Sha256};
@@ -53,6 +52,7 @@ const MAXIMUM_RUNTIME_EXECUTION_RECORDS: usize = 262_144;
 /// The value is configuration input, not admission authority. Authority exists
 /// only after these bindings have been committed to the dedicated journal and
 /// reloaded by [`JournalRuntimeExecutionStoreV1`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProtectedExecutionAdmissionStateV1 {
     authority_binding: ObjectDigest,
     resource_ledger: ObjectDigest,
@@ -128,38 +128,10 @@ impl AuthenticatedJournalExecutionRecoveryV1 {
 
 /// Reserves one live-process, one-shot crossing of the backend effect boundary.
 #[must_use = "dropping a dispatch permit leaves the Issued effect recoverable, not retryable"]
-pub struct PreparedExecutionDispatchV1 {
+pub(crate) struct PreparedExecutionDispatchV1 {
     effect: DurableExecutionEffectV1,
     snapshot: ProtectedJournalSnapshot,
     store_binding: ObjectDigest,
-}
-
-/// Owns the exact backend request after the one-shot journal fence is consumed.
-#[must_use = "the backend request must be consumed exactly once"]
-pub struct ConsumedExecutionDispatchV1 {
-    effect: DurableExecutionEffectV1,
-}
-
-impl ConsumedExecutionDispatchV1 {
-    /// Consumes the one-shot wrapper and returns the exact Issued effect.
-    #[must_use]
-    pub fn into_effect(self) -> DurableExecutionEffectV1 {
-        self.effect
-    }
-
-    /// Consumes an authorization wrapper into its exact backend request.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`JournalRuntimeExecutionError::WrongOperation`] for a control
-    /// operation that does not carry an execution specification.
-    pub fn into_backend_request(
-        self,
-    ) -> Result<BackendExecutionRequestV1, JournalRuntimeExecutionError> {
-        self.effect
-            .backend_execution_request()
-            .map_err(|_| JournalRuntimeExecutionError::WrongOperation)
-    }
 }
 
 /// Owns a dedicated protected execution journal and its live dispatch fence.
@@ -380,7 +352,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
     /// Returns [`JournalRuntimeExecutionError`] unless current protected bytes
     /// exactly match `effect`, it is an Issued authorization, and no permit was
     /// previously minted by this store instance.
-    pub fn prepare_dispatch(
+    pub(crate) fn prepare_dispatch(
         &mut self,
         effect: &DurableExecutionEffectV1,
     ) -> Result<PreparedExecutionDispatchV1, JournalRuntimeExecutionError> {
@@ -418,10 +390,10 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
     ///
     /// Returns [`JournalRuntimeExecutionError`] when the permit belongs to
     /// another store, any journal mutation intervened, or the effect changed.
-    pub fn consume_dispatch(
+    pub(crate) fn consume_dispatch(
         &self,
         permit: PreparedExecutionDispatchV1,
-    ) -> Result<ConsumedExecutionDispatchV1, JournalRuntimeExecutionError> {
+    ) -> Result<(), JournalRuntimeExecutionError> {
         if permit.store_binding != self.store_binding {
             return Err(JournalRuntimeExecutionError::InvalidBinding);
         }
@@ -437,9 +409,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         if stored.record_commitment() != permit.effect.record_commitment() {
             return Err(JournalRuntimeExecutionError::RecordConflict);
         }
-        Ok(ConsumedExecutionDispatchV1 {
-            effect: permit.effect,
-        })
+        Ok(())
     }
 
     pub(crate) fn disarm_recovery_issue(&mut self, effect: &DurableExecutionEffectV1) {

@@ -200,6 +200,67 @@ pub(crate) struct NetworkObserverProjectionV1 {
     candidate: Option<ObservedRevisionEffectsV1>,
 }
 
+/// Carries a verifier-produced kernel projection into the fixed protected owner.
+///
+/// Construction is crate-sealed so portable callers cannot turn arbitrary
+/// observation scalars into protected replacement evidence.
+#[must_use]
+pub struct ProtectedNetworkObservationInputV1 {
+    observed: ObservedNetworkPolicyV1,
+    projection: NetworkObserverProjectionV1,
+}
+
+impl ProtectedNetworkObservationInputV1 {
+    pub(crate) const fn from_kernel_observer(
+        observed: ObservedNetworkPolicyV1,
+        projection: NetworkObserverProjectionV1,
+    ) -> Self {
+        Self {
+            observed,
+            projection,
+        }
+    }
+
+    pub(crate) fn protected_binding(&self) -> (ObjectDigest, ObjectDigest) {
+        (
+            observer_namespace(
+                self.projection.network_handle,
+                self.projection.allocation_generation,
+            ),
+            observer_projection_digest(
+                self.observed,
+                self.projection.kernel_boot_id,
+                self.projection.namespace_device,
+                self.projection.namespace_inode,
+                self.projection.host_ifindex,
+                self.projection.sandbox_ifindex,
+                self.projection.host_peer_ifindex,
+                self.projection.sandbox_peer_ifindex,
+                self.projection.host_mac,
+                self.projection.sandbox_mac,
+                self.projection.network_handle,
+                self.projection.allocation_generation,
+                &self.projection.address_pairs,
+                &self.projection.routes,
+                &self.projection.anti_spoof,
+                self.projection.predecessor.as_ref(),
+                self.projection.candidate.as_ref(),
+            ),
+        )
+    }
+
+    pub(crate) fn seal(
+        self,
+        currentness: ProtectedCurrentnessWitnessV1,
+    ) -> Result<NetworkReplacementObservationV1, AdvancedNetworkPolicyError> {
+        NetworkReplacementObservationV1::seal_observer_projection(
+            self.observed,
+            currentness,
+            self.projection,
+        )
+    }
+}
+
 impl ObservedAntiSpoofBindingV1 {
     pub(crate) const fn new(
         peer: AntiSpoofPeerV1,
@@ -1232,6 +1293,302 @@ pub fn reduce_network_policy_replacement_v1(
             )
         }
         _ => Err(AdvancedNetworkPolicyError::InvalidTransition),
+    }
+}
+
+pub(crate) fn protected_currentness_inventory(
+    state: &NetworkPolicyReplacementStateV1,
+) -> Vec<ProtectedCurrentnessWitnessV1> {
+    let mut witnesses = Vec::new();
+    match state {
+        NetworkPolicyReplacementStateV1::Stable(value) => {
+            collect_policy_currentness(&value.active, &mut witnesses);
+            witnesses.push(value.registry_currentness);
+            witnesses.push(value.aggregate_quota.currentness());
+            witnesses.push(value.transaction.currentness());
+            witnesses.push(value.active_observation.boot_currentness);
+        }
+        NetworkPolicyReplacementStateV1::Reserved(value) => {
+            collect_reserved_currentness(value, &mut witnesses);
+        }
+        NetworkPolicyReplacementStateV1::EffectReleased(value)
+        | NetworkPolicyReplacementStateV1::RecoveryRequired(value)
+        | NetworkPolicyReplacementStateV1::RecoveryAuthorized(value)
+        | NetworkPolicyReplacementStateV1::RecoveryFenced(value)
+        | NetworkPolicyReplacementStateV1::RecoveryApplyPrepared(value)
+        | NetworkPolicyReplacementStateV1::RecoveryEffectReleased(value) => {
+            collect_reserved_currentness(&value.reservation, &mut witnesses);
+            if let Some(observation) = &value.observation {
+                witnesses.push(observation.boot_currentness);
+            }
+            if let Some(recovery) = &value.recovery {
+                witnesses.push(recovery.authority);
+                witnesses.push(recovery.authorization_observation.boot_currentness);
+                if let Some(observation) = &recovery.fenced_observation {
+                    witnesses.push(observation.boot_currentness);
+                }
+            }
+        }
+        NetworkPolicyReplacementStateV1::Committed(value)
+        | NetworkPolicyReplacementStateV1::RolledBack(value)
+        | NetworkPolicyReplacementStateV1::Aborted(value) => {
+            collect_policy_currentness(&value.predecessor, &mut witnesses);
+            collect_policy_currentness(&value.candidate, &mut witnesses);
+            collect_policy_currentness(&value.active, &mut witnesses);
+            witnesses.push(value.registry_currentness);
+            witnesses.push(value.aggregate_quota.currentness());
+            witnesses.push(value.transaction.currentness());
+            witnesses.push(value.baseline_observation.boot_currentness);
+            if let Some(observation) = &value.observation {
+                witnesses.push(observation.boot_currentness);
+            }
+        }
+    }
+    witnesses.sort_unstable_by_key(|witness| witness.encode_recovery());
+    witnesses.dedup_by_key(|witness| witness.encode_recovery());
+    witnesses
+}
+
+pub(crate) fn effect_currentness_inventory(
+    state: &NetworkPolicyReplacementStateV1,
+) -> Result<Vec<ProtectedCurrentnessWitnessV1>, AdvancedNetworkPolicyError> {
+    let ambiguous = match state {
+        NetworkPolicyReplacementStateV1::EffectReleased(value)
+        | NetworkPolicyReplacementStateV1::RecoveryEffectReleased(value) => value,
+        _ => return Err(AdvancedNetworkPolicyError::InvalidTransition),
+    };
+    let mut witnesses = Vec::new();
+    let policy = if state.phase() == NetworkPolicyReplacementPhaseV1::EffectReleased {
+        &ambiguous.reservation.candidate
+    } else {
+        &ambiguous.reservation.predecessor
+    };
+    collect_policy_currentness(policy, &mut witnesses);
+    witnesses.push(ambiguous.reservation.reserved_ingress_currentness);
+    witnesses.push(ambiguous.reservation.reserved_quota.currentness());
+    witnesses.push(ambiguous.reservation.reserved_transaction.currentness());
+    witnesses.push(ambiguous.reservation.pool.currentness());
+    witnesses.push(ambiguous.reservation.capabilities.currentness());
+    let observation = if state.phase() == NetworkPolicyReplacementPhaseV1::EffectReleased {
+        &ambiguous.reservation.predecessor_observation
+    } else {
+        let recovery = ambiguous
+            .recovery
+            .as_ref()
+            .ok_or(AdvancedNetworkPolicyError::InvalidTransition)?;
+        witnesses.push(recovery.authority);
+        recovery
+            .fenced_observation
+            .as_ref()
+            .ok_or(AdvancedNetworkPolicyError::InvalidTransition)?
+    };
+    witnesses.push(observation.boot_currentness);
+    witnesses.sort_unstable_by_key(|witness| witness.encode_recovery());
+    witnesses.dedup_by_key(|witness| witness.encode_recovery());
+    Ok(witnesses)
+}
+
+pub(crate) fn protected_recovery_authorization(
+    state: &NetworkPolicyReplacementStateV1,
+    recovery_id: OperationId,
+    currentness: ProtectedCurrentnessWitnessV1,
+) -> Result<NetworkPolicyReplacementEventV1, AdvancedNetworkPolicyError> {
+    let current = match state {
+        NetworkPolicyReplacementStateV1::RecoveryRequired(current) => current,
+        _ => return Err(AdvancedNetworkPolicyError::InvalidTransition),
+    };
+    let observation = current
+        .observation
+        .as_ref()
+        .ok_or(AdvancedNetworkPolicyError::InvalidObservation)?;
+    let physical = current
+        .reservation
+        .predecessor
+        .source()
+        .identity()
+        .physical();
+    let namespace = observer_namespace(physical.network_handle(), physical.generation());
+    let digest = recovery_authorization_digest(&current.reservation, observation, recovery_id);
+    if currentness.purpose() != ProtectedWitnessPurposeV1::RecoveryAuthority
+        || currentness.namespace() != namespace
+        || currentness.record_digest() != digest
+        || !currentness.is_exact_journal_successor_of(observation.boot_currentness)
+    {
+        return Err(AdvancedNetworkPolicyError::StaleAuthority);
+    }
+    Ok(NetworkPolicyReplacementEventV1::AuthorizeRecovery {
+        expected_generation: current.reservation.generation,
+        replacement_id: current.reservation.replacement_id,
+        recovery_id,
+        authority: currentness,
+    })
+}
+
+pub(crate) fn protected_recovery_fence(
+    state: &NetworkPolicyReplacementStateV1,
+    observation: NetworkReplacementObservationV1,
+) -> Result<NetworkPolicyReplacementEventV1, AdvancedNetworkPolicyError> {
+    let current = match state {
+        NetworkPolicyReplacementStateV1::RecoveryAuthorized(current) => current,
+        _ => return Err(AdvancedNetworkPolicyError::InvalidTransition),
+    };
+    let recovery = current
+        .recovery
+        .as_ref()
+        .ok_or(AdvancedNetworkPolicyError::InvalidTransition)?;
+    Ok(NetworkPolicyReplacementEventV1::FenceRecovery {
+        expected_generation: current.reservation.generation,
+        replacement_id: current.reservation.replacement_id,
+        recovery_id: recovery.recovery_id,
+        observation,
+    })
+}
+
+pub(crate) fn recovery_authority_binding(
+    state: &NetworkPolicyReplacementStateV1,
+    recovery_id: OperationId,
+) -> Result<(ObjectDigest, ObjectDigest, u64, ObjectDigest), AdvancedNetworkPolicyError> {
+    let current = match state {
+        NetworkPolicyReplacementStateV1::RecoveryRequired(current) => current,
+        _ => return Err(AdvancedNetworkPolicyError::InvalidTransition),
+    };
+    let observation = current
+        .observation
+        .as_ref()
+        .ok_or(AdvancedNetworkPolicyError::InvalidObservation)?;
+    let physical = current
+        .reservation
+        .predecessor
+        .source()
+        .identity()
+        .physical();
+    Ok((
+        observer_namespace(physical.network_handle(), physical.generation()),
+        recovery_authorization_digest(&current.reservation, observation, recovery_id),
+        observation.boot_currentness.sequence(),
+        observation.boot_currentness.current_head(),
+    ))
+}
+
+pub(crate) fn combined_state_components(
+    state: &NetworkPolicyReplacementStateV1,
+) -> (
+    &ExternalIngressRegistryV1,
+    ProtectedCurrentnessWitnessV1,
+    &ProtectedNetworkQuotaV1,
+    ProtectedNetworkTransactionV1,
+) {
+    match state {
+        NetworkPolicyReplacementStateV1::Stable(value) => (
+            &value.registry,
+            value.registry_currentness,
+            &value.aggregate_quota,
+            value.transaction,
+        ),
+        NetworkPolicyReplacementStateV1::Reserved(value) => (
+            &value.reserved_registry,
+            value.reserved_ingress_currentness,
+            &value.reserved_quota,
+            value.reserved_transaction,
+        ),
+        NetworkPolicyReplacementStateV1::EffectReleased(value)
+        | NetworkPolicyReplacementStateV1::RecoveryRequired(value)
+        | NetworkPolicyReplacementStateV1::RecoveryAuthorized(value)
+        | NetworkPolicyReplacementStateV1::RecoveryFenced(value)
+        | NetworkPolicyReplacementStateV1::RecoveryApplyPrepared(value)
+        | NetworkPolicyReplacementStateV1::RecoveryEffectReleased(value) => (
+            &value.reservation.reserved_registry,
+            value.reservation.reserved_ingress_currentness,
+            &value.reservation.reserved_quota,
+            value.reservation.reserved_transaction,
+        ),
+        NetworkPolicyReplacementStateV1::Committed(value)
+        | NetworkPolicyReplacementStateV1::RolledBack(value)
+        | NetworkPolicyReplacementStateV1::Aborted(value) => (
+            &value.registry,
+            value.registry_currentness,
+            &value.aggregate_quota,
+            value.transaction,
+        ),
+    }
+}
+
+pub(crate) fn rebind_combined_state(
+    state: &NetworkPolicyReplacementStateV1,
+    registry_currentness: ProtectedCurrentnessWitnessV1,
+    quota: ProtectedNetworkQuotaV1,
+    transaction: ProtectedNetworkTransactionV1,
+) -> Result<NetworkPolicyReplacementStateV1, AdvancedNetworkPolicyError> {
+    let phase = state.phase();
+    let mut rebound = match state {
+        NetworkPolicyReplacementStateV1::Stable(value) => {
+            return NetworkPolicyReplacementStateV1::stable(
+                value.generation,
+                value.active.clone(),
+                value.registry.clone(),
+                registry_currentness,
+                quota,
+                transaction,
+                value.advisory_degradations.clone(),
+                value.active_observation.clone(),
+            );
+        }
+        _ => state.clone(),
+    };
+    match &mut rebound {
+        NetworkPolicyReplacementStateV1::Stable(_) => {
+            return Err(AdvancedNetworkPolicyError::InvalidTransition);
+        }
+        NetworkPolicyReplacementStateV1::Reserved(value) => {
+            value.reserved_ingress_currentness = registry_currentness;
+            value.reserved_quota = quota;
+            value.reserved_transaction = transaction;
+            validate_reserved_state(value)?;
+        }
+        NetworkPolicyReplacementStateV1::EffectReleased(value)
+        | NetworkPolicyReplacementStateV1::RecoveryRequired(value)
+        | NetworkPolicyReplacementStateV1::RecoveryAuthorized(value)
+        | NetworkPolicyReplacementStateV1::RecoveryFenced(value)
+        | NetworkPolicyReplacementStateV1::RecoveryApplyPrepared(value)
+        | NetworkPolicyReplacementStateV1::RecoveryEffectReleased(value) => {
+            value.reservation.reserved_ingress_currentness = registry_currentness;
+            value.reservation.reserved_quota = quota;
+            value.reservation.reserved_transaction = transaction;
+            validate_ambiguous_state(value, phase)?;
+        }
+        NetworkPolicyReplacementStateV1::Committed(value)
+        | NetworkPolicyReplacementStateV1::RolledBack(value)
+        | NetworkPolicyReplacementStateV1::Aborted(value) => {
+            value.registry_currentness = registry_currentness;
+            value.aggregate_quota = quota;
+            value.transaction = transaction;
+            validate_terminal_state(value, phase)?;
+        }
+    }
+    Ok(rebound)
+}
+
+fn collect_reserved_currentness(
+    state: &ReservedStateV1,
+    witnesses: &mut Vec<ProtectedCurrentnessWitnessV1>,
+) {
+    collect_policy_currentness(&state.predecessor, witnesses);
+    collect_policy_currentness(&state.candidate, witnesses);
+    witnesses.push(state.reserved_ingress_currentness);
+    witnesses.push(state.reserved_quota.currentness());
+    witnesses.push(state.reserved_transaction.currentness());
+    witnesses.push(state.pool.currentness());
+    witnesses.push(state.capabilities.currentness());
+    witnesses.push(state.predecessor_observation.boot_currentness);
+}
+
+fn collect_policy_currentness(
+    policy: &CompiledAdvancedNetworkPolicyV1,
+    witnesses: &mut Vec<ProtectedCurrentnessWitnessV1>,
+) {
+    witnesses.push(policy.source().identity().revision().currentness());
+    if let Some(currentness) = policy.discovery_currentness() {
+        witnesses.push(currentness);
     }
 }
 

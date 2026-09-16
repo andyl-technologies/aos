@@ -1,14 +1,16 @@
-//! Canonical method-family semantic fact encoding for AOSLIF01 records.
+//! Canonical method-family semantic fact encoding for current AOSLIF03 records,
+//! with strict AOSLIF01/AOSLIF02 decoding.
 //!
 //! ```text
 //! kind:1 | reserved:3 | read-count:4 | write-count:4 |
 //! assignment-count:4 | reservation-count:4 | retention-count:4 |
-//! fixed-method-evidence:856 | method-header | reads | writes |
+//! fixed-method-evidence:936 (legacy:856/872) | method-header | reads | writes |
 //! assignments | reservations | retention-acknowledgements
 //! ```
 //!
-//! The fixed evidence area persists coordination/writer/dataset/thaw,
-//! retention-ledger, suspend, boot, and initial-incarnation commitments.
+//! The fixed evidence area persists coordination/writer/dataset/thaw plus the
+//! exact manifest and post-retention ledger, suspend, boot, and initial-
+//! incarnation commitments.
 
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, ObjectDigest,
@@ -43,14 +45,48 @@ use super::semantic::{
 use super::snapshot::LifecycleSnapshotTombstoneDigestV1;
 
 const MAXIMUM_SEMANTIC_FACT_BYTES: usize = 2 * 1024 * 1024;
-const SEMANTIC_EVIDENCE_BYTES: usize = 856;
+const LEGACY_SEMANTIC_EVIDENCE_BYTES: usize = 856;
+const HOST_BOOT_SEMANTIC_EVIDENCE_BYTES: usize = 872;
+const CURRENT_SEMANTIC_EVIDENCE_BYTES: usize = 936;
 const LIVE_FENCE_BYTES: usize = 104;
 
 use super::LifecycleModelError;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum LifecycleSemanticFactLayoutV1 {
+    LegacyWithoutHostBoot,
+    HostBootWithoutCoordinationBindings,
+    Current,
+}
+
+impl LifecycleSemanticFactLayoutV1 {
+    const fn has_host_boot(self) -> bool {
+        !matches!(Self::LegacyWithoutHostBoot, self)
+    }
+
+    const fn has_coordination_bindings(self) -> bool {
+        matches!(Self::Current, self)
+    }
+}
+
 pub(super) fn encode_semantic_fact(
     value: &LifecycleMethodSemanticCommitV1,
 ) -> Result<Vec<u8>, LifecycleModelError> {
+    encode_semantic_fact_with_layout(value, LifecycleSemanticFactLayoutV1::Current)
+}
+
+pub(super) fn encode_semantic_fact_with_layout(
+    value: &LifecycleMethodSemanticCommitV1,
+    layout: LifecycleSemanticFactLayoutV1,
+) -> Result<Vec<u8>, LifecycleModelError> {
+    if layout.has_coordination_bindings()
+        && value
+            .evidence()
+            .coordination()
+            .is_some_and(|fact| fact.manifest().is_none() || fact.retention_ledger().is_none())
+    {
+        return Err(LifecycleModelError::InvalidModel);
+    }
     let mut bytes = Vec::new();
     let (kind, reads, writes, assignments, reservations, retention) = match value.facts() {
         LifecycleSemanticCommitFactV1::DesiredState {
@@ -101,7 +137,15 @@ pub(super) fn encode_semantic_fact(
             .and_then(|total| total.checked_add(cascade.postorder().len().checked_mul(17)?))
             .ok_or(LifecycleModelError::InvalidModel)?,
     };
-    let length = 880_usize
+    let evidence_bytes = match layout {
+        LifecycleSemanticFactLayoutV1::LegacyWithoutHostBoot => LEGACY_SEMANTIC_EVIDENCE_BYTES,
+        LifecycleSemanticFactLayoutV1::HostBootWithoutCoordinationBindings => {
+            HOST_BOOT_SEMANTIC_EVIDENCE_BYTES
+        }
+        LifecycleSemanticFactLayoutV1::Current => CURRENT_SEMANTIC_EVIDENCE_BYTES,
+    };
+    let length = 24_usize
+        .checked_add(evidence_bytes)
         .checked_add(variant_bytes)
         .and_then(|total| total.checked_add(reads.len().checked_mul(68)?))
         .and_then(|total| total.checked_add(writes.len().checked_mul(148)?))
@@ -124,7 +168,7 @@ pub(super) fn encode_semantic_fact(
     ] {
         push_count(&mut bytes, count);
     }
-    encode_semantic_evidence(&mut bytes, value.evidence());
+    encode_semantic_evidence(&mut bytes, value.evidence(), layout);
     match value.facts() {
         LifecycleSemanticCommitFactV1::DesiredState { .. } => {}
         LifecycleSemanticCommitFactV1::Snapshot {
@@ -211,7 +255,10 @@ pub(super) fn encode_semantic_fact(
     Ok(bytes)
 }
 
-pub(super) fn preflight_semantic_fact(bytes: &[u8]) -> Result<(), LifecycleModelError> {
+pub(super) fn preflight_semantic_fact_with_layout(
+    bytes: &[u8],
+    layout: LifecycleSemanticFactLayoutV1,
+) -> Result<(), LifecycleModelError> {
     if bytes.is_empty() {
         return Ok(());
     }
@@ -228,7 +275,16 @@ pub(super) fn preflight_semantic_fact(bytes: &[u8]) -> Result<(), LifecycleModel
     let assignments = bounded_fact_count(&mut remaining)?;
     let reservations = bounded_fact_count(&mut remaining)?;
     let retention = bounded_fact_count(&mut remaining)?;
-    take_slice(&mut remaining, SEMANTIC_EVIDENCE_BYTES)?;
+    take_slice(
+        &mut remaining,
+        match layout {
+            LifecycleSemanticFactLayoutV1::LegacyWithoutHostBoot => LEGACY_SEMANTIC_EVIDENCE_BYTES,
+            LifecycleSemanticFactLayoutV1::HostBootWithoutCoordinationBindings => {
+                HOST_BOOT_SEMANTIC_EVIDENCE_BYTES
+            }
+            LifecycleSemanticFactLayoutV1::Current => CURRENT_SEMANTIC_EVIDENCE_BYTES,
+        },
+    )?;
     match kind {
         1 => {}
         2 => {
@@ -264,9 +320,10 @@ pub(super) fn preflight_semantic_fact(bytes: &[u8]) -> Result<(), LifecycleModel
     }
 }
 
-pub(super) fn decode_semantic_fact(
+pub(super) fn decode_semantic_fact_with_layout(
     bytes: &[u8],
     witness: Option<LifecycleSemanticCommitV1>,
+    layout: LifecycleSemanticFactLayoutV1,
 ) -> Result<Option<(LifecycleSemanticCommitFactV1, LifecycleSemanticEvidenceV1)>, LifecycleModelError>
 {
     if bytes.is_empty() {
@@ -284,7 +341,7 @@ pub(super) fn decode_semantic_fact(
     let assignment_count = bounded_fact_count(&mut remaining)?;
     let reservation_count = bounded_fact_count(&mut remaining)?;
     let retention_count = bounded_fact_count(&mut remaining)?;
-    let evidence = decode_semantic_evidence(&mut remaining)?;
+    let evidence = decode_semantic_evidence(&mut remaining, layout)?;
     let snapshot = if kind == 2 {
         Some((
             SnapshotId::from_bytes(take(&mut remaining)?),
@@ -529,7 +586,11 @@ pub(super) fn decode_semantic_fact(
     Ok(Some((facts, evidence)))
 }
 
-fn encode_semantic_evidence(bytes: &mut Vec<u8>, value: &LifecycleSemanticEvidenceV1) {
+fn encode_semantic_evidence(
+    bytes: &mut Vec<u8>,
+    value: &LifecycleSemanticEvidenceV1,
+    layout: LifecycleSemanticFactLayoutV1,
+) {
     if let Some(fact) = value.coordination() {
         encode_presence(bytes, true);
         bytes.extend_from_slice(fact.transaction().get().as_bytes());
@@ -544,9 +605,24 @@ fn encode_semantic_evidence(bytes: &mut Vec<u8>, value: &LifecycleSemanticEviden
             fact.dataset_transaction().map(|value| value.digest()),
         );
         bytes.extend_from_slice(fact.thaw_compensation().digest().as_bytes());
+        if layout.has_coordination_bindings() {
+            bytes.extend_from_slice(
+                fact.manifest()
+                    .map_or(ObjectDigest::from_bytes([0; 32]), |value| value.digest())
+                    .as_bytes(),
+            );
+            bytes.extend_from_slice(
+                fact.retention_ledger()
+                    .map_or(ObjectDigest::from_bytes([0; 32]), |value| value.digest())
+                    .as_bytes(),
+            );
+        }
         bytes.extend_from_slice(fact.record().digest().as_bytes());
     } else {
         bytes.extend_from_slice(&[0; 312]);
+        if layout.has_coordination_bindings() {
+            bytes.extend_from_slice(&[0; 64]);
+        }
     }
     if let Some(fact) = value.retention() {
         encode_presence(bytes, true);
@@ -561,10 +637,16 @@ fn encode_semantic_evidence(bytes: &mut Vec<u8>, value: &LifecycleSemanticEviden
         bytes.extend_from_slice(&record.operation_revision().get().to_be_bytes());
         bytes.extend_from_slice(record.operation_record().digest().as_bytes());
         encode_live_fence(bytes, record.fence());
+        if layout.has_host_boot() {
+            bytes.extend_from_slice(&record.host_boot());
+        }
         bytes.extend_from_slice(record.observation().digest().as_bytes());
         bytes.extend_from_slice(&record.observed_at().get().to_be_bytes());
     } else {
         bytes.extend_from_slice(&[0; 208]);
+        if layout.has_host_boot() {
+            bytes.extend_from_slice(&[0; 16]);
+        }
     }
     if let Some(fact) = value.boot() {
         encode_presence(bytes, true);
@@ -596,6 +678,7 @@ fn encode_semantic_evidence(bytes: &mut Vec<u8>, value: &LifecycleSemanticEviden
 
 fn decode_semantic_evidence(
     bytes: &mut &[u8],
+    layout: LifecycleSemanticFactLayoutV1,
 ) -> Result<LifecycleSemanticEvidenceV1, LifecycleModelError> {
     let coordination = if decode_presence(bytes)? {
         let transaction = LifecycleTransactionIdV1::new(ResourceId::from_bytes(take(bytes)?))
@@ -620,6 +703,18 @@ fn decode_semantic_evidence(
             .transpose()?;
         let thaw_compensation =
             LifecycleThawCompensationDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+        let (manifest, retention_ledger) = if layout.has_coordination_bindings() {
+            (
+                Some(LifecycleSnapshotManifestDigestV1::from_stored(
+                    ObjectDigest::from_bytes(take(bytes)?),
+                )?),
+                Some(LifecycleRetentionLedgerDigestV1::from_stored(
+                    ObjectDigest::from_bytes(take(bytes)?),
+                )?),
+            )
+        } else {
+            (None, None)
+        };
         let evidence_shape = match phase {
             LifecycleCoordinationPhaseV1::Admitted => {
                 quiesce.is_none() && writer_fence.is_none() && dataset_transaction.is_none()
@@ -647,12 +742,17 @@ fn decode_semantic_evidence(
             writer_fence,
             dataset_transaction,
             thaw_compensation,
+            manifest,
+            retention_ledger,
             LifecycleCoordinationRecordDigestV1::from_stored(ObjectDigest::from_bytes(take(
                 bytes,
             )?))?,
         ))
     } else {
         require_zero(bytes, 304)?;
+        if layout.has_coordination_bindings() {
+            require_zero(bytes, 64)?;
+        }
         None
     };
     let retention = if decode_presence(bytes)? {
@@ -669,18 +769,44 @@ fn decode_semantic_evidence(
         None
     };
     let suspend = if decode_presence(bytes)? {
-        Some(LifecycleSuspendObservationV1::from_stored(
-            OperationId::from_bytes(take(bytes)?),
-            Revision::new(u64::from_be_bytes(take(bytes)?)),
-            super::LifecycleRecordDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?,
-            decode_live_fence(bytes)?,
-            LifecycleSuspendObservationDigestV1::from_stored(ObjectDigest::from_bytes(take(
-                bytes,
-            )?))?,
-            LifecycleTimeV1::from_stored(u64::from_be_bytes(take(bytes)?))?,
-        )?)
+        let operation = OperationId::from_bytes(take(bytes)?);
+        let revision = Revision::new(u64::from_be_bytes(take(bytes)?));
+        let record =
+            super::LifecycleRecordDigestV1::from_stored(ObjectDigest::from_bytes(take(bytes)?))?;
+        let fence = decode_live_fence(bytes)?;
+        let host_boot = layout.has_host_boot().then(|| take(bytes)).transpose()?;
+        let observation = LifecycleSuspendObservationDigestV1::from_stored(
+            ObjectDigest::from_bytes(take(bytes)?),
+        )?;
+        let observed_at = LifecycleTimeV1::from_stored(u64::from_be_bytes(take(bytes)?))?;
+        Some(match host_boot {
+            Some(host_boot) => LifecycleSuspendObservationV1::from_stored(
+                operation,
+                revision,
+                record,
+                fence,
+                host_boot,
+                observation,
+                observed_at,
+            )?,
+            None => LifecycleSuspendObservationV1::from_legacy_stored(
+                operation,
+                revision,
+                record,
+                fence,
+                observation,
+                observed_at,
+            )?,
+        })
     } else {
-        require_zero(bytes, 200)?;
+        require_zero(
+            bytes,
+            match layout {
+                LifecycleSemanticFactLayoutV1::LegacyWithoutHostBoot => 200,
+                LifecycleSemanticFactLayoutV1::HostBootWithoutCoordinationBindings
+                | LifecycleSemanticFactLayoutV1::Current => 216,
+            },
+        )?;
         None
     };
     let boot = if decode_presence(bytes)? {

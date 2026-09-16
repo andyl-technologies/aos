@@ -509,7 +509,7 @@ where
     }
 }
 
-fn publish_catalog_request(
+pub(crate) fn publish_catalog_request(
     publisher: &FileHostCatalogPublisher,
     request: &ValidatedHostCatalogPublication,
     catalog_file: OwnedFd,
@@ -624,7 +624,7 @@ fn signed_plan_lease_feature() -> Result<FeatureRef> {
         .map_err(|error| HostError::State(error.to_string()))
 }
 
-fn trusted_paired_clock_sample() -> Result<RawPairedClockSample> {
+pub(crate) fn trusted_paired_clock_sample() -> Result<RawPairedClockSample> {
     let wall = clock_gettime(ClockId::Realtime);
     let boottime = clock_gettime(ClockId::Boottime);
     let seconds = u64::try_from(boottime.tv_sec)

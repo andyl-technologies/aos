@@ -17,6 +17,7 @@ mod commitment;
 mod effect;
 mod protected_store;
 pub use protected_store::{
+    DormantGuardianActionV1, DormantGuardianEffectHandoffV1, DormantGuardianEffectStepV1,
     DormantGuardianProtectedCommitV1, DormantGuardianProtectedOwnerErrorV1,
     DormantGuardianProtectedOwnerV1,
 };
@@ -957,6 +958,7 @@ pub(crate) struct GuardianReleasePreflightV1 {
 pub(crate) struct GuardianEffectPlanV1 {
     admission: GuardianEffectAdmissionV1,
     step: GuardianEffectStepV1,
+    release_current: ProtectedGuardianCurrentV1,
     step_attempt_digest: ObjectDigest,
     recovery_digest: ObjectDigest,
     released_boottime_nanoseconds: u64,
@@ -973,6 +975,11 @@ impl GuardianEffectPlanV1 {
     /// Returns the sole fresh-observation-selected effect step.
     pub(crate) const fn step(&self) -> GuardianEffectStepV1 {
         self.step
+    }
+
+    /// Returns the fresh protected currentness that authorized release.
+    pub(crate) const fn release_current(&self) -> ProtectedGuardianCurrentV1 {
+        self.release_current
     }
 
     /// Returns the exact plan-release watermark the outcome must echo.
@@ -2090,6 +2097,7 @@ impl GuardianAuthorityReducerV1 {
         let plan = GuardianEffectPlanV1 {
             admission: pending.admission,
             step,
+            release_current: current,
             step_attempt_digest,
             released_boottime_nanoseconds: pending
                 .released_boottime_nanoseconds

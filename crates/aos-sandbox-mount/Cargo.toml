@@ -23,11 +23,12 @@ aos-sandbox-broker.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
+aos-sandbox-source-provider.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 aos-sandbox-source-provider-security.workspace = true
 buffa.workspace = true
 libc.workspace = true
-rustix = { workspace = true, features = ["event", "fs", "net", "process", "time"] }
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

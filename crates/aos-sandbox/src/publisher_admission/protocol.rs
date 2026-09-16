@@ -146,6 +146,18 @@ impl ObservedDescriptorV1 {
             body_digest,
         }
     }
+
+    /// Checks one body-bound carrier observation against a typed commitment.
+    pub(crate) const fn matches(
+        &self,
+        commitment: DescriptorCommitmentV1,
+        body_digest: ObjectDigest,
+    ) -> bool {
+        self.ordinal == commitment.ordinal
+            && self.identity_digest == commitment.identity_digest
+            && self.access as u8 == commitment.access as u8
+            && self.body_digest == body_digest
+    }
 }
 
 /// Owns one closed typed method body.
@@ -289,6 +301,30 @@ pub struct PublisherLocalMessageV1 {
     pub body_digest: ObjectDigest,
 }
 
+impl PublisherLocalMessageV1 {
+    /// Revalidates that this typed value is the exact canonical message it claims.
+    ///
+    /// This check is required because the public data model is convenient for
+    /// diagnostics and construction, while dispatch accepts only values that
+    /// could have passed the canonical decoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublisherLocalProtocolError`] for a malformed body, invalid
+    /// request identity, or a body commitment that differs from canonical bytes.
+    pub fn validate_canonical(&self) -> Result<(), PublisherLocalProtocolError> {
+        if self.request_id == [0; 16] {
+            return Err(PublisherLocalProtocolError::Malformed);
+        }
+        let body = encode_body(&self.body)?;
+        let expected = body_digest(self.body.method(), self.request_id, &body);
+        if self.body_digest != expected {
+            return Err(PublisherLocalProtocolError::DigestMismatch);
+        }
+        Ok(())
+    }
+}
+
 /// Reports malformed protocol or descriptor observations.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PublisherLocalProtocolError {
@@ -389,6 +425,28 @@ pub fn decode_local_message_v1(
         body,
         body_digest: digest,
     })
+}
+
+/// Decodes one exact readable-source message from the fixed local carrier.
+pub(crate) fn decode_local_source_message_from_carrier_v1(
+    bytes: &[u8],
+    identity_digest: ObjectDigest,
+) -> Result<PublisherLocalMessageV1, PublisherLocalProtocolError> {
+    if bytes.len() < HEADER_BYTES || bytes.len() > HEADER_BYTES + MAXIMUM_BODY_BYTES {
+        return Err(PublisherLocalProtocolError::LimitExceeded);
+    }
+    let body_digest = ObjectDigest::from_bytes(exact(&bytes[32..64])?);
+    let observed = ObservedDescriptorV1::from_carrier(
+        0,
+        identity_digest,
+        DescriptorAccessV1::ReadableSource,
+        body_digest,
+    );
+    let message = decode_local_message_v1(bytes, &[observed])?;
+    if !matches!(&message.body, PublisherLocalBodyV1::PrepareArtifact { .. }) {
+        return Err(PublisherLocalProtocolError::DescriptorMismatch);
+    }
+    Ok(message)
 }
 
 fn validate_descriptors(

@@ -16,11 +16,14 @@
 //! ```
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
+use crate::environment::{
+    FixedLiveAuthorityClockV1, LiveAuthorityClockSampleV1,
+    authority_clock::validate_bracketed_samples_v1, fixed_live_authority_clock_v1,
+};
 use crate::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
@@ -55,6 +58,8 @@ pub enum GitProtectedEvidenceErrorV1 {
 pub struct GitProtectedEvidenceOwnerV1 {
     journal: Journal,
     pinned_record: Vec<u8>,
+    clock: FixedLiveAuthorityClockV1,
+    last_sample: LiveAuthorityClockSampleV1,
 }
 
 /// Carries one singular fixed-root validator and boot-clock observation.
@@ -120,6 +125,21 @@ impl GitProtectedEvidenceOwnerV1 {
     /// Returns [`GitProtectedEvidenceErrorV1`] unless the dedicated protected
     /// root contains exactly one canonical current record.
     pub fn open_fixed_protected() -> Result<(Self, RecoveryReport), GitProtectedEvidenceErrorV1> {
+        Self::open_fixed_protected_with_clock(fixed_live_authority_clock_v1())
+    }
+
+    /// Opens protected evidence with an explicitly supplied live clock source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitProtectedEvidenceErrorV1`] unless the journal read is
+    /// bracketed by non-regressing samples from the recorded kernel boot.
+    fn open_fixed_protected_with_clock(
+        mut clock: FixedLiveAuthorityClockV1,
+    ) -> Result<(Self, RecoveryReport), GitProtectedEvidenceErrorV1> {
+        let before = clock
+            .sample()
+            .map_err(|_| GitProtectedEvidenceErrorV1::InvalidEvidence)?;
         let (mut journal, report) = Journal::open_protected_at(
             Path::new(PROTECTED_GIT_EVIDENCE_ROOT),
             PROTECTED_GIT_EVIDENCE_JOURNAL,
@@ -127,11 +147,18 @@ impl GitProtectedEvidenceOwnerV1 {
         )?;
         let pinned_record = read_exact_evidence_record(&mut journal)?;
         let evidence = decode_evidence(&pinned_record)?;
-        validate_currentness(&evidence)?;
+        let after = clock
+            .sample()
+            .map_err(|_| GitProtectedEvidenceErrorV1::InvalidEvidence)?;
+        let last_sample = validate_bracketed_samples_v1(before, after)
+            .map_err(|_| GitProtectedEvidenceErrorV1::InvalidEvidence)?;
+        validate_currentness(&evidence, last_sample)?;
         Ok((
             Self {
                 journal,
                 pinned_record,
+                clock,
+                last_sample,
             },
             report,
         ))
@@ -166,12 +193,28 @@ impl GitProtectedEvidenceOwnerV1 {
     fn read_pinned_evidence(
         &mut self,
     ) -> Result<DecodedGitEvidenceV1, GitProtectedEvidenceErrorV1> {
+        let before = self
+            .clock
+            .sample()
+            .map_err(|_| GitProtectedEvidenceErrorV1::InvalidEvidence)?;
+        if before.boot() != self.last_sample.boot()
+            || before.boottime_nanoseconds() < self.last_sample.boottime_nanoseconds()
+        {
+            return Err(GitProtectedEvidenceErrorV1::InvalidEvidence);
+        }
         let current_record = read_exact_evidence_record(&mut self.journal)?;
         if current_record != self.pinned_record {
             return Err(GitProtectedEvidenceErrorV1::InvalidEvidence);
         }
         let evidence = decode_evidence(&current_record)?;
-        validate_currentness(&evidence)?;
+        let after = self
+            .clock
+            .sample()
+            .map_err(|_| GitProtectedEvidenceErrorV1::InvalidEvidence)?;
+        let current = validate_bracketed_samples_v1(before, after)
+            .map_err(|_| GitProtectedEvidenceErrorV1::InvalidEvidence)?;
+        validate_currentness(&evidence, current)?;
+        self.last_sample = current;
         Ok(evidence)
     }
 }
@@ -291,15 +334,23 @@ fn decode_digest_set(
 
 fn validate_currentness(
     evidence: &DecodedGitEvidenceV1,
+    current: LiveAuthorityClockSampleV1,
 ) -> Result<(), GitProtectedEvidenceErrorV1> {
-    let current = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| GitProtectedEvidenceErrorV1::InvalidEvidence)?
-        .as_secs();
+    let validity_nanoseconds = evidence
+        .valid_until_unix_seconds
+        .checked_sub(evidence.authenticated_at_unix_seconds)
+        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+        .ok_or(GitProtectedEvidenceErrorV1::InvalidEvidence)?;
+    let deadline = evidence
+        .current_boottime
+        .get()
+        .checked_add(validity_nanoseconds)
+        .ok_or(GitProtectedEvidenceErrorV1::InvalidEvidence)?;
     if evidence.authenticated_at_unix_seconds == 0
         || evidence.valid_until_unix_seconds <= evidence.authenticated_at_unix_seconds
-        || current < evidence.authenticated_at_unix_seconds
-        || current > evidence.valid_until_unix_seconds
+        || current.boot() != evidence.current_boot
+        || current.boottime_nanoseconds() < evidence.current_boottime.get()
+        || current.boottime_nanoseconds() >= deadline
     {
         return Err(GitProtectedEvidenceErrorV1::InvalidEvidence);
     }

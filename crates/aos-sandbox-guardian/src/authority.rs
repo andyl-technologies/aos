@@ -20,6 +20,7 @@ use crate::{DurablyPersistedGuardian, GuardianState, GuardianStateCodecError};
 
 mod reducer;
 pub use reducer::{
+    DormantGuardianActionV1, DormantGuardianEffectHandoffV1, DormantGuardianEffectStepV1,
     DormantGuardianProtectedCommitV1, DormantGuardianProtectedOwnerErrorV1,
     DormantGuardianProtectedOwnerV1,
 };

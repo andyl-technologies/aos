@@ -81,6 +81,67 @@ struct PreparedProviderDispositionV2 {
 }
 
 impl SourceAcquisitionTableV2 {
+    /// Confirms that retained authenticated evidence equals the durable lineage tail.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the acquisition, method lineage, attempt, or
+    /// canonical provider response cannot be reproduced exactly.
+    pub(crate) fn retained_disposition_matches_v2(
+        &self,
+        acquisition_id: [u8; 32],
+        method: ProviderMethodV2,
+        outcome: &VerifiedMountProviderOutcomeV2,
+    ) -> Result<bool> {
+        let row = self
+            .acquisitions
+            .get(&acquisition_id)
+            .ok_or_else(|| state_error("retained disposition owner is absent"))?;
+        let reference = match method {
+            ProviderMethodV2::Acquire => row.acquire_lineage.tail,
+            ProviderMethodV2::Release => {
+                row.release_lineage
+                    .as_ref()
+                    .map(|lineage| lineage.tail)
+                    .ok_or_else(|| state_error("retained Release lineage is absent"))?
+            }
+            ProviderMethodV2::Inventory => {
+                return Err(state_error("Inventory has no acquisition disposition"));
+            }
+        };
+        let attempt = self
+            .provider_attempts
+            .get(&reference.id)
+            .filter(|attempt| {
+                attempt.revision == reference.revision
+                    && attempt.record_digest == reference.record_digest
+                    && attempt.method == method
+                    && attempt.owner.owner_id() == acquisition_id
+            })
+            .ok_or_else(|| state_error("retained disposition attempt is absent"))?;
+        let decoded = decode_disposition(method, outcome.canonical_response())?;
+        let ProviderAttemptStateV2::DispositionConsumed {
+            response_sequence,
+            verification_anchor,
+            status,
+            signed_status,
+            signed_status_digest,
+            signed_result,
+            signed_result_digest,
+        } = &attempt.state
+        else {
+            return Ok(false);
+        };
+        Ok(protocol_status(outcome.status())? == *status
+            && *response_sequence == decoded.response_sequence
+            && *verification_anchor == outcome.verification_anchor()
+            && *status == decoded.status
+            && signed_status == &decoded.signed_status
+            && *signed_status_digest == decoded.signed_status_digest
+            && signed_result == &decoded.signed_result
+            && *signed_result_digest == decoded.signed_result_digest)
+    }
+
     /// Reauthenticates and consumes one outcome retained across a Mount crash.
     ///
     /// The table supplies the exact immutable attempt and session records to
@@ -101,29 +162,17 @@ impl SourceAcquisitionTableV2 {
         catalog_journal: &ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         attempt_id: [u8; 32],
-        canonical_signed_status: Vec<u8>,
-        canonical_signed_result: Vec<u8>,
-        reopened_source_root: Option<ProviderSourceRootHandoffV1>,
+        captured: aos_sandbox_source_provider_security::CapturedMountProviderRecoveryOutcomeV2,
     ) -> Result<RecoveredProviderOutcomeConsumptionV2> {
         let attempt = self
             .provider_attempts
             .get(&attempt_id)
             .cloned()
             .ok_or_else(|| state_error("recovered provider outcome attempt is absent"))?;
-        if let ProviderAttemptStateV2::DispositionConsumed {
-            signed_status,
-            signed_result,
-            ..
-        } = &attempt.state
-        {
-            if signed_status != &canonical_signed_status
-                || signed_result != &canonical_signed_result
-            {
-                return Err(state_error(
-                    "recovered provider outcome differs from consumed disposition",
-                ));
-            }
-        } else if !matches!(&attempt.state, ProviderAttemptStateV2::Reserved) {
+        if !matches!(
+            &attempt.state,
+            ProviderAttemptStateV2::Reserved | ProviderAttemptStateV2::DispositionConsumed { .. }
+        ) {
             return Err(state_error(
                 "recovered provider outcome attempt is not consumable",
             ));
@@ -150,9 +199,7 @@ impl SourceAcquisitionTableV2 {
                 attempt_record,
                 provider_session_key(retained_session.session_id),
                 session_record,
-                canonical_signed_status,
-                canonical_signed_result,
-                reopened_source_root,
+                captured,
             )
             .map_err(|_| state_error("protected provider outcome recovery failed"))?;
         if let Some(authorization) = retained_root {
@@ -369,9 +416,9 @@ impl SourceAcquisitionTableV2 {
         journal: &mut ProtectedJournalAuthority<'_>,
         catalog_journal: &ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
-        sent: SentProviderQueryV2,
+        sent: &SentProviderQueryV2,
     ) -> Result<ConsumedProviderOutcomeV2> {
-        let (attempt_id, authorization) = sent.into_security_parts();
+        let (attempt_id, authorization) = sent.security_parts();
         let received = session
             .receive_and_verify_provider_outcome_v2(catalog_journal, authorization)
             .map_err(|_| state_error("SourceProvider outcome verification failed"))?;
@@ -1182,7 +1229,8 @@ fn consumed_status(attempt: &SourceProviderQueryAttemptV2) -> Result<ProviderSta
     match &attempt.state {
         ProviderAttemptStateV2::DispositionConsumed { status, .. } => Ok(*status),
         ProviderAttemptStateV2::Reserved
-        | ProviderAttemptStateV2::AbandonedIndeterminate { .. } => {
+        | ProviderAttemptStateV2::AbandonedIndeterminate { .. }
+        | ProviderAttemptStateV2::SupersededIndeterminate { .. } => {
             Err(state_error("provider attempt is not disposition-consumed"))
         }
     }
@@ -1195,7 +1243,8 @@ fn consumed_result_digest(attempt: &SourceProviderQueryAttemptV2) -> [u8; 32] {
             ..
         } => *signed_result_digest,
         ProviderAttemptStateV2::Reserved
-        | ProviderAttemptStateV2::AbandonedIndeterminate { .. } => [0; 32],
+        | ProviderAttemptStateV2::AbandonedIndeterminate { .. }
+        | ProviderAttemptStateV2::SupersededIndeterminate { .. } => [0; 32],
     }
 }
 

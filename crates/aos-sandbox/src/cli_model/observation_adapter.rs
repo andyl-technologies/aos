@@ -6,10 +6,13 @@
 use aos_proto::aos::sandbox::v1::{
     Event, GetAttachmentRequest, GetAttachmentResponse, GetExecutionRequest, GetExecutionResponse,
     GetOperationRequest, GetOperationResponse, GetSandboxRequest, GetSandboxResponse,
-    GetSnapshotRequest, GetSnapshotResponse, GetViewRequest, GetViewResponse, WatchCursor,
-    WatchRequest,
+    GetSnapshotRequest, GetSnapshotResponse, GetViewRequest, GetViewResponse,
+    OperatorRecoveryRequest, WatchCursor, WatchRequest,
 };
+use aos_sandbox_core::ObjectDigest;
+use sha2::{Digest as _, Sha256};
 
+use super::provenance::RequestProvenanceV1;
 use crate::client_state::WatchResumePointV1;
 use crate::controller_query::{
     BoundWatchCursorV1, CheckedAttachmentResourceV1, CheckedAuditWatchEventV1,
@@ -52,6 +55,132 @@ pub enum InvalidObservationClientAdapter {
     /// A sandbox audit cursor cannot be bound to the requested audit stream.
     #[error("sandbox audit cursor does not match the audit watch request")]
     InvalidAuditCursor,
+    /// An operator recovery request or result violates its exact closed binding.
+    #[error("operator recovery request or result is invalid")]
+    InvalidOperatorRecovery,
+}
+
+/// Retains an exact dormant operator-recovery action and concurrency fence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperatorRecoveryRequestV1 {
+    resource_id: [u8; 16],
+    expected_resource_version: Vec<u8>,
+    action: i32,
+    idempotency_key: Vec<u8>,
+    evidence: aos_proto::aos::sandbox::v1::ObjectDescriptor,
+}
+
+impl TryFrom<OperatorRecoveryRequest> for OperatorRecoveryRequestV1 {
+    type Error = InvalidObservationClientAdapter;
+
+    fn try_from(value: OperatorRecoveryRequest) -> Result<Self, Self::Error> {
+        let resource_id: [u8; 16] = value
+            .resource_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let evidence = value
+            .evidence
+            .as_option()
+            .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?
+            .clone();
+        crate::controller_query::portable::CheckedObjectDescriptorV1::try_from(evidence.clone())
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        if resource_id == [0; 16]
+            || value.expected_resource_version.is_empty()
+            || value.expected_resource_version.len() > super::grammar::MAXIMUM_CLI_OPAQUE_BYTES
+            || !(1..=4).contains(&value.action)
+            || value.idempotency_key.is_empty()
+            || value.idempotency_key.len() > super::grammar::MAXIMUM_IDEMPOTENCY_KEY_BYTES
+        {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        Ok(Self {
+            resource_id,
+            expected_resource_version: value.expected_resource_version,
+            action: value.action,
+            idempotency_key: value.idempotency_key,
+            evidence,
+        })
+    }
+}
+
+impl OperatorRecoveryRequestV1 {
+    /// Returns the exact checked recovery request without dispatching it.
+    #[must_use]
+    pub fn to_proto(&self) -> OperatorRecoveryRequest {
+        OperatorRecoveryRequest {
+            resource_id: self.resource_id.to_vec(),
+            expected_resource_version: self.expected_resource_version.clone(),
+            action: self.action,
+            idempotency_key: self.idempotency_key.clone(),
+            evidence: self.evidence.clone().into(),
+            ..Default::default()
+        }
+    }
+
+    /// Returns the exact request commitment used by authenticated authorization.
+    #[must_use]
+    pub fn authority_binding(&self) -> ObjectDigest {
+        let mut digest = Sha256::new();
+        digest.update(b"aos.sandbox.operator-recovery-request.v1\0");
+        digest.update(self.resource_id);
+        hash_recovery_bytes(&mut digest, &self.expected_resource_version);
+        digest.update(self.action.to_be_bytes());
+        hash_recovery_bytes(&mut digest, &self.idempotency_key);
+        hash_recovery_bytes(&mut digest, self.evidence.media_type.as_bytes());
+        hash_recovery_bytes(&mut digest, &self.evidence.sha256);
+        digest.update(self.evidence.encoded_size.to_be_bytes());
+        ObjectDigest::from_bytes(digest.finalize().into())
+    }
+
+    pub(crate) const fn resource_id(&self) -> [u8; 16] {
+        self.resource_id
+    }
+
+    pub(crate) fn expected_resource_version(&self) -> &[u8] {
+        &self.expected_resource_version
+    }
+
+    pub(crate) const fn action(&self) -> i32 {
+        self.action
+    }
+
+    pub(crate) fn idempotency_key(&self) -> &[u8] {
+        &self.idempotency_key
+    }
+
+    pub(crate) const fn evidence(&self) -> &aos_proto::aos::sandbox::v1::ObjectDescriptor {
+        &self.evidence
+    }
+}
+
+fn hash_recovery_bytes(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_be_bytes());
+    digest.update(value);
+}
+
+/// Carries one recovery request authorized from exact authenticated semantics.
+#[must_use = "operator-recovery authority must be consumed by its protected owner"]
+pub(crate) struct AuthorizedOperatorRecoveryV1 {
+    request: OperatorRecoveryRequestV1,
+    provenance: RequestProvenanceV1,
+}
+
+impl AuthorizedOperatorRecoveryV1 {
+    pub(crate) const fn from_authenticated(
+        request: OperatorRecoveryRequestV1,
+        provenance: RequestProvenanceV1,
+    ) -> Self {
+        Self {
+            request,
+            provenance,
+        }
+    }
+
+    pub(crate) const fn into_parts(self) -> (OperatorRecoveryRequestV1, RequestProvenanceV1) {
+        (self.request, self.provenance)
+    }
 }
 
 /// Retains an exact operation identity around a pure get request.

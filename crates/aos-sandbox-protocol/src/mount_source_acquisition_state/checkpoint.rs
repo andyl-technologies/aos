@@ -183,7 +183,8 @@ pub fn validate_attempt_checkpoint(
             .checked_add(signed_status.len())
             .and_then(|value| value.checked_add(signed_result.len())),
         ProviderAttemptStateV2::Reserved
-        | ProviderAttemptStateV2::AbandonedIndeterminate { .. } => {
+        | ProviderAttemptStateV2::AbandonedIndeterminate { .. }
+        | ProviderAttemptStateV2::SupersededIndeterminate { .. } => {
             Some(attempt.signed_request.len())
         }
     };
@@ -297,7 +298,8 @@ pub fn validate_attempt_checkpoint(
             }
             Ok(())
         }
-        ProviderAttemptStateV2::AbandonedIndeterminate { .. } => Ok(()),
+        ProviderAttemptStateV2::AbandonedIndeterminate { .. }
+        | ProviderAttemptStateV2::SupersededIndeterminate { .. } => Ok(()),
     }
 }
 

@@ -147,6 +147,16 @@ message BrokerRequestEnvelope {
   repeated BrokerDescriptorEntry descriptors = 3;
   BrokerAuthorizationArtifactsV1 authorization = 4;
   bytes signed_session_request = 5;
+  // Exact catalog inputs authenticated by the fixed client record. Presence is
+  // method-specific: Storage Apply requires Storage, Mount Apply may require
+  // Mount, and every other V1 method forbids this message.
+  BrokerSemanticBindingsV1 semantic_bindings = 6;
+}
+
+message BrokerSemanticBindingsV1 {
+  uint64 storage_catalog_generation = 1;
+  bytes storage_catalog_digest = 2; // Empty or exactly 32 nonzero bytes.
+  bytes mount_catalog_digest = 3; // Empty or exactly 32 nonzero bytes.
 }
 
 // One response packet. request_id repeats the validated body header ID.
@@ -447,12 +457,43 @@ message StorageWorkspaceInventoryRecord {
   bytes resource_digest = 10; // Commitment to the complete broker observation.
 }
 
+// One exact physical object from the protected Storage catalog. Resource and
+// operation identities are semantic controller identifiers; all digest fields
+// are exact 32-byte commitments. Empty lifecycle_operation and hold_id fields
+// encode absence rather than a zero identifier.
+message StorageLifecycleInventoryRecord {
+  uint32 kind = 1; // Closed dataset/snapshot/clone/hold/quota discriminator.
+  uint32 resource_kind = 2; // Closed sandbox/snapshot/capability/other discriminator.
+  bytes resource_id = 3; // Exactly 16 bytes.
+  bytes effect_subject = 4; // Exactly 32 bytes.
+  bytes effect_request = 5; // Exactly 32 bytes.
+  bytes lifecycle_operation = 6; // Empty or exactly 16 bytes.
+  bytes hold_id = 7; // Empty or exactly 16 bytes.
+  bytes identity = 8; // Exactly 32 bytes.
+}
+
+// One exact committed protected Storage catalog transition. History identifies
+// the action that produced or removed state but is never counted as physical
+// presence by itself.
+message StorageLifecycleTransitionRecord {
+  uint32 kind = 1; // Closed catalog-transition discriminator.
+  uint32 resource_kind = 2; // Closed sandbox/snapshot/capability/other discriminator.
+  bytes resource_id = 3; // Exactly 16 bytes.
+  bytes effect_subject = 4; // Exactly 32 bytes.
+  bytes effect_request = 5; // Exactly 32 bytes.
+  bytes hold_id = 6; // Empty or exactly 16 bytes.
+  bytes identity = 7; // Exactly 32 bytes.
+}
+
 message InventoryStorageResourcesResponse {
   bytes kernel_boot_id = 1; // Current Linux boot ID, exactly 16 bytes.
   uint64 journal_sequence = 2; // Nonzero next-frame durable boundary.
   uint64 catalog_generation = 3; // Nonzero protected storage catalog generation.
   repeated StorageWorkspaceInventoryRecord workspaces = 4; // At most 16384, strict handle order.
   bytes broker_instance_id = 5; // Exactly 16 bytes; changes on broker start.
+  bytes lifecycle_source = 6; // Exact protected five-family catalog digest, 32 bytes.
+  repeated StorageLifecycleInventoryRecord lifecycle_resources = 7; // At most 16384, canonical order.
+  repeated StorageLifecycleTransitionRecord lifecycle_transitions = 8; // At most 16384, canonical order.
 }
 
 service StorageBroker {

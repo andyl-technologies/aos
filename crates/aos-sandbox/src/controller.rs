@@ -10,7 +10,19 @@
 //! or volatile work queue.
 
 use aos_sandbox_core::{ObjectDigest, OperationId, RawPairedClockSample};
+use buffa::Message as _;
+#[cfg(target_os = "linux")]
 use sha2::{Digest as _, Sha256};
+
+use crate::cli_model::{
+    AuthorizedOperatorRecoveryV1, DormantPublicApiClientV1, InvalidObservationClientAdapter,
+    OperatorRecoveryRequestV1,
+};
+use crate::controller_query::{
+    CheckedOperationPhaseV1, CheckedOperationResourceV1, CheckedRetryClassV1,
+    CheckedSandboxResourceV1, PublicConditionCodeV1,
+};
+use crate::{JournalRecord, JournalTransaction, RecordNamespace};
 
 #[cfg(target_os = "linux")]
 use crate::cli_model::authorization_adapter::{
@@ -21,8 +33,8 @@ use crate::cli_model::authorization_adapter::{
 };
 #[cfg(target_os = "linux")]
 use crate::cli_model::{
-    AuditAuthorizationV1, AuthorizedResolvedMutationV1, RequestProvenanceV1,
-    ResolvedPublicMutationV1,
+    AuditAuthorizationV1, AuthorizedResolvedMutationV1, DormantClientStatePlanV1,
+    DormantSandboxOutputV1, DormantSandboxRequestV1, RequestProvenanceV1, ResolvedPublicMutationV1,
 };
 use crate::publisher_authority::{
     PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
@@ -202,25 +214,2197 @@ pub struct NodeController<C, E> {
     reconciler: Reconciler<E>,
 }
 
+/// Composes real injected controller and public-client dependencies without activation.
+///
+/// Construction registers no RPC service, opens no socket, and grants no
+/// mutation authority. It exists so source integration can supply a concrete
+/// compiler, effect executor, and public API wire transport without replacing
+/// them with production's deliberately unavailable implementations.
+pub struct DormantControllerCompositionV1<C, E, T> {
+    controller: NodeController<C, E>,
+    public_api_client: DormantPublicApiClientV1<T>,
+}
+
+impl<C, E, T> DormantControllerCompositionV1<C, E, T>
+where
+    C: ActivatedOperationCompiler,
+    E: SingleNodeEffectExecutor,
+{
+    /// Rechecks every protected owner after first-root commit and returns the root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::lifecycle::LifecyclePhase6ErrorV1`] unless the newly
+    /// committed root exactly matches a fresh all-domain join under one boot.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn finalize_lifecycle_boot_inventory_bootstrap<'current>(
+        &mut self,
+        lifecycle: &'current crate::lifecycle::LifecycleProtectedJournalOwnerV1<'_>,
+        operation_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        boot_inventory_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        runtime: &crate::lifecycle::LifecycleAuthenticatedRuntimeInventorySuccessorV1,
+        mounts: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventorySuccessorV1,
+        storage: &crate::DurableStorageResourceInventorySnapshotV1,
+        storage_inventory: &crate::lifecycle::LifecycleAuthenticatedStorageInventorySuccessorV1,
+        network: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventorySuccessorV1,
+        cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        transfer: &mut crate::multi_node::ProtectedMultiNodeAuthorityOwnerV1,
+        transfer_inventory: &crate::lifecycle::LifecycleAuthenticatedTransferInventoryV1,
+    ) -> Result<
+        crate::lifecycle::CurrentLifecycleBootInventoryV1<'current>,
+        crate::lifecycle::LifecyclePhase6ErrorV1,
+    > {
+        let checked = self.controller.current_lifecycle_boot_domains(
+            lifecycle,
+            operation_key,
+            boot_inventory_key,
+            runtime,
+            mounts,
+            storage,
+            storage_inventory,
+            network,
+            cache,
+            transfer,
+            transfer_inventory,
+        )?;
+        drop(checked);
+        lifecycle
+            .current_boot_inventory(boot_inventory_key)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .ok_or(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)
+    }
+
+    /// Publishes the absent first lifecycle boot root from protected owners.
+    ///
+    /// Host, Mount, Storage, and Network must be challenge-authenticated by
+    /// their fixed BSA sessions. Cache and Transfer are reread through their
+    /// concrete protected owners around derivation. On an applied commit,
+    /// callers must issue four new broker pairs and run the standard joined
+    /// boot-domain query before using any recovery observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::lifecycle::LifecyclePhase6ErrorV1`] for a stale
+    /// challenge, an existing root, changed owner state, boot rollover, or a
+    /// protected append failure. Indeterminate commits retain their recovery
+    /// token in the returned progress value.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_lifecycle_boot_inventory_bootstrap(
+        &mut self,
+        lifecycle: &mut crate::lifecycle::LifecycleProtectedJournalOwnerV1<'_>,
+        operation_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        boot_inventory_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        challenge: crate::lifecycle::LifecycleBootInventoryBootstrapChallengeV1,
+        runtime: &crate::lifecycle::LifecycleAuthenticatedRuntimeInventoryBootstrapV1,
+        mounts: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+        storage: &crate::DurableStorageResourceInventorySnapshotV1,
+        storage_inventory: &crate::lifecycle::LifecycleAuthenticatedStorageInventoryBootstrapV1,
+        network: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+        cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        transfer: &mut crate::multi_node::ProtectedMultiNodeAuthorityOwnerV1,
+        transfer_inventory: &crate::lifecycle::LifecycleAuthenticatedTransferInventoryV1,
+        transaction_id: [u8; 16],
+        atomic_join: aos_sandbox_core::ResourceId,
+        operation_lineage: aos_sandbox_core::ResourceId,
+        inventory_lineage: aos_sandbox_core::ResourceId,
+    ) -> Result<
+        crate::lifecycle::LifecycleProgressCommitOutcomeV1,
+        crate::lifecycle::LifecyclePhase6ErrorV1,
+    > {
+        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if boot_before != challenge.host_boot() {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        storage
+            .recheck(self.controller.reconciler.journal_mut())
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let cache_inventory = cache
+            .lifecycle_boot_inventory()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        transfer
+            .recheck_lifecycle_transfer_inventory(transfer_inventory)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let source =
+            crate::lifecycle::LifecycleBootInventoryBootstrapSourceV1::from_protected_join(
+                challenge,
+                runtime,
+                mounts,
+                storage_inventory,
+                storage,
+                network,
+                &cache_inventory,
+                transfer_inventory,
+            )?;
+        storage
+            .recheck(self.controller.reconciler.journal_mut())
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        if cache
+            .lifecycle_boot_inventory()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            != cache_inventory
+        {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        transfer
+            .recheck_lifecycle_transfer_inventory(transfer_inventory)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if boot_before != boot_after {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        self.controller
+            .commit_lifecycle_boot_inventory_bootstrap(
+                lifecycle,
+                operation_key,
+                boot_inventory_key,
+                source,
+                transaction_id,
+                atomic_join,
+                operation_lineage,
+                inventory_lineage,
+            )
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)
+    }
+
+    /// Publishes a refreshed lifecycle boot root from all protected domain owners.
+    ///
+    /// This dormant callsite performs the first phase only: it joins and
+    /// rechecks every owner, consumes that capability internally, and commits
+    /// the derived root. The caller must then obtain fresh Host and Storage
+    /// successors and perform the ordinary boot-domain join; pre-publication
+    /// observations cannot be reused as post-publication currentness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::lifecycle::LifecyclePhase6ErrorV1`] when any domain is
+    /// stale or incomplete, the protected clock rolls over, or root preparation
+    /// fails. An indeterminate commit is returned with its recovery token.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_lifecycle_boot_inventory_refresh(
+        &mut self,
+        lifecycle: &mut crate::lifecycle::LifecycleProtectedJournalOwnerV1<'_>,
+        operation_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        boot_inventory_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        challenge: crate::lifecycle::LifecycleBootInventoryBootstrapChallengeV1,
+        runtime: &crate::lifecycle::LifecycleAuthenticatedRuntimeInventoryBootstrapV1,
+        mounts: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+        storage: &crate::DurableStorageResourceInventorySnapshotV1,
+        storage_inventory: &crate::lifecycle::LifecycleAuthenticatedStorageInventoryBootstrapV1,
+        network: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+        cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        transfer: &mut crate::multi_node::ProtectedMultiNodeAuthorityOwnerV1,
+        transfer_inventory: &crate::lifecycle::LifecycleAuthenticatedTransferInventoryV1,
+        transaction_id: [u8; 16],
+        atomic_join: aos_sandbox_core::ResourceId,
+        operation_lineage: aos_sandbox_core::ResourceId,
+        inventory_lineage: aos_sandbox_core::ResourceId,
+    ) -> Result<
+        crate::lifecycle::LifecycleProgressCommitOutcomeV1,
+        crate::lifecycle::LifecyclePhase6ErrorV1,
+    > {
+        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if boot_before != challenge.host_boot() {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        storage
+            .recheck(self.controller.reconciler.journal_mut())
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let cache_inventory = cache
+            .lifecycle_boot_inventory()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        transfer
+            .recheck_lifecycle_transfer_inventory(transfer_inventory)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let source =
+            crate::lifecycle::LifecycleBootInventoryBootstrapSourceV1::from_protected_join(
+                challenge,
+                runtime,
+                mounts,
+                storage_inventory,
+                storage,
+                network,
+                &cache_inventory,
+                transfer_inventory,
+            )?
+            .into_refresh_source();
+        storage
+            .recheck(self.controller.reconciler.journal_mut())
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        if cache
+            .lifecycle_boot_inventory()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            != cache_inventory
+        {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        transfer
+            .recheck_lifecycle_transfer_inventory(transfer_inventory)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if boot_before != boot_after {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        self.controller
+            .commit_lifecycle_boot_inventory_refresh(
+                lifecycle,
+                operation_key,
+                boot_inventory_key,
+                source,
+                transaction_id,
+                atomic_join,
+                operation_lineage,
+                inventory_lineage,
+            )
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)
+    }
+
+    /// Constructs a dormant composition around explicitly supplied real dependencies.
+    #[must_use]
+    pub fn new(
+        scope: ControllerRequestScopeV1,
+        limits: NodeControllerLimits,
+        journal: crate::Journal,
+        compiler: C,
+        executor: E,
+        public_api_transport: T,
+    ) -> Self {
+        Self {
+            controller: NodeController::new(
+                scope,
+                limits,
+                compiler,
+                Reconciler::new(journal, executor),
+            ),
+            public_api_client: DormantPublicApiClientV1::new(public_api_transport),
+        }
+    }
+
+    /// Borrows the supplied controller composition without admitting work.
+    #[must_use]
+    pub fn controller_mut(&mut self) -> &mut NodeController<C, E> {
+        &mut self.controller
+    }
+
+    /// Constructs the dormant public recovery handler from explicit dependencies.
+    ///
+    /// The returned handler remains unregistered and borrows the sole controller
+    /// journal through this composition.
+    #[must_use]
+    pub(crate) fn operator_recovery_service<A, S, O>(
+        &mut self,
+        authorizer: A,
+        current_observer: S,
+        effect_observer: O,
+    ) -> DormantOperatorRecoveryPublicServiceV1<'_, C, E, A, S, O>
+    where
+        A: DormantOperatorRecoveryPublicAuthorizerV1,
+        S: DormantOperatorRecoveryCurrentObserverV1,
+        O: DormantOperatorRecoveryEffectObserverV1,
+    {
+        DormantOperatorRecoveryPublicServiceV1::new(
+            &mut self.controller,
+            authorizer,
+            current_observer,
+            effect_observer,
+        )
+    }
+
+    /// Borrows the supplied public API client without choosing an endpoint.
+    #[must_use]
+    pub fn public_api_client_mut(&mut self) -> &mut DormantPublicApiClientV1<T> {
+        &mut self.public_api_client
+    }
+
+    /// Dismantles the dormant composition into its controller and API client.
+    #[must_use]
+    pub fn into_parts(self) -> (NodeController<C, E>, DormantPublicApiClientV1<T>) {
+        (self.controller, self.public_api_client)
+    }
+}
+
+/// Borrows the controller's protected journal for a dormant recovery transition.
+///
+/// This owner registers no route and dispatches no runtime effect. It owns the
+/// protected current-head, idempotency, and canonical transition records.
+pub(crate) struct DormantOperatorRecoveryOwnerV1<'controller> {
+    journal: &'controller mut crate::Journal,
+}
+
+/// Maximum dispatch attempts retained for one operator-recovery effect.
+pub const MAXIMUM_OPERATOR_RECOVERY_EFFECT_ATTEMPTS_V1: u32 = 3;
+/// Maximum consecutive unknown observer classifications retained before escalation.
+pub const MAXIMUM_OPERATOR_RECOVERY_AMBIGUITY_QUERIES_V1: u32 = 3;
+/// Maximum nonterminal operator-recovery rows returned by one startup scan.
+pub const MAXIMUM_PENDING_OPERATOR_RECOVERIES_V1: usize = 4_096;
+
+/// Reports durable admission, restart recovery, ambiguity, or exact terminal replay.
+pub(crate) enum DormantOperatorRecoveryAdmissionV1 {
+    /// A durable issued effect must be handed to the recovery executor.
+    Issued(DormantOperatorRecoveryEffectHandoffV1),
+    /// A previously issued effect must be observed before any redispatch.
+    RecoveryRequired(DormantOperatorRecoveryPendingV1),
+    /// Observation remains ambiguous and no redispatch is permitted.
+    Ambiguous(DormantOperatorRecoveryPendingV1),
+    /// The bounded observer ambiguity budget is exhausted without classification.
+    AmbiguityExhausted(DormantOperatorRecoveryPendingV1),
+    /// Absence was proven, but the bounded dispatch-attempt budget is exhausted.
+    DispatchBudgetExhausted(DormantOperatorRecoveryPendingV1),
+    /// The same authorized request already reached a durable terminal result.
+    Terminal(aos_proto::aos::sandbox::v1::OperatorRecoveryResult),
+    /// A terminal observation is retained while its atomic journal commit is ambiguous.
+    TerminalCommitAmbiguous(DormantOperatorRecoveryTerminalV1),
+}
+
+/// Seals one durably issued recovery effect for a future typed executor.
+#[must_use = "an issued operator-recovery effect must reach a terminal observation"]
+pub(crate) struct DormantOperatorRecoveryEffectHandoffV1 {
+    issued: DormantOperatorRecoveryIssuedStateV1,
+    reservation_key: Vec<u8>,
+}
+
+/// Seals a checked executor terminal observation before durable reduction.
+#[must_use = "a checked operator-recovery terminal must be durably recorded"]
+pub(crate) struct DormantOperatorRecoveryTerminalV1 {
+    handoff: DormantOperatorRecoveryEffectHandoffV1,
+    result: aos_proto::aos::sandbox::v1::OperatorRecoveryResult,
+}
+
+/// Retains either a durable terminal result or exact custody after commit ambiguity.
+pub(crate) enum DormantOperatorRecoveryTerminalCommitV1 {
+    /// The terminal result and successor current head are durably committed.
+    Complete(aos_proto::aos::sandbox::v1::OperatorRecoveryResult),
+    /// Commit outcome is uncertain; the terminal token must be retried, never redispatched.
+    Ambiguous(DormantOperatorRecoveryTerminalV1),
+}
+
+/// Retains a restart-enumerated issued effect without granting redispatch authority.
+#[must_use = "a pending recovery must be classified through its effect observer"]
+pub(crate) struct DormantOperatorRecoveryPendingV1 {
+    issued: DormantOperatorRecoveryIssuedStateV1,
+    reservation_key: Vec<u8>,
+}
+
+/// Carries the exact issued identity to an injected effect observer.
+pub(crate) struct DormantOperatorRecoveryEffectQueryV1 {
+    effect_id: ObjectDigest,
+    attempt: u32,
+    current_generation: u64,
+    request: aos_proto::aos::sandbox::v1::OperatorRecoveryRequest,
+}
+
+impl DormantOperatorRecoveryEffectQueryV1 {
+    /// Returns the stable durable effect identity.
+    #[must_use]
+    pub const fn effect_id(&self) -> ObjectDigest {
+        self.effect_id
+    }
+
+    /// Returns the exact one-based dispatch attempt under observation.
+    #[must_use]
+    pub const fn attempt(&self) -> u32 {
+        self.attempt
+    }
+
+    /// Returns the exact desired generation retained at initial issuance.
+    #[must_use]
+    pub const fn current_generation(&self) -> u64 {
+        self.current_generation
+    }
+
+    /// Returns the canonical request retained before the first dispatch.
+    #[must_use]
+    pub const fn request(&self) -> &aos_proto::aos::sandbox::v1::OperatorRecoveryRequest {
+        &self.request
+    }
+}
+
+/// Classifies one exact issued effect from an authoritative receipt/inventory query.
+pub(crate) enum DormantOperatorRecoveryEffectDispositionV1 {
+    /// A terminal executor result is authoritatively retained.
+    Terminal(aos_proto::aos::sandbox::v1::OperatorRecoveryResult),
+    /// The observer proves this exact attempt did not apply an effect.
+    NotObserved,
+    /// The observer cannot distinguish absent, in-flight, or completed state.
+    Unknown,
+}
+
+/// Seals an observer classification to the queried effect and attempt.
+pub(crate) struct DormantOperatorRecoveryEffectReceiptV1 {
+    effect_id: ObjectDigest,
+    attempt: u32,
+    current_generation: u64,
+    disposition: DormantOperatorRecoveryEffectDispositionV1,
+}
+
+impl DormantOperatorRecoveryEffectReceiptV1 {
+    /// Constructs a receipt proving an exact attempt did not apply an effect.
+    #[must_use]
+    pub(crate) const fn not_observed(query: &DormantOperatorRecoveryEffectQueryV1) -> Self {
+        Self {
+            effect_id: query.effect_id,
+            attempt: query.attempt,
+            current_generation: query.current_generation,
+            disposition: DormantOperatorRecoveryEffectDispositionV1::NotObserved,
+        }
+    }
+
+    /// Constructs a receipt retaining an authoritative terminal result.
+    #[must_use]
+    pub(crate) fn terminal(
+        query: &DormantOperatorRecoveryEffectQueryV1,
+        result: aos_proto::aos::sandbox::v1::OperatorRecoveryResult,
+    ) -> Self {
+        Self {
+            effect_id: query.effect_id,
+            attempt: query.attempt,
+            current_generation: query.current_generation,
+            disposition: DormantOperatorRecoveryEffectDispositionV1::Terminal(result),
+        }
+    }
+
+    /// Constructs an explicitly unknown classification that never permits redispatch.
+    #[must_use]
+    pub(crate) const fn unknown(query: &DormantOperatorRecoveryEffectQueryV1) -> Self {
+        Self {
+            effect_id: query.effect_id,
+            attempt: query.attempt,
+            current_generation: query.current_generation,
+            disposition: DormantOperatorRecoveryEffectDispositionV1::Unknown,
+        }
+    }
+}
+
+/// Queries authoritative effect receipts or independently enumerated effect inventory.
+pub(crate) trait DormantOperatorRecoveryEffectObserverV1 {
+    /// Classifies exactly one durable issued attempt without performing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidObservationClientAdapter`] when the observer cannot
+    /// authenticate or bound its response.
+    fn classify(
+        &mut self,
+        query: &DormantOperatorRecoveryEffectQueryV1,
+    ) -> Result<DormantOperatorRecoveryEffectReceiptV1, InvalidObservationClientAdapter>;
+}
+
+/// Performs one checked recovery effect while the protected journal is exclusively borrowed.
+pub(crate) trait DormantOperatorRecoveryEffectExecutorV1 {
+    /// Executes the exact durably issued attempt and returns its terminal observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidObservationClientAdapter`] when dispatch or its authenticated
+    /// terminal observation cannot be completed.
+    fn execute(
+        &mut self,
+        query: &DormantOperatorRecoveryEffectQueryV1,
+    ) -> Result<aos_proto::aos::sandbox::v1::OperatorRecoveryResult, InvalidObservationClientAdapter>;
+}
+
+/// Reports a rejected dormant public operator-recovery service request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum DormantOperatorRecoveryServiceErrorV1 {
+    /// The public request or authorization binding is malformed.
+    #[error("dormant operator-recovery request is invalid")]
+    InvalidRequest,
+    /// The explicitly injected authorizer rejected the public context.
+    #[error("dormant operator-recovery authorization was rejected")]
+    AuthorizationRejected,
+    /// Protected durable recovery state rejected the transition.
+    #[error("dormant operator-recovery state rejected the transition")]
+    RecoveryState,
+}
+
+/// Carries the principal and exact request binding proven by an injected authorizer.
+pub(crate) struct DormantOperatorRecoveryPublicAuthorizationV1 {
+    principal: ObjectDigest,
+    request_binding: ObjectDigest,
+}
+
+impl DormantOperatorRecoveryPublicAuthorizationV1 {
+    /// Constructs a decision bound to one already checked recovery request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantOperatorRecoveryServiceErrorV1::InvalidRequest`] for a
+    /// zero principal.
+    pub(crate) fn for_request(
+        principal: ObjectDigest,
+        request: &OperatorRecoveryRequestV1,
+    ) -> Result<Self, DormantOperatorRecoveryServiceErrorV1> {
+        Self::new(principal, request.authority_binding())
+    }
+
+    /// Constructs an explicit public-service authorization decision.
+    ///
+    /// This constructor is for an injected authenticated transport authorizer;
+    /// the dormant service independently checks the request binding before it
+    /// reaches protected durable state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantOperatorRecoveryServiceErrorV1::InvalidRequest`] for a
+    /// zero principal or request commitment.
+    pub(crate) fn new(
+        principal: ObjectDigest,
+        request_binding: ObjectDigest,
+    ) -> Result<Self, DormantOperatorRecoveryServiceErrorV1> {
+        if principal.as_bytes() == &[0; 32] || request_binding.as_bytes() == &[0; 32] {
+            Err(DormantOperatorRecoveryServiceErrorV1::InvalidRequest)
+        } else {
+            Ok(Self {
+                principal,
+                request_binding,
+            })
+        }
+    }
+}
+
+/// Authorizes one exact public recovery request from opaque transport context.
+pub(crate) trait DormantOperatorRecoveryPublicAuthorizerV1 {
+    /// Consumes the opaque context and returns its proven principal/request binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantOperatorRecoveryServiceErrorV1::AuthorizationRejected`]
+    /// when authentication, authorization, or current policy rejects the request.
+    fn authorize(
+        &mut self,
+        authorization: crate::cli_model::DormantPublicApiAuthorizationV1,
+        request: &aos_proto::aos::sandbox::v1::OperatorRecoveryRequest,
+    ) -> Result<DormantOperatorRecoveryPublicAuthorizationV1, DormantOperatorRecoveryServiceErrorV1>;
+}
+
+/// Binds a current-state observation to an authorized recovery request.
+pub(crate) struct DormantOperatorRecoveryCurrentQueryV1 {
+    principal: ObjectDigest,
+    request_binding: ObjectDigest,
+    request: aos_proto::aos::sandbox::v1::OperatorRecoveryRequest,
+}
+
+impl DormantOperatorRecoveryCurrentQueryV1 {
+    /// Returns the authenticated principal commitment.
+    #[must_use]
+    pub const fn principal(&self) -> ObjectDigest {
+        self.principal
+    }
+
+    /// Returns the exact authorized request commitment.
+    #[must_use]
+    pub const fn request_binding(&self) -> ObjectDigest {
+        self.request_binding
+    }
+
+    /// Returns the exact public request requiring a current observation.
+    #[must_use]
+    pub const fn request(&self) -> &aos_proto::aos::sandbox::v1::OperatorRecoveryRequest {
+        &self.request
+    }
+}
+
+enum DormantOperatorRecoveryCurrentResourceV1 {
+    Sandbox(CheckedSandboxResourceV1),
+    Operation(CheckedOperationResourceV1),
+}
+
+/// Seals a fully checked current resource to its authorized observation query.
+pub(crate) struct DormantOperatorRecoveryCurrentObservationV1 {
+    principal: ObjectDigest,
+    request_binding: ObjectDigest,
+    resource: DormantOperatorRecoveryCurrentResourceV1,
+}
+
+impl DormantOperatorRecoveryCurrentObservationV1 {
+    /// Constructs an exact checked sandbox observation receipt.
+    #[must_use]
+    pub(crate) fn sandbox(
+        query: &DormantOperatorRecoveryCurrentQueryV1,
+        resource: CheckedSandboxResourceV1,
+    ) -> Self {
+        Self {
+            principal: query.principal,
+            request_binding: query.request_binding,
+            resource: DormantOperatorRecoveryCurrentResourceV1::Sandbox(resource),
+        }
+    }
+
+    /// Constructs an exact checked operation observation receipt.
+    #[must_use]
+    pub(crate) fn operation(
+        query: &DormantOperatorRecoveryCurrentQueryV1,
+        resource: CheckedOperationResourceV1,
+    ) -> Self {
+        Self {
+            principal: query.principal,
+            request_binding: query.request_binding,
+            resource: DormantOperatorRecoveryCurrentResourceV1::Operation(resource),
+        }
+    }
+}
+
+/// Obtains current public state through an explicitly injected authorized adapter.
+pub(crate) trait DormantOperatorRecoveryCurrentObserverV1 {
+    /// Returns one checked current sandbox or operation observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantOperatorRecoveryServiceErrorV1::RecoveryState`] when a
+    /// current authenticated observation cannot be obtained or bounded.
+    fn observe_current(
+        &mut self,
+        query: &DormantOperatorRecoveryCurrentQueryV1,
+    ) -> Result<DormantOperatorRecoveryCurrentObservationV1, DormantOperatorRecoveryServiceErrorV1>;
+}
+
+/// Retains authorization only after current state is durably synchronized.
+#[must_use = "synchronized recovery authority must be consumed by begin"]
+pub(crate) struct DormantOperatorRecoverySynchronizedV1 {
+    principal: ObjectDigest,
+    request: OperatorRecoveryRequestV1,
+}
+
+/// Composes a callable dormant public recovery handler without route registration.
+pub(crate) struct DormantOperatorRecoveryPublicServiceV1<'controller, C, E, A, S, O> {
+    controller: &'controller mut NodeController<C, E>,
+    authorizer: A,
+    current_observer: S,
+    effect_observer: O,
+}
+
+impl<'controller, C, E, A, S, O> DormantOperatorRecoveryPublicServiceV1<'controller, C, E, A, S, O>
+where
+    C: ActivatedOperationCompiler,
+    E: SingleNodeEffectExecutor,
+    A: DormantOperatorRecoveryPublicAuthorizerV1,
+    S: DormantOperatorRecoveryCurrentObserverV1,
+    O: DormantOperatorRecoveryEffectObserverV1,
+{
+    /// Constructs a callable handler around explicit dependencies.
+    #[must_use]
+    pub(crate) const fn new(
+        controller: &'controller mut NodeController<C, E>,
+        authorizer: A,
+        current_observer: S,
+        effect_observer: O,
+    ) -> Self {
+        Self {
+            controller,
+            authorizer,
+            current_observer,
+            effect_observer,
+        }
+    }
+
+    /// Authorizes and durably begins or exactly replays one public request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantOperatorRecoveryServiceErrorV1`] when request parsing,
+    /// authorization, exact binding, or protected durable admission fails.
+    pub(crate) fn begin(
+        &mut self,
+        authorization: crate::cli_model::DormantPublicApiAuthorizationV1,
+        request: aos_proto::aos::sandbox::v1::OperatorRecoveryRequest,
+    ) -> Result<DormantOperatorRecoveryAdmissionV1, DormantOperatorRecoveryServiceErrorV1> {
+        let synchronized = self.synchronize_current(authorization, request)?;
+        self.begin_synchronized(synchronized)
+    }
+
+    /// Authorizes, observes, and durably synchronizes current public state.
+    ///
+    /// No recovery effect can be issued by this method. The returned sealed
+    /// authority is the only public-service input accepted by
+    /// [`Self::begin_synchronized`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantOperatorRecoveryServiceErrorV1`] when request parsing,
+    /// authorization, observation binding, or durable synchronization fails.
+    pub(crate) fn synchronize_current(
+        &mut self,
+        authorization: crate::cli_model::DormantPublicApiAuthorizationV1,
+        request: aos_proto::aos::sandbox::v1::OperatorRecoveryRequest,
+    ) -> Result<DormantOperatorRecoverySynchronizedV1, DormantOperatorRecoveryServiceErrorV1> {
+        let checked = OperatorRecoveryRequestV1::try_from(request.clone())
+            .map_err(|_| DormantOperatorRecoveryServiceErrorV1::InvalidRequest)?;
+        let authorized = self.authorizer.authorize(authorization, &request)?;
+        if authorized.request_binding != checked.authority_binding() {
+            return Err(DormantOperatorRecoveryServiceErrorV1::AuthorizationRejected);
+        }
+        let query = DormantOperatorRecoveryCurrentQueryV1 {
+            principal: authorized.principal,
+            request_binding: authorized.request_binding,
+            request,
+        };
+        let observation = self.current_observer.observe_current(&query)?;
+        if observation.principal != query.principal
+            || observation.request_binding != query.request_binding
+        {
+            return Err(DormantOperatorRecoveryServiceErrorV1::RecoveryState);
+        }
+        let mut owner = self.controller.dormant_operator_recovery();
+        match observation.resource {
+            DormantOperatorRecoveryCurrentResourceV1::Sandbox(resource)
+                if resource.sandbox_id() == checked.resource_id()
+                    && resource.as_proto().resource_version.as_slice()
+                        == checked.expected_resource_version() =>
+            {
+                owner.synchronize_sandbox(&resource)
+            }
+            DormantOperatorRecoveryCurrentResourceV1::Operation(resource)
+                if resource.operation_id() == checked.resource_id()
+                    && resource.resource_version().as_bytes()
+                        == checked.expected_resource_version() =>
+            {
+                owner.synchronize_operation(&resource)
+            }
+            DormantOperatorRecoveryCurrentResourceV1::Sandbox(_)
+            | DormantOperatorRecoveryCurrentResourceV1::Operation(_) => {
+                return Err(DormantOperatorRecoveryServiceErrorV1::RecoveryState);
+            }
+        }
+        .map_err(|_| DormantOperatorRecoveryServiceErrorV1::RecoveryState)?;
+        let synchronized_evidence = owner
+            .current_evidence(checked.resource_id())
+            .map_err(|_| DormantOperatorRecoveryServiceErrorV1::RecoveryState)?;
+        if &synchronized_evidence != checked.evidence() {
+            return Err(DormantOperatorRecoveryServiceErrorV1::RecoveryState);
+        }
+        Ok(DormantOperatorRecoverySynchronizedV1 {
+            principal: authorized.principal,
+            request: checked,
+        })
+    }
+
+    /// Durably begins a recovery only after authorized current synchronization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantOperatorRecoveryServiceErrorV1::RecoveryState`] when
+    /// protected current state no longer admits the synchronized request.
+    pub(crate) fn begin_synchronized(
+        &mut self,
+        synchronized: DormantOperatorRecoverySynchronizedV1,
+    ) -> Result<DormantOperatorRecoveryAdmissionV1, DormantOperatorRecoveryServiceErrorV1> {
+        self.controller
+            .dormant_operator_recovery()
+            .begin_public_authorized(synchronized.principal, synchronized.request)
+            .map_err(|_| DormantOperatorRecoveryServiceErrorV1::RecoveryState)
+    }
+
+    /// Enumerates all durable nonterminal recoveries at a startup boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantOperatorRecoveryServiceErrorV1::RecoveryState`] when
+    /// protected provenance or a durable recovery record is invalid.
+    pub(crate) fn pending_recoveries(
+        &mut self,
+    ) -> Result<Vec<DormantOperatorRecoveryPendingV1>, DormantOperatorRecoveryServiceErrorV1> {
+        self.controller
+            .dormant_operator_recovery()
+            .pending_recoveries()
+            .map_err(|_| DormantOperatorRecoveryServiceErrorV1::RecoveryState)
+    }
+
+    /// Reconciles one startup-enumerated effect through the injected observer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantOperatorRecoveryServiceErrorV1::RecoveryState`] when
+    /// retained state or the authoritative observer receipt is invalid.
+    pub(crate) fn reconcile(
+        &mut self,
+        pending: DormantOperatorRecoveryPendingV1,
+    ) -> Result<DormantOperatorRecoveryAdmissionV1, DormantOperatorRecoveryServiceErrorV1> {
+        self.controller
+            .dormant_operator_recovery()
+            .recover_pending(pending, &mut self.effect_observer)
+            .map_err(|_| DormantOperatorRecoveryServiceErrorV1::RecoveryState)
+    }
+
+    /// Dispatches one sealed issuance under an exclusive protected-current borrow.
+    pub(crate) fn dispatch<X>(
+        &mut self,
+        handoff: DormantOperatorRecoveryEffectHandoffV1,
+        executor: &mut X,
+    ) -> Result<DormantOperatorRecoveryAdmissionV1, DormantOperatorRecoveryServiceErrorV1>
+    where
+        X: DormantOperatorRecoveryEffectExecutorV1,
+    {
+        self.controller
+            .dormant_operator_recovery()
+            .dispatch_effect(handoff, executor)
+            .map_err(|_| DormantOperatorRecoveryServiceErrorV1::RecoveryState)
+    }
+
+    /// Durably reduces one checked executor terminal returned by an issued handoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantOperatorRecoveryServiceErrorV1::RecoveryState`] when
+    /// the issued record, current head, or terminal result no longer matches.
+    pub(crate) fn record_terminal(
+        &mut self,
+        terminal: DormantOperatorRecoveryTerminalV1,
+    ) -> Result<DormantOperatorRecoveryTerminalCommitV1, DormantOperatorRecoveryServiceErrorV1>
+    {
+        self.controller
+            .dormant_operator_recovery()
+            .record_terminal(terminal)
+            .map_err(|_| DormantOperatorRecoveryServiceErrorV1::RecoveryState)
+    }
+
+    /// Dismantles the dormant service into its explicit dependencies.
+    #[must_use]
+    pub(crate) fn into_parts(self) -> (&'controller mut NodeController<C, E>, A, S, O) {
+        (
+            self.controller,
+            self.authorizer,
+            self.current_observer,
+            self.effect_observer,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DormantOperatorRecoveryIssuedStateV1 {
+    principal: ObjectDigest,
+    binding: ObjectDigest,
+    effect_id: ObjectDigest,
+    request: OperatorRecoveryRequestV1,
+    current: Vec<u8>,
+    current_generation: u64,
+    attempt: u32,
+    ambiguity_queries: u32,
+    recovery_state: DormantOperatorRecoveryDurableStateV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DormantOperatorRecoveryDurableStateV1 {
+    InitialIssue,
+    ReissuedAfterAbsence,
+    ObservationUnknown,
+}
+
+impl DormantOperatorRecoveryDurableStateV1 {
+    const fn to_wire(self) -> u32 {
+        match self {
+            Self::InitialIssue => 1,
+            Self::ReissuedAfterAbsence => 2,
+            Self::ObservationUnknown => 3,
+        }
+    }
+
+    const fn from_wire(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::InitialIssue),
+            2 => Some(Self::ReissuedAfterAbsence),
+            3 => Some(Self::ObservationUnknown),
+            _ => None,
+        }
+    }
+}
+
+impl DormantOperatorRecoveryEffectHandoffV1 {
+    /// Returns the stable effect identity committed by durable issuance.
+    #[must_use]
+    pub const fn effect_id(&self) -> ObjectDigest {
+        self.issued.effect_id
+    }
+
+    /// Returns the exact one-based dispatch attempt.
+    #[must_use]
+    pub const fn attempt(&self) -> u32 {
+        self.issued.attempt
+    }
+
+    /// Returns the desired generation retained before effect issuance.
+    #[must_use]
+    pub const fn current_generation(&self) -> u64 {
+        self.issued.current_generation
+    }
+
+    fn check_terminal(
+        self,
+        result: aos_proto::aos::sandbox::v1::OperatorRecoveryResult,
+    ) -> Result<DormantOperatorRecoveryTerminalV1, InvalidObservationClientAdapter> {
+        validate_recovery_terminal(&self.issued.request, &result)?;
+        Ok(DormantOperatorRecoveryTerminalV1 {
+            handoff: self,
+            result,
+        })
+    }
+}
+
+impl DormantOperatorRecoveryPendingV1 {
+    /// Returns the stable effect identity that must be observed.
+    #[must_use]
+    pub const fn effect_id(&self) -> ObjectDigest {
+        self.issued.effect_id
+    }
+
+    /// Returns the last durably issued attempt.
+    #[must_use]
+    pub const fn attempt(&self) -> u32 {
+        self.issued.attempt
+    }
+
+    /// Returns the number of consecutive durable unknown classifications.
+    #[must_use]
+    pub const fn ambiguity_queries(&self) -> u32 {
+        self.issued.ambiguity_queries
+    }
+
+    /// Returns the desired generation retained with the original current head.
+    #[must_use]
+    pub const fn current_generation(&self) -> u64 {
+        self.issued.current_generation
+    }
+
+    /// Returns the canonical request retained before the first dispatch.
+    #[must_use]
+    pub fn request(&self) -> aos_proto::aos::sandbox::v1::OperatorRecoveryRequest {
+        self.issued.request.to_proto()
+    }
+}
+
+impl DormantOperatorRecoveryOwnerV1<'_> {
+    /// Executes one sealed attempt only while its durable issuance and current head are exact.
+    pub(crate) fn dispatch_effect<X>(
+        &mut self,
+        handoff: DormantOperatorRecoveryEffectHandoffV1,
+        executor: &mut X,
+    ) -> Result<DormantOperatorRecoveryAdmissionV1, InvalidObservationClientAdapter>
+    where
+        X: DormantOperatorRecoveryEffectExecutorV1,
+    {
+        self.recheck_effect_handoff(&handoff)?;
+        let query = DormantOperatorRecoveryEffectQueryV1 {
+            effect_id: handoff.issued.effect_id,
+            attempt: handoff.issued.attempt,
+            current_generation: handoff.issued.current_generation,
+            request: handoff.issued.request.to_proto(),
+        };
+        let result = executor.execute(&query)?;
+        self.recheck_effect_handoff(&handoff)?;
+        let terminal = handoff.check_terminal(result)?;
+        match self.record_terminal(terminal)? {
+            DormantOperatorRecoveryTerminalCommitV1::Complete(result) => {
+                Ok(DormantOperatorRecoveryAdmissionV1::Terminal(result))
+            }
+            DormantOperatorRecoveryTerminalCommitV1::Ambiguous(terminal) => Ok(
+                DormantOperatorRecoveryAdmissionV1::TerminalCommitAmbiguous(terminal),
+            ),
+        }
+    }
+
+    fn recheck_effect_handoff(
+        &self,
+        handoff: &DormantOperatorRecoveryEffectHandoffV1,
+    ) -> Result<(), InvalidObservationClientAdapter> {
+        self.journal
+            .ensure_protected_authority()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let retained = self
+            .journal
+            .get(RecordNamespace::OperatorRecovery, &handoff.reservation_key)
+            .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let DormantOperatorRecoveryReservationV1::Issued(retained) =
+            decode_recovery_reservation(retained)?
+        else {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        };
+        let current = self
+            .journal
+            .get(
+                RecordNamespace::OperatorRecovery,
+                &recovery_current_key(retained.request.resource_id()),
+            )
+            .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        if retained != handoff.issued || current != retained.current {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        validate_recovery_reservation_key(&retained, &handoff.reservation_key)?;
+        validate_recovery_current(&retained.request, current)
+    }
+
+    /// Returns sealed evidence for the protected current head of one resource.
+    pub(crate) fn current_evidence(
+        &self,
+        resource_id: [u8; 16],
+    ) -> Result<aos_proto::aos::sandbox::v1::ObjectDescriptor, InvalidObservationClientAdapter>
+    {
+        self.journal
+            .ensure_protected_authority()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let current = self
+            .journal
+            .get(
+                RecordNamespace::OperatorRecovery,
+                &recovery_current_key(resource_id),
+            )
+            .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let digest: [u8; 32] = Sha256::new()
+            .chain_update(b"aos.sandbox.operator-recovery-current-evidence.v1\0")
+            .chain_update(resource_id)
+            .chain_update((current.len() as u64).to_be_bytes())
+            .chain_update(current)
+            .finalize()
+            .into();
+        Ok(aos_proto::aos::sandbox::v1::ObjectDescriptor {
+            media_type: "application/vnd.aos.sandbox.operator-recovery-evidence.v1".into(),
+            sha256: digest.to_vec(),
+            encoded_size: (16 + current.len()) as u64,
+            ..Default::default()
+        })
+    }
+
+    /// Reserves a transition after checking protected journal provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidObservationClientAdapter`] when protected provenance is absent.
+    pub(crate) fn begin(
+        &mut self,
+        authorized: AuthorizedOperatorRecoveryV1,
+    ) -> Result<DormantOperatorRecoveryAdmissionV1, InvalidObservationClientAdapter> {
+        let (request, provenance) = authorized.into_parts();
+        self.begin_with_authority(provenance.commitments().0.digest(), request)
+    }
+
+    fn begin_public_authorized(
+        &mut self,
+        principal: ObjectDigest,
+        request: OperatorRecoveryRequestV1,
+    ) -> Result<DormantOperatorRecoveryAdmissionV1, InvalidObservationClientAdapter> {
+        self.begin_with_authority(principal, request)
+    }
+
+    fn begin_with_authority(
+        &mut self,
+        principal: ObjectDigest,
+        request: OperatorRecoveryRequestV1,
+    ) -> Result<DormantOperatorRecoveryAdmissionV1, InvalidObservationClientAdapter> {
+        self.journal
+            .ensure_protected_authority()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        if principal.as_bytes() == &[0; 32] {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        let reservation_key =
+            recovery_reservation_key(principal.as_bytes(), request.idempotency_key());
+        let binding = request.authority_binding();
+        let effect_id = recovery_effect_id(principal, &request);
+        if let Some(existing) = self
+            .journal
+            .get(RecordNamespace::OperatorRecovery, &reservation_key)
+            .map(<[u8]>::to_vec)
+        {
+            return match decode_recovery_reservation(&existing)? {
+                DormantOperatorRecoveryReservationV1::Issued(issued) => {
+                    validate_recovery_replay(
+                        &issued,
+                        principal,
+                        binding,
+                        effect_id,
+                        &request,
+                        &reservation_key,
+                    )?;
+                    let pending = DormantOperatorRecoveryPendingV1 {
+                        issued,
+                        reservation_key,
+                    };
+                    if pending.issued.ambiguity_queries
+                        == MAXIMUM_OPERATOR_RECOVERY_AMBIGUITY_QUERIES_V1
+                    {
+                        Ok(DormantOperatorRecoveryAdmissionV1::AmbiguityExhausted(
+                            pending,
+                        ))
+                    } else {
+                        Ok(DormantOperatorRecoveryAdmissionV1::RecoveryRequired(
+                            pending,
+                        ))
+                    }
+                }
+                DormantOperatorRecoveryReservationV1::Complete { issued, result } => {
+                    validate_recovery_replay(
+                        &issued,
+                        principal,
+                        binding,
+                        effect_id,
+                        &request,
+                        &reservation_key,
+                    )?;
+                    validate_recovery_terminal(&request, &result)?;
+                    Ok(DormantOperatorRecoveryAdmissionV1::Terminal(result))
+                }
+            };
+        }
+        let current_key = recovery_current_key(request.resource_id());
+        let current = self
+            .journal
+            .get(RecordNamespace::OperatorRecovery, &current_key)
+            .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?
+            .to_vec();
+        validate_recovery_current(&request, &current)?;
+        let current_generation = decode_recovery_current(&current)?.desired_generation;
+        let issued = DormantOperatorRecoveryIssuedStateV1 {
+            principal,
+            binding,
+            effect_id,
+            request,
+            current,
+            current_generation,
+            attempt: 1,
+            ambiguity_queries: 0,
+            recovery_state: DormantOperatorRecoveryDurableStateV1::InitialIssue,
+        };
+        commit_recovery_records(
+            self.journal,
+            recovery_issued_commit_id(&issued),
+            vec![JournalRecord::put(
+                RecordNamespace::OperatorRecovery,
+                reservation_key.clone(),
+                encode_issued_recovery_reservation(&issued)?,
+            )],
+        )?;
+        Ok(DormantOperatorRecoveryAdmissionV1::Issued(
+            DormantOperatorRecoveryEffectHandoffV1 {
+                issued,
+                reservation_key,
+            },
+        ))
+    }
+
+    /// Enumerates every nonterminal recovery row from protected startup state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidObservationClientAdapter`] for unhealthy provenance,
+    /// foreign/corrupt records, or more than the bounded pending-row ceiling.
+    pub fn pending_recoveries(
+        &self,
+    ) -> Result<Vec<DormantOperatorRecoveryPendingV1>, InvalidObservationClientAdapter> {
+        self.journal
+            .ensure_protected_authority()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let mut pending = Vec::new();
+        for (key, encoded) in self.journal.records(RecordNamespace::OperatorRecovery) {
+            if !key.starts_with(b"idempotency/") {
+                continue;
+            }
+            match decode_recovery_reservation(encoded)? {
+                DormantOperatorRecoveryReservationV1::Issued(issued) => {
+                    validate_recovery_reservation_key(&issued, key)?;
+                    if pending.len() == MAXIMUM_PENDING_OPERATOR_RECOVERIES_V1 {
+                        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+                    }
+                    pending.push(DormantOperatorRecoveryPendingV1 {
+                        issued,
+                        reservation_key: key.to_vec(),
+                    });
+                }
+                DormantOperatorRecoveryReservationV1::Complete { issued, result } => {
+                    validate_recovery_reservation_key(&issued, key)?;
+                    validate_recovery_terminal(&issued.request, &result)?;
+                }
+            }
+        }
+        Ok(pending)
+    }
+
+    /// Classifies a restart-enumerated effect before deciding whether to redispatch.
+    ///
+    /// A positive `NotObserved` receipt is the only state that can produce a new
+    /// issued handoff. `Unknown` consumes a bounded durable ambiguity query and
+    /// never grants effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidObservationClientAdapter`] when the pending token is no
+    /// longer current or the injected observer returns a mismatched receipt.
+    pub fn recover_pending<O>(
+        &mut self,
+        pending: DormantOperatorRecoveryPendingV1,
+        observer: &mut O,
+    ) -> Result<DormantOperatorRecoveryAdmissionV1, InvalidObservationClientAdapter>
+    where
+        O: DormantOperatorRecoveryEffectObserverV1,
+    {
+        self.journal
+            .ensure_protected_authority()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        if pending.issued.ambiguity_queries == MAXIMUM_OPERATOR_RECOVERY_AMBIGUITY_QUERIES_V1 {
+            return Ok(DormantOperatorRecoveryAdmissionV1::AmbiguityExhausted(
+                pending,
+            ));
+        }
+        let retained = self
+            .journal
+            .get(RecordNamespace::OperatorRecovery, &pending.reservation_key)
+            .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let DormantOperatorRecoveryReservationV1::Issued(retained) =
+            decode_recovery_reservation(retained)?
+        else {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        };
+        if retained != pending.issued {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        validate_recovery_reservation_key(&retained, &pending.reservation_key)?;
+        let current = self
+            .journal
+            .get(
+                RecordNamespace::OperatorRecovery,
+                &recovery_current_key(retained.request.resource_id()),
+            )
+            .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        if current != retained.current {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        let query = DormantOperatorRecoveryEffectQueryV1 {
+            effect_id: retained.effect_id,
+            attempt: retained.attempt,
+            current_generation: retained.current_generation,
+            request: retained.request.to_proto(),
+        };
+        let receipt = observer.classify(&query)?;
+        if receipt.effect_id != retained.effect_id
+            || receipt.attempt != retained.attempt
+            || receipt.current_generation != retained.current_generation
+        {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        match receipt.disposition {
+            DormantOperatorRecoveryEffectDispositionV1::Terminal(result) => {
+                let handoff = DormantOperatorRecoveryEffectHandoffV1 {
+                    issued: retained,
+                    reservation_key: pending.reservation_key,
+                };
+                let terminal = handoff.check_terminal(result)?;
+                match self.record_terminal(terminal)? {
+                    DormantOperatorRecoveryTerminalCommitV1::Complete(result) => {
+                        Ok(DormantOperatorRecoveryAdmissionV1::Terminal(result))
+                    }
+                    DormantOperatorRecoveryTerminalCommitV1::Ambiguous(terminal) => Ok(
+                        DormantOperatorRecoveryAdmissionV1::TerminalCommitAmbiguous(terminal),
+                    ),
+                }
+            }
+            DormantOperatorRecoveryEffectDispositionV1::NotObserved => {
+                if retained.attempt == MAXIMUM_OPERATOR_RECOVERY_EFFECT_ATTEMPTS_V1 {
+                    return Ok(DormantOperatorRecoveryAdmissionV1::DispatchBudgetExhausted(
+                        DormantOperatorRecoveryPendingV1 {
+                            issued: retained,
+                            reservation_key: pending.reservation_key,
+                        },
+                    ));
+                }
+                let mut reissued = retained;
+                reissued.attempt += 1;
+                reissued.ambiguity_queries = 0;
+                reissued.recovery_state =
+                    DormantOperatorRecoveryDurableStateV1::ReissuedAfterAbsence;
+                commit_recovery_records(
+                    self.journal,
+                    recovery_issued_commit_id(&reissued),
+                    vec![JournalRecord::put(
+                        RecordNamespace::OperatorRecovery,
+                        pending.reservation_key.clone(),
+                        encode_issued_recovery_reservation(&reissued)?,
+                    )],
+                )?;
+                Ok(DormantOperatorRecoveryAdmissionV1::Issued(
+                    DormantOperatorRecoveryEffectHandoffV1 {
+                        issued: reissued,
+                        reservation_key: pending.reservation_key,
+                    },
+                ))
+            }
+            DormantOperatorRecoveryEffectDispositionV1::Unknown => {
+                let mut ambiguous = retained;
+                ambiguous.ambiguity_queries = ambiguous
+                    .ambiguity_queries
+                    .checked_add(1)
+                    .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+                ambiguous.recovery_state =
+                    DormantOperatorRecoveryDurableStateV1::ObservationUnknown;
+                if ambiguous.ambiguity_queries > MAXIMUM_OPERATOR_RECOVERY_AMBIGUITY_QUERIES_V1 {
+                    return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+                }
+                commit_recovery_records(
+                    self.journal,
+                    recovery_issued_commit_id(&ambiguous),
+                    vec![JournalRecord::put(
+                        RecordNamespace::OperatorRecovery,
+                        pending.reservation_key.clone(),
+                        encode_issued_recovery_reservation(&ambiguous)?,
+                    )],
+                )?;
+                let pending = DormantOperatorRecoveryPendingV1 {
+                    issued: ambiguous,
+                    reservation_key: pending.reservation_key,
+                };
+                if pending.issued.ambiguity_queries
+                    == MAXIMUM_OPERATOR_RECOVERY_AMBIGUITY_QUERIES_V1
+                {
+                    Ok(DormantOperatorRecoveryAdmissionV1::AmbiguityExhausted(
+                        pending,
+                    ))
+                } else {
+                    Ok(DormantOperatorRecoveryAdmissionV1::Ambiguous(pending))
+                }
+            }
+        }
+    }
+
+    /// Records one executor-supplied terminal result and resulting recovery head.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidObservationClientAdapter`] when protected provenance is
+    /// absent or the result fails semantic, identity, or exact binding checks.
+    pub(crate) fn record_terminal(
+        &mut self,
+        terminal: DormantOperatorRecoveryTerminalV1,
+    ) -> Result<DormantOperatorRecoveryTerminalCommitV1, InvalidObservationClientAdapter> {
+        let handoff = &terminal.handoff;
+        let result = &terminal.result;
+        self.journal
+            .ensure_protected_authority()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let retained_bytes = self
+            .journal
+            .get(RecordNamespace::OperatorRecovery, &handoff.reservation_key)
+            .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?
+            .to_vec();
+        let retained = match decode_recovery_reservation(&retained_bytes)? {
+            DormantOperatorRecoveryReservationV1::Issued(retained) => retained,
+            DormantOperatorRecoveryReservationV1::Complete {
+                issued,
+                result: completed,
+            } => {
+                if issued != handoff.issued || completed != *result {
+                    return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+                }
+                let (next_current, completed_reservation) =
+                    recovery_terminal_records(&issued, result)?;
+                let transition_key =
+                    recovery_transition_key(issued.request.resource_id(), &result.resource_version);
+                if self.journal.get(
+                    RecordNamespace::OperatorRecovery,
+                    &recovery_current_key(issued.request.resource_id()),
+                ) != Some(next_current.as_slice())
+                    || self
+                        .journal
+                        .get(RecordNamespace::OperatorRecovery, &transition_key)
+                        != Some(completed_reservation.as_slice())
+                {
+                    return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+                }
+                return Ok(DormantOperatorRecoveryTerminalCommitV1::Complete(
+                    terminal.result,
+                ));
+            }
+        };
+        if retained != handoff.issued {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        let current_key = recovery_current_key(handoff.issued.request.resource_id());
+        let protected_current = self
+            .journal
+            .get(RecordNamespace::OperatorRecovery, &current_key)
+            .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?
+            .to_vec();
+        validate_recovery_current(&handoff.issued.request, &protected_current)?;
+        validate_recovery_terminal(&handoff.issued.request, result)?;
+        if protected_current != handoff.issued.current {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        let (next_current, completed_reservation) =
+            recovery_terminal_records(&handoff.issued, result)?;
+        let records = vec![
+            JournalRecord::put(RecordNamespace::OperatorRecovery, current_key, next_current),
+            JournalRecord::put(
+                RecordNamespace::OperatorRecovery,
+                handoff.reservation_key.clone(),
+                completed_reservation.clone(),
+            ),
+            JournalRecord::put(
+                RecordNamespace::OperatorRecovery,
+                recovery_transition_key(
+                    handoff.issued.request.resource_id(),
+                    &result.resource_version,
+                ),
+                completed_reservation,
+            ),
+        ];
+        if commit_recovery_records(
+            self.journal,
+            recovery_terminal_commit_id(&handoff.issued, result),
+            records,
+        )
+        .is_err()
+        {
+            return Ok(DormantOperatorRecoveryTerminalCommitV1::Ambiguous(terminal));
+        }
+        Ok(DormantOperatorRecoveryTerminalCommitV1::Complete(
+            terminal.result,
+        ))
+    }
+
+    /// Synchronizes a fully checked current sandbox head into protected authority.
+    pub(crate) fn synchronize_sandbox(
+        &mut self,
+        resource: &CheckedSandboxResourceV1,
+    ) -> Result<(), InvalidObservationClientAdapter> {
+        let allowed = (u8::from(resource.has_true_condition(PublicConditionCodeV1::Blocked))
+            | u8::from(resource.has_true_condition(PublicConditionCodeV1::Degraded))
+            | u8::from(resource.has_true_condition(PublicConditionCodeV1::ResidualState))
+            | u8::from(resource.has_true_condition(PublicConditionCodeV1::OwnershipPending)))
+            * 4
+            | (u8::from(resource.has_true_condition(PublicConditionCodeV1::Fenced))
+                | u8::from(resource.has_true_condition(PublicConditionCodeV1::Blocked)))
+                * 8;
+        synchronize_recovery_current(
+            self.journal,
+            resource.sandbox_id(),
+            &resource.as_proto().resource_version,
+            1,
+            allowed,
+            resource.desired_generation(),
+            resource.observation_sequence(),
+            latest_recovery_transition(
+                resource.conditions(),
+                resource
+                    .as_proto()
+                    .updated_at
+                    .as_option()
+                    .map(|timestamp| (timestamp.seconds, timestamp.nanoseconds)),
+            )?,
+        )
+    }
+
+    /// Synchronizes a fully checked current operation head into protected authority.
+    pub(crate) fn synchronize_operation(
+        &mut self,
+        resource: &CheckedOperationResourceV1,
+    ) -> Result<(), InvalidObservationClientAdapter> {
+        let retry = resource.phase() == CheckedOperationPhaseV1::FailedBeforeCommit
+            && resource.retry() != CheckedRetryClassV1::Never;
+        let abandon = matches!(
+            resource.phase(),
+            CheckedOperationPhaseV1::PermanentlyBlocked
+                | CheckedOperationPhaseV1::CommittedWithResidualCleanup
+        );
+        synchronize_recovery_current(
+            self.journal,
+            resource.operation_id(),
+            resource.resource_version().as_bytes(),
+            2,
+            u8::from(retry) | u8::from(abandon) * 2,
+            resource.as_proto().accepted_generation,
+            resource
+                .conditions()
+                .iter()
+                .map(|condition| condition.as_proto().observation_sequence)
+                .max()
+                .filter(|sequence| *sequence != 0)
+                .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+            latest_recovery_transition(
+                resource.conditions(),
+                resource
+                    .as_proto()
+                    .accepted_at
+                    .as_option()
+                    .map(|timestamp| (timestamp.seconds, timestamp.nanoseconds)),
+            )?,
+        )
+    }
+}
+
+fn recovery_current_key(resource_id: [u8; 16]) -> Vec<u8> {
+    [b"current/".as_slice(), resource_id.as_slice()].concat()
+}
+
+fn recovery_reservation_key(principal: &[u8; 32], idempotency_key: &[u8]) -> Vec<u8> {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.operator-recovery-idempotency.v1\0")
+        .chain_update(principal)
+        .chain_update((idempotency_key.len() as u64).to_be_bytes())
+        .chain_update(idempotency_key)
+        .finalize()
+        .into();
+    [b"idempotency/".as_slice(), digest.as_slice()].concat()
+}
+
+fn recovery_transition_key(resource_id: [u8; 16], next_version: &[u8]) -> Vec<u8> {
+    let version_digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.operator-recovery-version-key.v1\0")
+        .chain_update((next_version.len() as u64).to_be_bytes())
+        .chain_update(next_version)
+        .finalize()
+        .into();
+    [
+        b"transition/".as_slice(),
+        resource_id.as_slice(),
+        b"/".as_slice(),
+        version_digest.as_slice(),
+    ]
+    .concat()
+}
+
+const RECOVERY_ISSUED_MAGIC: &[u8; 8] = b"AOSORI1\0";
+const RECOVERY_COMPLETE_MAGIC: &[u8; 8] = b"AOSORC1\0";
+const MAXIMUM_OPERATOR_RECOVERY_RECORD_BYTES_V1: usize = 128 * 1024;
+
+enum DormantOperatorRecoveryReservationV1 {
+    Issued(DormantOperatorRecoveryIssuedStateV1),
+    Complete {
+        issued: DormantOperatorRecoveryIssuedStateV1,
+        result: aos_proto::aos::sandbox::v1::OperatorRecoveryResult,
+    },
+}
+
+fn recovery_effect_id(
+    principal: ObjectDigest,
+    request: &OperatorRecoveryRequestV1,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.sandbox.operator-recovery-effect.v1\0")
+            .chain_update(principal.as_bytes())
+            .chain_update(request.authority_binding().as_bytes())
+            .finalize()
+            .into(),
+    )
+}
+
+fn recovery_issued_commit_id(issued: &DormantOperatorRecoveryIssuedStateV1) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.sandbox.operator-recovery-issued-commit.v1\0")
+            .chain_update(issued.effect_id.as_bytes())
+            .chain_update(issued.attempt.to_be_bytes())
+            .chain_update(issued.ambiguity_queries.to_be_bytes())
+            .finalize()
+            .into(),
+    )
+}
+
+fn recovery_terminal_commit_id(
+    issued: &DormantOperatorRecoveryIssuedStateV1,
+    result: &aos_proto::aos::sandbox::v1::OperatorRecoveryResult,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.sandbox.operator-recovery-terminal-commit.v1\0")
+            .chain_update(issued.effect_id.as_bytes())
+            .chain_update(issued.attempt.to_be_bytes())
+            .chain_update((result.resource_version.len() as u64).to_be_bytes())
+            .chain_update(&result.resource_version)
+            .finalize()
+            .into(),
+    )
+}
+
+fn encode_issued_recovery_reservation(
+    issued: &DormantOperatorRecoveryIssuedStateV1,
+) -> Result<Vec<u8>, InvalidObservationClientAdapter> {
+    let request = issued.request.to_proto().encode_to_vec();
+    let request_length = u32::try_from(request.len())
+        .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let current_length = u32::try_from(issued.current.len())
+        .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let current_head = decode_recovery_current(&issued.current)?;
+    if issued.binding != issued.request.authority_binding()
+        || issued.effect_id != recovery_effect_id(issued.principal, &issued.request)
+        || issued.current_generation != current_head.desired_generation
+        || issued.attempt == 0
+        || issued.attempt > MAXIMUM_OPERATOR_RECOVERY_EFFECT_ATTEMPTS_V1
+        || issued.ambiguity_queries > MAXIMUM_OPERATOR_RECOVERY_AMBIGUITY_QUERIES_V1
+        || !matches!(
+            (
+                issued.recovery_state,
+                issued.attempt,
+                issued.ambiguity_queries
+            ),
+            (DormantOperatorRecoveryDurableStateV1::InitialIssue, 1, 0)
+                | (
+                    DormantOperatorRecoveryDurableStateV1::ReissuedAfterAbsence,
+                    2..=MAXIMUM_OPERATOR_RECOVERY_EFFECT_ATTEMPTS_V1,
+                    0
+                )
+                | (
+                    DormantOperatorRecoveryDurableStateV1::ObservationUnknown,
+                    _,
+                    1..=MAXIMUM_OPERATOR_RECOVERY_AMBIGUITY_QUERIES_V1
+                )
+        )
+    {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    validate_recovery_current(&issued.request, &issued.current)?;
+    let encoded_length = 136_usize
+        .checked_add(request.len())
+        .and_then(|length| length.checked_add(issued.current.len()))
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    if encoded_length > MAXIMUM_OPERATOR_RECOVERY_RECORD_BYTES_V1 {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let mut encoded = Vec::with_capacity(encoded_length);
+    encoded.extend_from_slice(RECOVERY_ISSUED_MAGIC);
+    encoded.extend_from_slice(issued.principal.as_bytes());
+    encoded.extend_from_slice(issued.binding.as_bytes());
+    encoded.extend_from_slice(issued.effect_id.as_bytes());
+    encoded.extend_from_slice(&issued.attempt.to_be_bytes());
+    encoded.extend_from_slice(&issued.ambiguity_queries.to_be_bytes());
+    encoded.extend_from_slice(&issued.recovery_state.to_wire().to_be_bytes());
+    encoded.extend_from_slice(&issued.request.action().to_be_bytes());
+    encoded.extend_from_slice(&issued.current_generation.to_be_bytes());
+    encoded.extend_from_slice(&request_length.to_be_bytes());
+    encoded.extend_from_slice(&current_length.to_be_bytes());
+    encoded.extend_from_slice(&request);
+    encoded.extend_from_slice(&issued.current);
+    Ok(encoded)
+}
+
+fn encode_completed_recovery_reservation(
+    issued: &DormantOperatorRecoveryIssuedStateV1,
+    result: &aos_proto::aos::sandbox::v1::OperatorRecoveryResult,
+) -> Result<Vec<u8>, InvalidObservationClientAdapter> {
+    validate_recovery_terminal(&issued.request, result)?;
+    let issued = encode_issued_recovery_reservation(issued)?;
+    let result = result.encode_to_vec();
+    let issued_length = u32::try_from(issued.len())
+        .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let result_length = u32::try_from(result.len())
+        .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let encoded_length = 16_usize
+        .checked_add(issued.len())
+        .and_then(|length| length.checked_add(result.len()))
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    if encoded_length > MAXIMUM_OPERATOR_RECOVERY_RECORD_BYTES_V1 {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let mut encoded = Vec::with_capacity(encoded_length);
+    encoded.extend_from_slice(RECOVERY_COMPLETE_MAGIC);
+    encoded.extend_from_slice(&issued_length.to_be_bytes());
+    encoded.extend_from_slice(&issued);
+    encoded.extend_from_slice(&result_length.to_be_bytes());
+    encoded.extend_from_slice(&result);
+    Ok(encoded)
+}
+
+fn decode_recovery_reservation(
+    encoded: &[u8],
+) -> Result<DormantOperatorRecoveryReservationV1, InvalidObservationClientAdapter> {
+    if encoded.len() > MAXIMUM_OPERATOR_RECOVERY_RECORD_BYTES_V1 {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    if encoded.get(..8) == Some(RECOVERY_ISSUED_MAGIC.as_slice()) {
+        return decode_issued_recovery_reservation(encoded)
+            .map(DormantOperatorRecoveryReservationV1::Issued);
+    }
+    if encoded.len() < 16 || encoded.get(..8) != Some(RECOVERY_COMPLETE_MAGIC.as_slice()) {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let issued_length = u32::from_be_bytes(
+        encoded[8..12]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    ) as usize;
+    let issued_end = 12_usize
+        .checked_add(issued_length)
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let result_length_end = issued_end
+        .checked_add(4)
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    if encoded.len() < result_length_end {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let result_length = u32::from_be_bytes(
+        encoded[issued_end..result_length_end]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    ) as usize;
+    let result_end = result_length_end
+        .checked_add(result_length)
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    if result_end != encoded.len() {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let issued = decode_issued_recovery_reservation(&encoded[12..issued_end])?;
+    let result = aos_proto::aos::sandbox::v1::OperatorRecoveryResult::decode_from_slice(
+        &encoded[result_length_end..result_end],
+    )
+    .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    if result.encode_to_vec() != encoded[result_length_end..result_end] {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    validate_recovery_terminal(&issued.request, &result)?;
+    Ok(DormantOperatorRecoveryReservationV1::Complete { issued, result })
+}
+
+fn decode_issued_recovery_reservation(
+    encoded: &[u8],
+) -> Result<DormantOperatorRecoveryIssuedStateV1, InvalidObservationClientAdapter> {
+    if encoded.len() < 136 || encoded.get(..8) != Some(RECOVERY_ISSUED_MAGIC.as_slice()) {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let principal = ObjectDigest::from_bytes(
+        encoded[8..40]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    let binding = ObjectDigest::from_bytes(
+        encoded[40..72]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    let effect_id = ObjectDigest::from_bytes(
+        encoded[72..104]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    let attempt = u32::from_be_bytes(
+        encoded[104..108]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    let ambiguity_queries = u32::from_be_bytes(
+        encoded[108..112]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    let recovery_state = DormantOperatorRecoveryDurableStateV1::from_wire(u32::from_be_bytes(
+        encoded[112..116]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    ))
+    .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let action = i32::from_be_bytes(
+        encoded[116..120]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    let current_generation = u64::from_be_bytes(
+        encoded[120..128]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    let request_length = u32::from_be_bytes(
+        encoded[128..132]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    ) as usize;
+    let current_length = u32::from_be_bytes(
+        encoded[132..136]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    ) as usize;
+    let request_end = 136_usize
+        .checked_add(request_length)
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let current_end = request_end
+        .checked_add(current_length)
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    if current_end != encoded.len() {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let request_proto = aos_proto::aos::sandbox::v1::OperatorRecoveryRequest::decode_from_slice(
+        &encoded[136..request_end],
+    )
+    .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    if request_proto.encode_to_vec() != encoded[136..request_end] {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let request = OperatorRecoveryRequestV1::try_from(request_proto)?;
+    let issued = DormantOperatorRecoveryIssuedStateV1 {
+        principal,
+        binding,
+        effect_id,
+        request,
+        current: encoded[request_end..current_end].to_vec(),
+        current_generation,
+        attempt,
+        ambiguity_queries,
+        recovery_state,
+    };
+    if action != issued.request.action() || encode_issued_recovery_reservation(&issued)? != encoded
+    {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    Ok(issued)
+}
+
+fn validate_recovery_reservation_key(
+    issued: &DormantOperatorRecoveryIssuedStateV1,
+    key: &[u8],
+) -> Result<(), InvalidObservationClientAdapter> {
+    if key
+        != recovery_reservation_key(
+            issued.principal.as_bytes(),
+            issued.request.idempotency_key(),
+        )
+    {
+        Err(InvalidObservationClientAdapter::InvalidOperatorRecovery)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_recovery_replay(
+    issued: &DormantOperatorRecoveryIssuedStateV1,
+    principal: ObjectDigest,
+    binding: ObjectDigest,
+    effect_id: ObjectDigest,
+    request: &OperatorRecoveryRequestV1,
+    reservation_key: &[u8],
+) -> Result<(), InvalidObservationClientAdapter> {
+    validate_recovery_reservation_key(issued, reservation_key)?;
+    if issued.principal != principal
+        || issued.binding != binding
+        || issued.effect_id != effect_id
+        || &issued.request != request
+    {
+        Err(InvalidObservationClientAdapter::InvalidOperatorRecovery)
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RecoveryCurrentHeadV1 {
+    kind: u8,
+    allowed_actions: u8,
+    version: Vec<u8>,
+    desired_generation: u64,
+    observation_sequence: u64,
+    transition: (i64, u32),
+}
+
+fn latest_recovery_transition(
+    conditions: &[crate::controller_query::CheckedConditionV1],
+    fallback: Option<(i64, u32)>,
+) -> Result<(i64, u32), InvalidObservationClientAdapter> {
+    conditions
+        .iter()
+        .map(crate::controller_query::CheckedConditionV1::transition)
+        .chain(fallback)
+        .max()
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)
+}
+
+fn encode_recovery_current(
+    kind: u8,
+    allowed_actions: u8,
+    version: &[u8],
+    desired_generation: u64,
+    observation_sequence: u64,
+    transition: (i64, u32),
+) -> Result<Vec<u8>, InvalidObservationClientAdapter> {
+    if !matches!(kind, 1 | 2)
+        || version.is_empty()
+        || desired_generation == 0
+        || observation_sequence == 0
+        || transition.1 >= 1_000_000_000
+        || !(-62_135_596_800..=253_402_300_799).contains(&transition.0)
+    {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let version_len = u32::try_from(version.len())
+        .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let mut value = Vec::with_capacity(34 + version.len());
+    value.extend_from_slice(&[kind, allowed_actions]);
+    value.extend_from_slice(&version_len.to_be_bytes());
+    value.extend_from_slice(version);
+    value.extend_from_slice(&desired_generation.to_be_bytes());
+    value.extend_from_slice(&observation_sequence.to_be_bytes());
+    value.extend_from_slice(&transition.0.to_be_bytes());
+    value.extend_from_slice(&transition.1.to_be_bytes());
+    Ok(value)
+}
+
+fn decode_recovery_current(
+    current: &[u8],
+) -> Result<RecoveryCurrentHeadV1, InvalidObservationClientAdapter> {
+    if current.len() < 35 {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let version_len = u32::from_be_bytes(
+        current[2..6]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    ) as usize;
+    let version_end = 6_usize
+        .checked_add(version_len)
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    if current.len() != version_end + 28 {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let desired_generation = u64::from_be_bytes(
+        current[version_end..version_end + 8]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    let observation_sequence = u64::from_be_bytes(
+        current[version_end + 8..version_end + 16]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    let seconds = i64::from_be_bytes(
+        current[version_end + 16..version_end + 24]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    let nanoseconds = u32::from_be_bytes(
+        current[version_end + 24..version_end + 28]
+            .try_into()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+    );
+    encode_recovery_current(
+        current[0],
+        current[1],
+        &current[6..version_end],
+        desired_generation,
+        observation_sequence,
+        (seconds, nanoseconds),
+    )?;
+    Ok(RecoveryCurrentHeadV1 {
+        kind: current[0],
+        allowed_actions: current[1],
+        version: current[6..version_end].to_vec(),
+        desired_generation,
+        observation_sequence,
+        transition: (seconds, nanoseconds),
+    })
+}
+
+fn synchronize_recovery_current(
+    journal: &mut crate::Journal,
+    resource_id: [u8; 16],
+    version: &[u8],
+    kind: u8,
+    allowed_actions: u8,
+    desired_generation: u64,
+    observation_sequence: u64,
+    transition: (i64, u32),
+) -> Result<(), InvalidObservationClientAdapter> {
+    journal
+        .ensure_protected_authority()
+        .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let value = encode_recovery_current(
+        kind,
+        allowed_actions,
+        version,
+        desired_generation,
+        observation_sequence,
+        transition,
+    )?;
+    let current_key = recovery_current_key(resource_id);
+    if let Some(existing) = journal.get(RecordNamespace::OperatorRecovery, &current_key) {
+        if existing == value.as_slice() {
+            return Ok(());
+        }
+        let existing = decode_recovery_current(existing)?;
+        if existing.kind != kind
+            || observation_sequence <= existing.observation_sequence
+            || desired_generation < existing.desired_generation
+            || transition < existing.transition
+        {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+    }
+    let digest = ObjectDigest::from_bytes(Sha256::digest(&value).into());
+    commit_recovery_records(
+        journal,
+        digest,
+        vec![JournalRecord::put(
+            RecordNamespace::OperatorRecovery,
+            current_key,
+            value,
+        )],
+    )
+}
+
+fn validate_recovery_current(
+    request: &OperatorRecoveryRequestV1,
+    current: &[u8],
+) -> Result<(), InvalidObservationClientAdapter> {
+    let head = decode_recovery_current(current)?;
+    if head.version.as_slice() != request.expected_resource_version()
+        || head.allowed_actions & (1_u8 << (request.action() - 1)) == 0
+    {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let evidence = request.evidence();
+    let expected_digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.operator-recovery-current-evidence.v1\0")
+        .chain_update(request.resource_id())
+        .chain_update((current.len() as u64).to_be_bytes())
+        .chain_update(current)
+        .finalize()
+        .into();
+    if evidence.media_type != "application/vnd.aos.sandbox.operator-recovery-evidence.v1"
+        || evidence.sha256 != expected_digest
+        || evidence.encoded_size != (16 + current.len()) as u64
+    {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    Ok(())
+}
+
+fn validate_recovery_terminal(
+    request: &OperatorRecoveryRequestV1,
+    result: &aos_proto::aos::sandbox::v1::OperatorRecoveryResult,
+) -> Result<(), InvalidObservationClientAdapter> {
+    if result.resource_id.as_slice() != request.resource_id()
+        || result.action != request.action()
+        || result.resource_version.is_empty()
+        || result.resource_version.len() > crate::cli_model::MAXIMUM_CLI_OPAQUE_BYTES
+        || result.resource_version == request.expected_resource_version()
+    {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    crate::cli_model::CheckedOperatorRecoveryResultV1::try_from(result.clone())
+        .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    Ok(())
+}
+
+fn recovery_terminal_records(
+    issued: &DormantOperatorRecoveryIssuedStateV1,
+    result: &aos_proto::aos::sandbox::v1::OperatorRecoveryResult,
+) -> Result<(Vec<u8>, Vec<u8>), InvalidObservationClientAdapter> {
+    validate_recovery_terminal(&issued.request, result)?;
+    let current_head = decode_recovery_current(&issued.current)?;
+    let desired_generation = result
+        .conditions
+        .iter()
+        .map(|condition| condition.desired_generation)
+        .max()
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let observation_sequence = result
+        .conditions
+        .iter()
+        .map(|condition| condition.observation_sequence)
+        .max()
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    let transition = result
+        .conditions
+        .iter()
+        .filter_map(|condition| condition.transition_time.as_option())
+        .map(|timestamp| (timestamp.seconds, timestamp.nanoseconds))
+        .max()
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    if result.resource_version == current_head.version
+        || desired_generation < current_head.desired_generation
+        || observation_sequence <= current_head.observation_sequence
+        || transition < current_head.transition
+    {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let next_current = encode_recovery_current(
+        current_head.kind,
+        0,
+        &result.resource_version,
+        desired_generation,
+        observation_sequence,
+        transition,
+    )?;
+    let completed = encode_completed_recovery_reservation(issued, result)?;
+    Ok((next_current, completed))
+}
+
+fn commit_recovery_records(
+    journal: &mut crate::Journal,
+    binding: ObjectDigest,
+    records: Vec<JournalRecord>,
+) -> Result<(), InvalidObservationClientAdapter> {
+    let mut transaction_id = [0_u8; 16];
+    transaction_id.copy_from_slice(&binding.as_bytes()[..16]);
+    if transaction_id == [0; 16] {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    let transaction = JournalTransaction::new(transaction_id, records)
+        .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    match journal.commit(&transaction) {
+        Ok(_) => Ok(()),
+        Err(_)
+            if transaction
+                .records()
+                .iter()
+                .all(|record| journal.get(record.namespace(), record.key()) == record.value()) =>
+        {
+            Ok(())
+        }
+        Err(_) => Err(InvalidObservationClientAdapter::InvalidOperatorRecovery),
+    }
+}
+
 /// Borrows the controller's sole protected journal for dormant CLI authorization.
 ///
 /// Only [`NodeController::dormant_cli_authorization`] constructs this owner.
 /// It cannot be redirected to a caller-selected journal and exposes no journal
 /// accessor, command registration, route, or effect-dispatch operation. Its
-/// paired-clock adapter is the same protected deployment boundary used by the
-/// controller's ownership and runtime-currentness paths.
+/// fixed clock owner reads only kernel realtime, BOOTTIME, and boot identity;
+/// callers cannot supply samples or replace its source.
 #[cfg(target_os = "linux")]
 #[must_use = "the dormant CLI authorization owner must be used while borrowed"]
-pub(crate) struct DormantCliAuthorizationOwnerV1<'controller, 'clock, T> {
+pub(crate) struct DormantCliAuthorizationOwnerV1<'controller> {
     journal: &'controller mut crate::Journal,
-    protected_clock: &'clock mut T,
+    protected_clock: ControllerProtectedClockV1,
 }
 
 #[cfg(target_os = "linux")]
-impl<T> DormantCliAuthorizationOwnerV1<'_, '_, T>
-where
-    T: FnMut() -> Result<RawPairedClockSample, crate::ProtectedOwnershipClockError>,
-{
+impl DormantCliAuthorizationOwnerV1<'_> {
+    /// Authenticates and routes one mutation with retained sealed authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliAuthorizationAdapterError`] unless the authenticated payload,
+    /// protected authorization head, resolver result, and routed protobuf agree.
+    pub(crate) fn authorize_routed_mutation<F>(
+        &mut self,
+        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
+        output: DormantSandboxOutputV1,
+        client_state: DormantClientStatePlanV1,
+        resolve: F,
+    ) -> Result<DormantSandboxRequestV1, CliAuthorizationAdapterError>
+    where
+        F: FnOnce(
+            &DecodedAuthenticatedCliRequestV1,
+            &RequestProvenanceV1,
+        ) -> ResolvedPublicMutationV1,
+    {
+        let authorized = self.authorize_mutation(authenticated, resolve)?;
+        DormantSandboxRequestV1::from_authorized_mutation(authorized, output, client_state)
+            .map_err(|_| CliAuthorizationAdapterError::MutationBindingMismatch)
+    }
+
+    /// Authenticates and authorizes one exact protected operator-recovery request.
+    pub(crate) fn authorize_operator_recovery(
+        &mut self,
+        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
+        request: OperatorRecoveryRequestV1,
+    ) -> Result<AuthorizedOperatorRecoveryV1, CliAuthorizationAdapterError> {
+        self.authenticate_request(authenticated)?
+            .authorize_operator_recovery(request)
+    }
+
     /// Authenticates, currently authorizes, resolves, and seals one CLI mutation.
     ///
     /// The authenticated local record supplies every transport identity. The
@@ -291,7 +2475,7 @@ where
             PublisherAuthorityLimits::default(),
             PublisherPolicyLimits::default(),
             authenticated.capability_id(),
-            &mut *self.protected_clock,
+            &mut self.protected_clock,
             &decoded,
             &identity,
             &channel,
@@ -301,11 +2485,121 @@ where
     }
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) struct ControllerProtectedClockV1 {
+    provenance: aos_sandbox_core::RawClockProvenance,
+    host_boot_id: [u8; 16],
+}
+
+#[cfg(target_os = "linux")]
+impl ControllerProtectedClockV1 {
+    fn open_fixed() -> Result<Self, crate::ProtectedOwnershipClockError> {
+        let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .map_err(|_| crate::ProtectedOwnershipClockError)?;
+        let compact = boot_id.trim().replace('-', "");
+        if compact.len() != 32 {
+            return Err(crate::ProtectedOwnershipClockError);
+        }
+        let mut host_boot_id = [0_u8; 16];
+        for (target, pair) in host_boot_id
+            .iter_mut()
+            .zip(compact.as_bytes().chunks_exact(2))
+        {
+            let high = fixed_hex_nibble(pair[0]).ok_or(crate::ProtectedOwnershipClockError)?;
+            let low = fixed_hex_nibble(pair[1]).ok_or(crate::ProtectedOwnershipClockError)?;
+            *target = (high << 4) | low;
+        }
+        let provenance = aos_sandbox_core::RawClockProvenance::new_untrusted(*b"aos-cli-clock-v1")
+            .map_err(|_| crate::ProtectedOwnershipClockError)?;
+
+        Ok(Self {
+            provenance,
+            host_boot_id,
+        })
+    }
+
+    pub(crate) fn sample(
+        &mut self,
+    ) -> Result<RawPairedClockSample, crate::ProtectedOwnershipClockError> {
+        let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+        let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+        let boottime_nanoseconds = u64::try_from(boottime.tv_sec)
+            .ok()
+            .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+            .and_then(|value| {
+                u64::try_from(boottime.tv_nsec)
+                    .ok()
+                    .and_then(|nanoseconds| value.checked_add(nanoseconds))
+            })
+            .ok_or(crate::ProtectedOwnershipClockError)?;
+
+        RawPairedClockSample::new_untrusted(
+            self.provenance,
+            self.host_boot_id,
+            realtime.tv_sec,
+            boottime_nanoseconds,
+        )
+        .map_err(|_| crate::ProtectedOwnershipClockError)
+    }
+}
+
+#[cfg(target_os = "linux")]
+const fn fixed_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 impl<C, E> NodeController<C, E>
 where
     C: ActivatedOperationCompiler,
     E: SingleNodeEffectExecutor,
 {
+    /// Borrows the sole protected journal for a dormant operator-recovery transition.
+    ///
+    /// The returned owner dispatches no runtime action and registers no route;
+    /// it may only maintain protected recovery authority and transition records.
+    pub(crate) fn dormant_operator_recovery(&mut self) -> DormantOperatorRecoveryOwnerV1<'_> {
+        DormantOperatorRecoveryOwnerV1 {
+            journal: self.reconciler.journal_mut(),
+        }
+    }
+
+    /// Borrows protected effect progress for the dormant observability producer seam.
+    pub(crate) fn dormant_observability(
+        &mut self,
+    ) -> crate::controller_query::observability::DormantObservabilityProtectedOwnerV1<'_> {
+        crate::controller_query::observability::DormantObservabilityProtectedOwnerV1::new(
+            self.reconciler.journal_mut(),
+        )
+    }
+
+    /// Constructs the unregistered protected observability service from selected sinks.
+    pub(crate) fn dormant_observability_service<R, X, H, I>(
+        &mut self,
+        recorder: R,
+        exporter: X,
+        health: H,
+        inventory: I,
+    ) -> crate::controller_query::observability::DormantObservabilityServiceV1<'_, R, X, H, I>
+    where
+        R: crate::controller_query::observability::DormantObservationRecorderV1,
+        X: crate::controller_query::observability::DormantMetricExporterV1,
+        H: crate::controller_query::observability::DormantHealthApiV1,
+        I: crate::controller_query::observability::DormantResidualInventoryApiV1,
+    {
+        crate::controller_query::observability::DormantObservabilityServiceV1::new(
+            self.reconciler.journal_mut(),
+            recorder,
+            exporter,
+            health,
+            inventory,
+        )
+    }
+
     /// Constructs a controller around the sole journal writer.
     #[must_use]
     pub const fn new(
@@ -326,21 +2620,21 @@ where
     ///
     /// This source-only factory registers no public command or route and grants
     /// no effect authority. The returned owner can only derive CLI provenance
-    /// from an authenticated local-session record, a protected paired-clock
-    /// adapter, and current protected state. The adapter is retained rather
-    /// than accepting caller-shaped timestamps at individual authorizations.
+    /// from an authenticated local-session record, the fixed controller-owned
+    /// paired clock, and current protected state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtectedOwnershipClockError`](crate::ProtectedOwnershipClockError)
+    /// when the fixed kernel boot identity cannot be read or validated.
     #[cfg(target_os = "linux")]
-    pub(crate) fn dormant_cli_authorization<'controller, 'clock, T>(
-        &'controller mut self,
-        protected_clock: &'clock mut T,
-    ) -> DormantCliAuthorizationOwnerV1<'controller, 'clock, T>
-    where
-        T: FnMut() -> Result<RawPairedClockSample, crate::ProtectedOwnershipClockError>,
-    {
-        DormantCliAuthorizationOwnerV1 {
+    pub(crate) fn dormant_cli_authorization(
+        &mut self,
+    ) -> Result<DormantCliAuthorizationOwnerV1<'_>, crate::ProtectedOwnershipClockError> {
+        Ok(DormantCliAuthorizationOwnerV1 {
             journal: self.reconciler.journal_mut(),
-            protected_clock,
-        }
+            protected_clock: ControllerProtectedClockV1::open_fixed()?,
+        })
     }
 
     /// Borrows the protected publisher capability registry for controller administration.
@@ -398,7 +2692,7 @@ where
     /// signatures or clocks, an unavailable current publication, and an empty
     /// fixed validity window.
     #[cfg(target_os = "linux")]
-    pub fn acquire_current_assignment_target<T>(
+    pub(crate) fn acquire_current_assignment_target<T>(
         &mut self,
         holder: crate::runtime_scope::RuntimeScopeHolder,
         policy: crate::runtime_scope::CurrentRuntimeScopePolicy,
@@ -436,7 +2730,7 @@ where
     /// invalid signatures or clocks, missing Host grants, broker denial, and
     /// stale or substituted kernel execution observations.
     #[cfg(target_os = "linux")]
-    pub fn observe_current_runtime<T>(
+    pub(crate) fn observe_current_runtime<T>(
         &mut self,
         holder: crate::runtime_scope::RuntimeScopeHolder,
         client: crate::runtime_scope::RuntimeScopeClient,
@@ -473,7 +2767,7 @@ where
     /// Rejects current-state changes, signature or clock failures, elapsed
     /// deadlines, and stale retained Host or payload executions.
     #[cfg(target_os = "linux")]
-    pub fn recheck_current_runtime<T>(
+    pub(crate) fn recheck_current_runtime<T>(
         &mut self,
         scope: &crate::runtime_scope::CurrentRuntimeScope,
         clock: &mut T,
@@ -485,6 +2779,325 @@ where
         >,
     {
         scope.recheck(self.reconciler.journal_mut(), clock)
+    }
+
+    /// Joins current controller assignment authority to one lifecycle rebuild.
+    ///
+    /// The returned evidence borrows this controller, the fixed lifecycle
+    /// owner, and the acquired assignment. Controller currentness and the
+    /// paired clock are checked on both sides of lifecycle binding, so a
+    /// caller cannot substitute a boot-inventory scalar for the actual current
+    /// assignment head.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::lifecycle::LifecyclePhase6ErrorV1`] when assignment
+    /// currentness changes, the clock expires, or the lifecycle operation does
+    /// not bind the exact assignment and target.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn current_lifecycle_target_assignment<'current, T>(
+        &'current mut self,
+        lifecycle: &'current crate::lifecycle::LifecycleProtectedJournalOwnerV1<'_>,
+        operation_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        assignment: &'current crate::runtime_scope::CurrentAssignmentTarget,
+        target: aos_sandbox_core::SandboxId,
+        clock: &mut T,
+    ) -> Result<
+        crate::lifecycle::CurrentLifecycleTargetAssignmentV1<'current>,
+        crate::lifecycle::LifecyclePhase6ErrorV1,
+    >
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        assignment
+            .recheck(self.reconciler.journal_mut(), clock)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let current = lifecycle
+            .bind_current_target_assignment(operation_key, assignment, target)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        assignment
+            .recheck(self.reconciler.journal_mut(), clock)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        Ok(current)
+    }
+
+    /// Joins a freshly sampled kernel boot and live Host runtime to Resume.
+    ///
+    /// This boundary samples the fixed kernel boot identity around two full
+    /// protected runtime rechecks. The lifetime-bound result therefore cannot
+    /// be reconstructed from a caller-selected historical boot inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::lifecycle::LifecyclePhase6ErrorV1`] for boot rollover,
+    /// expired or replaced runtime authority, failed Host liveness, or an
+    /// operation/fence mismatch.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn current_lifecycle_runtime_liveness<'current, T>(
+        &'current mut self,
+        lifecycle: &'current crate::lifecycle::LifecycleProtectedJournalOwnerV1<'_>,
+        operation_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        runtime: &'current crate::runtime_scope::CurrentRuntimeScope,
+        clock: &mut T,
+    ) -> Result<
+        crate::lifecycle::CurrentLifecycleRuntimeLivenessV1<'current>,
+        crate::lifecycle::LifecyclePhase6ErrorV1,
+    >
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        runtime
+            .recheck(self.reconciler.journal_mut(), clock)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let current = lifecycle
+            .bind_current_runtime_liveness(operation_key, runtime, boot_before)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        runtime
+            .recheck(self.reconciler.journal_mut(), clock)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        if boot_before != boot_after {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        Ok(current)
+    }
+
+    /// Joins all six protected current inventories for LIFE-06 planning.
+    ///
+    /// Runtime, Mount, Storage, and Network arrive as opaque adjacent outcome
+    /// pairs minted from their fixed protected broker-session exchanges. Each
+    /// pair preserves complete state and advances both traffic sequences by
+    /// exactly one; retained historical or no-op rechecks are rejected.
+    /// Storage's signed body includes its complete
+    /// dataset/snapshot/clone/hold/quota projection. Cache and the complete
+    /// zero-or-many transfer set are replayed by their fixed protected owners.
+    /// The fixed kernel boot is sampled around the join and every commitment
+    /// must match the lifecycle boot record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::lifecycle::LifecyclePhase6ErrorV1`] when any inventory
+    /// is incomplete, stale, foreign to the current boot, replaced during the
+    /// join, or mismatched with the operation-bound lifecycle aggregate.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn current_lifecycle_boot_domains<'current>(
+        &'current mut self,
+        lifecycle: &'current crate::lifecycle::LifecycleProtectedJournalOwnerV1<'_>,
+        operation_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        boot_inventory_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        runtime: &'current crate::lifecycle::LifecycleAuthenticatedRuntimeInventorySuccessorV1,
+        mounts: &'current crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventorySuccessorV1,
+        storage: &'current crate::DurableStorageResourceInventorySnapshotV1,
+        storage_inventory: &'current crate::lifecycle::LifecycleAuthenticatedStorageInventorySuccessorV1,
+        network: &'current crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventorySuccessorV1,
+        cache: &'current mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        transfer: &'current mut crate::multi_node::ProtectedMultiNodeAuthorityOwnerV1,
+        transfer_inventory: &'current crate::lifecycle::LifecycleAuthenticatedTransferInventoryV1,
+    ) -> Result<
+        crate::lifecycle::CurrentLifecycleBootDomainInventoriesV1<'current>,
+        crate::lifecycle::LifecyclePhase6ErrorV1,
+    > {
+        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        let runtime_inventory = runtime.initial();
+        let runtime_inventory_after = runtime.current();
+        if runtime.boot_binding() != storage_inventory.boot_binding()
+            || runtime.boot_binding() != mounts.boot_binding()
+            || runtime.boot_binding() != network.boot_binding()
+            || mounts.initial().endpoint()
+                != crate::lifecycle::LifecycleBootBootstrapEndpointV1::Mount
+            || network.initial().endpoint()
+                != crate::lifecycle::LifecycleBootBootstrapEndpointV1::Network
+        {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        runtime_inventory.recheck_boot(boot_before)?;
+        runtime_inventory_after.recheck_boot(boot_before)?;
+        storage
+            .recheck(self.reconciler.journal_mut())
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let storage_inventory_after = storage_inventory.current();
+        let storage_inventory = storage_inventory.initial();
+        storage_inventory.recheck_launch_snapshot(storage)?;
+        storage_inventory_after.recheck_launch_snapshot(storage)?;
+        if storage.inventory().kernel_boot_id() != &boot_before {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+
+        let cache_inventory = cache
+            .lifecycle_boot_inventory()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        transfer
+            .recheck_lifecycle_transfer_inventory(transfer_inventory)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        storage
+            .recheck(self.reconciler.journal_mut())
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        storage_inventory_after.recheck_launch_snapshot(storage)?;
+        let cache_after = cache
+            .lifecycle_boot_inventory()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        transfer
+            .recheck_lifecycle_transfer_inventory(transfer_inventory)
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        let boot_final = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
+            .into_bytes();
+        runtime_inventory.recheck_boot(boot_final)?;
+        runtime_inventory_after.recheck_boot(boot_final)?;
+        if boot_before != boot_after || boot_after != boot_final || cache_after != cache_inventory {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let commitments = [
+            runtime_inventory.commitment(),
+            mounts.initial().commitment(),
+            storage_inventory.commitment(),
+            network.initial().commitment(),
+            cache_after.root(),
+            transfer_inventory.commitment(),
+        ];
+        let physical = crate::lifecycle::fresh_physical_inventory(
+            &runtime_inventory,
+            mounts.initial(),
+            &storage_inventory,
+            network.initial(),
+            &cache_after,
+            transfer_inventory,
+        )?;
+        let current = lifecycle
+            .bind_current_boot_domains(
+                operation_key,
+                boot_inventory_key,
+                boot_final,
+                commitments,
+                physical,
+            )
+            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
+        if current.boot_binding() != runtime.boot_binding() {
+            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        Ok(current)
+    }
+
+    /// Commits a new boot inventory root from a consumed protected six-domain join.
+    ///
+    /// This is the publication half of the dormant two-phase boot protocol.
+    /// Callers first consume the current joined inventories into `source`; this
+    /// method then derives every domain commitment from that opaque value and
+    /// derives time and boot identity from the controller-owned kernel clock.
+    /// After commit, callers must query Host and Storage again and run the
+    /// ordinary current-domain join before using the new boot capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::lifecycle::LifecycleProtectedJournalErrorV1`] for a
+    /// stale operation/root, clock or boot rollover, malformed lineage, or a
+    /// protected commit failure. Outcome-unknown retains its exact recovery
+    /// token in the returned progress value.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_lifecycle_boot_inventory_refresh(
+        &mut self,
+        lifecycle: &mut crate::lifecycle::LifecycleProtectedJournalOwnerV1<'_>,
+        operation_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        boot_inventory_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        source: crate::lifecycle::LifecycleBootInventoryRefreshSourceV1,
+        transaction_id: [u8; 16],
+        atomic_join: aos_sandbox_core::ResourceId,
+        operation_lineage: aos_sandbox_core::ResourceId,
+        inventory_lineage: aos_sandbox_core::ResourceId,
+    ) -> Result<
+        crate::lifecycle::LifecycleProgressCommitOutcomeV1,
+        crate::lifecycle::LifecycleProtectedJournalErrorV1,
+    > {
+        let mut clock = ControllerProtectedClockV1::open_fixed()
+            .map_err(|_| crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let sample = clock
+            .sample()
+            .map_err(|_| crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let current_boot = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
+            .into_bytes();
+        if sample.host_boot_id() != current_boot || sample.wall_seconds() <= 0 {
+            return Err(crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let observed_at = u64::try_from(sample.wall_seconds())
+            .ok()
+            .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+            .and_then(|value| value.checked_add(sample.boottime_nanoseconds() % 1_000_000_000))
+            .and_then(|value| crate::lifecycle::LifecycleTimeV1::new(value).ok())
+            .ok_or(crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let prepared = lifecycle.prepare_boot_inventory_refresh(
+            operation_key,
+            boot_inventory_key,
+            transaction_id,
+            atomic_join,
+            operation_lineage,
+            inventory_lineage,
+            current_boot,
+            source,
+            observed_at,
+        )?;
+        lifecycle.commit_auxiliary_append(prepared)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_lifecycle_boot_inventory_bootstrap(
+        &mut self,
+        lifecycle: &mut crate::lifecycle::LifecycleProtectedJournalOwnerV1<'_>,
+        operation_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        boot_inventory_key: &crate::lifecycle::LifecycleProtectedJournalKeyV1,
+        source: crate::lifecycle::LifecycleBootInventoryBootstrapSourceV1,
+        transaction_id: [u8; 16],
+        atomic_join: aos_sandbox_core::ResourceId,
+        operation_lineage: aos_sandbox_core::ResourceId,
+        inventory_lineage: aos_sandbox_core::ResourceId,
+    ) -> Result<
+        crate::lifecycle::LifecycleProgressCommitOutcomeV1,
+        crate::lifecycle::LifecycleProtectedJournalErrorV1,
+    > {
+        let mut clock = ControllerProtectedClockV1::open_fixed()
+            .map_err(|_| crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let sample = clock
+            .sample()
+            .map_err(|_| crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if sample.host_boot_id() != source.challenge().host_boot() || sample.wall_seconds() <= 0 {
+            return Err(crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let observed_at = u64::try_from(sample.wall_seconds())
+            .ok()
+            .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+            .and_then(|value| value.checked_add(sample.boottime_nanoseconds() % 1_000_000_000))
+            .and_then(|value| crate::lifecycle::LifecycleTimeV1::new(value).ok())
+            .ok_or(crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let prepared = lifecycle.prepare_boot_inventory_bootstrap(
+            operation_key,
+            boot_inventory_key,
+            transaction_id,
+            atomic_join,
+            operation_lineage,
+            inventory_lineage,
+            source,
+            observed_at,
+        )?;
+        lifecycle.commit_auxiliary_append(prepared)
     }
 
     /// Tracks a freshly observed runtime in the protected generation ledger.
@@ -501,7 +3114,7 @@ where
     /// authority, and failed protected commits. A post-commit failure can leave
     /// an inert generation record without returning any live proof.
     #[cfg(target_os = "linux")]
-    pub fn track_current_runtime_generation<T>(
+    pub(crate) fn track_current_runtime_generation<T>(
         &mut self,
         scope: crate::runtime_scope::CurrentRuntimeScope,
         clock: &mut T,
@@ -532,7 +3145,7 @@ where
     /// Rejects changed generation heads, corrupt history, stale authority,
     /// expired observations, and unavailable retained kernel executions.
     #[cfg(target_os = "linux")]
-    pub fn recheck_current_runtime_generation<T>(
+    pub(crate) fn recheck_current_runtime_generation<T>(
         &mut self,
         generation: &crate::runtime_scope::CurrentRuntimeGeneration,
         clock: &mut T,
@@ -560,7 +3173,7 @@ where
     /// Rejects corrupt or exhausted allocation history, stale runtime proofs,
     /// incompatible signed target changes, and failed protected commits.
     #[cfg(target_os = "linux")]
-    pub fn bind_current_namespace_target<T>(
+    pub(crate) fn bind_current_namespace_target<T>(
         &mut self,
         generation: crate::runtime_scope::CurrentRuntimeGeneration,
         clock: &mut T,
@@ -591,7 +3204,7 @@ where
     /// Rejects changed current authority, runtime or allocation heads, expired
     /// live evidence, corrupt history, and signed-target substitution.
     #[cfg(target_os = "linux")]
-    pub fn recheck_current_namespace_target<T>(
+    pub(crate) fn recheck_current_namespace_target<T>(
         &mut self,
         target: &crate::runtime_scope::CurrentNamespaceTarget,
         clock: &mut T,
@@ -656,7 +3269,7 @@ where
     /// resource version, operation equivocation, undrained attachment or Mount
     /// state, corrupt history, capacity exhaustion, and failed commits.
     #[cfg(target_os = "linux")]
-    pub fn commit_current_assignment_attachment_slot<T>(
+    pub(crate) fn commit_current_assignment_attachment_slot<T>(
         &mut self,
         target: crate::runtime_scope::CurrentAssignmentTarget,
         mutation: crate::AttachmentSlotMutationV1,
@@ -692,7 +3305,7 @@ where
     /// attachment or Mount state, corrupt history, capacity exhaustion, and
     /// failed protected commits.
     #[cfg(target_os = "linux")]
-    pub fn commit_current_attachment_slot<T>(
+    pub(crate) fn commit_current_attachment_slot<T>(
         &mut self,
         target: crate::runtime_scope::CurrentNamespaceTarget,
         mutation: crate::AttachmentSlotMutationV1,
@@ -744,7 +3357,7 @@ where
     /// resource version, attachment or slot conflicts, corrupt history,
     /// capacity exhaustion, and failed protected commits.
     #[cfg(target_os = "linux")]
-    pub fn commit_current_attachment_desired_state<T>(
+    pub(crate) fn commit_current_attachment_desired_state<T>(
         &mut self,
         target: crate::runtime_scope::CurrentNamespaceTarget,
         mutation: crate::AttachmentDesiredMutationV1,
@@ -867,7 +3480,7 @@ where
     /// authority, a missing exact Host grant, substituted service responses,
     /// expired deadlines, invalid Mount semantics, and transport failures.
     #[cfg(target_os = "linux")]
-    pub fn prepare_current_mount_catalog<T>(
+    pub(crate) fn prepare_current_mount_catalog<T>(
         &mut self,
         target: crate::runtime_scope::CurrentNamespaceTarget,
         intent: &crate::mount_preparation::MountCatalogIntentV1,
@@ -902,7 +3515,7 @@ where
     /// Rejects changed current authority, runtime or namespace heads, expired
     /// live evidence, and unavailable retained kernel executions.
     #[cfg(target_os = "linux")]
-    pub fn recheck_current_mount_catalog<T>(
+    pub(crate) fn recheck_current_mount_catalog<T>(
         &mut self,
         prepared: &crate::mount_preparation::PreparedCurrentMountCatalogV1,
         clock: &mut T,
@@ -929,7 +3542,7 @@ where
     /// wrong audience/protocol/ownership authority, an absent exact grant, and
     /// an expired preparation.
     #[cfg(target_os = "linux")]
-    pub fn bind_current_mount_plan<T>(
+    pub(crate) fn bind_current_mount_plan<T>(
         &mut self,
         catalog: crate::mount_preparation::PreparedCurrentMountCatalogV1,
         signed_plan: crate::SignedBrokerPlan,
@@ -959,7 +3572,7 @@ where
     /// Rejects changed current authority, runtime or namespace heads, expired
     /// live evidence, and unavailable retained kernel executions.
     #[cfg(target_os = "linux")]
-    pub fn recheck_current_mount_dispatch<T>(
+    pub(crate) fn recheck_current_mount_dispatch<T>(
         &mut self,
         prepared: &crate::mount_preparation::PreparedCurrentMountDispatchV1,
         clock: &mut T,
@@ -993,7 +3606,7 @@ where
     /// a deadline beyond the catalog lifetime, conflicting request replay,
     /// corrupt cross-referenced history, capacity, and failed durable commits.
     #[cfg(target_os = "linux")]
-    pub fn admit_current_mount_attempt<T>(
+    pub(crate) fn admit_current_mount_attempt<T>(
         &mut self,
         prepared: crate::mount_preparation::PreparedCurrentMountDispatchV1,
         deadline_boottime_nanoseconds: u64,
@@ -1020,7 +3633,7 @@ where
     /// Rejects changed live authority, missing or substituted durable bytes,
     /// corrupt cross-references, expired preparation, and journal failures.
     #[cfg(target_os = "linux")]
-    pub fn recheck_current_mount_attempt<T>(
+    pub(crate) fn recheck_current_mount_attempt<T>(
         &mut self,
         attempt: &crate::mount_attempt::DurableCurrentMountAttemptV1,
         clock: &mut T,
@@ -1052,7 +3665,7 @@ where
     /// correlation or negotiation failure, malformed or mismatched results,
     /// conflicting completion replay, capacity, and failed durable commits.
     #[cfg(target_os = "linux")]
-    pub fn dispatch_current_mount_attempt<T>(
+    pub(crate) fn dispatch_current_mount_attempt<T>(
         &mut self,
         attempt: crate::mount_attempt::DurableCurrentMountAttemptV1,
         client: crate::mount_attempt::MountDispatchClient,
@@ -1134,7 +3747,7 @@ where
     /// Rejects stale target or snapshot state, substituted resource identity,
     /// contradictory completion evidence, and corrupt durable cross-references.
     #[cfg(target_os = "linux")]
-    pub fn reconcile_current_mount_inventory<T>(
+    pub(crate) fn reconcile_current_mount_inventory<T>(
         &mut self,
         target: crate::runtime_scope::CurrentNamespaceTarget,
         snapshot: crate::mount_attempt::DurableMountInventorySnapshotV1,
@@ -1330,7 +3943,7 @@ where
     /// Rejects stale desired state, target or inventory evidence; corrupt
     /// cross-references; fixed-bound exhaustion; and protected-clock failure.
     #[cfg(target_os = "linux")]
-    pub fn reconcile_current_attachment<T>(
+    pub(crate) fn reconcile_current_attachment<T>(
         &mut self,
         desired: crate::DurableAttachmentDesiredStateV1,
         inventory: crate::CurrentMountInventoryReconciliationV1,
@@ -1363,7 +3976,7 @@ where
     /// substitution; faulted or abandoned custody; invalid bounds; and corrupt
     /// protected history.
     #[cfg(target_os = "linux")]
-    pub fn plan_current_attachment_source<T>(
+    pub(crate) fn plan_current_attachment_source<T>(
         &mut self,
         desired: crate::DurableAttachmentDesiredStateV1,
         inventory: crate::CurrentMountFilesystemInventoryV1,
@@ -1399,7 +4012,7 @@ where
     /// an open or substituted predecessor, and capacity or durability failure.
     #[cfg(target_os = "linux")]
     #[allow(clippy::too_many_arguments)]
-    pub fn record_current_attachment_source_attempt<T>(
+    pub(crate) fn record_current_attachment_source_attempt<T>(
         &mut self,
         plan: crate::CurrentAttachmentSourcePlanV1,
         kind: crate::AttachmentSourceAttemptKindV1,
@@ -1441,7 +4054,7 @@ where
     /// Rejects stale or substituted attempt, inventory, acquisition, resource,
     /// verification, predecessor, or desired-state evidence.
     #[cfg(target_os = "linux")]
-    pub fn record_current_attachment_source_completion<T>(
+    pub(crate) fn record_current_attachment_source_completion<T>(
         &mut self,
         attempt: crate::DurableAttachmentSourceAttemptV1,
         plan: crate::CurrentAttachmentSourcePlanV1,
@@ -1493,7 +4106,7 @@ where
     /// namespace evidence, a changed installed resource, conflicting durable
     /// verification, capacity exhaustion, and failed protected commits.
     #[cfg(target_os = "linux")]
-    pub fn record_current_attachment_verification<T>(
+    pub(crate) fn record_current_attachment_verification<T>(
         &mut self,
         reconciliation: crate::CurrentAttachmentReconciliationV1,
         clock: &mut T,
@@ -1525,7 +4138,7 @@ where
     /// attempt state, an action/input mismatch, expired authority, or a changed
     /// live catalog, request, namespace target, or broker identity.
     #[cfg(target_os = "linux")]
-    pub fn prepare_current_attachment_mount_resume<T>(
+    pub(crate) fn prepare_current_attachment_mount_resume<T>(
         &mut self,
         reconciliation: crate::CurrentAttachmentReconciliationV1,
         input: crate::AttachmentMountPreparationInputV1,
@@ -1552,7 +4165,7 @@ where
     /// Rejects changed desired state, inventory, durable attempt bytes, live
     /// target, reacquired catalog, or original deadline.
     #[cfg(target_os = "linux")]
-    pub fn recheck_current_attachment_mount_resume<T>(
+    pub(crate) fn recheck_current_attachment_mount_resume<T>(
         &mut self,
         prepared: &crate::PreparedCurrentAttachmentMountResumeV1,
         clock: &mut T,
@@ -1578,7 +4191,7 @@ where
     /// Rejects stale replay evidence, a substituted or unauthorized plan,
     /// changed ownership authority, or an expired original deadline.
     #[cfg(target_os = "linux")]
-    pub fn bind_current_attachment_mount_resume_plan<T>(
+    pub(crate) fn bind_current_attachment_mount_resume_plan<T>(
         &mut self,
         prepared: crate::PreparedCurrentAttachmentMountResumeV1,
         signed_plan: crate::SignedBrokerPlan,
@@ -1605,7 +4218,7 @@ where
     /// Rejects changed desired, inventory, attempt, signed authority, catalog,
     /// live target, or deadline evidence.
     #[cfg(target_os = "linux")]
-    pub fn recheck_current_attachment_mount_resume_dispatch<T>(
+    pub(crate) fn recheck_current_attachment_mount_resume_dispatch<T>(
         &mut self,
         prepared: &crate::PreparedCurrentAttachmentMountResumeDispatchV1,
         clock: &mut T,
@@ -1633,7 +4246,7 @@ where
     /// catalog or namespace authority, expired plan/lease/deadline, and corrupt
     /// cross-referenced history.
     #[cfg(target_os = "linux")]
-    pub fn resume_current_attachment_mount_attempt<T>(
+    pub(crate) fn resume_current_attachment_mount_attempt<T>(
         &mut self,
         prepared: crate::PreparedCurrentAttachmentMountResumeDispatchV1,
         clock: &mut T,
@@ -1661,7 +4274,7 @@ where
     /// changed lease time, invalid derived semantics, or failed Mount catalog
     /// exchange and live-target validation.
     #[cfg(target_os = "linux")]
-    pub fn prepare_current_attachment_mount<T>(
+    pub(crate) fn prepare_current_attachment_mount<T>(
         &mut self,
         reconciliation: crate::CurrentAttachmentReconciliationV1,
         input: crate::AttachmentMountPreparationInputV1,
@@ -1688,7 +4301,7 @@ where
     /// Rejects changed desired state, inventory, lease time, live target, or
     /// catalog lifetime.
     #[cfg(target_os = "linux")]
-    pub fn recheck_current_attachment_mount<T>(
+    pub(crate) fn recheck_current_attachment_mount<T>(
         &mut self,
         prepared: &crate::PreparedCurrentAttachmentMountV1,
         clock: &mut T,
@@ -1709,7 +4322,7 @@ where
     /// Rejects stale reconciliation evidence, a substituted or unauthorized
     /// plan, changed ownership authority, or an expired preparation.
     #[cfg(target_os = "linux")]
-    pub fn bind_current_attachment_mount_plan<T>(
+    pub(crate) fn bind_current_attachment_mount_plan<T>(
         &mut self,
         prepared: crate::PreparedCurrentAttachmentMountV1,
         signed_plan: crate::SignedBrokerPlan,
@@ -1741,7 +4354,7 @@ where
     /// Rejects stale evidence, deadline or authority mismatch, conflicting
     /// replay, corrupt cross-references, capacity, and failed durable commit.
     #[cfg(target_os = "linux")]
-    pub fn admit_current_attachment_mount_attempt<T>(
+    pub(crate) fn admit_current_attachment_mount_attempt<T>(
         &mut self,
         prepared: crate::PreparedCurrentAttachmentMountDispatchV1,
         deadline_boottime_nanoseconds: u64,
@@ -1769,7 +4382,7 @@ where
     /// substituted durable bytes, and expired deadlines. A resumed token also
     /// requires its validated pending inventory evidence to remain current.
     #[cfg(target_os = "linux")]
-    pub fn recheck_current_attachment_mount_attempt<T>(
+    pub(crate) fn recheck_current_attachment_mount_attempt<T>(
         &mut self,
         attempt: &crate::DurableCurrentAttachmentMountAttemptV1,
         clock: &mut T,
@@ -1797,7 +4410,7 @@ where
     /// protocol failures, substituted results, conflicting completion, and
     /// journal errors.
     #[cfg(target_os = "linux")]
-    pub fn dispatch_current_attachment_mount_attempt<T>(
+    pub(crate) fn dispatch_current_attachment_mount_attempt<T>(
         &mut self,
         attempt: crate::DurableCurrentAttachmentMountAttemptV1,
         client: crate::mount_attempt::MountDispatchClient,
@@ -1836,7 +4449,7 @@ where
     /// denied policy, capacity, clock, encoding, or protected commit failures.
     /// Post-commit failure can retain an audited capability without a live session.
     #[cfg(target_os = "linux")]
-    pub fn provision_current_runtime_ingress<T>(
+    pub(crate) fn provision_current_runtime_ingress<T>(
         &mut self,
         sessions: &mut crate::local_sessions::LocalSessionRegistry,
         runtime: crate::runtime_scope::CurrentRuntimeScope,
@@ -1883,7 +4496,7 @@ where
     /// failure. No endpoint escapes on failure; post-commit failures may retain
     /// an audited capability that has no live session.
     #[cfg(target_os = "linux")]
-    pub fn provision_local_ingress<T>(
+    pub(crate) fn provision_local_ingress<T>(
         &mut self,
         sessions: &mut crate::local_sessions::LocalSessionRegistry,
         scope: crate::local_sessions::LocalSessionScope,
@@ -1924,7 +4537,7 @@ where
     /// clock, and protected storage failures. A failed or ambiguous commit may
     /// retain a retired execution pin until its original process exits.
     #[cfg(target_os = "linux")]
-    pub fn register_publisher_execution<T>(
+    pub(crate) fn register_publisher_execution<T>(
         &mut self,
         sessions: &mut crate::publisher_sessions::PublisherSessionRegistry,
         listener: &mut aos_sandbox_linux::seqpacket::RecordSubjectListener,
@@ -1966,7 +4579,7 @@ where
     /// expired or changed challenges, exhausted audit limits, and storage failure.
     /// Post-commit failure can leave an inert pending record without a receipt.
     #[cfg(target_os = "linux")]
-    pub fn register_publisher_challenge<T>(
+    pub(crate) fn register_publisher_challenge<T>(
         &mut self,
         sessions: &mut crate::publisher_sessions::PublisherSessionRegistry,
         instance: aos_sandbox_core::PublisherInstanceId,
@@ -2005,7 +4618,7 @@ where
     /// expired or inconsistent clocks. Failure after receiving a holder record
     /// closes its ingress; later receive or explicit invalidation removes the slot.
     #[cfg(target_os = "linux")]
-    pub fn join_publisher_request<'a, T>(
+    pub(crate) fn join_publisher_request<'a, T>(
         &'a mut self,
         holders: &'a mut crate::local_sessions::LocalSessionRegistry,
         publishers: &'a mut crate::publisher_sessions::PublisherSessionRegistry,
@@ -2141,7 +4754,7 @@ where
     /// mismatched negotiated session, hostile response substitution, local
     /// clock-observation failure, invalid authority artifacts, publication
     /// conflict, or durable activation failure.
-    pub fn resume_ownership<A, T>(
+    pub(crate) fn resume_ownership<A, T>(
         &mut self,
         operation_id: OperationId,
         client: &mut A,

@@ -31,15 +31,21 @@ use super::transition::{MutationIdentityV2, commit_mutation, next_revision, reco
 use crate::Result;
 
 /// Retains the sole send authority for one durably Reserved provider attempt.
-pub(crate) struct ReservedProviderQueryV2 {
+pub(super) struct ReservedProviderQueryV2 {
     attempt_id: [u8; 32],
     reservation: ReservedMountProviderRequestV2,
 }
 
 /// Retains the sole verifier for one provider request handed to the carrier.
-pub(crate) struct SentProviderQueryV2 {
+pub(super) struct SentProviderQueryV2 {
     attempt_id: [u8; 32],
     sent: SentMountProviderRequestV2,
+}
+
+/// Retains the exact attempt and protected send recovery without redispatch authority.
+pub(super) struct ProviderQuerySendRecoveryV2 {
+    attempt_id: [u8; 32],
+    recovery: aos_sandbox_source_provider_security::MountProviderRequestSendRecoveryV2,
 }
 
 impl core::fmt::Debug for ReservedProviderQueryV2 {
@@ -54,31 +60,77 @@ impl core::fmt::Debug for SentProviderQueryV2 {
     }
 }
 
+impl core::fmt::Debug for ProviderQuerySendRecoveryV2 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("ProviderQuerySendRecoveryV2([reserved send custody])")
+    }
+}
+
 impl ReservedProviderQueryV2 {
+    pub(super) fn from_reserved(
+        attempt_id: [u8; 32],
+        reservation: ReservedMountProviderRequestV2,
+    ) -> Self {
+        Self {
+            attempt_id,
+            reservation,
+        }
+    }
+
     /// Sends the exact request after rechecking its protected journal records.
     pub(crate) fn send(
         self,
         journal: &ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
-    ) -> Result<SentProviderQueryV2> {
-        let sent = session
-            .send_reserved_mount_request_v2(journal, self.reservation)
-            .map_err(|_| state_error("SourceProvider reserved request send failed"))?;
-        Ok(SentProviderQueryV2 {
-            attempt_id: self.attempt_id,
-            sent,
-        })
+    ) -> core::result::Result<SentProviderQueryV2, ProviderQuerySendRecoveryV2> {
+        match session.send_reserved_mount_request_v2(journal, self.reservation) {
+            Ok(sent) => Ok(SentProviderQueryV2 {
+                attempt_id: self.attempt_id,
+                sent,
+            }),
+            Err(recovery) => Err(ProviderQuerySendRecoveryV2 {
+                attempt_id: self.attempt_id,
+                recovery,
+            }),
+        }
+    }
+}
+
+impl ProviderQuerySendRecoveryV2 {
+    pub(super) const fn attempt_id(&self) -> [u8; 32] {
+        self.attempt_id
+    }
+
+    pub(super) fn retry(
+        self,
+        journal: &ProtectedJournalAuthority<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+    ) -> core::result::Result<SentProviderQueryV2, Self> {
+        match session.retry_reserved_mount_request_v2(journal, self.recovery) {
+            Ok(sent) => Ok(SentProviderQueryV2 {
+                attempt_id: self.attempt_id,
+                sent,
+            }),
+            Err(recovery) => Err(Self {
+                attempt_id: self.attempt_id,
+                recovery,
+            }),
+        }
     }
 }
 
 impl SentProviderQueryV2 {
-    pub(super) fn into_security_parts(
-        self,
+    pub(super) const fn attempt_id(&self) -> [u8; 32] {
+        self.attempt_id
+    }
+
+    pub(super) fn security_parts(
+        &self,
     ) -> (
         [u8; 32],
-        aos_sandbox_source_provider_security::AuthorizedMountProviderOutcomeV2,
+        &aos_sandbox_source_provider_security::AuthorizedMountProviderOutcomeV2,
     ) {
-        (self.attempt_id, self.sent.into_outcome_authorization())
+        (self.attempt_id, self.sent.outcome_authorization())
     }
 }
 

@@ -2,11 +2,11 @@
 //!
 //! This module owns grammar validation, stable output/exit policy, and a
 //! crate-private binding from authenticated transport evidence through current
-//! protected authorization. It does not parse process arguments, register
-//! commands or routes, dispatch effects, invoke services, or define a second
-//! resource schema. A future activated CLI adapter can translate its checked
-//! values to the established public protobuf client.
+//! protected authorization. The dormant routing module accepts parser output
+//! and constructs typed in-process requests, but registers no controller route,
+//! dispatches no effect, and invokes no service.
 
+#[cfg(target_os = "linux")]
 pub(crate) mod authorization_adapter;
 pub mod execution;
 pub mod grammar;
@@ -15,6 +15,7 @@ pub mod output;
 pub mod proto_json;
 pub mod provenance;
 pub mod requests;
+pub mod routing;
 
 pub use execution::*;
 pub use grammar::*;
@@ -23,3 +24,4 @@ pub use output::*;
 pub use proto_json::*;
 pub use provenance::*;
 pub use requests::*;
+pub use routing::*;

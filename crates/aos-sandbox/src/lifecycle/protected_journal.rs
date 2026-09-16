@@ -151,7 +151,11 @@ impl ProtectedDomainSchemaV1 for LifecycleProtectedJournalSchemaV1 {
                 Some(ProtectedReducerPhaseV1::Observed)
             }
             Self::Kind::Auxiliary => {
-                let record = decode_lifecycle_auxiliary_record_v1(body, verifier.replay()).ok()?;
+                let record = super::decode_lifecycle_auxiliary_record_from_protected_envelope_v1(
+                    body,
+                    verifier.replay(),
+                )
+                .ok()?;
                 if encode_lifecycle_auxiliary_record_v1(&record)
                     .ok()?
                     .as_slice()
@@ -205,8 +209,10 @@ impl ProtectedDomainSchemaV1 for LifecycleProtectedJournalSchemaV1 {
 
 fn canonical_operation(body: &[u8]) -> Option<LifecycleOperationV1> {
     let operation = decode_operation_record_v1(body).ok()?;
-    let canonical = encode_operation_record_v1(&operation).ok()?;
-    (canonical == body).then_some(operation)
+    super::format::operation_record_matches_canonical_encoding(&operation, body)
+        .ok()
+        .filter(|matches| *matches)
+        .map(|_| operation)
 }
 
 fn lifecycle_journal_subject(intent: &LifecycleIntentV1) -> [u8; 16] {

@@ -250,6 +250,34 @@ impl<'a> ProviderLedgerV1<'a> {
         Ok(())
     }
 
+    pub(crate) fn install_recovery_successor_session(
+        &mut self,
+        mut session: CurrentProviderIngressSessionV1,
+        supersession: ProviderSessionSupersessionEvidenceV1,
+        recovered_execution_death: Option<
+            aos_sandbox_source_provider_security::DeadProviderExecutionV1,
+        >,
+    ) -> Result<(), ProviderLedgerError> {
+        self.ensure_open()?;
+        let projection = session.current_projection()?;
+        if projection.provider() != &self.configuration.provider {
+            return Err(ProviderLedgerError::ConfigurationMismatch);
+        }
+        let holder_id = projection.holder().authority_id();
+        if self.current_sessions.contains_key(&holder_id) {
+            return Err(ProviderLedgerError::RuntimePoisoned);
+        }
+        self.current_sessions.insert(
+            holder_id,
+            InstalledProviderSessionV1 {
+                session,
+                supersession: Some(supersession),
+                recovered_execution_death,
+            },
+        );
+        Ok(())
+    }
+
     /// Atomically advances authenticated trust, signer, validity, and catalog heads.
     ///
     /// Historical catalog records remain immutable. Equal generations must

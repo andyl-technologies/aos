@@ -338,11 +338,7 @@ pub(crate) struct SnapshotCommitEvidenceV1 {
 
 impl SnapshotCommitEvidenceV1 {
     /// Wraps one checked record for the forthcoming protected observer.
-    #[allow(
-        dead_code,
-        reason = "the protected observer is introduced in the next source partition"
-    )]
-    const fn from_checked_record(metadata: CheckedSnapshotMetadataRecordV1) -> Self {
+    pub(crate) const fn from_checked_record(metadata: CheckedSnapshotMetadataRecordV1) -> Self {
         Self { metadata }
     }
 

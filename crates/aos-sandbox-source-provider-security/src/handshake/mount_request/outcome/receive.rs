@@ -3,6 +3,92 @@
 use super::*;
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    /// Captures one persisted canonical response under current protected custody.
+    ///
+    /// This is the cold-restart counterpart of carrier capture. The response
+    /// and optional reopened SourceRoot remain nonauthorizing until
+    /// [`Self::recover_mount_provider_outcome_v2`] matches them to the exact
+    /// durable Mount attempt and historical authenticated session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] for lost currentness, a
+    /// noncanonical response, or wrong SourceRoot cardinality.
+    #[doc(hidden)]
+    pub fn capture_persisted_mount_provider_outcome_v2(
+        &mut self,
+        method: SourceProviderMethod,
+        payload: Vec<u8>,
+        source_root: Option<crate::ProviderSourceRootHandoffV1>,
+        persisted: crate::PersistedProviderOutcomeV1,
+    ) -> Result<CapturedMountProviderRecoveryOutcomeV2, SourceProviderSecurityError> {
+        self.revalidate()?;
+        let (canonical_signed_status, canonical_signed_result, needs_source_root) =
+            split_canonical_response(method, &payload).map_err(|error| self.poison(error))?;
+        if source_root.is_some() != needs_source_root {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+
+        Ok(CapturedMountProviderRecoveryOutcomeV2 {
+            method,
+            canonical_signed_status,
+            canonical_signed_result,
+            source_root,
+            persisted: Some(persisted),
+        })
+    }
+
+    /// Captures one exact carrier response for durable-attempt recovery.
+    ///
+    /// This operation performs no historical reconstruction and exposes no
+    /// response bytes or descriptor. The opaque result can only be consumed by
+    /// [`Self::recover_mount_provider_outcome_v2`] with matching protected
+    /// attempt and session records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] for carrier failure, a
+    /// noncanonical response, wrong descriptor cardinality, or invalid
+    /// SourceRoot observation.
+    pub fn capture_mount_provider_recovery_outcome_v2(
+        &mut self,
+        method: SourceProviderMethod,
+    ) -> Result<CapturedMountProviderRecoveryOutcomeV2, SourceProviderSecurityError> {
+        let received = self
+            .carrier
+            .receive_optional_source_root()
+            .map_err(|failure| {
+                let error = match failure {
+                    CarrierFailureV1::Retryable => SourceProviderSecurityError::SessionContinuity,
+                    CarrierFailureV1::Fatal(error) => error,
+                };
+                self.poison(error)
+            })?;
+        let crate::carrier::ReceivedSourceProviderRecordV1 {
+            payload,
+            mut descriptors,
+            execution: _,
+        } = received;
+        let (canonical_signed_status, canonical_signed_result, needs_source_root) =
+            split_canonical_response(method, &payload).map_err(|error| self.poison(error))?;
+        if descriptors.len() != usize::from(needs_source_root) {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        let source_root = descriptors
+            .pop()
+            .map(crate::ProviderSourceRootHandoffV1::observe)
+            .transpose()
+            .map_err(|error| self.poison(error))?;
+
+        Ok(CapturedMountProviderRecoveryOutcomeV2 {
+            method,
+            canonical_signed_status,
+            canonical_signed_result,
+            source_root,
+            persisted: None,
+        })
+    }
+
     /// Atomically receives and verifies one exact provider outcome and descriptors.
     ///
     /// # Errors
@@ -14,7 +100,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     pub fn receive_and_verify_provider_outcome_v2(
         &mut self,
         catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        authorization: AuthorizedMountProviderOutcomeV2,
+        authorization: &AuthorizedMountProviderOutcomeV2,
     ) -> Result<VerifiedReceivedMountProviderOutcomeV2, SourceProviderSecurityError> {
         let received = self
             .carrier
@@ -44,7 +130,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         if !needs_source_root {
             let verified = self.verify_provider_outcome_bytes_v2(
                 catalog_journal,
-                &authorization,
+                authorization,
                 payload,
                 None,
             )?;
@@ -101,7 +187,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         source_root.revalidate(self)?;
         let verified = self.verify_provider_outcome_bytes_v2(
             catalog_journal,
-            &authorization,
+            authorization,
             payload,
             Some(source_root.protocol_observation().clone()),
         )?;
@@ -116,5 +202,50 @@ impl CurrentRootMountSourceProviderSessionV1 {
             verified,
             source_root: Some(source_root),
         })
+    }
+}
+
+fn split_canonical_response(
+    method: SourceProviderMethod,
+    payload: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>, bool), SourceProviderSecurityError> {
+    match method {
+        SourceProviderMethod::Acquire => {
+            let response = decode_acquire_response(payload)
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            if encode_acquire_response(&response) != payload {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            Ok((
+                response.signed_status().to_canonical_bytes(),
+                response.signed_receipt().unwrap_or_default().to_vec(),
+                response.status() == SourceProviderStatus::Complete,
+            ))
+        }
+        SourceProviderMethod::Release => {
+            let response = decode_release_response(payload)
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            if encode_release_response(&response) != payload {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            Ok((
+                response.signed_status().to_canonical_bytes(),
+                response.signed_receipt().unwrap_or_default().to_vec(),
+                false,
+            ))
+        }
+        SourceProviderMethod::Inventory => {
+            let response = decode_inventory_response(payload)
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            if encode_inventory_response(&response) != payload {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            Ok((
+                response.signed_status().to_canonical_bytes(),
+                response.signed_inventory().unwrap_or_default().to_vec(),
+                false,
+            ))
+        }
+        SourceProviderMethod::Hello => Err(SourceProviderSecurityError::SessionContinuity),
     }
 }

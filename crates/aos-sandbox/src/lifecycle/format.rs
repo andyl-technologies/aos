@@ -1,7 +1,7 @@
 //! Canonical fixed-width codec for lifecycle operation snapshots.
 //!
 //! ```text
-//! AOSLIF01 | version:1 | phase:1 | terminal-result:1 | intent:260 |
+//! AOSLIF03 | version:3 | phase:1 | terminal-result:1 | intent:260 |
 //! operation-id:16 | caller:16 | project:16 | idempotency:32 | normalized-request:32 |
 //! accepted-at:8 | record-revision:8 | forward:4 | compensated:4 |
 //! semantic-commit-slot:200 | failure-slot:48 | retry-slot:16 |
@@ -51,14 +51,21 @@ use super::semantic::{
     LifecycleReservationCommitFactV1, LifecycleRetentionAcknowledgementV1,
     LifecycleSemanticCommitFactV1, LifecycleSnapshotManifestDigestV1, LifecycleTransactionIdV1,
 };
-use super::semantic_format::{decode_semantic_fact, encode_semantic_fact, preflight_semantic_fact};
+use super::semantic_format::{
+    LifecycleSemanticFactLayoutV1, decode_semantic_fact_with_layout,
+    encode_semantic_fact_with_layout, preflight_semantic_fact_with_layout,
+};
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, ExecutionId, IncarnationId, NamespaceGeneration,
     ObjectDigest, OperationId, ResourceId, Revision, SandboxId, SnapshotId, ViewId,
 };
 
-const MAGIC: &[u8; 8] = b"AOSLIF01";
-const VERSION: u16 = 1;
+const LEGACY_MAGIC: &[u8; 8] = b"AOSLIF01";
+const LEGACY_VERSION: u16 = 1;
+const HOST_BOOT_MAGIC: &[u8; 8] = b"AOSLIF02";
+const HOST_BOOT_VERSION: u16 = 2;
+const CURRENT_MAGIC: &[u8; 8] = b"AOSLIF03";
+const CURRENT_VERSION: u16 = 3;
 const INTENT_BYTES: usize = 260;
 const FIXED_BODY_BYTES: usize = 740;
 const EXPECTATION_BYTES: usize = 60;
@@ -82,9 +89,51 @@ const MAXIMUM_RECORD_BYTES: usize = FIXED_BODY_BYTES
 pub fn encode_operation_record_v1(
     operation: &LifecycleOperationV1,
 ) -> Result<Vec<u8>, LifecycleModelError> {
+    encode_operation_record_with_format(operation, LifecycleOperationRecordFormatV1::Current)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LifecycleOperationRecordFormatV1 {
+    Legacy,
+    HostBootWithoutCoordinationBindings,
+    Current,
+}
+
+impl LifecycleOperationRecordFormatV1 {
+    const fn magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::Legacy => LEGACY_MAGIC,
+            Self::HostBootWithoutCoordinationBindings => HOST_BOOT_MAGIC,
+            Self::Current => CURRENT_MAGIC,
+        }
+    }
+
+    const fn version(self) -> u16 {
+        match self {
+            Self::Legacy => LEGACY_VERSION,
+            Self::HostBootWithoutCoordinationBindings => HOST_BOOT_VERSION,
+            Self::Current => CURRENT_VERSION,
+        }
+    }
+
+    const fn semantic_layout(self) -> LifecycleSemanticFactLayoutV1 {
+        match self {
+            Self::Legacy => LifecycleSemanticFactLayoutV1::LegacyWithoutHostBoot,
+            Self::HostBootWithoutCoordinationBindings => {
+                LifecycleSemanticFactLayoutV1::HostBootWithoutCoordinationBindings
+            }
+            Self::Current => LifecycleSemanticFactLayoutV1::Current,
+        }
+    }
+}
+
+fn encode_operation_record_with_format(
+    operation: &LifecycleOperationV1,
+    format: LifecycleOperationRecordFormatV1,
+) -> Result<Vec<u8>, LifecycleModelError> {
     let semantic_fact = operation
         .method_semantic_commit()
-        .map(encode_semantic_fact)
+        .map(|fact| encode_semantic_fact_with_layout(fact, format.semantic_layout()))
         .transpose()?
         .unwrap_or_default();
     let length = FIXED_BODY_BYTES
@@ -105,8 +154,8 @@ pub fn encode_operation_record_v1(
     bytes
         .try_reserve_exact(length)
         .map_err(|_| LifecycleModelError::Allocation)?;
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&VERSION.to_be_bytes());
+    bytes.extend_from_slice(format.magic());
+    bytes.extend_from_slice(&format.version().to_be_bytes());
     bytes.push(operation.phase() as u8);
     bytes.push(operation.terminal_result().map_or(0, |value| value as u8));
     encode_intent(&mut bytes, operation.intent());
@@ -159,6 +208,7 @@ pub fn decode_operation_record_v1(
     if hash_record(body).digest().as_bytes() != stored_digest {
         return Err(LifecycleModelError::CorruptEncoding);
     }
+    let format = operation_record_format(body)?;
 
     // Counts live at the end of the fixed prefix. Preflight the exact length
     // before any collection allocation or variable-region parsing.
@@ -190,7 +240,7 @@ pub fn decode_operation_record_v1(
     let semantic_fact_region = body
         .get(FIXED_BODY_BYTES..FIXED_BODY_BYTES + semantic_fact_length)
         .ok_or(LifecycleModelError::CorruptEncoding)?;
-    preflight_semantic_fact(semantic_fact_region)?;
+    preflight_semantic_fact_with_layout(semantic_fact_region, format.semantic_layout())?;
     let expectation_region = expectation_count
         .checked_mul(EXPECTATION_BYTES)
         .ok_or(LifecycleModelError::CorruptEncoding)?;
@@ -218,7 +268,9 @@ pub fn decode_operation_record_v1(
     }
 
     let mut bytes = body;
-    if take::<8>(&mut bytes)? != *MAGIC || u16::from_be_bytes(take(&mut bytes)?) != VERSION {
+    if take::<8>(&mut bytes)? != *format.magic()
+        || u16::from_be_bytes(take(&mut bytes)?) != format.version()
+    {
         return Err(LifecycleModelError::CorruptEncoding);
     }
     let phase = decode_phase(take::<1>(&mut bytes)?[0])?;
@@ -253,9 +305,10 @@ pub fn decode_operation_record_v1(
     {
         return Err(LifecycleModelError::CorruptEncoding);
     }
-    let semantic_fact = decode_semantic_fact(
+    let semantic_fact = decode_semantic_fact_with_layout(
         take_slice(&mut bytes, semantic_fact_length)?,
         semantic_witness,
+        format.semantic_layout(),
     )?;
 
     let mut expectations = Vec::new();
@@ -305,6 +358,41 @@ pub fn decode_operation_record_v1(
         predecessor_digest,
     )
     .map_err(|_| LifecycleModelError::CorruptEncoding)
+}
+
+fn operation_record_format(
+    body: &[u8],
+) -> Result<LifecycleOperationRecordFormatV1, LifecycleModelError> {
+    let magic = body.get(..8).ok_or(LifecycleModelError::CorruptEncoding)?;
+    let version = u16::from_be_bytes(
+        body.get(8..10)
+            .and_then(|value| value.try_into().ok())
+            .ok_or(LifecycleModelError::CorruptEncoding)?,
+    );
+    match (magic, version) {
+        (value, LEGACY_VERSION) if value == LEGACY_MAGIC => {
+            Ok(LifecycleOperationRecordFormatV1::Legacy)
+        }
+        (value, HOST_BOOT_VERSION) if value == HOST_BOOT_MAGIC => {
+            Ok(LifecycleOperationRecordFormatV1::HostBootWithoutCoordinationBindings)
+        }
+        (value, CURRENT_VERSION) if value == CURRENT_MAGIC => {
+            Ok(LifecycleOperationRecordFormatV1::Current)
+        }
+        _ => Err(LifecycleModelError::CorruptEncoding),
+    }
+}
+
+pub(crate) fn operation_record_matches_canonical_encoding(
+    operation: &LifecycleOperationV1,
+    encoded: &[u8],
+) -> Result<bool, LifecycleModelError> {
+    let body_length = encoded
+        .len()
+        .checked_sub(DIGEST_BYTES)
+        .ok_or(LifecycleModelError::CorruptEncoding)?;
+    let format = operation_record_format(&encoded[..body_length])?;
+    Ok(encode_operation_record_with_format(operation, format)?.as_slice() == encoded)
 }
 
 pub(super) fn record_digest(

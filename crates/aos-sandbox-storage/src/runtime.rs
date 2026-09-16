@@ -153,6 +153,15 @@ pub enum StorageApplyReadiness {
     /// Apply remains closed until every advertised action, including Snapshot,
     /// has a dedicated worker and complete MAC and platform qualification.
     WorkspaceBackendUnavailable,
+    /// The explicit dormant constructor retained the fixed ZFS worker and
+    /// protected AOSSMT01 Snapshot metadata owner.
+    ProtectedWorkerReady,
+}
+
+#[derive(Clone, Copy)]
+enum StorageApplyConstructionV1 {
+    Closed,
+    DormantProtectedWorker,
 }
 
 /// Describes whether protected policy permits production catalog preparation.
@@ -185,6 +194,28 @@ pub enum StorageRuntimeMutationOutcome {
     },
 }
 
+/// Reports durable progress of one coordinated lifecycle dataset snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AtomicDatasetSnapshotMutationOutcomeV1 {
+    /// The exact whole-group readback was durably committed.
+    Committed {
+        /// Protected grouped-program commitment.
+        program: ObjectDigest,
+        /// Whole-group physical GUID observation commitment.
+        observation: ObjectDigest,
+    },
+    /// The effect may have occurred and recovery must only observe the group.
+    ObservationRequired {
+        /// Protected grouped-program commitment retained in durable custody.
+        program: ObjectDigest,
+    },
+    /// A durable Prepared record exists but no effect was dispatched.
+    PreparedBeforeEffect {
+        /// Protected grouped-program commitment retained before mutation.
+        program: ObjectDigest,
+    },
+}
+
 /// Reports one authorized workspace root-pin repair request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspacePinRepairExecutionOutcomeV1 {
@@ -212,6 +243,121 @@ pub struct StorageBrokerRuntime {
 }
 
 impl StorageBrokerRuntime {
+    pub(crate) fn prepare_lifecycle_atomic_snapshot(
+        &self,
+        plan: &aos_sandbox::lifecycle::LifecycleAtomicDatasetSnapshotPlanV1,
+    ) -> Result<crate::DormantAtomicDatasetSnapshotV1, aos_sandbox::lifecycle::LifecyclePhase6ErrorV1>
+    {
+        crate::lifecycle_atomic_snapshot::prepare_atomic_dataset_snapshot(&self.coordinator, plan)
+    }
+
+    pub(crate) fn execute_lifecycle_atomic_snapshot(
+        &mut self,
+        plan: &aos_sandbox::lifecycle::LifecycleAtomicDatasetSnapshotPlanV1,
+    ) -> Result<AtomicDatasetSnapshotMutationOutcomeV1, StorageRuntimeError> {
+        if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady
+            || !self.readiness.permits_catalog_methods()
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let program = crate::lifecycle_atomic_snapshot::prepare_atomic_dataset_snapshot(
+            &self.coordinator,
+            plan,
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+        let operation = program.operation();
+        let commitment = program.commitment();
+        self.coordinator
+            .prepare_atomic_dataset_snapshot(program)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let program = self
+            .coordinator
+            .mark_atomic_dataset_snapshot_ambiguous(operation, commitment)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        self.latch_recovery_required();
+        let observation = match self.helper.atomic_snapshot_once(&program, true) {
+            Ok(observation) => observation,
+            Err(_) => {
+                return Ok(
+                    AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
+                        program: commitment,
+                    },
+                );
+            }
+        };
+        if self
+            .coordinator
+            .commit_atomic_dataset_snapshot(operation, commitment, observation)
+            .is_err()
+        {
+            return Ok(
+                AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
+                    program: commitment,
+                },
+            );
+        }
+        self.readiness = self.reconcile_startup()?;
+        Ok(AtomicDatasetSnapshotMutationOutcomeV1::Committed {
+            program: commitment,
+            observation,
+        })
+    }
+
+    pub(crate) fn recover_lifecycle_atomic_snapshot(
+        &mut self,
+        operation: [u8; 16],
+    ) -> Result<AtomicDatasetSnapshotMutationOutcomeV1, StorageRuntimeError> {
+        if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let (phase, program, retained) = self
+            .coordinator
+            .atomic_dataset_snapshot_recovery(operation)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let commitment = program.commitment();
+        match phase {
+            crate::state::AtomicDatasetSnapshotPhaseV1::Prepared => Ok(
+                AtomicDatasetSnapshotMutationOutcomeV1::PreparedBeforeEffect {
+                    program: commitment,
+                },
+            ),
+            crate::state::AtomicDatasetSnapshotPhaseV1::Committed => {
+                Ok(AtomicDatasetSnapshotMutationOutcomeV1::Committed {
+                    program: commitment,
+                    observation: retained.ok_or(StorageRuntimeError::Recovery)?,
+                })
+            }
+            crate::state::AtomicDatasetSnapshotPhaseV1::Ambiguous => {
+                let observation = match self.helper.atomic_snapshot_once(&program, false) {
+                    Ok(observation) => observation,
+                    Err(_) => {
+                        return Ok(
+                            AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
+                                program: commitment,
+                            },
+                        );
+                    }
+                };
+                if self
+                    .coordinator
+                    .commit_atomic_dataset_snapshot(operation, commitment, observation)
+                    .is_err()
+                {
+                    return Ok(
+                        AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
+                            program: commitment,
+                        },
+                    );
+                }
+                self.readiness = self.reconcile_startup()?;
+                Ok(AtomicDatasetSnapshotMutationOutcomeV1::Committed {
+                    program: commitment,
+                    observation,
+                })
+            }
+        }
+    }
+
     /// Opens protected state, anchors genesis, and performs startup retirement and observation.
     ///
     /// `bootstrap_directory` is a root-owned fixed-file publication, not a
@@ -247,6 +393,7 @@ impl StorageBrokerRuntime {
             identity_pool,
             zfs_executable,
             executor,
+            StorageApplyConstructionV1::Closed,
         )
     }
 
@@ -284,6 +431,42 @@ impl StorageBrokerRuntime {
             identity_pool,
             zfs_executable,
             executor,
+            StorageApplyConstructionV1::Closed,
+        )
+    }
+
+    /// Opens the source-only protected Apply and Snapshot worker composition.
+    ///
+    /// Unlike the production constructors, this explicitly retains the fixed
+    /// root-owned Snapshot metadata directory alongside the existing ZFS
+    /// worker, protected transaction catalog, and workspace catalog. It does
+    /// not register or advertise Apply, install a unit, or dispatch an effect;
+    /// callers must still invoke admission and execution explicitly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError`] for every ordinary protected runtime
+    /// failure and when the fixed Snapshot metadata owner is unavailable or
+    /// insecure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_root_owned_dormant_apply_worker(
+        authority_directory: &Path,
+        bootstrap_directory: &Path,
+        state_directory: &Path,
+        resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1,
+        zfs_executable: PathBuf,
+        executor: SystemdZfsExecutor,
+    ) -> Result<Self, StorageRuntimeError> {
+        Self::open_root_owned_inner(
+            authority_directory,
+            bootstrap_directory,
+            state_directory,
+            resolver_policy_directory,
+            identity_pool,
+            zfs_executable,
+            executor,
+            StorageApplyConstructionV1::DormantProtectedWorker,
         )
     }
 
@@ -296,6 +479,7 @@ impl StorageBrokerRuntime {
         identity_pool: StorageIdentityPoolV1,
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
+        apply_construction: StorageApplyConstructionV1,
     ) -> Result<Self, StorageRuntimeError> {
         // Retain the host mount namespace before constructing any subsystem
         // that may later acquire a namespace-scoped helper.
@@ -365,7 +549,17 @@ impl StorageBrokerRuntime {
         )?;
         let broker_instance_id = random_challenge()?;
 
-        let backend = SystemdZfsProcessBackend::new(executor);
+        let (backend, apply_readiness) = match apply_construction {
+            StorageApplyConstructionV1::Closed => (
+                SystemdZfsProcessBackend::new(executor),
+                StorageApplyReadiness::WorkspaceBackendUnavailable,
+            ),
+            StorageApplyConstructionV1::DormantProtectedWorker => (
+                SystemdZfsProcessBackend::with_protected_snapshot_metadata(executor)
+                    .map_err(|_| StorageRuntimeError::Recovery)?,
+                StorageApplyReadiness::ProtectedWorkerReady,
+            ),
+        };
         let mut runtime = Self {
             coordinator,
             workspaces: Some(workspaces),
@@ -378,7 +572,7 @@ impl StorageBrokerRuntime {
                 Box::new(backend) as Box<dyn ZfsProcessBackend + Send>,
             ),
             readiness: StorageRuntimeReadiness::RecoveryPending { operations: 1 },
-            apply_readiness: StorageApplyReadiness::WorkspaceBackendUnavailable,
+            apply_readiness,
             resolver_policies,
             prepare_readiness,
             #[cfg(test)]
@@ -554,8 +748,13 @@ impl StorageBrokerRuntime {
     }
 
     fn operation_permits_apply(&self, operation_id: [u8; 16]) -> Result<bool, StorageRuntimeError> {
-        let _ = operation_id;
-        Ok(false)
+        if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady
+            || !self.readiness.permits_catalog_methods()
+        {
+            return Ok(false);
+        }
+        let _ = self.coordinator.prepared_catalog_for_apply(operation_id)?;
+        Ok(true)
     }
 
     /// Reports whether the isolated repair path may accept a fresh request.
@@ -583,13 +782,13 @@ impl StorageBrokerRuntime {
         workspaces.is_terminally_materialized()
     }
 
-    /// Encodes the current physically revalidated workspace inventory.
+    /// Encodes the current physically revalidated complete Storage inventory.
     ///
     /// # Errors
     ///
     /// Returns [`StorageRuntimeError::Recovery`] when the method gate or
-    /// deadline is invalid, or a workspace-catalog error when fresh physical
-    /// evidence rejects the retained launch resources. Returns
+    /// deadline is invalid, or protected workspace/resolver catalog evidence
+    /// rejects the retained launch or lifecycle resources. Returns
     /// [`StorageRuntimeError::ReopenRequired`] when post-observation
     /// materialization reports an ambiguous journal commit; all method gates
     /// remain closed until the process reopens protected state.
@@ -630,6 +829,28 @@ impl StorageBrokerRuntime {
                 Err(StorageRuntimeError::ReopenRequired)
             }
         }
+    }
+
+    /// Encodes the additive complete lifecycle inventory for dormant composition.
+    ///
+    /// This method is not used by the installed Storage service. It first runs
+    /// the existing physical workspace observation, then rereads the protected
+    /// resolver journal and appends all five lifecycle object families before
+    /// the caller submits the exact body to broker-session signing.
+    pub(crate) fn dormant_lifecycle_inventory_resources(
+        &mut self,
+        activation_deadline_boottime_nanoseconds: u64,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<Vec<u8>, StorageRuntimeError> {
+        let inventory = self.inventory_resources(
+            activation_deadline_boottime_nanoseconds,
+            worker_cutoff_boottime_nanoseconds,
+        )?;
+        crate::lifecycle_inventory::attach_complete_lifecycle_inventory(
+            &self.coordinator,
+            &inventory,
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)
     }
 
     fn inventory_from_validated(
@@ -1072,9 +1293,10 @@ impl StorageBrokerRuntime {
     /// Admits Storage 1.0 Apply using only signed bytes and protected preparation state.
     ///
     /// Create and Clone consume their exact canonical portable metadata and
-    /// reserve an identity range. Hold, Release, SetQuota, and Destroy retain
-    /// the generic admission path. Snapshot remains explicitly held, and the
-    /// incomplete Apply surface is structurally absent from advertisement.
+    /// reserve an identity range. Snapshot and the remaining operations use
+    /// generic admission; Snapshot execution additionally requires the exact
+    /// protected AOSSMT01 record retained by the dormant worker constructor.
+    /// The Apply surface remains structurally absent from advertisement.
     ///
     /// # Errors
     ///
@@ -1658,6 +1880,33 @@ pub(crate) fn reconcile_transaction_recovery<B: crate::helper::ZfsProcessBackend
         }
     }
 
+    for record in coordinator
+        .atomic_dataset_snapshot_inventory()
+        .map_err(|_| StorageRuntimeError::Recovery)?
+    {
+        match record.phase() {
+            crate::state::AtomicDatasetSnapshotPhaseV1::Prepared => pending += 1,
+            crate::state::AtomicDatasetSnapshotPhaseV1::Committed => {}
+            crate::state::AtomicDatasetSnapshotPhaseV1::Ambiguous => {
+                let program = record.program();
+                let observation = match helper.atomic_snapshot_once(program, false) {
+                    Ok(observation) => observation,
+                    Err(_) => {
+                        pending += 1;
+                        continue;
+                    }
+                };
+                coordinator
+                    .commit_atomic_dataset_snapshot(
+                        program.operation(),
+                        program.commitment(),
+                        observation,
+                    )
+                    .map_err(|_| StorageRuntimeError::Recovery)?;
+            }
+        }
+    }
+
     Ok(pending)
 }
 
@@ -1780,9 +2029,7 @@ enum StorageApplyAdmissionRoute {
 }
 
 const fn apply_admission_route(operation: StorageOperation) -> StorageApplyAdmissionRoute {
-    if matches!(operation, StorageOperation::Snapshot { .. }) {
-        StorageApplyAdmissionRoute::Held
-    } else if operation.requires_workspace_metadata() {
+    if operation.requires_workspace_metadata() {
         StorageApplyAdmissionRoute::Workspace
     } else {
         StorageApplyAdmissionRoute::Generic

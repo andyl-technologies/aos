@@ -7,6 +7,7 @@
 //! merely because a process restarted or the wall clock moved backwards.
 
 use std::{
+    collections::BTreeMap,
     path::Path,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -22,7 +23,8 @@ use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 
 use super::protected_journal::{
     CacheResidencyCurrentTimeAuthorityV1, CacheResidencyReplayPartitionEvidenceV1,
-    ProtectedCacheResidencyReplayAuthorityV1, decode_partition_descriptor,
+    ProtectedCacheResidencyReplayAuthorityV1, decode_cache_payload_for_lifecycle,
+    decode_partition_descriptor,
 };
 use super::{
     CacheAtomicObjectPayloadV1, CacheAuthorityOwner, CacheAuthorityPurposeV1,
@@ -72,6 +74,23 @@ pub struct CacheResidencyProtectedOpenReportV1 {
 pub struct CacheResidencyProtectedOwnerV1 {
     state_journal: Option<Journal>,
     authority: Arc<ProtectedCacheResidencyReplayAuthorityV1>,
+}
+
+/// Carries one complete protected Cache currentness root and its actionable resources.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheLifecycleBootInventoryV1 {
+    root: ObjectDigest,
+    entries: Vec<crate::lifecycle::LifecycleBootDomainEntryV1>,
+}
+
+impl CacheLifecycleBootInventoryV1 {
+    pub(crate) const fn root(&self) -> ObjectDigest {
+        self.root
+    }
+
+    pub(crate) fn entries(&self) -> &[crate::lifecycle::LifecycleBootDomainEntryV1] {
+        &self.entries
+    }
 }
 
 /// Classifies cold cache resolution without leaking instance-bound authority.
@@ -700,6 +719,130 @@ impl CacheResidencyProtectedOwnerV1 {
         })
     }
 
+    /// Reads the complete Cache projection and separately classifies physical resources.
+    ///
+    /// Accounting, effect, current-head, checkpoint, scrub, eviction, and
+    /// recovery records remain committed by `root` but never become lifecycle
+    /// release targets. Only active reservations, publications, and pins are
+    /// emitted as physical rows.
+    pub(crate) fn lifecycle_boot_inventory(
+        &mut self,
+    ) -> Result<CacheLifecycleBootInventoryV1, CacheResidencyProtectedJournalErrorV1> {
+        let authority = Arc::clone(&self.authority);
+        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
+            let journal = self
+                .state_journal
+                .as_mut()
+                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            let projection =
+                CacheResidencyProtectedJournalV1::claim(journal, validator)?.replay()?;
+            let mut latest = BTreeMap::new();
+            for envelope in projection.records().iter().filter(|envelope| {
+                matches!(
+                    envelope.key().kind(),
+                    CacheResidencyProtectedRecordKindV1::Reservation
+                        | CacheResidencyProtectedRecordKindV1::Pin
+                        | CacheResidencyProtectedRecordKindV1::Catalog
+                )
+            }) {
+                let payload = decode_cache_payload_for_lifecycle(envelope, validator)?
+                    .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+                let key = (envelope.key().kind(), payload.record.subject);
+                match latest.get(&key) {
+                    Some((sequence, _, _)) if *sequence >= payload.record.sequence => {}
+                    _ => {
+                        latest.insert(key, (payload.record.sequence, envelope.digest(), payload));
+                    }
+                }
+            }
+
+            let mut entries = Vec::new();
+            for ((kind, _), (_, _envelope, payload)) in latest {
+                match kind {
+                    CacheResidencyProtectedRecordKindV1::Reservation
+                        if matches!(
+                            payload.reservation.state,
+                            super::ReservationStateV1::Reserved
+                                | super::ReservationStateV1::Uncertain
+                        ) =>
+                    {
+                        entries.push(
+                            crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
+                                crate::lifecycle::LifecycleResourceV1::Capability(
+                                    aos_sandbox_core::ResourceId::from_bytes(
+                                        *payload.reservation.id.as_bytes(),
+                                    ),
+                                ),
+                                payload.reservation.digest,
+                            )
+                            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
+                        );
+                    }
+                    CacheResidencyProtectedRecordKindV1::Catalog => {
+                        if let Some(catalog) = payload
+                            .catalog
+                            .filter(|catalog| catalog.presence != super::CatalogPresenceV1::Evicted)
+                        {
+                            let mut environment = [0_u8; 16];
+                            environment
+                                .copy_from_slice(&catalog.descriptor.digest().as_bytes()[..16]);
+                            entries.push(
+                                crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
+                                    crate::lifecycle::LifecycleResourceV1::Environment(
+                                        aos_sandbox_core::ResourceId::from_bytes(environment),
+                                    ),
+                                    catalog.digest,
+                                )
+                                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
+                            );
+                        }
+                    }
+                    CacheResidencyProtectedRecordKindV1::Pin => {
+                        for pin in payload.pins {
+                            let resource = if let Some(attachment) = pin.attachment {
+                                crate::lifecycle::LifecycleResourceV1::Attachment(
+                                    aos_sandbox_core::ResourceId::from_bytes(
+                                        *attachment.as_bytes(),
+                                    ),
+                                )
+                            } else {
+                                crate::lifecycle::LifecycleResourceV1::View(pin.view)
+                            };
+                            let identity = ObjectDigest::from_bytes(
+                                Sha256::new()
+                                    .chain_update(
+                                        b"aos.sandbox.lifecycle.cache-pin-physical-row.v1\0",
+                                    )
+                                    .chain_update(pin.id.as_bytes())
+                                    .chain_update(pin.object.digest().as_bytes())
+                                    .chain_update([pin.kind as u8])
+                                    .finalize()
+                                    .into(),
+                            );
+                            entries.push(
+                                crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
+                                    resource, identity,
+                                )
+                                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            entries.sort_unstable();
+            entries.dedup();
+            if entries.len() > crate::lifecycle::MAXIMUM_LIFECYCLE_EXPECTATIONS {
+                return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
+            }
+            refresh()?;
+            Ok(CacheLifecycleBootInventoryV1 {
+                root: projection.root(),
+                entries,
+            })
+        })
+    }
+
     /// Captures exact cache currentness under fresh protected time.
     ///
     /// # Errors
@@ -737,7 +880,7 @@ impl CacheResidencyProtectedOwnerV1 {
             Vec<CacheResidencyControllerRecordV1<'session>>,
             CacheResidencyProtectedJournalErrorV1,
         >,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
         self.commit_authorized_transition(
@@ -769,7 +912,7 @@ impl CacheResidencyProtectedOwnerV1 {
             Vec<CacheResidencyControllerRecordV1<'session>>,
             CacheResidencyProtectedJournalErrorV1,
         >,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
         self.commit_authorized_transition(
@@ -797,7 +940,7 @@ impl CacheResidencyProtectedOwnerV1 {
             Vec<CacheResidencyControllerRecordV1<'session>>,
             CacheResidencyProtectedJournalErrorV1,
         >,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
         self.commit_authorized_transition(
@@ -825,7 +968,7 @@ impl CacheResidencyProtectedOwnerV1 {
             Vec<CacheResidencyControllerRecordV1<'session>>,
             CacheResidencyProtectedJournalErrorV1,
         >,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
         self.commit_authorized_transition(
@@ -853,7 +996,7 @@ impl CacheResidencyProtectedOwnerV1 {
             Vec<CacheResidencyControllerRecordV1<'session>>,
             CacheResidencyProtectedJournalErrorV1,
         >,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
         self.commit_authorized_transition(
@@ -881,7 +1024,7 @@ impl CacheResidencyProtectedOwnerV1 {
             Vec<CacheResidencyControllerRecordV1<'session>>,
             CacheResidencyProtectedJournalErrorV1,
         >,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
         self.commit_authorized_transition(
@@ -909,7 +1052,7 @@ impl CacheResidencyProtectedOwnerV1 {
             Vec<CacheResidencyControllerRecordV1<'session>>,
             CacheResidencyProtectedJournalErrorV1,
         >,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
         self.commit_authorized_transition(
@@ -940,7 +1083,7 @@ impl CacheResidencyProtectedOwnerV1 {
             Vec<CacheResidencyControllerRecordV1<'session>>,
             CacheResidencyProtectedJournalErrorV1,
         >,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
         self.commit_authorized_transition(
@@ -1006,7 +1149,7 @@ impl CacheResidencyProtectedOwnerV1 {
             Vec<CacheResidencyControllerRecordV1<'session>>,
             CacheResidencyProtectedJournalErrorV1,
         >,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
         self.validate_authority_requests(allowed_purposes, &requests)?;
@@ -1041,7 +1184,7 @@ impl CacheResidencyProtectedOwnerV1 {
                             return Ok((outcome, None));
                         };
                         let validated = capability.consume(&journal)?;
-                        Some(handoff(&validated))
+                        Some(handoff(validated))
                     }
                     CacheResidencyCommitOutcomeV1::OutcomeUnknown { .. }
                     | CacheResidencyCommitOutcomeV1::ValidationUnknown { .. } => None,
@@ -1104,7 +1247,7 @@ impl CacheResidencyProtectedOwnerV1 {
     pub fn recover<R>(
         &mut self,
         pending: CacheResidencyOutcomeUnknownV1,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyRecoveryV1, Option<R>), CacheResidencyProtectedJournalErrorV1> {
         self.reopen_state()?;
         let authority = Arc::clone(&self.authority);
@@ -1124,7 +1267,7 @@ impl CacheResidencyProtectedOwnerV1 {
                         return Ok((recovery, None));
                     };
                     let validated = capability.consume(&journal)?;
-                    Some(handoff(&validated))
+                    Some(handoff(validated))
                 }
                 CacheResidencyRecoveryV1::Retry(_)
                 | CacheResidencyRecoveryV1::Diverged(_)
@@ -1144,7 +1287,7 @@ impl CacheResidencyProtectedOwnerV1 {
         &mut self,
         transaction_id: [u8; 16],
         observation: Option<([u8; 16], ObjectDigest)>,
-        handoff: impl for<'current> FnOnce(&ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<CacheResidencyProtectedColdOutcomeV1<R>, CacheResidencyProtectedJournalErrorV1>
     {
         let authority = Arc::clone(&self.authority);
@@ -1176,7 +1319,7 @@ impl CacheResidencyProtectedOwnerV1 {
                     refresh()?;
                     let validated = cold.consume(&journal)?;
                     Ok(CacheResidencyProtectedColdOutcomeV1::Terminal(handoff(
-                        &validated,
+                        validated,
                     )))
                 }
             }

@@ -151,6 +151,8 @@ pub enum ProtectedRecordKindV1 {
     CatalogEviction = 11,
     /// Fenced physical/catalog recovery observation.
     RecoveryObservation = 12,
+    /// Exact pre-inode materialization intent.
+    PreparationIntent = 13,
 }
 
 impl ProtectedRecordKindV1 {
@@ -168,9 +170,35 @@ impl ProtectedRecordKindV1 {
             10 => Ok(Self::RootRegistry),
             11 => Ok(Self::CatalogEviction),
             12 => Ok(Self::RecoveryObservation),
+            13 => Ok(Self::PreparationIntent),
             _ => Err(super::ProtectedRecordCodecError::UnknownKind),
         }
     }
+}
+
+/// Commits every deterministic input before private-inode creation begins.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactPreparationIntentV1 {
+    /// Publication operation.
+    pub operation: OperationId,
+    /// Publisher execution that owns the attempt.
+    pub publisher_instance: PublisherInstanceId,
+    /// Admission decision authorizing the attempt.
+    pub decision_digest: ObjectDigest,
+    /// Exact selected protected root record.
+    pub root_record_digest: ObjectDigest,
+    /// Selected publication-root generation.
+    pub root_generation: u64,
+    /// Exact requested content descriptor.
+    pub content: ObjectDescriptor,
+    /// Digest of the controller-derived private name.
+    pub private_name_digest: ObjectDigest,
+    /// Digest of the controller-derived final name.
+    pub final_name_digest: ObjectDigest,
+    /// Maximum physical allocation admitted for the attempt.
+    pub maximum_allocated_bytes: u64,
+    /// Domain-separated commitment to this complete intent.
+    pub intent_digest: ObjectDigest,
 }
 
 /// States one durable admission operation without erasing obligations.
@@ -253,6 +281,8 @@ pub struct ArtifactCommitmentV1 {
     pub publisher_instance: PublisherInstanceId,
     /// Admission decision authorizing materialization.
     pub decision_digest: ObjectDigest,
+    /// Durable pre-inode intent consumed by this observation.
+    pub preparation_intent_digest: ObjectDigest,
     /// Selected publication root generation.
     pub root_generation: u64,
     /// Exact requested content descriptor.

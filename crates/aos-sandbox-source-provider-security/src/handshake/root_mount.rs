@@ -82,6 +82,34 @@ impl core::fmt::Debug for RootMountSourceProviderOwnerV1 {
 }
 
 impl RootMountSourceProviderOwnerV1 {
+    /// Reuses the protected connected carrier for a fresh successor transcript.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] unless the current session and
+    /// fixed custody remain live immediately before rotation.
+    #[doc(hidden)]
+    pub fn begin_successor_handshake(&mut self) -> Result<(), SourceProviderSecurityError> {
+        let state = self
+            .state
+            .take()
+            .ok_or(SourceProviderSecurityError::Poisoned)?;
+        let RootMountSourceProviderOwnerStateV1::Current(mut current) = state else {
+            self.state = Some(state);
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        };
+        current.revalidate()?;
+        let CurrentRootMountSourceProviderSessionV1 {
+            custody,
+            carrier,
+            session: _,
+            provider_execution: _,
+        } = current;
+        let prepared = RootMountHelloPreparedV1::prepare_carrier(custody, carrier)?;
+        self.state = Some(RootMountSourceProviderOwnerStateV1::Prepared(prepared));
+        Ok(())
+    }
+
     /// Opens the fixed Root-Mount custody and adopts one connected socket.
     ///
     /// `socket` must already be the caller's sole configured
@@ -178,10 +206,16 @@ impl RootMountSourceProviderOwnerV1 {
 
 impl RootMountHelloPreparedV1 {
     pub(super) fn prepare(
-        mut custody: ProtectedRootMountCustodyV1,
+        custody: ProtectedRootMountCustodyV1,
         socket: DescriptorSubjectSocket,
     ) -> Result<Self, SourceProviderSecurityError> {
-        let mut carrier = InertSourceProviderCarrierV1::adopt(socket)?;
+        Self::prepare_carrier(custody, InertSourceProviderCarrierV1::adopt(socket)?)
+    }
+
+    fn prepare_carrier(
+        mut custody: ProtectedRootMountCustodyV1,
+        mut carrier: InertSourceProviderCarrierV1,
+    ) -> Result<Self, SourceProviderSecurityError> {
         let now = match current_unix_seconds() {
             Ok(now) => now,
             Err(error) => return Err(poison_and_close(&mut custody, &mut carrier, error)),

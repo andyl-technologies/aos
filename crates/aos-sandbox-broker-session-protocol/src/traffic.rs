@@ -21,7 +21,7 @@ use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 
 use crate::artifact::{
     BrokerSessionArtifactError, SignedBrokerOutcomeV1, SignedBrokerRequestV1,
-    complete_signed_request_digest_v1,
+    complete_signed_outcome_bytes_digest_v1, complete_signed_request_digest_v1,
 };
 use crate::context::ProtectedBrokerSessionVerificationContextV1;
 use crate::model::{BrokerSessionKeyUsageV1, BrokerSessionValidationError};
@@ -682,12 +682,7 @@ fn require_advanceable_sequence(sequence: u64) -> Result<(), BrokerSessionSequen
 }
 
 fn digest_signed_outcome(bytes: &[u8]) -> [u8; 32] {
-    use sha2::{Digest as _, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos-sandbox-broker-session-signed-outcome-v1\0");
-    hasher.update((bytes.len() as u32).to_be_bytes());
-    hasher.update(bytes);
-    hasher.finalize().into()
+    complete_signed_outcome_bytes_digest_v1(bytes)
 }
 
 #[cfg(test)]

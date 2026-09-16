@@ -84,13 +84,19 @@ pub(crate) fn verify_pending_close_completion(
 ///
 /// # Errors
 ///
-/// Returns [`FileCallbackError`] unless the committed advancement is the exact
-/// post-CAS readback paired with this pending completion and live connection.
+/// Returns [`FileCallbackError`] together with the committed advancement unless
+/// it is the exact post-CAS readback paired with the pending completion.
 pub(crate) fn finish_pending_open_completion(
     connection: &MetadataConnection<'_, '_, '_, '_>,
     pending: PendingBackingOpenReceipt,
     advancement: ProtectedBrokerOutcomeCommittedAdvancementV1,
-) -> Result<CommittedBrokerReceipt<BackingOpenReceipt>, FileCallbackError> {
+) -> Result<
+    CommittedBrokerReceipt<BackingOpenReceipt>,
+    (
+        FileCallbackError,
+        ProtectedBrokerOutcomeCommittedAdvancementV1,
+    ),
+> {
     pending.mint_after_commit(connection, advancement)
 }
 
@@ -98,12 +104,18 @@ pub(crate) fn finish_pending_open_completion(
 ///
 /// # Errors
 ///
-/// Returns [`FileCallbackError`] unless the committed advancement is the exact
-/// post-CAS readback paired with this pending completion and live connection.
+/// Returns [`FileCallbackError`] together with the committed advancement unless
+/// it is the exact post-CAS readback paired with the pending completion.
 pub(crate) fn finish_pending_close_completion(
     connection: &MetadataConnection<'_, '_, '_, '_>,
     pending: PendingBackingCloseReceipt,
     advancement: ProtectedBrokerOutcomeCommittedAdvancementV1,
-) -> Result<CommittedBrokerReceipt<BackingCloseReceipt>, FileCallbackError> {
+) -> Result<
+    CommittedBrokerReceipt<BackingCloseReceipt>,
+    (
+        FileCallbackError,
+        ProtectedBrokerOutcomeCommittedAdvancementV1,
+    ),
+> {
     pending.mint_after_commit(connection, advancement)
 }

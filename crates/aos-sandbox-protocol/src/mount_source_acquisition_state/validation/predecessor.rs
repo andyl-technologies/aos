@@ -46,7 +46,7 @@ pub(super) fn validate_attempt(
     validate_provider_request(attempt, session, table)?;
     validate_attempt_checkpoint(attempt, session)?;
     validate_consumed_result(attempt, session)?;
-    validate_abandoned_attempt(attempt, table)
+    validate_indeterminate_attempt(attempt, table)
 }
 
 pub(super) fn validate_attempt_normalization(
@@ -400,22 +400,26 @@ pub(super) fn validate_predecessor_inventory_history(
     reserved_attempt: &SourceProviderQueryAttemptV2,
     table: &SourceAcquisitionTableV2,
 ) -> Result<()> {
-    let mut terminal = Vec::new();
+    let mut retained = Vec::new();
     for attempt in table.provider_attempts.values().filter(|attempt| {
         attempt.scope == value.scope
             && attempt.method == ProviderMethodV2::Inventory
-            && attempt_is_terminal(&attempt.state)
+            && (attempt_is_terminal(&attempt.state)
+                || matches!(
+                    attempt.state,
+                    ProviderAttemptStateV2::SupersededIndeterminate { .. }
+                ))
     }) {
         if attempt_happens_after(table, attempt, reserved_attempt)? {
-            terminal.push(attempt);
+            retained.push(attempt);
         }
     }
-    if value.last_inventory_attempt.is_some() != !terminal.is_empty() {
+    if value.last_inventory_attempt.is_some() != !retained.is_empty() {
         return Err(state_error(
             "provider-head predecessor Inventory tail has invalid presence",
         ));
     }
-    let complete_count = terminal
+    let complete_count = retained
         .iter()
         .filter(|attempt| is_complete(attempt))
         .count();
@@ -431,14 +435,18 @@ pub(super) fn validate_predecessor_inventory_history(
         let last = resolve_historical_attempt(table, reference)?;
         if last.scope != value.scope
             || last.method != ProviderMethodV2::Inventory
-            || !attempt_is_terminal(&last.state)
+            || !(attempt_is_terminal(&last.state)
+                || matches!(
+                    last.state,
+                    ProviderAttemptStateV2::SupersededIndeterminate { .. }
+                ))
             || !attempt_happens_after(table, &last, reserved_attempt)?
         {
             return Err(state_error(
                 "provider-head predecessor Inventory tail is invalid",
             ));
         }
-        for earlier in &terminal {
+        for earlier in &retained {
             if earlier.attempt_id != last.attempt_id
                 && !attempt_happens_after(table, earlier, &last)?
             {

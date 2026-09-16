@@ -8,9 +8,10 @@ use core::cell::Cell;
 
 pub use mount_request::{
     AuthorizedMountAcquireVerificationFloorV2, AuthorizedMountProviderOutcomeV2,
-    CommittedReopenedMountSourceRootV2, CurrentMountProviderSessionPlanV2,
-    HistoricalMountInventoryAuthorizationV2, HistoricalMountReleaseAuthorizationV2,
-    MountProviderAuthorityTrustProjectionV2, MountProviderRequestProjectionV2,
+    CapturedMountProviderRecoveryOutcomeV2, CommittedReopenedMountSourceRootV2,
+    CurrentMountProviderSessionPlanV2, HistoricalMountInventoryAuthorizationV2,
+    HistoricalMountReleaseAuthorizationV2, MountProviderAuthorityTrustProjectionV2,
+    MountProviderRequestProjectionV2, MountProviderRequestSendRecoveryV2,
     MountProviderSessionProjectionV2, MountProviderSignerProjectionV2,
     PreparedMountProviderRequestV2, ReceivedMountProviderOutcomePartsV2,
     RecoveredMountProviderOutcomePartsV2, RecoveredMountProviderOutcomeV2,
@@ -20,7 +21,7 @@ pub use mount_request::{
 };
 pub use provider::{
     AcquireReceiptFactsV1, CurrentProviderIngressSessionV1, CurrentProviderSessionProjectionV1,
-    ProviderCompletionBuilderV1, ProviderOwnerSecurityFacadeV1,
+    ProviderCompletionBuilderV1, ProviderIngressReopenCheckpointV1, ProviderOwnerSecurityFacadeV1,
     ProviderSessionSupersessionEvidenceV1, ProviderSourceProviderHandshakeStatusV1,
     ProviderSourceProviderOwnerV1, RevalidatedProviderReplayV1,
 };
@@ -39,6 +40,25 @@ pub struct CommittedProviderOutcomeV1 {
     pub(super) session_binding: aos_sandbox_core::ObjectDigest,
     pub(super) committed_snapshot: aos_sandbox::ProtectedJournalSnapshot,
     pub(super) response: Option<Vec<u8>>,
+}
+
+/// Proves one exact response was durably completed under Provider deadline checks.
+///
+/// The move-only value has no public constructor or scalar accessors. Mount may
+/// consume it only while reauthenticating the same response against its exact
+/// protected historical attempt.
+pub struct PersistedProviderOutcomeV1 {
+    pub(super) method: aos_sandbox_source_provider_protocol::SourceProviderMethod,
+    pub(super) signed_request_digest: [u8; 32],
+    pub(super) response_digest: [u8; 32],
+    pub(super) completed_at_seconds: i64,
+    pub(super) deadline_seconds: i64,
+}
+
+impl core::fmt::Debug for PersistedProviderOutcomeV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("PersistedProviderOutcomeV1([protected completion])")
+    }
 }
 
 /// Retains a provider request verified against live protected session custody.

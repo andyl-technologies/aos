@@ -21,6 +21,7 @@ pub mod authorization;
 pub mod broker;
 pub mod catalog;
 pub mod destination_slot;
+mod dormant_broker_session;
 pub mod helper;
 pub mod host_scope;
 pub mod keeper;
@@ -33,6 +34,11 @@ pub mod spawn;
 mod state;
 pub mod transport;
 pub mod worker;
+
+pub use dormant_broker_session::{
+    DormantMountBrokerCallErrorV1, DormantMountBrokerCallsiteV1, DormantMountBrokerCompositionV1,
+    DormantMountBrokerObservationV1,
+};
 
 pub(crate) const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 

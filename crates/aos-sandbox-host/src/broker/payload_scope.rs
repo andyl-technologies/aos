@@ -11,7 +11,10 @@
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 
 use aos_sandbox_broker::{BrokerAdmissionError, BrokerEffectIntentV1};
-use aos_sandbox_core::RawPairedClockSample;
+use aos_sandbox_core::{
+    AssignmentEpoch, BrokerAssignment, DesiredGeneration, IncarnationId, ObjectDigest,
+    RawPairedClockSample, SandboxId,
+};
 use aos_sandbox_protocol::payload_scope::{
     ValidatedPayloadScopeRequest, encode_payload_scope_response,
 };
@@ -40,6 +43,10 @@ impl<const N: usize> PreparedPayloadScopeReply<'_, N> {
 
     pub(crate) fn descriptors(&self) -> [BorrowedFd<'_>; N] {
         std::array::from_fn(|index| self.descriptors[index].as_fd())
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<u8>, Vec<OwnedFd>) {
+        (self.body, Vec::from(self.descriptors))
     }
 
     /// Rechecks both retained kernel identity and the live query deadline.
@@ -87,8 +94,9 @@ where
         let prior = self
             .state
             .prior_authorization(fence.sandbox_id())
-            .ok_or(HostError::UnknownHandle)?;
-        let current = self.authority.open_fence(fence.sandbox_id(), prior)?;
+            .ok_or(HostError::UnknownHandle)?
+            .to_vec();
+        let current = self.authority.open_fence(fence.sandbox_id(), &prior)?;
         let observed = clock()?;
         let admitted = self.authority.admit_payload_scope(
             artifacts,
@@ -149,5 +157,95 @@ where
         };
         reply.check_before_send(clock)?;
         Ok(reply)
+    }
+
+    /// Reopens descriptors for an already-protected exact terminal replay.
+    ///
+    /// This path deliberately does not admit a new effect or renew the
+    /// historical request deadline. It requires the request assignment to
+    /// equal the current protected fence and rechecks the live kernel objects
+    /// and monotone boot clock around physical readback.
+    pub(crate) async fn reopen_payload_scope_for_terminal_replay<T>(
+        &mut self,
+        request: &ValidatedPayloadScopeRequest,
+        clock: &mut T,
+    ) -> Result<(Vec<u8>, Vec<OwnedFd>)>
+    where
+        T: FnMut() -> Result<RawPairedClockSample> + Send,
+    {
+        self.ensure_healthy()?;
+        self.state.validate_authenticated(&self.authority)?;
+        let fence = request.fence();
+        let identity = HostRuntimeIdentity::new(
+            *fence.sandbox_id(),
+            *fence.incarnation_id(),
+            fence.assignment_epoch(),
+            fence.desired_generation(),
+            *fence.assignment_digest(),
+        );
+        if !self.state.contains_runtime(&identity) {
+            return Err(HostError::UnknownHandle);
+        }
+        let expected_assignment = BrokerAssignment::new(
+            SandboxId::from_bytes(*fence.sandbox_id()),
+            IncarnationId::from_bytes(*fence.incarnation_id()),
+            AssignmentEpoch::new(fence.assignment_epoch()),
+            DesiredGeneration::new(fence.desired_generation()),
+            ObjectDigest::from_bytes(*fence.assignment_digest()),
+        )
+        .map_err(|_| HostError::UnknownHandle)?;
+        let prior = self
+            .state
+            .prior_authorization(fence.sandbox_id())
+            .ok_or(HostError::UnknownHandle)?;
+        let current = self.authority.open_fence(fence.sandbox_id(), prior)?;
+        self.authority.check_current_fence(&current)?;
+        if current.assignment() != expected_assignment {
+            return Err(HostError::Fence(
+                "payload replay does not match installed authority",
+            ));
+        }
+        let _before_readback = clock()?;
+
+        self.recover_completed_runtime_scope(identity).await?;
+        self.refresh_payload_scope(identity).await?;
+        let pins = self
+            .payload_pin(&identity)
+            .ok_or(HostError::UnknownHandle)?;
+        pins.recheck_kernel()?;
+        let body = encode_payload_scope_response(
+            fence,
+            request.runtime_handle(),
+            &pins.scope_handle,
+            pins.payload.relative_cgroup_hint().as_bytes(),
+        )?;
+        ensure_response_bound(&body, request.header().maximum_response_bytes())?;
+        let descriptors = [
+            pins.payload
+                .pidfd()
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|source| HostError::Descriptor {
+                    operation: "clone replay payload pidfd",
+                    source,
+                })?,
+            pins.payload
+                .cgroup()
+                .try_clone_to_owned()
+                .map_err(|source| HostError::Descriptor {
+                    operation: "clone replay payload cgroup",
+                    source,
+                })?,
+        ];
+        pins.recheck_kernel()?;
+        let _after_readback = clock()?;
+        let current_after = self.authority.open_fence(fence.sandbox_id(), &prior)?;
+        self.authority.check_current_fence(&current_after)?;
+        if current_after != current {
+            return Err(HostError::Fence(
+                "payload authority changed during replay readback",
+            ));
+        }
+        Ok((body, Vec::from(descriptors)))
     }
 }

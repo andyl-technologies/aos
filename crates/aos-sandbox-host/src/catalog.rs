@@ -64,6 +64,17 @@ pub enum HostCatalogPublicationOutcome {
     Replay,
 }
 
+/// Classifies protected physical readback after an ambiguous publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostCatalogPublicationReadback {
+    /// The exact intended canonical bytes are durably visible.
+    Committed,
+    /// The intended generation is absent and its transition remains admissible.
+    Absent,
+    /// Visible state conflicts with the intended generation or predecessor.
+    Conflicting,
+}
+
 impl FileHostCatalog {
     /// Constructs a catalog reader from a pre-opened private directory.
     #[must_use]
@@ -145,6 +156,46 @@ impl FileHostCatalogPublisher {
         }
 
         Ok(HostCatalogPublicationOutcome::Published)
+    }
+
+    /// Resolves an ambiguous publication through locked durable readback.
+    ///
+    /// The root directory is synchronized before observation, then the visible
+    /// catalog is read twice while the publication lock is retained. `Absent`
+    /// is returned only when retrying this exact snapshot remains a valid next
+    /// transition; all other nonmatching visible state is `Conflicting`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the fixed root changes, cannot be synchronized,
+    /// or does not produce two identical protected canonical observations.
+    #[doc(hidden)]
+    pub fn resolve_ambiguous_publication(
+        &self,
+        intended: &HostCatalogSnapshot,
+    ) -> Result<HostCatalogPublicationReadback> {
+        let intended_bytes = intended.encode()?;
+        let _publication_lock = lock_catalog_root(&self.root)?;
+        rustix::fs::fsync(self.root.as_fd()).map_err(catalog_error)?;
+        let first = read_catalog_snapshot(&self.root)?;
+        rustix::fs::fsync(self.root.as_fd()).map_err(catalog_error)?;
+        let second = read_catalog_snapshot(&self.root)?;
+        if first != second {
+            return Err(HostError::Catalog(
+                "host catalog changed during ambiguity readback".to_owned(),
+            ));
+        }
+
+        let Some((visible, visible_bytes)) = first else {
+            return Ok(HostCatalogPublicationReadback::Absent);
+        };
+        if visible.generation() == intended.generation() && visible_bytes == intended_bytes {
+            return Ok(HostCatalogPublicationReadback::Committed);
+        }
+        if validate_catalog_transition(&visible, intended).is_ok() {
+            return Ok(HostCatalogPublicationReadback::Absent);
+        }
+        Ok(HostCatalogPublicationReadback::Conflicting)
     }
 }
 

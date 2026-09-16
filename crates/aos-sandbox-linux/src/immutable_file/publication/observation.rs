@@ -9,8 +9,9 @@ use std::fs::File;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
 use super::{
-    FsVerityPublicationRoot, PrivateIdentity, PublicationName, PublicationRootError, inspect_root,
-    is_kernel_verity_filesystem, strict_resolution,
+    FsVerityPublicationRoot, PrivateIdentity, PublicationName, PublicationRootError,
+    RetainedPrivateArtifact, SealedPrivateFile, inspect_root, is_kernel_verity_filesystem,
+    strict_resolution,
 };
 use crate::Error;
 use crate::immutable_file::FsVerityDigest;
@@ -49,7 +50,60 @@ pub struct ObservedSealedPublicationFile<'root> {
     _root: &'root FsVerityPublicationRoot,
     name: PublicationName,
     identity: PrivateIdentity,
+    allocated_bytes: u64,
     verity: FsVerityDigest,
+}
+
+/// Pins one exact private inode retained after interrupted materialization.
+///
+/// Unlike [`ObservedSealedPublicationFile`], this type makes no seal or content
+/// claim. It exists so a higher-level protected recovery reducer can retain the
+/// actual inode while recording failure, quarantine, or authorized cleanup.
+#[derive(Debug)]
+pub struct ObservedRetainedPrivateArtifact<'root> {
+    file: OwnedFd,
+    _root: &'root FsVerityPublicationRoot,
+    name: PublicationName,
+    identity: PrivateIdentity,
+    allocated_bytes: u64,
+}
+
+impl ObservedRetainedPrivateArtifact<'_> {
+    /// Returns the exact basename resolved beneath the retained root.
+    #[must_use]
+    pub fn name(&self) -> &PublicationName {
+        &self.name
+    }
+
+    /// Returns the stable observed byte length.
+    #[must_use]
+    pub const fn bytes(&self) -> u64 {
+        self.identity.bytes
+    }
+
+    /// Returns the stable observed allocated byte count.
+    #[must_use]
+    pub const fn allocated_bytes(&self) -> u64 {
+        self.allocated_bytes
+    }
+
+    /// Returns the session-local device number.
+    #[must_use]
+    pub const fn device(&self) -> u64 {
+        self.identity.device
+    }
+
+    /// Returns the session-local inode number.
+    #[must_use]
+    pub const fn inode(&self) -> u64 {
+        self.identity.inode
+    }
+}
+
+impl AsFd for ObservedRetainedPrivateArtifact<'_> {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.file.as_fd()
+    }
 }
 
 impl ObservedSealedPublicationFile<'_> {
@@ -63,6 +117,12 @@ impl ObservedSealedPublicationFile<'_> {
     #[must_use]
     pub const fn bytes(&self) -> u64 {
         self.identity.bytes
+    }
+
+    /// Returns the allocated resident bytes reported for the pinned inode.
+    #[must_use]
+    pub const fn allocated_bytes(&self) -> u64 {
+        self.allocated_bytes
     }
 
     /// Returns the session-local device number.
@@ -87,6 +147,25 @@ impl ObservedSealedPublicationFile<'_> {
     }
 }
 
+impl<'root> ObservedSealedPublicationFile<'root> {
+    /// Converts an exact observed sealed private name into a naming pin.
+    ///
+    /// This grants only Linux no-replace mechanics. The higher publisher owner
+    /// must independently match the name, content, allocation, seal, durable
+    /// preparation intent, and protected root before permitting publication.
+    #[must_use = "a recovered private pin must remain under authority-bound custody"]
+    pub fn into_recovered_private(self) -> SealedPrivateFile<'root> {
+        SealedPrivateFile {
+            file: self.file,
+            name: self.name,
+            root: self._root,
+            identity: self.identity,
+            allocated_bytes: self.allocated_bytes,
+            verity: self.verity,
+        }
+    }
+}
+
 impl AsFd for ObservedSealedPublicationFile<'_> {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.file.as_fd()
@@ -94,6 +173,83 @@ impl AsFd for ObservedSealedPublicationFile<'_> {
 }
 
 impl FsVerityPublicationRoot {
+    /// Opens and pins one exact private inode without asserting fs-verity.
+    ///
+    /// The inode must remain a current-user-owned regular file with one link,
+    /// read-only descriptor access, stable identity/allocation, and size within
+    /// `maximum_bytes`. This observation grants neither cleanup nor adoption.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Ok(None)` only for stable name absence. Unsafe inode metadata,
+    /// an oversized inode, or any root/name/identity race fails closed.
+    pub fn open_named_retained_private<'root>(
+        &'root self,
+        name: &PublicationName,
+        maximum_bytes: u64,
+    ) -> Result<Option<ObservedRetainedPrivateArtifact<'root>>, ObserveSealedPublicationError> {
+        self.recheck_observation_root()?;
+        let file = match open_published_name(self, name) {
+            Ok(file) => file,
+            Err(error) if syscall_errno(&error) == Some(libc::ENOENT) => {
+                self.recheck_observation_root()?;
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let identity = inspect_retained_private(file.as_fd(), maximum_bytes)?;
+        let allocated_bytes = observed_allocated_bytes(file.as_fd())?;
+        if allocated_bytes > maximum_bytes {
+            return Err(ObserveSealedPublicationError::ByteLimitExceeded);
+        }
+        let reopened = open_published_name(self, name)?;
+        if inspect_retained_private(reopened.as_fd(), maximum_bytes)? != identity
+            || observed_allocated_bytes(reopened.as_fd())? != allocated_bytes
+        {
+            return Err(ObserveSealedPublicationError::AdmissionRace);
+        }
+        self.recheck_observation_root()?;
+        if inspect_retained_private(file.as_fd(), maximum_bytes)? != identity
+            || observed_allocated_bytes(file.as_fd())? != allocated_bytes
+        {
+            return Err(ObserveSealedPublicationError::AdmissionRace);
+        }
+        Ok(Some(ObservedRetainedPrivateArtifact {
+            file: file.into(),
+            _root: self,
+            name: name.clone(),
+            identity,
+            allocated_bytes,
+        }))
+    }
+
+    /// Reopens retained failure evidence and proves it still names that inode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for disappearance, identity replacement, a shortened
+    /// confirmed prefix, or any ordinary retained-private observation failure.
+    pub fn reopen_retained_private<'root>(
+        &'root self,
+        retained: &RetainedPrivateArtifact,
+        maximum_bytes: u64,
+    ) -> Result<ObservedRetainedPrivateArtifact<'root>, ObserveSealedPublicationError> {
+        let observed = self
+            .open_named_retained_private(retained.name(), maximum_bytes)?
+            .ok_or(ObserveSealedPublicationError::AdmissionRace)?;
+        if retained
+            .device()
+            .is_some_and(|device| device != observed.device())
+            || retained
+                .inode()
+                .is_some_and(|inode| inode != observed.inode())
+            || observed.bytes() < retained.confirmed_bytes()
+        {
+            return Err(ObserveSealedPublicationError::AdmissionRace);
+        }
+        Ok(observed)
+    }
+
     /// Opens one exact final name and observes its existing fs-verity seal.
     ///
     /// Resolution is descriptor-relative and rejects traversal, symlinks,
@@ -128,6 +284,7 @@ impl FsVerityPublicationRoot {
             Err(error) => return Err(error.into()),
         };
         let identity = inspect_observed_publication(file.as_fd(), maximum_bytes)?;
+        let allocated_bytes = observed_allocated_bytes(file.as_fd())?;
         let verity = observed_sha256_verity(file.as_fd())?;
 
         validate_reopened_observation(
@@ -148,12 +305,21 @@ impl FsVerityPublicationRoot {
                 ))
             },
         )?;
+        validate_allocated_observation(
+            allocated_bytes,
+            || {
+                let named = open_published_name(self, name)?;
+                observed_allocated_bytes(named.as_fd())
+            },
+            || observed_allocated_bytes(file.as_fd()),
+        )?;
 
         Ok(Some(ObservedSealedPublicationFile {
             file: file.into(),
             _root: self,
             name: name.clone(),
             identity,
+            allocated_bytes,
             verity,
         }))
     }
@@ -168,8 +334,39 @@ impl FsVerityPublicationRoot {
         {
             return Err(ObserveSealedPublicationError::AdmissionRace);
         }
+        if self.protected_path.is_some() {
+            self.recheck_protected_path()
+                .map_err(|_| ObserveSealedPublicationError::AdmissionRace)?;
+        }
         Ok(())
     }
+}
+
+fn inspect_retained_private(
+    file: BorrowedFd<'_>,
+    maximum_bytes: u64,
+) -> Result<PrivateIdentity, ObserveSealedPublicationError> {
+    uapi::ensure_cloexec(file)?;
+    let flags = uapi::get_status_flags(file)?;
+    let stat = uapi::fstat(file)?;
+    let bytes = u64::try_from(stat.st_size)
+        .map_err(|_| ObserveSealedPublicationError::ByteLimitExceeded)?;
+    if bytes > maximum_bytes {
+        return Err(ObserveSealedPublicationError::ByteLimitExceeded);
+    }
+    if flags & libc::O_ACCMODE != libc::O_RDONLY
+        || flags & libc::O_PATH != 0
+        || stat.st_mode & libc::S_IFMT != libc::S_IFREG
+        || stat.st_uid != uapi::effective_uid()
+        || stat.st_nlink != 1
+    {
+        return Err(ObserveSealedPublicationError::InodeInvariant);
+    }
+    Ok(PrivateIdentity {
+        device: stat.st_dev,
+        inode: stat.st_ino,
+        bytes,
+    })
 }
 
 fn validate_reopened_observation<E>(
@@ -187,6 +384,20 @@ where
     }
     recheck_root()?;
     if recheck_pinned()? != (expected_identity, expected_verity) {
+        return Err(ObserveSealedPublicationError::AdmissionRace.into());
+    }
+    Ok(())
+}
+
+fn validate_allocated_observation<E>(
+    expected: u64,
+    reopen_name: impl FnOnce() -> Result<u64, E>,
+    recheck_pinned: impl FnOnce() -> Result<u64, E>,
+) -> Result<(), E>
+where
+    E: From<ObserveSealedPublicationError>,
+{
+    if reopen_name()? != expected || recheck_pinned()? != expected {
         return Err(ObserveSealedPublicationError::AdmissionRace.into());
     }
     Ok(())
@@ -237,6 +448,14 @@ fn inspect_observed_publication(
         inode: stat.st_ino,
         bytes,
     })
+}
+
+fn observed_allocated_bytes(file: BorrowedFd<'_>) -> Result<u64, ObserveSealedPublicationError> {
+    let stat = uapi::fstat(file)?;
+    u64::try_from(stat.st_blocks)
+        .ok()
+        .and_then(|blocks| blocks.checked_mul(512))
+        .ok_or(ObserveSealedPublicationError::InodeInvariant)
 }
 
 fn observed_sha256_verity(

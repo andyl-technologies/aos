@@ -244,6 +244,20 @@ message Command {
   repeated EnvironmentVariable environment = 2;
   bytes working_directory = 3; // Slash-separated relative path bytes.
   bool allocate_terminal = 4;
+  bytes sandbox_shell = 5; // Mutually exclusive with arguments.
+  Duration execution_timeout = 6;
+  ExecutionIoMode io_mode = 7;
+  uint32 terminal_rows = 8;
+  uint32 terminal_columns = 9;
+  uint64 detached_capture_bytes = 10;
+  repeated Feature stream_features = 11;
+}
+
+enum ExecutionIoMode {
+  EXECUTION_IO_MODE_UNSPECIFIED = 0;
+  EXECUTION_IO_MODE_STREAM = 1;
+  EXECUTION_IO_MODE_PTY = 2;
+  EXECUTION_IO_MODE_DETACHED_CAPTURE = 3;
 }
 
 message EnvironmentVariable {
@@ -270,6 +284,15 @@ message ExecutionResult {
   int32 exit_code = 1;
   string termination_reason = 2;
   Timestamp exited_at = 3;
+  ExecutionTerminationKind termination_kind = 4;
+  ExecutionSignal signal = 5;
+}
+
+enum ExecutionTerminationKind {
+  EXECUTION_TERMINATION_KIND_UNSPECIFIED = 0;
+  EXECUTION_TERMINATION_KIND_EXIT_CODE = 1;
+  EXECUTION_TERMINATION_KIND_SIGNAL = 2;
+  EXECUTION_TERMINATION_KIND_LOST = 3;
 }
 
 message Execution {
@@ -471,6 +494,68 @@ message PolicyReason {
   string code = 1;
   ObjectDescriptor source = 2;
   string safe_message = 3;
+  PolicyReasonCode reason_code = 4;
+}
+
+enum PolicyReasonCode {
+  POLICY_REASON_CODE_UNSPECIFIED = 0;
+  POLICY_REASON_CODE_REQUEST_ACCEPTED = 1;
+  POLICY_REASON_CODE_REQUEST_ATTENUATED = 2;
+  POLICY_REASON_CODE_REQUIRED_FEATURE = 3;
+  POLICY_REASON_CODE_RESOURCE_CONFLICT = 4;
+  POLICY_REASON_CODE_POLICY_CONFLICT = 5;
+  POLICY_REASON_CODE_PARENT_CONSTRAINT = 6;
+  POLICY_REASON_CODE_BACKEND_UNAVAILABLE = 7;
+}
+
+message PublicFeatureDefinition {
+  Feature feature = 1;
+  string safe_description = 2;
+  bytes conformance_fixture_digest = 3;
+}
+
+message PublicFeatureRegistry {
+  uint32 schema_version = 1;
+  repeated PublicFeatureDefinition features = 2;
+  bytes registry_digest = 3;
+}
+
+message GetPublicFeatureRegistryRequest {}
+message GetPublicFeatureRegistryResponse { PublicFeatureRegistry registry = 1; }
+
+message GetCacheStatusRequest {
+  bytes project_id = 1;
+  bytes sandbox_id = 2;
+}
+
+message GetCacheStatusResponse { CacheStatus status = 1; }
+
+message PinCacheObjectRequest {
+  ObjectDescriptor object = 1;
+  MutationContext mutation = 2;
+}
+
+message PinCacheObjectResponse { Operation operation = 1; }
+
+message UnpinCacheObjectRequest {
+  ObjectDescriptor object = 1;
+  MutationContext mutation = 2;
+}
+
+message UnpinCacheObjectResponse { Operation operation = 1; }
+
+message SandboxTreeNode {
+  Sandbox sandbox = 1;
+  uint32 depth = 2; // Relative to the requested root; descendants start at 1.
+  bytes parent_sandbox_id = 3;
+}
+
+// Exact preorder continuation state before or after one descendant page.
+message SandboxTreePreorderState {
+  // Root at index zero followed by the still-open emitted ancestor path.
+  repeated bytes open_path = 1;
+  uint64 emitted_nodes = 2;
+  bytes prefix_digest = 3; // SHA-256 commitment to the emitted preorder prefix.
 }
 
 message SemanticCapability {
@@ -679,6 +764,20 @@ message CreateSandboxResponse {
   Operation operation = 2;
 }
 
+// Pure create validation and policy resolution. This request has no mutation
+// context and cannot be dispatched through CreateSandbox.
+message PlanCreateSandboxRequest {
+  bytes project_id = 1;
+  bytes parent_sandbox_id = 2;
+  bytes expected_parent_resource_version = 3;
+  bytes expected_project_resource_version = 4;
+  ObjectDescriptor specification = 5;
+  ObjectDescriptor requested_policy = 6;
+  repeated Feature required_features = 7;
+}
+
+message PlanCreateSandboxResponse { PolicyPlan plan = 1; }
+
 message GetSandboxRequest { bytes sandbox_id = 1; }
 message GetSandboxResponse { Sandbox sandbox = 1; }
 
@@ -720,12 +819,18 @@ message ListDescendantsRequest {
   bytes sandbox_id = 1;
   uint32 maximum_depth = 2;
   uint32 page_size = 3;
+  // Server-authenticated and bound to field 5 plus fields 1-3.
   bytes page_token = 4;
+  SandboxTreePreorderState expected_preorder_before = 5;
 }
 
 message ListDescendantsResponse {
-  repeated Sandbox descendants = 1;
+  repeated Sandbox descendants = 1 [deprecated = true];
   PageInfo page = 2;
+  repeated SandboxTreeNode nodes = 3;
+  SandboxTreePreorderState preorder_before = 4;
+  // The server binds this state into a nonempty next_page_token.
+  SandboxTreePreorderState preorder_after = 5;
 }
 
 message PlanSandboxPolicyRequest {
@@ -757,11 +862,13 @@ message DeleteSandboxRequest {
   bool cascade = 2;
   bytes expected_plan_digest = 3;
   MutationContext mutation = 4;
+  bool force = 5;
 }
 
 message DeleteSandboxResponse { Operation operation = 1; }
 
 service SandboxService {
+  rpc PlanCreate(PlanCreateSandboxRequest) returns (PlanCreateSandboxResponse);
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
@@ -811,10 +918,45 @@ message CancelExecutionRequest {
 
 message CancelExecutionResponse { Operation operation = 1; }
 
+enum ExecutionControlAction {
+  EXECUTION_CONTROL_ACTION_UNSPECIFIED = 0;
+  EXECUTION_CONTROL_ACTION_ATTACH = 1;
+  EXECUTION_CONTROL_ACTION_RESIZE = 2;
+  EXECUTION_CONTROL_ACTION_SIGNAL = 3;
+}
+
+enum ExecutionSignal {
+  EXECUTION_SIGNAL_UNSPECIFIED = 0;
+  EXECUTION_SIGNAL_HANGUP = 1;
+  EXECUTION_SIGNAL_INTERRUPT = 2;
+  EXECUTION_SIGNAL_QUIT = 3;
+  EXECUTION_SIGNAL_TERMINATE = 4;
+  EXECUTION_SIGNAL_KILL = 5;
+  EXECUTION_SIGNAL_USER_1 = 6;
+  EXECUTION_SIGNAL_USER_2 = 7;
+}
+
+message ExecutionControlRequest {
+  bytes execution_id = 1;
+  ExecutionControlAction action = 2;
+  uint32 terminal_rows = 3;
+  uint32 terminal_columns = 4;
+  ExecutionSignal signal = 5;
+  MutationContext mutation = 6;
+}
+
+message ExecutionControlResult {
+  bytes execution_id = 1;
+  ExecutionControlAction action = 2;
+  bool accepted = 3;
+  Operation operation = 4;
+}
+
 service ExecutionService {
   rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
   rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
   rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+  rpc ControlExecution(ExecutionControlRequest) returns (ExecutionControlResult);
   rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
 }
 
@@ -824,6 +966,7 @@ message CreateViewRequest {
   bytes expected_project_resource_version = 3;
   bytes idempotency_key = 4;
   repeated Feature required_features = 5;
+  Duration operation_timeout = 6;
 }
 
 message CreateViewResponse {
@@ -834,8 +977,6 @@ message CreateViewResponse {
 message GetViewRequest { bytes view_id = 1; }
 message GetViewResponse { FilesystemView view = 1; }
 
-// Dormant point-read messages. They intentionally are not registered as a
-// FilesystemViewService RPC until the public observation surface is activated.
 message GetAttachmentRequest { bytes attachment_id = 1; }
 message GetAttachmentResponse { Attachment attachment = 1; }
 
@@ -857,6 +998,7 @@ message AttachViewRequest {
   bytes destination_slot_id = 4;
   ViewMutation mutation_mode = 5;
   MutationContext mutation = 6;
+  bool noexec = 7;
 }
 
 message AttachViewResponse {
@@ -890,6 +1032,7 @@ message ReleaseViewResponse { Operation operation = 1; }
 service FilesystemViewService {
   rpc CreateView(CreateViewRequest) returns (CreateViewResponse);
   rpc GetView(GetViewRequest) returns (GetViewResponse);
+  rpc GetAttachment(GetAttachmentRequest) returns (GetAttachmentResponse);
   rpc ListViews(ListViewsRequest) returns (ListViewsResponse);
   rpc AttachView(AttachViewRequest) returns (AttachViewResponse);
   rpc ReplaceAttachment(ReplaceAttachmentRequest) returns (ReplaceAttachmentResponse);
@@ -940,6 +1083,8 @@ message ForkSnapshotRequest {
   ObjectDescriptor requested_policy = 5;
   bytes idempotency_key = 6;
   repeated Feature required_features = 7;
+  bytes expected_project_resource_version = 8;
+  Duration operation_timeout = 9;
 }
 
 message ForkSnapshotResponse {
@@ -1025,6 +1170,98 @@ message WatchRequest {
 
 message GetNodeCapabilitiesRequest { bytes node_id = 1; }
 message GetNodeCapabilitiesResponse { NodeCapabilities capabilities = 1; }
+
+enum OperatorRecoveryAction {
+  OPERATOR_RECOVERY_ACTION_UNSPECIFIED = 0;
+  OPERATOR_RECOVERY_ACTION_RETRY = 1;
+  OPERATOR_RECOVERY_ACTION_ABANDON = 2;
+  OPERATOR_RECOVERY_ACTION_RECONCILE = 3;
+  OPERATOR_RECOVERY_ACTION_REPAIR = 4;
+}
+
+message OperatorRecoveryRequest {
+  bytes resource_id = 1;
+  bytes expected_resource_version = 2;
+  OperatorRecoveryAction action = 3;
+  bytes idempotency_key = 4;
+  ObjectDescriptor evidence = 5;
+}
+
+message OperatorRecoveryResult {
+  bytes resource_id = 1;
+  bytes resource_version = 2;
+  OperatorRecoveryAction action = 3;
+  repeated Condition conditions = 4;
+}
+
+message OperatorRecoveryResponse { Operation operation = 1; }
+
+service CacheService {
+  rpc GetStatus(GetCacheStatusRequest) returns (GetCacheStatusResponse);
+  rpc PinObject(PinCacheObjectRequest) returns (PinCacheObjectResponse);
+  rpc UnpinObject(UnpinCacheObjectRequest) returns (UnpinCacheObjectResponse);
+}
+
+service DiscoveryService {
+  rpc GetPublicFeatureRegistry(GetPublicFeatureRegistryRequest) returns (GetPublicFeatureRegistryResponse);
+  rpc GetNodeCapabilities(GetNodeCapabilitiesRequest) returns (GetNodeCapabilitiesResponse);
+}
+
+service OperatorService {
+  rpc Recover(OperatorRecoveryRequest) returns (OperatorRecoveryResponse);
+}
+
+// Closed, method-preserving command envelope for in-process CLI transports.
+message SandboxCommandRequest {
+  oneof request {
+    PlanCreateSandboxRequest plan_create = 1;
+    CreateSandboxRequest create = 2;
+    GetSandboxRequest get_sandbox = 3;
+    GetExecutionRequest get_execution = 4;
+    GetViewRequest get_view = 5;
+    GetAttachmentRequest get_attachment = 6;
+    GetSnapshotRequest get_snapshot = 7;
+    GetOperationRequest get_operation = 8;
+    ListSandboxesRequest list_sandboxes = 9;
+    ListExecutionsRequest list_executions = 10;
+    ListSnapshotsRequest list_snapshots = 11;
+    ListDescendantsRequest list_descendants = 12;
+    ListChildrenRequest list_children = 13;
+    ListAncestorsRequest list_ancestors = 14;
+    PlanSandboxPolicyRequest plan_policy = 15;
+    UpdateSandboxPolicyRequest update_policy = 16;
+    SandboxLifecycleRequest start = 17;
+    SandboxLifecycleRequest stop = 18;
+    SandboxLifecycleRequest suspend = 19;
+    SandboxLifecycleRequest resume = 20;
+    CreateExecutionRequest create_execution = 21;
+    ExecutionControlRequest execution_control = 22;
+    CancelExecutionRequest cancel_execution = 23;
+    CancelOperationRequest cancel_operation = 24;
+    CreateSnapshotRequest create_snapshot = 25;
+    DeleteSnapshotRequest delete_snapshot = 26;
+    RestoreSnapshotRequest restore_snapshot = 27;
+    ForkSnapshotRequest fork_snapshot = 28;
+    DeleteSandboxRequest delete_sandbox = 29;
+    WatchRequest watch = 30;
+    CreateViewRequest create_view = 31;
+    AttachViewRequest attach_view = 32;
+    ReplaceAttachmentRequest replace_attachment = 33;
+    DetachViewRequest detach_view = 34;
+    ReleaseViewRequest release_view = 35;
+    ListViewsRequest list_views = 36;
+    GetCacheStatusRequest cache_status = 37;
+    PinCacheObjectRequest cache_pin = 38;
+    UnpinCacheObjectRequest cache_unpin = 39;
+    GetPublicFeatureRegistryRequest public_features = 40;
+    GetNodeCapabilitiesRequest node_capabilities = 41;
+    AttenuateCapabilityRequest attenuate_capability = 42;
+    InspectCapabilityRequest inspect_capability = 43;
+    RenewCapabilityRequest renew_capability = 44;
+    RevokeCapabilityRequest revoke_capability = 45;
+    OperatorRecoveryRequest operator_recovery = 46;
+  }
+}
 
 service OperationService {
   rpc GetOperation(GetOperationRequest) returns (GetOperationResponse);

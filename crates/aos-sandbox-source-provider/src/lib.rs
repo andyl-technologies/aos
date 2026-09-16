@@ -3,8 +3,12 @@
 //! This production-inert crate owns the canonical `AOSSPL01` journal graph,
 //! normalized acquisition intent, hostile recovery, exactly-once request
 //! reservations, backend effect permits, completion ordering, and retained
-//! replay responses. It deliberately has no listener, daemon, socket, service,
-//! Nix wiring, production feature advertisement, or real backend adapter.
+//! replay responses. Its constructible dormant backend adapter accepts only an
+//! externally supplied raw transport; a fixed root-owned verifier set must
+//! authenticate every class-specific observation before completion. Neither
+//! transport nor verifier inputs expose protected authority. The crate is a
+//! Linux-only boundary and deliberately has no listener, daemon, socket,
+//! service, Nix wiring, or production feature advertisement.
 //!
 //! [`ProviderLedgerV1`] is lent only by [`FixedProviderOwnerV1`], which binds
 //! fixed protected custody and journal paths to one authenticated live session.
@@ -13,9 +17,13 @@
 //! Request admission always invokes protocol verification inside the ledger
 //! facade; arbitrary pre-verified values are never accepted.
 
+#![cfg(target_os = "linux")]
+
 mod acquire;
 mod admission;
 pub mod backend;
+mod backend_adapter;
+mod backend_verifier;
 mod configuration;
 mod error;
 mod inventory;
@@ -50,6 +58,19 @@ pub use backend::{
     ReleaseObservationV1, ReleasePlanV1, ReopenIdentityV1, ReopenObservationV1,
     ReopenedSourceRootV1, SourceProviderBackendV1,
 };
+pub use backend_adapter::{
+    FixedProviderBackendRequestOutcomeV1, FixedProviderBackendSessionV1,
+    FixedProviderReceivedRequestProgressV1, RawAcquireNotAppliedV1, RawAcquireObservationV1,
+    RawBackendAcquisitionV1, RawBackendReleaseV1, RawReleaseObservationV1,
+    RawReleaseStillPresentV1, RawReopenObservationV1, SourceProviderBackendTransportErrorV1,
+    SourceProviderBackendTransportV1,
+};
+pub use backend_verifier::{
+    BackendObservationChallengeV1, BackendVerifierRoleV1, RawBackendAttestationV1,
+    backend_acquire_absence_attestation_statement_v1, backend_acquisition_attestation_statement_v1,
+    backend_attestation_signing_message_v1, backend_release_attestation_statement_v1,
+    backend_release_presence_attestation_statement_v1, backend_reopen_attestation_statement_v1,
+};
 pub use configuration::VerifiedCatalogPublicationV1;
 pub use error::ProviderLedgerError;
 pub use inventory::DurableInventoryPermitV1;
@@ -61,8 +82,9 @@ pub use model::{
     SourceRootIdentityV1,
 };
 pub use owner::{
-    FixedMountStateMigrationRecoveryOutcomeV2, FixedProviderOpenReportV1,
-    FixedProviderOwnerStatusV1, FixedProviderOwnerV1,
+    FixedMountStateMigrationRecoveryOutcomeV2, FixedProviderAcquireReopenV1,
+    FixedProviderHistoricalOutcomeV1, FixedProviderOpenReportV1, FixedProviderOwnerStatusV1,
+    FixedProviderOwnerV1, FixedProviderRequestReadbackV1, ProtectedProviderMountRetryAuthorityV1,
 };
 pub use recovery::{
     ProviderRecoveryObservationV1, RecoveryAcquireNotAppliedV1, RecoveryReleaseStillPresentV1,

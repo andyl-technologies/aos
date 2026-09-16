@@ -375,6 +375,7 @@ pub(super) fn validate_sequence_and_reservation_graph(
         if matches!(
             &attempt.state,
             ProviderAttemptStateV2::AbandonedIndeterminate { .. }
+                | ProviderAttemptStateV2::SupersededIndeterminate { .. }
         ) {
             abandoned_sequences
                 .entry(attempt.session_id)
@@ -405,7 +406,7 @@ pub(super) fn validate_sequence_and_reservation_graph(
             .is_some_and(|abandoned| abandoned.len() != 1 || abandoned[0] != last_sequence)
         {
             return Err(state_error(
-                "provider abandonment is not the final request in its session",
+                "provider indeterminate attempt is not the final request in its session",
             ));
         }
     }

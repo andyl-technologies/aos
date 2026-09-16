@@ -749,6 +749,19 @@ impl LookupAuthorityScopeV1 {
 pub struct AuthorizedLookupKey(ObjectDigest);
 
 impl AuthorizedLookupKey {
+    /// Returns the opaque authority-scoped lookup commitment.
+    #[must_use]
+    pub const fn digest(self) -> ObjectDigest {
+        self.0
+    }
+
+    pub(crate) fn from_digest(digest: ObjectDigest) -> Result<Self, CacheDomainError> {
+        if digest.as_bytes() == &[0; 32] {
+            return Err(CacheDomainError::InvalidAuthority);
+        }
+        Ok(Self(digest))
+    }
+
     /// Derives the shared key used by every cache-result class.
     ///
     /// # Errors

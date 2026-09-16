@@ -24,6 +24,7 @@
 //! keeps a fast-success worker alive while the broker verifies that READY and
 //! RESPONSE came from the same still-live service execution.
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -38,6 +39,7 @@ use aos_sandbox_linux::process::{FixedProcessOutcome, FixedProcessRequest, run_f
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
 };
+use sha2::{Digest as _, Sha256};
 
 use crate::observation::{
     MAXIMUM_CATALOG_ZFS_STDOUT_BYTES, ZfsObservationPlan, ZfsObservationResult,
@@ -52,9 +54,11 @@ use crate::{
 mod wire;
 
 use wire::{
-    MAXIMUM_OBSERVATION_RESPONSE_BYTES, MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES,
-    WIRE_VERSION, WorkerRequestVerb, decode_mutation_response, decode_observation_response,
-    decode_request, encode_mutation_response, encode_observation_response, encode_request,
+    AtomicSnapshotRequestVerbV1, AtomicSnapshotWorkerRequestV1, MAXIMUM_OBSERVATION_RESPONSE_BYTES,
+    MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, WIRE_VERSION, WorkerRequestVerb,
+    decode_atomic_snapshot_request, decode_mutation_response, decode_observation_response,
+    decode_request, encode_atomic_snapshot_request, encode_mutation_response,
+    encode_observation_response, encode_request, is_atomic_snapshot_request,
 };
 
 const READY_MAGIC: &[u8; 8] = b"AOSZRDY1";
@@ -252,6 +256,32 @@ impl SystemdZfsExecutor {
         decode_mutation_response(&response)
     }
 
+    /// Executes or observes one exact coordinated multi-dataset snapshot group.
+    ///
+    /// The mutation form invokes one bounded `zfs snapshot` command containing
+    /// every destination. The observation form never mutates and is suitable
+    /// only for recovery after durable ambiguous custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid protected group, worker authentication,
+    /// transport failure, or a failed whole-group GUID readback.
+    pub(crate) fn atomic_snapshot_once(
+        &mut self,
+        contract: &ZfsHelperContract,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+    ) -> Result<WorkerProcessOutput, ZfsWorkerError> {
+        let verb = if mutate {
+            AtomicSnapshotRequestVerbV1::Mutate
+        } else {
+            AtomicSnapshotRequestVerbV1::Observe
+        };
+        let request = encode_atomic_snapshot_request(verb, contract, program)?;
+        let response = self.exchange(request, MAXIMUM_RESPONSE_BYTES)?;
+        decode_mutation_response(&response)
+    }
+
     /// Revalidates the transaction's exact physical preconditions without mutation.
     ///
     /// The protected caller remains responsible for the catalog-binding check;
@@ -439,6 +469,23 @@ pub fn run_inherited_worker(configured_zfs: PathBuf) -> Result<(), ZfsWorkerErro
     let request = receive_before(&mut socket, MAXIMUM_REQUEST_BYTES, deadline)?;
     verify_same_subject(socket.peer(), request.subject())?;
     storaged_cgroup.verify_exact_membership(request.subject().pidfd())?;
+    if is_atomic_snapshot_request(request.payload()) {
+        let request = decode_atomic_snapshot_request(request.payload())?;
+        if request.executable != *contract.executable() {
+            return Err(ZfsWorkerError::Executable(
+                "broker and worker executable contracts differ".to_owned(),
+            ));
+        }
+        _executable_pin.validate_current(&contract)?;
+        let output = execute_atomic_snapshot(&contract, &request, deadline)?;
+        _executable_pin.validate_current(&contract)?;
+        send_before(&mut socket, &encode_mutation_response(&output)?, deadline)?;
+        let acknowledgement = receive_before(&mut socket, MAXIMUM_ACK_BYTES, deadline)?;
+        verify_same_subject(socket.peer(), acknowledgement.subject())?;
+        storaged_cgroup.verify_exact_membership(acknowledgement.subject().pidfd())?;
+        decode_ack(acknowledgement.payload())?;
+        return Ok(());
+    }
     let request = decode_request(request.payload())?;
     let expected_executable = &request.executable;
     if expected_executable != contract.executable() {
@@ -474,6 +521,197 @@ pub fn run_inherited_worker(configured_zfs: PathBuf) -> Result<(), ZfsWorkerErro
     storaged_cgroup.verify_exact_membership(acknowledgement.subject().pidfd())?;
     decode_ack(acknowledgement.payload())?;
     Ok(())
+}
+
+fn execute_atomic_snapshot(
+    contract: &ZfsHelperContract,
+    request: &AtomicSnapshotWorkerRequestV1,
+    deadline: Deadline,
+) -> Result<WorkerProcessOutput, ZfsWorkerError> {
+    if request.operation == [0; 16]
+        || request.snapshot == [0; 16]
+        || request.program.as_bytes() == &[0; 32]
+    {
+        return Err(ZfsWorkerError::Protocol(
+            "atomic snapshot program identity is invalid",
+        ));
+    }
+    if request.verb == AtomicSnapshotRequestVerbV1::Mutate {
+        require_atomic_snapshot_sources(contract, request, deadline)?;
+        let mut arguments = Vec::with_capacity(request.members.len() + 1);
+        arguments.push("snapshot".into());
+        arguments.extend(
+            request
+                .members
+                .iter()
+                .map(|member| OsString::from(&member.destination_name)),
+        );
+        let output = execute_fixed_arguments(contract, &arguments, deadline)?;
+        if !output.success || output.timed_out {
+            return Ok(output);
+        }
+    }
+    observe_atomic_snapshot_group(contract, request, deadline)
+}
+
+fn require_atomic_snapshot_sources(
+    contract: &ZfsHelperContract,
+    request: &AtomicSnapshotWorkerRequestV1,
+    deadline: Deadline,
+) -> Result<(), ZfsWorkerError> {
+    let mut arguments = vec![
+        "list".into(),
+        "-H".into(),
+        "-p".into(),
+        "-o".into(),
+        "name,guid".into(),
+    ];
+    arguments.extend(
+        request
+            .members
+            .iter()
+            .map(|member| OsString::from(&member.source_name)),
+    );
+    let output = execute_fixed_arguments(contract, &arguments, deadline)?;
+    if !output.success || output.timed_out || !output.stderr.is_empty() {
+        return Err(ZfsWorkerError::Protocol(
+            "atomic snapshot source observation failed",
+        ));
+    }
+    let text = std::str::from_utf8(&output.stdout)
+        .map_err(|_| ZfsWorkerError::Protocol("atomic snapshot source rows are not UTF-8"))?;
+    let mut observed = text
+        .lines()
+        .map(|line| {
+            let (name, guid) = line.split_once('\t').ok_or(ZfsWorkerError::Protocol(
+                "atomic snapshot source row is invalid",
+            ))?;
+            let guid = guid.parse::<u64>().ok().filter(|guid| *guid != 0).ok_or(
+                ZfsWorkerError::Protocol("atomic snapshot source GUID is invalid"),
+            )?;
+            Ok((name, guid))
+        })
+        .collect::<Result<Vec<_>, ZfsWorkerError>>()?;
+    observed.sort_unstable();
+    let mut expected = request
+        .members
+        .iter()
+        .map(|member| (member.source_name.as_str(), member.source_guid))
+        .collect::<Vec<_>>();
+    expected.sort_unstable();
+    if observed != expected {
+        return Err(ZfsWorkerError::Protocol(
+            "atomic snapshot source GUID set changed",
+        ));
+    }
+    Ok(())
+}
+
+fn observe_atomic_snapshot_group(
+    contract: &ZfsHelperContract,
+    request: &AtomicSnapshotWorkerRequestV1,
+    deadline: Deadline,
+) -> Result<WorkerProcessOutput, ZfsWorkerError> {
+    let mut arguments = vec![
+        "list".into(),
+        "-H".into(),
+        "-p".into(),
+        "-o".into(),
+        "name,guid".into(),
+    ];
+    arguments.extend(
+        request
+            .members
+            .iter()
+            .map(|member| OsString::from(&member.destination_name)),
+    );
+    let output = execute_fixed_arguments(contract, &arguments, deadline)?;
+    if !output.success || output.timed_out || !output.stderr.is_empty() {
+        return Ok(output);
+    }
+    let text = std::str::from_utf8(&output.stdout)
+        .map_err(|_| ZfsWorkerError::Protocol("atomic snapshot observation is not UTF-8"))?;
+    let mut observed = text.lines().collect::<Vec<_>>();
+    observed.sort_unstable();
+    let mut expected = request
+        .members
+        .iter()
+        .map(|member| member.destination_name.as_str())
+        .collect::<Vec<_>>();
+    expected.sort_unstable();
+    if observed.len() != expected.len() {
+        return Err(ZfsWorkerError::Protocol(
+            "atomic snapshot observation is incomplete",
+        ));
+    }
+    let mut digest = Sha256::new()
+        .chain_update(b"aos.sandbox.storage.atomic-snapshot-observation.v1\0")
+        .chain_update(request.program.as_bytes())
+        .chain_update((observed.len() as u32).to_be_bytes());
+    for (line, expected_name) in observed.into_iter().zip(expected) {
+        let (name, guid) = line.split_once('\t').ok_or(ZfsWorkerError::Protocol(
+            "atomic snapshot observation row is invalid",
+        ))?;
+        let guid = guid
+            .parse::<u64>()
+            .ok()
+            .filter(|guid| *guid != 0)
+            .ok_or(ZfsWorkerError::Protocol("atomic snapshot GUID is invalid"))?;
+        if name != expected_name {
+            return Err(ZfsWorkerError::Protocol(
+                "atomic snapshot observation names a foreign object",
+            ));
+        }
+        digest = digest
+            .chain_update(name.as_bytes())
+            .chain_update([0])
+            .chain_update(guid.to_be_bytes());
+    }
+    Ok(WorkerProcessOutput {
+        stdout: digest.finalize().to_vec(),
+        stderr: Vec::new(),
+        success: true,
+        timed_out: false,
+    })
+}
+
+fn execute_fixed_arguments(
+    contract: &ZfsHelperContract,
+    arguments: &[OsString],
+    deadline: Deadline,
+) -> Result<WorkerProcessOutput, ZfsWorkerError> {
+    let Some(timeout) = deadline.remaining() else {
+        return Ok(WorkerProcessOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            success: false,
+            timed_out: true,
+        });
+    };
+    match run_fixed_process(FixedProcessRequest {
+        executable: contract.executable(),
+        arguments,
+        timeout,
+        maximum_stdout_bytes: MAXIMUM_STDOUT_BYTES,
+        maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
+    }) {
+        Ok(FixedProcessOutcome::Completed(output)) => Ok(WorkerProcessOutput {
+            success: output.exit_code == Some(0) && output.signal.is_none(),
+            timed_out: false,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        }),
+        Ok(FixedProcessOutcome::TimedOut) => Ok(WorkerProcessOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            success: false,
+            timed_out: true,
+        }),
+        Ok(FixedProcessOutcome::OutputLimitExceeded) => {
+            Err(ZfsWorkerError::Protocol("ZFS output exceeded its ceiling"))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(crate) fn execute_transaction_for(

@@ -376,19 +376,31 @@ impl PendingBackingOpenReceipt {
     ///
     /// # Errors
     ///
-    /// Returns a stale or integrity error unless committed advancement matches
-    /// this exact pending outcome, connection, request, and durable CAS.
+    /// Returns a stale or integrity error together with the still-owned
+    /// committed advancement unless every binding remains exact.
     pub(crate) fn mint_after_commit(
         self,
         connection: &MetadataConnection<'_, '_, '_, '_>,
         advancement: ProtectedBrokerOutcomeCommittedAdvancementV1,
-    ) -> Result<CommittedBrokerReceipt<BackingOpenReceipt>, FileCallbackError> {
-        validate_committed_advancement(&self.binding, &advancement)?;
+    ) -> Result<
+        CommittedBrokerReceipt<BackingOpenReceipt>,
+        (
+            FileCallbackError,
+            ProtectedBrokerOutcomeCommittedAdvancementV1,
+        ),
+    > {
+        if let Err(error) = validate_committed_advancement(&self.binding, &advancement) {
+            return Err((error, advancement));
+        }
         let operation = self.completion.operation;
         let backing = self.completion.backing;
-        let receipt = self
+        let receipt = match self
             .factory
-            .mint_open(connection, operation, backing, self.completion)?;
+            .mint_open(connection, operation, backing, self.completion)
+        {
+            Ok(receipt) => receipt,
+            Err(error) => return Err((error, advancement)),
+        };
         Ok(CommittedBrokerReceipt {
             receipt,
             advancement,
@@ -401,26 +413,37 @@ impl PendingBackingCloseReceipt {
     ///
     /// # Errors
     ///
-    /// Returns a stale or integrity error unless committed advancement matches
-    /// this exact pending outcome, connection, request, descriptor, and CAS.
+    /// Returns a stale or integrity error together with the still-owned
+    /// committed advancement unless every binding remains exact.
     pub(crate) fn mint_after_commit(
         self,
         connection: &MetadataConnection<'_, '_, '_, '_>,
         advancement: ProtectedBrokerOutcomeCommittedAdvancementV1,
-    ) -> Result<CommittedBrokerReceipt<BackingCloseReceipt>, FileCallbackError> {
-        validate_committed_advancement(&self.binding, &advancement)?;
+    ) -> Result<
+        CommittedBrokerReceipt<BackingCloseReceipt>,
+        (
+            FileCallbackError,
+            ProtectedBrokerOutcomeCommittedAdvancementV1,
+        ),
+    > {
+        if let Err(error) = validate_committed_advancement(&self.binding, &advancement) {
+            return Err((error, advancement));
+        }
         let operation = self.completion.operation;
         let backing = self.completion.backing;
         let backing_id = self.completion.backing_id;
         let descriptor_commitment = self.completion.descriptor_commitment;
-        let receipt = self.factory.mint_close(
+        let receipt = match self.factory.mint_close(
             connection,
             operation,
             backing,
             backing_id,
             descriptor_commitment,
             self.completion,
-        )?;
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => return Err((error, advancement)),
+        };
         Ok(CommittedBrokerReceipt {
             receipt,
             advancement,

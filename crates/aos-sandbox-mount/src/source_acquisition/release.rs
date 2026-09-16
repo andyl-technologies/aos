@@ -4,7 +4,7 @@
 //! lease evidence, and pre-reservation acquisition witness are committed before
 //! the security-owned carrier can send the provider request.
 
-use aos_sandbox::journal::ProtectedJournalAuthority;
+use aos_sandbox::journal::{JournalTransaction, ProtectedJournalAuthority};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::{
     LiveValidatedReleaseMountSourceAcquisitionRequest, mount_source_acquisition_request_digest_v1,
@@ -13,8 +13,10 @@ use aos_sandbox_source_provider_protocol::{
     ReleaseSourceRequestV1, SignedSourceProviderRequestV1, SourceProviderAuthorityV1,
     SourceProviderMethod, decode_release_request, digest_release_request,
 };
-use aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1;
-use aos_sandbox_source_provider_security::PreparedMountSourceReleaseV2;
+use aos_sandbox_source_provider_security::{
+    CurrentRootMountSourceProviderSessionV1, PreparedMountProviderRequestV2,
+    PreparedMountSourceReleaseV2,
+};
 
 use super::SourceAcquisitionTableV2;
 use super::format::{
@@ -37,9 +39,21 @@ pub(crate) struct ReservedReleaseProviderQueryV2 {
     postcommit: SourceAcquisitionPostcommitOutcomeV2,
 }
 
+/// Returns precommit Release custody to the fixed owner after a failed reservation.
+pub(crate) struct RetainedReleasePreparationFailureV2 {
+    error: crate::MountError,
+    prepared_release: PreparedMountSourceReleaseV2,
+}
+
 impl ReservedReleaseProviderQueryV2 {
     pub(super) fn into_postcommit(self) -> SourceAcquisitionPostcommitOutcomeV2 {
         self.postcommit
+    }
+}
+
+impl RetainedReleasePreparationFailureV2 {
+    pub(super) fn into_parts(self) -> (crate::MountError, PreparedMountSourceReleaseV2) {
+        (self.error, self.prepared_release)
     }
 }
 
@@ -61,7 +75,44 @@ impl SourceAcquisitionTableV2 {
         mount_request: Vec<u8>,
         provider_deadline_seconds: i64,
         prepared_release: PreparedMountSourceReleaseV2,
-    ) -> Result<ReservedReleaseProviderQueryV2> {
+    ) -> std::result::Result<ReservedReleaseProviderQueryV2, RetainedReleasePreparationFailureV2>
+    {
+        let (transaction, prepared) = match self.prepare_release_reservation_v2(
+            journal,
+            session,
+            live_request,
+            mount_request,
+            provider_deadline_seconds,
+            &prepared_release,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return Err(RetainedReleasePreparationFailureV2 {
+                    error,
+                    prepared_release,
+                });
+            }
+        };
+        let postcommit = session.commit_mount_source_release_v2(
+            journal,
+            transaction,
+            prepared_release,
+            prepared,
+        );
+        let postcommit = self.retain_source_root_postcommit(journal, postcommit);
+        Ok(ReservedReleaseProviderQueryV2 { postcommit })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_release_reservation_v2(
+        &mut self,
+        journal: &mut ProtectedJournalAuthority<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        live_request: &LiveValidatedReleaseMountSourceAcquisitionRequest,
+        mount_request: Vec<u8>,
+        provider_deadline_seconds: i64,
+        prepared_release: &PreparedMountSourceReleaseV2,
+    ) -> Result<(JournalTransaction, PreparedMountProviderRequestV2)> {
         let request = live_request.request();
         let acquisition_id = *request.acquisition_id().as_bytes();
         let current_row = self
@@ -423,13 +474,6 @@ impl SourceAcquisitionTableV2 {
                 },
             ],
         )?;
-        let postcommit = session.commit_mount_source_release_v2(
-            journal,
-            transaction,
-            prepared_release,
-            prepared,
-        );
-        let postcommit = self.retain_source_root_postcommit(journal, postcommit);
-        Ok(ReservedReleaseProviderQueryV2 { postcommit })
+        Ok((transaction, prepared))
     }
 }

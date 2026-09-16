@@ -319,6 +319,9 @@ pub(crate) struct VerifiedPhysicalDatasetV1 {
     guid: u64,
     root: ManagedDatasetRoot,
     domains: StorageDomainsV1,
+    space: Option<(u64, Option<u64>)>,
+    aggregate: Option<(u64, u64, u64)>,
+    origin: Option<(String, u64)>,
     created_by: Option<[u8; 16]>,
 }
 
@@ -358,6 +361,20 @@ impl VerifiedPhysicalCatalogSnapshotV1 {
                     )
                     .map_err(|_| StorageStateError::CorruptRecord)?,
                     domains: domains_from_wire(dataset.domains)?,
+                    space: dataset
+                        .space
+                        .map(|space| (space.refquota_bytes, space.reservation_bytes)),
+                    aggregate: dataset.aggregate.as_ref().map(|aggregate| {
+                        (
+                            aggregate.quota_bytes,
+                            aggregate.filesystem_limit,
+                            aggregate.snapshot_limit,
+                        )
+                    }),
+                    origin: dataset
+                        .origin
+                        .as_ref()
+                        .map(|origin| (origin.name.clone(), origin.guid)),
                     created_by: dataset.created_by,
                 })
             })
@@ -453,6 +470,20 @@ impl VerifiedPhysicalDatasetV1 {
 
     pub(crate) const fn domains(&self) -> StorageDomainsV1 {
         self.domains
+    }
+
+    pub(crate) const fn space(&self) -> Option<(u64, Option<u64>)> {
+        self.space
+    }
+
+    pub(crate) const fn aggregate(&self) -> Option<(u64, u64, u64)> {
+        self.aggregate
+    }
+
+    pub(crate) fn origin(&self) -> Option<(&str, u64)> {
+        self.origin
+            .as_ref()
+            .map(|(name, guid)| (name.as_str(), *guid))
     }
 
     pub(crate) const fn created_by(&self) -> Option<[u8; 16]> {

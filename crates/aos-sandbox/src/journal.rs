@@ -193,6 +193,10 @@ pub enum RecordNamespace {
     BrokerSessionTraffic = 47,
     /// Monotone protected authorization-time observations for dormant CLI binding.
     CliAuthorizationTime = 48,
+    /// Protected current heads, idempotency reservations, and operator-recovery transitions.
+    OperatorRecovery = 49,
+    /// Protected canonical filesystem-worker passthrough registration snapshots.
+    FilesystemWorkerRegistration = 50,
 }
 
 impl RecordNamespace {
@@ -246,6 +250,8 @@ impl RecordNamespace {
             46 => Ok(Self::GlobalCapacityReservation),
             47 => Ok(Self::BrokerSessionTraffic),
             48 => Ok(Self::CliAuthorizationTime),
+            49 => Ok(Self::OperatorRecovery),
+            50 => Ok(Self::FilesystemWorkerRegistration),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }

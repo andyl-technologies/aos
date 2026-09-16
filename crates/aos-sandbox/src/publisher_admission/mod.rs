@@ -16,8 +16,24 @@
 
 mod accounting;
 mod controller_adapter;
+#[cfg(target_os = "linux")]
+mod controller_authority;
 mod decision;
+#[cfg(target_os = "linux")]
+#[allow(
+    dead_code,
+    reason = "publisher effects remain an explicit dormant source-only integration seam"
+)]
+pub(crate) mod dormant_effects;
+#[cfg(target_os = "linux")]
+mod durable_catalog;
+#[cfg(target_os = "linux")]
+mod executor_registry;
+#[cfg(target_os = "linux")]
+mod fixed_owner;
 mod format;
+#[cfg(target_os = "linux")]
+mod linux_bridge;
 mod model;
 mod payload;
 mod payload_decode;
@@ -27,12 +43,16 @@ mod read_authority;
 mod recovery;
 mod replay;
 #[cfg(target_os = "linux")]
+mod service;
+#[cfg(target_os = "linux")]
 mod settlement;
 mod source;
 
 pub(crate) use controller_adapter::{
     PublisherAdmissionControllerCommitV1, publisher_admission_controller_commit_v1,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use decision::CommittedArtifactPreparationIntent;
 pub(crate) use decision::{
     CapacityProtectedStoreSettlementV1, ProtectedMutationBranchV1,
     ProtectedStoreSettlementReceiptV1, RootRegistryOwnerToken, SourceRegistryOwnerToken,
@@ -60,25 +80,44 @@ pub(crate) use settlement::{
 pub use accounting::{
     AccountingError, CapacityAccountV1, CapacityPolicyV1, PublicationAccounting, ReservationStateV1,
 };
+#[cfg(target_os = "linux")]
+pub use controller_authority::{
+    PublisherFixedBootstrapReportV1, PublisherFixedControllerAuthorityErrorV1,
+    PublisherFixedControllerAuthorityOwnerV1,
+};
 pub use decision::{
     AdmissionError, AdmissionLedger, AdmissionResult, ArtifactPreparation,
-    CatalogEvictionAuthorizationV1, CatalogEvictionCommitV1, CatalogEvictionObservation,
-    CommittedAdmissionFrontier, CommittedCatalogObservation, CompletionEffectCustodyV1,
-    CompletionEffectObservationV1, FreshSealedArtifactObservation, PermitIssueResult,
-    ProtectedStoreCommitToken,
+    ArtifactPreparationIntent, CatalogEvictionAuthorizationV1, CatalogEvictionCommitV1,
+    CatalogEvictionObservation, CommittedAdmissionFrontier, CommittedCatalogObservation,
+    CompletionEffectCustodyV1, CompletionEffectObservationV1, FreshSealedArtifactObservation,
+    PermitIssueResult, ProtectedStoreCommitToken,
 };
 #[cfg(target_os = "linux")]
 pub use decision::{
     AdmittedPublisherPlan, CompletionAuthorityV1, CompletionSettlementV1, LivePublisherExecution,
     MaterializationAuthority, RetainedCompletionPermit,
 };
+#[cfg(target_os = "linux")]
+pub use dormant_effects::PublisherDormantEffectCapabilityV1;
+#[cfg(target_os = "linux")]
+pub use executor_registry::{
+    PublisherFixedExecutorRegistryErrorV1, PublisherFixedExecutorRegistryOpenReportV1,
+    PublisherFixedExecutorRegistryOwnerV1, PublisherFixedFenceSyncReportV1,
+};
+#[cfg(target_os = "linux")]
+pub use fixed_owner::{
+    PublisherFixedColdRecoveryV1, PublisherFixedProtectedOpenReportV1,
+    PublisherFixedProtectedOwnerErrorV1, PublisherFixedProtectedOwnerV1,
+};
 pub use format::{
     DecodedProtectedRecordV1, ProtectedRecordCodecError, decode_protected_record_v1,
     encode_protected_record_v1,
 };
+#[cfg(target_os = "linux")]
+pub use linux_bridge::PreparedLinuxPublisherArtifactV1;
 pub use model::{
     AdmissionDecisionStateV1, AdmissionDecisionV1, AdmissionLimits, ArtifactCommitmentV1,
-    AuthorityCheckpointV1, CatalogEvictionReceiptV1, ChallengeConsumptionV1,
+    ArtifactPreparationIntentV1, AuthorityCheckpointV1, CatalogEvictionReceiptV1,
     CompletionPermitStateV1, CompletionPermitV1, CompletionReceiptV1, LedgerMutation,
     ProtectedRecordKindV1, PublicationAuthorityEpoch, PublicationPermitId, RecoveryDispositionV1,
     RecoveryObservationKindCodeV1, RecoveryObservationReceiptV1,
@@ -101,6 +140,13 @@ pub use recovery::{
     RecoveryObservationV1, RecoveryPhysicalCustodyV1, RecoveryResultV1,
 };
 pub use replay::{ProtectedLedgerReplayV1, ReplayedPublisherRecordV1, VerifiedHistoryFloorV1};
+#[cfg(target_os = "linux")]
+pub use service::{
+    AdoptedPublisherSourceV1, PublisherAdmissionDispatchV1, PublisherColdPreparationRecoveryV1,
+    PublisherCompletionDispatchV1, PublisherDomainServiceErrorV1, PublisherDomainServiceV1,
+    PublisherRecoveryDispatchV1, PublisherRootCapabilityV1,
+    publisher_source_descriptor_commitment_v1,
+};
 pub use source::{
     AuthorizedSourceRelease, SourceReleaseError, SourceReleaseRegistry, SourceReleaseStateV1,
     SourceReleaseV1,

@@ -736,6 +736,8 @@ pub enum SandboxCommandV1 {
     Tree(TreeCommandV1),
     /// `aos sandbox children`.
     Children(ChildrenCommandV1),
+    /// `aos sandbox ancestors`.
+    Ancestors(TreeCommandV1),
     /// `aos sandbox start|stop|suspend|resume`.
     Lifecycle {
         /// Selects the lifecycle action.
@@ -751,12 +753,16 @@ pub enum SandboxCommandV1 {
     CancelExec(MutationTargetV1),
     /// `aos sandbox snapshot`.
     Snapshot(SnapshotCommandV1),
+    /// `aos sandbox delete-snapshot`.
+    DeleteSnapshot(MutationTargetV1),
     /// `aos sandbox restore`.
     Restore(SnapshotSourceCommandV1),
     /// `aos sandbox fork`.
     Fork(SnapshotSourceCommandV1),
     /// `aos sandbox delete`.
     Delete(DeleteCommandV1),
+    /// `aos sandbox cancel-operation`.
+    CancelOperation(MutationTargetV1),
     /// `aos sandbox events`.
     Events(EventsCommandV1),
     /// `aos sandbox view ...`.
@@ -769,4 +775,6 @@ pub enum SandboxCommandV1 {
     CapabilityService(CapabilityCommandV1),
     /// Emits shell completions for this complete grammar.
     Completions(CompletionShellV1),
+    /// Applies one exactly fenced protected operator recovery action.
+    OperatorRecovery(super::observation_adapter::OperatorRecoveryRequestV1),
 }

@@ -21,7 +21,7 @@ pub const MAXIMUM_EXEC_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum public-key or proof bytes used for endpoint admission.
 pub const MAXIMUM_ENDPOINT_PROOF_BYTES: usize = 64 * 1024;
 /// States execution fields that require public proto integration before use.
-pub const EXECUTION_REQUEST_INTEGRATION_REQUIRED: &str = "add runtime timeout, PTY dimensions, capture policy, resize, signal, and exact exit-signal fields to aos.sandbox.v1 before activating this CLI model";
+pub const EXECUTION_REQUEST_INTEGRATION_REQUIRED: &str = "execution request and terminal-result contracts are source-complete; transport activation and qualification remain deliberately deferred";
 
 /// Stores one nonzero exact 128-bit public resource identity.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -462,13 +462,20 @@ impl ExecutionSignalV1 {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExecutionControlCommandV1 {
     /// Attaches to a live execution endpoint.
-    Attach(CliIdentityV1),
+    Attach {
+        /// Selects the execution.
+        execution: CliIdentityV1,
+        /// Supplies the full authenticated incarnation mutation fence.
+        mutation: ExecutionMutationFenceV1,
+    },
     /// Resizes a live PTY.
     Resize {
         /// Selects the execution.
         execution: CliIdentityV1,
         /// Supplies the new checked terminal size.
         size: PtySizeV1,
+        /// Supplies the full authenticated incarnation mutation fence.
+        mutation: ExecutionMutationFenceV1,
     },
     /// Sends one closed portable signal.
     Signal {
@@ -476,6 +483,8 @@ pub enum ExecutionControlCommandV1 {
         execution: CliIdentityV1,
         /// Supplies the closed signal.
         signal: ExecutionSignalV1,
+        /// Supplies the full authenticated incarnation mutation fence.
+        mutation: ExecutionMutationFenceV1,
     },
     /// Explicitly cancels an execution operation.
     Cancel {
@@ -489,34 +498,11 @@ pub enum ExecutionControlCommandV1 {
 }
 
 impl ExecutionControlCommandV1 {
-    /// Reports whether this control returns an operation rather than an
-    /// immediate execution control result.
+    /// Reports whether this control returns an operation.
     #[must_use]
     pub const fn returns_operation(&self) -> bool {
-        matches!(self, Self::Cancel { .. })
+        true
     }
-
-    /// Returns the exact immediate result kind for a noncancel control.
-    #[must_use]
-    pub const fn immediate_result(&self) -> Option<ExecutionControlResultV1> {
-        match self {
-            Self::Attach(_) => Some(ExecutionControlResultV1::Attached),
-            Self::Resize { .. } => Some(ExecutionControlResultV1::Resized),
-            Self::Signal { .. } => Some(ExecutionControlResultV1::SignalDelivered),
-            Self::Cancel { .. } => None,
-        }
-    }
-}
-
-/// Identifies one successful immediate execution-control result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ExecutionControlResultV1 {
-    /// A live endpoint was attached.
-    Attached,
-    /// A live PTY was resized.
-    Resized,
-    /// A portable signal was accepted by the live endpoint.
-    SignalDelivered,
 }
 
 /// Represents an exact terminal execution outcome.
@@ -528,4 +514,94 @@ pub enum ExecutionTerminalOutcomeV1 {
     Signal(ExecutionSignalV1),
     /// Authority or node loss prevented a process result.
     Lost,
+}
+
+impl ExecutionTerminalOutcomeV1 {
+    /// Converts the exact terminal classification into established public fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidCliGrammar::InvalidArguments`] when the timestamp is
+    /// noncanonical or the public reason contains control characters or is oversized.
+    pub fn to_proto(
+        self,
+        exited_at: aos_proto::aos::sandbox::v1::Timestamp,
+        safe_reason: String,
+    ) -> Result<aos_proto::aos::sandbox::v1::ExecutionResult, InvalidCliGrammar> {
+        if !(-62_135_596_800..=253_402_300_799).contains(&exited_at.seconds)
+            || exited_at.nanoseconds >= 1_000_000_000
+            || safe_reason.len() > 16 * 1024
+            || safe_reason.chars().any(char::is_control)
+        {
+            return Err(InvalidCliGrammar::InvalidArguments);
+        }
+        let (exit_code, termination_kind, signal) = match self {
+            Self::ExitCode(code) => (code, 1, 0),
+            Self::Signal(signal) => (0, 2, execution_signal_proto(signal)),
+            Self::Lost => (0, 3, 0),
+        };
+        Ok(aos_proto::aos::sandbox::v1::ExecutionResult {
+            exit_code,
+            termination_reason: safe_reason,
+            exited_at: exited_at.into(),
+            termination_kind,
+            signal,
+            ..Default::default()
+        })
+    }
+
+    /// Decodes the exact public terminal classification without inferring from text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidCliGrammar::InvalidArguments`] for an unspecified or
+    /// inconsistent termination kind, signal, or exit-code combination.
+    pub fn try_from_proto(
+        value: &aos_proto::aos::sandbox::v1::ExecutionResult,
+    ) -> Result<Self, InvalidCliGrammar> {
+        let timestamp = value
+            .exited_at
+            .as_option()
+            .ok_or(InvalidCliGrammar::InvalidArguments)?;
+        if !(-62_135_596_800..=253_402_300_799).contains(&timestamp.seconds)
+            || timestamp.nanoseconds >= 1_000_000_000
+            || value.termination_reason.len() > 16 * 1024
+            || value.termination_reason.chars().any(char::is_control)
+        {
+            return Err(InvalidCliGrammar::InvalidArguments);
+        }
+        match (value.termination_kind, value.signal, value.exit_code) {
+            (1, 0, code) => Ok(Self::ExitCode(code)),
+            (2, signal, 0) => execution_signal_from_proto(signal)
+                .map(Self::Signal)
+                .ok_or(InvalidCliGrammar::InvalidArguments),
+            (3, 0, 0) => Ok(Self::Lost),
+            _ => Err(InvalidCliGrammar::InvalidArguments),
+        }
+    }
+}
+
+const fn execution_signal_proto(value: ExecutionSignalV1) -> i32 {
+    match value {
+        ExecutionSignalV1::Hangup => 1,
+        ExecutionSignalV1::Interrupt => 2,
+        ExecutionSignalV1::Quit => 3,
+        ExecutionSignalV1::Terminate => 4,
+        ExecutionSignalV1::Kill => 5,
+        ExecutionSignalV1::User1 => 6,
+        ExecutionSignalV1::User2 => 7,
+    }
+}
+
+const fn execution_signal_from_proto(value: i32) -> Option<ExecutionSignalV1> {
+    match value {
+        1 => Some(ExecutionSignalV1::Hangup),
+        2 => Some(ExecutionSignalV1::Interrupt),
+        3 => Some(ExecutionSignalV1::Quit),
+        4 => Some(ExecutionSignalV1::Terminate),
+        5 => Some(ExecutionSignalV1::Kill),
+        6 => Some(ExecutionSignalV1::User1),
+        7 => Some(ExecutionSignalV1::User2),
+        _ => None,
+    }
 }

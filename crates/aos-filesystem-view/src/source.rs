@@ -36,6 +36,10 @@ pub trait ObjectSource {
 pub struct ExactObject(Vec<u8>);
 
 impl ExactObject {
+    pub(crate) fn from_verified(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
     /// Returns the verified stored-object bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {

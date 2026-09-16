@@ -1,6 +1,8 @@
 //! Host adapter for shared signed-plan and ownership-lease admission.
 
-use std::os::fd::BorrowedFd;
+use std::fs::File;
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
+use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 
 use aos_sandbox_broker::{
@@ -17,6 +19,8 @@ use aos_sandbox_core::{
 };
 use aos_sandbox_protocol::ValidatedRuntimeRequest;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
+use sha2::{Digest as _, Sha256};
 
 use super::semantics_v1::canonical_host_semantics_v1;
 
@@ -27,6 +31,31 @@ type RevalidatedGuardianCredentials<'a> = [(
 ); 6];
 
 const HOST_EXECUTION_RECORD_DOMAIN: [u8; 16] = *b"AOSHOSTEXECV0001";
+const BROKER_OUTCOME_VERIFIER_FILE: &str = "broker-outcome-verifier-v1";
+const BROKER_OUTCOME_VERIFIER_BYTES: usize =
+    aos_sandbox_protocol::BROKER_TERMINAL_COMMIT_VERIFIER_BYTES;
+
+struct ProtectedTerminalVerifierV1 {
+    descriptor: OwnedFd,
+    verifier: aos_sandbox_protocol::BrokerTerminalCommitVerifierV1,
+    metadata: TerminalVerifierMetadataV1,
+    digest: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TerminalVerifierMetadataV1 {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    links: u32,
+    uid: u32,
+    gid: u32,
+    size: u64,
+    modified_seconds: u64,
+    modified_nanoseconds: u32,
+    changed_seconds: u64,
+    changed_nanoseconds: u32,
+}
 
 /// Host-audience alias for shared admission failures.
 pub type HostAdmissionError = BrokerAdmissionError;
@@ -39,6 +68,7 @@ pub(crate) type VerifiedHostAdmissionV1 = VerifiedBrokerAdmission;
 pub struct HostAuthorityV1 {
     authority: BrokerAuthority,
     public_credentials: Option<ProtectedBrokerPublicCredentials>,
+    terminal_verifier: Option<ProtectedTerminalVerifierV1>,
 }
 
 impl HostAuthorityV1 {
@@ -66,6 +96,7 @@ impl HostAuthorityV1 {
         Ok(Self {
             authority,
             public_credentials: None,
+            terminal_verifier: None,
         })
     }
 
@@ -78,15 +109,37 @@ impl HostAuthorityV1 {
     pub fn from_protected_directory(
         path: impl AsRef<Path>,
     ) -> Result<Self, HostAuthorityConfigError> {
+        let path = path.as_ref();
         let configuration = ProtectedBrokerAuthorityConfiguration::from_protected_directory(
             path,
             BrokerDomain::Host,
         )?;
         let (authority, public_credentials) = configuration.into_authority_and_public_credentials();
+        let terminal_verifier = load_optional_terminal_verifier(path)?;
         Ok(Self {
             authority,
             public_credentials: Some(public_credentials),
+            terminal_verifier,
         })
+    }
+
+    /// Returns the fixed protected broker-outcome verifier commitment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error when the verifier credential is absent,
+    /// replaced, modified, or no longer has its protected shape.
+    pub(crate) fn terminal_verifier_commitment(
+        &self,
+    ) -> Result<[u8; 32], HostAuthorityConfigError> {
+        let protected =
+            self.terminal_verifier
+                .as_ref()
+                .ok_or(HostAuthorityConfigError::Invalid(
+                    BROKER_OUTCOME_VERIFIER_FILE,
+                ))?;
+        revalidate_terminal_verifier(protected)?;
+        Ok(protected.verifier.commitment())
     }
 
     /// Revalidates and borrows the protected public Guardian credentials.
@@ -210,6 +263,13 @@ impl HostAuthorityV1 {
         bytes: &[u8],
     ) -> Result<BrokerAuthorizationFenceV1, HostAdmissionError> {
         self.authority.open_fence(sandbox_id, bytes)
+    }
+
+    pub(crate) fn check_current_fence(
+        &self,
+        fence: &BrokerAuthorizationFenceV1,
+    ) -> Result<(), HostAdmissionError> {
+        self.authority.check_current_fence(fence)
     }
 
     /// Admits only the distinct exact-scope RootMount observation commitment.
@@ -341,6 +401,155 @@ fn request_assignment(
         ObjectDigest::from_bytes(*request.fence().assignment_digest()),
     )
     .map_err(|_| HostAdmissionError::RequestMismatch)
+}
+
+fn load_optional_terminal_verifier(
+    path: &Path,
+) -> Result<Option<ProtectedTerminalVerifierV1>, HostAuthorityConfigError> {
+    let directory = open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|source| terminal_verifier_filesystem("directory", source))?;
+    let directory_metadata =
+        fstat(&directory).map_err(|source| terminal_verifier_filesystem("directory", source))?;
+    if FileType::from_raw_mode(directory_metadata.st_mode) != FileType::Directory
+        || directory_metadata.st_uid != 0
+        || directory_metadata.st_mode & 0o022 != 0
+    {
+        return Err(HostAuthorityConfigError::Invalid("directory"));
+    }
+    let descriptor = match openat(
+        &directory,
+        BROKER_OUTCOME_VERIFIER_FILE,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(source) => {
+            return Err(terminal_verifier_filesystem(
+                BROKER_OUTCOME_VERIFIER_FILE,
+                source,
+            ));
+        }
+    };
+    let initial = terminal_verifier_metadata(&descriptor)?;
+    let file = File::from(descriptor);
+    let mut bytes = [0_u8; BROKER_OUTCOME_VERIFIER_BYTES];
+    file.read_exact_at(&mut bytes, 0)
+        .map_err(|source| HostAuthorityConfigError::Filesystem {
+            object: BROKER_OUTCOME_VERIFIER_FILE,
+            source,
+        })?;
+    let mut extra = [0_u8; 1];
+    if file
+        .read_at(&mut extra, BROKER_OUTCOME_VERIFIER_BYTES as u64)
+        .map_err(|source| HostAuthorityConfigError::Filesystem {
+            object: BROKER_OUTCOME_VERIFIER_FILE,
+            source,
+        })?
+        != 0
+    {
+        return Err(HostAuthorityConfigError::Invalid(
+            BROKER_OUTCOME_VERIFIER_FILE,
+        ));
+    }
+    let mut repeated_bytes = [0_u8; BROKER_OUTCOME_VERIFIER_BYTES];
+    file.read_exact_at(&mut repeated_bytes, 0)
+        .map_err(|source| HostAuthorityConfigError::Filesystem {
+            object: BROKER_OUTCOME_VERIFIER_FILE,
+            source,
+        })?;
+    let descriptor = OwnedFd::from(file);
+    let repeated = terminal_verifier_metadata(&descriptor)?;
+    if initial != repeated || bytes != repeated_bytes {
+        return Err(HostAuthorityConfigError::Invalid(
+            BROKER_OUTCOME_VERIFIER_FILE,
+        ));
+    }
+    let verifier = aos_sandbox_protocol::BrokerTerminalCommitVerifierV1::decode(&bytes).ok_or(
+        HostAuthorityConfigError::Invalid(BROKER_OUTCOME_VERIFIER_FILE),
+    )?;
+    Ok(Some(ProtectedTerminalVerifierV1 {
+        descriptor,
+        verifier,
+        metadata: initial,
+        digest: Sha256::digest(bytes).into(),
+    }))
+}
+
+fn revalidate_terminal_verifier(
+    protected: &ProtectedTerminalVerifierV1,
+) -> Result<(), HostAuthorityConfigError> {
+    if terminal_verifier_metadata(&protected.descriptor)? != protected.metadata {
+        return Err(HostAuthorityConfigError::Invalid(
+            BROKER_OUTCOME_VERIFIER_FILE,
+        ));
+    }
+    let file = File::from(protected.descriptor.try_clone().map_err(|source| {
+        HostAuthorityConfigError::Filesystem {
+            object: BROKER_OUTCOME_VERIFIER_FILE,
+            source,
+        }
+    })?);
+    let mut bytes = [0_u8; BROKER_OUTCOME_VERIFIER_BYTES];
+    file.read_exact_at(&mut bytes, 0)
+        .map_err(|source| HostAuthorityConfigError::Filesystem {
+            object: BROKER_OUTCOME_VERIFIER_FILE,
+            source,
+        })?;
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    if terminal_verifier_metadata(&protected.descriptor)? != protected.metadata
+        || digest != protected.digest
+    {
+        return Err(HostAuthorityConfigError::Invalid(
+            BROKER_OUTCOME_VERIFIER_FILE,
+        ));
+    }
+    Ok(())
+}
+
+fn terminal_verifier_metadata(
+    descriptor: &OwnedFd,
+) -> Result<TerminalVerifierMetadataV1, HostAuthorityConfigError> {
+    let metadata = fstat(descriptor)
+        .map_err(|source| terminal_verifier_filesystem(BROKER_OUTCOME_VERIFIER_FILE, source))?;
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        || metadata.st_uid != 0
+        || metadata.st_gid != 0
+        || metadata.st_nlink != 1
+        || metadata.st_mode & 0o777 != 0o400
+        || metadata.st_size != BROKER_OUTCOME_VERIFIER_BYTES as i64
+    {
+        return Err(HostAuthorityConfigError::Invalid(
+            BROKER_OUTCOME_VERIFIER_FILE,
+        ));
+    }
+    Ok(TerminalVerifierMetadataV1 {
+        device: metadata.st_dev,
+        inode: metadata.st_ino,
+        mode: metadata.st_mode,
+        links: metadata.st_nlink,
+        uid: metadata.st_uid,
+        gid: metadata.st_gid,
+        size: metadata.st_size as u64,
+        modified_seconds: metadata.st_mtime,
+        modified_nanoseconds: metadata.st_mtime_nsec,
+        changed_seconds: metadata.st_ctime,
+        changed_nanoseconds: metadata.st_ctime_nsec,
+    })
+}
+
+fn terminal_verifier_filesystem(
+    object: &'static str,
+    source: rustix::io::Errno,
+) -> HostAuthorityConfigError {
+    HostAuthorityConfigError::Filesystem {
+        object,
+        source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+    }
 }
 
 #[cfg(test)]

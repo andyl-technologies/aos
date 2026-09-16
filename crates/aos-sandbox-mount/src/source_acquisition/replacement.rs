@@ -21,6 +21,276 @@ use super::transition::{MutationIdentityV2, commit_mutation, next_revision, reco
 use crate::Result;
 
 impl SourceAcquisitionTableV2 {
+    /// Supersedes one exact pending attempt for provider-owned backend recovery.
+    #[doc(hidden)]
+    pub(crate) fn replace_backend_recovery_session_v2(
+        &mut self,
+        journal: &mut ProtectedJournalAuthority<'_>,
+        live_successor: &mut CurrentRootMountSourceProviderSessionV1,
+        attempt_id: [u8; 32],
+    ) -> Result<([u8; 32], u64, [u8; 32], ProviderMethodV2)> {
+        let current_attempt = self
+            .provider_attempts
+            .get(&attempt_id)
+            .filter(|attempt| matches!(attempt.state, ProviderAttemptStateV2::Reserved))
+            .cloned()
+            .ok_or_else(|| state_error("backend recovery attempt is not reserved"))?;
+        let identity = (
+            current_attempt.scope.holder_authority_id,
+            current_attempt.scope.provider_authority_id,
+        );
+        let current_head = self
+            .provider_heads
+            .get(&identity)
+            .filter(|head| head.pending_attempt.map(|value| value.id) == Some(attempt_id))
+            .cloned()
+            .ok_or_else(|| state_error("backend recovery head is not pending"))?;
+        let predecessor = self
+            .provider_sessions
+            .get(&current_head.current_session_id)
+            .filter(|session| session.record_digest == current_head.current_session_record_digest)
+            .cloned()
+            .ok_or_else(|| state_error("backend recovery predecessor session is absent"))?;
+        let plan = live_successor
+            .recovery_replacement_mount_provider_session_plan_v2(
+                journal,
+                journal.snapshot()?,
+                provider_head_key(identity.0, identity.1),
+                record_bytes(StoredRecordV2::ProviderHead {
+                    value: current_head.clone(),
+                })?,
+                provider_session_key(predecessor.session_id),
+                record_bytes(StoredRecordV2::ProviderSession {
+                    value: predecessor.clone(),
+                })?,
+                ObjectDigest::from_bytes(predecessor.session_id),
+                ObjectDigest::from_bytes(predecessor.session_binding),
+                current_head.next_request_sequence,
+                current_head.next_response_sequence,
+            )
+            .map_err(|_| state_error("protected backend recovery replacement planning failed"))?;
+        let successor = session_from_projection(plan.session(), Some(predecessor.session_id))?;
+        validate_successor(&predecessor, &successor, &self.provider_sessions)?;
+
+        let mut next_attempt = current_attempt.clone();
+        next_attempt.revision = next_revision(current_attempt.revision)?;
+        next_attempt.state = ProviderAttemptStateV2::SupersededIndeterminate {
+            successor_session_id: successor.session_id,
+            recovery_root_attempt_id: current_attempt.lineage_root_attempt_id,
+            outcome_may_exist: true,
+        };
+        next_attempt.record_digest = [0; 32];
+        let next_attempt = sealed_attempt(next_attempt)?;
+        let next_attempt_ref = record_ref(&StoredRecordV2::ProviderQueryAttempt {
+            value: next_attempt.clone(),
+        })?;
+        let acquisition_id = current_attempt.owner.owner_id();
+        let mut next_row = self
+            .acquisitions
+            .get(&acquisition_id)
+            .cloned()
+            .ok_or_else(|| state_error("backend recovery owner row is absent"))?;
+        next_row.revision = next_revision(next_row.revision)?;
+        match current_attempt.method {
+            ProviderMethodV2::Acquire => next_row.acquire_lineage.tail = next_attempt_ref,
+            ProviderMethodV2::Release => {
+                next_row
+                    .release_lineage
+                    .as_mut()
+                    .ok_or_else(|| state_error("backend recovery Release lineage is absent"))?
+                    .tail = next_attempt_ref;
+            }
+            ProviderMethodV2::Inventory => {
+                return Err(state_error(
+                    "backend recovery attempt has no acquisition owner",
+                ));
+            }
+        }
+        next_row.recovery = AcquisitionRecoveryV2::Ready;
+        next_row.record_digest = [0; 32];
+        let next_row = sealed_row(next_row)?;
+
+        let mut next_head = current_head.clone();
+        next_head.revision = next_revision(current_head.revision)?;
+        next_head.holder_authority_generation = successor.root_mount_authority_generation;
+        next_head.holder_authority_digest = successor.root_mount_authority_digest;
+        next_head.provider_authority_generation = successor.provider_authority_generation;
+        next_head.provider_authority_digest = successor.provider_authority_digest;
+        next_head.current_session_id = successor.session_id;
+        next_head.current_session_record_digest = successor.record_digest;
+        next_head.next_request_sequence = 1;
+        next_head.next_response_sequence = 1;
+        next_head.pending_attempt = None;
+        next_head.recovery_barrier = None;
+        next_head.last_reconciliation = None;
+        next_head.record_digest = [0; 32];
+        let next_head = sealed_head(next_head)?;
+        commit_mutation(
+            self,
+            journal,
+            MutationIdentityV2 {
+                tag: MutationTagV2::BackendRecoveryReplacement,
+                holder_id: identity.0,
+                provider_id: identity.1,
+                next_holder_sequence_revision: self
+                    .holder_sequences
+                    .get(&identity.0)
+                    .map_or(0, |value| value.revision),
+                next_head_revision: next_head.revision,
+                acquisition_id: Some(acquisition_id),
+                next_row_revision: Some(next_row.revision),
+                attempt_id: Some(next_attempt.attempt_id),
+                next_attempt_revision: Some(next_attempt.revision),
+                session_id: Some(successor.session_id),
+            },
+            vec![
+                StoredRecordV2::ProviderQueryAttempt {
+                    value: next_attempt,
+                },
+                StoredRecordV2::ProviderSession { value: successor },
+                StoredRecordV2::Acquisition {
+                    value: next_row.clone(),
+                },
+                StoredRecordV2::ProviderHead { value: next_head },
+            ],
+        )?;
+        Ok((
+            acquisition_id,
+            next_row.revision,
+            next_row.record_digest,
+            current_attempt.method,
+        ))
+    }
+
+    /// Supersedes one exact pending Inventory under a proven successor session.
+    #[doc(hidden)]
+    pub(crate) fn replace_inventory_recovery_session_v2(
+        &mut self,
+        journal: &mut ProtectedJournalAuthority<'_>,
+        live_successor: &mut CurrentRootMountSourceProviderSessionV1,
+        attempt_id: [u8; 32],
+    ) -> Result<([u8; 16], [u8; 16], Option<[u8; 32]>, [u8; 32])> {
+        let current_attempt = self
+            .provider_attempts
+            .get(&attempt_id)
+            .filter(|attempt| {
+                attempt.method == ProviderMethodV2::Inventory
+                    && attempt.owner == ProviderQueryOwnerV2::Inventory
+                    && matches!(attempt.state, ProviderAttemptStateV2::Reserved)
+            })
+            .cloned()
+            .ok_or_else(|| state_error("Inventory recovery attempt is not reserved"))?;
+        let identity = (
+            current_attempt.scope.holder_authority_id,
+            current_attempt.scope.provider_authority_id,
+        );
+        let current_head = self
+            .provider_heads
+            .get(&identity)
+            .filter(|head| head.pending_attempt.map(|value| value.id) == Some(attempt_id))
+            .cloned()
+            .ok_or_else(|| state_error("Inventory recovery head is not pending"))?;
+        let predecessor = self
+            .provider_sessions
+            .get(&current_head.current_session_id)
+            .filter(|session| session.record_digest == current_head.current_session_record_digest)
+            .cloned()
+            .ok_or_else(|| state_error("Inventory recovery predecessor session is absent"))?;
+        let plan = live_successor
+            .recovery_replacement_mount_provider_session_plan_v2(
+                journal,
+                journal.snapshot()?,
+                provider_head_key(identity.0, identity.1),
+                record_bytes(StoredRecordV2::ProviderHead {
+                    value: current_head.clone(),
+                })?,
+                provider_session_key(predecessor.session_id),
+                record_bytes(StoredRecordV2::ProviderSession {
+                    value: predecessor.clone(),
+                })?,
+                ObjectDigest::from_bytes(predecessor.session_id),
+                ObjectDigest::from_bytes(predecessor.session_binding),
+                current_head.next_request_sequence,
+                current_head.next_response_sequence,
+            )
+            .map_err(|_| state_error("protected Inventory recovery planning failed"))?;
+        let successor = session_from_projection(plan.session(), Some(predecessor.session_id))?;
+        validate_successor(&predecessor, &successor, &self.provider_sessions)?;
+
+        let mut next_attempt = current_attempt.clone();
+        next_attempt.revision = next_revision(current_attempt.revision)?;
+        next_attempt.state = ProviderAttemptStateV2::SupersededIndeterminate {
+            successor_session_id: successor.session_id,
+            recovery_root_attempt_id: current_attempt.lineage_root_attempt_id,
+            outcome_may_exist: true,
+        };
+        next_attempt.record_digest = [0; 32];
+        let next_attempt = sealed_attempt(next_attempt)?;
+        let next_attempt_ref = record_ref(&StoredRecordV2::ProviderQueryAttempt {
+            value: next_attempt.clone(),
+        })?;
+        let mut next_head = current_head.clone();
+        next_head.revision = next_revision(current_head.revision)?;
+        next_head.holder_authority_generation = successor.root_mount_authority_generation;
+        next_head.holder_authority_digest = successor.root_mount_authority_digest;
+        next_head.provider_authority_generation = successor.provider_authority_generation;
+        next_head.provider_authority_digest = successor.provider_authority_digest;
+        next_head.current_session_id = successor.session_id;
+        next_head.current_session_record_digest = successor.record_digest;
+        next_head.next_request_sequence = 1;
+        next_head.next_response_sequence = 1;
+        next_head.pending_attempt = None;
+        next_head.last_reconciliation = None;
+        let recovery_root_attempt_id = current_head
+            .recovery_barrier
+            .as_ref()
+            .map(|barrier| barrier.root_attempt.id);
+        if let Some(barrier) = next_head.recovery_barrier.as_mut() {
+            barrier.required_session_id = successor.session_id;
+            barrier.recovery_inventory_tail = Some(next_attempt_ref);
+            barrier.replacement_count = barrier
+                .replacement_count
+                .checked_add(1)
+                .ok_or_else(|| state_error("Inventory replacement count is exhausted"))?;
+        } else {
+            next_head.last_inventory_attempt = Some(next_attempt_ref);
+        }
+        next_head.record_digest = [0; 32];
+        let next_head = sealed_head(next_head)?;
+        commit_mutation(
+            self,
+            journal,
+            MutationIdentityV2 {
+                tag: MutationTagV2::BackendRecoveryReplacement,
+                holder_id: identity.0,
+                provider_id: identity.1,
+                next_holder_sequence_revision: self
+                    .holder_sequences
+                    .get(&identity.0)
+                    .map_or(0, |value| value.revision),
+                next_head_revision: next_head.revision,
+                acquisition_id: None,
+                next_row_revision: None,
+                attempt_id: Some(next_attempt.attempt_id),
+                next_attempt_revision: Some(next_attempt.revision),
+                session_id: Some(successor.session_id),
+            },
+            vec![
+                StoredRecordV2::ProviderQueryAttempt {
+                    value: next_attempt,
+                },
+                StoredRecordV2::ProviderSession { value: successor },
+                StoredRecordV2::ProviderHead { value: next_head },
+            ],
+        )?;
+        Ok((
+            identity.0,
+            identity.1,
+            recovery_root_attempt_id,
+            current_attempt.signed_request_digest,
+        ))
+    }
+
     /// Replaces one idle provider session under fresh protected authentication.
     ///
     /// # Errors

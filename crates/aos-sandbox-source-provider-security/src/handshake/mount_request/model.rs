@@ -59,6 +59,18 @@ pub struct SentMountProviderRequestV2 {
     outcome: AuthorizedMountProviderOutcomeV2,
 }
 
+/// Retains an exact durable request reservation when carrier send is incomplete.
+#[must_use = "retry through the same protected session or retain exact send custody"]
+pub struct MountProviderRequestSendRecoveryV2 {
+    pub(super) reservation: ReservedMountProviderRequestV2,
+}
+
+impl core::fmt::Debug for MountProviderRequestSendRecoveryV2 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("MountProviderRequestSendRecoveryV2([reserved send custody])")
+    }
+}
+
 /// Projects the exact identities committed by an authorized Acquire-v2 request.
 pub struct MountProviderRequestProjectionV2 {
     method: SourceProviderMethod,
@@ -253,6 +265,24 @@ pub enum ReceivedMountProviderOutcomePartsV2 {
 pub struct RecoveredMountProviderOutcomeV2 {
     pub(super) verified: VerifiedMountProviderOutcomeV2,
     pub(super) source_root: Option<ReopenedMountSourceRootV2>,
+}
+
+/// Retains one carrier-received provider response for protected crash recovery.
+///
+/// Its fields are deliberately opaque. Only a current Root-Mount session can
+/// capture it, and only exact durable attempt/session records can consume it.
+pub struct CapturedMountProviderRecoveryOutcomeV2 {
+    pub(super) method: SourceProviderMethod,
+    pub(super) canonical_signed_status: Vec<u8>,
+    pub(super) canonical_signed_result: Vec<u8>,
+    pub(super) source_root: Option<crate::ProviderSourceRootHandoffV1>,
+    pub(super) persisted: Option<crate::PersistedProviderOutcomeV1>,
+}
+
+impl core::fmt::Debug for CapturedMountProviderRecoveryOutcomeV2 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("CapturedMountProviderRecoveryOutcomeV2([received custody])")
+    }
 }
 
 /// Retains a freshly reobserved post-crash SourceRoot bound to one exact outcome.
@@ -723,6 +753,13 @@ impl SentMountProviderRequestV2 {
     #[must_use]
     pub const fn projection(&self) -> &MountProviderRequestProjectionV2 {
         &self.projection
+    }
+
+    /// Borrows the verifier while its fixed Mount owner retains sole custody.
+    #[must_use]
+    #[doc(hidden)]
+    pub const fn outcome_authorization(&self) -> &AuthorizedMountProviderOutcomeV2 {
+        &self.outcome
     }
 
     /// Consumes the sent marker into the sole verifier for its exact provider outcome.

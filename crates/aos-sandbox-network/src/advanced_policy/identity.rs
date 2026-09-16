@@ -156,6 +156,10 @@ impl ProtectedCurrentnessWitnessV1 {
         self.namespace
     }
 
+    pub(crate) fn protected_source_key(self) -> [u8; 33] {
+        protected_source_key(self.purpose, self.namespace)
+    }
+
     pub(crate) fn is_exact_successor_of(self, prior: Self) -> bool {
         self.purpose == prior.purpose
             && self.owner == prior.owner
@@ -180,6 +184,12 @@ impl ProtectedCurrentnessWitnessV1 {
             && self.sequence > prior.sequence
     }
 
+    pub(crate) const fn belongs_to(self, identity: ProtectedJournalIdentityV1) -> bool {
+        self.owner == identity.owner
+            && self.namespace == identity.namespace
+            && self.journal == identity.journal
+    }
+
     pub(crate) fn encode_recovery(self) -> [u8; 201] {
         let mut bytes = [0; 201];
         bytes[0] = witness_purpose_code(self.purpose);
@@ -202,6 +212,39 @@ impl ProtectedCurrentnessWitnessV1 {
         }
         authorities.rebind(bytes)
     }
+
+    pub(crate) fn decode_protected_record(
+        bytes: &[u8],
+    ) -> Result<Self, AdvancedNetworkPolicyError> {
+        if bytes.len() != 201 {
+            return Err(AdvancedNetworkPolicyError::NonCanonical);
+        }
+        let purpose =
+            protected_witness_purpose(bytes[0]).ok_or(AdvancedNetworkPolicyError::NonCanonical)?;
+        let identity = ProtectedJournalIdentityV1::seal(
+            ObjectDigest::from_bytes(copy_array(&bytes[1..33])?),
+            ObjectDigest::from_bytes(copy_array(&bytes[33..65])?),
+            ObjectDigest::from_bytes(copy_array(&bytes[65..97])?),
+        )?;
+        let sequence = u64::from_be_bytes(copy_array(&bytes[97..105])?);
+        let predecessor_head = ObjectDigest::from_bytes(copy_array(&bytes[105..137])?);
+        let record_digest = ObjectDigest::from_bytes(copy_array(&bytes[169..201])?);
+        let witness = Self::mint(purpose, identity, sequence, predecessor_head, record_digest)?;
+        if witness.current_head.as_bytes() != &bytes[137..169] {
+            return Err(AdvancedNetworkPolicyError::NonCanonical);
+        }
+        Ok(witness)
+    }
+}
+
+pub(crate) fn protected_source_key(
+    purpose: ProtectedWitnessPurposeV1,
+    namespace: ObjectDigest,
+) -> [u8; 33] {
+    let mut key = [0; 33];
+    key[0] = witness_purpose_code(purpose);
+    key[1..].copy_from_slice(namespace.as_bytes());
+    key
 }
 
 impl ProtectedRecoveryAuthoritiesV1 {
@@ -482,7 +525,7 @@ impl AdvancedNetworkIdentityV1 {
             || !candidate
                 .revision
                 .currentness
-                .is_exact_successor_of(self.revision.currentness)
+                .is_later_in_same_journal(self.revision.currentness)
             || self.assignment().digest() == candidate.assignment().digest()
         {
             return false;
@@ -729,6 +772,22 @@ const fn witness_purpose_code(value: ProtectedWitnessPurposeV1) -> u8 {
         ProtectedWitnessPurposeV1::CombinedTransaction => 8,
         ProtectedWitnessPurposeV1::RecoveryAuthority => 9,
         ProtectedWitnessPurposeV1::RecoveryCheckpoint => 10,
+    }
+}
+
+const fn protected_witness_purpose(value: u8) -> Option<ProtectedWitnessPurposeV1> {
+    match value {
+        1 => Some(ProtectedWitnessPurposeV1::Assignment),
+        2 => Some(ProtectedWitnessPurposeV1::Discovery),
+        3 => Some(ProtectedWitnessPurposeV1::Capabilities),
+        4 => Some(ProtectedWitnessPurposeV1::IngressPool),
+        5 => Some(ProtectedWitnessPurposeV1::IngressRegistry),
+        6 => Some(ProtectedWitnessPurposeV1::Quota),
+        7 => Some(ProtectedWitnessPurposeV1::KernelObservation),
+        8 => Some(ProtectedWitnessPurposeV1::CombinedTransaction),
+        9 => Some(ProtectedWitnessPurposeV1::RecoveryAuthority),
+        10 => Some(ProtectedWitnessPurposeV1::RecoveryCheckpoint),
+        _ => None,
     }
 }
 

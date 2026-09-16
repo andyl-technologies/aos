@@ -125,17 +125,21 @@ authority-signed lease and never from a persisted monotonic counter alone.
 The portable `aos-sandbox-core` runtime-backend module defines move-only
 prepare, start, freeze, thaw, stop, destroy, execution-admission, effect, and
 recovery contracts. `aos-sandbox-host` contains a dormant projection from an
-already validated Host 1.0 request into those contracts. The projection has no
-active service call site, and no concrete runtime backend currently implements
-the portable trait.
+already validated Host 1.0 request into those contracts and a concrete dormant
+`RuntimeBackend` composition backed by fixed-root protected owner records and
+readiness evidence. It has no active service call site, listener, readiness
+advertisement, or production activation.
 
 The source-only `aos-sandbox-agent` crate defines the bounded `AOSAGE01`
-incarnation handshake, stop-and-wait operation stream, execution and quiesce
-reducer, exact replay fencing, and protected checkpoint format. Its broker
-adapter is a dormant nonauthorizing projection, and no guest-local effect
-adapter or public execution data plane consumes it. These source foundations
-do not start nspawn, register a public route, advertise readiness, or authorize
-a Host or guest effect.
+incarnation handshake and stop-and-wait operation data model. Protected reducer,
+reservation, checkpoint, and terminal-commit ownership now resides under the
+runtime execution owner in `aos-sandbox`, while the agent crate retains only
+portable protocol and dormant executable/root-builder/package seams. A dormant
+guest adapter and protected process supervisor implement credential, process,
+PTY, resize, and signal effects and mint opaque observations only after injected
+effects; the same protected owner reconciles signed restart readback. These
+source foundations do not start nspawn, register a public route, advertise
+readiness, or activate a Host or guest service.
 
 ## `aos-viewd`
 

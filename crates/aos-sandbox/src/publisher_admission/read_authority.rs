@@ -448,6 +448,13 @@ impl ReadCatalogProjectionV1 {
         self.entries.contains_key(object)
     }
 
+    pub(super) fn recovery_entry(
+        &self,
+        object: &ObjectDescriptor,
+    ) -> Option<&CommittedReadEntryV1> {
+        (!self.poisoned).then(|| self.entries.get(object)).flatten()
+    }
+
     pub(super) fn begin_exclusive_insertion(
         &mut self,
         prior_generation: u64,

@@ -208,7 +208,14 @@ impl PassthroughRegistrations {
         connection: &PreparedFuseConnection<'_, '_, '_, '_, '_>,
         limits: RegistrationLimits,
     ) -> Result<Self, DataError> {
-        let authority_binding = connection.binding();
+        Self::new_for_authority(connection.binding(), connection.lease(), limits)
+    }
+
+    fn new_for_authority(
+        authority_binding: [u8; 32],
+        lease: ConnectionLease,
+        limits: RegistrationLimits,
+    ) -> Result<Self, DataError> {
         if authority_binding == [0; 32]
             || limits.maximum_registrations == 0
             || limits.maximum_open_references == 0
@@ -225,7 +232,7 @@ impl PassthroughRegistrations {
         Ok(Self {
             authority_binding,
             callback_reducer_commitment: [0; 32],
-            lease: connection.lease(),
+            lease,
             limits,
             entries,
             references: 0,
@@ -239,18 +246,48 @@ impl PassthroughRegistrations {
         limits: RegistrationLimits,
         records: &[DurableRegistrationRecord],
     ) -> Result<Self, DataError> {
-        let authority_binding = connection.binding();
-        let mut state = Self::new(connection, limits)?;
+        let prior_commitment = records
+            .first()
+            .map_or([0; 32], |record| record.callback_reducer_commitment);
+        Self::restore_for_authority(
+            connection.binding(),
+            connection.lease(),
+            limits,
+            prior_commitment,
+            records,
+        )
+    }
+
+    pub(crate) fn restore_for_worker(
+        connection: &super::MetadataConnection<'_, '_, '_, '_>,
+        limits: RegistrationLimits,
+        prior_commitment: [u8; 32],
+        records: &[DurableRegistrationRecord],
+    ) -> Result<Self, DataError> {
+        Self::restore_for_authority(
+            connection.authority_binding,
+            connection.lease,
+            limits,
+            prior_commitment,
+            records,
+        )
+    }
+
+    fn restore_for_authority(
+        authority_binding: [u8; 32],
+        lease: ConnectionLease,
+        limits: RegistrationLimits,
+        prior_commitment: [u8; 32],
+        records: &[DurableRegistrationRecord],
+    ) -> Result<Self, DataError> {
+        let mut state = Self::new_for_authority(authority_binding, lease, limits)?;
         if records.len() > limits.maximum_registrations {
             return Err(DataError::ResourceExhausted);
         }
         let mut previous = 0_u64;
-        let restored_reducer_commitment = records
-            .first()
-            .map_or([0; 32], |record| record.callback_reducer_commitment);
         for record in records {
             if record.authority_binding != authority_binding
-                || record.callback_reducer_commitment != restored_reducer_commitment
+                || record.callback_reducer_commitment != prior_commitment
                 || record.operation.0 <= previous
                 || record.backing.authority_binding() != authority_binding
             {
@@ -276,7 +313,7 @@ impl PassthroughRegistrations {
         state.next_operation = previous
             .checked_add(1)
             .ok_or(DataError::ResourceExhausted)?;
-        state.callback_reducer_commitment = restored_reducer_commitment;
+        state.callback_reducer_commitment = prior_commitment;
         Ok(state)
     }
 

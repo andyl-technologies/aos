@@ -22,8 +22,11 @@ mod authority;
 mod data;
 mod durable;
 mod file;
+#[cfg(target_os = "linux")]
 mod integration;
 mod lifecycle;
+#[cfg(target_os = "linux")]
+mod reconciliation;
 mod registration;
 mod scratch;
 mod xattr;
@@ -42,15 +45,21 @@ pub use durable::{DurableStateCodec, DurableStateError, DurableStateLimits};
 pub use file::{
     FileAccessMode, FileContentAuthority, FileOpenRequest, OpenFileReply, PendingFileReply,
 };
+#[cfg(target_os = "linux")]
 pub use integration::{
     DormantFilesystemWorkerPreparation, PendingFuseConnectionQualification,
-    ProtectedFuseConnectionQualification, QualificationAdmission, QualificationError,
-    admit_fuse_connection_qualification,
+    ProtectedFuseConnectionQualification, ProtectedFuseKernelClockV1, QualificationAdmission,
+    QualificationError, admit_fuse_connection_qualification,
 };
 pub use lifecycle::{
     AttachmentHealth, ConsumerEvidence, DurableLifecycleEvent, InventoryEvidence, LifecycleError,
     ProcessEvidence, PublicationHealth, ReconciliationAction, RepairEvidence, WorkerLifecycle,
     WorkerLifecycleSnapshot, WorkerPhase,
+};
+#[cfg(target_os = "linux")]
+pub use reconciliation::{
+    DormantReconciliationAdapter, ReapEffectResult, ReconciliationAdapterError,
+    ReconciliationEffectExecutor, ReconciliationObservation, SealedEffectReceipt,
 };
 pub use registration::{
     DurableRegistrationRecord, PassthroughRegistrations, RegistrationAction, RegistrationLimits,
@@ -584,6 +593,30 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     #[must_use]
     pub const fn callback_instance_brand(&self) -> u64 {
         self.connection_brand.0
+    }
+
+    /// Restores inert registrations for a later protected callback owner.
+    ///
+    /// This allocates only move-only in-memory reducer state. It performs no
+    /// backing or kernel effect, and the dormant transport must persist the
+    /// freshly rebound reducer before publishing a reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DataError`] when the snapshot is foreign, malformed, exceeds
+    /// its exact bounds, or cannot be allocated.
+    pub fn restore_inert_passthrough_registrations(
+        &self,
+        limits: RegistrationLimits,
+        prior_reducer_commitment: [u8; 32],
+        records: &[DurableRegistrationRecord],
+    ) -> Result<PassthroughRegistrations, DataError> {
+        PassthroughRegistrations::restore_for_worker(
+            self,
+            limits,
+            prior_reducer_commitment,
+            records,
+        )
     }
 
     /// Mints single-use authority for this worker's sole callback reducer.

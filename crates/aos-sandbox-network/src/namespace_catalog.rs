@@ -23,8 +23,8 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
-    AssignmentFence, InventoryNetworkResourcesResponse, NetworkNamespaceInventoryRecord,
-    NetworkState,
+    AssignmentFence, BrokerError, BrokerErrorCode, InventoryNetworkResourcesResponse,
+    InventoryNetworksResponse, NetworkNamespaceInventoryRecord, NetworkResult, NetworkState,
 };
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::{BrokerAssignment, ObjectDigest};
@@ -35,7 +35,7 @@ use aos_sandbox_protocol::{
     MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS, MAXIMUM_RESPONSE_BYTES,
     decode_network_resource_inventory_response,
 };
-use buffa::Message as _;
+use buffa::{Enumeration as _, Message as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -546,6 +546,50 @@ impl NetworkNamespaceCatalogV1 {
         decode_network_resource_inventory_response(&bytes, MAXIMUM_RESPONSE_BYTES)
             .map_err(|_| NetworkNamespaceCatalogError::InvalidInventory)?;
 
+        Ok(bytes)
+    }
+
+    /// Encodes the legacy logical inventory as a projection of the same protected catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] when physical catalog validation
+    /// fails or its projection violates the closed legacy response profile.
+    pub fn inventory_networks(&self) -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
+        let current = self.inventory_resources()?;
+        let authoritative = InventoryNetworkResourcesResponse::decode_from_slice(&current)
+            .map_err(|_| NetworkNamespaceCatalogError::InvalidInventory)?;
+        let networks = authoritative
+            .networks
+            .into_iter()
+            .map(|record| {
+                let state = record
+                    .state
+                    .as_known()
+                    .ok_or(NetworkNamespaceCatalogError::InvalidInventory)?;
+                let error = (state == NetworkState::NETWORK_STATE_FAILED).then(|| BrokerError {
+                    code: BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE.into(),
+                    safe_message: "network resource is failed".to_owned(),
+                    retryable: true,
+                    ..Default::default()
+                });
+                Ok(NetworkResult {
+                    network_handle: record.network_handle,
+                    state: state.into(),
+                    lease_generation: record.lease_generation,
+                    error: error.into(),
+                    ..Default::default()
+                })
+            })
+            .collect::<Result<Vec<_>, NetworkNamespaceCatalogError>>()?;
+        let bytes = InventoryNetworksResponse {
+            networks,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        if bytes.len() > MAXIMUM_RESPONSE_BYTES as usize {
+            return Err(NetworkNamespaceCatalogError::InvalidInventory);
+        }
         Ok(bytes)
     }
 

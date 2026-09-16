@@ -73,7 +73,7 @@ pub enum OpenReplyPlan {
 
 /// Records the exact disposition encoded in a successful transport reply.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OpenReplySelection {
+pub(crate) enum OpenReplySelection {
     /// The reply selected userspace fallback.
     Fallback,
     /// The reply selected one nonzero broker-created backing selector.
@@ -89,7 +89,7 @@ pub enum OpenReplySelection {
 /// a completed descriptor-owning operation. Portable callback callers cannot
 /// turn a scalar selector into success evidence.
 #[must_use = "consume the completed backing-open receipt in callback state"]
-pub struct BackingOpenReceipt {
+pub(crate) struct BackingOpenReceipt {
     authority_binding: [u8; 32],
     worker_brand: u64,
     reducer_identity: [u8; 32],
@@ -151,7 +151,7 @@ impl RegisteredBacking {
 
 /// Reports whether a synchronous reply became externally visible.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OpenPublication {
+pub(crate) enum OpenPublication {
     /// The transport proved that this exact handle and selection became visible.
     Published {
         /// Exact raw file handle encoded in the successful reply.
@@ -166,7 +166,7 @@ pub enum OpenPublication {
 }
 
 /// Reports the committed result of one unambiguous OPEN callback.
-pub enum OpenCompletion<'index> {
+pub(crate) enum OpenCompletion<'index> {
     /// The kernel-visible reply was committed under this raw handle.
     Published {
         /// Active connection-scoped file handle.
@@ -191,7 +191,7 @@ pub enum OpenCompletion<'index> {
 }
 
 /// Reports whether a failed OPEN finish returned or terminally consumed its token.
-pub enum OpenFinishFailure<'index> {
+pub(crate) enum OpenFinishFailure<'index> {
     /// No terminal fault was established, so the caller retains exact ownership.
     OwnershipReturned {
         /// Failure that prevented the requested transition.
@@ -235,7 +235,7 @@ impl<'index> OpenFinishFailure<'index> {
 
 /// Opaque broker observation that one connection-local backing close completed.
 #[must_use = "consume the completed backing-close receipt in callback state"]
-pub struct BackingCloseReceipt {
+pub(crate) struct BackingCloseReceipt {
     authority_binding: [u8; 32],
     worker_brand: u64,
     reducer_identity: [u8; 32],
@@ -254,7 +254,7 @@ pub struct BackingCloseReceipt {
 
 /// Retains a rejected pending OPEN until its successful registration is closed.
 #[must_use = "confirm or reconcile the backing close before dropping worker state"]
-pub struct RejectedOpenCleanup<'index> {
+pub(crate) struct RejectedOpenCleanup<'index> {
     worker: PendingFileReply<'index>,
     operation: RegistrationOperation,
     worker_brand: u64,
@@ -273,7 +273,7 @@ pub struct RejectedWorkerCleanup<'index> {
 
 /// Proves registration state was updated after an active-handle close.
 #[must_use = "persist registration state before releasing the worker handle"]
-pub struct WorkerReleasePermit {
+pub(crate) struct WorkerReleasePermit {
     worker_brand: u64,
     reducer_commitment: [u8; 32],
     node_id: u64,
@@ -306,7 +306,7 @@ pub enum ReleasePlan {
 
 /// Holds a worker reservation and resolved data disposition before reply publication.
 #[must_use = "finish the OPEN publication transition"]
-pub struct PendingCallbackOpen<'index> {
+pub(crate) struct PendingCallbackOpen<'index> {
     worker: PendingFileReply<'index>,
     data: PreparedDataOpen,
     worker_brand: u64,
@@ -324,7 +324,7 @@ impl PendingCallbackOpen<'_> {
     ///
     /// Returns [`FileCallbackError::Stale`] if a passthrough disposition lacks
     /// the durable registration operation created with it.
-    pub fn reply_plan(&self) -> Result<OpenReplyPlan, FileCallbackError> {
+    pub(crate) fn reply_plan(&self) -> Result<OpenReplyPlan, FileCallbackError> {
         match self.data.disposition() {
             BackingDisposition::VerifiedFallback => Ok(OpenReplyPlan::Fallback {
                 handle: self.worker.raw_handle(),
@@ -356,7 +356,7 @@ struct ActiveCallbackOpen {
 }
 
 /// Owns bounded adapter state for active data dispositions.
-pub struct FileCallbackState {
+pub(crate) struct FileCallbackState {
     active: Vec<ActiveCallbackOpen>,
     pending_handles: usize,
     maximum_handles: usize,
@@ -414,7 +414,7 @@ impl FileCallbackState {
     ///
     /// Returns [`FileCallbackError`] for unsupported flags, exhausted adapter
     /// capacity, worker admission failure, or unavailable data realization.
-    pub fn prepare_open<'index>(
+    pub(crate) fn prepare_open<'index>(
         &mut self,
         connection: &mut MetadataConnection<'_, 'index, '_, '_>,
         data_plane: &DataPlane,
@@ -505,7 +505,7 @@ impl FileCallbackState {
     ///
     /// Returns [`FileCallbackError`] unless `pending` owns the exact pending
     /// registration named by nonforgeable broker completion evidence.
-    pub fn record_backing_opened(
+    pub(crate) fn record_backing_opened(
         &mut self,
         pending: &mut PendingCallbackOpen<'_>,
         receipt: BackingOpenReceipt,
@@ -595,7 +595,7 @@ impl FileCallbackState {
     /// [`OpenFinishFailure::Terminal`] only after the charge is consumed exactly
     /// once and connection teardown owns the retained inode pin. A published
     /// mismatch is terminal because kernel-visible authority cannot be guessed.
-    pub fn finish_open<'index>(
+    pub(crate) fn finish_open<'index>(
         &mut self,
         connection: &mut MetadataConnection<'_, 'index, '_, '_>,
         mut pending: PendingCallbackOpen<'index>,
@@ -686,7 +686,7 @@ impl FileCallbackState {
     ///
     /// Returns [`FileCallbackError`] unless the receipt matches the exact
     /// connection, operation, and selector retained by `cleanup`.
-    pub fn record_rejected_backing_closed<'index>(
+    pub(crate) fn record_rejected_backing_closed<'index>(
         &mut self,
         cleanup: RejectedOpenCleanup<'index>,
         receipt: BackingCloseReceipt,
@@ -728,7 +728,7 @@ impl FileCallbackState {
     /// # Errors
     ///
     /// Returns [`FileCallbackError`] for a foreign permit or stale worker state.
-    pub fn finish_rejected_open_cleanup<'index>(
+    pub(crate) fn finish_rejected_open_cleanup<'index>(
         &mut self,
         connection: &mut MetadataConnection<'_, 'index, '_, '_>,
         mut cleanup: RejectedWorkerCleanup<'index>,
@@ -749,7 +749,7 @@ impl FileCallbackState {
     ///
     /// Returns [`FileCallbackError::Stale`] unless `cleanup` belongs to this
     /// connection and its durable registration remains `Closing`.
-    pub fn retry_rejected_open_close(
+    pub(crate) fn retry_rejected_open_close(
         &self,
         cleanup: &RejectedOpenCleanup<'_>,
     ) -> Result<ReleasePlan, FileCallbackError> {
@@ -787,7 +787,7 @@ impl FileCallbackState {
     ///
     /// Returns [`FileCallbackError`] for stale state or after recording the
     /// terminal ambiguity.
-    pub fn record_rejected_close_ambiguity(
+    pub(crate) fn record_rejected_close_ambiguity(
         &mut self,
         connection: &mut MetadataConnection<'_, '_, '_, '_>,
         cleanup: RejectedOpenCleanup<'_>,
@@ -855,7 +855,7 @@ impl FileCallbackState {
     ///
     /// Returns [`FileCallbackError`] for a stale pair or data/open mismatch.
     /// Errors preserve adapter state for teardown.
-    pub fn prepare_release(
+    pub(crate) fn prepare_release(
         &mut self,
         connection: &MetadataConnection<'_, '_, '_, '_>,
         data_plane: &DataPlane,
@@ -924,7 +924,7 @@ impl FileCallbackState {
     ///
     /// Returns [`FileCallbackError::Stale`] unless the connection, inode,
     /// handle, and pending-release phase all match.
-    pub fn retry_release(
+    pub(crate) fn retry_release(
         &self,
         connection: &MetadataConnection<'_, '_, '_, '_>,
         node_id: u64,
@@ -976,7 +976,7 @@ impl FileCallbackState {
     ///
     /// Returns [`FileCallbackError`] for foreign, stale, nonfinal, or mismatched
     /// close evidence.
-    pub fn record_backing_closed(
+    pub(crate) fn record_backing_closed(
         &mut self,
         node_id: u64,
         raw_handle: u64,
@@ -1024,7 +1024,7 @@ impl FileCallbackState {
     /// Returns [`FileCallbackError`] for foreign or stale state, absent or
     /// mismatched release permission, or worker release failure. Lease expiry does
     /// not block identity-checked cleanup.
-    pub fn finish_release(
+    pub(crate) fn finish_release(
         &mut self,
         connection: &mut MetadataConnection<'_, '_, '_, '_>,
         node_id: u64,
@@ -1064,7 +1064,7 @@ impl FileCallbackState {
     ///
     /// Returns [`FileCallbackError`] for stale state or after marking the
     /// connection terminally faulted due to the ambiguous external effect.
-    pub fn record_close_ambiguity(
+    pub(crate) fn record_close_ambiguity(
         &mut self,
         connection: &mut MetadataConnection<'_, '_, '_, '_>,
         node_id: u64,

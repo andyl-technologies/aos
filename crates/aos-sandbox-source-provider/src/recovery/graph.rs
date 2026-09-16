@@ -281,6 +281,7 @@ pub(super) fn validate_graph(
             lease_id: release.lease_id,
             lease_digest: release.lease_digest,
             backend_id: release.backend_id,
+            acquired_evidence: crate::backend::acquired_evidence(acquisition)?,
         };
         if release_plan.lineage_digest() != release.backend_lineage_digest {
             return Err(ProviderLedgerError::Corrupt(

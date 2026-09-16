@@ -42,6 +42,18 @@ pub struct RecoveryObservationV1<'root> {
 pub struct RecoveryPhysicalCustodyV1<'root> {
     #[cfg(target_os = "linux")]
     root: crate::publisher_roots::AuthorizedPublicationRoot<'root>,
+    #[cfg(target_os = "linux")]
+    _private: Option<aos_sandbox_linux::immutable_file::ObservedSealedPublicationFile<'root>>,
+    #[cfg(target_os = "linux")]
+    _final_file: Option<aos_sandbox_linux::immutable_file::ObservedSealedPublicationFile<'root>>,
+    #[cfg(target_os = "linux")]
+    _partial_private:
+        Option<aos_sandbox_linux::immutable_file::ObservedRetainedPrivateArtifact<'root>>,
+    #[cfg(target_os = "linux")]
+    _partial_final:
+        Option<aos_sandbox_linux::immutable_file::ObservedRetainedPrivateArtifact<'root>>,
+    #[cfg(target_os = "linux")]
+    _retained_failure: Option<aos_sandbox_linux::immutable_file::RetainedPrivateArtifact>,
     #[cfg(not(target_os = "linux"))]
     root: core::marker::PhantomData<&'root ()>,
     root_record_digest: ObjectDigest,
@@ -52,14 +64,28 @@ pub struct RecoveryPhysicalCustodyV1<'root> {
 impl<'root> RecoveryPhysicalCustodyV1<'root> {
     /// Seals a pinned physical observation with its live root authorization.
     #[cfg(target_os = "linux")]
-    pub(crate) const fn seal_from_physical_adapter(
+    pub(crate) fn seal_from_physical_adapter(
         root: crate::publisher_roots::AuthorizedPublicationRoot<'root>,
+        private: Option<aos_sandbox_linux::immutable_file::ObservedSealedPublicationFile<'root>>,
+        final_file: Option<aos_sandbox_linux::immutable_file::ObservedSealedPublicationFile<'root>>,
+        partial_private: Option<
+            aos_sandbox_linux::immutable_file::ObservedRetainedPrivateArtifact<'root>,
+        >,
+        partial_final: Option<
+            aos_sandbox_linux::immutable_file::ObservedRetainedPrivateArtifact<'root>,
+        >,
+        retained_failure: Option<aos_sandbox_linux::immutable_file::RetainedPrivateArtifact>,
         artifact_digest: Option<ObjectDigest>,
         observation_digest: ObjectDigest,
     ) -> Self {
         let root_record_digest = root.record_digest();
         Self {
             root,
+            _private: private,
+            _final_file: final_file,
+            _partial_private: partial_private,
+            _partial_final: partial_final,
+            _retained_failure: retained_failure,
             root_record_digest,
             artifact_digest,
             observation_digest,
@@ -140,11 +166,28 @@ impl RecoveryExecutorFenceV1 {
             ],
         )
     }
+
+    pub(crate) const fn publisher_instance(&self) -> aos_sandbox_core::PublisherInstanceId {
+        self.publisher_instance
+    }
+
+    pub(crate) const fn death_or_revocation_digest(&self) -> ObjectDigest {
+        self.death_or_revocation_digest
+    }
+
+    pub(crate) const fn recovery_incarnation(&self) -> ObjectDigest {
+        self.recovery_incarnation
+    }
 }
 
 impl<'root> RecoveryObservationV1<'root> {
+    /// Returns the exact opaque physical observation commitment for a response.
+    pub(crate) const fn observation_digest(&self) -> ObjectDigest {
+        self.physical_custody.observation_digest
+    }
+
     /// Captures complete pre-effect absence under trusted physical custody.
-    pub(crate) const fn no_effect_from_physical_adapter(
+    pub(crate) fn no_effect_from_physical_adapter(
         operation: OperationId,
         physical_custody: RecoveryPhysicalCustodyV1<'root>,
     ) -> Self {
@@ -155,7 +198,7 @@ impl<'root> RecoveryObservationV1<'root> {
     }
 
     /// Captures an exact private artifact under trusted physical custody.
-    pub(crate) const fn private_artifact_from_physical_adapter(
+    pub(crate) fn private_artifact_from_physical_adapter(
         operation: OperationId,
         artifact_digest: ObjectDigest,
         physical_custody: RecoveryPhysicalCustodyV1<'root>,
@@ -170,7 +213,7 @@ impl<'root> RecoveryObservationV1<'root> {
     }
 
     /// Captures exact post-fence physical absence.
-    pub(crate) const fn absent_after_fence_from_physical_adapter(
+    pub(crate) fn absent_after_fence_from_physical_adapter(
         operation: OperationId,
         artifact_digest: ObjectDigest,
         executor_fence: RecoveryExecutorFenceV1,
@@ -187,7 +230,7 @@ impl<'root> RecoveryObservationV1<'root> {
     }
 
     /// Captures a fenced final object whose exact catalog obligation is absent.
-    pub(crate) const fn final_only_catalog_absent_from_physical_adapter(
+    pub(crate) fn final_only_catalog_absent_from_physical_adapter(
         operation: OperationId,
         artifact_digest: ObjectDigest,
         executor_fence: RecoveryExecutorFenceV1,
@@ -219,7 +262,7 @@ impl<'root> RecoveryObservationV1<'root> {
     /// This is not an ordinary-completion ingress seam: its result type can be
     /// created only inside the publisher authority reducer from an unresolved
     /// protected permit and an exact recovery observation.
-    pub(super) const fn committed_from_durable_adapter(
+    pub(super) fn committed_from_durable_adapter(
         result: CompletionResult,
         physical_custody: RecoveryPhysicalCustodyV1<'root>,
     ) -> Self {
@@ -230,7 +273,7 @@ impl<'root> RecoveryObservationV1<'root> {
     }
 
     /// Captures a bounded contradiction observed by a trusted adapter.
-    pub(crate) const fn contradiction_from_protected_adapter(
+    pub(crate) fn contradiction_from_protected_adapter(
         operation: OperationId,
         evidence_digest: ObjectDigest,
         physical_custody: RecoveryPhysicalCustodyV1<'root>,

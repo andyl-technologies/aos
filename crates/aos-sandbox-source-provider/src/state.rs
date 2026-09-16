@@ -764,6 +764,38 @@ pub(crate) struct DetachedProviderLedgerV1 {
     poisoned: bool,
 }
 
+impl DetachedProviderLedgerV1 {
+    pub(crate) fn recovered(&self) -> &RecoveredProviderLedgerV1 {
+        &self.recovered
+    }
+
+    pub(crate) fn take_fixed_current_session(
+        &mut self,
+    ) -> Result<
+        (
+            CurrentProviderIngressSessionV1,
+            Option<aos_sandbox_source_provider_security::DeadProviderExecutionV1>,
+        ),
+        ProviderLedgerError,
+    > {
+        if self.current_sessions.len() != 1 {
+            return Err(ProviderLedgerError::InvalidTransition(
+                "fixed provider successor handshake requires one current session",
+            ));
+        }
+        let holder_id = self
+            .current_sessions
+            .keys()
+            .next()
+            .copied()
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        self.current_sessions
+            .remove(&holder_id)
+            .map(|installed| (installed.session, installed.recovered_execution_death))
+            .ok_or(ProviderLedgerError::RuntimePoisoned)
+    }
+}
+
 impl<'a> ProviderLedgerV1<'a> {
     pub(crate) fn detach(self) -> DetachedProviderLedgerV1 {
         DetachedProviderLedgerV1 {

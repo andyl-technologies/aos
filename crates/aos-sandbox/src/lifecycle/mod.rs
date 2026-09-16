@@ -8,18 +8,22 @@
 mod attempt;
 mod auxiliary_checkpoint;
 mod auxiliary_payload;
+mod boot_reconcile;
 mod cancel;
 mod coordination;
+mod deletion;
 mod digest;
 mod durable;
 mod evidence;
 mod format;
 mod history;
 mod idempotency;
+mod incarnation_rebuild;
 mod intent;
 mod journal;
 mod model;
 mod operation;
+mod phase6;
 mod projection;
 pub mod protected_journal;
 pub(crate) mod protected_journal_adapter;
@@ -31,6 +35,9 @@ mod semantic;
 mod semantic_digest;
 mod semantic_format;
 mod snapshot;
+mod snapshot_availability;
+mod snapshot_barrier;
+mod suspension;
 mod verification;
 
 pub use attempt::{
@@ -45,6 +52,28 @@ pub use auxiliary_payload::{
     LifecycleAuxiliaryPayloadV1, MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES,
     decode_lifecycle_auxiliary_payload_v1, encode_lifecycle_auxiliary_payload_v1,
 };
+pub use boot_reconcile::{
+    CurrentLifecycleBootDomainInventoriesV1, LifecycleAuthenticatedAtomicStorageSuccessorV1,
+    LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+    LifecycleAuthenticatedBrokerDomainInventorySuccessorV1,
+    LifecycleAuthenticatedBrokerDomainInventoryV1,
+    LifecycleAuthenticatedRuntimeInventoryBootstrapV1,
+    LifecycleAuthenticatedRuntimeInventorySuccessorV1, LifecycleAuthenticatedRuntimeInventoryV1,
+    LifecycleAuthenticatedStorageInventoryBootstrapV1,
+    LifecycleAuthenticatedStorageInventorySuccessorV1, LifecycleAuthenticatedStorageInventoryV1,
+    LifecycleAuthenticatedStorageReadbackV1, LifecycleAuthenticatedTransferInventoryV1,
+    LifecycleBootBootstrapEndpointV1, LifecycleBootDomainEntryV1, LifecycleBootDomainInventoryV1,
+    LifecycleBootDomainV1, LifecycleBootInventoryBootstrapChallengeV1, LifecycleBootReconcilerV1,
+    LifecycleBootRecoveryActionV1, LifecycleBootRecoveryStepV1, LifecycleBootResourceObservationV1,
+    LifecycleBootResourceStateV1, LifecycleStorageInventoryEntryV1,
+    LifecycleStorageInventoryKindV1, LifecycleStorageTransitionEntryV1,
+    LifecycleStorageTransitionKindV1,
+};
+pub(crate) use boot_reconcile::{
+    LifecycleAuthenticatedBootDesiredV1, LifecycleBootInventoryBootstrapSourceV1,
+    LifecycleBootInventoryRefreshSourceV1, LifecycleFreshPhysicalInventoryV1,
+    fresh_physical_inventory,
+};
 pub use cancel::{
     LifecycleCancelIdempotencyDigestV1, LifecycleCancelIdempotencyIndexV1,
     LifecycleCancelOutcomeV1, LifecycleCancelRequestV1, LifecycleCancellationRecordV1,
@@ -54,9 +83,14 @@ pub use coordination::{
     LifecycleBootInventoryDigestV1, LifecycleBootInventoryDomainsV1, LifecycleBootInventoryV1,
     LifecycleControllerDependencySnapshotV1, LifecycleCoordinationPhaseV1,
     LifecycleCoordinationTransactionV1, LifecycleDatasetTransactionDigestV1,
-    LifecycleQuiesceDigestV1, LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerReceiptV1,
-    LifecycleRetentionLedgerV1, LifecycleRetentionPurposeV1, LifecycleSuspendObservationDigestV1,
+    LifecycleProtectedRetentionAcknowledgementV1, LifecycleQuiesceDigestV1,
+    LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerReceiptV1, LifecycleRetentionLedgerV1,
+    LifecycleRetentionPurposeV1, LifecycleSuspendObservationDigestV1,
     LifecycleSuspendObservationV1, LifecycleThawCompensationDigestV1, LifecycleWriterFenceDigestV1,
+};
+pub use deletion::{
+    LifecycleDeletionActionV1, LifecycleDeletionObservationV1, LifecycleDeletionPlanV1,
+    LifecycleDeletionReceiptV1,
 };
 pub use durable::{
     LifecycleAtomicJoinDigestV1, LifecycleAuxiliaryCheckpointV1, LifecycleAuxiliaryHistoryV1,
@@ -80,6 +114,10 @@ pub use idempotency::{
     LifecycleIdempotencyBindingV1, LifecycleIdempotencyIndexV1, LifecycleIdempotencyResolutionV1,
     LifecycleIdempotencyScopeV1, MAXIMUM_LIFECYCLE_IDEMPOTENCY_BINDINGS,
 };
+pub use incarnation_rebuild::{
+    LifecycleAttachmentReconstructionV1, LifecycleIncarnationRebuildV1,
+    LifecyclePolicyIntersectionV1, LifecycleRebuildActionV1, LifecycleRebuildModeV1,
+};
 pub use intent::{
     DesiredStateCasV1, DesiredStateFenceV1, LifecycleFailureClassV1, LifecycleFailureV1,
     LifecycleIntentV1, LifecycleMethodV1, LifecycleResourceV1, LifecycleResumeSourceV1,
@@ -102,10 +140,26 @@ pub use model::{
     LifecycleStepV1, LifecycleTerminalResultV1, MAXIMUM_LIFECYCLE_EXPECTATIONS,
     MAXIMUM_LIFECYCLE_STEPS,
 };
+pub(crate) use phase6::LifecycleEffectRequestV1;
+pub use phase6::{
+    CurrentLifecycleBootInventoryV1, CurrentLifecycleCoordinationV1, CurrentLifecycleEffectV1,
+    CurrentLifecycleOperationV1, CurrentLifecycleRetentionLedgerV1,
+    CurrentLifecycleRuntimeLivenessV1, CurrentLifecycleSuspendObservationV1,
+    CurrentLifecycleTargetAssignmentV1, LifecycleAuthenticatedBrokerEffectV1,
+    LifecycleDeferredEffectCursorV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
+    LifecycleMethodCompletionV1, LifecycleMethodPlanV1, LifecyclePersistedEffectCursorV1,
+    LifecyclePhase6ErrorV1, lifecycle_phase6_effect_body_commitment_v1,
+    lifecycle_phase6_plan_commitment_v1,
+};
 pub use projection::{
     LifecycleModelError, LifecycleOperationClaimV1, LifecycleTerminalProjectionV1,
 };
-pub use protected_owner::LifecycleProtectedJournalOwnerV1;
+pub use protected_journal::AppliedLifecycleJournalTransactionV1;
+pub use protected_owner::{
+    LifecycleCurrentAuxiliaryPublicationV1, LifecycleProgressCommitOutcomeV1,
+    LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,
+    LifecycleProtectedJournalOwnerV1, PreparedLifecycleProgressV1,
+};
 pub use recovery::{LifecycleRecoveryActionV1, classify_operation_recovery_v1};
 pub use semantic::{
     LifecycleAssignmentCommitFactV1, LifecycleAuthoritativeSemanticCommitV1,
@@ -117,4 +171,19 @@ pub use semantic::{
     LifecycleSnapshotRetentionReleaseV1, LifecycleTransactionIdV1,
 };
 pub use snapshot::{LifecycleSnapshotTombstoneDigestV1, LifecycleValidatedSnapshotV1};
+pub use snapshot_availability::{
+    LifecycleExternalAvailabilityEvidenceV1, LifecycleExternalAvailabilityProviderV1,
+    LifecycleSecretIssuerAvailabilityV1, LifecycleSecretIssuerTrustOwnerV1,
+    LifecycleServiceCheckpointAvailabilityV1, LifecycleServiceCheckpointTrustOwnerV1,
+    LifecycleSnapshotAvailabilityContractV1, LifecycleSnapshotAvailabilityModeV1,
+    LifecycleSnapshotDependencyClassV1, LifecycleSnapshotDependencyV1,
+    LifecycleSnapshotTransferJoinV1,
+};
+pub use snapshot_barrier::{
+    LifecycleAtomicDatasetSnapshotMemberV1, LifecycleAtomicDatasetSnapshotPlanV1,
+    LifecycleSnapshotBarrierActionV1, LifecycleSnapshotBarrierV1,
+};
+pub use suspension::{
+    LifecycleSuspensionActionV1, LifecycleSuspensionModeV1, LifecycleSuspensionPlanV1,
+};
 pub use verification::LifecycleReplayVerificationV1;

@@ -453,6 +453,19 @@ pub struct ProtectedNetworkTransactionV1 {
 }
 
 impl ProtectedNetworkTransactionV1 {
+    pub(crate) fn commitment(
+        registry: &ExternalIngressRegistryV1,
+        registry_currentness: ProtectedCurrentnessWitnessV1,
+        quota: &ProtectedNetworkQuotaV1,
+    ) -> ObjectDigest {
+        transaction_digest(
+            registry.digest(),
+            registry_currentness,
+            quota.digest(),
+            quota.currentness(),
+        )
+    }
+
     pub(crate) fn mint(
         registry: &ExternalIngressRegistryV1,
         registry_currentness: ProtectedCurrentnessWitnessV1,
@@ -460,12 +473,7 @@ impl ProtectedNetworkTransactionV1 {
         currentness: ProtectedCurrentnessWitnessV1,
     ) -> Result<Self, AdvancedNetworkPolicyError> {
         let quota_currentness = quota.currentness();
-        let commitment = transaction_digest(
-            registry.digest(),
-            registry_currentness,
-            quota.digest(),
-            quota_currentness,
-        );
+        let commitment = Self::commitment(registry, registry_currentness, quota);
         if registry_currentness.purpose() != ProtectedWitnessPurposeV1::IngressRegistry
             || registry_currentness.record_digest() != registry.digest()
             || quota_currentness.purpose() != ProtectedWitnessPurposeV1::Quota
@@ -584,7 +592,11 @@ impl ProtectedNetworkQuotaV1 {
         projects: Vec<ProjectNetworkUsageV1>,
         currentness: ProtectedCurrentnessWitnessV1,
     ) -> Result<Self, AdvancedNetworkPolicyError> {
-        if projects.len() > MAXIMUM_PROJECT_ACCOUNTS || !super::strictly_increasing(&projects) {
+        if projects.len() > MAXIMUM_PROJECT_ACCOUNTS
+            || projects
+                .windows(2)
+                .any(|pair| pair[0].project() >= pair[1].project())
+        {
             return Err(AdvancedNetworkPolicyError::NonCanonical);
         }
         let mut node = NetworkPolicyUsageV1::default();
@@ -656,6 +668,45 @@ impl ProtectedNetworkQuotaV1 {
             projects,
             next_currentness,
         )
+    }
+
+    pub(crate) fn reserve_candidate_from_protected_owner(
+        &self,
+        project: ProjectId,
+        candidate: NetworkPolicyUsageV1,
+        mint: impl FnOnce(
+            ObjectDigest,
+        ) -> Result<ProtectedCurrentnessWitnessV1, AdvancedNetworkPolicyError>,
+    ) -> Result<Self, AdvancedNetworkPolicyError> {
+        if project.as_bytes() == &[0; 16] {
+            return Err(AdvancedNetworkPolicyError::StaleAuthority);
+        }
+        let mut projects = self.projects.clone();
+        if projects.iter().any(|row| row.reservation_present) {
+            return Err(AdvancedNetworkPolicyError::InvalidTransition);
+        }
+        match projects.binary_search_by_key(&project, ProjectNetworkUsageV1::project) {
+            Ok(index) => {
+                projects[index].reserved = candidate;
+                projects[index].reservation_present = true;
+            }
+            Err(index) => {
+                if projects.len() == MAXIMUM_PROJECT_ACCOUNTS {
+                    return Err(AdvancedNetworkPolicyError::QuotaExceeded);
+                }
+                projects.insert(
+                    index,
+                    ProjectNetworkUsageV1 {
+                        project,
+                        active: NetworkPolicyUsageV1::default(),
+                        reserved: candidate,
+                        reservation_present: true,
+                    },
+                );
+            }
+        }
+        let digest = aggregate_digest(self.project_limit, self.node_limit, &projects);
+        Self::new(self.project_limit, self.node_limit, projects, mint(digest)?)
     }
 
     /// Returns the protected aggregate commitment.
@@ -854,6 +905,32 @@ impl ProtectedNetworkQuotaV1 {
         )
     }
 
+    pub(crate) fn commit_replacement_from_protected_owner(
+        &self,
+        project: ProjectId,
+        predecessor: NetworkPolicyUsageV1,
+        candidate: NetworkPolicyUsageV1,
+        mint: impl FnOnce(
+            ObjectDigest,
+        ) -> Result<ProtectedCurrentnessWitnessV1, AdvancedNetworkPolicyError>,
+    ) -> Result<Self, AdvancedNetworkPolicyError> {
+        if !self.contains_reservation(project, candidate) {
+            return Err(AdvancedNetworkPolicyError::StaleAuthority);
+        }
+        let mut projects = self.projects.clone();
+        let index = projects
+            .binary_search_by_key(&project, ProjectNetworkUsageV1::project)
+            .map_err(|_| AdvancedNetworkPolicyError::QuotaExceeded)?;
+        projects[index].active = projects[index]
+            .active
+            .checked_sub(predecessor)?
+            .checked_add(candidate)?;
+        projects[index].reserved = NetworkPolicyUsageV1::default();
+        projects[index].reservation_present = false;
+        let digest = aggregate_digest(self.project_limit, self.node_limit, &projects);
+        Self::new(self.project_limit, self.node_limit, projects, mint(digest)?)
+    }
+
     /// Releases one exact protected candidate reservation without changing active use.
     ///
     /// # Errors
@@ -883,6 +960,27 @@ impl ProtectedNetworkQuotaV1 {
             projects,
             next_currentness,
         )
+    }
+
+    pub(crate) fn rollback_reservation_from_protected_owner(
+        &self,
+        project: ProjectId,
+        candidate: NetworkPolicyUsageV1,
+        mint: impl FnOnce(
+            ObjectDigest,
+        ) -> Result<ProtectedCurrentnessWitnessV1, AdvancedNetworkPolicyError>,
+    ) -> Result<Self, AdvancedNetworkPolicyError> {
+        if !self.contains_reservation(project, candidate) {
+            return Err(AdvancedNetworkPolicyError::StaleAuthority);
+        }
+        let mut projects = self.projects.clone();
+        let index = projects
+            .binary_search_by_key(&project, ProjectNetworkUsageV1::project)
+            .map_err(|_| AdvancedNetworkPolicyError::QuotaExceeded)?;
+        projects[index].reserved = NetworkPolicyUsageV1::default();
+        projects[index].reservation_present = false;
+        let digest = aggregate_digest(self.project_limit, self.node_limit, &projects);
+        Self::new(self.project_limit, self.node_limit, projects, mint(digest)?)
     }
 }
 

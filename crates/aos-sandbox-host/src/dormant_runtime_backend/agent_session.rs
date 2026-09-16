@@ -38,6 +38,10 @@ impl SignedAgentOutcomeV1 {
     pub const fn new(outcome: AgentExecutionOutcomeV1, signature: [u8; 64]) -> Self {
         Self { outcome, signature }
     }
+
+    pub(super) fn into_parts(self) -> (AgentExecutionOutcomeV1, [u8; 64]) {
+        (self.outcome, self.signature)
+    }
 }
 
 /// Owns one outcome authenticated for the exact outstanding channel request.

@@ -71,6 +71,36 @@ pub struct AuthorizedPublicationRoot<'custody> {
 }
 
 impl PublicationRootCustody {
+    /// Pairs a fixed protected-owner recovery root without live session authority.
+    ///
+    /// This constructor is crate-private and is called only while an opaque
+    /// protected executor-fence claim is consumed. The recovery commitment is
+    /// retained as the boot-incarnation custody key and grants observation, not
+    /// new admission.
+    pub(crate) fn pair_fixed_recovery(
+        registry: &mut PublicationRootRegistry,
+        root_id: PublicationRootId,
+        expected_record_digest: ObjectDigest,
+        root: FsVerityPublicationRoot,
+        recovery_commitment: ObjectDigest,
+    ) -> Result<Self, RootObservationError> {
+        let record = registry.active(root_id)?.clone();
+        if record.record_digest != expected_record_digest
+            || recovery_commitment.as_bytes() == &[0; 32]
+            || record.filesystem_profile != PublicationFilesystemProfileV1::FsVeritySha256NoReplace
+        {
+            return Err(RootObservationError::ServiceMismatch);
+        }
+        root.recheck_protected_path()
+            .map_err(|_| RootObservationError::ServiceMismatch)?;
+        registry.retain_custody(root_id, recovery_commitment)?;
+        Ok(Self {
+            root,
+            record,
+            boot_commitment: recovery_commitment,
+        })
+    }
+
     /// Pairs one already mechanically protected descriptor with registry state.
     ///
     /// # Errors
@@ -172,6 +202,16 @@ impl PublicationRootCustody {
     #[must_use]
     pub const fn root_id(&self) -> PublicationRootId {
         self.record.root_id
+    }
+
+    /// Borrows the fixed Linux mechanics retained by this authenticated custody.
+    pub(crate) const fn mechanics(&self) -> &FsVerityPublicationRoot {
+        &self.root
+    }
+
+    /// Borrows the exact protected record paired with this custody.
+    pub(crate) const fn record(&self) -> &PublicationRootRecordV1 {
+        &self.record
     }
 
     /// Releases this exact live custody from the registry retirement guard.

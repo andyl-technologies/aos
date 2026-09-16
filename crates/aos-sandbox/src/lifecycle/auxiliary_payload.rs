@@ -31,6 +31,15 @@ use super::{
 /// Maximum canonical bytes retained by one auxiliary payload.
 pub const MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 
+/// Selects the historical payload shape authenticated by an outer envelope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LifecycleAuxiliaryPayloadLayoutV1 {
+    /// Pre-host-boot payloads emitted by `AOSLIFA3` version 1.
+    LegacyWithoutHostBoot,
+    /// Current payloads emitted by `AOSLIFA4` version 2.
+    Current,
+}
+
 /// Stores one complete reconstructing lifecycle auxiliary value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LifecycleAuxiliaryPayloadV1 {
@@ -155,6 +164,7 @@ pub fn encode_lifecycle_auxiliary_payload_v1(
             bytes.extend_from_slice(&value.operation_revision().get().to_be_bytes());
             bytes.extend_from_slice(value.operation_record().digest().as_bytes());
             encode_live_fence(&mut bytes, value.fence());
+            bytes.extend_from_slice(&value.host_boot());
             bytes.extend_from_slice(value.observation().digest().as_bytes());
             bytes.extend_from_slice(&value.observed_at().get().to_be_bytes());
         }
@@ -165,6 +175,7 @@ pub fn encode_lifecycle_auxiliary_payload_v1(
             bytes.extend_from_slice(&value.step().to_be_bytes());
             bytes.extend_from_slice(value.step_result().digest().as_bytes());
             encode_live_fence(&mut bytes, value.fence());
+            bytes.extend_from_slice(&value.host_boot());
             for digest in [
                 value.domains().runtime(),
                 value.domains().mounts(),
@@ -246,12 +257,12 @@ fn payload_encoded_length(
             .len()
             .checked_mul(66)
             .and_then(|entries| 52_usize.checked_add(entries)),
-        LifecycleAuxiliaryPayloadV1::SuspendObservation(_) => Some(200),
+        LifecycleAuxiliaryPayloadV1::SuspendObservation(_) => Some(216),
         LifecycleAuxiliaryPayloadV1::BootInventory(value) => value
             .resources()
             .len()
             .checked_mul(17)
-            .and_then(|resources| 432_usize.checked_add(resources)),
+            .and_then(|resources| 448_usize.checked_add(resources)),
         LifecycleAuxiliaryPayloadV1::Cancellation(value) => {
             encode_operation_record_v1(value.operation())?
                 .len()
@@ -273,10 +284,29 @@ pub fn decode_lifecycle_auxiliary_payload_v1(
     kind: LifecycleAuxiliaryKindV1,
     encoded: &[u8],
 ) -> Result<LifecycleAuxiliaryPayloadV1, LifecycleModelError> {
+    if preflight(kind, encoded, LifecycleAuxiliaryPayloadLayoutV1::Current).is_ok() {
+        return decode_lifecycle_auxiliary_payload_with_layout_v1(
+            kind,
+            encoded,
+            LifecycleAuxiliaryPayloadLayoutV1::Current,
+        );
+    }
+    decode_lifecycle_auxiliary_payload_with_layout_v1(
+        kind,
+        encoded,
+        LifecycleAuxiliaryPayloadLayoutV1::LegacyWithoutHostBoot,
+    )
+}
+
+pub(crate) fn decode_lifecycle_auxiliary_payload_with_layout_v1(
+    kind: LifecycleAuxiliaryKindV1,
+    encoded: &[u8],
+    layout: LifecycleAuxiliaryPayloadLayoutV1,
+) -> Result<LifecycleAuxiliaryPayloadV1, LifecycleModelError> {
     if encoded.is_empty() || encoded.len() > MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES {
         return Err(LifecycleModelError::CorruptEncoding);
     }
-    preflight(kind, encoded)?;
+    preflight(kind, encoded, layout)?;
     let mut bytes = encoded;
     let payload = match kind {
         LifecycleAuxiliaryKindV1::Operation => {
@@ -388,20 +418,38 @@ pub fn decode_lifecycle_auxiliary_payload_v1(
             )
         }
         LifecycleAuxiliaryKindV1::SuspendObservation => {
-            LifecycleAuxiliaryPayloadV1::SuspendObservation(
-                LifecycleSuspendObservationV1::from_stored(
-                    OperationId::from_bytes(take(&mut bytes)?),
-                    Revision::new(u64::from_be_bytes(take(&mut bytes)?)),
-                    LifecycleRecordDigestV1::from_stored(ObjectDigest::from_bytes(take(
-                        &mut bytes,
-                    )?))?,
-                    decode_live_fence(&mut bytes)?,
-                    LifecycleSuspendObservationDigestV1::from_stored(ObjectDigest::from_bytes(
-                        take(&mut bytes)?,
-                    ))?,
-                    LifecycleTimeV1::from_stored(u64::from_be_bytes(take(&mut bytes)?))?,
+            let operation = OperationId::from_bytes(take(&mut bytes)?);
+            let operation_revision = Revision::new(u64::from_be_bytes(take(&mut bytes)?));
+            let operation_record =
+                LifecycleRecordDigestV1::from_stored(ObjectDigest::from_bytes(take(&mut bytes)?))?;
+            let fence = decode_live_fence(&mut bytes)?;
+            let host_boot = (layout == LifecycleAuxiliaryPayloadLayoutV1::Current)
+                .then(|| take(&mut bytes))
+                .transpose()?;
+            let observation = LifecycleSuspendObservationDigestV1::from_stored(
+                ObjectDigest::from_bytes(take(&mut bytes)?),
+            )?;
+            let observed_at = LifecycleTimeV1::from_stored(u64::from_be_bytes(take(&mut bytes)?))?;
+            let observation = match host_boot {
+                Some(host_boot) => LifecycleSuspendObservationV1::from_stored(
+                    operation,
+                    operation_revision,
+                    operation_record,
+                    fence,
+                    host_boot,
+                    observation,
+                    observed_at,
                 )?,
-            )
+                None => LifecycleSuspendObservationV1::from_legacy_stored(
+                    operation,
+                    operation_revision,
+                    operation_record,
+                    fence,
+                    observation,
+                    observed_at,
+                )?,
+            };
+            LifecycleAuxiliaryPayloadV1::SuspendObservation(observation)
         }
         LifecycleAuxiliaryKindV1::BootInventory => {
             let operation = OperationId::from_bytes(take(&mut bytes)?);
@@ -413,6 +461,9 @@ pub fn decode_lifecycle_auxiliary_payload_v1(
                 take(&mut bytes)?,
             ))?;
             let fence = decode_live_fence(&mut bytes)?;
+            let host_boot = (layout == LifecycleAuxiliaryPayloadLayoutV1::Current)
+                .then(|| take(&mut bytes))
+                .transpose()?;
             let domains = super::LifecycleBootInventoryDomainsV1::new(
                 ObjectDigest::from_bytes(take(&mut bytes)?),
                 ObjectDigest::from_bytes(take(&mut bytes)?),
@@ -430,20 +481,38 @@ pub fn decode_lifecycle_auxiliary_payload_v1(
             for _ in 0..count {
                 resources.push(decode_resource(&mut bytes)?);
             }
-            LifecycleAuxiliaryPayloadV1::BootInventory(LifecycleBootInventoryV1::new(
-                operation,
-                operation_revision,
-                operation_record,
-                step,
-                step_result,
-                fence,
-                domains,
-                resources,
-                LifecycleBootInventoryDigestV1::from_stored(ObjectDigest::from_bytes(take(
-                    &mut bytes,
-                )?))?,
-                LifecycleTimeV1::from_stored(u64::from_be_bytes(take(&mut bytes)?))?,
-            )?)
+            let inventory = LifecycleBootInventoryDigestV1::from_stored(ObjectDigest::from_bytes(
+                take(&mut bytes)?,
+            ))?;
+            let observed_at = LifecycleTimeV1::from_stored(u64::from_be_bytes(take(&mut bytes)?))?;
+            let inventory = match host_boot {
+                Some(host_boot) => LifecycleBootInventoryV1::new(
+                    operation,
+                    operation_revision,
+                    operation_record,
+                    step,
+                    step_result,
+                    fence,
+                    host_boot,
+                    domains,
+                    resources,
+                    inventory,
+                    observed_at,
+                )?,
+                None => LifecycleBootInventoryV1::from_legacy_stored(
+                    operation,
+                    operation_revision,
+                    operation_record,
+                    step,
+                    step_result,
+                    fence,
+                    domains,
+                    resources,
+                    inventory,
+                    observed_at,
+                )?,
+            };
+            LifecycleAuxiliaryPayloadV1::BootInventory(inventory)
         }
         LifecycleAuxiliaryKindV1::Cancellation => {
             let request = LifecycleCancelRequestV1::new(
@@ -462,7 +531,9 @@ pub fn decode_lifecycle_auxiliary_payload_v1(
                 return Err(LifecycleModelError::CorruptEncoding);
             }
             let length = read_length(&mut bytes)?;
-            let operation = decode_operation_record_v1(take_slice(&mut bytes, length)?)?;
+            let operation_bytes = take_slice(&mut bytes, length)?;
+            let operation = decode_operation_record_v1(operation_bytes)?;
+            let operation_record = super::format::record_digest(operation_bytes)?;
             let outcome = match outcome_kind {
                 1 => LifecycleCancelOutcomeV1::CanceledBeforeCommit(operation.clone()),
                 2 => LifecycleCancelOutcomeV1::AlreadyCommitted(
@@ -479,8 +550,13 @@ pub fn decode_lifecycle_auxiliary_payload_v1(
                 _ => return Err(LifecycleModelError::CorruptEncoding),
             };
             LifecycleAuxiliaryPayloadV1::Cancellation(
-                LifecycleCancellationRecordV1::new(request, operation, outcome)
-                    .map_err(|_| LifecycleModelError::CorruptEncoding)?,
+                LifecycleCancellationRecordV1::from_stored(
+                    request,
+                    operation,
+                    outcome,
+                    operation_record,
+                )
+                .map_err(|_| LifecycleModelError::CorruptEncoding)?,
             )
         }
     };
@@ -490,7 +566,11 @@ pub fn decode_lifecycle_auxiliary_payload_v1(
     Ok(payload)
 }
 
-fn preflight(kind: LifecycleAuxiliaryKindV1, encoded: &[u8]) -> Result<(), LifecycleModelError> {
+fn preflight(
+    kind: LifecycleAuxiliaryKindV1,
+    encoded: &[u8],
+    layout: LifecycleAuxiliaryPayloadLayoutV1,
+) -> Result<(), LifecycleModelError> {
     let mut bytes = encoded;
     match kind {
         LifecycleAuxiliaryKindV1::Operation => {
@@ -533,10 +613,21 @@ fn preflight(kind: LifecycleAuxiliaryKindV1, encoded: &[u8]) -> Result<(), Lifec
             )?;
         }
         LifecycleAuxiliaryKindV1::SuspendObservation => {
-            take_slice(&mut bytes, 16 + 8 + 32 + 104 + 32 + 8)?;
+            let host_boot_bytes = match layout {
+                LifecycleAuxiliaryPayloadLayoutV1::LegacyWithoutHostBoot => 0,
+                LifecycleAuxiliaryPayloadLayoutV1::Current => 16,
+            };
+            take_slice(&mut bytes, 16 + 8 + 32 + 104 + host_boot_bytes + 32 + 8)?;
         }
         LifecycleAuxiliaryKindV1::BootInventory => {
-            take_slice(&mut bytes, 16 + 8 + 32 + 4 + 32 + 104 + 32 * 6)?;
+            let host_boot_bytes = match layout {
+                LifecycleAuxiliaryPayloadLayoutV1::LegacyWithoutHostBoot => 0,
+                LifecycleAuxiliaryPayloadLayoutV1::Current => 16,
+            };
+            take_slice(
+                &mut bytes,
+                16 + 8 + 32 + 4 + 32 + 104 + host_boot_bytes + 32 * 6,
+            )?;
             let count = read_count(&mut bytes)?;
             take_slice(
                 &mut bytes,

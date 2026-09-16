@@ -264,6 +264,13 @@ impl SandboxMetricNameV1 {
         }
     }
 
+    pub(crate) fn from_stable_name(value: &str) -> Option<Self> {
+        ALL_SANDBOX_METRIC_NAMES_V1
+            .iter()
+            .copied()
+            .find(|name| name.as_str() == value)
+    }
+
     /// Returns the required numeric interpretation for this family.
     #[must_use]
     pub const fn value_kind(self) -> MetricValueKindV1 {
@@ -385,6 +392,84 @@ impl SandboxMetricNameV1 {
         )
     }
 }
+
+const ALL_SANDBOX_METRIC_NAMES_V1: &[SandboxMetricNameV1] = &[
+    SandboxMetricNameV1::SandboxResources,
+    SandboxMetricNameV1::Executions,
+    SandboxMetricNameV1::ReconcileAttempts,
+    SandboxMetricNameV1::ReconcileDuration,
+    SandboxMetricNameV1::ReconcileConflicts,
+    SandboxMetricNameV1::FencingFailures,
+    SandboxMetricNameV1::ResidualResources,
+    SandboxMetricNameV1::LeaseRenewalMargin,
+    SandboxMetricNameV1::GuardianContainmentLatency,
+    SandboxMetricNameV1::StaleCleanupDenials,
+    SandboxMetricNameV1::CreateToReadyLatency,
+    SandboxMetricNameV1::ExecutionStartLatency,
+    SandboxMetricNameV1::FreezeLatency,
+    SandboxMetricNameV1::SnapshotLatency,
+    SandboxMetricNameV1::ResumeLatency,
+    SandboxMetricNameV1::DeleteLatency,
+    SandboxMetricNameV1::NativeAttachments,
+    SandboxMetricNameV1::FuseAttachments,
+    SandboxMetricNameV1::AttachmentReplacementDuration,
+    SandboxMetricNameV1::AttachmentDetachDuration,
+    SandboxMetricNameV1::FuseRequests,
+    SandboxMetricNameV1::FuseQueueCongestion,
+    SandboxMetricNameV1::FuseErrors,
+    SandboxMetricNameV1::FuseForgets,
+    SandboxMetricNameV1::FuseOpenHandles,
+    SandboxMetricNameV1::FuseRegisteredBackingFiles,
+    SandboxMetricNameV1::FuseFallbackBytes,
+    SandboxMetricNameV1::FuseWorkerRestarts,
+    SandboxMetricNameV1::StructuralIndexMappedBytes,
+    SandboxMetricNameV1::StructuralIndexResidentBytes,
+    SandboxMetricNameV1::StructuralIndexNodesTouched,
+    SandboxMetricNameV1::StructuralIndexRebuilds,
+    SandboxMetricNameV1::CacheLogicalBytes,
+    SandboxMetricNameV1::CachePhysicalResidentBytes,
+    SandboxMetricNameV1::CacheResidencyProfileObjects,
+    SandboxMetricNameV1::CacheAuthorizationLeases,
+    SandboxMetricNameV1::CacheKernelPins,
+    SandboxMetricNameV1::CacheDuplicateAvoidance,
+    SandboxMetricNameV1::CacheEvictions,
+    SandboxMetricNameV1::CgroupCpuNanoseconds,
+    SandboxMetricNameV1::CgroupMemoryBytes,
+    SandboxMetricNameV1::CgroupSwapBytes,
+    SandboxMetricNameV1::CgroupIoBytes,
+    SandboxMetricNameV1::CgroupPids,
+    SandboxMetricNameV1::CgroupPressureNanoseconds,
+    SandboxMetricNameV1::CgroupOomEvents,
+    SandboxMetricNameV1::OperationCpuNanoseconds,
+    SandboxMetricNameV1::OperationMemoryBytes,
+    SandboxMetricNameV1::OperationPids,
+    SandboxMetricNameV1::OperationIoBytes,
+    SandboxMetricNameV1::OperationNetworkBytes,
+    SandboxMetricNameV1::OperationLogBytes,
+    SandboxMetricNameV1::OperationStagingBytes,
+    SandboxMetricNameV1::OperationCancellations,
+    SandboxMetricNameV1::OperationOutputBytes,
+    SandboxMetricNameV1::ZfsArcSizeBytes,
+    SandboxMetricNameV1::ZfsArcMetadataBytes,
+    SandboxMetricNameV1::ZfsArcDataBytes,
+    SandboxMetricNameV1::ZfsArcHits,
+    SandboxMetricNameV1::ZfsArcMisses,
+    SandboxMetricNameV1::ZfsArcDirtyBytes,
+    SandboxMetricNameV1::ZfsArcReclaims,
+    SandboxMetricNameV1::ZfsArcConfiguredMaximumBytes,
+    SandboxMetricNameV1::ZfsArcPressureNanoseconds,
+    SandboxMetricNameV1::ZfsReferencedBytes,
+    SandboxMetricNameV1::ZfsLogicalBytes,
+    SandboxMetricNameV1::ZfsQuotaFailures,
+    SandboxMetricNameV1::ZfsSnapshotHolds,
+    SandboxMetricNameV1::ZfsCloneLineageDepth,
+    SandboxMetricNameV1::ReconciliationNamespaceMismatches,
+    SandboxMetricNameV1::ReconciliationMountMismatches,
+    SandboxMetricNameV1::ReconciliationUnitMismatches,
+    SandboxMetricNameV1::ReconciliationDatasetMismatches,
+    SandboxMetricNameV1::ReconciliationLeaseMismatches,
+    SandboxMetricNameV1::ReconciliationAllocationMismatches,
+];
 
 /// Identifies the closed numeric shape of a metric family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

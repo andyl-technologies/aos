@@ -13,8 +13,9 @@ use std::fs::File;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
 use super::{
-    FsVerityPublicationRoot, PrivateIdentity, PublicationName, SealedPrivateFile, inspect_private,
-    inspect_root, is_kernel_verity_filesystem, sha256_measurement, strict_resolution,
+    FsVerityPublicationRoot, PrivateIdentity, PublicationName, SealedPrivateFile,
+    inspect_allocated_bytes, inspect_private, inspect_root, is_kernel_verity_filesystem,
+    sha256_measurement, strict_resolution,
 };
 use crate::Error;
 use crate::uapi::{self, OpenHow};
@@ -88,10 +89,11 @@ pub struct AmbiguousNamedSealedFile<'root> {
     private_name: PublicationName,
     final_name: PublicationName,
     identity: PrivateIdentity,
+    allocated_bytes: u64,
     verity: super::FsVerityDigest,
 }
 
-impl AmbiguousNamedSealedFile<'_> {
+impl<'root> AmbiguousNamedSealedFile<'root> {
     /// Returns the name used before the rename attempt.
     #[must_use]
     pub fn private_name(&self) -> &PublicationName {
@@ -110,10 +112,42 @@ impl AmbiguousNamedSealedFile<'_> {
         self.identity.bytes
     }
 
+    /// Returns the allocated resident bytes reported for the pinned inode.
+    #[must_use]
+    pub const fn allocated_bytes(&self) -> u64 {
+        self.allocated_bytes
+    }
+
     /// Returns the measured seal creation evidence.
     #[must_use]
     pub const fn verity_digest(&self) -> super::FsVerityDigest {
         self.verity
+    }
+
+    /// Resolves an indeterminate rename only when the exact final inode is durable.
+    ///
+    /// The recovery rechecks the pinned inode, both names, and both retained
+    /// roots, synchronizes the required parent directories, then repeats every
+    /// check. It never retries the rename or adopts a different destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an after-rename failure retaining the pinned inode when exact
+    /// final-name durability cannot be established.
+    pub fn recover_durable_final(
+        self,
+    ) -> Result<DurablyNamedSealedFile<'root>, NoReplacePublicationError<'root>> {
+        let renamed = RenamedSealedFile {
+            file: self.file,
+            staging_root: self._staging_root,
+            final_root: self._final_root,
+            private_name: self.private_name,
+            final_name: self.final_name,
+            identity: self.identity,
+            allocated_bytes: self.allocated_bytes,
+            verity: self.verity,
+        };
+        finish_renamed_durability(renamed)
     }
 }
 
@@ -143,10 +177,11 @@ pub struct RenamedSealedFile<'root> {
     private_name: PublicationName,
     final_name: PublicationName,
     identity: PrivateIdentity,
+    allocated_bytes: u64,
     verity: super::FsVerityDigest,
 }
 
-impl RenamedSealedFile<'_> {
+impl<'root> RenamedSealedFile<'root> {
     /// Returns the name from which the inode was renamed.
     #[must_use]
     pub fn private_name(&self) -> &PublicationName {
@@ -165,10 +200,28 @@ impl RenamedSealedFile<'_> {
         self.identity.bytes
     }
 
+    /// Returns the allocated resident bytes reported for the pinned inode.
+    #[must_use]
+    pub const fn allocated_bytes(&self) -> u64 {
+        self.allocated_bytes
+    }
+
     /// Returns the measured seal creation evidence.
     #[must_use]
     pub const fn verity_digest(&self) -> super::FsVerityDigest {
         self.verity
+    }
+
+    /// Repeats exact post-rename validation and parent synchronization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an after-rename failure retaining the pinned inode when the
+    /// exact final name, roots, seal, or directory synchronization differs.
+    pub fn recover_durability(
+        self,
+    ) -> Result<DurablyNamedSealedFile<'root>, NoReplacePublicationError<'root>> {
+        finish_renamed_durability(self)
     }
 }
 
@@ -197,6 +250,7 @@ pub struct DurablyNamedSealedFile<'root> {
     _final_root: &'root FsVerityPublicationRoot,
     final_name: PublicationName,
     identity: PrivateIdentity,
+    allocated_bytes: u64,
     verity: super::FsVerityDigest,
 }
 
@@ -211,6 +265,12 @@ impl DurablyNamedSealedFile<'_> {
     #[must_use]
     pub const fn bytes(&self) -> u64 {
         self.identity.bytes
+    }
+
+    /// Returns the allocated resident bytes reported for the pinned inode.
+    #[must_use]
+    pub const fn allocated_bytes(&self) -> u64 {
+        self.allocated_bytes
     }
 
     /// Returns the session-local device number.
@@ -381,18 +441,26 @@ fn publish_noreplace<'root>(
     }
 
     let renamed = RenamedSealedFile::from_private(private, final_root, final_name);
-    let after_rename = match layout {
-        PublicationLayout::SameDirectory => run_after_rename(
+    finish_renamed_durability(renamed)
+}
+
+fn finish_renamed_durability<'root>(
+    renamed: RenamedSealedFile<'root>,
+) -> Result<DurablyNamedSealedFile<'root>, NoReplacePublicationError<'root>> {
+    let same_root = renamed.staging_root.identity == renamed.final_root.identity;
+    let after_rename = if same_root {
+        run_after_rename(
             || validate_renamed(&renamed),
             || uapi::fsync(renamed.final_root.directory.as_fd()).map_err(MechanicsFailure::Linux),
             || validate_renamed(&renamed),
-        ),
-        PublicationLayout::DistinctDirectories => run_after_cross_directory_rename(
+        )
+    } else {
+        run_after_cross_directory_rename(
             || validate_renamed(&renamed),
             || uapi::fsync(renamed.final_root.directory.as_fd()).map_err(MechanicsFailure::Linux),
             || uapi::fsync(renamed.staging_root.directory.as_fd()).map_err(MechanicsFailure::Linux),
             || validate_renamed(&renamed),
-        ),
+        )
     };
     if let Err((step, failure)) = after_rename {
         return Err(NoReplacePublicationError::AfterRename {
@@ -400,7 +468,6 @@ fn publish_noreplace<'root>(
             renamed: Box::new(renamed),
         });
     }
-
     Ok(renamed.into_durable())
 }
 
@@ -423,6 +490,7 @@ impl<'root> AmbiguousNamedSealedFile<'root> {
             private_name: private.name,
             final_name,
             identity: private.identity,
+            allocated_bytes: private.allocated_bytes,
             verity: private.verity,
         }
     }
@@ -441,6 +509,7 @@ impl<'root> RenamedSealedFile<'root> {
             private_name: private.name,
             final_name,
             identity: private.identity,
+            allocated_bytes: private.allocated_bytes,
             verity: private.verity,
         }
     }
@@ -452,6 +521,7 @@ impl<'root> RenamedSealedFile<'root> {
             _final_root: self.final_root,
             final_name: self.final_name,
             identity: self.identity,
+            allocated_bytes: self.allocated_bytes,
             verity: self.verity,
         }
     }
@@ -469,11 +539,17 @@ fn before<'root>(
 
 fn validate_private(private: &SealedPrivateFile<'_>) -> Result<(), MechanicsFailure> {
     validate_root(private.root)?;
-    validate_pinned(private.file.as_fd(), private.identity, private.verity)?;
+    validate_pinned(
+        private.file.as_fd(),
+        private.identity,
+        private.allocated_bytes,
+        private.verity,
+    )?;
     validate_named(
         private.root,
         &private.name,
         private.identity,
+        private.allocated_bytes,
         private.verity,
     )
 }
@@ -481,11 +557,17 @@ fn validate_private(private: &SealedPrivateFile<'_>) -> Result<(), MechanicsFail
 fn validate_renamed(renamed: &RenamedSealedFile<'_>) -> Result<(), MechanicsFailure> {
     validate_root(renamed.staging_root)?;
     validate_root(renamed.final_root)?;
-    validate_pinned(renamed.file.as_fd(), renamed.identity, renamed.verity)?;
+    validate_pinned(
+        renamed.file.as_fd(),
+        renamed.identity,
+        renamed.allocated_bytes,
+        renamed.verity,
+    )?;
     validate_named(
         renamed.final_root,
         &renamed.final_name,
         renamed.identity,
+        renamed.allocated_bytes,
         renamed.verity,
     )?;
     require_absent(renamed.staging_root, &renamed.private_name)
@@ -540,13 +622,17 @@ fn validate_root(root: &FsVerityPublicationRoot) -> Result<(), MechanicsFailure>
 fn validate_pinned(
     file: BorrowedFd<'_>,
     expected: PrivateIdentity,
+    allocated_bytes: u64,
     verity: super::FsVerityDigest,
 ) -> Result<(), MechanicsFailure> {
     let flags = uapi::get_status_flags(file).map_err(MechanicsFailure::Linux)?;
     if flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_PATH != 0 {
         return Err(MechanicsFailure::InodeInvariant);
     }
-    if observed_private(file)? != expected || observed_verity(file)? != verity {
+    if observed_private(file)? != expected
+        || observed_allocated_bytes(file)? != allocated_bytes
+        || observed_verity(file)? != verity
+    {
         return Err(MechanicsFailure::InodeInvariant);
     }
     Ok(())
@@ -556,10 +642,14 @@ fn validate_named(
     root: &FsVerityPublicationRoot,
     name: &PublicationName,
     expected: PrivateIdentity,
+    allocated_bytes: u64,
     verity: super::FsVerityDigest,
 ) -> Result<(), MechanicsFailure> {
     let file = open_name(root, name)?;
-    if observed_private(file.as_fd())? != expected || observed_verity(file.as_fd())? != verity {
+    if observed_private(file.as_fd())? != expected
+        || observed_allocated_bytes(file.as_fd())? != allocated_bytes
+        || observed_verity(file.as_fd())? != verity
+    {
         return Err(MechanicsFailure::InodeInvariant);
     }
     Ok(())
@@ -608,6 +698,13 @@ fn observed_private(file: BorrowedFd<'_>) -> Result<PrivateIdentity, MechanicsFa
 
 fn observed_verity(file: BorrowedFd<'_>) -> Result<super::FsVerityDigest, MechanicsFailure> {
     sha256_measurement::<Infallible>(file).map_err(|error| match error {
+        super::MaterializationFailure::Linux(error) => MechanicsFailure::Linux(error),
+        _ => MechanicsFailure::InodeInvariant,
+    })
+}
+
+fn observed_allocated_bytes(file: BorrowedFd<'_>) -> Result<u64, MechanicsFailure> {
+    inspect_allocated_bytes::<Infallible>(file).map_err(|error| match error {
         super::MaterializationFailure::Linux(error) => MechanicsFailure::Linux(error),
         _ => MechanicsFailure::InodeInvariant,
     })

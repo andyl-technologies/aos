@@ -4,8 +4,10 @@
 //! admits that length against a caller-owned ceiling, and only then allocates
 //! and consumes the record. Every consumed record must carry exactly one
 //! kernel-checked `SCM_CREDENTIALS` nomination and one correlated `SCM_PIDFD`.
-//! This metadata does not prove the actual syscall writer. All other ancillary
-//! data is rejected and every received descriptor is closed on every path.
+//! This metadata does not prove the actual syscall writer. Ordinary records
+//! reject all other ancillary data; the explicit descriptor methods admit only
+//! an exact one-to-five-entry `SCM_RIGHTS` table and retain ownership on every
+//! ambiguity path.
 //!
 //! Adoption separately captures the connection establisher with `SO_PEERCRED`
 //! and `SO_PEERPIDFD`. That peer remains useful for service-manager policy, but
@@ -18,9 +20,13 @@
 //! be bound to the exact retained socket object through a private `SO_COOKIE`
 //! origin stamp. That binding is carrier continuity, not writer identity.
 
+use std::io::IoSlice;
+use std::mem::MaybeUninit;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Component, Path};
+
+use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
 
 use crate::Error;
 use crate::pidfd::{PidFd, PidFdInfo};
@@ -179,6 +185,59 @@ impl SeqpacketSocket {
         Ok(())
     }
 
+    /// Sends one atomic record with one to five owned-capability descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty descriptor table, more than five entries,
+    /// backpressure, ancillary failure, or a short/fatal record send.
+    pub fn send_with_descriptors(
+        &mut self,
+        payload: &[u8],
+        descriptors: &[BorrowedFd<'_>],
+    ) -> Result<(), SeqpacketError> {
+        if payload.is_empty() || descriptors.is_empty() || descriptors.len() > 5 {
+            return Err(SeqpacketError::InvalidMaximum);
+        }
+        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(5))];
+        let mut control = SendAncillaryBuffer::new(&mut space);
+        if !control.push(SendAncillaryMessage::ScmRights(descriptors)) {
+            self.fd.take();
+            return Err(SeqpacketError::Ancillary(
+                "SCM_RIGHTS descriptor table exceeded its fixed buffer",
+            ));
+        }
+        let result = sendmsg(
+            self.borrow_fd()?,
+            &[IoSlice::new(payload)],
+            &mut control,
+            SendFlags::DONTWAIT | SendFlags::NOSIGNAL,
+        )
+        .map_err(|source| {
+            map_kernel_error(Error::Syscall {
+                operation: "sendmsg(SCM_RIGHTS)",
+                source: source.into(),
+            })
+        });
+        let written = match result {
+            Ok(written) => written,
+            Err(error) => {
+                if error.is_fatal() {
+                    self.fd.take();
+                }
+                return Err(error);
+            }
+        };
+        if written != payload.len() {
+            self.fd.take();
+            return Err(SeqpacketError::PartialSend {
+                expected: payload.len(),
+                actual: written,
+            });
+        }
+        Ok(())
+    }
+
     /// Receives one exactly sized record and its kernel-checked nominated subject.
     ///
     /// `maximum_bytes` is an admission ceiling, not a buffer size. No
@@ -200,6 +259,48 @@ impl SeqpacketSocket {
             self.fd.take();
         }
         result
+    }
+
+    /// Receives one record with an exact table of up to five descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns the ordinary bounded-record errors and rejects a zero or
+    /// above-five descriptor count, or any inexact ancillary table.
+    pub fn receive_with_descriptors(
+        &mut self,
+        maximum_bytes: usize,
+        expected_descriptors: usize,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, SeqpacketError> {
+        if maximum_bytes == 0 || expected_descriptors == 0 || expected_descriptors > 5 {
+            return Err(SeqpacketError::InvalidMaximum);
+        }
+        let result = self.receive_descriptor_inner(maximum_bytes, expected_descriptors);
+        if result.as_ref().is_err_and(SeqpacketError::is_fatal) {
+            self.fd.take();
+        }
+        result
+    }
+
+    /// Binds a descriptor record to this exact retained socket endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Closes the socket and descriptors when the record originated elsewhere
+    /// or the retained socket binding is no longer current.
+    pub fn bind_received_descriptors<'socket>(
+        &'socket mut self,
+        record: descriptor_subject::ReceivedDescriptorRecord,
+    ) -> Result<
+        descriptor_subject::ConnectionBoundReceivedDescriptorRecord<'socket>,
+        RecordBindingError,
+    > {
+        let result = self.require_descriptor_record_origin(&record);
+        if let Err(error) = result {
+            self.fd.take();
+            return Err(error);
+        }
+        Ok(descriptor_subject::ConnectionBoundReceivedDescriptorRecord::new(record, &self.peer))
     }
 
     /// Binds an already received record to this exact retained socket endpoint.
@@ -255,6 +356,77 @@ impl SeqpacketSocket {
         }
 
         self.consume_exact(preview.bytes)
+    }
+
+    fn receive_descriptor_inner(
+        &self,
+        maximum_bytes: usize,
+        expected_descriptors: usize,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, SeqpacketError> {
+        let mut probe = [0_u8; 1];
+        let preview = uapi::recv_seqpacket(
+            self.borrow_fd()?,
+            &mut probe,
+            libc::MSG_PEEK | libc::MSG_TRUNC,
+        )
+        .map_err(map_kernel_error)?;
+        if preview.flags & libc::MSG_CTRUNC != 0 {
+            return Err(SeqpacketError::ControlTruncated);
+        }
+        drop(descriptor_subject::validate_ancillary(
+            preview.ancillary,
+            expected_descriptors,
+            false,
+        )?);
+        if preview.bytes == 0 {
+            return Err(SeqpacketError::EmptyRecord);
+        }
+        if preview.bytes > maximum_bytes {
+            return Err(SeqpacketError::RecordTooLarge {
+                actual: preview.bytes,
+                maximum: maximum_bytes,
+            });
+        }
+
+        let mut payload = vec![0_u8; preview.bytes];
+        let received =
+            uapi::recv_seqpacket(self.borrow_fd()?, &mut payload, 0).map_err(map_kernel_error)?;
+        if received.flags & libc::MSG_CTRUNC != 0 {
+            return Err(SeqpacketError::ControlTruncated);
+        }
+        if received.flags & libc::MSG_TRUNC != 0 {
+            return Err(SeqpacketError::PayloadTruncated);
+        }
+        if received.bytes != preview.bytes {
+            return Err(SeqpacketError::LengthChanged {
+                previewed: preview.bytes,
+                received: received.bytes,
+            });
+        }
+        let (subject, descriptors) = descriptor_subject::validate_ancillary(
+            received.ancillary,
+            expected_descriptors,
+            false,
+        )?;
+        Ok(descriptor_subject::ReceivedDescriptorRecord::from_parts(
+            payload,
+            subject,
+            descriptors,
+            self.peer.binding.received_origin(),
+        ))
+    }
+
+    fn require_descriptor_record_origin(
+        &self,
+        record: &descriptor_subject::ReceivedDescriptorRecord,
+    ) -> Result<(), RecordBindingError> {
+        let fd = self
+            .fd
+            .as_ref()
+            .map(AsFd::as_fd)
+            .ok_or_else(RecordBindingError::closed)?;
+        self.peer.binding.require_current(fd)?;
+        record.require_origin(self.peer.binding)
     }
 
     fn consume_exact(&self, expected: usize) -> Result<ReceivedRecord, SeqpacketError> {

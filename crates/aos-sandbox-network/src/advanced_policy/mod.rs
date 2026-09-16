@@ -12,16 +12,21 @@ pub mod egress;
 pub mod handoff;
 pub mod identity;
 pub mod ingress;
+mod protected_owner;
 pub mod quota;
 pub mod replacement;
 pub mod service_discovery;
+mod source_authority;
 
 pub use compiler::{
     AdvancedNetworkPolicyV1, CompiledAdvancedNetworkPolicyV1, NetworkEnforcementArtifactsV1,
     compile_advanced_network_policy_v1,
 };
 pub use egress::{MediatedEgressDestinationV1, MediatedEgressPolicyV1};
-pub use handoff::{AdvancedNetworkPolicyWorkerHandoffV1, AdvancedNetworkPolicyWorkerOperationV1};
+pub use handoff::{
+    AdvancedNetworkKernelEffectHandoffV1, AdvancedNetworkPolicyWorkerHandoffV1,
+    AdvancedNetworkPolicyWorkerOperationV1,
+};
 pub use identity::{
     AdvancedNetworkIdentityV1, NetworkAllocationIdentityV1, NetworkPolicyRevisionV1,
     ProtectedCurrentnessWitnessV1, ProtectedRecoveryAuthoritiesV1,
@@ -32,6 +37,15 @@ pub use ingress::{
     IngressRegistryRowStateV1, IngressRegistryRowV1, IngressTranslationPlanV1,
     IngressTranslationV1, PublishedIngressAllocationV1,
 };
+pub use protected_owner::{
+    AdvancedNetworkPolicyOwnerCommitV1, AdvancedNetworkPolicyOwnerSnapshotV1,
+    AdvancedNetworkPolicyProtectedAuthoritiesV1, AdvancedNetworkPolicyProtectedOwnerV1,
+    AdvancedNetworkPolicyProtectedSourceOwnerV1, ProtectedAssignmentSourceInputV1,
+    ProtectedCapabilitiesSourceInputV1, ProtectedCombinedNetworkOutcomeV1,
+    ProtectedCombinedNetworkSourceInputV1, ProtectedCombinedNetworkStateV1,
+    ProtectedDiscoverySourceInputV1, ProtectedIngressPoolSourceInputV1,
+    ProtectedIngressRegistrySnapshotV1,
+};
 pub use quota::{
     AdvancedNetworkQuotaV1, NetworkPolicyUsageV1, NetworkQuotaAccountV1, ProjectNetworkUsageV1,
     ProtectedNetworkQuotaV1, ProtectedNetworkTransactionV1,
@@ -40,12 +54,17 @@ pub use replacement::{
     AdvancedNetworkRecoveryCompanionsV1, AdvancedNetworkRecoveryRecordV1, AmbiguousStateV1,
     NetworkPolicyReplacementEventV1, NetworkPolicyReplacementPhaseV1,
     NetworkPolicyReplacementStateV1, NetworkReplacementObservationV1, ObservedNetworkPolicyV1,
-    ReplacementCapabilitiesV1, ReservedStateV1, StableStateV1, TerminalStateV1,
-    reduce_network_policy_replacement_v1,
+    ProtectedNetworkObservationInputV1, ReplacementCapabilitiesV1, ReservedStateV1, StableStateV1,
+    TerminalStateV1, reduce_network_policy_replacement_v1,
 };
 pub use service_discovery::{
     DiscoveredProjectServiceV1, ProjectServiceAddressV1, ProjectServiceDiscoverySnapshotV1,
     ServiceDiscoveryExpectationV1, ServicePublicationAuthorityV1,
+};
+pub use source_authority::{
+    AdvancedNetworkPolicyAuthorityCompositionV1, AdvancedNetworkPolicyUpstreamAuthorityOwnerV1,
+    BrokerAssignmentLeaseProofV1, DiscoveryPublisherProofV1, IngressPoolAuthorityProofV1,
+    KernelCapabilityProbeProofV1, QuotaAuthorityProofV1,
 };
 
 /// Maximum number of logical endpoints in one advanced policy.
@@ -100,6 +119,12 @@ pub enum AdvancedNetworkPolicyError {
     /// Immutable physical namespace identity or artifact commitments disagree.
     #[error("advanced Network physical namespace identity does not match")]
     PhysicalIdentityMismatch,
+    /// Fixed protected journal replay, mutation, or exact readback failed.
+    #[error("advanced Network policy protected storage is unavailable or ambiguous")]
+    ProtectedStorage,
+    /// A durable append may have completed and must be resolved by cold replay.
+    #[error("advanced Network policy protected commit outcome is indeterminate")]
+    CommitIndeterminate,
 }
 
 pub(crate) fn strictly_increasing<T: Ord>(values: &[T]) -> bool {

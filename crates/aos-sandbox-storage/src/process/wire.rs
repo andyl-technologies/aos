@@ -18,6 +18,7 @@ use crate::{ResolvedCatalogCommitmentV1, StorageOperation, ZfsHelperContract, Zf
 use super::{Decoder, WorkerObservationOutcome, WorkerProcessOutput};
 
 const REQUEST_MAGIC: &[u8; 8] = b"AOSZREQ1";
+const ATOMIC_SNAPSHOT_REQUEST_MAGIC: &[u8; 8] = b"AOSZAS01";
 const MUTATION_RESPONSE_MAGIC: &[u8; 8] = b"AOSZRSP1";
 const OBSERVATION_RESPONSE_MAGIC: &[u8; 8] = b"AOSZOBS1";
 
@@ -25,6 +26,170 @@ pub(super) const WIRE_VERSION: u16 = 1;
 pub(super) const MAXIMUM_REQUEST_BYTES: usize = 24 * 1024;
 pub(super) const MAXIMUM_RESPONSE_BYTES: usize = 132 * 1024;
 pub(super) const MAXIMUM_OBSERVATION_RESPONSE_BYTES: usize = 52;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AtomicSnapshotRequestVerbV1 {
+    Mutate,
+    Observe,
+}
+
+pub(super) struct AtomicSnapshotWorkerMemberV1 {
+    pub(super) source_name: String,
+    pub(super) source_guid: u64,
+    pub(super) destination_name: String,
+}
+
+pub(super) struct AtomicSnapshotWorkerRequestV1 {
+    pub(super) verb: AtomicSnapshotRequestVerbV1,
+    pub(super) executable: PathBuf,
+    pub(super) operation: [u8; 16],
+    pub(super) snapshot: [u8; 16],
+    pub(super) program: aos_sandbox_core::ObjectDigest,
+    pub(super) members: Vec<AtomicSnapshotWorkerMemberV1>,
+}
+
+pub(super) fn is_atomic_snapshot_request(bytes: &[u8]) -> bool {
+    bytes.starts_with(ATOMIC_SNAPSHOT_REQUEST_MAGIC)
+}
+
+pub(super) fn encode_atomic_snapshot_request(
+    verb: AtomicSnapshotRequestVerbV1,
+    contract: &ZfsHelperContract,
+    program: &crate::DormantAtomicDatasetSnapshotV1,
+) -> Result<Vec<u8>, ZfsWorkerError> {
+    let path = contract.executable().as_os_str().as_encoded_bytes();
+    let path_length = u16::try_from(path.len())
+        .map_err(|_| ZfsWorkerError::Protocol("executable path is too long"))?;
+    let member_count = u16::try_from(program.member_count())
+        .map_err(|_| ZfsWorkerError::Protocol("atomic snapshot has too many members"))?;
+    let mut bytes = Vec::with_capacity(128 + path.len() + program.member_count() * 192);
+    bytes.extend_from_slice(ATOMIC_SNAPSHOT_REQUEST_MAGIC);
+    bytes.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    bytes.push(match verb {
+        AtomicSnapshotRequestVerbV1::Mutate => 1,
+        AtomicSnapshotRequestVerbV1::Observe => 2,
+    });
+    bytes.extend_from_slice(&path_length.to_be_bytes());
+    bytes.extend_from_slice(path);
+    bytes.extend_from_slice(&program.operation());
+    bytes.extend_from_slice(&program.snapshot());
+    bytes.extend_from_slice(program.commitment().as_bytes());
+    bytes.extend_from_slice(&member_count.to_be_bytes());
+    for member in program.members() {
+        encode_text(&mut bytes, member.source_name())?;
+        bytes.extend_from_slice(&member.source_guid().to_be_bytes());
+        encode_text(&mut bytes, member.destination_name())?;
+    }
+    if bytes.len() > MAXIMUM_REQUEST_BYTES {
+        return Err(ZfsWorkerError::Protocol(
+            "atomic snapshot request exceeds byte ceiling",
+        ));
+    }
+    Ok(bytes)
+}
+
+pub(super) fn decode_atomic_snapshot_request(
+    bytes: &[u8],
+) -> Result<AtomicSnapshotWorkerRequestV1, ZfsWorkerError> {
+    if bytes.len() > MAXIMUM_REQUEST_BYTES {
+        return Err(ZfsWorkerError::Protocol(
+            "atomic snapshot request exceeds byte ceiling",
+        ));
+    }
+    let mut decoder = Decoder::new(bytes);
+    if decoder.take(8)? != ATOMIC_SNAPSHOT_REQUEST_MAGIC || decoder.u16()? != WIRE_VERSION {
+        return Err(ZfsWorkerError::Protocol(
+            "atomic snapshot request magic or version mismatch",
+        ));
+    }
+    let verb = match decoder.byte()? {
+        1 => AtomicSnapshotRequestVerbV1::Mutate,
+        2 => AtomicSnapshotRequestVerbV1::Observe,
+        _ => {
+            return Err(ZfsWorkerError::Protocol(
+                "atomic snapshot request verb is invalid",
+            ));
+        }
+    };
+    let path_length = usize::from(decoder.u16()?);
+    let executable = PathBuf::from(OsString::from_vec(decoder.take(path_length)?.to_vec()));
+    let operation = decoder.array()?;
+    let snapshot = decoder.array()?;
+    let program = aos_sandbox_core::ObjectDigest::from_bytes(decoder.array()?);
+    let member_count = usize::from(decoder.u16()?);
+    if operation == [0; 16]
+        || snapshot == [0; 16]
+        || program.as_bytes() == &[0; 32]
+        || member_count == 0
+        || member_count > aos_sandbox::lifecycle::MAXIMUM_LIFECYCLE_EXPECTATIONS
+    {
+        return Err(ZfsWorkerError::Protocol(
+            "atomic snapshot request identity is invalid",
+        ));
+    }
+    let mut members = Vec::with_capacity(member_count);
+    for _ in 0..member_count {
+        let source_name = decode_text(&mut decoder)?;
+        let source_guid = decoder.u64()?;
+        let destination_name = decode_text(&mut decoder)?;
+        if source_guid == 0
+            || !destination_name.starts_with(&source_name)
+            || destination_name.as_bytes().get(source_name.len()) != Some(&b'@')
+        {
+            return Err(ZfsWorkerError::Protocol(
+                "atomic snapshot member is invalid",
+            ));
+        }
+        members.push(AtomicSnapshotWorkerMemberV1 {
+            source_name,
+            source_guid,
+            destination_name,
+        });
+    }
+    decoder.finish()?;
+    let unique_sources = members
+        .iter()
+        .map(|member| member.source_name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let unique_destinations = members
+        .iter()
+        .map(|member| member.destination_name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if unique_sources.len() != members.len() || unique_destinations.len() != members.len() {
+        return Err(ZfsWorkerError::Protocol(
+            "atomic snapshot members are not unique",
+        ));
+    }
+    Ok(AtomicSnapshotWorkerRequestV1 {
+        verb,
+        executable,
+        operation,
+        snapshot,
+        program,
+        members,
+    })
+}
+
+fn encode_text(bytes: &mut Vec<u8>, value: &str) -> Result<(), ZfsWorkerError> {
+    let length = u16::try_from(value.len())
+        .map_err(|_| ZfsWorkerError::Protocol("atomic snapshot name is too long"))?;
+    if value.is_empty() || value.as_bytes().contains(&0) {
+        return Err(ZfsWorkerError::Protocol("atomic snapshot name is invalid"));
+    }
+    bytes.extend_from_slice(&length.to_be_bytes());
+    bytes.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn decode_text(decoder: &mut Decoder<'_>) -> Result<String, ZfsWorkerError> {
+    let length = usize::from(decoder.u16()?);
+    let value = decoder.take(length)?;
+    if value.is_empty() || value.contains(&0) {
+        return Err(ZfsWorkerError::Protocol("atomic snapshot name is invalid"));
+    }
+    String::from_utf8(value.to_vec())
+        .map_err(|_| ZfsWorkerError::Protocol("atomic snapshot name is not UTF-8"))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum WorkerRequestVerb {

@@ -41,7 +41,7 @@ impl ServicePublicationAuthorityV1 {
     /// Returns [`AdvancedNetworkPolicyError`] for sentinel publisher, lease, or
     /// assignment state, a lease not newer than the revocation high-water, or
     /// noncanonical disclosure membership.
-    pub fn new(
+    pub(crate) fn new(
         publisher: SandboxId,
         publisher_assignment_digest: ObjectDigest,
         lease_generation: u64,
