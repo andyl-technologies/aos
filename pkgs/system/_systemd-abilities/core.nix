@@ -68,6 +68,7 @@
     boot-artifact-storage = imagePlatformImplementation imageRolloutPlatform.artifactStorage;
     boot-selection = imagePlatformImplementation imageRolloutPlatform.selection;
     boot-success = imagePlatformImplementation imageRolloutPlatform.success;
+    image-health-observation = imagePlatformImplementation imageRolloutPlatform.healthObservation;
     host-restart = imagePlatformImplementation imageRolloutPlatform.hostRestart;
   };
   measurementEnabled =
@@ -1486,6 +1487,7 @@ in {
         boot-artifact-storage.implementation = "boot-artifact-storage";
         boot-selection.implementation = "boot-selection";
         boot-success.implementation = "boot-success";
+        image-health-observation.implementation = "image-health-observation";
         host-restart.implementation = "host-restart";
       })
     ];
