@@ -8,10 +8,13 @@
 }: let
   managerInterface = lib.abilities.interfaces.systemManager.interfaces.manager;
   managerArtifact = lib.abilities.packageOutput {};
+  managerBindings =
+    if abilitySelection == null
+    then []
+    else abilitySelection.bindingsForImplementation "system-manager";
   selected =
-    config.aos.abilities.environment != null
-    && abilitySelection != null
-    && abilitySelection.isImplementationSelected "system-manager";
+    builtins.length managerBindings == 1
+    && (builtins.head managerBindings).request == "system:manager";
 
   buildManagerConfiguration = {runCommand}:
     runCommand "systemd-manager-configuration" {} ''
@@ -42,9 +45,6 @@ in {
         artifact = managerArtifact;
         methods = [];
         guarantees = [];
-      };
-      instances = lib.mkIf selected {
-        system-manager-provider.implementation = "system-manager";
       };
     };
 

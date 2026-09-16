@@ -10,7 +10,13 @@
     abi = 1;
     description = "Selects the package that realizes system and initrd manager artifacts.";
     requestType = types.boolean;
-    outputs = {};
+    outputs.selected-manager = {
+      phase = "planning";
+      lifetime = "persistent";
+      visibility = "protected";
+      description = "References the authenticated package selected to realize manager artifacts.";
+      schema = types.artifactReference;
+    };
     methods = {};
     lifecycle.persistentDeleteMethod = null;
     guarantees = [];
