@@ -494,8 +494,12 @@ fn admit_lifecycle_worker(
     let mut executor =
         SystemdNetworkLifecycleExecutor::new(lifecycle_worker_socket, cgroup_root, host)
             .context("construct lifecycle executor")?;
+    let trusted_current_fence = prepared
+        .coordinator
+        .trusted_lifecycle_fence(&dispatch)
+        .context("reload protected lifecycle fence")?;
     let admitted = executor
-        .execute_once(&authority, &dispatch, target)
+        .execute_once(&authority, &dispatch, &trusted_current_fence, target)
         .context("complete lifecycle worker execution")?;
     ensure!(
         admitted.request_id() == LIFECYCLE_REQUEST_ID

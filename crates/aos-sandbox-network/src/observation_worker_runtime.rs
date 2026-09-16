@@ -24,6 +24,7 @@ use aos_sandbox_linux::seqpacket::{
 
 use crate::kernel_plan::{NetworkKernelPlanError, NetworkKernelPlanV1};
 use crate::kernel_reader::{FixedBpfObservationReader, NetworkKernelReaderError};
+use crate::lifecycle_state::AmbiguousNetworkLifecycleRecoveryV1;
 use crate::namespace_catalog::{
     NetworkNamespaceObservedStateKindV1, NetworkNamespaceObservedStateV1,
 };
@@ -299,6 +300,33 @@ impl SystemdNetworkObservationExecutor {
             execution.target_identity().kernel_boot_id(),
             target.namespace().identity(),
             NetworkNamespaceObservedStateV1::absent(),
+            plan,
+        )?;
+        self.execute_observation(&request, target.namespace())
+    }
+
+    pub(crate) fn observe_recovery_once(
+        &mut self,
+        recovery: AmbiguousNetworkLifecycleRecoveryV1,
+        plan: &NetworkKernelPlanV1,
+        target: &RetainedNetworkNamespace,
+    ) -> Result<PreparedNetworkObservationV1, NetworkObservationWorkerError> {
+        let authority = recovery.authority();
+        let identity = authority.identity;
+        if authority.kernel_plan_digest != plan.digest()
+            || identity.network_handle() != target.network_handle()
+            || identity.namespace_device() != target.identity().device
+            || identity.namespace_inode() != target.identity().inode
+        {
+            return protocol("lifecycle recovery custody is invalid");
+        }
+        let request = ObservationRequestV1::new(
+            recovery.request_id(),
+            recovery.effect_digest(),
+            plan.digest(),
+            identity.kernel_boot_id(),
+            target.identity(),
+            recovery.desired_state(),
             plan,
         )?;
         self.execute_observation(&request, target.namespace())

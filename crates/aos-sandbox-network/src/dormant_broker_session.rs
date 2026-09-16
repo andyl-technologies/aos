@@ -16,13 +16,14 @@ use sha2::{Digest as _, Sha256};
 use crate::authorization::decode_assignment;
 use crate::{
     ActivatedNetworkDescriptors, AuthenticatedNetworkPreparationV1,
-    CommittedNetworkLifecycleResultV1, NetworkAdmissionError, NetworkAdmissionOutcome,
-    NetworkBrokerError, NetworkKernelPlanV1, NetworkLifecycleAdmissionCoordinator,
-    NetworkLifecycleAdmissionOutcome, NetworkLifecycleWorkerRuntimeError,
-    NetworkNamespaceCatalogV1, NetworkNamespaceLifecycleActionV1,
-    NetworkNamespaceLifecycleObservationV1, NetworkNamespaceLifecycleTransitionV1,
-    NetworkNamespacePinWorkerError, NetworkNamespaceStoreError, NetworkNamespaceStoreName,
-    NetworkNamespaceStoreOutcome, NetworkObservationWorkerError, NetworkPreparationCatalogV1,
+    CommittedNetworkLifecycleResultV1, DurableNetworkLifecyclePhase, NetworkAdmissionError,
+    NetworkAdmissionOutcome, NetworkBrokerError, NetworkKernelPlanV1,
+    NetworkLifecycleAdmissionCoordinator, NetworkLifecycleAdmissionOutcome,
+    NetworkLifecycleWorkerRuntimeError, NetworkNamespaceCatalogV1,
+    NetworkNamespaceLifecycleActionV1, NetworkNamespaceLifecycleObservationV1,
+    NetworkNamespaceLifecycleTransitionV1, NetworkNamespacePinWorkerError,
+    NetworkNamespaceStoreError, NetworkNamespaceStoreName, NetworkNamespaceStoreOutcome,
+    NetworkObservationWorkerError, NetworkPreparationCatalogV1,
     NetworkPreparationFinalizationInput, NetworkPreparationRuntimeError,
     NetworkPrepareExecutionOutcomeV1, NetworkWorkerRuntimeError, PreparedNetworkObservationV1,
     SystemdNetworkLifecycleExecutor, SystemdNetworkNamespacePinExecutor,
@@ -425,9 +426,12 @@ impl DormantNetworkBrokerCallsiteV1 for ProductionNetworkBrokerCompositionV1<'_>
                             .activation
                             .namespace_for_handle(*network_handle)
                             .ok_or(DormantNetworkBrokerCallErrorV1::StaleKernel)?;
+                        let trusted_current_fence =
+                            self.coordinator.trusted_lifecycle_fence(&dispatch)?;
                         let execution = self.lifecycle_executor.execute_once(
                             self.coordinator.authority(),
                             &dispatch,
+                            &trusted_current_fence,
                             target,
                         )?;
                         let target_namespace_identity = target.identity();
@@ -457,7 +461,9 @@ impl DormantNetworkBrokerCallsiteV1 for ProductionNetworkBrokerCompositionV1<'_>
                                     return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
                                 }
                                 let observation_digest = destroyed_custody_observation_digest(
-                                    execution,
+                                    execution.request_id(),
+                                    execution.effect_digest(),
+                                    execution.target_identity(),
                                     proof,
                                     pin_removal_digest,
                                 )?;
@@ -492,6 +498,79 @@ impl DormantNetworkBrokerCallsiteV1 for ProductionNetworkBrokerCompositionV1<'_>
                             self.namespaces,
                         )?;
                         let released_identity = (execution.action()
+                            == NetworkNamespaceLifecycleActionV1::Destroy)
+                            .then_some(target_namespace_identity);
+                        (committed, released_identity)
+                    }
+                    NetworkLifecycleAdmissionOutcome::ObserveOnly {
+                        phase: DurableNetworkLifecyclePhase::Ambiguous,
+                        effect_digest,
+                    } => {
+                        let recovery = self
+                            .coordinator
+                            .recover_ambiguous_lifecycle(request_id, effect_digest)?;
+                        let target = self
+                            .activation
+                            .namespace_for_handle(*network_handle)
+                            .ok_or(DormantNetworkBrokerCallErrorV1::StaleKernel)?;
+                        let target_namespace_identity = target.identity();
+                        let proof = self.observation_executor.observe_recovery_once(
+                            recovery,
+                            &kernel_plan,
+                            target,
+                        )?;
+                        let observation_digest =
+                            if recovery.action() == NetworkNamespaceLifecycleActionV1::Destroy {
+                                let pin_removal_digest = self.pin_executor.reconcile_once(
+                                    recovery.request_id(),
+                                    recovery.effect_digest(),
+                                    recovery.authority().identity.network_handle(),
+                                    target_namespace_identity,
+                                )?;
+                                let store_name = NetworkNamespaceStoreName::from_network_handle(
+                                    recovery.authority().identity.network_handle(),
+                                )?;
+                                if !matches!(
+                                    self.namespace_store.remove(&store_name)?,
+                                    NetworkNamespaceStoreOutcome::Removed
+                                        | NetworkNamespaceStoreOutcome::Absent
+                                ) || self
+                                    .namespace_store
+                                    .retained_identity(&store_name)?
+                                    .is_some()
+                                {
+                                    return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
+                                }
+                                destroyed_custody_observation_digest(
+                                    recovery.request_id(),
+                                    recovery.effect_digest(),
+                                    recovery.authority().identity,
+                                    proof,
+                                    pin_removal_digest,
+                                )?
+                            } else {
+                                proof.observation_digest()
+                            };
+                        let observation = NetworkNamespaceLifecycleObservationV1::new(
+                            recovery.request_id(),
+                            recovery.authority().resource_digest,
+                            recovery.authority().identity,
+                            proof.observed_state(),
+                            observation_digest,
+                        )
+                        .map_err(NetworkBrokerError::from)?;
+                        let transition = lifecycle_transition(
+                            recovery.action(),
+                            recovery.desired_state(),
+                            observation,
+                        )?;
+                        let committed = self.coordinator.commit_verified_transition(
+                            recovery.request_id(),
+                            recovery.effect_digest(),
+                            transition,
+                            self.namespaces,
+                        )?;
+                        let released_identity = (recovery.action()
                             == NetworkNamespaceLifecycleActionV1::Destroy)
                             .then_some(target_namespace_identity);
                         (committed, released_identity)
@@ -761,28 +840,27 @@ fn lifecycle_transition(
 }
 
 fn destroyed_custody_observation_digest(
-    execution: crate::ExecutedNetworkLifecycleWorkerV1,
+    request_id: [u8; 16],
+    effect_digest: ObjectDigest,
+    target: crate::NetworkNamespaceIdentityV1,
     proof: PreparedNetworkObservationV1,
     pin_removal_digest: ObjectDigest,
 ) -> Result<ObjectDigest, DormantNetworkBrokerCallErrorV1> {
-    if execution.action() != NetworkNamespaceLifecycleActionV1::Destroy
-        || execution.desired_state().kind() != crate::NetworkNamespaceObservedStateKindV1::Absent
-        || proof.request_id() != execution.request_id()
-        || proof.effect_digest() != execution.effect_digest()
-        || proof.kernel_boot_id() != execution.target_identity().kernel_boot_id()
-        || proof.namespace() != execution.target_namespace()
+    if proof.request_id() != request_id
+        || proof.effect_digest() != effect_digest
+        || proof.kernel_boot_id() != target.kernel_boot_id()
+        || proof.namespace().device != target.namespace_device()
+        || proof.namespace().inode != target.namespace_inode()
         || proof.observed_state().kind() != crate::NetworkNamespaceObservedStateKindV1::Absent
         || pin_removal_digest.as_bytes() == &[0; 32]
     {
         return Err(DormantNetworkBrokerCallErrorV1::StaleKernel);
     }
-
-    let target = execution.target_identity();
-    let namespace = execution.target_namespace();
+    let namespace = proof.namespace();
     let mut digest = Sha256::new();
     digest.update(b"aos.sandbox.network.destroyed-custody-observation.v1\0");
-    digest.update(execution.request_id());
-    digest.update(execution.effect_digest().as_bytes());
+    digest.update(request_id);
+    digest.update(effect_digest.as_bytes());
     digest.update(proof.kernel_plan_digest().as_bytes());
     digest.update(target.network_handle());
     digest.update(target.kernel_boot_id());

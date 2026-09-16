@@ -84,10 +84,16 @@ pub(crate) fn publish_namespace_pin(
 pub(crate) fn remove_namespace_pin(
     network_handle: [u8; 32],
     expected: NamespaceIdentity,
+    allow_absent: bool,
 ) -> Result<(), NetworkNamespacePinMutationError> {
     let root = open_pin_root()?;
     let component = handle_component(network_handle)?;
     let destination = fixed_pin_path(&component);
+    match rustix::fs::statat(root.as_fd(), component.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+        Err(rustix::io::Errno::NOENT) if allow_absent => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
     let observed = root.open_namespace(Path::new(&component), NamespaceKind::Network)?;
     if observed.identity() != expected {
         return Err(NetworkNamespacePinMutationError::Identity);

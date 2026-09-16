@@ -64,6 +64,7 @@ const MAXIMUM_CHALLENGE_BYTES: usize = 132;
 const MAXIMUM_READY_BYTES: usize = 664;
 const MAXIMUM_ACK_BYTES: usize = 164;
 const MAXIMUM_CGROUP_BYTES: usize = 512;
+const MAXIMUM_TRUSTED_FENCE_BYTES: usize = 64 * 1024;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
 const NATURAL_EXIT_TIMEOUT: Duration = Duration::from_secs(1);
 const QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -341,9 +342,16 @@ impl SystemdNetworkLifecycleExecutor {
         &mut self,
         authority: &NetworkAuthorityV1,
         dispatch: &NetworkLifecycleWorkerDispatchV1,
+        trusted_current_fence: &[u8],
         target: &RetainedNetworkNamespace,
     ) -> Result<ExecutedNetworkLifecycleWorkerV1, NetworkLifecycleWorkerRuntimeError> {
         ensure_executor_available(self.fail_stopped)?;
+        if trusted_current_fence.is_empty()
+            || trusted_current_fence.len() > MAXIMUM_TRUSTED_FENCE_BYTES
+            || trusted_current_fence != dispatch.claimed_current_fence()
+        {
+            return Err(NetworkLifecycleWorkerRuntimeError::Authority);
+        }
         self.host_namespace.validate_current_network()?;
         let target_namespace = retype_network_namespace(target.as_fd())?;
         if target_namespace.identity() == self.host_namespace.identity() {
@@ -372,6 +380,7 @@ impl SystemdNetworkLifecycleExecutor {
             host_namespace: &self.host_namespace,
             target_namespace: &target_namespace,
             dispatch_bytes: &dispatch_bytes,
+            trusted_current_fence,
             dispatch_digest,
             target_identity: dispatch.target_identity(),
             action: dispatch.lifecycle_action(),
@@ -390,6 +399,7 @@ struct SystemdLifecycleAdmission<'a> {
     host_namespace: &'a NamespaceFd,
     target_namespace: &'a NamespaceFd,
     dispatch_bytes: &'a [u8],
+    trusted_current_fence: &'a [u8],
     dispatch_digest: ObjectDigest,
     target_identity: NetworkNamespaceIdentityV1,
     action: NetworkNamespaceLifecycleActionV1,
@@ -506,6 +516,7 @@ impl LifecycleAdmissionOperations for SystemdLifecycleAdmission<'_> {
         let exchange = exchange_after_ready(
             connection,
             self.dispatch_bytes,
+            self.trusted_current_fence,
             self.challenge,
             self.target_namespace.as_fd(),
             &ready_subject,
@@ -677,7 +688,21 @@ pub fn run_inherited_network_lifecycle_worker(
         return Err(NetworkLifecycleWorkerRuntimeError::Authority);
     }
     bootstrap_namespace.validate_current_network()?;
-    let current_fence = dispatch.claimed_current_fence().to_vec();
+    let current_fence_record = receive_record_before(
+        &mut socket,
+        MAXIMUM_TRUSTED_FENCE_BYTES,
+        0,
+        deadline_after(TRANSFER_TIMEOUT)?,
+    )?;
+    validate_broker_subject(
+        socket.peer(),
+        current_fence_record.subject(),
+        &control_cgroup,
+    )?;
+    let current_fence = current_fence_record.payload().to_vec();
+    if current_fence.is_empty() || current_fence != dispatch.claimed_current_fence() {
+        return Err(NetworkLifecycleWorkerRuntimeError::Authority);
+    }
     let authenticated = dispatch.authenticate(&authority)?;
     let mut trusted_current_fence = || Ok(current_fence.clone());
     let mut trusted_clock = protected_clock;
@@ -718,6 +743,7 @@ pub fn run_inherited_network_lifecycle_worker(
 fn exchange_after_ready(
     socket: &mut DescriptorSubjectSocket,
     dispatch: &[u8],
+    trusted_current_fence: &[u8],
     challenge: NetworkLifecycleWorkerChallengeV1,
     target: BorrowedFd<'_>,
     ready_subject: &KernelAuthorizedRecordSubject,
@@ -735,6 +761,11 @@ fn exchange_after_ready(
         dispatch,
         challenge,
         target,
+        deadline_after(TRANSFER_TIMEOUT)?,
+    )?;
+    send_record_before(
+        socket,
+        trusted_current_fence,
         deadline_after(TRANSFER_TIMEOUT)?,
     )?;
     let acknowledgement = receive_record_before(

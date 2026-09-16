@@ -158,6 +158,10 @@ impl NetworkLifecycleWorkerDispatchV1 {
         self.context.authority.identity
     }
 
+    pub(crate) const fn sandbox_id(&self) -> [u8; 16] {
+        self.context.sandbox_id
+    }
+
     /// Returns the sealed fence this untrusted record claims was current.
     ///
     /// A caller must obtain the latest fence independently from protected

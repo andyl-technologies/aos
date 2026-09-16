@@ -205,6 +205,37 @@ pub(crate) struct AmbiguousNetworkLifecycleDispatchV1 {
     pub(crate) effect: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AmbiguousNetworkLifecycleRecoveryV1 {
+    request_id: [u8; 16],
+    effect_digest: ObjectDigest,
+    action: NetworkNamespaceLifecycleActionV1,
+    authority: NetworkNamespaceLifecycleAuthorityV1,
+    desired_state: NetworkNamespaceObservedStateV1,
+}
+
+impl AmbiguousNetworkLifecycleRecoveryV1 {
+    pub(crate) const fn request_id(self) -> [u8; 16] {
+        self.request_id
+    }
+
+    pub(crate) const fn effect_digest(self) -> ObjectDigest {
+        self.effect_digest
+    }
+
+    pub(crate) const fn action(self) -> NetworkNamespaceLifecycleActionV1 {
+        self.action
+    }
+
+    pub(crate) const fn authority(self) -> NetworkNamespaceLifecycleAuthorityV1 {
+        self.authority
+    }
+
+    pub(crate) const fn desired_state(self) -> NetworkNamespaceObservedStateV1 {
+        self.desired_state
+    }
+}
+
 pub(crate) struct PreparedNetworkLifecycleRecordInput {
     pub(crate) request_id: [u8; 16],
     pub(crate) sandbox_id: [u8; 16],
@@ -384,10 +415,18 @@ impl NetworkLifecycleStateStore {
             (DurableNetworkLifecyclePhase::Committed, Some(result)) => {
                 NetworkLifecycleBeginOutcome::Replay(result)
             }
-            (phase, _) => NetworkLifecycleBeginOutcome::ObserveOnly {
-                phase,
-                effect_digest: existing.effect_digest,
-            },
+            (DurableNetworkLifecyclePhase::Prepared, None) => {
+                NetworkLifecycleBeginOutcome::Prepared {
+                    effect_digest: existing.effect_digest,
+                }
+            }
+            (phase @ DurableNetworkLifecyclePhase::Ambiguous, None) => {
+                NetworkLifecycleBeginOutcome::ObserveOnly {
+                    phase,
+                    effect_digest: existing.effect_digest,
+                }
+            }
+            _ => return Err(NetworkLifecycleStateError::CorruptRecord),
         }))
     }
 
@@ -404,10 +443,18 @@ impl NetworkLifecycleStateStore {
                 (DurableNetworkLifecyclePhase::Committed, Some(result)) => {
                     NetworkLifecycleBeginOutcome::Replay(result)
                 }
-                (phase, _) => NetworkLifecycleBeginOutcome::ObserveOnly {
-                    phase,
-                    effect_digest: existing.effect_digest,
-                },
+                (DurableNetworkLifecyclePhase::Prepared, None) => {
+                    NetworkLifecycleBeginOutcome::Prepared {
+                        effect_digest: existing.effect_digest,
+                    }
+                }
+                (phase @ DurableNetworkLifecyclePhase::Ambiguous, None) => {
+                    NetworkLifecycleBeginOutcome::ObserveOnly {
+                        phase,
+                        effect_digest: existing.effect_digest,
+                    }
+                }
+                _ => return Err(NetworkLifecycleStateError::CorruptRecord),
             });
         }
         if self.records.len() >= MAXIMUM_OPERATIONS {
@@ -483,6 +530,24 @@ impl NetworkLifecycleStateStore {
         let dispatch = ambiguous_dispatch(&record)?;
         self.publish(authority, record, b"ambiguous")?;
         Ok(dispatch)
+    }
+
+    pub(crate) fn ambiguous_recovery(
+        &self,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+    ) -> Result<AmbiguousNetworkLifecycleRecoveryV1, NetworkLifecycleStateError> {
+        let record = self.exact_current(request_id, effect_digest)?;
+        if record.phase != DurableNetworkLifecyclePhase::Ambiguous || record.result.is_some() {
+            return Err(NetworkLifecycleStateError::InvalidTransition);
+        }
+        Ok(AmbiguousNetworkLifecycleRecoveryV1 {
+            request_id,
+            effect_digest,
+            action: record.action,
+            authority: record.authority,
+            desired_state: record.desired_state,
+        })
     }
 
     pub(crate) fn commit_verified(

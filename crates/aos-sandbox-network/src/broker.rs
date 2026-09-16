@@ -27,9 +27,10 @@ use crate::authorization::{
 };
 use crate::catalog::{AuthenticatedNetworkPreparationV1, ResolvedNetworkPreparationV1};
 use crate::lifecycle_state::{
-    AmbiguousNetworkLifecycleDispatchV1, CommittedNetworkLifecycleResultV1,
-    DurableNetworkLifecyclePhase, NetworkLifecycleBeginOutcome, NetworkLifecycleStateError,
-    NetworkLifecycleStateStore, PreparedNetworkLifecycleRecordInput, prepared_lifecycle_record,
+    AmbiguousNetworkLifecycleDispatchV1, AmbiguousNetworkLifecycleRecoveryV1,
+    CommittedNetworkLifecycleResultV1, DurableNetworkLifecyclePhase, NetworkLifecycleBeginOutcome,
+    NetworkLifecycleStateError, NetworkLifecycleStateStore, PreparedNetworkLifecycleRecordInput,
+    prepared_lifecycle_record,
 };
 use crate::lifecycle_worker_protocol::{
     NetworkLifecycleWorkerDispatchV1, issue_lifecycle_dispatch,
@@ -854,6 +855,16 @@ impl NetworkLifecycleAdmissionCoordinator {
         Ok(NetworkLifecycleEffectDispatchPermitV1 { durable })
     }
 
+    pub(crate) fn recover_ambiguous_lifecycle(
+        &self,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+    ) -> Result<AmbiguousNetworkLifecycleRecoveryV1, NetworkBrokerError> {
+        self.lifecycle_state
+            .ambiguous_recovery(request_id, effect_digest)
+            .map_err(Into::into)
+    }
+
     /// Consumes a fresh lifecycle permit into one authenticated worker request.
     ///
     /// The raw request, protected preparation, and canonical kernel plan must
@@ -879,6 +890,37 @@ impl NetworkLifecycleAdmissionCoordinator {
             kernel_plan,
         )
         .map_err(Into::into)
+    }
+
+    /// Reloads and authenticates the protected fence for one issued dispatch.
+    ///
+    /// The returned bytes come from the locked lifecycle journal rather than
+    /// the worker-facing dispatch. The caller must transfer them as a separate
+    /// broker-authenticated record immediately before worker execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal has no current fence for the target,
+    /// the fence changed after dispatch issuance, or its seal is invalid.
+    pub fn trusted_lifecycle_fence(
+        &self,
+        dispatch: &NetworkLifecycleWorkerDispatchV1,
+    ) -> Result<Vec<u8>, NetworkBrokerError> {
+        let fence = self
+            .lifecycle_state
+            .current_fence(&dispatch.sandbox_id())
+            .ok_or(NetworkBrokerError::LifecycleState(
+                NetworkLifecycleStateError::InvalidTransition,
+            ))?;
+        if fence != dispatch.claimed_current_fence() {
+            return Err(NetworkBrokerError::LifecycleState(
+                NetworkLifecycleStateError::InvalidTransition,
+            ));
+        }
+        self.authority
+            .open_fence(&dispatch.sandbox_id(), fence)
+            .map_err(|_| NetworkBrokerError::Authority)?;
+        Ok(fence.to_vec())
     }
 
     /// Applies and durably commits one exact helper-verified transition.

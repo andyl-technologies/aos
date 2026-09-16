@@ -116,11 +116,43 @@ impl SystemdNetworkNamespacePinExecutor {
         network_handle: [u8; 32],
         expected: NamespaceIdentity,
     ) -> Result<ObjectDigest, NetworkNamespacePinWorkerError> {
+        self.execute_removal(request_id, effect_digest, network_handle, expected, false)
+    }
+
+    /// Reconciles one exact namespace pin, accepting already-proved absence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same fail-closed errors as [`Self::remove_once`]. Present
+    /// pins must still reproduce `expected` before removal.
+    pub fn reconcile_once(
+        &mut self,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        network_handle: [u8; 32],
+        expected: NamespaceIdentity,
+    ) -> Result<ObjectDigest, NetworkNamespacePinWorkerError> {
+        self.execute_removal(request_id, effect_digest, network_handle, expected, true)
+    }
+
+    fn execute_removal(
+        &mut self,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        network_handle: [u8; 32],
+        expected: NamespaceIdentity,
+        allow_absent: bool,
+    ) -> Result<ObjectDigest, NetworkNamespacePinWorkerError> {
         if self.fail_stopped {
             return protocol("Network namespace pin executor is fail-stopped");
         }
-        let request =
-            PinRemovalRequestV1::new(request_id, effect_digest, network_handle, expected)?;
+        let request = PinRemovalRequestV1::new(
+            request_id,
+            effect_digest,
+            network_handle,
+            expected,
+            allow_absent,
+        )?;
         let request_bytes = request.encode();
         let request_digest = ObjectDigest::from_bytes(Sha256::digest(&request_bytes).into());
         let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
@@ -222,6 +254,7 @@ pub fn run_inherited_network_namespace_pin_worker() -> Result<(), NetworkNamespa
             device: request.namespace_device,
             inode: request.namespace_inode,
         },
+        request.allow_absent,
     )?;
     let request_digest = ObjectDigest::from_bytes(Sha256::digest(request_record.payload()).into());
     send_record_before(
@@ -305,6 +338,7 @@ struct PinRemovalRequestV1 {
     network_handle: [u8; 32],
     namespace_device: u64,
     namespace_inode: u64,
+    allow_absent: bool,
 }
 
 impl PinRemovalRequestV1 {
@@ -313,6 +347,7 @@ impl PinRemovalRequestV1 {
         effect_digest: ObjectDigest,
         network_handle: [u8; 32],
         namespace: NamespaceIdentity,
+        allow_absent: bool,
     ) -> Result<Self, NetworkNamespacePinWorkerError> {
         let request = Self {
             request_id,
@@ -320,6 +355,7 @@ impl PinRemovalRequestV1 {
             network_handle,
             namespace_device: namespace.device,
             namespace_inode: namespace.inode,
+            allow_absent,
         };
         request.validate()?;
         Ok(request)
@@ -342,6 +378,7 @@ impl PinRemovalRequestV1 {
         bytes[..8].copy_from_slice(REQUEST_MAGIC);
         bytes[8..10].copy_from_slice(&WIRE_VERSION.to_be_bytes());
         bytes[10] = REQUEST_KIND;
+        bytes[11] = u8::from(self.allow_absent);
         bytes[12..16].copy_from_slice(&(REQUEST_BYTES as u32).to_be_bytes());
         bytes[16..32].copy_from_slice(&self.request_id);
         bytes[32..64].copy_from_slice(self.effect_digest.as_bytes());
@@ -356,7 +393,7 @@ impl PinRemovalRequestV1 {
             || &bytes[..8] != REQUEST_MAGIC
             || u16::from_be_bytes(copy_array(&bytes[8..10])?) != WIRE_VERSION
             || bytes[10] != REQUEST_KIND
-            || bytes[11] != 0
+            || bytes[11] > 1
             || u32::from_be_bytes(copy_array(&bytes[12..16])?) != REQUEST_BYTES as u32
         {
             return protocol("Network namespace pin request header is invalid");
@@ -367,6 +404,7 @@ impl PinRemovalRequestV1 {
             network_handle: copy_array(&bytes[64..96])?,
             namespace_device: u64::from_be_bytes(copy_array(&bytes[96..104])?),
             namespace_inode: u64::from_be_bytes(copy_array(&bytes[104..112])?),
+            allow_absent: bytes[11] == 1,
         };
         request.validate()?;
         if request.encode().as_slice() != bytes {
