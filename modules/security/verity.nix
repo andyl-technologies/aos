@@ -14,7 +14,7 @@
 ##! root device retarget). The build-side hash-tree, the `root-a-hash` GPT
 ##! partition, and the cmdline `roothash=` append are gated on
 ##! `aos.security.verity.enable` inside lib/build/rootfs.nix,
-##! modules/image/_builder.nix, and pkgs/boot/aos-uki.nix respectively.
+##! the selected package image builder, and the selected boot-artifact tool.
 ##!
 ##! systemd assembles `/dev/mapper/root` from the union of:
 ##!   * the `roothash=<hex>` token on the kernel command line (build-injected),

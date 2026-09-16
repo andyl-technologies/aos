@@ -1478,7 +1478,7 @@ Grounding files:
 `crates/aos-package/src/credential_artifact.rs`,
 `crates/aos-package/src/types.rs`,
 `lib/build/{rootfs.nix,package-root-image.nix}`,
-`pkgs/boot/aos-uki.nix`, `modules/image/_builder.nix`,
+`pkgs/boot/aos-uki.nix`, `pkgs/system/_systemd-abilities/platform/_image-builder.nix`,
 `modules/base/{boot.nix,filesystems.nix,system.nix}`,
 `modules/services/ignition.nix`.
 
@@ -1964,7 +1964,7 @@ it into the same `.cmdline` section that ukify measures
 Authenticode-signs — so the roothash is simultaneously in PCR 11 and under the
 whole-PE signature.
 
-### 4.3 Build side — `modules/image/_builder.nix`
+### 4.3 Build side — `pkgs/system/_systemd-abilities/platform/_image-builder.nix`
 
 1. Thread `rootHashFile = "${rootfs}/root.roothash"` into the `pkgs.aos-uki { … }`
    call.
@@ -2114,7 +2114,7 @@ Grounding: `crates/aos-package/src/types.rs:3081-3112` (`SystemGeneration` /
 `SystemGenerationState`), `crates/aos-package/src/profile/{mod.rs,meta.rs}`
 (`Profile`/`Generation`/`ProfileState`), `crates/aos-package/src/store.rs:251`
 (`create_gc_roots`), `modules/base/activate.sh.in` (staged swap),
-`modules/image/_builder.nix` (ESP/GPT assembly), `modules/base/system.nix:132`
+`pkgs/system/_systemd-abilities/platform/_image-builder.nix` (ESP/GPT assembly), `modules/base/system.nix:132`
 (`stateVersion`).
 
 ## 1. Splitting `SystemGeneration` into two records
@@ -2429,7 +2429,7 @@ boot-counting (§5.2).
 
 Image rollback boots the other A/B UKI slot. It is **not** "just boot the other
 slot" because the ESP `loader.conf` `default aos-*.efi` lexically-highest glob
-(`modules/image/_builder.nix:176-183`) always re-selects the *newer/suspect* UKI
+(`pkgs/system/_systemd-abilities/platform/_image-builder.nix:176-183`) always re-selects the *newer/suspect* UKI
 on the next reboot (review M-rollback-glob). The durable mechanism is therefore:
 
 - **Roll forward with boot-counting.** A newly staged UKI is named with an
@@ -2487,4 +2487,4 @@ contract.
 
 ---
 
-The relevant source loci for implementation are: `crates/aos-package/src/types.rs:3081-3112` (replace `SystemGeneration`/`SystemGenerationState` with `ImageGeneration`/`ImageGenerationState` + `ConfigGeneration`/`ConfigGenerationState`), `crates/aos-package/src/store.rs:251` (`create_gc_roots`: add `cfg/` + `cfgsrc/`, plus a new image-scoped `baselib/<module_abi>` root writer), `crates/aos-package/src/profile/mod.rs` (`Generation` accessors for the two new root dirs), `modules/base/system.nix:132,257` (`moduleAbi` option + `AOS_MODULE_ABI`/`AOS_BASELIB_ABI_HASH` os-release lines), `modules/base/activate.sh.in` (unchanged swap; the new `aos-firstboot-reeval.service` orders before it), and `modules/image/_builder.nix:176-183` (boot-counting tries-suffix + `bootctl set-default` durability over the `default aos-*.efi` glob).
+The relevant source loci for implementation are: `crates/aos-package/src/types.rs:3081-3112` (replace `SystemGeneration`/`SystemGenerationState` with `ImageGeneration`/`ImageGenerationState` + `ConfigGeneration`/`ConfigGenerationState`), `crates/aos-package/src/store.rs:251` (`create_gc_roots`: add `cfg/` + `cfgsrc/`, plus a new image-scoped `baselib/<module_abi>` root writer), `crates/aos-package/src/profile/mod.rs` (`Generation` accessors for the two new root dirs), `modules/base/system.nix:132,257` (`moduleAbi` option + `AOS_MODULE_ABI`/`AOS_BASELIB_ABI_HASH` os-release lines), `modules/base/activate.sh.in` (unchanged swap; the new `aos-firstboot-reeval.service` orders before it), and `pkgs/system/_systemd-abilities/platform/_image-builder.nix:176-183` (boot-counting tries-suffix + `bootctl set-default` durability over the `default aos-*.efi` glob).

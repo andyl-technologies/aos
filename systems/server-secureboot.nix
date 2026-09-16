@@ -25,7 +25,7 @@
   # publication transaction. Keep this test fixture's larger storage and
   # direct-download contracts scoped away from the production server image.
   aos.image.budgets = {
-    maxEspMiB = 512;
+    maxFirmwarePartitionMiB = 512;
     maxDownloadMiB = 768;
   };
   aos.image.allowTestArtifacts = true;

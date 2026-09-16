@@ -84,7 +84,7 @@
   transactionStorageEffects =
     initrdImplementations."aos-boot-transaction-storage-provider:boot-transaction-storage-view-effects";
   seedDependencies = request initrdRequests "aos-boot-preparations" "aos-config-seed-dependencies";
-  installerScript = builtins.readFile ../../modules/image/install-zfs.sh.in;
+  installerScript = builtins.readFile ../../pkgs/system/_systemd-abilities/platform/install-zfs.sh.in;
   unlockScript = builtins.readFile ../../pkgs/boot/_aos-boot-storage/zfs-unlock.sh.in;
   systemdSealAdapter = builtins.readFile ../../pkgs/system/aos-systemd-boot-credential-seal.sh.in;
 in

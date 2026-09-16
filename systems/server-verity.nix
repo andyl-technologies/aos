@@ -24,7 +24,7 @@
   # F1: anchor the immutable erofs root to measured boot via dm-verity. The
   # server profile already sets rootFsType = "erofs" (required by the verity
   # assertion). This flips on the build-side hash tree (lib/build/rootfs.nix),
-  # the root-a-hash partition (modules/image/_builder.nix), the roothash-on-
+  # the root-a-hash partition (selected package image builder), the roothash-on-
   # cmdline append (pkgs/boot/aos-uki.nix), and the eval-side
   # systemd-veritysetup-generator params + /dev/mapper/root retarget
   # (modules/security/verity.nix).
