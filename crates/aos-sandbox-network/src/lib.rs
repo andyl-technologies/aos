@@ -192,7 +192,8 @@ pub use preparation_runtime::{
     NetworkPreparationFinalizationInput, NetworkPreparationRecoveryInput,
     NetworkPreparationRuntimeError, begin_network_preparation_once,
     finalize_executed_network_preparation, finalize_observation_worker_preparation,
-    finalize_recovered_ambiguous_network_preparation, publish_committed_network_preparation,
+    finalize_recovered_ambiguous_network_preparation,
+    finalize_recovered_observation_worker_preparation, publish_committed_network_preparation,
 };
 pub use protected_policy::{NETWORK_POLICY_CATALOG_FILE_NAME, ProtectedNetworkPolicyErrorV1};
 pub use rtnetlink_reader::{

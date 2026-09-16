@@ -41,9 +41,10 @@ use crate::worker_process::{
     validate_same_worker_execution, validate_systemd_manager_peer,
 };
 use crate::worker_runtime::{
-    NetworkWorkerRuntimeError, PreparedNetworkWorkerOutput, current_cgroup, deadline_after,
-    normalized_absolute_path, open_cgroup_root, quiesce_worker, receive_record_before,
-    send_record_before, send_record_with_descriptors_before, wait_for_quiescence,
+    NetworkWorkerRuntimeError, PreparedNetworkWorkerOutput, RecoveredNetworkPreparationObservation,
+    current_cgroup, deadline_after, normalized_absolute_path, open_cgroup_root, quiesce_worker,
+    receive_record_before, send_record_before, send_record_with_descriptors_before,
+    wait_for_quiescence,
 };
 
 const SYSTEMD_MANAGER_CGROUP: &str = "init.scope";
@@ -238,6 +239,37 @@ impl SystemdNetworkObservationExecutor {
             plan,
         )?;
         self.execute_observation(&request, prepared.namespace())
+    }
+
+    /// Re-observes one restart-retained ambiguous preparation.
+    ///
+    /// The recovery value is derived from the protected creation journal and
+    /// exact retained namespace descriptor. This path carries no preparation
+    /// dispatch authority and therefore cannot repeat the original effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for plan substitution, stale namespace custody,
+    /// malformed framing, an unequal or invalid kernel snapshot, or unproved
+    /// whole-cgroup quiescence.
+    pub fn observe_preparation_recovery_once(
+        &mut self,
+        recovered: RecoveredNetworkPreparationObservation<'_>,
+        plan: &NetworkKernelPlanV1,
+    ) -> Result<PreparedNetworkObservationV1, NetworkObservationWorkerError> {
+        if recovered.kernel_plan_digest() != plan.digest() {
+            return protocol("preparation recovery plan changed");
+        }
+        let request = ObservationRequestV1::new(
+            recovered.request_id(),
+            recovered.effect_digest(),
+            recovered.kernel_plan_digest(),
+            recovered.kernel_boot_id(),
+            recovered.namespace().identity(),
+            NetworkNamespaceObservedStateV1::default_drop(),
+            plan,
+        )?;
+        self.execute_observation(&request, recovered.namespace())
     }
 
     /// Observes one present lifecycle postcondition and proves worker exit.

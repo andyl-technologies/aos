@@ -329,6 +329,66 @@ pub fn finalize_observation_worker_preparation(
     })
 }
 
+/// Commits and publishes one recovered preparation observation-worker proof.
+///
+/// Recovery authority is reconstructed from the exact ambiguous journal row
+/// and restart-retained namespace descriptor before the proof is accepted.
+/// This function cannot construct or redispatch a preparation effect.
+///
+/// # Errors
+///
+/// Returns [`NetworkPreparationRuntimeError::ObservationProof`] when the proof
+/// differs from the retained recovery authority or canonical plan, and
+/// otherwise propagates durable commit or fixed-pin publication failures.
+pub fn finalize_recovered_observation_worker_preparation(
+    coordinator: &mut NetworkLifecycleAdmissionCoordinator,
+    preparations: &NetworkPreparationCatalogV1,
+    namespaces: &mut NetworkNamespaceCatalogV1,
+    input: NetworkPreparationRecoveryInput<'_>,
+    proof: PreparedNetworkObservationV1,
+) -> Result<FinalizedNetworkPreparationCommitV1, NetworkPreparationRuntimeError> {
+    let recovered = coordinator.recover_ambiguous_preparation_observation(
+        input.request_id,
+        input.effect_digest,
+        input.namespace,
+    )?;
+    let namespace_identity = recovered.namespace().identity();
+    if proof.request_id() != recovered.request_id()
+        || proof.effect_digest() != recovered.effect_digest()
+        || proof.kernel_plan_digest() != recovered.kernel_plan_digest()
+        || proof.kernel_plan_digest() != input.kernel_plan.digest()
+        || proof.kernel_boot_id() != recovered.kernel_boot_id()
+        || proof.namespace() != namespace_identity
+        || proof.observed_state() != crate::NetworkNamespaceObservedStateV1::default_drop()
+    {
+        return Err(NetworkPreparationRuntimeError::ObservationProof);
+    }
+
+    let verified = VerifiedNetworkResultV1::verify_preparation(
+        proof.request_id(),
+        ObjectDigest::from_bytes(Sha256::digest(input.request_body).into()),
+        input.resolution,
+        proof.kernel_boot_id(),
+        namespace_identity.device,
+        namespace_identity.inode,
+        proof.kernel_plan_digest(),
+        proof.observation_digest(),
+    )?;
+    let result = coordinator.commit_verified_preparation(
+        proof.request_id(),
+        proof.effect_digest(),
+        verified,
+    )?;
+    let publication =
+        publish_committed_network_preparation(coordinator, preparations, namespaces, result)?;
+
+    Ok(FinalizedNetworkPreparationCommitV1 {
+        observation_digest: proof.observation_digest(),
+        result,
+        publication,
+    })
+}
+
 /// Re-observes, commits, and publishes one ambiguous preparation after restart.
 ///
 /// The coordinator derives a read-only observation token from the exact

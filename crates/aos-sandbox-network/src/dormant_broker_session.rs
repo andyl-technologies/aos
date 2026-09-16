@@ -24,11 +24,13 @@ use crate::{
     NetworkNamespaceLifecycleTransitionV1, NetworkNamespacePinWorkerError,
     NetworkNamespaceStoreError, NetworkNamespaceStoreName, NetworkNamespaceStoreOutcome,
     NetworkObservationWorkerError, NetworkPreparationCatalogV1,
-    NetworkPreparationFinalizationInput, NetworkPreparationRuntimeError,
-    NetworkPrepareExecutionOutcomeV1, NetworkWorkerRuntimeError, PreparedNetworkObservationV1,
-    SystemdNetworkLifecycleExecutor, SystemdNetworkNamespacePinExecutor,
-    SystemdNetworkNamespaceStore, SystemdNetworkObservationExecutor, SystemdNetworkPrepareExecutor,
+    NetworkPreparationFinalizationInput, NetworkPreparationRecoveryInput,
+    NetworkPreparationRuntimeError, NetworkPrepareExecutionOutcomeV1, NetworkWorkerRuntimeError,
+    PreparedNetworkObservationV1, SystemdNetworkLifecycleExecutor,
+    SystemdNetworkNamespacePinExecutor, SystemdNetworkNamespaceStore,
+    SystemdNetworkObservationExecutor, SystemdNetworkPrepareExecutor,
     begin_network_preparation_once, finalize_observation_worker_preparation,
+    finalize_recovered_observation_worker_preparation,
 };
 
 mod sealed {
@@ -363,6 +365,42 @@ impl DormantNetworkBrokerCallsiteV1 for ProductionNetworkBrokerCompositionV1<'_>
                             &worker_output,
                         );
                         finalize_observation_worker_preparation(
+                            self.coordinator,
+                            self.preparations,
+                            self.namespaces,
+                            input,
+                            proof,
+                        )?
+                        .result()
+                    }
+                    NetworkAdmissionOutcome::ObserveOnly {
+                        phase: crate::DurableNetworkPhase::Ambiguous,
+                        effect_digest,
+                    } => {
+                        let target = self
+                            .activation
+                            .namespace_for_handle(
+                                *preparation.resolution().reserved_network_handle(),
+                            )
+                            .ok_or(DormantNetworkBrokerCallErrorV1::StaleKernel)?;
+                        let recovered =
+                            self.coordinator.recover_ambiguous_preparation_observation(
+                                request_id,
+                                effect_digest,
+                                target.namespace(),
+                            )?;
+                        let proof = self
+                            .observation_executor
+                            .observe_preparation_recovery_once(recovered, &kernel_plan)?;
+                        let input = NetworkPreparationRecoveryInput::new(
+                            request_id,
+                            effect_digest,
+                            request_body,
+                            preparation.resolution(),
+                            &kernel_plan,
+                            target.namespace(),
+                        );
+                        finalize_recovered_observation_worker_preparation(
                             self.coordinator,
                             self.preparations,
                             self.namespaces,
