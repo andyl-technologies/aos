@@ -27,7 +27,9 @@ use super::profile::meta::{list_meta, orphaned_by_registry};
 use super::registry::{Registry, RegistrySet, store_path_hash};
 use super::store;
 use super::sysroot_lock;
-use super::types::{InstalledMeta, PackageMeta, ProfileScope};
+use super::types::{
+    DocumentationArtifactMeta, InstalledMeta, PackageContractMeta, PackageMeta, ProfileScope,
+};
 use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
@@ -234,7 +236,7 @@ pub async fn show(
         }
 
         if let Some(installed) = find_installed_package(&meta_list, package, Some(filter)) {
-            return show_installed_unavailable(installed, &meta_list, printer).await;
+            return show_installed_unavailable(installed, &meta_list, config.scope, printer).await;
         }
 
         if registries.get_registry(filter).is_none() {
@@ -246,7 +248,7 @@ pub async fn show(
     if let Some((reg, meta)) = registries.resolve(package) {
         show_registry_package(config, reg, meta, &meta_list, printer)
     } else if let Some(installed) = find_installed_package(&meta_list, package, None) {
-        show_installed_unavailable(installed, &meta_list, printer).await
+        show_installed_unavailable(installed, &meta_list, config.scope, printer).await
     } else {
         bail!("package '{package}' not found in any registry")
     }
@@ -271,6 +273,18 @@ fn show_registry_package(
         .find(|m| store_path_hash(&m.store_path) == pkg_hash);
 
     let is_installed = installed_meta.is_some();
+    let documentation_hint = meta.documentation.as_ref().map(|_| {
+        documentation_hint(
+            &meta.name,
+            config.scope,
+            installed_meta.is_some_and(|installed| {
+                installed
+                    .apm
+                    .as_ref()
+                    .is_some_and(|apm| apm.documentation.is_some())
+            }),
+        )
+    });
 
     // Resolve dependency names from references.
     let dep_names = resolve_dependency_names(meta, reg);
@@ -292,6 +306,9 @@ fn show_registry_package(
             "dependencies": dep_names,
             "source_drv": meta.source_drv,
             "maintainer": meta.maintainer,
+            "documentation": documentation_availability(meta.documentation.as_ref()),
+            "package_contract": contract_availability(meta.contract.as_ref()),
+            "documentation_hint": documentation_hint,
         });
         printer.json(&json_obj);
     } else {
@@ -314,6 +331,12 @@ fn show_registry_package(
         }
         printer.kv("Source drv", &meta.source_drv);
         printer.kv("Maintainer", &meta.maintainer);
+        print_document_authority(
+            printer,
+            meta.documentation.as_ref(),
+            meta.contract.as_ref(),
+            documentation_hint.as_deref(),
+        );
         // Show sysroot-specific information.
         crate::sysroot::show_sysroot_info(meta, printer);
 
@@ -355,6 +378,7 @@ fn show_registry_package(
 async fn show_installed_unavailable(
     installed: &InstalledMeta,
     meta_list: &[InstalledMeta],
+    scope: ProfileScope,
     printer: &Printer,
 ) -> Result<()> {
     let apm = installed
@@ -362,6 +386,10 @@ async fn show_installed_unavailable(
         .as_ref()
         .context("installed metadata is missing APM package state")?;
     let dep_names = installed_dependency_names(installed, meta_list).await?;
+    let documentation_hint = apm
+        .documentation
+        .as_ref()
+        .map(|_| documentation_hint(&apm.name, scope, true));
 
     if printer.mode() == OutputMode::Json {
         let json_obj = serde_json::json!({
@@ -380,6 +408,9 @@ async fn show_installed_unavailable(
             "dependencies": dep_names,
             "source_drv": null,
             "maintainer": null,
+            "documentation": documentation_availability(apm.documentation.as_ref()),
+            "package_contract": contract_availability(apm.contract.as_ref()),
+            "documentation_hint": documentation_hint,
         });
         printer.json(&json_obj);
     } else {
@@ -395,9 +426,87 @@ async fn show_installed_unavailable(
         } else {
             printer.kv("Dependencies", &dep_names.join(", "));
         }
+        print_document_authority(
+            printer,
+            apm.documentation.as_ref(),
+            apm.contract.as_ref(),
+            documentation_hint.as_deref(),
+        );
     }
 
     Ok(())
+}
+
+fn documentation_availability(metadata: Option<&DocumentationArtifactMeta>) -> serde_json::Value {
+    metadata.map_or_else(
+        || serde_json::json!({ "available": false }),
+        |metadata| {
+            serde_json::json!({
+                "available": true,
+                "format": metadata.format,
+                "document_sha256": metadata.document_sha256,
+                "semantic_schema_sha256": metadata.semantic_schema_sha256,
+                "nar_hash": metadata.nar_hash,
+            })
+        },
+    )
+}
+
+fn contract_availability(metadata: Option<&PackageContractMeta>) -> serde_json::Value {
+    metadata.map_or_else(
+        || serde_json::json!({ "available": false }),
+        |metadata| {
+            serde_json::json!({
+                "available": true,
+                "document_sha256": metadata.document.document_sha256,
+                "nar_hash": metadata.document.nar_hash,
+            })
+        },
+    )
+}
+
+fn documentation_hint(package: &str, scope: ProfileScope, installed: bool) -> String {
+    let command = match scope {
+        ProfileScope::User => format!("apm docs show {package}"),
+        ProfileScope::System => format!("apm docs show {package} --system"),
+    };
+    if installed {
+        command
+    } else {
+        format!("install the package, then run `{command}`")
+    }
+}
+
+fn print_document_authority(
+    printer: &Printer,
+    documentation: Option<&DocumentationArtifactMeta>,
+    contract: Option<&PackageContractMeta>,
+    hint: Option<&str>,
+) {
+    if let Some(documentation) = documentation {
+        printer.kv("Documentation", "available");
+        printer.kv("Documentation document", &documentation.document_sha256);
+        printer.kv(
+            "Documentation semantic schema",
+            &documentation.semantic_schema_sha256,
+        );
+    } else {
+        printer.kv("Documentation", "unavailable");
+    }
+
+    if let Some(contract) = contract {
+        printer.kv("Package contract", "available");
+        printer.kv(
+            "Package contract document",
+            &contract.document.document_sha256,
+        );
+    } else {
+        printer.kv("Package contract", "unavailable");
+    }
+
+    if let Some(hint) = hint {
+        printer.kv("Documentation hint", hint);
+    }
 }
 
 /// Dependency display names for an installed package: direct store
@@ -963,7 +1072,10 @@ mod tests {
 
     use crate::registry::Registry;
     use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
-    use crate::types::{ApmMeta, InstalledMeta, RegistryConfig};
+    use crate::types::{
+        ApmMeta, InstalledMeta, PackageContractArtifactMeta, PackageContractDocumentMeta,
+        RegistryConfig,
+    };
 
     /// Helper: create a registry in a temp directory from TOML test fixtures.
     fn make_registry(
@@ -1152,6 +1264,72 @@ mod tests {
         assert_eq!(format_size(14_893_056), "14.2 MiB");
         assert_eq!(format_size(1_073_741_824), "1.0 GiB");
         assert_eq!(format_size(2_684_354_560), "2.5 GiB");
+    }
+
+    #[test]
+    fn show_authority_summaries_use_verified_metadata_identities() {
+        let documentation = DocumentationArtifactMeta {
+            format: "aos.package-documentation/v1".to_string(),
+            store_path: "/nix/store/documentation".to_string(),
+            nar_hash: "sha256:documentation-nar".to_string(),
+            nar_size: 42,
+            document_sha256: "sha256:documentation-document".to_string(),
+            document_size: 41,
+            semantic_schema_sha256: "sha256:documentation-schema".to_string(),
+            references: Vec::new(),
+        };
+        let artifact = PackageContractArtifactMeta {
+            content: "sha256:content".to_string(),
+            store_path: "/nix/store/artifact".to_string(),
+            nar_hash: "sha256:artifact-nar".to_string(),
+            nar_size: 43,
+            closure_digest: "sha256:closure".to_string(),
+            closure: Vec::new(),
+        };
+        let contract = PackageContractMeta {
+            document: PackageContractDocumentMeta {
+                store_path: "/nix/store/contract".to_string(),
+                nar_hash: "sha256:contract-nar".to_string(),
+                nar_size: 44,
+                document_sha256: "sha256:contract-document".to_string(),
+                document_size: 45,
+                references: Vec::new(),
+            },
+            payload: artifact.clone(),
+            source: artifact,
+            selectors: Vec::new(),
+            provenance: "contracts/fixture.dsse.json".to_string(),
+        };
+
+        let documentation_summary = documentation_availability(Some(&documentation));
+        assert_eq!(documentation_summary["available"], true);
+        assert_eq!(
+            documentation_summary["document_sha256"],
+            "sha256:documentation-document"
+        );
+        assert_eq!(
+            documentation_summary["semantic_schema_sha256"],
+            "sha256:documentation-schema"
+        );
+
+        let contract_summary = contract_availability(Some(&contract));
+        assert_eq!(contract_summary["available"], true);
+        assert_eq!(
+            contract_summary["document_sha256"],
+            "sha256:contract-document"
+        );
+        assert_eq!(
+            documentation_hint("fixture", ProfileScope::System, true),
+            "apm docs show fixture --system"
+        );
+        assert_eq!(
+            documentation_availability(None),
+            serde_json::json!({ "available": false })
+        );
+        assert_eq!(
+            contract_availability(None),
+            serde_json::json!({ "available": false })
+        );
     }
 
     // 7. list_installed_filters_correctly
