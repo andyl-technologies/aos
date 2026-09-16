@@ -30,6 +30,10 @@ name = "aos-configuration-provider"
 path = "src/configuration_provider.rs"
 
 [[bin]]
+name = "aos-provisioning-configuration-evaluator"
+path = "src/provisioning_configuration_evaluator.rs"
+
+[[bin]]
 name = "aos-configuration-observer"
 path = "src/configuration_observer.rs"
 

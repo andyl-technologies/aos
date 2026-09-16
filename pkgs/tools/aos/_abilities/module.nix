@@ -7,6 +7,7 @@
     ./control-plane/module.nix
     ./package-attestation-quote.nix
     ./package-profile-convergence.nix
+    ./provisioning-configuration-evaluator.nix
     ./registry-snapshot.nix
     ./release-coordinator/module.nix
   ];

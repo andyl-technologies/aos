@@ -596,6 +596,7 @@ in
           mkdir -p "$packageRuntime/libexec"
           mv "$out/bin/aos-configuration-provider" "$packageRuntime/libexec/"
           mv "$out/bin/aos-configuration-observer" "$packageRuntime/libexec/"
+          mv "$out/bin/aos-provisioning-configuration-evaluator" "$packageRuntime/libexec/"
           mv \
             "$out/bin/aos-image-rollout-boot" \
             "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped"
@@ -629,6 +630,7 @@ in
         test "$(readlink "$packageRuntime/libexec/aos-socat")" = "${socat}/bin/socat"
         test -x "$packageRuntime/libexec/aos-configuration-provider"
         test -x "$packageRuntime/libexec/aos-configuration-observer"
+        test -x "$packageRuntime/libexec/aos-provisioning-configuration-evaluator"
         test -x "$packageRuntime/libexec/aos-image-rollout-boot"
         test -x "$packageRuntime/libexec/aos-registry-snapshot-provider"
         test -x "$packageRuntime/libexec/aos-image-rollout-observer"
