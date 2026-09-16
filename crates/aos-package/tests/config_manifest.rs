@@ -27,7 +27,7 @@ fn shared_fixture_rejects_unknown_top_level_fields() {
 }
 
 #[test]
-fn shared_fixture_inputs_are_exactly_the_five_declared_inputs() {
+fn shared_fixture_inputs_are_exactly_the_six_declared_inputs() {
     let value: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
     let mut keys: Vec<&str> = value["inputs"]
         .as_object()
@@ -43,7 +43,8 @@ fn shared_fixture_inputs_are_exactly_the_five_declared_inputs() {
             "evaluator",
             "host_nix",
             "instance_facts",
-            "package_modules"
+            "package_modules",
+            "store_view"
         ]
     );
 }

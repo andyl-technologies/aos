@@ -25,6 +25,8 @@ const RUNTIME_GRAPH: &str = "/run/aos/graph.json";
 /// Supplies the image-owned and operator-configurable paths for boot evaluation.
 #[derive(Debug, Clone)]
 pub struct ServiceCommand {
+    /// Selected immutable view of the running image's package store.
+    pub store_view: super::store_view::StoreViewLocator,
     /// Image-owned base module library.
     pub base_lib: PathBuf,
     /// Fallback module ABI when the running image omits it.
@@ -75,6 +77,7 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
     let desired = command.desired.is_file().then(|| command.desired.clone());
 
     let result = run_eval_command(&EvalCommand {
+        store_view: command.store_view.clone(),
         host_nix,
         runtime_modules,
         runtime_module_root,

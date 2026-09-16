@@ -19,6 +19,8 @@ use crate::registry::{RegistrySet, store_path_hash};
 use crate::types::PackageContractMeta;
 use aos_ability_model::{ArtifactReference, LocalKey};
 
+use super::store_view::StoreViewLocator;
+
 /// Identifies the authority that supplied one exact package contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "origin", rename_all = "kebab-case", deny_unknown_fields)]
@@ -144,7 +146,7 @@ pub struct RuntimeRealisationPin {
 /// dependency cycle exists, the selected registry has no `store/` graph, a
 /// graph member has no blessed NAR, or root metadata disagrees with the graph.
 pub fn resolve_runtime(registries: &RegistrySet, selected: &[String]) -> Result<RuntimeResolution> {
-    resolve_runtime_with_local(registries, &BTreeMap::new(), selected)
+    resolve_runtime_inner(registries, &BTreeMap::new(), selected, None)
 }
 
 /// Resolves packages with registry priority and measured-image fallback.
@@ -164,6 +166,16 @@ pub fn resolve_runtime_with_local(
     registries: &RegistrySet,
     local: &BTreeMap<String, LocalRuntimePackage>,
     selected: &[String],
+    store_view: &StoreViewLocator,
+) -> Result<RuntimeResolution> {
+    resolve_runtime_inner(registries, local, selected, Some(store_view))
+}
+
+fn resolve_runtime_inner(
+    registries: &RegistrySet,
+    local: &BTreeMap<String, LocalRuntimePackage>,
+    selected: &[String],
+    store_view: Option<&StoreViewLocator>,
 ) -> Result<RuntimeResolution> {
     let mut pending = selected.iter().cloned().collect::<BTreeSet<_>>();
     let mut closures = Vec::new();
@@ -313,7 +325,9 @@ pub fn resolve_runtime_with_local(
         let package = local
             .get(&name)
             .with_context(|| format!("image-local package '{name}' disappeared"))?;
-        let closure = local_closure(package)
+        let store_view =
+            store_view.context("image-local package resolution has no selected store view")?;
+        let closure = local_closure(package, store_view)
             .with_context(|| format!("validating image-local closure for '{name}'"))?;
         edges.insert(name.clone(), Vec::new());
         let root_hash = store_path_hash(&package.store_path);
@@ -345,7 +359,10 @@ pub fn resolve_runtime_with_local(
     Ok(RuntimeResolution { packages, edges })
 }
 
-fn local_closure(package: &LocalRuntimePackage) -> Result<Vec<RuntimeClosurePin>> {
+fn local_closure(
+    package: &LocalRuntimePackage,
+    store_view: &StoreViewLocator,
+) -> Result<Vec<RuntimeClosurePin>> {
     if let Some(cached) = package.closure.borrow().as_ref() {
         return Ok(cached.clone());
     }
@@ -368,7 +385,7 @@ fn local_closure(package: &LocalRuntimePackage) -> Result<Vec<RuntimeClosurePin>
         .map(str::trim)
         .filter(|path| !path.is_empty())
     {
-        let lower_path = immutable_lower_store_path(path)?;
+        let lower_path = store_view.read_path(Path::new(path))?;
         if !lower_path.exists() {
             bail!("image-local closure member {path} is absent from the immutable image store");
         }
@@ -383,35 +400,6 @@ fn local_closure(package: &LocalRuntimePackage) -> Result<Vec<RuntimeClosurePin>
     members.dedup_by(|left, right| left.store_path_hash == right.store_path_hash);
     *package.closure.borrow_mut() = Some(members.clone());
     Ok(members)
-}
-
-/// Resolves a canonical store path through the immutable lower image store.
-///
-/// # Errors
-///
-/// Returns an error for nested, relative, or otherwise non-canonical store
-/// paths. Callers must separately require the returned path to exist.
-pub(crate) fn immutable_lower_store_path(path: &str) -> Result<std::path::PathBuf> {
-    let store_path = Path::new(path);
-    if store_path.parent() != Some(Path::new("/nix/store")) {
-        bail!("image catalog contains non-canonical store path {path:?}");
-    }
-    let name = store_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("image catalog store path is not UTF-8")?;
-    let Some((hash, output_name)) = name.split_once('-') else {
-        bail!("image catalog store path has no output name: {path:?}");
-    };
-    if hash.len() != 32
-        || output_name.is_empty()
-        || !hash
-            .bytes()
-            .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
-    {
-        bail!("image catalog contains malformed store path {path:?}");
-    }
-    Ok(Path::new("/nix.lower/store").join(name))
 }
 
 pub(crate) fn local_store_identity_at(identity: &str, read_path: &Path) -> Result<(String, u64)> {
@@ -554,9 +542,19 @@ mod tests {
             },
         );
 
-        let resolution =
-            resolve_runtime_with_local(&registries, &image_packages, &["image-web".to_string()])
-                .unwrap();
+        let store_view = StoreViewLocator::new(
+            "/nix/store".into(),
+            "/immutable/store".into(),
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-contract/contract.json".into(),
+        )
+        .unwrap();
+        let resolution = resolve_runtime_with_local(
+            &registries,
+            &image_packages,
+            &["image-web".to_string()],
+            &store_view,
+        )
+        .unwrap();
         let selected = &resolution.packages["image-web"];
 
         assert_eq!(selected.origin, RuntimePackageOrigin::Image);

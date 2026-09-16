@@ -62,6 +62,33 @@
       };
     };
   };
+  storeView = {
+    requirementTemplates.package-store-read-view =
+      lib.abilities.interfaceSelector {
+        name = "aos.package-store.read-view";
+        abi = 1;
+      }
+      // {
+        description = "Require the selected immutable package-store view for host evaluation.";
+        methods = ["observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+    requests.package-store-read-view = {
+      requirement = "package-store-read-view";
+      consumer = consumerInstance;
+      scope = ["boot-image"];
+      parameters.scope = "boot-image";
+    };
+  };
+  storeViewInterface = lib.abilities.interfaces.packageStoreReadView.interfaces.readView;
+  storeViewLocator = lib.abilities.canonicalJsonOf {
+    type = storeViewInterface.locatorType;
+    value = resultOf "package-store-read-view" "locator";
+    maxBytes = 4096;
+  };
+  storeViewResource = resultOf "package-store-read-view" "read-view-resource";
   registrySynchronization = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
@@ -370,6 +397,8 @@
               entry_point = "bin/aos-package-runtime";
               arguments = [
                 "__eval-service"
+                "--store-view"
+                storeViewLocator
                 "--base-lib"
                 cfg.baseLib
                 "--module-abi"
@@ -396,7 +425,10 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        prerequisites = [(resultOf "nix-store-database" "readiness-resource")];
+        prerequisites = [
+          (resultOf "nix-store-database" "readiness-resource")
+          storeViewResource
+        ];
         after = [
           (resultOf "local-filesystems" "readiness-resource")
           (resultOf "network-readiness" "readiness-resource")
@@ -518,7 +550,8 @@
     );
   baseContributions = builtins.map serviceManagement.splitContribution declaredFragments;
   storeDatabaseContribution = serviceManagement.splitContribution storeDatabase;
-  contributions = builtins.map serviceManagement.splitContribution (configuredFragments ++ [storeDatabase]);
+  storeViewContribution = serviceManagement.splitContribution storeView;
+  contributions = builtins.map serviceManagement.splitContribution (configuredFragments ++ [storeDatabase storeView]);
 in {
   options.aos.packageRuntime.configurationEvaluation = {
     enable = lib.mkOption {
@@ -578,7 +611,10 @@ in {
     {
       aos.abilities = lib.mkMerge (
         builtins.map (contribution: contribution.declarations) baseContributions
-        ++ lib.optional cfg.enable storeDatabaseContribution.declarations
+        ++ lib.optionals cfg.enable [
+          storeDatabaseContribution.declarations
+          storeViewContribution.declarations
+        ]
       );
     }
     (lib.mkIf (hostStage && cfg.enable) {

@@ -48,6 +48,15 @@ fn fixed_point_inputs(seed_set: Vec<WorkingSetMember>) -> FixpointInputs {
     }
 }
 
+fn store_view() -> store_view::StoreViewLocator {
+    store_view::StoreViewLocator::new(
+        "/nix/store".into(),
+        "/immutable/store".into(),
+        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-contract/contract.json".into(),
+    )
+    .expect("valid test store view")
+}
+
 #[test]
 fn fixed_point_evaluates_the_complete_selected_set_once() {
     let evaluator = ScriptedEvaluator::new(vec![EvalClass::Manifest("{}".to_string())]);
@@ -99,6 +108,7 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
     std::fs::write(&out, b"stale manifest").unwrap();
     std::fs::write(&graph, b"stale graph").unwrap();
     let cmd = EvalCommand {
+        store_view: store_view(),
         host_nix,
         runtime_modules: Vec::new(),
         runtime_module_root: None,
@@ -132,6 +142,7 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
     let host_nix = tmp.path().join("host.nix");
     std::fs::write(&host_nix, b"{ }").unwrap();
     let cmd = EvalCommand {
+        store_view: store_view(),
         host_nix,
         runtime_modules: Vec::new(),
         runtime_module_root: None,
@@ -160,6 +171,7 @@ fn host_package_selection_rejects_a_mutable_input_path() {
     let host_nix = tmp.path().join("host.nix");
     std::fs::write(&host_nix, b"{ aos.apm.desiredPackages = []; }\n").unwrap();
     let cmd = EvalCommand {
+        store_view: store_view(),
         host_nix,
         runtime_modules: Vec::new(),
         runtime_module_root: None,
@@ -192,6 +204,7 @@ fn image_default_host_accepts_only_the_empty_module_without_operator_keys() {
     let host_nix = tmp.path().join("host.nix");
     std::fs::write(&host_nix, b"{}\n").unwrap();
     let mut cmd = EvalCommand {
+        store_view: store_view(),
         host_nix: host_nix.clone(),
         runtime_modules: Vec::new(),
         runtime_module_root: None,

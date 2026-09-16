@@ -1071,6 +1071,7 @@ fn is_nix_path_byte(b: u8) -> bool {
 pub struct RegistryPackageModules {
     registries: RegistrySet,
     image_packages: BTreeMap<String, super::runtime::LocalRuntimePackage>,
+    store_view: Option<super::store_view::StoreViewLocator>,
 }
 
 impl RegistryPackageModules {
@@ -1079,6 +1080,7 @@ impl RegistryPackageModules {
         Self {
             registries,
             image_packages: BTreeMap::new(),
+            store_view: None,
         }
     }
 
@@ -1098,7 +1100,7 @@ impl RegistryPackageModules {
     ///
     /// Returns an error when APM configuration, a registry, or image package
     /// static contract cannot be loaded and authenticated.
-    pub fn load_system() -> Result<Self> {
+    pub fn load_system(store_view: &super::store_view::StoreViewLocator) -> Result<Self> {
         let scope = crate::types::ProfileScope::System;
         let config = crate::config::ApmConfig::load(scope)?;
         let enabled = config.enabled_registries();
@@ -1107,11 +1109,12 @@ impl RegistryPackageModules {
             &enabled,
             &native_platform(),
         )?;
-        let image_packages = super::static_packages::load()
+        let image_packages = super::static_packages::load(store_view)
             .context("loading checked packages from the host static ability contract")?;
         Ok(Self {
             registries,
             image_packages,
+            store_view: Some(store_view.clone()),
         })
     }
 }
@@ -1150,6 +1153,7 @@ fn resolved_registry_package_module(
 fn resolved_image_package_module(
     name: &str,
     package: &super::runtime::LocalRuntimePackage,
+    store_view: &super::store_view::StoreViewLocator,
 ) -> Result<Option<ResolvedPackageModule>> {
     let Some(origin) = package.contract.as_ref() else {
         return Ok(None);
@@ -1161,6 +1165,7 @@ fn resolved_image_package_module(
         &package.store_path,
         &package.nar_hash,
         origin,
+        store_view,
     )?;
 
     Ok(Some(ResolvedPackageModule {
@@ -1189,7 +1194,13 @@ impl PackageModuleResolver for RegistryPackageModules {
         let Some((local_name, local)) = self.image_packages.get_key_value(package) else {
             return Ok(None);
         };
-        resolved_image_package_module(local_name, local)
+        resolved_image_package_module(
+            local_name,
+            local,
+            self.store_view
+                .as_ref()
+                .context("image package resolver has no selected store view")?,
+        )
     }
 
     fn package_module_exact(
@@ -1223,7 +1234,13 @@ impl PackageModuleResolver for RegistryPackageModules {
         {
             return Ok(None);
         }
-        resolved_image_package_module(local_name, local)
+        resolved_image_package_module(
+            local_name,
+            local,
+            self.store_view
+                .as_ref()
+                .context("image package resolver has no selected store view")?,
+        )
     }
 }
 

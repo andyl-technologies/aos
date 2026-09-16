@@ -62,6 +62,7 @@ pub mod service;
 pub mod stage_handoff;
 pub(crate) mod static_packages;
 pub mod stock;
+pub mod store_view;
 pub mod system_roots;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -497,6 +498,8 @@ fn assign_runtime_outputs(members: &mut [WorkingSetMember], runtime: &runtime::R
 /// Parameters for the on-host config-eval command.
 #[derive(Debug, Clone)]
 pub struct EvalCommand {
+    /// Selected immutable view of the running image's package store.
+    pub store_view: store_view::StoreViewLocator,
     /// The delivered leaf `host.nix` path.
     pub host_nix: PathBuf,
     /// Ordered runtime operator module entrypoints from one immutable set.
@@ -628,6 +631,10 @@ pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
 /// Returns the same failures as [`run_eval_command`]. No report or manifest is
 /// produced unless the fixpoint converges and the manifest is validated.
 pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalCommandReport> {
+    cmd.store_view
+        .validate()
+        .context("validating the selected package-store read view")?;
+
     // A failed re-evaluation must never leave an older manifest looking like
     // fresh output to ConditionPathExists or checked activation preflight.
     remove_if_present(&cmd.out)?;
@@ -656,10 +663,10 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     // the removed registry-wide provides index. When apm config is
     // unavailable or corrupt, fail closed before selecting or fetching any
     // package. Off-host callers inject an explicit resolver instead.
-    let resolver = stock::RegistryPackageModules::load_system()
+    let resolver = stock::RegistryPackageModules::load_system(&cmd.store_view)
         .context("loading authenticated system registry snapshot for config evaluation")?;
     if let Some(snapshot) = &cmd.registry_snapshot {
-        validate_registry_authority(&resolver, snapshot)?;
+        validate_registry_authority(&resolver, snapshot, &cmd.store_view)?;
     }
 
     let mut seed_set = load_host_selection(cmd)?;
@@ -684,6 +691,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         resolver.registries(),
         resolver.image_packages(),
         &initially_selected,
+        &cmd.store_view,
     )
     .context("resolving selected runtime package closures")?;
     for package in runtime.packages.keys() {
@@ -752,6 +760,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             resolver.registries(),
             resolver.image_packages(),
             &selected,
+            &cmd.store_view,
         )
         .context("resolving converged runtime package closures")?;
         let mut next = candidate.working_set.clone();
@@ -794,6 +803,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
 fn validate_registry_authority(
     resolver: &stock::RegistryPackageModules,
     snapshot: &registry_snapshot_provider::SynchronizedSnapshot,
+    store_view: &store_view::StoreViewLocator,
 ) -> Result<()> {
     registry_snapshot_provider::validate_synchronized_snapshot(snapshot)?;
     let releases = resolver
@@ -817,7 +827,7 @@ fn validate_registry_authority(
         releases == snapshot.releases,
         "configuration registry authority differs from the synchronized snapshot"
     );
-    let (static_contract, _) = static_packages::checked_host_selection()
+    let (static_contract, _) = static_packages::checked_host_selection(store_view)
         .context("revalidating the synchronized immutable package contract")?;
     anyhow::ensure!(
         static_contract == snapshot.static_contract,
@@ -1088,8 +1098,12 @@ fn enrich_manifest(
         .and_then(|inputs| inputs.remove("ability_activation"));
 
     enrich_runtime_projection(object, runtime)?;
-    let ability_activation =
-        enrich_ability_activation(ability_activation, runtime, &outcome.ability_fixed_point)?;
+    let ability_activation = enrich_ability_activation(
+        ability_activation,
+        runtime,
+        &outcome.ability_fixed_point,
+        &cmd.store_view,
+    )?;
     if let Some(activation) = &ability_activation {
         retain_ability_sidecar_roots(object, activation)?;
     }
@@ -1200,6 +1214,7 @@ fn enrich_manifest(
         },
         "host_nix": host_input,
         "instance_facts": facts_input,
+        "store_view": cmd.store_view,
     });
     if let Some(runtime_modules) = runtime_modules {
         inputs
@@ -1236,6 +1251,7 @@ fn enrich_ability_activation(
     input: Option<serde_json::Value>,
     runtime: &runtime::RuntimeResolution,
     fixed_point: &ability_rounds::AbilityFixedPointProjection,
+    store_view: &store_view::StoreViewLocator,
 ) -> Result<Option<serde_json::Value>> {
     let requires_effect_activation =
         runtime
@@ -1252,6 +1268,7 @@ fn enrich_ability_activation(
                     &package.store_path,
                     &package.nar_hash,
                     contract,
+                    store_view,
                 )?;
                 Ok(required
                     || resolved.document.required_features.iter().any(|feature| {
@@ -1813,6 +1830,7 @@ fn retained_cross_abi_working_set(
                 &pin.store_path,
                 &pin.nar_hash,
                 contract,
+                &source.inputs.store_view,
             )?;
             anyhow::ensure!(
                 resolved.document.content_digest()?.to_string() == module.document_digest,

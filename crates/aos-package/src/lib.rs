@@ -550,6 +550,9 @@ pub enum PackageCommand {
     /// install step is a no-op and the active configuration remains unchanged.
     #[command(name = "__eval", hide = true)]
     Eval {
+        /// Canonical typed locator for the selected package-store read view.
+        #[arg(long = "store-view")]
+        store_view: String,
         /// The delivered leaf host.nix path
         #[arg(long = "host-nix")]
         host_nix: PathBuf,
@@ -603,6 +606,9 @@ pub enum PackageCommand {
     /// Hidden: run the complete boot-time configuration evaluation service.
     #[command(name = "__eval-service", hide = true)]
     EvalService {
+        /// Canonical typed locator for the selected package-store read view.
+        #[arg(long = "store-view")]
+        store_view: String,
         /// Image-owned base module library.
         #[arg(long = "base-lib", default_value = "/aos-toplevel/base-lib")]
         base_lib: PathBuf,
@@ -3044,6 +3050,7 @@ async fn apply_runtime_worktree(
     let candidate = eval_root.join(format!("runtime-candidate-{}.json", std::process::id()));
     config_eval::dry_run::run_switch(&config_eval::dry_run::SwitchParams {
         eval: config_eval::EvalCommand {
+            store_view: current.inputs.store_view.clone(),
             host_nix,
             runtime_modules: snapshot.entrypoints,
             runtime_module_root: Some(snapshot.store_path),
@@ -3195,6 +3202,7 @@ pub async fn run(
     // the registry index and host.nix from disk and shells out to stock nix.
     // Dispatch it before `ApmConfig::load`.
     if let PackageCommand::Eval {
+        store_view,
         host_nix,
         runtime_module,
         runtime_module_root,
@@ -3211,7 +3219,10 @@ pub async fn run(
     } = command
     {
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
+        let store_view =
+            config_eval::store_view::StoreViewLocator::from_canonical_json(store_view)?;
         let result = config_eval::run_eval_command(&config_eval::EvalCommand {
+            store_view,
             host_nix: host_nix.clone(),
             runtime_modules: runtime_module.clone(),
             runtime_module_root: runtime_module_root.clone(),
@@ -3250,6 +3261,7 @@ pub async fn run(
     }
 
     if let PackageCommand::EvalService {
+        store_view,
         base_lib,
         module_abi,
         desired,
@@ -3258,7 +3270,10 @@ pub async fn run(
     } = command
     {
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
+        let store_view =
+            config_eval::store_view::StoreViewLocator::from_canonical_json(store_view)?;
         let result = config_eval::service::run(&config_eval::service::ServiceCommand {
+            store_view,
             base_lib: base_lib.clone(),
             module_abi: *module_abi,
             desired: desired.clone(),
@@ -3444,6 +3459,7 @@ pub async fn run(
             std::env::temp_dir().join(format!("aos-switch-candidate-{}.json", std::process::id()));
         let params = config_eval::dry_run::SwitchParams {
             eval: config_eval::EvalCommand {
+                store_view: active_manifest.inputs.store_view.clone(),
                 host_nix,
                 runtime_modules,
                 runtime_module_root: runtime_module_root.clone(),
@@ -4770,7 +4786,20 @@ fn package_attestation_catalog_from_sources(
 
 fn embedded_package_attestation_catalog()
 -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
-    match config_eval::static_packages::measurement_catalog() {
+    let manifest_path = Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/manifest.json");
+    let manifest_bytes = match std::fs::read(&manifest_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading {}", manifest_path.display()));
+        }
+    };
+    let manifest: config_eval::materialize::ConfigManifest =
+        serde_json::from_slice(&manifest_bytes)
+            .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    manifest.validate()?;
+
+    match config_eval::static_packages::measurement_catalog(&manifest.inputs.store_view) {
         Ok(entries) => Ok(entries),
         Err(err)
             if err

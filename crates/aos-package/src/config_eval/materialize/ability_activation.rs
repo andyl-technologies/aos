@@ -84,6 +84,7 @@ impl AbilityActivationInput {
     pub(crate) fn validate(
         &self,
         package_outputs: &BTreeMap<String, RuntimePackagePin>,
+        store_view: &super::super::store_view::StoreViewLocator,
     ) -> Result<()> {
         self.validate_descriptor()?;
         self.fixed_point
@@ -104,6 +105,7 @@ impl AbilityActivationInput {
                 &package.store_path,
                 &package.nar_hash,
                 contract,
+                store_view,
             )?;
             if resolved.document.package.name.as_str() != name {
                 bail!(
