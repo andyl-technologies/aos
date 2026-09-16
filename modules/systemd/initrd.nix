@@ -33,6 +33,7 @@
   pkgs,
   ...
 }: let
+  buildPkgs = pkgs.buildPackages;
   systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
   systemdUnitOptions = import ../../lib/modules/systemd/unit-options.nix {
     inherit lib systemdLib;
@@ -74,6 +75,31 @@
     if initrdAbilityEvaluation == null
     then []
     else initrdAbilityEvaluation.config.systemd.providerUnitArtifacts or [];
+  selectedArtifactBackend = config.aos.artifacts.backend or null;
+  artifactBackend =
+    if
+      builtins.isAttrs selectedArtifactBackend
+      && (selectedArtifactBackend._type or null) == "aos-package-artifact-backend"
+    then selectedArtifactBackend
+    else throw "systemd initrd requires one selected package-owned artifact backend";
+  targetPlatform = {
+    os = pkgs.stdenv.hostPlatform.constraints.os;
+    cpu = pkgs.stdenv.hostPlatform.constraints.cpu;
+    abi = pkgs.stdenv.hostPlatform.constraints.abi;
+    features = pkgs.stdenv.hostPlatform.constraints.features;
+  };
+  mkReferenceGraph = import ../../lib/build/reference-graph.nix {
+    inherit lib;
+    inherit (buildPkgs) mkDerivation coreutils jq;
+  };
+  initrdStaticAbilityContractBuild = artifactBackend.buildStaticContract {
+    inherit lib targetPlatform mkReferenceGraph;
+    buildPackages = buildPkgs;
+    pname = "aos-initrd-static-abilities";
+    artifactClass = "bootable";
+    executionStage = "initrd";
+    packageRoots = config.aos.boot.initrd.packageRoots;
+  };
 
   # Render the typed `boot.initrd.systemd.network` tree to a directory of
   # `<name>.network` files. These are networkd config (not units), so they
@@ -296,6 +322,7 @@ in {
       renderedUnits = builtins.attrNames renderedInitrdUnits;
       renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);
       handoff = config.system.build.bootSubstrateContract;
+      inherit initrdStaticAbilityContractBuild;
       abilityResolutionInput = config.aos.abilities.stages.initrd.resolutionInput;
       abilityEnvironment = config.system.build.initrdAbilityGraph.environment;
       abilityIntent = config.aos.abilities.stages.initrd.intent;
@@ -310,7 +337,6 @@ in {
       keepBinutils = config.aos.boot.recovery.enable;
     };
 
-    system.build.initrdStaticAbilityContract =
-      config.system.build.initrd.staticAbilityContract;
+    system.build.initrdStaticAbilityContract = initrdStaticAbilityContractBuild.artifact;
   };
 }
