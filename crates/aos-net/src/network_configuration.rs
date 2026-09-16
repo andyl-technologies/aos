@@ -6,7 +6,7 @@
 //! authorization and backend code. It deliberately defines no parallel serde
 //! document, defaults, method set, or schema validation policy.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use aos_ability_model::AbilityValue;
 use serde_json::{Map, Value};
 

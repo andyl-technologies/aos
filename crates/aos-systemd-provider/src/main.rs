@@ -810,10 +810,8 @@ mod tests {
     #[test]
     fn entry_points_select_closed_semantic_roles() {
         assert_eq!(
-            HandlerRole::from_entry_point(OsStr::new(
-                "aos-systemd-activation-group-effects"
-            ))
-            .expect("activation-group role parses"),
+            HandlerRole::from_entry_point(OsStr::new("aos-systemd-activation-group-effects"))
+                .expect("activation-group role parses"),
             HandlerRole::NativeResource(NativeResourceRole::ActivationGroup)
         );
         assert_eq!(
