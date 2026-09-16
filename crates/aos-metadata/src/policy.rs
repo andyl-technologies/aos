@@ -148,7 +148,7 @@ struct PlanObservation {
 /// # Errors
 ///
 /// Returns an error when the selected ABI, checked authority, metadata input,
-/// restricted evaluation, or provider result is invalid.
+/// complete initrd evaluation, or provider result is invalid.
 pub async fn run_policy_provider_from_process() -> Result<()> {
     run_provider_from_process().await
 }

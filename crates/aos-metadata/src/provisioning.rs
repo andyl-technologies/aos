@@ -50,7 +50,7 @@ fn generate_marker_uuid() -> String {
 
 /// Evaluates one typed authorized input into its canonical provisioning plan.
 ///
-/// The private scratch files created here are inputs to the restricted Nix
+/// The private scratch files created here are inputs to the `restrict-eval` Nix
 /// process only. They are never used as an operation result, synchronization
 /// marker, or cross-provider transport.
 ///
