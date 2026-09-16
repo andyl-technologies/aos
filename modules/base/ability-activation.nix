@@ -87,7 +87,7 @@ in {
     '';
 
     system.build.staticAbilityContract = staticAbilityContract;
-    aos.boot.initrd.extraPackages = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable [
+    aos.boot.initrd.packageRoots = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable [
       pkgs.aos.packageRuntime
     ];
   };

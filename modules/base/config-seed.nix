@@ -17,10 +17,6 @@
     # Rendered unit scripts are also part of the initrd closure graph, but this
     # declaration makes the backend self-contained if unit materialization is
     # refactored independently of the initrd package set.
-    aos.boot.initrd.extraPackages = [pkgs.aos-boot-preparations];
-    aos.abilities.stages.initrd.packages = [
-      pkgs.aos-boot-preparations
-      pkgs.systemd
-    ];
+    aos.boot.initrd.packageRoots = [pkgs.aos-boot-preparations];
   };
 }

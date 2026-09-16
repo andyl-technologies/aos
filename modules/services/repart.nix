@@ -11,7 +11,6 @@
 }: {
   config = lib.mkIf (config.aos.boot.storage.backend != "zfs-zvol") {
     environment.systemPackages = [pkgs.aos-storage-provisioning-provider];
-    aos.boot.initrd.extraPackages = [pkgs.aos-storage-provisioning-provider];
-    aos.abilities.stages.initrd.packages = [pkgs.aos-storage-provisioning-provider];
+    aos.boot.initrd.packageRoots = [pkgs.aos-storage-provisioning-provider];
   };
 }

@@ -1747,6 +1747,8 @@ in rec {
     authenticatedPackageProjectionFor
     checkedAuthenticatedPackageProjection
     authenticatedProjectionOutputFor
+    authenticatedModuleRecordIdentity
+    canonicalizeAuthenticatedModuleRecords
     selectAuthenticatedPackageModuleRecords
     ;
   types = abilityTypes;

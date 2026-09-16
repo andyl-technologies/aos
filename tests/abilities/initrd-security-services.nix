@@ -81,7 +81,7 @@
   secureVerityPackages =
     builtins.map
     (package: package.pname)
-    secureVeritySystem.config.aos.abilities.stages.initrd.packages;
+    secureVeritySystem.config.aos.boot.initrd.packageRoots;
   secureBootModule = builtins.readFile ../../modules/base/secure-boot.nix;
   intentValuesAt = path:
     builtins.concatMap

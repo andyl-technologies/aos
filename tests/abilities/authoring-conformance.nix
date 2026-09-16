@@ -1197,6 +1197,25 @@
   selectedCallerRecords = lib.abilities.selectAuthenticatedPackageModuleRecords
     [transitiveOwner]
     [callerModuleRecord];
+  mismatchedCallerRecord = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.selectAuthenticatedPackageModuleRecords
+      [transitiveOwner]
+      [(callerModuleRecord // {version = "2";})])
+    true);
+  canonicalCallerRecords = lib.abilities.canonicalizeAuthenticatedModuleRecords [
+    callerModuleRecord
+    callerModuleRecord
+  ];
+  conflictingCallerRecords = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.canonicalizeAuthenticatedModuleRecords [
+      callerModuleRecord
+      (callerModuleRecord // {
+        outputs = callerModuleRecord.outputs // {
+          self = "/nix/store/66666666666666666666666666666666-other-owner";
+        };
+      })
+    ])
+    true);
   providerTerminalBase = {
     guarantees = {};
     interfaces = {};
@@ -1467,6 +1486,9 @@ in
   assert !ambiguousOutput.success;
   assert !globallySelectedForeignOutput.success;
   assert selectedCallerRecords == [callerModuleRecord];
+  assert !mismatchedCallerRecord.success;
+  assert canonicalCallerRecords == [callerModuleRecord];
+  assert !conflictingCallerRecords.success;
   assert checkedProviderTerminal == providerTerminalBase;
   assert !providerIntroducedImplementation.success;
   assert !providerIntroducedBinding.success;

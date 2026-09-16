@@ -50,7 +50,7 @@
   firmwarePackages ? [],
   loadModules,
   initrdUnits,
-  initrdExtraPackages ? [],
+  initrdPackages,
   initrdNetworkDir ? null,
   renderedUnits,
   renderedNetworks,
@@ -100,30 +100,6 @@
     util-linux
     zstd
     ;
-  bootIdentityPackages = lib.optional validateBootIdentity pkgs.aos-boot-identity;
-
-  # Packages whose full runtime closures are copied into the initrd's
-  # /nix/store. See the docstring at the top of this file for why.
-  runtimeInitrdPackages =
-    [
-      bash
-      coreutils
-      cryptsetup
-      e2fsprogs
-      grep
-      gptfdisk
-      iproute2
-      kmod
-      less
-      systemd
-      util-linux
-    ]
-    ++ bootIdentityPackages;
-  initrdPackages =
-    runtimeInitrdPackages
-    # Feature-specific closures injected by modules (e.g. the measured-boot
-    # PCR-policy public key — RFC-0006 phase 3).
-    ++ initrdExtraPackages;
   uniqueInitrdPackages = lib.unique initrdPackages;
   initrdStaticAbilityContractBuild = oci.mkStaticAbilityContract {
     pname = "aos-initrd-static-abilities";
@@ -197,13 +173,7 @@
       store_path = "${package}";
       available_stage = "initrd";
     })
-    runtimeInitrdPackages
-    ++ map (package: {
-      kind = "extra-package";
-      store_path = "${package}";
-      available_stage = "initrd";
-    })
-    initrdExtraPackages
+    uniqueInitrdPackages
     ++ map (package: {
       kind = "kernel-module-package";
       store_path = "${package}";

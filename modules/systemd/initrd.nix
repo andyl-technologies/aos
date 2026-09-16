@@ -199,15 +199,21 @@ in {
     # The selected initrd manager owns its package implementations. Security
     # policy contributes only provider-neutral intent; it does not select a
     # manager or a TPM token format from the generic secure-boot module.
-    aos.abilities.stages.initrd.packages =
-      [pkgs.systemd]
+    aos.boot.initrd.packageRoots =
+      (with pkgs; [
+        bash
+        coreutils
+        cryptsetup
+        e2fsprogs
+        grep
+        gptfdisk
+        iproute2
+        kmod
+        less
+        systemd
+        util-linux
+      ])
       ++ lib.optional
-      (config.aos.boot.secureBoot.measuredBoot.enable
-        && config.aos.boot.storage.backend != "zfs-zvol")
-      pkgs.aos-systemd-var-policy;
-
-    aos.boot.initrd.extraPackages =
-      lib.optional
       (config.aos.boot.secureBoot.measuredBoot.enable
         && config.aos.boot.storage.backend != "zfs-zvol")
       pkgs.aos-systemd-var-policy;
@@ -285,7 +291,7 @@ in {
       firmwarePackages = config.aos.boot.initrd.firmwarePackages;
       loadModules = config.aos.boot.initrd.loadModules;
       initrdUnits = config.system.build.systemdInitrdUnits;
-      initrdExtraPackages = config.aos.boot.initrd.extraPackages;
+      initrdPackages = config.aos.boot.initrd.packageRoots;
       inherit initrdNetworkDir;
       renderedUnits = builtins.attrNames renderedInitrdUnits;
       renderedNetworks = map (name: "${name}.network") (builtins.attrNames cfg.network);

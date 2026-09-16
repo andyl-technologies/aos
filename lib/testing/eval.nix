@@ -384,7 +384,7 @@
         ".aos-package-runtime-unwrapped __materialize"
         system.config.boot.initrd.systemd.services."aos-config-seed".script)
     then throw "the initrd must restore the committed non-base configuration lower before mounting /etc"
-    else if !(builtins.elem pkgs.aos.packageRuntime system.config.aos.boot.initrd.extraPackages)
+    else if !(builtins.elem pkgs.aos.packageRuntime system.config.aos.boot.initrd.packageRoots)
     then throw "the initrd configuration backend must carry the AOS materializer closure explicitly"
     else if
       !(containsStr

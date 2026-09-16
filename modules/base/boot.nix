@@ -165,19 +165,20 @@ in {
         '';
       };
 
-      ## Extra packages whose full runtime closures are copied into the
-      ## initrd's /nix/store, beyond the built-in set. Used by features
-      ## that need an extra file or tool available pre-switch-root — e.g.
-      ## measured boot ships the PCR-policy public key here so the
-      ## first-boot /var sealing service can read it (RFC-0006 phase 3).
-      extraPackages = lib.mkOption {
+      ## Complete package-root set whose runtime closures are copied into the
+      ## initrd's /nix/store and whose authenticated modules participate in
+      ## the initrd ability fixed point. The selected initrd manager supplies
+      ## the base roots; features append their pre-switch-root dependencies.
+      packageRoots = lib.mkOption {
         type = lib.types.listOf lib.types.package;
         default = [];
+        apply = lib.unique;
+        internal = true;
         description = ''
-          Additional packages (derivations) whose closures are included
-          in the initrd. Anything an initrd unit references by store path
-          must be reachable through this list, since the initrd copies a
-          fixed package set rather than the whole toplevel closure.
+          Exact packages whose closures and authenticated declarations form
+          the initrd. Anything an initrd unit references by store path must be
+          reachable through this list; package selection and archive assembly
+          consume this same value.
         '';
       };
     };

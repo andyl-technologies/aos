@@ -21,7 +21,7 @@
     };
 
     # Exercise exact duplicate normalization and one root used in two roles.
-    aos.boot.initrd.extraPackages = [
+    aos.boot.initrd.packageRoots = [
       pkgs.coreutils
       pkgs.coreutils
       pkgs.ability-package-smoke

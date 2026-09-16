@@ -211,9 +211,8 @@ in {
     system.build.checks.rooted-executable-path = rootedExecutablePathCheck;
 
     environment.systemPackages = [pkgs.aos-boot-preparations];
-    aos.boot.initrd.extraPackages = [pkgs.aos-boot-preparations];
+    aos.boot.initrd.packageRoots = [pkgs.aos-boot-preparations];
     aos.abilities.stages.initrd = {
-      packages = [pkgs.aos-boot-preparations pkgs.systemd];
       intent = [
         {
           aos.boot.substrateServices = {
