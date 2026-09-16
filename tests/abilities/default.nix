@@ -587,6 +587,9 @@
   initrdBootSubstrate = import ./initrd-boot-substrate.nix {
     inherit pkgs lib;
   };
+  packageStoreReadView = import ./package-store-read-view.nix {
+    inherit pkgs lib;
+  };
   baseKernelNative = import ./base-kernel-native.nix {
     inherit pkgs lib;
   };
@@ -1101,6 +1104,7 @@ in
   assert nixStoreDatabase;
   assert bootPreparationProvider;
   assert bootStorageServices;
+  assert packageStoreReadView;
   assert stagedEnvironment;
   assert linuxServiceFeatures;
   assert postgresqlService;
