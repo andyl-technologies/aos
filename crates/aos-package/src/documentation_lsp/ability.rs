@@ -53,7 +53,7 @@ impl<'a> AbilityCatalog<'a> {
     pub(super) fn new(documents: &'a [LoadedDocumentation]) -> Self {
         let references = documents
             .iter()
-            .filter_map(|document| document.ability_reference.as_ref())
+            .filter_map(|document| document.projection.ability_reference.as_ref())
             .filter_map(|reference| {
                 let input = ReferenceInspectionInput::new(reference.clone()).ok()?;
                 let digest = aos_contract::Sha256Digest::of_bytes(&input.canonical_bytes().ok()?);

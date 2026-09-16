@@ -6,11 +6,8 @@
 
 use std::fmt::Write as _;
 
-use anyhow::Result;
-use aos_ability_model::{
-    OptionVisibility, RequirementDeclaration, RequirementStrength, ValueSchema,
-};
-use aos_doc_model::PackageAbilityReference;
+use crate::PackageAbilityReference;
+use aos_ability_model::{RequirementDeclaration, RequirementStrength, ValueSchema};
 
 const SCOPE_NOTICE: &str = concat!(
     "Authenticated static package declaration. This section does not report activation, ",
@@ -18,7 +15,7 @@ const SCOPE_NOTICE: &str = concat!(
     "configuration sections show public schemas only, never deployed instance values."
 );
 
-pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
+pub(crate) fn plain(reference: &PackageAbilityReference) -> String {
     let mut output = String::from("\nDECLARED ABILITIES\n------------------\n");
     let _ = writeln!(output, "{SCOPE_NOTICE}");
     let _ = writeln!(output, "manifest identity\t{}", reference.manifest_sha256);
@@ -27,33 +24,6 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
         "package contract identity\t{}",
         reference.package_digest
     );
-
-    output.push_str("\nPACKAGE OPTIONS\n");
-    if !reference
-        .option_declarations
-        .iter()
-        .any(|option| option.visibility == OptionVisibility::Public)
-    {
-        output.push_str("No package-owned configuration options are declared.\n");
-    }
-    for option in reference
-        .option_declarations
-        .iter()
-        .filter(|option| option.visibility == OptionVisibility::Public)
-    {
-        let _ = writeln!(
-            output,
-            "declared option\t{}\t{}",
-            option.path.join("."),
-            option.description
-        );
-        let _ = writeln!(
-            output,
-            "  portable type\t{}",
-            scalar(&option.structured_type)?
-        );
-        let _ = writeln!(output, "  source\t{}", option.source.path.as_str());
-    }
 
     output.push_str("\nPACKAGE INTERFACES\n");
     if reference.interfaces.is_empty() {
@@ -70,7 +40,7 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
             interface.description,
         );
         output.push_str("  declared request or contribution schema\n");
-        indented_schema(&mut output, &interface.request, "    ")?;
+        indented_schema(&mut output, &interface.request, "    ");
         for (name, declared_output) in &interface.outputs {
             let _ = writeln!(
                 output,
@@ -127,12 +97,20 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
         let _ = writeln!(output, "  semantics\t{}", guarantee.semantics);
     }
 
-    output.push_str("\nEXPOSED ABILITIES\n");
+    output.push_str("\nPROVIDED ABILITIES\n");
     if reference.exports.is_empty() {
         output.push_str("No provider interfaces are declared.\n");
     }
     for export in &reference.exports {
-        let interface = &reference.interface_for_export(export)?.interface;
+        let Ok(interface_document) = reference.interface_for_export(export) else {
+            let _ = writeln!(
+                output,
+                "declared export\t{}\tretained interface document unavailable",
+                export.name.as_str()
+            );
+            continue;
+        };
+        let interface = &interface_document.interface;
         let descriptor = export.interface.descriptor;
         let _ = writeln!(
             output,
@@ -149,10 +127,10 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
             export.implementation
         );
         output.push_str("  declared request or contribution schema\n");
-        indented_schema(&mut output, &interface.request, "    ")?;
+        indented_schema(&mut output, &interface.request, "    ");
         if let Some(configuration) = &interface.configuration {
             output.push_str("  declared operator-owned provider instance configuration schema\n");
-            indented_schema(&mut output, configuration, "    ")?;
+            indented_schema(&mut output, configuration, "    ");
         } else {
             output.push_str("  no operator-owned provider instance configuration is declared\n");
         }
@@ -162,9 +140,9 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
                 output,
                 "  declared aggregate output\t{}\t{}\t{}\t{}",
                 name.as_str(),
-                scalar(&declared_output.phase)?,
-                scalar(&declared_output.visibility)?,
-                scalar(&declared_output.lifetime)?
+                scalar(&declared_output.phase),
+                scalar(&declared_output.visibility),
+                scalar(&declared_output.lifetime)
             );
             let _ = writeln!(output, "    description\t{}", declared_output.description);
         }
@@ -179,7 +157,7 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
                 output,
                 "  declared method\t{}\t{}\ttarget {}\toperations [{}]",
                 name.as_str(),
-                scalar(&method.semantics)?,
+                scalar(&method.semantics),
                 method.target_resource.as_str(),
                 operations
             );
@@ -246,28 +224,28 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
                 entry_point
             );
             output.push_str("  declared arguments schema\n");
-            indented_schema(&mut output, &handler.arguments, "    ")?;
+            indented_schema(&mut output, &handler.arguments, "    ");
             output.push_str("  declared result schema\n");
-            indented_schema(&mut output, &handler.result, "    ")?;
+            indented_schema(&mut output, &handler.result, "    ");
         }
     }
 
-    Ok(output)
+    output
 }
 
-pub(super) fn plain_absent() -> String {
+pub(crate) fn plain_absent() -> String {
     concat!(
         "\nDECLARED ABILITIES\n------------------\n",
         "No checked signed ability projection is available for this package.\n",
-        "\nEXPOSED ABILITIES\n",
-        "No exposed abilities are declared.\n",
+        "\nPROVIDED ABILITIES\n",
+        "No provided abilities are declared.\n",
         "\nCONSUMED ABILITIES\n",
         "No consumed abilities are declared.\n",
     )
     .to_string()
 }
 
-pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
+pub(crate) fn html(reference: &PackageAbilityReference) -> String {
     let mut output =
         String::from("<section id=\"declared-abilities\"><h2>Declared abilities</h2><p>");
     escape_html_into(SCOPE_NOTICE, &mut output);
@@ -276,30 +254,6 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
     output.push_str("</code></dd><dt>Package contract identity</dt><dd><code>");
     escape_html_into(&reference.package_digest.to_string(), &mut output);
     output.push_str("</code></dd></dl>");
-
-    output.push_str("<h3>Package options</h3>");
-    if !reference
-        .option_declarations
-        .iter()
-        .any(|option| option.visibility == OptionVisibility::Public)
-    {
-        output.push_str("<p>No package-owned configuration options are declared.</p>");
-    }
-    for option in reference
-        .option_declarations
-        .iter()
-        .filter(|option| option.visibility == OptionVisibility::Public)
-    {
-        output.push_str("<article><h4><code>");
-        escape_html_into(&option.path.join("."), &mut output);
-        output.push_str("</code></h4><p>");
-        escape_html_into(&option.description, &mut output);
-        output.push_str("</p><dl><dt>Portable type</dt><dd><code>");
-        escape_html_into(&scalar(&option.structured_type)?, &mut output);
-        output.push_str("</code></dd><dt>Source</dt><dd><code>");
-        escape_html_into(option.source.path.as_str(), &mut output);
-        output.push_str("</code></dd></dl></article>");
-    }
 
     output.push_str("<h3>Package interfaces</h3>");
     if reference.interfaces.is_empty() {
@@ -314,7 +268,7 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
         let _ = write!(output, "</code> ABI {}</h4><p>", interface.abi);
         escape_html_into(&interface.description, &mut output);
         output.push_str("</p><h5>Request or contribution schema</h5>");
-        schema_html(&mut output, &interface.request)?;
+        schema_html(&mut output, &interface.request);
         if !interface.outputs.is_empty() {
             output.push_str("<h5>Aggregate outputs</h5><ul>");
             for (name, declared_output) in &interface.outputs {
@@ -376,13 +330,17 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
         output.push_str("</p></article>");
     }
 
-    output.push_str("<h3>Exposed abilities</h3>");
+    output.push_str("<h3>Provided abilities</h3>");
 
     if reference.exports.is_empty() {
         output.push_str("<p>No provider interfaces are declared.</p>");
     }
     for export in &reference.exports {
-        let interface = &reference.interface_for_export(export)?.interface;
+        let Ok(interface_document) = reference.interface_for_export(export) else {
+            output.push_str("<p>The checked export has no retained interface document.</p>");
+            continue;
+        };
+        let interface = &interface_document.interface;
         let descriptor = export.interface.descriptor;
         output.push_str("<article><h4>Declared export <code>");
         escape_html_into(export.name.as_str(), &mut output);
@@ -397,12 +355,12 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
         output.push_str("</code></dd><dt>Implementation identity</dt><dd><code>");
         escape_html_into(&export.implementation.to_string(), &mut output);
         output.push_str("</code></dd></dl><h5>Declared request or contribution schema</h5>");
-        schema_html(&mut output, &interface.request)?;
+        schema_html(&mut output, &interface.request);
         if let Some(configuration) = &interface.configuration {
             output.push_str(
                 "<h5>Declared operator-owned provider instance configuration schema</h5>",
             );
-            schema_html(&mut output, configuration)?;
+            schema_html(&mut output, configuration);
         } else {
             output
                 .push_str("<p>No operator-owned provider instance configuration is declared.</p>");
@@ -414,11 +372,11 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
                 output.push_str("<li><code>");
                 escape_html_into(name.as_str(), &mut output);
                 output.push_str("</code> - ");
-                escape_html_into(&scalar(&declared_output.phase)?, &mut output);
+                escape_html_into(&scalar(&declared_output.phase), &mut output);
                 output.push_str(", ");
-                escape_html_into(&scalar(&declared_output.visibility)?, &mut output);
+                escape_html_into(&scalar(&declared_output.visibility), &mut output);
                 output.push_str(", ");
-                escape_html_into(&scalar(&declared_output.lifetime)?, &mut output);
+                escape_html_into(&scalar(&declared_output.lifetime), &mut output);
                 output.push_str(" - ");
                 escape_html_into(&declared_output.description, &mut output);
                 output.push_str("</li>");
@@ -431,7 +389,7 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
                 output.push_str("<li><code>");
                 escape_html_into(name.as_str(), &mut output);
                 output.push_str("</code> - ");
-                escape_html_into(&scalar(&method.semantics)?, &mut output);
+                escape_html_into(&scalar(&method.semantics), &mut output);
                 output.push_str(" - ");
                 escape_html_into(&method.description, &mut output);
                 output.push_str(" targeting <code>");
@@ -515,34 +473,33 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
             output.push_str("</code></h4><p>Authenticated entry point <code>");
             escape_html_into(&handler.entry_point, &mut output);
             output.push_str("</code></p><h5>Declared arguments schema</h5>");
-            schema_html(&mut output, &handler.arguments)?;
+            schema_html(&mut output, &handler.arguments);
             output.push_str("<h5>Declared result schema</h5>");
-            schema_html(&mut output, &handler.result)?;
+            schema_html(&mut output, &handler.result);
             output.push_str("</article>");
         }
     }
 
     output.push_str("</section>");
-    Ok(output)
+    output
 }
 
-pub(super) fn html_absent() -> String {
+pub(crate) fn html_absent() -> String {
     concat!(
         "<section id=\"declared-abilities\"><h2>Declared abilities</h2>",
         "<p>No checked signed ability projection is available for this package.</p>",
-        "<h3>Exposed abilities</h3><p>No exposed abilities are declared.</p>",
+        "<h3>Provided abilities</h3><p>No provided abilities are declared.</p>",
         "<h3>Consumed abilities</h3><p>No consumed abilities are declared.</p>",
         "</section>",
     )
     .to_string()
 }
 
-pub(super) fn roff(reference: &PackageAbilityReference) -> Result<String> {
-    let plain = plain(reference)?;
-    Ok(plain_to_roff(&plain))
+pub(crate) fn roff(reference: &PackageAbilityReference) -> String {
+    plain_to_roff(&plain(reference))
 }
 
-pub(super) fn roff_absent() -> String {
+pub(crate) fn roff_absent() -> String {
     plain_to_roff(&plain_absent())
 }
 
@@ -644,22 +601,26 @@ fn html_requirement(output: &mut String, consumer: &str, requirement: &Requireme
     output.push_str("</ul></li>");
 }
 
-fn indented_schema(output: &mut String, schema: &ValueSchema, indent: &str) -> Result<()> {
-    for line in serde_json::to_string_pretty(schema)?.lines() {
+fn indented_schema(output: &mut String, schema: &ValueSchema, indent: &str) {
+    let rendered = serde_json::to_string_pretty(schema)
+        .unwrap_or_else(|_| "{\"kind\":\"unavailable\"}".to_string());
+    for line in rendered.lines() {
         let _ = writeln!(output, "{indent}{line}");
     }
-    Ok(())
 }
 
-fn schema_html(output: &mut String, schema: &ValueSchema) -> Result<()> {
+fn schema_html(output: &mut String, schema: &ValueSchema) {
+    let rendered = serde_json::to_string_pretty(schema)
+        .unwrap_or_else(|_| "{\"kind\":\"unavailable\"}".to_string());
     output.push_str("<pre>");
-    escape_html_into(&serde_json::to_string_pretty(schema)?, output);
+    escape_html_into(&rendered, output);
     output.push_str("</pre>");
-    Ok(())
 }
 
-fn scalar(value: &impl serde::Serialize) -> Result<String> {
-    Ok(serde_json::to_string(value)?.trim_matches('"').to_string())
+fn scalar(value: &impl serde::Serialize) -> String {
+    serde_json::to_string(value)
+        .map(|encoded| encoded.trim_matches('"').to_string())
+        .unwrap_or_else(|_| "unavailable".to_string())
 }
 
 fn safe_plain_text(value: &str) -> String {

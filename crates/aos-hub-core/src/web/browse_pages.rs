@@ -1097,19 +1097,6 @@ pub struct PackageClosure {
     pub reverse_total: usize,
 }
 
-/// Canonical documentation rendered beside one package selection.
-#[derive(Debug, Clone)]
-pub struct PackageDocumentationPanel {
-    /// Reverified closed-schema document.
-    pub document: aos_doc_model::PackageDocumentation,
-    /// Exact signed Nix store object carrying the JSON bytes.
-    pub store_path: String,
-    /// Exact canonical document digest.
-    pub document_sha256: String,
-    /// NAR identity of the store object.
-    pub nar_hash: String,
-}
-
 /// Signed indexed documentation reference, without loading the document bytes.
 #[derive(Debug, Clone)]
 pub struct PackageDocumentationReference {
@@ -1600,61 +1587,6 @@ pub fn documentation_index_page(
     page_with_session(
         "Package documentation",
         &registry_crumbs(slug, &[(format!("/{slug}/-/docs"), "documentation".into())]),
-        &body,
-        &state_line(status, started),
-        session,
-    )
-}
-
-/// Renders one permanent exact package/version/platform documentation page.
-pub fn documentation_page(
-    registry: &RegistryRecord,
-    status: Option<&IndexStatus>,
-    documentation: &PackageDocumentationPanel,
-    started: Instant,
-    session: &SessionIndicator,
-) -> String {
-    let slug = &registry.slug;
-    let document = &documentation.document;
-    let mut body = registry_nav(slug, "docs");
-    body.push_str("<div class=\"docs-detail-toolbar\">");
-    let _ = write!(
-        body,
-        "<a href=\"/{}/-/docs\">← Search documentation</a><span><a href=\"/{}/-/api/v1/documentation/{}\">Canonical JSON</a> · <a href=\"/{}/-/api/docs/schema\">JSON Schema</a></span>",
-        escape(slug),
-        escape(slug),
-        escape(&documentation.document_sha256),
-        escape(slug),
-    );
-    body.push_str("</div>");
-    let _ = write!(
-        body,
-        "<div class=\"docs-provenance-card\"><div><span>Version</span><strong>{}</strong></div><div><span>Platform</span><strong>{}</strong></div><div><span>Document</span>{}</div><div><span>Semantic schema</span>{}</div><details><summary>Signed Nix object</summary><code>{}</code><p>NAR {}</p></details></div>",
-        escape(&document.package.version),
-        escape(&document.package.platform),
-        hash_value(&documentation.document_sha256),
-        hash_value(&document.identity.semantic_schema_sha256),
-        escape(&documentation.store_path),
-        hash_value(&documentation.nar_hash),
-    );
-    body.push_str(&document.render_html_fragment());
-    body.push_str("<section class=\"docs-offline\"><h2>Use offline</h2><p>This same object is retained with the installed package profile.</p><pre>");
-    let _ = write!(
-        body,
-        "apm docs show {}\napm docs show {} --format man\napm docs schema",
-        escape(&document.package.name),
-        escape(&document.package.name),
-    );
-    body.push_str("</pre></section>");
-    page_with_session(
-        &format!("{} documentation", document.package.name),
-        &registry_crumbs(
-            slug,
-            &[
-                (format!("/{slug}/-/docs"), "documentation".into()),
-                (String::new(), document.package.name.clone()),
-            ],
-        ),
         &body,
         &state_line(status, started),
         session,
@@ -3003,28 +2935,11 @@ mod tests {
         RegistrySetup::new(registry, None, Some(url), caches)
     }
 
-    fn documentation_panel(summary: &str) -> PackageDocumentationPanel {
-        let mut document = aos_doc_model::PackageDocumentation {
-            schema: aos_doc_model::DOCUMENT_SCHEMA.into(),
-            package: aos_doc_model::DocumentedPackage {
-                name: "nginx".into(),
-                version: "1.30.4".into(),
-                platform: "x86_64-linux".into(),
-                summary: summary.into(),
-                homepage: Some("https://nginx.org/".into()),
-                license: "BSD-2-Clause".into(),
-            },
-            identity: aos_doc_model::DocumentationIdentity {
-                semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
-                runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
-                source_nar_hash: format!("sha256:{}", "2".repeat(64)),
-            },
-        };
-        document.identity.semantic_schema_sha256 = document
-            .computed_semantic_schema_sha256()
-            .expect("semantic schema");
-        PackageDocumentationPanel {
-            document,
+    fn documentation_reference() -> PackageDocumentationReference {
+        PackageDocumentationReference {
+            package: "nginx".into(),
+            version: "1.30.4".into(),
+            platform: "x86_64-linux".into(),
             store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nginx-docs.json".into(),
             document_sha256: format!("sha256:{}", "3".repeat(64)),
             nar_hash: format!("sha256:{}", "4".repeat(64)),
@@ -3758,7 +3673,7 @@ mod tests {
     #[test]
     fn documentation_pages_render_verified_content_and_escape_search_rows() {
         let registry = registry();
-        let panel = documentation_panel("HTTP <proxy> service");
+        let reference = documentation_reference();
         let detail = PackageDetail {
             name: "nginx".into(),
             description: "HTTP server".into(),
@@ -3769,14 +3684,6 @@ mod tests {
             versions: Vec::new(),
         };
         let setup = setup(&registry, "https://hub.example/demo", &[]);
-        let reference = PackageDocumentationReference {
-            package: panel.document.package.name.clone(),
-            version: panel.document.package.version.clone(),
-            platform: panel.document.package.platform.clone(),
-            store_path: panel.store_path.clone(),
-            document_sha256: panel.document_sha256.clone(),
-            nar_hash: panel.nar_hash.clone(),
-        };
         let package_html = package_page(
             &registry,
             None,
@@ -3807,13 +3714,6 @@ mod tests {
         assert!(!package_html.contains("HTTP <proxy> service"));
         assert!(package_html.contains("/-/docs/nginx/1.30.4/x86_64-linux?digest=sha256%3A"));
         assert!(!package_html.contains("/-/api/v1/documentation/sha256:"));
-
-        let detail_html = documentation_page(&registry, None, &panel, Instant::now(), &anon());
-        assert!(
-            detail_html.contains("Exact installable reference")
-                || detail_html.contains("Canonical JSON")
-        );
-        assert!(detail_html.contains("apm docs show nginx"));
 
         let search_html = documentation_index_page(
             &registry,
