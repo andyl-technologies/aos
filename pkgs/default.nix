@@ -367,22 +367,6 @@
         interfaces = {};
         requirementTemplates = {};
       };
-    projectLocalAbilityMap = values:
-      builtins.listToAttrs (lib.concatMap (name:
-        lib.optional (lib.hasPrefix "${packageName}:" name) {
-          name = lib.removePrefix "${packageName}:" name;
-          value = values.${name};
-        })
-      (builtins.attrNames values));
-    localAbilityProjection =
-      if evaluatedAbilities == null
-      then null
-      else {
-        guarantees = projectLocalAbilityMap evaluatedAbilities.guarantees;
-        interfaces = projectLocalAbilityMap evaluatedAbilities.interfaces;
-        implementations = projectLocalAbilityMap evaluatedAbilities.implementations;
-        requirementTemplates = projectLocalAbilityMap evaluatedAbilities.requirementTemplates;
-      };
     normalizeOptionType = value:
       if builtins.isList value
       then builtins.map normalizeOptionType value
@@ -421,7 +405,7 @@
           (declaration: declaration.owner == packageName)
           abilityEvaluation._optionDecls);
     packageProjectionResult =
-      if localAbilityProjection == null && authoredPackageProbe == null
+      if evaluatedAbilities == null && authoredPackageProbe == null
       then null
       else if builtins.elem "contract" existingOutputs
       then throw "mkDerivation package contract for '${packageName}' reserves the 'contract' output name"
@@ -439,7 +423,7 @@
       then null
       else packageProjectionResult.value;
     packageAbilityProjection =
-      if localAbilityProjection == null
+      if evaluatedAbilities == null
       then null
       else {
         inherit (packageProjection) guarantees interfaces;
@@ -513,7 +497,7 @@
             selectors = packageProjectionResult.selectors;
           };
         }
-        // lib.optionalAttrs (localAbilityProjection != null) {
+        // lib.optionalAttrs (evaluatedAbilities != null) {
           abilities = packageAbilityProjection;
           # Module selection and artifact binding use the package's real
           # module output. The static ability view contains semantic data only.
