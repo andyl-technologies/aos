@@ -304,8 +304,8 @@ in
       } = let
         sqliteExtension = sqliteExtensionFor extensionPlatform;
       in
-        import ../../../lib/build/artifact-consumption-audit.nix {
-          inherit pkgs lib;
+        lib.mkArtifactConsumptionAudit {
+          inherit pkgs;
           name = "python-sqlite-runtime-plugin";
           consumer = self;
           consumerPath = "/bin/python3";

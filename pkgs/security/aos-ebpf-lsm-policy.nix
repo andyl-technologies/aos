@@ -145,8 +145,8 @@ in
       self,
       pkgs,
     }: {
-      policy-consumption = import ../../lib/build/artifact-consumption-audit.nix {
-        inherit pkgs lib;
+      policy-consumption = lib.mkArtifactConsumptionAudit {
+        inherit pkgs;
         name = "ebpf-lsm-immutable-policy";
         consumer = self;
         consumerPath = "/bin/aos-ebpf-lsm-policy";

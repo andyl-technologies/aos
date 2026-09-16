@@ -188,8 +188,8 @@ in
       self,
       pkgs,
     }: {
-      lowdown-consumption = import ../../lib/build/artifact-consumption-audit.nix {
-        inherit pkgs lib;
+      lowdown-consumption = lib.mkArtifactConsumptionAudit {
+        inherit pkgs;
         name = "zram-generator-lowdown-build-tool";
         consumer = self;
         consumerPath = "/share/man/man8/zram-generator.8";

@@ -151,8 +151,8 @@ mkDerivation {
       platform = pkgs.stdenv.hostPlatform;
     in
     {
-      payload-consumption = import ../../lib/build/artifact-consumption-audit.nix {
-        inherit pkgs lib;
+      payload-consumption = lib.mkArtifactConsumptionAudit {
+        inherit pkgs;
         name = "${pname}-k3s-payload";
         consumer = launcher;
         consumerPath = "/bin/k3s-${pname}-start";

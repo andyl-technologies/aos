@@ -1014,7 +1014,7 @@ in
   assert guaranteeReferenceEvaluation.config.aos.abilities.interfaces."authoring:test".guarantees == ["authoring:authoring"];
   assert sharedImplementationEvaluation.config.aos.abilities.implementations."authoring:shared".interface
   == sharedInterfaceIdentity;
-  assert sharedImplementationProjection.interfaces == {};
+  assert sharedImplementationProjection.interfaces.shared == sharedInterfaceIdentity;
   assert (builtins.head sharedImplementationProjection.exports).interface == sharedInterfaceIdentity;
   assert coreGuaranteeProviderProjection.guarantees == {};
   assert builtins.map (provider: provider.name) coreGuaranteeProviderProjection.implementation.providers
