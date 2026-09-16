@@ -41,8 +41,8 @@ in {
         fallback = null;
       };
       providerModule = {
-        inherit artifact;
-        path = "share/aos/providers/storage-format.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "provider.nix";
       };
       desiredType = realizationType;
       requiredFeatures = [];

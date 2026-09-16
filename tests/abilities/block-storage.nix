@@ -13,18 +13,7 @@
   selectedDatasetProvider = selectedProvider pkgs.aos-zfs-provider "storage-dataset";
   selectedProvisioningProvider = selectedProvider pkgs.aos-storage-provisioning-provider "storage-provisioning";
   selectedContentProvider = selectedProvider pkgs.aos-nix-store-provider "content-addressed-object";
-  systemdSelector = lib.abilities.packageOutput {};
-  selectedNetworkProvider = import ./_selected-package-provider.nix {
-    inherit lib;
-    package = pkgs.systemd;
-    implementation = "network-configuration";
-    dependencies.${
-      builtins.toJSON {
-        package = systemdSelector.package;
-        output = systemdSelector.output;
-      }
-    } = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-systemd";
-  };
+  selectedStoreViewProvider = selectedProvider pkgs.systemd "package-store-read-view";
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   storageInterfaces = lib.abilities.interfaces.blockStorage.interfaces;
   storageTypes = lib.abilities.interfaces.blockStorage.types;
@@ -38,19 +27,33 @@
   datasetEffects = controllerKey "aos-zfs-provider:storage-dataset" "aos-zfs-provider:manager" "dataset";
   provisioningEffects = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "provisioning";
   provisioningDetection = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "detect-platform-provisioning";
+  provisioningAcquisition = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "acquire-metadata-provisioning";
   provisioningAuthorization = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "authorize-input-provisioning";
   provisioningMarker = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "observe-marker-provisioning";
-  provisioningPlan = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "observe-plan-provisioning";
+  provisioningEvaluation = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "evaluate-configuration-provisioning";
+  provisioningStoreView = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "package-store-read-view-provisioning";
   provisioningNetwork = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "network-readiness-provisioning";
   provisioningNetworkEffects = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "network-configuration-effects-provisioning";
   provisioningContent = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "authorized-input-object-provisioning";
   provisioningContentOperations = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "authorized-input-object-operations-provisioning";
   contentEffects = controllerKey "aos-nix-store-provider:content-addressed-object" "aos-nix-store-provider:manager" "authorized-provisioning-input-provisioning";
-  networkEffects = controllerKey "systemd:network-configuration" "systemd:manager" "host-network";
+  networkEffects = controllerKey "network-provider:network-configuration" "network-provider:network-config-manager" "host-network";
   evaluated = lib.evalModules {
     inherit lib;
     modules = [
       lib.abilities.module
+      {
+        options.system.build.staticAbilityContract = lib.mkOption {
+          type = lib.types.package;
+          readOnly = true;
+        };
+
+        config.system.build.staticAbilityContract = pkgs.writeTextFile {
+          name = "block-storage-static-ability-contract";
+          destination = "/contract.json";
+          text = ''{"schema":"aos.static-ability-contract/v1"}'';
+        };
+      }
       {
         aos.abilities = {
           environment = {
@@ -66,7 +69,9 @@
             "aos-nix-store-provider:manager" = {};
             "aos-zfs-provider:manager" = {};
             "network-provider:manager" = {};
+            "network-provider:network-config-manager" = {};
             "systemd:manager" = {};
+            "systemd:package-store-read-view" = {};
           };
           bindings = {
             "test:mapping" = {
@@ -131,21 +136,33 @@
             };
             "test:provisioning-detection" = {
               request = provisioningDetection;
-              implementation = "aos:storage-provisioning-platform-detector";
-              providerInstance = "aos:storage-provisioning-platform-detector";
+              implementation = "aos-metadata-provider:storage-provisioning-platform-detector";
+              providerInstance = "aos-metadata-provider:storage-provisioning-platform-detector";
+              slot = "provisioning";
+            };
+            "test:provisioning-acquisition" = {
+              request = provisioningAcquisition;
+              implementation = "aos-metadata-provider:storage-provisioning-metadata-acquirer";
+              providerInstance = "aos-metadata-provider:storage-provisioning-metadata-acquirer";
               slot = "provisioning";
             };
             "test:provisioning-authorization" = {
               request = provisioningAuthorization;
-              implementation = "aos:storage-provisioning-input-authorizer";
-              providerInstance = "aos:storage-provisioning-input-authorizer";
+              implementation = "aos-metadata-provider:storage-provisioning-input-authorizer";
+              providerInstance = "aos-metadata-provider:storage-provisioning-input-authorizer";
               slot = "provisioning";
             };
-            "test:provisioning-plan" = {
-              request = provisioningPlan;
-              implementation = "aos:storage-provisioning-plan-observer";
-              providerInstance = "aos:storage-provisioning-plan-observer";
+            "test:provisioning-evaluation" = {
+              request = provisioningEvaluation;
+              implementation = "aos:storage-provisioning-configuration-evaluator";
+              providerInstance = "aos:storage-provisioning-configuration-evaluator";
               slot = "provisioning";
+            };
+            "test:provisioning-store-view" = {
+              request = provisioningStoreView;
+              implementation = "systemd:package-store-read-view";
+              providerInstance = "systemd:package-store-read-view";
+              slot = "boot-image";
             };
             "test:provisioning-marker" = {
               request = provisioningMarker;
@@ -161,20 +178,20 @@
             };
             "test:network-configuration" = {
               request = "consumer:host-network";
-              implementation = "systemd:network-configuration";
-              providerInstance = "systemd:manager";
+              implementation = "network-provider:network-configuration";
+              providerInstance = "network-provider:network-config-manager";
               slot = "host-network";
             };
             "test:network-effects" = {
               request = networkEffects;
-              implementation = "systemd:network-configuration-effects";
-              providerInstance = "systemd:manager";
+              implementation = "network-provider:network-configuration-effects";
+              providerInstance = "network-provider:network-config-manager";
               slot = "host-network";
             };
             "test:provisioning-network-effects" = {
               request = provisioningNetworkEffects;
-              implementation = "systemd:network-configuration-effects";
-              providerInstance = "systemd:manager";
+              implementation = "network-provider:network-configuration-effects";
+              providerInstance = "network-provider:network-config-manager";
               slot = "host-network";
             };
             "test:provisioning-content" = {
@@ -210,6 +227,7 @@
         inherit (pkgs.aos-storage-format-provider) version;
         module = pkgs.aos-storage-format-provider.module + "/module.nix";
       }
+      (lib.abilities.authenticatedPackageModuleRecordFor pkgs.aos-metadata-provider)
       {
         name = "aos";
         version = pkgs.aos.version;
@@ -219,38 +237,138 @@
         name = "network-provider";
         module = {lib, ...}: let
           network = lib.abilities.interfaces.serviceManagement.interfaces.networkReadiness;
+          networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;
+          networkEffects = networkConfiguration.effects;
+          bindingFor = bindings: requestName:
+            builtins.head (
+              builtins.filter
+              (binding: binding.request == requestName)
+              (builtins.attrValues bindings)
+            );
         in {
           config.aos.abilities = {
-            implementations.network-readiness = {
-              description = "Provides the test's exact configured-network observation.";
-              interface = "network-readiness";
-              artifact = lib.abilities.packageOutput {};
-              inherit (network) methods;
-              guarantees = [];
-              handlerDescriptor = null;
-              providerModule = null;
-              desiredType = null;
-              requiredFeatures = [];
-              provide = {
-                instance,
-                requests,
-                ...
-              }: {
-                requests = {};
-                resourceFragments = {};
-                outputs =
-                  builtins.mapAttrs (_: _: {
-                    readiness-resource = {
-                      interface = network.identity;
-                      resource = {
-                        provider = instance.id;
-                        key = "network-online";
+            implementations = {
+              network-readiness = {
+                description = "Provides the test's exact configured-network observation.";
+                interface = "network-readiness";
+                artifact = lib.abilities.packageOutput {};
+                inherit (network) methods;
+                guarantees = [];
+                handlerDescriptor = null;
+                providerModule = null;
+                desiredType = null;
+                requiredFeatures = [];
+                provide = {
+                  instance,
+                  requests,
+                  ...
+                }: {
+                  requests = {};
+                  resourceFragments = {};
+                  outputs =
+                    builtins.mapAttrs (_: _: {
+                      readiness-resource = {
+                        interface = network.identity;
+                        resource = {
+                          provider = instance.id;
+                          key = "network-online";
+                        };
+                        operations = ["observe"];
+                        lifetime = "instance";
                       };
-                      operations = ["observe"];
-                      lifetime = "instance";
-                    };
-                  })
-                  requests;
+                    })
+                    requests;
+                };
+              };
+
+              network-configuration = {
+                description = "Provides a focused network resource for the storage composition fixture.";
+                interface = networkConfiguration.identity;
+                artifact = lib.abilities.packageOutput {};
+                inherit (networkConfiguration) methods;
+                guarantees = [];
+                requirements.network-configuration-effects = {
+                  accepted_interfaces = [networkEffects.identity];
+                  methods = networkEffects.methods;
+                  guarantees = [];
+                  strength = "required";
+                  fallback = null;
+                };
+                handlerDescriptor = null;
+                providerModule = null;
+                desiredType = lib.abilities.types.record {
+                  fields.schema = lib.abilities.types.enum ["aos.test.network-realization/v1"];
+                };
+                requiredFeatures = [];
+                provide = {
+                  instance,
+                  requests,
+                  bindings,
+                  ...
+                }: {
+                  requests = {};
+                  outputs =
+                    builtins.mapAttrs (requestName: _: let
+                      binding = bindingFor bindings requestName;
+                    in {
+                      readiness-resource = {
+                        interface = networkConfiguration.identity;
+                        resource = {
+                          provider = instance.id;
+                          key = binding.slot;
+                        };
+                        operations = ["observe"];
+                        lifetime = "persistent";
+                      };
+                    })
+                    requests;
+                  resourceFragments = builtins.listToAttrs (
+                    builtins.map (requestName: let
+                      binding = bindingFor bindings requestName;
+                    in {
+                      name = binding.slot;
+                      value = {
+                        kind = networkConfiguration.identity.name;
+                        lifetime = "persistent";
+                        value = requests.${requestName}.parameters;
+                      };
+                    }) (builtins.attrNames requests)
+                  );
+                };
+                compose = {resources, ...}: {
+                  outputs = {};
+                  requests =
+                    builtins.mapAttrs (key: _: {
+                      requirement = "network-configuration-effects";
+                      scope = ["network-configuration-effects"];
+                      slot = key;
+                      parameters = {};
+                    })
+                    resources;
+                  realizations =
+                    builtins.mapAttrs (_: _: {
+                      schema = "aos.test.network-realization/v1";
+                    })
+                    resources;
+                };
+                transition = _: lib.abilities.transitionFragment {};
+              };
+
+              network-configuration-effects = {
+                description = "Accepts network effects for the storage composition fixture.";
+                interface = "systemd:${networkEffects.alias}";
+                artifact = lib.abilities.packageOutput {};
+                inherit (networkEffects) methods;
+                guarantees = [];
+                handlerDescriptor = {
+                  artifact = lib.abilities.packageOutput {};
+                  entryPoint = "bin/network-effects-fixture";
+                  arguments = networkEffects.requestType;
+                  result = networkEffects.observationType;
+                };
+                providerModule = null;
+                desiredType = null;
+                requiredFeatures = [];
               };
             };
             instances.manager.implementation = "network-readiness";
@@ -380,7 +498,7 @@
       selectedDatasetProvider
       selectedProvisioningProvider
       selectedContentProvider
-      selectedNetworkProvider
+      selectedStoreViewProvider
     ];
     specialArgs = {
       inherit pkgs;
@@ -459,6 +577,14 @@
           access = "read";
         })
         (authorizedBinding {
+          id = "acquire-metadata";
+          request = "acquire-metadata-${provisioning.resource.key}";
+          interface = interfaceIdentity "aos.metadata.storage-provisioning-acquisition";
+          method = "acquire";
+          resource = provisioning.resource;
+          access = "exclusive-write";
+        })
+        (authorizedBinding {
           id = "authorize-input";
           request = "authorize-input-${provisioning.resource.key}";
           interface = interfaceIdentity "aos.metadata.storage-provisioning-input-authorization";
@@ -491,10 +617,10 @@
           access = "read";
         })
         (authorizedBinding {
-          id = "observe-plan";
-          request = "observe-plan-${provisioning.resource.key}";
-          interface = interfaceIdentity "aos.metadata.storage-provisioning-plan";
-          method = "observe";
+          id = "evaluate-configuration";
+          request = "evaluate-configuration-${provisioning.resource.key}";
+          interface = interfaceIdentity "aos.configuration.storage-provisioning-evaluation";
+          method = "evaluate";
           resource = provisioning.resource;
           access = "exclusive-write";
         })
@@ -550,12 +676,12 @@
   imageNetworkApply = operationByKey imageTransition "apply-network-bootstrap-${provisioning.resource.key}";
   operatorNetworkApply = operationByKey operatorTransition "apply-network-bootstrap-${provisioning.resource.key}";
   markerObservation = operationByKey imageTransition "observe-marker-${provisioning.resource.key}";
-  planObservation = operationByKey imageTransition "observe-plan-${provisioning.resource.key}";
+  configurationEvaluation = operationByKey imageTransition "evaluate-configuration-${provisioning.resource.key}";
   authorizedInputCommit = operationByKey imageTransition "commit-authorized-input-${provisioning.resource.key}";
   bootstrapEdge = edge:
     edge.from.kind
     == "merge"
-    && edge.from.key.key == "authorized-input-${provisioning.resource.key}"
+    && edge.from.key.key == "acquired-metadata-${provisioning.resource.key}"
     && edge.to.kind == "operation"
     && edge.to.key.key == "apply-network-bootstrap-${provisioning.resource.key}"
     && edge.kind == "data";
@@ -580,7 +706,7 @@ in
   assert abilities.compositionRequests.${provisioningNetworkEffects}.parameters == {};
   assert hostNetwork.value.authority == "image";
   assert markerObservation.inputs.fields.lsblk.value.entry_point == "bin/lsblk";
-  assert planObservation.inputs.fields.marker
+  assert configurationEvaluation.inputs.fields.marker
   == {
     source = "operation-result";
     reference = {
@@ -602,7 +728,7 @@ in
         kind = "merge";
         key = {
           scope = ["storage-provisioning"];
-          key = "authorized-input-${provisioning.resource.key}";
+          key = "acquired-metadata-${provisioning.resource.key}";
         };
       };
       output = "network-bootstrap";
@@ -617,14 +743,15 @@ in
   assert builtins.length (builtins.filter bootstrapEdge operatorTransition.edges) == 0;
   assert authorizedInputCommit.target.resource == authorizedInputObject.resource;
   assert authorizedInputCommit.target.interface == lib.abilities.interfaces.contentAddressedArtifacts.identity;
-  assert authorizedInputCommit.inputs.fields.blob == {
+  assert authorizedInputCommit.inputs.fields.blob
+  == {
     source = "operation-result";
     reference = {
       producer = {
-        kind = "merge";
+        kind = "operation";
         key = {
           scope = ["storage-provisioning"];
-          key = "authorized-input-${provisioning.resource.key}";
+          key = "authorize-${provisioning.resource.key}";
         };
       };
       output = "authorized-input-blob";
@@ -649,11 +776,11 @@ in
   assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning-effects".providerModule == null;
   assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning-marker-observer".handlerDescriptor.entryPoint
   == "bin/aos-storage-provisioning-marker-observer";
-  assert abilities.implementations."aos:storage-provisioning-platform-detector".handlerDescriptor.entryPoint
-  == "libexec/aos-metadata-provisioning-provider";
-  assert abilities.implementations."aos:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
-  == "libexec/aos-metadata-provisioning-provider";
-  assert abilities.implementations."aos:storage-provisioning-plan-observer".handlerDescriptor.entryPoint
-  == "libexec/aos-metadata-provisioning-provider";
+  assert abilities.implementations."aos-metadata-provider:storage-provisioning-platform-detector".handlerDescriptor.entryPoint
+  == "bin/aos-metadata-acquisition-provider";
+  assert abilities.implementations."aos-metadata-provider:storage-provisioning-metadata-acquirer".handlerDescriptor.entryPoint
+  == "bin/aos-metadata-acquisition-provider";
+  assert abilities.implementations."aos-metadata-provider:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
+  == "bin/aos-metadata-policy-provider";
   assert abilities.implementations."aos:storage-provisioning-configuration-evaluator".handlerDescriptor.entryPoint
-  == "libexec/aos-metadata-provisioning-provider"; true
+  == "libexec/aos-provisioning-configuration-evaluator"; true

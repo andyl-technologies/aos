@@ -248,8 +248,8 @@ in {
             fallback = null;
           };
           providerModule = {
-            artifact = providerArtifact;
-            path = "share/aos/providers/nix-store-database.nix";
+            artifact = lib.abilities.packageOutput {output = "module";};
+            path = "provider.nix";
           };
           desiredType = realizationType;
           requiredFeatures = [];
@@ -287,8 +287,8 @@ in {
             fallback = null;
           };
           providerModule = {
-            artifact = providerArtifact;
-            path = "share/aos/providers/content-addressed-object.nix";
+            artifact = lib.abilities.packageOutput {output = "module";};
+            path = "content-object-provider.nix";
           };
           desiredType = contentObject.realizationType;
           requiredFeatures = [];

@@ -110,7 +110,7 @@ in
     '';
 
     postInstall = ''
-      mkdir -p $out/libexec $out/lib/bpf $out/share/aos/ebpf-lsm $out/share/aos/providers
+      mkdir -p $out/libexec $out/lib/bpf $out/share/aos/ebpf-lsm
       cp ${bpfSource} "$TMPDIR/aos-ebpf-lsm-policy.bpf.c"
 
       ${buildPackages.llvm}/bin/clang -target bpf -O2 -g \
@@ -130,9 +130,6 @@ in
         -o $out/libexec/aos-ebpf-lsm-loader \
         ${loaderSource} \
         $(pkg-config --cflags --libs libbpf json-c)
-
-      cp ${./_aos-ebpf-lsm-policy/provider.nix} \
-        $out/share/aos/providers/ebpf-lsm-policy-set.nix
 
       cat > $out/share/aos/ebpf-lsm/aos-task-audit.json <<'JSON'
       {

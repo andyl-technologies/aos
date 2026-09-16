@@ -1758,7 +1758,12 @@ in {
       in
         if rejected == []
         then resources
-        else throw "Desired ability resources do not match their controller contracts: ${builtins.concatStringsSep ", " rejected}.";
+        else
+          throw "Desired ability resources do not match their controller contracts: ${builtins.toJSON (builtins.map (name: {
+              inherit name;
+              inherit (resources.${name}) kind resource;
+            })
+            rejected)}.";
       description = "Provider-owned desired resources derived during module evaluation.";
     };
     resolvedResources = mkOption {

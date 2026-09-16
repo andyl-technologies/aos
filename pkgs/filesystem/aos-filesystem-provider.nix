@@ -31,11 +31,8 @@ in
     abilities = ./_aos-filesystem-provider;
 
     postInstall = ''
-      mkdir -p "$out/libexec" "$out/share/aos/providers"
+      mkdir -p "$out/libexec"
       mv "$out/bin/aos-filesystem-provider" "$out/libexec/aos-filesystem-provider"
-      install -m 444 \
-        ${./_aos-filesystem-provider/provider.nix} \
-        "$out/share/aos/providers/filesystem.nix"
     '';
 
     meta = {

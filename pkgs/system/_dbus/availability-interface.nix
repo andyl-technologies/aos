@@ -68,8 +68,8 @@ in {
       methods = ["observe"];
       guarantees = [];
       providerModule = {
-        artifact = lib.abilities.packageOutput {};
-        path = "share/aos/providers/dbus-availability.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "availability-provider.nix";
       };
       desiredType = null;
       requiredFeatures = [];

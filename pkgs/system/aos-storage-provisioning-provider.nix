@@ -85,9 +85,6 @@ in
     '';
 
     postInstall = ''
-      mkdir -p "$out/share/aos/providers"
-      cp ${./_aos-storage-provisioning-provider/provider.nix} \
-        "$out/share/aos/providers/storage-provisioning.nix"
       test -x "$out/bin/aos-storage-provisioning-provider"
       test -x "$out/bin/aos-storage-provisioning-marker-observer"
       if patchelf --print-interpreter "$out/bin/aos-storage-provisioning-provider" \

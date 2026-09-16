@@ -8,6 +8,7 @@
   storage = lib.abilities.interfaces.blockStorage.interfaces;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   artifact = lib.abilities.packageOutput {};
+  moduleArtifact = lib.abilities.packageOutput {output = "module";};
   cfg = config.aos.filesystems.zfs;
   consumerInstance = "zfs-storage";
   resultOf = lib.abilities.resultOf;
@@ -198,7 +199,7 @@
       fallback = null;
     };
     providerModule = {
-      inherit artifact;
+      artifact = moduleArtifact;
       path = providerPath;
     };
     desiredType = terminalValue.realizationType;
@@ -402,8 +403,8 @@ in {
           {
             interfaces.${poolTerminal.alias} = poolTerminal.declaration;
             interfaces.${datasetTerminal.alias} = datasetTerminal.declaration;
-            implementations.storage-pool = controller storage.pool poolTerminal "share/aos/providers/storage-pool.nix" "Converges storage pools through the OpenZFS controller.";
-            implementations.storage-dataset = controller storage.dataset datasetTerminal "share/aos/providers/storage-dataset.nix" "Converges storage datasets through the OpenZFS controller.";
+            implementations.storage-pool = controller storage.pool poolTerminal "pool-provider.nix" "Converges storage pools through the OpenZFS controller.";
+            implementations.storage-dataset = controller storage.dataset datasetTerminal "dataset-provider.nix" "Converges storage datasets through the OpenZFS controller.";
             implementations.${poolTerminal.alias} = poolTerminal.implementation;
             implementations.${datasetTerminal.alias} = datasetTerminal.implementation;
           }

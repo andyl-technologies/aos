@@ -110,7 +110,7 @@ in
     '';
 
     postInstall = ''
-      mkdir -p $out/libexec $out/lib/bpf $out/share/aos/ebpf-net $out/share/aos/providers
+      mkdir -p $out/libexec $out/lib/bpf $out/share/aos/ebpf-net
       cp ${bpfSource} "$TMPDIR/aos-ebpf-net-policy.bpf.c"
 
       ${buildPackages.llvm}/bin/clang -target bpf -O2 -g \
@@ -130,9 +130,6 @@ in
         -o $out/libexec/aos-ebpf-net-policy-loader \
         ${loaderSource} \
         $(pkg-config --cflags --libs libbpf json-c)
-
-      cp ${./_aos-ebpf-net-policy/provider.nix} \
-        $out/share/aos/providers/ebpf-cgroup-network-policy.nix
 
       cat > $out/share/aos/ebpf-net/sample-policy.json <<'JSON'
       {
