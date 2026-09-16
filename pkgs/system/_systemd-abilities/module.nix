@@ -8,6 +8,7 @@
     ./manager.nix
     ./package-store-read-view.nix
     ./package-attestation-quote.nix
+    ./platform/image.nix
     ./verity-root.nix
   ];
 }

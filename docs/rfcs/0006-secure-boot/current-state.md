@@ -28,7 +28,7 @@ rather than re-deriving it.
   today**; should be corrected as part of phase 1.
 - Stub (`:38`): `${systemd}/lib/systemd/boot/efi/linuxx64.efi.stub`, unsigned.
 
-**sd-boot / ESP** — `modules/image/_builder.nix`
+**sd-boot / ESP** — `pkgs/system/_systemd-abilities/platform/_image-builder.nix`
 
 - ESP tree (`:6-9`): `EFI/BOOT/BOOTX64.EFI`,
   `EFI/systemd/systemd-bootx64.efi`, `EFI/Linux/aos-<ver>.efi`,
@@ -122,7 +122,7 @@ rather than re-deriving it.
   `CONFIG_SYSTEM_TRUSTED_KEYS`, `CONFIG_SYSTEM_BLACKLIST_KEYS`,
   `CONFIG_LOCK_DOWN_IN_EFI_SECURE_BOOT`. `CONFIG_EFI_PARTITION=y` is the only
   EFI-relevant setting (`storage.config:63`).
-- Cmdline (assembled from `aos.boot.kernelParams`, `modules/image/_builder.nix:37`,
+- Cmdline (assembled from `aos.boot.kernelParams`, `pkgs/system/_systemd-abilities/platform/_image-builder.nix:37`,
   base in `modules/base/boot.nix:107-129`): `console=… systemd.gpt-auto=0
   root=/dev/disk/by-partlabel/root-a ro` + `audit=1` + x86 hardening +
   `selinux=1 security=selinux`. **No** `lockdown=`, `module.sig_enforce`,

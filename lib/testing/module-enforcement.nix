@@ -96,7 +96,7 @@
   undersizedEspSystem = aos.mkSystem {
     modules = [
       ../../systems/server.nix
-      {aos.image.budgets.maxEspMiB = lib.mkForce 351;}
+      {aos.image.budgets.maxFirmwarePartitionMiB = lib.mkForce 351;}
     ];
   };
   undersizedEspRejected =

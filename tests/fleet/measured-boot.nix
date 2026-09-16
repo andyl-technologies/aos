@@ -38,7 +38,7 @@
         aos.boot.secureBoot.measuredBoot.pinnedPcrs = lib.mkForce "7";
         # Boundary tests temporarily duplicate a complete normal UKI so a
         # failed addon boot cannot affect the clean default entry.
-        aos.image.espExtraFreeMiB = 192;
+        aos.image.extraFirmwareFreeMiB = 192;
         # Keep the serial console last so /dev/console and journald expose
         # initrd transaction failures in the fleet-test transcript.
         aos.boot.kernelParams = lib.mkAfter ["console=ttyS0,115200"];
@@ -49,7 +49,7 @@
         # package activation across measured configuration generations.
         aos.image.testArtifactRoots = [pkgs.binutils pkgs.test-http-server];
         aos.image.budgets.maxRootMiB = 640;
-        aos.image.budgets.maxEspMiB = 640;
+        aos.image.budgets.maxFirmwarePartitionMiB = 640;
       }
     ];
   };

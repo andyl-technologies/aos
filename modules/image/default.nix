@@ -1,8 +1,8 @@
-##! modules/image/default.nix — Disk image format module
+##! Provider-neutral immutable disk image policy and format assembly.
 ##!
-##! Provides aos.image options and wires system.build.image.{format} to
-##! image builder derivations. The raw GPT image is the base format;
-##! all others are converted from it via qemu-img.
+##! The exact checked image-builder binding produces the raw image plan. This
+##! module builds the manager-neutral root filesystem and converts the selected
+##! raw artifact into delivery formats without interpreting bootloader layout.
 ##!
 ##! Supported formats:
 ##!   raw   — raw GPT disk image (base, bootable via dd or losetup)
@@ -22,17 +22,11 @@
       type = lib.types.addCheck lib.types.int (value: value > 0);
       inherit default description;
     };
-  maxLogicalDiskMiB = 8192;
-  verityStorageMiB =
-    if config.aos.security.verity.enable
-    then 2 * cfg.budgets.maxVerityMiB
-    else 0;
-  logicalDiskContractMiB =
-    2
-    + cfg.budgets.maxEspMiB
-    + 2 * cfg.rootPartitionMiB
-    + verityStorageMiB;
-  buildImage = import ./_builder.nix;
+  rootfsArtifacts = import ./_rootfs.nix {
+    inherit pkgs lib;
+    system = {inherit config;};
+    name = config.aos.system.name;
+  };
   runtimeRoots =
     [config.system.build.toplevel config.system.build.kernel]
     ++ cfg.hostConfigClosures;
@@ -46,18 +40,43 @@
     testArtifactRoots = cfg.testArtifactRoots;
   };
 
-  rawImage = buildImage {
-    inherit pkgs lib runtimeClosureAudit;
-    system = {inherit config;};
+  platform = cfg.platform;
+  plan = platform.plan {
     name = config.aos.system.name;
+    rootfs = rootfsArtifacts.rootfs;
+    trustBundle = rootfsArtifacts.activeImageDbCerts;
+    inherit runtimeClosureAudit;
   };
-  imageBudgetCheck = import ./_budget-check.nix {
-    inherit config lib pkgs runtimeClosureAudit;
-    image = rawImage;
-    name = config.aos.system.name;
-    rootfs = rawImage.rootfs;
-    uki = "${rawImage.ukiA}/${rawImage.ukiAStoreFilename}";
-  };
+  rawImage = plan.rawImage;
+  planFields = [
+    "_type"
+    "budgetCheck"
+    "finishConvertedImage"
+    "initialBootExecutable"
+    "installBundle"
+    "rawImage"
+    "recoveryBootExecutableA"
+    "recoveryBootExecutableB"
+    "recoveryBundle"
+    "recoveryInitrd"
+    "recoverySlotManifest"
+    "unsignedAssembly"
+  ];
+  planValid =
+    builtins.isAttrs plan
+    && builtins.attrNames plan == planFields
+    && (plan._type or null) == "aos-image-build-plan"
+    && lib.types.package.check plan.rawImage
+    && lib.types.package.check plan.budgetCheck
+    && builtins.isFunction plan.finishConvertedImage
+    && lib.types.package.check plan.initialBootExecutable
+    && lib.types.package.check plan.unsignedAssembly
+    && (plan.installBundle == null || lib.types.package.check plan.installBundle)
+    && (plan.recoveryBundle == null || lib.types.package.check plan.recoveryBundle)
+    && (plan.recoveryInitrd == null || lib.types.package.check plan.recoveryInitrd)
+    && (plan.recoverySlotManifest == null || lib.types.package.check plan.recoverySlotManifest)
+    && (plan.recoveryBootExecutableA == null || lib.types.package.check plan.recoveryBootExecutableA)
+    && (plan.recoveryBootExecutableB == null || lib.types.package.check plan.recoveryBootExecutableB);
 
   # Convert a raw image to another format via qemu-img and emit a per-format
   # manifest. The manifest retains the canonical boot/partition facts from
@@ -71,7 +90,7 @@
     pkgs.mkDerivation {
       name = "aos-image-${config.aos.system.name}-${format}";
       src = null;
-      buildDeps = [pkgs.qemu pkgs.coreutils pkgs.jq pkgs.openssl pkgs.zstd];
+      buildDeps = [pkgs.qemu pkgs.coreutils pkgs.jq pkgs.zstd];
       IMAGE_FORMAT = format;
       IMAGE_FILENAME = "aos-${config.aos.system.name}.${format}";
       IMAGE_MEDIA_TYPE = mediaType;
@@ -122,56 +141,6 @@
                | .virtualSizeBytes = $expectedVirtualSize' \
               ${rawImage}/image-info.json > $out/image-info.json
 
-            ${lib.optionalString config.aos.boot.recovery.enable ''
-              for component in \
-                root.img root.verity root.roothash root.roothash.p7s \
-                uki-a.efi uki-b.efi \
-                recovery-a.efi recovery-b.efi \
-                recovery-a.conf recovery-b.conf; do
-                cp "${rawImage}/$component" "$out/$component"
-              done
-
-              component() {
-                id=$1
-                path=$2
-                size=$(stat -c %s "$out/$path")
-                digest=$(sha256sum "$out/$path" | cut -d ' ' -f1)
-                ${pkgs.jq}/bin/jq -n \
-                  --arg id "$id" --arg path "$path" \
-                  --argjson byteSize "$size" --arg sha256 "$digest" \
-                  '{id: $id, path: $path, byte_size: $byteSize, sha256: $sha256}'
-              }
-              components=$(
-                {
-                  component root-image root.img
-                  component root-verity root.verity
-                  component root-hash root.roothash
-                  component normal-uki-a uki-a.efi
-                  component normal-uki-b uki-b.efi
-                  component recovery-uki-a recovery-a.efi
-                  component recovery-uki-b recovery-b.efi
-                  component recovery-entry-a recovery-a.conf
-                  component recovery-entry-b recovery-b.conf
-                  component image-metadata image-info.json
-                } | ${pkgs.jq}/bin/jq -s .
-              )
-              ${pkgs.jq}/bin/jq -S -n \
-                --arg schema aos.recovery-bundle/v1 \
-                --arg release ${lib.escapeShellArg config.aos.system.version} \
-                --arg architecture ${lib.escapeShellArg lib.platform.constraints.cpu} \
-                --arg platform ${lib.escapeShellArg lib.system} \
-                --argjson module_abi ${toString config.aos.system.moduleAbi} \
-                --argjson recovery_abi ${toString config.aos.boot.recovery.abi} \
-                --argjson components "$components" \
-                '{schema: $schema, release: $release, architecture: $architecture,
-                  platform: $platform, module_abi: $module_abi,
-                  recovery_abi: $recovery_abi, components: $components}' \
-                > "$out/recovery-bundle.json"
-              ${pkgs.openssl}/bin/openssl dgst -sha256 \
-                -sign ${config.aos.boot.secureBoot.dbKey} \
-                -out "$out/recovery-bundle.json.sig" \
-                "$out/recovery-bundle.json"
-            ''}
           '';
         }
       ];
@@ -207,25 +176,27 @@
       meta = {inherit description;};
     };
 
-  convertedImages = {
-    qcow2 = convertImage {
+  convertedImages = let
+    finish = baseImage: plan.finishConvertedImage {inherit baseImage;};
+  in {
+    qcow2 = finish (convertImage {
       format = "qcow2";
       formatFlag = "qcow2";
       mediaType = "application/vnd.aos.disk-image.qcow2";
       targets = ["qemu-kvm" "openstack"];
-    };
-    vmdk = convertImage {
+    });
+    vmdk = finish (convertImage {
       format = "vmdk";
       formatFlag = "vmdk";
       mediaType = "application/x-vmdk";
       targets = ["vmware"];
-    };
-    vhd = convertImage {
+    });
+    vhd = finish (convertImage {
       format = "vhd";
       formatFlag = "vpc";
       mediaType = "application/vnd.aos.disk-image.vhd";
       targets = ["hyper-v"];
-    };
+    });
   };
 
   artifactFor = format: bundle: filename: {
@@ -241,11 +212,13 @@
     };
   };
 in {
+  imports = [./_platform.nix];
+
   options.aos.image = {
     ## Whether to build disk images for this system variant.
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = false;
       description = "Whether to build disk images for this system variant.";
     };
 
@@ -259,12 +232,12 @@ in {
       '';
     };
 
-    espExtraFreeMiB = lib.mkOption {
+    extraFirmwareFreeMiB = lib.mkOption {
       type = lib.types.int;
       default = 0;
       internal = true;
       description = ''
-        Additional free space reserved on the ESP for tests that exercise
+        Additional free space reserved in the firmware partition for tests that exercise
         temporary boot artifacts outside the production publication
         transaction.
       '';
@@ -311,9 +284,9 @@ in {
     budgets = {
       maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
-      maxInitrdMiB = positiveMiB 128 "Maximum initrd artifact size before it is embedded in a UKI.";
-      maxUkiMiB = positiveMiB 160 "Maximum signed Unified Kernel Image size.";
-      maxEspMiB = positiveMiB 384 "EFI System Partition capacity, including two UKIs and update headroom.";
+      maxInitrdMiB = positiveMiB 128 "Maximum selected early-boot artifact size.";
+      maxBootExecutableMiB = positiveMiB 160 "Maximum selected boot executable size.";
+      maxFirmwarePartitionMiB = positiveMiB 384 "Firmware partition capacity, including two boot executables and update headroom.";
       maxRuntimeClosureMiB = positiveMiB 768 "Maximum NAR size of the system toplevel runtime closure.";
       maxDevelopmentPayloadMiB = positiveMiB 48 "Maximum headers, static archives, and build metadata retained in the image runtime closure.";
       maxDownloadMiB = positiveMiB 640 "Maximum directly downloadable disk-image object size.";
@@ -323,7 +296,7 @@ in {
   options.system.build.image = {
     raw = lib.mkOption {
       type = lib.types.package;
-      description = "Zstandard-compressed raw GPT disk image (bootable after decompression).";
+      description = "Selected provider's compressed raw disk image.";
     };
     qcow2 = lib.mkOption {
       type = lib.types.package;
@@ -359,26 +332,21 @@ in {
     '';
   };
 
-  options.system.build.uki = lib.mkOption {
+  options.system.build.initialBootExecutable = lib.mkOption {
     type = lib.types.package;
-    description = ''
-      The assembled Unified Kernel Image (`.efi`) written to the image's
-      ESP. Secure Boot signed when `aos.boot.secureBoot.enable` is set.
-      Exposed so it can be published (`apr publish --image`) and have its
-      Secure Boot facts cataloged (RFC-0006 phase 4).
-    '';
+    description = "Selected provider's initial immutable boot executable.";
   };
 
-  options.system.build.recoveryUkiA = lib.mkOption {
+  options.system.build.recoveryBootExecutableA = lib.mkOption {
     type = lib.types.nullOr lib.types.package;
     default = null;
-    description = "Signed, uncounted recovery UKI paired with immutable slot A.";
+    description = "Selected provider's recovery boot executable for slot A.";
   };
 
-  options.system.build.recoveryUkiB = lib.mkOption {
+  options.system.build.recoveryBootExecutableB = lib.mkOption {
     type = lib.types.nullOr lib.types.package;
     default = null;
-    description = "Signed, uncounted recovery UKI paired with immutable slot B.";
+    description = "Selected provider's recovery boot executable for slot B.";
   };
 
   options.system.build.recoveryBundle = lib.mkOption {
@@ -387,37 +355,49 @@ in {
     description = "Authenticated fixed-layout payload for removable recovery media.";
   };
 
-  config = lib.mkIf cfg.enable (lib.mkMerge [
+  options.system.build.installBundle = lib.mkOption {
+    type = lib.types.nullOr lib.types.package;
+    default = null;
+    readOnly = true;
+    description = "Selected image builder's guarded bare-metal installation bundle.";
+  };
+
+  config = lib.mkMerge [
     {
       assertions = [
         {
+          assertion = !cfg.enable || platform != null;
+          message = "aos.image.enable requires exactly one checked image-builder binding";
+        }
+        {
           assertion = cfg.allowTestArtifacts || cfg.testArtifactRoots == [];
           message = "aos.image.testArtifactRoots requires aos.image.allowTestArtifacts = true";
-        }
-        {
-          assertion = cfg.budgets.maxEspMiB >= 2 * cfg.budgets.maxUkiMiB + 32;
-          message = "aos.image.budgets.maxEspMiB must hold two maximum-sized UKIs plus 32 MiB of bootloader and FAT headroom";
-        }
-        {
-          assertion = logicalDiskContractMiB <= maxLogicalDiskMiB;
-          message = "aos.image storage budgets produce a logical disk larger than the 8192 MiB publication safety limit";
         }
         {
           assertion = cfg.rootPartitionMiB >= cfg.budgets.maxRootMiB;
           message = "aos.image.rootPartitionMiB must be at least aos.image.budgets.maxRootMiB";
         }
         {
-          assertion = cfg.espExtraFreeMiB >= 0;
-          message = "aos.image.espExtraFreeMiB must not be negative";
+          assertion = cfg.extraFirmwareFreeMiB >= 0;
+          message = "aos.image.extraFirmwareFreeMiB must not be negative";
+        }
+      ];
+    }
+    (lib.mkIf (cfg.enable && platform != null) {
+      assertions = [
+        {
+          assertion = planValid;
+          message = "the selected image builder produced an invalid immutable image plan";
         }
       ];
       system.build.unsignedImageAssembly =
         if externalFinalization
-        then rawImage
+        then plan.unsignedAssembly
         else null;
       system.build.checks.runtime-closure = runtimeClosureAudit;
-    }
-    (lib.mkIf (!externalFinalization) {
+      system.build.installBundle = plan.installBundle;
+    })
+    (lib.mkIf (cfg.enable && platform != null && !externalFinalization) {
       system.build.image = {
         raw = rawImage;
         inherit (convertedImages) qcow2 vmdk vhd;
@@ -428,13 +408,13 @@ in {
         vmdk = artifactFor "vmdk" convertedImages.vmdk "aos-${config.aos.system.name}.vmdk";
         vhd = artifactFor "vhd" convertedImages.vhd "aos-${config.aos.system.name}.vhd";
       };
-      system.build.checks.image-budget = imageBudgetCheck;
-      system.build.uki = rawImage.uki;
-      system.build.recoveryInitrd = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryInitrdA;
-      system.build.recoverySlotManifest = lib.mkIf config.aos.boot.recovery.enable rawImage.recoverySlotManifest;
-      system.build.recoveryUkiA = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiA;
-      system.build.recoveryUkiB = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryUkiB;
-      system.build.recoveryBundle = lib.mkIf config.aos.boot.recovery.enable rawImage.recoveryBundle;
+      system.build.checks.image-budget = plan.budgetCheck;
+      system.build.initialBootExecutable = plan.initialBootExecutable;
+      system.build.recoveryInitrd = lib.mkIf config.aos.boot.recovery.enable plan.recoveryInitrd;
+      system.build.recoverySlotManifest = lib.mkIf config.aos.boot.recovery.enable plan.recoverySlotManifest;
+      system.build.recoveryBootExecutableA = lib.mkIf config.aos.boot.recovery.enable plan.recoveryBootExecutableA;
+      system.build.recoveryBootExecutableB = lib.mkIf config.aos.boot.recovery.enable plan.recoveryBootExecutableB;
+      system.build.recoveryBundle = lib.mkIf config.aos.boot.recovery.enable plan.recoveryBundle;
     })
-  ]);
+  ];
 }

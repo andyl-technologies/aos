@@ -200,7 +200,7 @@
   candidateImage = candidate.config.system.build.image.raw;
   candidateImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
   candidateImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
-  candidateUki = candidate.config.system.build.uki;
+  candidateUki = candidate.config.system.build.initialBootExecutable;
 
   # Image-mode machines boot the system image directly. Keep only the exact
   # byte-comparison tool needed by the slot assertions in that image; APM's

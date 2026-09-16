@@ -31,7 +31,7 @@
   abi2Image = abi2.config.system.build.image.raw;
   abi2ImageDisk = abi2.config.system.build.imageArtifacts.raw.disk;
   abi2ImageInfo = abi2.config.system.build.imageArtifacts.raw.info;
-  abi2Uki = abi2.config.system.build.uki;
+  abi2Uki = abi2.config.system.build.initialBootExecutable;
 
   # Image-mode machines do not consume fleet `extraClosures`. The test driver
   # clones the authenticated registry in each guest, so make the AOS-built Git

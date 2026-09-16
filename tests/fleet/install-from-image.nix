@@ -105,7 +105,7 @@
   server2Image = candidate.config.system.build.image.raw;
   server2ImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
   server2ImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
-  server2Uki = candidate.config.system.build.uki;
+  server2Uki = candidate.config.system.build.initialBootExecutable;
 
   targetSystem = mkSystem [
     ../../systems/server-verity.nix

@@ -40,8 +40,8 @@ associated default OCI artifact at
     maxRootMiB = 512;
     maxVerityMiB = 16;
     maxInitrdMiB = 128;
-    maxUkiMiB = 160;
-    maxEspMiB = 384;
+    maxBootExecutableMiB = 160;
+    maxFirmwarePartitionMiB = 384;
     maxRuntimeClosureMiB = 768;
     maxDownloadMiB = 640;
   };
@@ -188,8 +188,8 @@ The raw output contains `aos-<system>.img.zst` and `image-info.json`. The outer
 zstd stream keeps fixed partition headroom and the empty inactive slot out of
 the transfer while the metadata separately binds both the compressed object
 and reconstructed GPT disk. Secure Boot plus dm-verity systems also expose
-`system.build.recoveryUkiA`,
-`system.build.recoveryUkiB`, and `system.build.recoveryBundle`. The bundle has a
+`system.build.recoveryBootExecutableA`,
+`system.build.recoveryBootExecutableB`, and `system.build.recoveryBundle`. The bundle has a
 fixed `aos/recovery/` layout containing the ten cataloged payload components,
 the db-signed manifest, and its detached signature. Preserve it with the
 release if removable-media recovery is supported. Converted outputs contain

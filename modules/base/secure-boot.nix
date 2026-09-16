@@ -2,9 +2,9 @@
 ##!
 ##! Declares `aos.boot.secureBoot`. When enabled it does two things:
 ##!
-##!  1. Exposes the db signing key/cert that the image builder
-##!     (`modules/image/_builder.nix`) reads to Authenticode-sign the UKI
-##!     and sd-boot. Signing is OFF by default, so the base image stays
+##!  1. Exposes the db signing key/cert that the selected package image
+##!     builder reads to sign its boot artifacts. Signing is OFF by default,
+##!     so the base image stays
 ##!     byte-reproducible and carries no key — SB material is a
 ##!     deployment overlay (RFC-0006 key-custody.md).
 ##!

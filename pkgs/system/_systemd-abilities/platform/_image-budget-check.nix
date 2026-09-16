@@ -1,4 +1,4 @@
-##! modules/image/_budget-check.nix — per-image artifact contract check
+##! Package-owned boot artifact budget check.
 {
   config,
   lib,
@@ -32,7 +32,7 @@ in
       IMAGE_INFO = "${image}/image-info.json";
       MAX_ROOT_BYTES = toString (budgets.maxRootMiB * mib);
       MAX_INITRD_BYTES = toString (budgets.maxInitrdMiB * mib);
-      MAX_UKI_BYTES = toString (budgets.maxUkiMiB * mib);
+      MAX_UKI_BYTES = toString (budgets.maxBootExecutableMiB * mib);
       MAX_RUNTIME_CLOSURE_BYTES = toString (budgets.maxRuntimeClosureMiB * mib);
       RUNTIME_CLOSURE_REPORT = "${runtimeClosureAudit}/report.json";
 
@@ -77,9 +77,9 @@ in
               --argjson downloadBytes "$download_bytes" \
               --argjson maxRootMiB ${toString budgets.maxRootMiB} \
               --argjson maxInitrdMiB ${toString budgets.maxInitrdMiB} \
-              --argjson maxUkiMiB ${toString budgets.maxUkiMiB} \
+              --argjson maxUkiMiB ${toString budgets.maxBootExecutableMiB} \
               --argjson maxVerityMiB ${toString budgets.maxVerityMiB} \
-              --argjson maxEspMiB ${toString budgets.maxEspMiB} \
+              --argjson maxEspMiB ${toString budgets.maxFirmwarePartitionMiB} \
               --argjson maxRuntimeClosureMiB ${toString budgets.maxRuntimeClosureMiB} \
               --argjson maxDownloadMiB ${toString budgets.maxDownloadMiB} \
               '{

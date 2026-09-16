@@ -83,7 +83,7 @@ packaged). For CI: ephemeral, per-run, clearly test-named
   `--secureboot-private-key`/`--secureboot-certificate` to `ukify build`
   (`:71-77`). Absent → today's reproducible unsigned UKI. Fix the docstring
   (`:3-4`) to stop claiming "signed" unconditionally.
-- **sd-boot** — `modules/image/_builder.nix`: when a key is configured,
+- **sd-boot** — `pkgs/system/_systemd-abilities/platform/_image-builder.nix`: when a key is configured,
   `sbsign` `systemd-bootx64.efi` before the copies at `:117-118` (both ESP
   paths). sbsigntools is already packaged, just never invoked.
 
@@ -124,7 +124,7 @@ lockdown is a **deployment kernel overlay**:
   post-build step (the module-signing key in [`key-custody.md`](key-custody.md)).
 - Cmdline gains `lockdown=confidentiality` (or `integrity`) and
   `module.sig_enforce=1`, added via `aos.boot.kernelParams` from the secure
-  boot module (cmdline assembly at `modules/image/_builder.nix:37`,
+  boot module (cmdline assembly at `pkgs/system/_systemd-abilities/platform/_image-builder.nix:37`,
   base params `modules/base/boot.nix:107-129`).
 
 Because lockdown auto-engages under SB
