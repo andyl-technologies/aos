@@ -726,6 +726,16 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: RuntimeConfigCommand,
     },
+    /// Hidden: author canonical inputs for one explicit source-built stage.
+    #[command(name = "__ability-author-build-stage", hide = true)]
+    AbilityAuthorBuildStage {
+        /// Canonical adapter specification and explicit selection intent.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Directory receiving canonical desired and policy documents.
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Hidden: produce one authenticated build-stage planning snapshot.
     #[command(name = "__ability-plan-build-stage", hide = true)]
     AbilityPlanBuildStage {
@@ -1105,6 +1115,7 @@ impl PackageCommand {
                 | PackageCommand::Materialize { .. }
                 | PackageCommand::AbilityActivationPreflight { .. }
                 | PackageCommand::AbilityActivate { .. }
+                | PackageCommand::AbilityAuthorBuildStage { .. }
                 | PackageCommand::AbilityPlanBuildStage { .. }
                 | PackageCommand::AbilityBuildStage { .. }
                 | PackageCommand::AbilityStageRun { .. }
@@ -1128,6 +1139,7 @@ impl PackageCommand {
             | PackageCommand::AbilityActivationPreflight { .. }
             | PackageCommand::AbilityActivate { .. } => LiveAos,
             PackageCommand::AbilityStageRun { .. }
+            | PackageCommand::AbilityAuthorBuildStage { .. }
             | PackageCommand::AbilityPlanBuildStage { .. }
             | PackageCommand::AbilityBuildStage { .. }
             | PackageCommand::AbilityStageValidate { .. }
@@ -3740,6 +3752,9 @@ pub async fn run(
             &credential_artifact::aos_root_path(),
         );
     }
+    if let PackageCommand::AbilityAuthorBuildStage { spec, out } = command {
+        return config_eval::build_stage::author_build_stage(spec, out);
+    }
     if let PackageCommand::AbilityPlanBuildStage { spec, out } = command {
         return config_eval::build_stage::plan_build_stage(spec, out);
     }
@@ -4090,6 +4105,9 @@ pub async fn run(
         }
         PackageCommand::Schema { .. } => {
             unreachable!("Schema is handled before ApmConfig::load")
+        }
+        PackageCommand::AbilityAuthorBuildStage { .. } => {
+            unreachable!("AbilityAuthorBuildStage is handled before ApmConfig::load")
         }
         PackageCommand::AbilityPlanBuildStage { .. } => {
             unreachable!("AbilityPlanBuildStage is handled before ApmConfig::load")

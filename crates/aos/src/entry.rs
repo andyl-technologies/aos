@@ -143,6 +143,7 @@ fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
         "__materialize",
         "__ability-activation-preflight",
         "__ability-activate",
+        "__ability-author-build-stage",
         "__ability-plan-build-stage",
         "__ability-build-stage",
         "__ability-stage-run",
