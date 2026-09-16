@@ -47,7 +47,11 @@
     operations = ["observe"];
     lifetime = "instance";
   };
-  executionPath = instance: "/run/aos/k3s/${builtins.hashString "sha256" (builtins.toJSON instance.id)}.json";
+  executionPath = instance: let
+    identity = lib.abilities.identityKeyFor "aos.k3s.configuration-instance/v1" {
+      inherit (instance) id;
+    };
+  in "/run/aos/k3s/${identity}.json";
   outputsFor = instance: entries:
     builtins.listToAttrs (
       map
@@ -96,7 +100,9 @@
           value.contributions = builtins.listToAttrs (
             map
             (entry: {
-              name = builtins.hashString "sha256" entry.requestName;
+              name = lib.abilities.identityKeyFor "aos.k3s.configuration-contribution/v1" {
+                request = entry.requestName;
+              };
               value = entry.request.parameters;
             })
             checked

@@ -87,7 +87,9 @@
           kind = controllerIdentity.name;
           lifetime = "instance";
           value.contributions = builtins.listToAttrs (builtins.map (entry: {
-              name = builtins.hashString "sha256" entry.requestName;
+              name = lib.abilities.identityKeyFor "aos.dbus.registration-contribution/v1" {
+                request = entry.requestName;
+              };
               value = entry.request.parameters;
             })
             checked);

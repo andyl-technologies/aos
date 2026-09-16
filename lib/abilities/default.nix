@@ -112,6 +112,11 @@
   resourceRevision = material:
     descriptorFor "aos.ability.resource-revision/v1" (normalizeSemanticValue material);
 
+  identityKeyFor = domain: material:
+    builtins.substring 7 64 (
+      descriptorFor domain (normalizeSemanticValue material)
+    );
+
   semanticInterfaceDocument = document:
     document
     // {
@@ -1591,6 +1596,7 @@ in rec {
     packageOutputSelectorsFor
     packageProjectionFor
     resourceRevision
+    identityKeyFor
     ;
   types = abilityTypes;
   interfaces = rec {

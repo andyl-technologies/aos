@@ -90,7 +90,7 @@
       if persistent
       then "/var/lib/aos/storage"
       else "/run/aos/storage";
-    digest = builtins.hashString "sha256" (builtins.toJSON resource);
+    digest = lib.abilities.identityKeyFor "aos.filesystem.default-storage-path/v1" resource;
   in "${root}/${digest}";
   storagePath = persistent: resource: request:
     request.requested_path or (defaultStoragePath persistent resource);

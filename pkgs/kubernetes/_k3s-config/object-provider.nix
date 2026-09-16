@@ -72,7 +72,10 @@
     if package == null
     then throw "a Kubernetes object contribution must retain its authenticated package owner"
     else entry.request.parameters;
-  contributionKey = requestName: builtins.hashString "sha256" requestName;
+  contributionKey = requestName:
+    lib.abilities.identityKeyFor "aos.kubernetes.object-set-contribution/v1" {
+      request = requestName;
+    };
   provideBase = context: let
     entry = exactlyOne "Kubernetes cluster base" (entriesFor context);
   in
