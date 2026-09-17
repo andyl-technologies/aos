@@ -27,9 +27,6 @@ pub const PACKAGE_PROJECTION_SCHEMA: &str = "aos.ability.package-projection/v1";
 /// Exact authoring marker for a symbolic package output selector.
 pub const PACKAGE_OUTPUT_SELECTOR_MARKER: &str = "aos-package-output-selector";
 
-/// Exact authoring marker for a symbolic evaluated configuration artifact selector.
-pub const CONFIG_ARTIFACT_SELECTOR_MARKER: &str = "aos-config-artifact-selector";
-
 /// Selects one named output from a package in the enclosing orchestration set.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -38,14 +35,6 @@ pub struct PackageOutputSelector {
     pub package: LocalKey,
     /// Nix output name.
     pub output: LocalKey,
-}
-
-/// Selects one named artifact from the enclosing evaluated system configuration.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigArtifactSelector {
-    /// Name in the authoritative `aos.config.artifacts` projection.
-    pub name: LocalKey,
 }
 
 /// Retains one resolved symbolic package output for downstream evaluators.
@@ -67,14 +56,6 @@ struct TaggedPackageOutputSelector {
     marker: String,
     package: LocalKey,
     output: LocalKey,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TaggedConfigArtifactSelector {
-    #[serde(rename = "_type")]
-    marker: String,
-    name: LocalKey,
 }
 
 struct PackageOutputResolver<F> {
@@ -109,16 +90,13 @@ where
     }
 }
 
-struct ArtifactSelectorResolver<P, C> {
+struct ArtifactSelectorResolver<P> {
     packages: PackageOutputResolver<P>,
-    config_artifacts: BTreeMap<ConfigArtifactSelector, ArtifactReference>,
-    resolve_config_artifact: C,
 }
 
-impl<P, C> ArtifactSelectorResolver<P, C>
+impl<P> ArtifactSelectorResolver<P>
 where
     P: FnMut(&PackageOutputSelector) -> Result<ArtifactReference>,
-    C: FnMut(&ConfigArtifactSelector) -> Result<ArtifactReference>,
 {
     fn resolve_value(&mut self, value: &mut serde_json::Value, depth: u32) -> Result<()> {
         if depth > aos_ability_model::ABILITY_LIMITS_V1.max_structural_depth {
@@ -147,32 +125,6 @@ where
                 *value = serde_json::to_value(artifact)
                     .context("encoding resolved package output artifact")?;
             }
-            serde_json::Value::Object(fields)
-                if fields.get("_type").and_then(serde_json::Value::as_str)
-                    == Some(CONFIG_ARTIFACT_SELECTOR_MARKER) =>
-            {
-                let tagged: TaggedConfigArtifactSelector = serde_json::from_value(value.clone())
-                    .context("decoding symbolic configuration artifact selector")?;
-                if tagged.marker != CONFIG_ARTIFACT_SELECTOR_MARKER {
-                    bail!("symbolic configuration artifact selector has an invalid marker");
-                }
-                let selector = ConfigArtifactSelector { name: tagged.name };
-                let artifact = if let Some(artifact) = self.config_artifacts.get(&selector) {
-                    artifact.clone()
-                } else {
-                    let artifact =
-                        (self.resolve_config_artifact)(&selector).with_context(|| {
-                            format!(
-                                "resolving evaluated configuration artifact selector '{}'",
-                                selector.name.as_str()
-                            )
-                        })?;
-                    self.config_artifacts.insert(selector, artifact.clone());
-                    artifact
-                };
-                *value = serde_json::to_value(artifact)
-                    .context("encoding resolved configuration artifact")?;
-            }
             serde_json::Value::Object(fields) => {
                 for value in fields.values_mut() {
                     self.resolve_value(value, depth.saturating_add(1))?;
@@ -197,12 +149,9 @@ where
 pub fn resolve_artifact_selectors(
     value: &mut serde_json::Value,
     resolve_package_output: impl FnMut(&PackageOutputSelector) -> Result<ArtifactReference>,
-    resolve_config_artifact: impl FnMut(&ConfigArtifactSelector) -> Result<ArtifactReference>,
 ) -> Result<()> {
     ArtifactSelectorResolver {
         packages: PackageOutputResolver::new(resolve_package_output),
-        config_artifacts: BTreeMap::new(),
-        resolve_config_artifact,
     }
     .resolve_value(value, 1)
 }

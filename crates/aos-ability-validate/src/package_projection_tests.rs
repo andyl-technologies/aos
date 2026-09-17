@@ -612,15 +612,11 @@ fn resolves_selectors_nested_in_portable_executable_values() {
         "arguments": ["--foreground"]
     });
 
-    resolve_artifact_selectors(
-        &mut executable,
-        |selector| {
-            assert_eq!(selector.package.as_str(), "self");
-            assert_eq!(selector.output.as_str(), "out");
-            Ok(selected.clone())
-        },
-        |_| unreachable!("fixture contains no configuration artifact selector"),
-    )
+    resolve_artifact_selectors(&mut executable, |selector| {
+        assert_eq!(selector.package.as_str(), "self");
+        assert_eq!(selector.output.as_str(), "out");
+        Ok(selected.clone())
+    })
     .unwrap();
 
     assert_eq!(
@@ -645,60 +641,9 @@ fn rejects_nonclosed_nested_selectors() {
     });
 
     assert!(
-        resolve_artifact_selectors(
-            &mut executable,
-            |_| unreachable!("a malformed selector must fail before resolution"),
-            |_| unreachable!("fixture contains no configuration artifact selector"),
-        )
-        .is_err()
-    );
-}
-
-#[test]
-fn resolves_evaluated_configuration_artifact_selectors() {
-    let selected = artifact("dbus-config", "/nix/store/dbus-system-conf");
-    let mut reference = json!({
-        "artifact": {
-            "_type": "aos-config-artifact-selector",
-            "name": "dbus-system-conf"
-        },
-        "path": "system.conf"
-    });
-
-    resolve_artifact_selectors(
-        &mut reference,
-        |_| unreachable!("fixture contains no package output selector"),
-        |selector| {
-            assert_eq!(selector.name.as_str(), "dbus-system-conf");
-            Ok(selected.clone())
-        },
-    )
-    .unwrap();
-
-    assert_eq!(
-        reference["artifact"],
-        serde_json::to_value(selected).unwrap()
-    );
-    assert_eq!(reference["path"], "system.conf");
-}
-
-#[test]
-fn rejects_nonclosed_configuration_artifact_selectors() {
-    let mut reference = json!({
-        "artifact": {
-            "_type": "aos-config-artifact-selector",
-            "name": "dbus-system-conf",
-            "store_path": "/nix/store/untrusted"
-        },
-        "path": "system.conf"
-    });
-
-    assert!(
-        resolve_artifact_selectors(
-            &mut reference,
-            |_| unreachable!("fixture contains no package output selector"),
-            |_| unreachable!("a malformed selector must fail before resolution"),
-        )
+        resolve_artifact_selectors(&mut executable, |_| unreachable!(
+            "a malformed selector must fail before resolution"
+        ),)
         .is_err()
     );
 }
@@ -712,11 +657,9 @@ fn preserves_the_canonical_runtime_path_expression_for_later_typed_resolution() 
     });
     let original = value.clone();
 
-    resolve_artifact_selectors(
-        &mut value,
-        |_| unreachable!("fixture contains no package selector"),
-        |_| unreachable!("fixture contains no configuration selector"),
-    )
+    resolve_artifact_selectors(&mut value, |_| {
+        unreachable!("fixture contains no package selector")
+    })
     .unwrap();
 
     assert_eq!(value, original);
