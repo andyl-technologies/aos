@@ -7,6 +7,17 @@
       unixAuth = types.boolean;
       startSession = types.boolean;
       setLoginUid = types.boolean;
+      useDefaultRules = {
+        type = types.optional types.boolean;
+        optional = true;
+      };
+      text = {
+        type = types.optional (types.string {
+          maxLength = 65536;
+          syntax = null;
+        });
+        optional = true;
+      };
     };
   };
 in {

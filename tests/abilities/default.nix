@@ -365,6 +365,9 @@
   eventLogPolicy = import ./event-log-policy.nix {
     inherit pkgs lib;
   };
+  loginSessionTracking = import ./login-session-tracking.nix {
+    inherit pkgs lib;
+  };
   baseHardeningNative = import ./base-hardening-native.nix {
     inherit pkgs lib;
   };
@@ -619,6 +622,7 @@ in
   assert baseNixDbNative;
   assert baseNetworkingNative;
   assert eventLogPolicy;
+  assert loginSessionTracking;
   assert baseHardeningNative;
   assert securityAuditNative;
   assert securityEbpfLsmNative;

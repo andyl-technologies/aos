@@ -14,6 +14,8 @@
 }: let
   cfg = config.aos.pam;
   parentConfig = config;
+  sessionTracking = lib.abilities.interfaces.loginSessionTracking.interface;
+  needsSessionTracking = builtins.any (service: service.startSession) (builtins.attrValues cfg.services);
 
   autoOrderRules = rules:
     lib.pipe rules [
@@ -109,39 +111,40 @@
         modulePath = "${pkgs.linux-pam}/lib/security/pam_deny.so";
       }
     ];
-    session = autoOrderRules [
-      {
-        name = "env";
-        enable = service.setEnvironment;
-        control = "required";
-        modulePath = "${pkgs.linux-pam}/lib/security/pam_env.so";
-        args = ["conffile=/etc/pam/environment" "readenv=0"];
-      }
-      {
-        name = "unix";
-        control = "required";
-        modulePath = "${pkgs.linux-pam}/lib/security/pam_unix.so";
-      }
-      {
-        name = "loginuid";
-        enable = service.setLoginUid;
-        control = "required";
-        modulePath = "${pkgs.linux-pam}/lib/security/pam_loginuid.so";
-      }
-      {
-        name = "limits";
-        enable = service.limits != [];
-        control = "required";
-        modulePath = "${pkgs.linux-pam}/lib/security/pam_limits.so";
-        args = ["conf=${makeLimitsConf service.limits}"];
-      }
-      {
-        name = "systemd";
-        enable = service.startSession;
-        control = "optional";
-        modulePath = "${pkgs.systemd}/lib/security/pam_systemd.so";
-      }
-    ];
+    session = autoOrderRules (
+      [
+        {
+          name = "env";
+          enable = service.setEnvironment;
+          control = "required";
+          modulePath = "${pkgs.linux-pam}/lib/security/pam_env.so";
+          args = ["conffile=/etc/pam/environment" "readenv=0"];
+        }
+        {
+          name = "unix";
+          control = "required";
+          modulePath = "${pkgs.linux-pam}/lib/security/pam_unix.so";
+        }
+        {
+          name = "loginuid";
+          enable = service.setLoginUid;
+          control = "required";
+          modulePath = "${pkgs.linux-pam}/lib/security/pam_loginuid.so";
+        }
+        {
+          name = "limits";
+          enable = service.limits != [];
+          control = "required";
+          modulePath = "${pkgs.linux-pam}/lib/security/pam_limits.so";
+          args = ["conf=${makeLimitsConf service.limits}"];
+        }
+      ]
+      ++ lib.optional (service.startSession && cfg.sessionTrackingRule != null) ({
+          name = "session-tracking";
+          enable = true;
+        }
+        // cfg.sessionTrackingRule)
+    );
   };
 
   ruleType = lib.types.submodule ({name, ...}: {
@@ -310,6 +313,22 @@ in {
         overridden per-service. Empty = pam_limits.so is omitted.
       '';
     };
+    sessionTrackingRule = lib.mkOption {
+      type = lib.types.nullOr (lib.types.submodule {
+        options = {
+          control = lib.mkOption {type = lib.types.str;};
+          modulePath = lib.mkOption {type = lib.types.str;};
+          args = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [];
+          };
+        };
+      });
+      default = null;
+      internal = true;
+      contributable = true;
+      description = "Selected system-manager integration for authenticated login sessions.";
+    };
   };
 
   options.environment.sessionVariables = lib.mkOption {
@@ -326,63 +345,67 @@ in {
 
   config = lib.mkMerge [
     {aos.pam.services = config.aos.contributions.pamServices;}
-    (lib.mkIf cfg.enable {
-    # Register every distinct non-empty limit set as an image-fixed config
-    # artifact keyed by its canonical limits identity. `makeLimitsConf`
-    # references `artifacts.<limitsKey>` so a `pam_limits.so conf=` argument
-    # resolves to the stage-1-frozen store path on-host without rebuilding.
-    # Guarded so the stage-2 frozen pkgs never evaluates `writeTextFile`. The
-    # drv `name` stays "pam-limits", so on a normal build this is the exact
-    # same derivation as before (byte-identical).
-    aos.config._artifactSources = builtins.listToAttrs (
-      builtins.map (
-        limits:
-          lib.nameValuePair (limitsKey limits) (
-            if config.aos.config.frozenArtifacts ? ${limitsKey limits}
-            then null
-            else
-              pkgs.writeTextFile {
-                name = "pam-limits";
-                destination = "/limits.conf";
-                text = renderLimitsText limits;
-              }
-          )
-      ) (builtins.filter (l: l != []) (lib.mapAttrsToList (_: s: s.limits) cfg.services))
-    );
-
-    aos.pam.services.other = {
-      useDefaultRules = false;
-      text = ''
-        account required ${pkgs.linux-pam}/lib/security/pam_warn.so
-        account required ${pkgs.linux-pam}/lib/security/pam_deny.so
-        auth     required ${pkgs.linux-pam}/lib/security/pam_warn.so
-        auth     required ${pkgs.linux-pam}/lib/security/pam_deny.so
-        password required ${pkgs.linux-pam}/lib/security/pam_warn.so
-        password required ${pkgs.linux-pam}/lib/security/pam_deny.so
-        session  required ${pkgs.linux-pam}/lib/security/pam_warn.so
-        session  required ${pkgs.linux-pam}/lib/security/pam_deny.so
-      '';
-    };
-
-    aos.pam.services.systemd-user = {
-      useDefaultRules = false;
-      text = ''
-        account required ${pkgs.linux-pam}/lib/security/pam_unix.so no_pass_expiry
-        session  required ${pkgs.linux-pam}/lib/security/pam_loginuid.so
-        session  optional ${pkgs.linux-pam}/lib/security/pam_keyinit.so force revoke
-        session  required ${pkgs.linux-pam}/lib/security/pam_namespace.so
-        session  optional ${pkgs.linux-pam}/lib/security/pam_umask.so silent
-        session  optional ${pkgs.systemd}/lib/security/pam_systemd.so
-      '';
-    };
-
-    environment.sessionVariables.PATH = lib.mkDefault config.system.build.systemPath;
-
-    environment.etc =
-      pamServiceFiles
-      // {
-        "pam/environment".text = formatEnvVars config.environment.sessionVariables;
+    (lib.mkIf (cfg.enable && needsSessionTracking) {
+      aos.abilities = {
+        instances."pam:session" = {};
+        requirementTemplates."pam:login-session-tracking" = {
+          description = "Requires integration with the selected system manager for login sessions.";
+          interface = sessionTracking.identity.name;
+          inherit (sessionTracking.identity) abi descriptor;
+        };
+        requests."pam:login-session-tracking" = {
+          requirement = "pam:login-session-tracking";
+          consumer = "pam:session";
+          scope = ["login-sessions"];
+          parameters.enabled = true;
+        };
       };
+    })
+    (lib.mkIf cfg.enable {
+      # Register every distinct non-empty limit set as an image-fixed config
+      # artifact keyed by its canonical limits identity. `makeLimitsConf`
+      # references `artifacts.<limitsKey>` so a `pam_limits.so conf=` argument
+      # resolves to the stage-1-frozen store path on-host without rebuilding.
+      # Guarded so the stage-2 frozen pkgs never evaluates `writeTextFile`. The
+      # drv `name` stays "pam-limits", so on a normal build this is the exact
+      # same derivation as before (byte-identical).
+      aos.config._artifactSources = builtins.listToAttrs (
+        builtins.map (
+          limits:
+            lib.nameValuePair (limitsKey limits) (
+              if config.aos.config.frozenArtifacts ? ${limitsKey limits}
+              then null
+              else
+                pkgs.writeTextFile {
+                  name = "pam-limits";
+                  destination = "/limits.conf";
+                  text = renderLimitsText limits;
+                }
+            )
+        ) (builtins.filter (l: l != []) (lib.mapAttrsToList (_: s: s.limits) cfg.services))
+      );
+
+      aos.pam.services.other = {
+        useDefaultRules = false;
+        text = ''
+          account required ${pkgs.linux-pam}/lib/security/pam_warn.so
+          account required ${pkgs.linux-pam}/lib/security/pam_deny.so
+          auth     required ${pkgs.linux-pam}/lib/security/pam_warn.so
+          auth     required ${pkgs.linux-pam}/lib/security/pam_deny.so
+          password required ${pkgs.linux-pam}/lib/security/pam_warn.so
+          password required ${pkgs.linux-pam}/lib/security/pam_deny.so
+          session  required ${pkgs.linux-pam}/lib/security/pam_warn.so
+          session  required ${pkgs.linux-pam}/lib/security/pam_deny.so
+        '';
+      };
+
+      environment.sessionVariables.PATH = lib.mkDefault config.system.build.systemPath;
+
+      environment.etc =
+        pamServiceFiles
+        // {
+          "pam/environment".text = formatEnvVars config.environment.sessionVariables;
+        };
     })
   ];
 }
