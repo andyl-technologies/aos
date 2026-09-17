@@ -195,11 +195,20 @@
   semanticJson = value:
     builtins.unsafeDiscardStringContext (builtins.toJSON value);
 
-  strictRecordType = file: fields:
-    moduleTypes.submodule {
+  strictRecordType = file: fields: let
+    fieldNames = builtins.attrNames fields;
+    base = moduleTypes.submodule {
       _file = file;
       config._module.strict = true;
       options = builtins.mapAttrs (_: type: mkOption {inherit type;}) fields;
+    };
+  in
+    base
+    // {
+      check = value:
+        builtins.isAttrs value
+        && builtins.attrNames value == fieldNames
+        && builtins.all (name: fields.${name}.check value.${name}) fieldNames;
     };
 
   decorateRecord = context: file: schema: normalizedFields: optionalFields: let
@@ -594,6 +603,27 @@ in rec {
     };
   };
 
+  resourceId = record {
+    fields = {
+      provider = instanceId;
+      key = localKey;
+    };
+  };
+
+  resolvedResourceReference = record {
+    fields = {
+      interface = interfaceKey;
+      resource = resourceId;
+      operations = list {
+        element = localKey;
+        maxItems = 1024;
+        unique = true;
+        canonicalOrder = true;
+      };
+      lifetime = lifetime;
+    };
+  };
+
   integer = args: let
     schema = schemas.integer args;
     base =
@@ -942,13 +972,24 @@ in rec {
     nar_hash = digestType;
     closure = digestType;
   };
-  resourceReference = specialType "resource-reference" schemas.resourceReference {
-    _type = moduleTypes.enum ["aos-resource-reference"];
-    interface = interfaceKeyType;
-    resource = resourceIdType;
-    operations = moduleTypes.listOf localKeyType;
-    lifetime = moduleTypes.enum ["attempt" "transaction" "instance" "persistent"];
-  };
+  resourceReference = let
+    authored = specialType "resource-reference" schemas.resourceReference {
+      _type = moduleTypes.enum ["aos-resource-reference"];
+      interface = interfaceKeyType;
+      resource = resourceIdType;
+      operations = moduleTypes.listOf localKeyType;
+      lifetime = moduleTypes.enum ["attempt" "transaction" "instance" "persistent"];
+    };
+  in
+    authored
+    // {
+      # Module-authored references retain `_type` for deferred-value dispatch.
+      # Pure provider results carry the same portable schema without that
+      # authoring marker and are checked before entering the fixed point.
+      check = value:
+        authored.check value
+        || resolvedResourceReference.check value;
+    };
   providerAssignment = specialType "provider-assignment" schemas.providerAssignment {
     provider = instanceType;
     interface = interfaceKeyType;

@@ -5,6 +5,110 @@
   lib,
   ...
 }: let
+  abilityTypes = lib.abilities.types;
+  storePath = abilityTypes.refined {
+    name = "Nix store path";
+    description = "a canonical Nix store output path";
+    type = abilityTypes.string {
+      maxLength = 4096;
+      syntax = null;
+    };
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+";
+      }
+    ];
+  };
+  narHash = abilityTypes.refined {
+    name = "NAR hash";
+    description = "a canonical SHA-256 NAR hash";
+    type = abilityTypes.string {
+      maxLength = 59;
+      syntax = null;
+    };
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "sha256:[0-9abcdfghijklmnpqrsvwxyz]{52}";
+      }
+    ];
+  };
+  storeHash = abilityTypes.refined {
+    name = "store path hash";
+    description = "a canonical Nix store-path hash component";
+    type = abilityTypes.string {
+      maxLength = 32;
+      syntax = null;
+    };
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[0-9abcdfghijklmnpqrsvwxyz]{32}";
+      }
+    ];
+  };
+  sidecar = abilityTypes.record {
+    fields = {
+      store_path = storePath;
+      nar_hash = narHash;
+      nar_size = abilityTypes.integer {
+        minimum = 1;
+        maximum = abilityTypes.limits.maxSafeInteger;
+      };
+      references = {
+        type = abilityTypes.list {
+          element = storeHash;
+          maxItems = 100000;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
+      };
+      document = abilityTypes.relativePath;
+      document_sha256 = abilityTypes.digest;
+      document_size = abilityTypes.integer {
+        minimum = 1;
+        maximum = abilityTypes.limits.maxDocumentBytes;
+      };
+    };
+  };
+  executionObserver = abilityTypes.record {
+    fields = {
+      request = abilityTypes.declarationKey;
+      resource = abilityTypes.resolvedResourceReference;
+      socket = abilityTypes.executionPath;
+    };
+  };
+  requiredFeatures = [
+    "abilities-v1"
+    "ability-effects-v1"
+    "native-platform-policy-v1"
+    "native-resource-map-v1"
+  ];
+  requiredFeaturesType = lib.types.addCheck (abilityTypes.list {
+    element = abilityTypes.enum requiredFeatures;
+    maxItems = builtins.length requiredFeatures;
+    unique = true;
+  }) (value: value == requiredFeatures);
+  activationInput = abilityTypes.record {
+    fields = {
+      schema = {
+        type = abilityTypes.enum ["aos.contract.activation-input/v1"];
+        default = "aos.contract.activation-input/v1";
+      };
+      required_features = {
+        type = requiredFeaturesType;
+        default = requiredFeatures;
+      };
+      desired_state = sidecar;
+      authenticated_policy_set = sidecar;
+      execution_observer = {
+        type = executionObserver;
+        optional = true;
+      };
+    };
+  };
   buildPkgs = pkgs.buildPackages;
   selectedArtifactBackend = config.aos.artifacts.backend;
   artifactBackend =
@@ -48,7 +152,7 @@
 in {
   options = {
     aos.abilities.activationInput = lib.mkOption {
-      type = lib.types.nullOr lib.types.attrs;
+      type = lib.types.nullOr activationInput;
       default = null;
       description = ''
         Immutable desired-state and authenticated-policy sidecars used to plan

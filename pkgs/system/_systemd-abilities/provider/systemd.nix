@@ -620,10 +620,12 @@
     in
       if output.phase != "planning"
       then throw "systemd dependency ${value.request}.${value.output} is not a planning output"
-      else if !lib.abilities.types.resourceReference.check output.value
+      else if !lib.abilities.types.resolvedResourceReference.check output.value
       then throw "systemd dependency ${value.request}.${value.output} is not a ResourceReference"
       else output.value
-    else if lib.abilities.types.resourceReference.check value
+    else if
+      lib.abilities.types.resourceReference.check value
+      || lib.abilities.types.resolvedResourceReference.check value
     then value
     else throw "systemd dependency is not an exact ResourceReference";
 
@@ -954,7 +956,7 @@
   in
     if plannedPath.phase != "planning" || plannedPath.value != preparation.destination
     then throw "systemd directory preparation planned another destination"
-    else if entryResource.phase != "planning" || !lib.abilities.types.resourceReference.check entryResource.value
+    else if entryResource.phase != "planning" || !lib.abilities.types.resolvedResourceReference.check entryResource.value
     then throw "systemd directory preparation omitted an exact planning ResourceReference"
     else entryResource.value;
   composeServices = featureName: {

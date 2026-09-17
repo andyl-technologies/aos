@@ -311,26 +311,27 @@
     .config
     .test
     true);
+  invalidResourceReferenceValue = {
+    _type = "aos-resource-reference";
+    interface = {
+      name = "aos.test.resource";
+      abi = 1;
+      descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      unknown = true;
+    };
+    resource = {
+      provider = plainIdentity;
+      key = "resource";
+    };
+    operations = [];
+    lifetime = "instance";
+  };
   invalidResourceReference = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
       modules = [
         {
           options.test = lib.mkOption {type = lib.abilities.types.resourceReference;};
-          config.test = {
-            _type = "aos-resource-reference";
-            interface = {
-              name = "aos.test.resource";
-              abi = 1;
-              descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-              unknown = true;
-            };
-            resource = {
-              provider = plainIdentity;
-              key = "resource";
-            };
-            operations = [];
-            lifetime = "instance";
-          };
+          config.test = invalidResourceReferenceValue;
         }
       ];
     })
@@ -1824,6 +1825,7 @@ in
   assert !(taggedUnionEvaluation.config.test.settings ? _module);
   assert !invalidDecodedRecord.success;
   assert !invalidResourceReference.success;
+  assert !lib.abilities.types.resourceReference.check invalidResourceReferenceValue;
   assert !(evaluateSelectedManager selectedManagerProjection ? _module);
   assert !((evaluateSelectedManager selectedManagerProjection).configuration ? _module);
   assert builtins.all rejectsSelectedManager selectedManagerUnknownFieldRejections;
