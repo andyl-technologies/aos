@@ -7,6 +7,7 @@
     ./manager.nix
     ./package-store-read-view.nix
     ./package-attestation-quote.nix
+    ./platform/crash-dump.nix
     ./platform/event-log.nix
     ./platform/image.nix
     ./verity-root.nix
