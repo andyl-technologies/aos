@@ -28,7 +28,7 @@ pub(super) async fn organization_domain(
             org,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read(
                 printer,
                 &client,
@@ -46,7 +46,7 @@ pub(super) async fn organization_domain(
             org,
             domain,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read(
                 printer,
                 &client,
@@ -65,7 +65,8 @@ pub(super) async fn organization_domain(
                 domain,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
                 topology_mutation(
                     printer,
@@ -84,7 +85,7 @@ pub(super) async fn organization_domain(
                 .await
             }
             HubOrganizationDomainClaimCmd::Apply(apply) => {
-                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
                 let mutation = retained_apply_mutation(apply);
                 topology_mutation::<
                     _,
@@ -110,7 +111,8 @@ pub(super) async fn organization_domain(
                 domain,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
                 topology_mutation(
                     printer,
@@ -129,7 +131,7 @@ pub(super) async fn organization_domain(
                 .await
             }
             HubOrganizationDomainVerifyCmd::Apply(apply) => {
-                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
                 let mutation = retained_apply_mutation(apply);
                 topology_mutation::<
                     _,
@@ -155,7 +157,8 @@ pub(super) async fn organization_domain(
                 domain,
                 if_version,
             } => {
-                let client = hub_client(&request.access.hub, request.access.token.as_deref())?;
+                let client =
+                    hub_client(&request.access.hub, request.access.token.as_deref()).await?;
                 let mutation = retained_plan_mutation(&request.idempotency_key, Some(if_version));
                 topology_mutation(
                     printer,
@@ -174,7 +177,7 @@ pub(super) async fn organization_domain(
                 .await
             }
             HubOrganizationDomainReleaseCmd::Apply(apply) => {
-                let client = hub_client(&apply.access.hub, apply.access.token.as_deref())?;
+                let client = hub_client(&apply.access.hub, apply.access.token.as_deref()).await?;
                 let mutation = retained_apply_mutation(apply);
                 topology_mutation(
                     printer,

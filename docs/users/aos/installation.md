@@ -74,8 +74,9 @@ nix-build -A pkgs.aos-vm -o result-aos-vm
 The command prepares a persistent writable disk and UEFI variable store, fixes
 the enlarged disk's backup GPT, and reports the exact launch configuration
 before starting QEMU. Use `--dry-run` to inspect the plan. The default chooses
-KVM when accessible and warns before falling back to TCG emulation; use
-`--accel kvm` when the absence of hardware acceleration should be an error.
+KVM on Linux when accessible and HVF on macOS. Linux warns before falling back
+to TCG emulation. Use `--accel kvm` or `--accel hvf` when the absence of the
+corresponding hardware accelerator should be an error.
 
 Use `aos --json image list` or `aos --json image show` for automation. The
 record includes the store and NAR identity, ordered cache URLs, format, target

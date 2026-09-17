@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   gnumake,
   pkg-config,
   hwdata,
@@ -9,6 +11,9 @@
   zlib,
 }: let
   version = "3.15.0";
+  # Upstream otherwise selects CPU-specific access methods using uname on
+  # the builder, which enables x86 I/O instructions in an ARM cross build.
+  targetMakeFlags = lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) " HOST=${stdenv.hostPlatform.config}";
 in
   mkDerivation {
     pname = "pciutils";
@@ -39,7 +44,7 @@ in
           make -j"$NIX_BUILD_CORES" \
             CC="$CC" AR="$AR" RANLIB="$RANLIB" \
             PREFIX="$out" LIBDIR="$out/lib" \
-            SHARED=yes DNS=yes IDSDIR="$out/share"
+            SHARED=yes DNS=yes IDSDIR="$out/share"${targetMakeFlags}
         '';
       }
       {
@@ -48,7 +53,7 @@ in
           make install install-lib \
             CC="$CC" AR="$AR" RANLIB="$RANLIB" \
             PREFIX="$out" LIBDIR="$out/lib" \
-            SHARED=yes DNS=yes IDSDIR="$out/share"
+            SHARED=yes DNS=yes IDSDIR="$out/share"${targetMakeFlags}
           cp "${hwdata}/share/hwdata/pci.ids" "$out/share/pci.ids"
           rm -f "$out/sbin/update-pciids"
         '';

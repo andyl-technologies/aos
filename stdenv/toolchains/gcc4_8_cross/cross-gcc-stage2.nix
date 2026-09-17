@@ -59,6 +59,10 @@ in
         (cd ${mpcSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/mpc" && tar xf -)
         chmod -R u+w "$TMPDIR/gcc-4.8.5/mpc"
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/gcc-4.8.5"
+
         SRC="$TMPDIR/gcc-4.8.5"
         cd "$SRC"
 
@@ -92,8 +96,10 @@ in
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
 
-        CC="${prev.gcc}/bin/gcc" \
-        CXX="${prev.gcc}/bin/g++" \
+        ${import ../lib/static-build-compiler.nix {tools = prev;}}
+
+        CC="$CC_FOR_BUILD" \
+        CXX="$CXX_FOR_BUILD" \
         CFLAGS="-O2 -isystem ${prev.glibc}/include" \
         CXXFLAGS="-O2 -isystem ${prev.glibc}/include" \
         LDFLAGS="-L${prev.glibc}/lib -static" \
@@ -103,6 +109,7 @@ in
           --host=${buildPlatform.config} \
           --target=${hostPlatform.config} \
           --enable-languages=c,c++ \
+          --with-gxx-include-dir="$out/include/c++/4.8.5" \
           --disable-shared --disable-nls --disable-threads \
           --disable-multilib --disable-bootstrap \
           --disable-libssp --disable-libgomp --disable-libmudflap \
@@ -110,7 +117,7 @@ in
           --program-transform-name=
 
         # Patch SYSTEM_HEADER_DIR
-        make configure-gcc
+        make SHELL="${prev.bash}/bin/bash" configure-gcc
         ${prev.sed}/bin/sed -i \
           "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${crossGlibc}/include|" \
           gcc/Makefile
@@ -133,18 +140,22 @@ in
         # Override target-libiberty — can fail with header incompatibilities
         printf '\nall-target-libiberty:\n\t@true\ninstall-target-libiberty:\n\t@true\nconfigure-target-libiberty:\n\t@true\n' >> Makefile
 
-        make -j"$NIX_BUILD_CORES" all-gcc \
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" all-gcc \
           BOOT_CFLAGS="-O2" \
           CFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
           CXXFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
           LDFLAGS_FOR_TARGET="-L${crossGlibc}/lib -static"
 
-        make -j"$NIX_BUILD_CORES" all-target-libgcc \
+        # The following Canadian compiler is itself C++ and needs the target
+        # standard library, including its installed headers and archive index.
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" all-target-libgcc all-target-libstdc++-v3 \
           CFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
+          CXXFLAGS_FOR_TARGET="-O2 -isystem ${crossGlibc}/include" \
           LDFLAGS_FOR_TARGET="-L${crossGlibc}/lib -static"
 
-        make install-gcc
-        make install-target-libgcc
+        make SHELL="${prev.bash}/bin/bash" install-gcc
+        make SHELL="${prev.bash}/bin/bash" install-target-libgcc install-target-libstdc++-v3
+        test -s "$out/include/c++/4.8.5/cstring"
 
         # Create expected symlinks
         test -f "$out/bin/gcc" && test ! -f "$out/bin/${hostPlatform.config}-gcc" && \
@@ -167,6 +178,16 @@ in
         mkdir -p "$GCCLIB" "$TARGLIB"
         for f in "${crossGlibc}/lib/"*.o "${crossGlibc}/lib/"*.a; do
           test -f "$f" && ln -sf "$f" "$GCCLIB/" && ln -sf "$f" "$TARGLIB/"
+        done
+
+        # GCC selects lib or lib64 according to its target OS layout.
+        for library in libstdc++.a libsupc++.a; do
+          runtime_library="$("$out/bin/${hostPlatform.config}-g++" -print-file-name="$library")"
+          case "$runtime_library" in
+            "$out/"*) ;;
+            *) echo "FATAL: $library is outside the cross compiler output"; exit 1 ;;
+          esac
+          test -s "$runtime_library" || { echo "FATAL: $library not installed"; exit 1; }
         done
 
         echo "Cross GCC stage 2 (${buildPlatform.config} → ${hostPlatform.config}) installed to $out"

@@ -53,7 +53,7 @@ in
       "--program-transform-name="
     ];
     postConfigure = ''
-      make configure-gcc
+      make SHELL="$CONFIG_SHELL" configure-gcc
       ${prev.sed}/bin/sed -i \
         "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = ${prev.glibc}/include|" \
         gcc/Makefile
@@ -62,22 +62,30 @@ in
       for item in "${prev.glibc}/include"/*; do
         ln -sf "$item" "$out/${targetPlatform.config}/sys-include/"
       done
-      cp -r ${linuxSrc}/include/linux "$out/${targetPlatform.config}/sys-include/"
-      cp -r ${linuxSrc}/include/asm-i386 "$out/${targetPlatform.config}/sys-include/asm"
-      cp -r ${linuxSrc}/include/asm-generic "$out/${targetPlatform.config}/sys-include/"
+      # A completed tier's libc already supplies the matching kernel headers.
+      # Preserve those links; only bootstrap libc needs the source fallback.
+      if [ ! -e "$out/${targetPlatform.config}/sys-include/linux" ]; then
+        cp -r ${linuxSrc}/include/linux "$out/${targetPlatform.config}/sys-include/"
+      fi
+      if [ ! -e "$out/${targetPlatform.config}/sys-include/asm" ]; then
+        cp -r ${linuxSrc}/include/asm-i386 "$out/${targetPlatform.config}/sys-include/asm"
+      fi
+      if [ ! -e "$out/${targetPlatform.config}/sys-include/asm-generic" ]; then
+        cp -r ${linuxSrc}/include/asm-generic "$out/${targetPlatform.config}/sys-include/"
+      fi
       ln -sf "$out/${targetPlatform.config}/sys-include" "$out/${targetPlatform.config}/include"
     '';
     # This tier exports a C compiler, not the target runtime collection carried
     # by the full GCC source archive. The top-level default also descends into
     # libstdc++, boehm-gc, and libffi even with --enable-languages=c.
     buildCommands = ''
-      make -j"$NIX_BUILD_CORES" all-gcc \
+      make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-gcc \
         BOOT_CFLAGS="-O2 -static" \
         CFLAGS_FOR_TARGET="-O2 -I${prev.glibc}/include" \
         LDFLAGS_FOR_TARGET="-B${prev.glibc}/lib -L${prev.glibc}/lib -static"
     '';
     installCommands = ''
-      make install-gcc
+      make SHELL="$CONFIG_SHELL" install-gcc
     '';
     postInstall = ''
       "${prev.binutils}/bin/ar" crs "$out/lib/gcc/${targetPlatform.config}/3.4.6/libgcc_eh.a"

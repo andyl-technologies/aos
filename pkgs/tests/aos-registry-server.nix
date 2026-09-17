@@ -10,6 +10,11 @@
   zstd,
 }: let
   registryPorts = [9418 15000];
+
+  # Both services use the same package identity and filesystem policy. Declare
+  # every shared directory in each isolated root before Landlock starts.
+  registryStateDirectories = "aos-registry-server/registries aos-registry-server/cache aos-registry-server/store-root";
+
   gitLauncher = mkDerivation {
     pname = "aos-registry-server-git-launcher";
     version = "0";
@@ -97,6 +102,11 @@ in
       }
     ];
 
+    passthru.evidenceSources = [
+      ./aos-registry-server.nix
+      ./_aos-registry-server-config
+    ];
+
     expose = {
       units = {
         "aos-registry-server-gitd.service" = {
@@ -110,8 +120,10 @@ in
             User = "aos-gitd";
             Group = "aos-gitd";
             DynamicUser = true;
-            StateDirectory = "aos-registry-server/registries";
+            StateDirectory = registryStateDirectories;
             StateDirectoryMode = "0755";
+            RuntimeDirectory = "aos-registry-server";
+            RuntimeDirectoryMode = "0755";
             ProtectSystem = "strict";
             ProtectHome = true;
             PrivateTmp = true;
@@ -135,7 +147,7 @@ in
             User = "aos-gitd";
             Group = "aos-gitd";
             DynamicUser = true;
-            StateDirectory = "aos-registry-server/cache aos-registry-server/store-root";
+            StateDirectory = registryStateDirectories;
             StateDirectoryMode = "0755";
             RuntimeDirectory = "aos-registry-server";
             RuntimeDirectoryMode = "0755";

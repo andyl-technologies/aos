@@ -6,14 +6,14 @@
   ...
 }: let
   inherit (lib) mkIf mkOption types;
-  # The package manifest records the authenticated engine companions as store
-  # paths, so readFile preserves their string context. fromJSON intentionally
-  # rejects context-bearing input. This module consumes only the version; the
-  # companions remain retained and authenticated independently through
-  # configModule.dependencies and runtimeDeps.
-  package = builtins.fromJSON (builtins.unsafeDiscardStringContext (
-    builtins.readFile "${outputs.self}/share/longhorn-package.json"
-  ));
+  # Runtime output names are authenticated configuration data. Their contents
+  # remain unavailable until activation, after pure evaluation has completed.
+  packageName = builtins.baseNameOf outputs.self;
+  versionMatch = builtins.match "[0-9a-z]{32}-longhorn-manager-(.+)" packageName;
+  version =
+    if versionMatch != null
+    then builtins.head versionMatch
+    else throw "Longhorn received an invalid authenticated runtime output name: ${packageName}";
   cfg = config.longhorn;
   values = ''
     defaultSettings:
@@ -55,7 +55,7 @@ in {
         chart: longhorn
         repo: https://charts.longhorn.io
         targetNamespace: longhorn-system
-        version: ${package.version}
+        version: ${version}
         valuesContent: |-
       ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
     '';

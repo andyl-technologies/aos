@@ -290,6 +290,8 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --deployment-id "$staging_deployment_id" \
   --database-instance hub \
   --oci-pull-enabled \
+  --oci-push-enabled \
+  --oci-verified-publication-enabled \
   --rate-limit-namespace-base 2000 \
   --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring" \
@@ -306,10 +308,12 @@ migration lineage selected by its separate adoption, then preserve them on
 routine updates. A database name alone does not establish its schema version.
 Production uses `hub-v2` as documented below.
 
-Staging enables OCI pulls so the public Containers browse pages render. Push,
-administration, verified publication, and garbage collection remain disabled
-unless explicitly enabled for a separate validation. Preserve the pull flag
-on subsequent deployments; omitting it disables public container browsing.
+Staging enables OCI pull, authenticated push, and verified publication so the
+testing release flow can upload an immutable graph, commit its signed sidecar,
+and exercise the public Containers browse pages. Administration and garbage
+collection remain disabled. Preserve all three release-path flags on subsequent
+deployments; omitting one disables that part of container publication or
+consumption.
 
 ### Configure the direct staging CDN
 
@@ -413,7 +417,11 @@ would remove it from the generated Worker configuration.
 
 Repeat `--domain DOMAIN` for every additional domain owned by the production
 Worker. Probe `https://aos.andyl.org/.well-known/aos-deployment` exactly as for
-staging, then repeat the relevant hosted acceptance tests.
+staging, then repeat the relevant hosted acceptance tests. The three OCI flags
+are required for the public testing release path: authenticated upload remains
+permission-gated, verified publication binds the staged graph to the signed AOS
+release, and pull makes the committed result publicly consumable. Container
+administration and garbage collection remain disabled.
 
 OCI capabilities are enabled by default; the production command records that
 intended configuration explicitly. Use `--oci-<capability>-enabled=false` for a

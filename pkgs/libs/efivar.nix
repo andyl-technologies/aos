@@ -2,6 +2,9 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
+  buildPackages,
   gnumake,
   pkg-config,
   mandoc,
@@ -34,16 +37,42 @@ in
       }
       {
         name = "build";
-        script = ''
-          make -j"$NIX_BUILD_CORES" \
-            PREFIX="$out" \
-            LIBDIR="$out/lib" \
-            BINDIR="$out/bin" \
-            INCLUDEDIR="$out/include" \
-            PCDIR="$out/lib/pkgconfig" \
-            MANDOC="${mandoc}/bin/mandoc" \
-            ENABLE_DOCS=1
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # makeguids runs during the build. Keep its native compiler clear
+            # of target include paths and link flags inherited from the stdenv.
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc-for-build <<'EOF'
+            #!${buildPackages.bash}/bin/bash
+            native_hardening=
+            for flag in $AOS_HARDENING_ENABLE; do
+              case "$flag" in
+                pacret) ;;
+                *) native_hardening="$native_hardening $flag" ;;
+              esac
+            done
+            export AOS_HARDENING_ENABLE="$native_hardening"
+            unset AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+            unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
+            exec ${buildPackages.cc}/bin/cc "$@"
+            EOF
+            chmod +x .aos-build-tools/cc-for-build
+            export HOSTCC="$PWD/.aos-build-tools/cc-for-build"
+            export HOSTCCLD="$HOSTCC"
+            # Build generators must not depend on the builder's CPU features.
+            sed -i 's/HOST_MARCH=-march=native/HOST_MARCH=/' src/include/defaults.mk
+          ''
+          + ''
+            make -j"$NIX_BUILD_CORES" \
+              PREFIX="$out" \
+              LIBDIR="$out/lib" \
+              BINDIR="$out/bin" \
+              INCLUDEDIR="$out/include" \
+              PCDIR="$out/lib/pkgconfig" \
+              MANDOC="${mandoc}/bin/mandoc" \
+              ENABLE_DOCS=1
+          '';
       }
       {
         name = "install";

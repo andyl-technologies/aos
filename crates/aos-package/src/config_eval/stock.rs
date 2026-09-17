@@ -6,7 +6,8 @@
 //! `config` output through the configured substituter (the registry static
 //! cache). Both are **builder-gated**: they require a real stock-nix and a
 //! reachable registry, so they cannot run on a developer's macOS host and are
-//! unit-tested here only for `entry.nix` rendering.
+//! unit-tested here for `entry.nix` rendering. A pure interpolation check also
+//! runs when the AOS Nix executable is available.
 //!
 //! # The eval invocation
 //!
@@ -25,7 +26,9 @@
 //! `allow-import-from-derivation = false` prevents evaluation from triggering a
 //! build. The generated expression arrives on standard input, so it has no
 //! mutable filesystem identity; facts are rendered inline. Every store input
-//! is admitted through a fixed-NAR-hash `fetchTree` expression.
+//! that evaluation reads is admitted through a fixed-NAR-hash `fetchTree`
+//! expression. Resolver-authenticated runtime output names remain plain strings;
+//! their binary closures are hydrated only after configuration converges.
 //!
 //! `entry.nix` is regenerated each iteration from the current working set, with
 //! the verified `host.nix` injected as an operator-provenance module (the
@@ -227,7 +230,7 @@ impl NixEvaluator for StockNixEvaluator {
         let expression = std::fs::read_to_string(&staged_entry)
             .with_context(|| format!("reading {}", staged_entry.display()))?;
 
-        let mut cmd = pure_eval_command()?;
+        let mut cmd = pure_eval_command(&self.root)?;
 
         // Standard input is not a mutable filesystem input. Every imported
         // path is independently admitted by its fixed NAR hash in the source.
@@ -291,31 +294,47 @@ fn command_from_path(name: &str) -> Result<Command> {
 ///
 /// The executable is resolved before the environment is cleared. Callers add
 /// only exact authenticated inputs and the expression/attribute they need.
-pub(super) fn pure_eval_command() -> Result<Command> {
+/// Without a configured service cache, Nix keeps client state under `eval_root`.
+///
+/// # Errors
+///
+/// Returns an error when the executable cannot be resolved or the fallback
+/// cache path cannot be made absolute.
+pub(super) fn pure_eval_command(eval_root: &Path) -> Result<Command> {
     let mut command = command_from_path("nix-instantiate")?;
     let nix_cache_home = std::env::var_os("XDG_CACHE_HOME");
-    configure_pure_eval_command(&mut command, nix_cache_home.as_deref());
+    configure_pure_eval_command(&mut command, eval_root, nix_cache_home.as_deref())?;
     Ok(command)
 }
 
-fn configure_pure_eval_command(command: &mut Command, nix_cache_home: Option<&OsStr>) {
+fn configure_pure_eval_command(
+    command: &mut Command,
+    eval_root: &Path,
+    nix_cache_home: Option<&OsStr>,
+) -> Result<()> {
+    let nix_cache_home = match nix_cache_home.filter(|path| !path.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => std::path::absolute(eval_root.join("nix-cache"))
+            .context("resolving the evaluator's Nix cache directory")?,
+    };
     let store = std::env::var_os("AOS_NIX_EVAL_STORE");
+
     command.env_clear();
     if let Some(store) = store {
         command.arg("--store").arg(store);
     }
-    // Nix creates client cache state even for pure evaluation. Preserve only
-    // the service-owned cache directory across the environment scrub so the
-    // hardened read-only home does not make evaluation fail before it starts.
-    if let Some(nix_cache_home) = nix_cache_home {
-        command.env("XDG_CACHE_HOME", nix_cache_home);
-    }
+    // Nix creates client cache state even for pure evaluation. The service
+    // supplies a persistent cache; interactive evaluation instead uses its
+    // writable staging root and never falls back to the image's read-only home.
+    command.env("XDG_CACHE_HOME", nix_cache_home);
     command
         .args(["--extra-experimental-features", "nix-command flakes"])
         .args(["--eval", "--strict", "--json", "--pure-eval"])
         .args(["--option", "restrict-eval", "true"])
         .args(["--option", "allow-import-from-derivation", "false"])
         .args(["--option", "allowed-uris", "path:/nix/store/"]);
+
+    Ok(())
 }
 
 /// Infer a [`KillReason`] when the subprocess was terminated by a signal.
@@ -349,23 +368,6 @@ fn kill_reason(status: &std::process::ExitStatus, stderr: &str) -> Option<KillRe
 
 /// Renders authenticated working-set modules as resolver-owned provenance records.
 fn render_package_module_list(members: &[WorkingSetMember], locked: bool) -> Result<String> {
-    render_package_module_list_with(members, locked, |path| locked_store_input(path, None))
-}
-
-/// Renders package modules with an injectable locked-input renderer.
-///
-/// Production evaluation uses [`locked_store_input`] above. Keeping the
-/// renderer injectable lets unit tests prove that every resolver-authenticated
-/// runtime output crosses the admission boundary without requiring a real Nix
-/// store path in the test process.
-fn render_package_module_list_with<F>(
-    members: &[WorkingSetMember],
-    locked: bool,
-    mut lock_input: F,
-) -> Result<String>
-where
-    F: FnMut(&Path) -> Result<String>,
-{
     let mut items = Vec::new();
     for member in members {
         if let Some(path) = member.config_output.as_deref() {
@@ -418,32 +420,22 @@ where
             let artifact_units = artifact_list(&member.authorization.artifacts.units);
             let artifact_users = artifact_list(&member.authorization.artifacts.users);
             let artifact_groups = artifact_list(&member.authorization.artifacts.groups);
+            // Runtime outputs are authenticated names, not evaluator inputs.
+            // Keep them as data so config evaluation precedes runtime hydration
+            // and cannot read those outputs through a fetchTree admission.
             let self_output = member
                 .outputs
                 .self_output
                 .as_deref()
-                .map(|output| {
-                    if locked {
-                        lock_input(Path::new(output))
-                    } else {
-                        Ok(nix_string(output))
-                    }
-                })
-                .transpose()?
-                .unwrap_or_else(|| "null".to_string());
+                .map_or_else(|| "null".to_string(), nix_string);
             let dependency_outputs = member
                 .outputs
                 .dependencies
                 .iter()
                 .map(|(package, output)| {
-                    let output = if locked {
-                        lock_input(Path::new(output))?
-                    } else {
-                        nix_string(output)
-                    };
-                    Ok(format!("{} = {output};", nix_string(package)))
+                    format!("{} = {};", nix_string(package), nix_string(output))
                 })
-                .collect::<Result<Vec<_>>>()?
+                .collect::<Vec<_>>()
                 .join(" ");
             items.push(format!(
                     "    (let configRoot = {config_root}; in {{ name = {}; authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; artifacts = {{ etc = [ {artifact_etc} ]; units = [ {artifact_units} ]; users = [ {artifact_users} ]; groups = [ {artifact_groups} ]; }}; }}; inherit configRoot; module = configRoot + \"/module.nix\"; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
@@ -1165,31 +1157,84 @@ mod tests {
     }
 
     #[test]
-    fn locked_entry_admits_self_and_dependency_outputs() {
+    fn locked_entry_preserves_unrealized_runtime_outputs_as_strings() {
         let mut web = member("web", Some("/nix/store/hash-web-config"));
         web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
-        web.outputs.self_output = Some("/nix/store/hash-web-runtime".to_string());
-        web.outputs.dependencies.insert(
-            "openssl".to_string(),
-            "/nix/store/hash-openssl-runtime".to_string(),
+        let runtime = "/nix/store/00000000000000000000000000000000-unrealized-web-runtime";
+        let dependency = "/nix/store/11111111111111111111111111111111-unrealized-bash-runtime";
+        assert!(!Path::new(runtime).exists());
+        assert!(!Path::new(dependency).exists());
+        web.outputs.self_output = Some(runtime.to_string());
+        web.outputs
+            .dependencies
+            .insert("bash".to_string(), dependency.to_string());
+
+        let text = render_package_module_list(&[web], true).unwrap();
+
+        assert!(text.contains(&format!("self = \"{runtime}\"")), "{text}");
+        assert!(
+            text.contains(&format!("\"bash\" = \"{dependency}\";")),
+            "{text}"
+        );
+        assert_eq!(text.matches("builtins.fetchTree").count(), 1, "{text}");
+        assert!(
+            text.contains("path = \"/nix/store/hash-web-config\""),
+            "{text}"
+        );
+        assert!(
+            text.contains("narHash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\""),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn locked_runtime_output_interpolation_is_data_under_pure_nix() {
+        let Ok(mut command) = command_from_path("nix-instantiate") else {
+            eprintln!("skipping pure runtime-output check: AOS Nix is unavailable");
+            return;
+        };
+        let cache = tempfile::tempdir().unwrap();
+        configure_pure_eval_command(&mut command, cache.path(), None).unwrap();
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "XDG_CACHE_HOME"
+                && value.is_some_and(|value| value == cache.path().join("nix-cache").as_os_str())
+        }));
+        let mut web = member("web", Some("/nix/store/hash-web-config"));
+        web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
+        let runtime =
+            r#"/nix/store/00000000000000000000000000000000-${throw "runtime was evaluated"}"#;
+        let dependency = "/nix/store/11111111111111111111111111111111-unrealized-bash-runtime";
+        web.outputs.self_output = Some(runtime.to_string());
+        web.outputs
+            .dependencies
+            .insert("bash".to_string(), dependency.to_string());
+        let rendered = render_package_module_list(&[web], true).unwrap();
+        let expression = format!(
+            r#"let outputs = (builtins.head ({rendered})).outputs; in {{
+                command = "${{outputs.self}}/bin/server";
+                shell = "${{outputs.dependencies.bash}}/bin/bash";
+                context = builtins.getContext outputs.self;
+                dependencyContext = builtins.getContext outputs.dependencies.bash;
+            }}"#
         );
 
-        let mut admitted = Vec::new();
-        let text = render_package_module_list_with(&[web], true, |path| {
-            admitted.push(path.to_path_buf());
-            Ok(format!("(admit {})", nix_path(path)))
-        })
-        .unwrap();
+        let output = command.arg("--expr").arg(expression).output().unwrap();
 
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let actual: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(
-            admitted,
-            [
-                PathBuf::from("/nix/store/hash-web-runtime"),
-                PathBuf::from("/nix/store/hash-openssl-runtime"),
-            ]
+            actual,
+            serde_json::json!({
+                "command": format!("{runtime}/bin/server"),
+                "shell": format!("{dependency}/bin/bash"),
+                "context": {},
+                "dependencyContext": {},
+            })
         );
-        assert!(text.contains("self = (admit /nix/store/hash-web-runtime)"));
-        assert!(text.contains("\"openssl\" = (admit /nix/store/hash-openssl-runtime);"));
     }
 
     #[test]
@@ -1286,7 +1331,12 @@ mod tests {
     fn evaluator_command_is_pure_restricted_and_environment_scrubbed() {
         let mut command = Command::new("nix-instantiate");
         command.env("AOS_AMBIENT_SENTINEL", "must-not-survive");
-        configure_pure_eval_command(&mut command, Some(OsStr::new("/var/cache/aos/nix-eval")));
+        configure_pure_eval_command(
+            &mut command,
+            Path::new("/run/aos-eval"),
+            Some(OsStr::new("/var/cache/aos/nix-eval")),
+        )
+        .unwrap();
 
         let args = command
             .get_args()

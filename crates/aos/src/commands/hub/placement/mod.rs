@@ -87,7 +87,7 @@ pub(in crate::commands::hub) async fn placement(
             surface,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let surface: HubSurfaceRef = surface.parse()?;
             let response: hub_types::ListPlacementsResponse = client
                 .call_topology(
@@ -153,7 +153,7 @@ pub(in crate::commands::hub) async fn placement(
             name,
         } => {
             let surface: HubSurfaceRef = surface.parse()?;
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let response: hub_types::GetPlacementResponse = client
                 .call_topology(
                     HubTopologyMethod::GetPlacement,
@@ -220,7 +220,7 @@ pub(in crate::commands::hub) async fn placement(
             object,
             pagination,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_read::<_, hub_types::ListObjectPresenceResponse>(
                 printer,
                 &client,
@@ -247,7 +247,7 @@ pub(in crate::commands::hub) async fn placement(
             hash_range,
             mutation,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             if mutation.plan_id.is_some() {
                 return topology_mutation(
                     printer,
@@ -344,7 +344,7 @@ pub(in crate::commands::hub) async fn placement(
             mutation,
         } => {
             if mutation.plan_id.is_some() {
-                let client = hub_client(&access.hub, access.token.as_deref())?;
+                let client = hub_client(&access.hub, access.token.as_deref()).await?;
                 return topology_mutation(
                     printer,
                     &client,
@@ -371,7 +371,7 @@ pub(in crate::commands::hub) async fn placement(
             if update_mask.is_empty() {
                 anyhow::bail!("placement update requires at least one changed field");
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyTopologyPlanRequest,
@@ -412,7 +412,7 @@ pub(in crate::commands::hub) async fn placement(
                 required_plan_version(mutation, "placement scan")?;
             }
             let surface: HubSurfaceRef = surface.parse()?;
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_operation_mutation(
                 printer,
                 &client,
@@ -441,7 +441,7 @@ pub(in crate::commands::hub) async fn placement(
                 required_plan_version(mutation, "placement replication")?;
             }
             let surface: HubSurfaceRef = surface.parse()?;
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_operation_mutation(
                 printer,
                 &client,
@@ -471,7 +471,7 @@ pub(in crate::commands::hub) async fn placement(
                 required_plan_version(mutation, "placement repair")?;
             }
             let surface: HubSurfaceRef = surface.parse()?;
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_operation_mutation(
                 printer,
                 &client,
@@ -499,7 +499,7 @@ pub(in crate::commands::hub) async fn placement(
             if mutation.plan_id.is_none() {
                 required_plan_version(mutation, "placement promotion")?;
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyTopologyPlanRequest,
@@ -547,7 +547,7 @@ pub(in crate::commands::hub) async fn placement(
             if mutation.plan_id.is_none() {
                 required_plan_version(mutation, "placement drain")?;
             }
-            let client = hub_client(hub, access.token.as_deref())?;
+            let client = hub_client(hub, access.token.as_deref()).await?;
             topology_operation_mutation(
                 printer,
                 &client,
@@ -577,7 +577,7 @@ pub(in crate::commands::hub) async fn placement(
             if mutation.plan_id.is_none() {
                 required_plan_version(mutation, "placement removal")?;
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyTopologyPlanRequest,
@@ -615,7 +615,7 @@ async fn placement_promotion(printer: &Printer, command: &HubPlacementPromotionC
             mutation,
         } => {
             let surface: HubSurfaceRef = surface.parse()?;
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyTopologyPlanRequest,
@@ -655,7 +655,7 @@ async fn placement_drain(printer: &Printer, command: &HubPlacementDrainCmd) -> R
             if mutation.plan_id.is_none() {
                 required_plan_version(mutation, "placement drain cancellation")?;
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             topology_mutation::<
                 _,
                 hub_types::ApplyTopologyPlanRequest,
@@ -689,7 +689,7 @@ async fn placement_eviction(printer: &Printer, command: &HubPlacementEvictionCmd
             if_version,
             idempotency_key,
         } => {
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let surface: HubSurfaceRef = surface_ref.parse()?;
             topology_read::<_, hub_types::TopologyPlanResponse>(
                 printer,
@@ -716,7 +716,7 @@ async fn placement_eviction(printer: &Printer, command: &HubPlacementEvictionCmd
                 printer.info("placement eviction cancelled");
                 return Ok(());
             }
-            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let response: hub_types::OperationResponse = client
                 .call_topology(
                     HubTopologyMethod::RunPlacementEviction,

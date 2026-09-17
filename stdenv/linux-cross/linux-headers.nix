@@ -39,7 +39,7 @@ buildStdenv.mkDerivation {
       script = ''
         # The kernel's headers_install target only builds scheduler-native
         # helper programs; ARCH controls the ABI of the published headers.
-        make -j"$NIX_BUILD_CORES" \
+        make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" \
           ARCH=${hostPlatform.linuxArch} \
           HOSTCC=${buildStdenv.cc}/bin/cc \
           SHELL=${buildStdenv.bash}/bin/bash \

@@ -26,7 +26,8 @@
     "INIT_ON_FREE_DEFAULT_ON"
     "SLAB_FREELIST_HARDENED"
     "SLAB_FREELIST_RANDOM"
-    "RANDOM_KMALLOC_CACHES"
+    "KMALLOC_PARTITION_CACHES"
+    "KMALLOC_PARTITION_RANDOM"
     "SHUFFLE_PAGE_ALLOCATOR"
     "VMAP_STACK"
     "RANDOMIZE_KSTACK_OFFSET"
@@ -86,6 +87,9 @@
 
   # Functional symbols required by higher-level roles.
   enabledFunctionalCommon = [
+    "CGROUP_SCHED"
+    "FAIR_GROUP_SCHED"
+    "CFS_BANDWIDTH"
     "NETFILTER_NETLINK_ACCT"
     "NFT_COMPAT"
   ];

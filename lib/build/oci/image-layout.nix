@@ -265,7 +265,7 @@ in
                   history: [
                     $layersJson[0][] | {
                       created: $specification.created,
-                      created_by: "AOS OCI builder layer ABI v1",
+                      created_by: "AOS OCI builder layer ABI v2",
                       empty_layer: false
                     }
                   ]

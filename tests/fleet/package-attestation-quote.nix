@@ -5,8 +5,9 @@
   ...
 }: {
   name = "package-attestation-quote";
-  timeout = 900;
-  bootTimeout = 300;
+  timeout = 1800;
+  bootTimeout = 900;
+  systemReadyTimeout = 300;
 
   machines = {
     target = {

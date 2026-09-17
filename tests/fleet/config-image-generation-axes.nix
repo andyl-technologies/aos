@@ -93,9 +93,16 @@
     {
       # Git is image-bundled fixture tooling for cloning the authenticated
       # registry. Seeding that profile uses the AOS binutils helper in the
-      # initrd, so declare that exact forbidden-name fixture root as well.
-      aos.image.budgets.maxRootMiB = 640;
-      aos.image.testArtifactRoots = [pkgs.binutils];
+      # initrd. Declare both fixture roots so their interpreter and development
+      # dependencies remain covered by the test-only artifact allowance.
+      # The corresponding EROFS fixture root measures 670 MiB.
+      aos.image.budgets.maxRootMiB = 704;
+      # Full Git, its interpreters, and the test agent bring this fixture's
+      # runtime closure to 1,015 MiB; production images keep their own limits.
+      aos.image.budgets.maxRuntimeClosureMiB = 1088;
+      # The signed A/B fixture compresses to 836 MiB with those test tools.
+      aos.image.budgets.maxDownloadMiB = 864;
+      aos.image.testArtifactRoots = [pkgs.binutils pkgs.git];
       environment.systemPackages = [pkgs.git];
       # This acceptance test runs three guests while generating and serving a
       # full closure. Give evaluation enough wall time on shared CI builders;
@@ -119,6 +126,10 @@
         lib.genAttrs
         ["aos-registry-server" "test-static-cache-server"]
         (_: {bundle = true;});
+      # The static server binds this directory before publication fills it.
+      environment.etc."tmpfiles.d/fleet-registry-cache.conf".text = ''
+        d /var/lib/sysreg-cache 0755 root root - -
+      '';
     }
   ];
 in {
@@ -128,15 +139,28 @@ in {
   # when a KVM builder is under I/O pressure. Keep the initial readiness budget
   # separate from the tighter per-transition reboot assertions below.
   bootTimeout = 1200;
+  systemReadyTimeout = 300;
 
   machines = {
     registry = {
       system = registrySystem;
       packages = ["aos-registry-server" "test-static-cache-server"];
+      metadata."host.nix" = ''
+        {
+          aos.networking.hostName = "registry";
+          aos.apm.desiredPackages = ["aos-registry-server" "test-static-cache-server"];
+          "aos-registry-server".enable = true;
+          "test-static-cache-server".enable = true;
+        }
+      '';
       extraClosures = [
+        pkgs.aos.apr
         abi2Top
         abi2Image
+        abi2ImageDisk
+        abi2ImageInfo
         abi2Uki
+        pkgs.secure-boot-test-keys
         pkgs.sbsigntools
         pkgs.binutils
         pkgs.git
@@ -407,6 +431,9 @@ in {
             --trust-key-id release \
             --key "$KEY"
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
+          # Verify the signed recovery bundle against the image's test key.
+          mkdir -p "$REG_DIR/sb-certs"
+          cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/sysreg
           git init --bare --object-format=sha256 "$ORIGIN"
@@ -511,7 +538,11 @@ in {
           systemctl start aos-pkg-test-static-cache-server.target
           systemctl is-active --quiet test-static-cache-server.socket
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
-          chown -R aos-gitd:aos-gitd "$ORIGIN"
+          # Resolve ownership through the daemon's idmapped state directory.
+          git_pid=$(systemctl show -p MainPID --value aos-registry-server-gitd.service)
+          test "$git_pid" -gt 0
+          git_owner=$(id -u aos-gitd):$(id -g aos-gitd)
+          ${pkgs.util-linux}/bin/nsenter --target "$git_pid" --mount --root --wd=/ ${pkgs.coreutils}/bin/chown -R "$git_owner" "$ORIGIN"
       """), timeout=1800)
       public_key = registry.succeed("cat /tmp/sysreg-pubkey").strip()
       configure_registry(target, public_key)

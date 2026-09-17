@@ -64,17 +64,17 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps =
-      [
-        pkgs.bash
-        pkgs.coreutils
-        pkgs.findutils
-        pkgs.gzip
-        pkgs.jq
-        pkgs.tar
-        referenceGraph
-      ]
-      ++ packageRoots;
+    buildDeps = [
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.findutils
+      pkgs.gzip
+      pkgs.jq
+      pkgs.tar
+      referenceGraph
+    ];
+    # These roots are inspected as payload, never executed by the builder.
+    inherit packageRoots;
 
     outputChecks.out = {};
     inherit facadeSpec;

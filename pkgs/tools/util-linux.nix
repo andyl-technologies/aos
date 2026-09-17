@@ -28,6 +28,9 @@ in
   mkDerivation {
     pname = "util-linux";
     inherit version;
+    # Mounting filesystems does not require the optional Python bindings.
+    # Keep those bindings available without retaining Python in boot images.
+    outputs = ["out" "python"];
 
     src = fetchurl {
       urls = [
@@ -129,6 +132,12 @@ in
         name = "install";
         script = ''
           make install
+
+          mkdir -p "$python/lib"
+          for bindings in "$out"/lib/python*; do
+            test -d "$bindings"
+            mv "$bindings" "$python/lib/"
+          done
         '';
       }
     ];

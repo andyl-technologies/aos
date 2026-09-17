@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result, bail};
 use aos_core::nar::cache::NarInfoSigner;
 use aos_core::nar::info;
 use aos_package::registry::nixcache::generate_static_cache;
-use aos_package::registry::release::{RegistryReleaseEntry, verify_release_entries};
+use aos_package::registry::release::verify_release_entries;
 use aos_release::build::BuildReportV1;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
@@ -43,17 +43,7 @@ pub(super) async fn run(
     let report_bytes = read_canonical(&args.build_report, "build report")?;
     let report: BuildReportV1 = canonical::from_slice(&report_bytes, "build report")?;
     report.validate(&plan, plan_digest)?;
-    let entries = report
-        .outputs
-        .iter()
-        .map(|output| RegistryReleaseEntry {
-            id: output.id.clone(),
-            name: output.package.clone(),
-            version: output.version.clone(),
-            platform: output.platform.to_string(),
-            store_path: output.store_path.clone(),
-        })
-        .collect::<Vec<_>>();
+    let entries = super::registry_entries::from_build(&plan.packages, &report.outputs)?;
     verify_release_entries(&args.registry, &entries)?;
 
     let (key_id, key_path) = parse_key_spec(&args.cache_key)?;
@@ -214,7 +204,7 @@ async fn sign_narinfos(
     Ok(operations)
 }
 
-fn parse_key_spec(value: &str) -> Result<(String, PathBuf)> {
+pub(super) fn parse_key_spec(value: &str) -> Result<(String, PathBuf)> {
     let (key_id, path) = value
         .split_once('=')
         .context("cache key must use KEY_ID=PATH")?;
@@ -224,7 +214,7 @@ fn parse_key_spec(value: &str) -> Result<(String, PathBuf)> {
     Ok((key_id.to_string(), PathBuf::from(path)))
 }
 
-fn load_cache_public_key(key_id: &str, path: &Path) -> Result<TrustedEd25519Key> {
+pub(super) fn load_cache_public_key(key_id: &str, path: &Path) -> Result<TrustedEd25519Key> {
     let bytes = capture::control_file(path, "cache public key")?;
     let text = std::str::from_utf8(&bytes)
         .context("cache public key is neither a Nix key line nor supported raw encoding")?

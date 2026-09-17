@@ -26,6 +26,15 @@
   bootstrapTools,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxArmCross = stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
+  buildTarget =
+    if isDarwinCross || isLinuxArmCross
+    then "images"
+    else "bootcycle-images";
+  jdkImage =
+    if isDarwinCross || isLinuxArmCross
+    then "build/*/images/jdk"
+    else "build/*/bootcycle-build/images/jdk";
   buildTools =
     if isDarwinCross
     then buildPackages
@@ -43,10 +52,24 @@
         file
         ;
     };
+
+  # Boot Java executes build-time generators; target compilers still build the JVM.
   bootJdk =
-    if isDarwinCross
+    if isDarwinCross || isLinuxArmCross
     then buildPackages.openjdk-24
     else openjdk-24;
+  linuxBuildJdkFlag =
+    if isLinuxArmCross
+    then " --with-build-jdk=${buildPackages.openjdk}"
+    else "";
+
+  # jpackage embeds native launchers in the module image, beyond ELF scrubbing.
+  # Replace the full compiler prefix, including its hash, but retain assertions.
+  linuxJpackageCxxFlag =
+    if isLinuxArmCross
+    then " -ffile-prefix-map=${stdenv.gcc}=/aos-toolchain"
+    else "";
+
   nativeMig =
     if isDarwinCross
     then
@@ -412,7 +435,7 @@ in
           else ''
             # OpenJDK configure requires bash
             $CONFIG_SHELL configure \
-              --with-boot-jdk=${openjdk-24} \
+              --with-boot-jdk=${bootJdk}${linuxBuildJdkFlag} \
               --enable-headless-only \
               --with-native-debug-symbols=none \
               --disable-warnings-as-errors \
@@ -431,7 +454,7 @@ in
               --with-version-opt=aos \
               --with-version-pre= \
               --with-extra-cflags="-Wno-error -fcommon" \
-              --with-extra-cxxflags="-Wno-error" \
+              --with-extra-cxxflags="-Wno-error${linuxJpackageCxxFlag}" \
               --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
               --with-jobs=$NIX_BUILD_CORES
           '';
@@ -445,7 +468,7 @@ in
             sed -i 's/-Xlinker -z -Xlinker defs//g; s/-Wl,-z,defs//g' "$f" 2>/dev/null || true
           done
 
-          make images JOBS=$NIX_BUILD_CORES
+          make ${buildTarget} JOBS=$NIX_BUILD_CORES
         '';
       }
       {
@@ -454,7 +477,7 @@ in
           if isDarwinCross
           then ''
             mkdir -p $out
-            cp -a build/*/images/jdk/* $out/
+            cp -a ${jdkImage}/* $out/
             test -x "$out/bin/java"
             test -x "$out/bin/javac"
             test -f "$out/lib/server/libjvm.dylib"
@@ -463,7 +486,7 @@ in
           ''
           else ''
             mkdir -p $out
-            cp -a build/*/images/jdk/* $out/
+            cp -a ${jdkImage}/* $out/
 
             # Patch ELF binaries with the correct dynamic linker and rpath
             INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")

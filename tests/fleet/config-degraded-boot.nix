@@ -37,10 +37,21 @@
       };
       aos.image.allowTestArtifacts = true;
       aos.image.testArtifactRoots = [pkgs.test-http-server.expose];
+
+      # The bundled Python HTTP server and registry fixtures bring this test's
+      # runtime closure to 854 MiB. Its compressed disk remains below the
+      # adjacent 832 MiB cap; production keeps its own limits.
+      aos.image.budgets = {
+        maxRootMiB = 736;
+        maxRuntimeClosureMiB = 864;
+        maxDownloadMiB = 832;
+      };
+
       # Bundling installs the runtime projections. The in-guest publisher also
       # needs each package's registry-only expose and config outputs so it can
       # construct the authenticated fixture catalog.
       environment.systemPackages = [
+        pkgs.aos.apr
         pkgs.desired-config-test.expose
         pkgs.desired-config-test.config
         pkgs.desired-prune-test.expose
@@ -350,7 +361,7 @@ in {
           line.split("=", 1) for line in fetch.splitlines() if "=" in line
       )
       assert fetch_properties["ActiveState"] == "failed", fetch_properties
-      assert fetch_properties["Result"] == "exit-code", fetch_properties
+      assert fetch_properties["Result"] == "start-limit-hit", fetch_properties
       assert fetch_properties["Restart"] == "on-failure", fetch_properties
       assert int(fetch_properties["NRestarts"]) >= 4, fetch_properties
       degraded.succeed("systemctl is-active --quiet aos-fetch.target")

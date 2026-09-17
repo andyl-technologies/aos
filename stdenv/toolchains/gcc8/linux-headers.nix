@@ -9,6 +9,28 @@
   buildPlatform,
   hostPlatform,
 }: let
+  # Reuse the source filter so emulated builds do not fork for every kernel file.
+  filterSourceScripts = hostPlatform.constraints.cpu != "x86_64";
+  sourceScriptFilterSetup =
+    if filterSourceScripts
+    then ''
+      source_runtime_inputs="$TMPDIR/kernel-runtime-scripts"
+      mkdir -p "$source_runtime_inputs"
+      ${prev.perl}/bin/perl ${../../filter-runtime-scripts.pl} . "$source_runtime_inputs"
+    ''
+    else "";
+  sourceScriptRoot =
+    if filterSourceScripts
+    then ''"$source_runtime_inputs"''
+    else ".";
+  sourceScriptFilterCleanup =
+    if filterSourceScripts
+    then ''
+
+      rm -rf "$source_runtime_inputs"
+    ''
+    else "";
+
   src = builtins.fetchTarball {
     url = "https://git.kernel.org/torvalds/t/linux-4.18.tar.gz";
     sha256 = "19rb2q5i5kcq0wd1apqmcypz7lhd4x2admzndvg4iyv3hg5i4wlp";
@@ -29,7 +51,11 @@ in
         cd linux-4.18
         chmod -R u+w .
 
-        make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+        # Pin source helpers that configure or make can execute directly.
+        ${sourceScriptFilterSetup}AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} ${sourceScriptRoot}${sourceScriptFilterCleanup}
+
+        make SHELL="${prev.bash}/bin/bash" ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
         echo "Linux 4.18 headers installed to $out"
       ''

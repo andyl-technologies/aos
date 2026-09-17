@@ -128,7 +128,7 @@
   # Recompute the budget against installed RAM and apply the parameters
   # OpenZFS expresses as divisors of physical memory, which cannot be derived
   # at build time. Runs at boot and again whenever configuration changes.
-  memoryPolicy = pkgs.writeShellScriptBin "aos-zfs-memory-policy" ''
+  memoryPolicy = ''
     set -euo pipefail
 
     PATH=${scriptPath}''${PATH:+:$PATH}
@@ -210,7 +210,7 @@
   # A host can apply configuration without rebooting, silently leaving
   # load-time parameters at their previous values. Report that rather than
   # letting a host run indefinitely on an allocation policy it has replaced.
-  verifyParameters = pkgs.writeShellScriptBin "aos-zfs-verify-parameters" ''
+  verifyParameters = ''
     set -uo pipefail
 
     PATH=${scriptPath}''${PATH:+:$PATH}
@@ -580,10 +580,9 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      # Live in-place upgrades change the derived values without a reboot;
-      # re-running the policy applies every runtime-writable parameter.
-      reloadTriggers = [memoryPolicy];
-      script = lib.getExe memoryPolicy;
+      # A changed script changes the unit and reapplies every runtime-writable
+      # parameter during activation.
+      script = memoryPolicy;
     };
 
     systemd.services."aos-zfs-verify-parameters" = lib.mkIf failure.verifyParameters {
@@ -595,7 +594,7 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      script = lib.getExe verifyParameters;
+      script = verifyParameters;
     };
 
     system.checks.zfs-memory = {

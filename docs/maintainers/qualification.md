@@ -254,6 +254,24 @@ do not disable features to simplify the build or label a broken basic operation
 as preview. Existing non-Linux package eligibility remains separate from Linux
 OS/runtime support and still requires its own native package tests.
 
+Package probes are immutable declarative programs built with
+`mkQualificationPackageProbe`. Each probe names the package and contains a
+primary operation plus a bad-input operation. An operation records its input,
+the command or public API being exercised, the expected result, regular input
+files, ordered command steps, and exact output-file assertions. Primary steps
+must expect success. The bad-input operation must observe a nonzero status or
+mark an exact stdout/stderr assertion as the rejection result.
+
+Commands use explicit paths. `@profile-out@` and
+`@profile-output:<name>@` address the APM-installed output, while `@out@` and
+`@output:<name>@` address the corresponding imported output. `@cc@`, `@cxx@`,
+`@python@`, and `@bash@` are the only harness commands. The runner rejects an
+executable outside the signed package closure, installed profile roots, and
+those named harness tools. It also requires exact stdout or stderr assertions
+where a successful command claims to have observed rejection. This keeps a
+probe from silently consulting a host tool or reporting an unobserved error
+path.
+
 ## Inspect and freeze the contract
 
 ```sh
@@ -271,7 +289,10 @@ readable for archival verification.
 
 Record a `qualification_predecessor` with the same registry, a distinct
 `release_id`, and the verified preceding `manifest_digest`. First public
-releases use a retained signed qualification snapshot as their predecessor.
+releases use the restricted, non-public
+[qualification snapshot workflow](canonical-releases.md#create-a-first-qualification-predecessor)
+as their predecessor. A descriptor alone is insufficient: retain the signed
+bundle and verification keys for the image update executor.
 A testing-to-main transition is a new main release and installation unless a
 separate authenticated migration contract has been implemented and qualified.
 
@@ -366,12 +387,16 @@ aos release qualification cases --plan release-bundle/release-plan.json \
   --manifest release-bundle/release-manifest.json --phase staging
 ```
 
-This command displays requirements; it does not verify signatures or claim a
-pass. Use `aos release verify` with independent public anchors for verification.
+This command displays requirements, a `case_digests` map keyed by case ID, and
+an `environment_profile_digests` map for target cases. It does not verify
+signatures or claim a pass. Use `aos release verify` with independent public
+anchors for verification.
 
 Run `aos release qualify-run --prepare-only` with the bundle, publication
 receipt, applicable executor mappings, and `--qualified-at now` described in
 [the runbook](canonical-releases.md#run-the-native-qualification-matrix).
+For staging image update cases, also supply the retained snapshot through an
+absolute `--predecessor-bundle` path.
 Inspect the prepared report and its retained `reports/` directory. Sign an
 independent review payload with a planned `release-evidence` key:
 
@@ -434,8 +459,11 @@ anonymous HTTPS download's size and SHA-256, retains it under a hashed name,
 and writes `request.json`, `scenario-registry.json`, and `objects.json` in a
 private attempt directory. The configured scenario receives the request on
 stdin and runs in that directory with no inherited environment. `objects.json`
-maps artifact IDs to the verified local paths. Scenarios use AOS-built tools
-and the published image's normal provisioning and serial/SSH interfaces.
+maps artifact IDs to the verified local paths. The object set contains each
+case subject and the complete transitive graph named by its manifest
+relationships, including signed narinfo and dependency artifacts. Scenarios
+use AOS-built tools and the published image's normal provisioning and
+serial/SSH interfaces.
 
 The scenario emits `QualificationExecutorResponseV1`. Its observation must
 contain the exact case digest, acceptance checks, numeric measurements, assessment
@@ -452,6 +480,102 @@ runner checks these bindings and retains response bytes, stdout,
 stderr, and failures. Coordinator attempts retain each request and returned
 response, including rejected results. Never overwrite a failed attempt.
 
+Scenario programs can delegate the request binding and canonical response
+assembly to the installed CLI. Write a canonical report in the attempt
+directory, then run:
+
+```sh
+aos release qualification respond \
+  --request request.json \
+  --scenarios scenario-registry.json \
+  --report scenario-report.json \
+  --identity linux-x86-v1
+```
+
+The Linux executors include a native program for each mandatory staging
+container claim. It reconstructs an OCI layout only from the anonymously
+downloaded objects, imports that layout into a private AOS-built containerd and
+runc instance, and runs ten bounded create, network, state, stop, and remove
+cycles. The program retains the runtime import, HTTP, container, inspection,
+and shutdown logs in the executor attempt. It records the host CPU, kernel,
+resources, container runtime, cgroup, network, and volume identities directly
+from the executing machine.
+
+Before running that program, place the reviewed compatibility assessment for
+each target at
+`/etc/aos-release/qualification-assessments/<target-id>.json`. The file is the
+canonical `CompatibilityAssessment` object for the exact environment-profile
+digest printed during case review. It must be a regular file rather than a
+symlink. The native program supplies the observed inventory; the assessment
+does not supply or override test results. Missing or mismatched assessments,
+OCI objects, runtime properties, lifecycle operations, or report bindings fail
+the case and leave the complete failed attempt in the executor work root.
+
+Completion container claims still consume retained campaign reports because
+their 24-hour-or-longer observation windows exceed the executor's six-hour
+process bound. Those reports must cover the same target inventory and include
+the required operation denominators and committed-data result.
+
+An executor that imports reports from several machines or package exercises can
+instead use `--report-root DIR`. The CLI selects
+`DIR/<case-digest-without-sha256-prefix>.json` from the exact case in the
+request. The report producer obtains that digest from `qualification cases` and
+must create a new canonical file for every case; a report for another release,
+manifest, receipt, or case is rejected.
+
+The report uses the common fields below and may retain additional
+scenario-specific measurements and diagnostics. `checks` must contain every and
+only the case's required checks. Release-wide and package reports use an
+unscoped, non-sensitive `environment` inventory. Target reports use the typed
+environment inventory and reviewed assessment described above. Assessment-only
+A1 reports omit `environment`.
+
+```json
+{
+  "schema_version": "aos.release.qualification-scenario-report/v1",
+  "registry": "andyl/testing",
+  "release_id": "release-2026.9.0",
+  "staging_receipt_digest": "sha256:<staging-receipt-hash>",
+  "manifest_digest": "sha256:<manifest-hash>",
+  "case_digest": "sha256:<qualification-case-hash>",
+  "started_at": "2026-09-06T18:00:00Z",
+  "finished_at": "2026-09-06T18:02:00Z",
+  "observed_seconds": 120,
+  "checks": {
+    "anonymous-download": {
+      "passed": true,
+      "detail": "Verified the retained public object inventory."
+    }
+  },
+  "operations": {"verified_objects": 3},
+  "environment": {"runner": "qualification-host-01"}
+}
+```
+
+`qualification respond` derives the request, executor, environment, report,
+subject, predecessor, authority and nonce bindings. It verifies the report's
+registry, release, publication receipt, manifest, and case identities first. It
+also rejects an unknown registry mapping, wrong check set, empty check details,
+malformed UTC times, an observation longer than its execution interval, or an
+environment shape that does not match the case.
+
+The flake exposes `qualification-executor-<platform>` packages for all four
+release platforms under `packages.x86_64-linux`, plus a native
+`qualification-executor` alias on each supported system. Install the exact
+platform closures at the paths passed to `qualify-run`. Before starting an
+executor, install each applicable report-backed scenario's single-link
+canonical report at
+`/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.
+The staging container lifecycle cases execute directly and do not read this
+report directory.
+The x86_64 Linux executor uses the fixed paths
+`/run/aos-release/qualification-reports/operator-recovery.json` and
+`production-recovery.json` for those two operator exercises. Each adapter
+drains the coordinator request, captures the selected report without following
+links, and binds it through `qualification respond`. A missing, changing,
+stale, malformed, incorrectly identified, or case-incomplete report fails the
+attempt.
+
 A fixture gate proves regression behavior only. The native Hub fleet uses
 visibly synthetic observations and timing to test admission mechanics; those
 records cannot establish release workload duration or physical reliability.
@@ -463,7 +587,9 @@ Package roles describe consequences: `system-integrity`, `qualified-workload`,
 or `general-catalog`. Dependencies inherit the obligations of the root that
 uses them. The authenticated runtime closure is the source of dependency
 membership. A library used by boot or recovery cannot avoid those tests by
-being listed as a general catalog package.
+being listed as a general catalog package. `qualification cases` reports the
+strongest effective role inherited through the signed package-NAR relationship
+graph for each package cell.
 
 Public status is separate: qualified for testing, preview, blocked, or not
 applicable. A reference target in the contract is a requirement, not a passing
@@ -472,6 +598,21 @@ Known failure of an advertised basic function blocks that artifact. Successful
 builds and `--version` checks do not establish complete functionality.
 
 ## Test execution and reuse
+
+Package qualification expands every published package/platform cell into a
+separate case. A package published for both `x86_64-linux` and `aarch64-linux`
+requires successful observations for both; a local check on one architecture
+does not satisfy the other. Package publication support policy determines
+which cells apply. The package probe schema has no architecture selector that
+can silently exempt an otherwise published cell.
+
+`qualify-run` routes each case to its platform's `--executor` mapping. The
+package executor runs natively and validates the requested platform; it does
+not create a VM itself. To qualify packages in Linux VMs, provision an executor
+inside each architecture's VM and route the corresponding mapping to it.
+Installing both executor closures on a coordinator does not establish that
+either ran inside a VM. Retain the execution environment with the resulting
+evidence. Image qualification separately boots the exact published image.
 
 Nix derivations own hermetic evaluation, build, and fixture/fleet regression
 tests. Nix-packaged executors own fresh public-download and live-environment

@@ -27,7 +27,7 @@ where
     PlanReq: Serialize + DeserializeOwned,
     Resp: DeserializeOwned + Serialize,
 {
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_mutation::<_, hub_types::ApplyCachePlanRequest, Resp, _>(
         printer,
         &client,
@@ -67,7 +67,7 @@ where
         printer.info(&format!("{action} cancelled"));
         return Ok(());
     }
-    let client = hub_client(&access.hub, access.token.as_deref())?;
+    let client = hub_client(&access.hub, access.token.as_deref()).await?;
     topology_read::<_, Resp>(
         printer,
         &client,

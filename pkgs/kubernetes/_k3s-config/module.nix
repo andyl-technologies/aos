@@ -7,7 +7,32 @@
 }: let
   inherit (lib) mkIf mkOption types;
 
-  roleSpec = builtins.fromJSON (builtins.readFile "${outputs.self}/share/k3s-role.json");
+  roleSpecs = [
+    {
+      pname = "k3s-worker";
+      role = "worker";
+    }
+    {
+      pname = "k3s-control-plane";
+      role = "control-plane";
+    }
+    {
+      pname = "k3s-combined";
+      role = "combined";
+    }
+  ];
+  # Runtime output names are authenticated configuration data. Their contents
+  # remain unavailable until activation, after pure evaluation has completed.
+  outputName = builtins.baseNameOf outputs.self;
+  selectedRoleSpecs =
+    builtins.filter (
+      spec: builtins.match "[0-9a-z]{32}-${spec.pname}-.+" outputName != null
+    )
+    roleSpecs;
+  roleSpec =
+    if builtins.length selectedRoleSpecs == 1
+    then builtins.head selectedRoleSpecs
+    else throw "k3s received an invalid authenticated runtime output name: ${outputName}";
   package = roleSpec.pname;
   role = roleSpec.role;
   cfg = config.k3s;

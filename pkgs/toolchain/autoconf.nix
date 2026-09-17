@@ -6,6 +6,10 @@
   m4,
   perl,
   bash,
+  coreutils,
+  gawk,
+  grep,
+  sed,
 }: let
   version = "2.73";
 in
@@ -30,6 +34,10 @@ in
       bash
     ];
     runtimeDeps = [
+      coreutils
+      gawk
+      grep
+      sed
       m4
       perl
       bash
@@ -71,6 +79,13 @@ in
             grep -IrlZ -F "$nativeRoot" "$out" 2>/dev/null \
               | xargs -0 -r sed -i "s|$nativeRoot|$targetRoot|g"
           }
+
+          # Preserve the shell utilities used by Autoconf and its generated
+          # configure scripts in the runtime closure.
+          mkdir -p "$out/nix-support"
+          printf '%s\n' ${coreutils} ${gawk} ${grep} ${sed} \
+            > "$out/nix-support/runtime-tools"
+
           retarget_tool_root m4 ${m4}
           retarget_tool_root perl ${perl}
 

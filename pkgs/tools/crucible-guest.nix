@@ -7,6 +7,7 @@
   mkCargoDummySource,
   fetchCargoVendor,
   patchelf,
+  glibc,
 }: let
   version = "0.1.0";
   src = import ./crucible/_source.nix {inherit lib;};
@@ -25,12 +26,22 @@
       stdenv.hostPlatform.system
     };
   staticBuildSetup = ''
-    target_triple="$(rustc -vV | sed -n 's/^host: //p')"
+    target_triple="${
+      if stdenv.isCross
+      then targetTriple
+      else ''$(rustc -vV | sed -n 's/^host: //p')''
+    }"
     test "$target_triple" = "${targetTriple}"
     rustflags_var="CARGO_TARGET_$(printf '%s' "$target_triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
     mkdir -p "$TMPDIR/static-shim"
     ln -s "$(dirname "$(cc -print-libgcc-file-name)")/libgcc_s.a" \
       "$TMPDIR/static-shim/libgcc_eh.a"
+    ${lib.optionalString stdenv.isCross ''
+      # The split static output retains libm's original runtime-output paths.
+      # Rebase this link-only script locally without changing the toolchain.
+      sed 's|${builtins.storeDir}/[^ /]*/lib/|${glibc.static}/lib/|g' \
+        ${glibc.static}/lib/libm.a > "$TMPDIR/static-shim/libm.a"
+    ''}
     export "$rustflags_var=-C target-feature=+crt-static -C relocation-model=static -L $TMPDIR/static-shim"
     export CARGO_BUILD_TARGET="$target_triple"
   '';
@@ -116,7 +127,7 @@ in
       cargo_binary=crucible-guest
       rustflags=-C target-feature=+crt-static
       cargo_build_target=host-triple-explicit
-      packaged_guest_system=${lib.system}
+      packaged_guest_system=${stdenv.hostPlatform.system}
       doorbell_instruction_abi_version=$doorbell_instruction_abi_version
       instruction_abi_architectures=x86_64,aarch64
       abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS

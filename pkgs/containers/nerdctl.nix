@@ -103,7 +103,7 @@ in
             cat > "$out/bin/nerdctl" << WRAPPER
         #!${bash}/bin/bash
         export CNI_PATH="${cni-plugins}/bin"
-        exec "\$(dirname "\$0")/.nerdctl-unwrapped" "\$@"
+        exec "\''${0%/*}/.nerdctl-unwrapped" "\$@"
         WRAPPER
             chmod +x "$out/bin/nerdctl"
       '';
