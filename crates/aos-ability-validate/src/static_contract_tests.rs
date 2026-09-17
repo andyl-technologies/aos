@@ -264,11 +264,22 @@ fn artifact_backed_container_contract() -> (Value, StaticPackageArtifacts) {
             encode_canonical(interface).expect("fixture interface must encode canonically")
         })
         .collect();
+    let resolved_outputs = aos_contract::canonical::to_vec(&vec![ResolvedPackageOutput {
+        package: package.package.name.clone(),
+        output: LocalKey::new("out").expect("fixture output name"),
+        artifact: package
+            .artifacts
+            .first()
+            .cloned()
+            .expect("fixture package must retain an artifact"),
+    }])
+    .expect("fixture output selectors must encode canonically");
 
     (
         contract,
         StaticPackageArtifacts {
             manifest: manifest_bytes,
+            resolved_outputs,
             retained_interfaces,
         },
     )
@@ -480,6 +491,7 @@ fn accepts_exact_artifact_backed_package_and_ability_projections() {
         package.payload(),
         &package.package_document().unwrap().package.payload
     );
+    assert_eq!(package.resolved_outputs().len(), 1);
 }
 
 #[test]
@@ -496,6 +508,8 @@ fn reads_exact_package_companions_from_an_immutable_store_root() {
     std::fs::create_dir_all(&interfaces).expect("fixture store root must be created");
     std::fs::write(package.join("package.json"), &artifacts.manifest)
         .expect("fixture package manifest must be written");
+    std::fs::write(package.join("selectors.json"), &artifacts.resolved_outputs)
+        .expect("fixture package output selectors must be written");
     for (index, interface) in artifacts.retained_interfaces.iter().enumerate() {
         std::fs::write(interfaces.join(format!("{index}.json")), interface)
             .expect("fixture interface must be written");
@@ -547,6 +561,21 @@ fn rejects_semantically_invalid_artifact_backed_package_companions() {
         &mut contract,
         json!(Sha256Digest::of_bytes(&artifacts.manifest)),
     );
+
+    assert_artifact_contract_rejected(&contract, &artifacts);
+}
+
+#[test]
+fn rejects_output_selectors_outside_the_authenticated_package_catalog() {
+    let (contract, mut artifacts) = artifact_backed_container_contract();
+    let mut outputs: Vec<ResolvedPackageOutput> =
+        aos_contract::canonical::from_slice(&artifacts.resolved_outputs, "fixture selectors")
+            .expect("fixture selectors must decode");
+    outputs[0].artifact.store_path =
+        "/nix/store/99999999999999999999999999999999-forged-output".to_string();
+    outputs[0].artifact.nar_hash = Sha256Digest::of_bytes(b"forged output");
+    artifacts.resolved_outputs = aos_contract::canonical::to_vec(&outputs)
+        .expect("mutated selectors must encode canonically");
 
     assert_artifact_contract_rejected(&contract, &artifacts);
 }

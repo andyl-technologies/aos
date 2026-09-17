@@ -7,11 +7,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use anyhow::{Context as _, Result as AnyResult, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, BindingPlanDocument, DesiredStateDocument, EffectPlanDocument,
-    EnvironmentDocument, EnvironmentId, InstanceId, InterfaceDocument, LocalKey, PackageDocument,
-    PlanId, RequestId, RequirementDeclaration, ResourceLifetime, ResourceReference,
-    ResourceRevision, ScopePath, ValuePhase, VersionedDocument,
+    ABILITY_LIMITS_V1, AbilityValue, ArtifactIdentity, BindingPlanDocument, DesiredStateDocument,
+    EffectPlanDocument, EnvironmentDocument, EnvironmentId, InstanceId, InterfaceDocument,
+    InterfaceName, LocalKey, PackageDocument, PlanId, RequestId, RequirementDeclaration,
+    ResourceId, ResourceLifetime, ResourceReference, ResourceRevision, RevisionId, ScopePath,
+    ValuePhase, VersionedDocument,
 };
 use aos_ability_validate::{
     BindingValidationInputs, CheckedEffectPlan, ValidationContext,
@@ -158,13 +160,305 @@ pub struct SourceStageOutput {
 
 /// Retains one checked module-system resource projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceStageResolvedResource {
-    /// Carries the portable desired resource revision.
-    #[serde(flatten)]
-    pub revision: ResourceRevision,
+    /// Identifies the logical provider-owned resource.
+    pub resource: ResourceId,
+    /// Identifies the schema that owns the desired resource value.
+    pub kind: InterfaceName,
+    /// Declares the resource retention boundary.
+    pub lifetime: ResourceLifetime,
+    /// Retains the exact semantic desired resource value.
+    pub value: AbilityValue,
+    /// Retains the selected provider's typed backend realization.
+    pub realization: AbilityValue,
+    /// Carries the centrally derived semantic revision after materialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<RevisionId>,
     /// Names the source binding that controls mutation, when any.
     pub controller: Option<String>,
+}
+
+impl SourceStageResolvedResource {
+    /// Projects this materialized fixed-point record into the runtime resource model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before central materialization has assigned its revision.
+    pub fn resource_revision(&self) -> AnyResult<ResourceRevision> {
+        Ok(ResourceRevision {
+            resource: self.resource.clone(),
+            kind: self.kind.clone(),
+            lifetime: self.lifetime,
+            value: self.value.clone(),
+            realization: self.realization.clone(),
+            revision: self
+                .revision
+                .context("source resource has no centrally derived revision")?,
+        })
+    }
+}
+
+impl SourceStageFixedPoint {
+    /// Derives every resource revision from the resolved fixed point and package catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a resource has no exact request, binding, instance,
+    /// or authenticated implementation, or when semantic material cannot be encoded.
+    pub fn derive_resource_revisions(&mut self, packages: &[PackageDocument]) -> AnyResult<()> {
+        let revisions = self
+            .resolved_resources
+            .iter()
+            .map(|(name, resource)| {
+                Ok((
+                    name.clone(),
+                    derive_resource_revision(self, packages, resource)?,
+                ))
+            })
+            .collect::<AnyResult<BTreeMap<_, _>>>()?;
+
+        for (name, revision) in revisions {
+            self.resolved_resources
+                .get_mut(&name)
+                .context("source resource disappeared during revision derivation")?
+                .revision = Some(revision);
+        }
+        Ok(())
+    }
+}
+
+fn derive_resource_revision(
+    fixed_point: &SourceStageFixedPoint,
+    packages: &[PackageDocument],
+    resource: &SourceStageResolvedResource,
+) -> AnyResult<RevisionId> {
+    let resource_value = serde_json::json!({
+        "resource": resource.resource,
+        "kind": resource.kind,
+        "lifetime": resource.lifetime,
+        "value": resource.value,
+        "realization": resource.realization,
+    });
+    let mut materials = Vec::new();
+
+    if let Some(controller) = resource.controller.as_deref() {
+        let binding = fixed_point
+            .bindings
+            .get(controller)
+            .with_context(|| format!("resource controller {controller:?} is absent"))?;
+        let (instance, identity, implementation) = selected_resource_implementation(
+            fixed_point,
+            packages,
+            &binding.provider_instance,
+            &binding.implementation,
+        )?;
+        let request = source_request(fixed_point, &binding.request)?;
+        materials.push(serde_json::json!({
+            "schema": "aos.ability.selected-resource/v1",
+            "instance": {
+                "declaration": binding.provider_instance,
+                "identity": identity,
+                "configuration": instance.configuration,
+            },
+            "request": {
+                "declaration": binding.request,
+                "value": request,
+            },
+            "controller": {
+                "binding": controller,
+                "slot": binding.slot,
+            },
+            "implementation": implementation,
+            "resource": resource_value,
+        }));
+    } else {
+        for (request_name, outputs) in &fixed_point.composition_outputs {
+            let publishes_resource = outputs.values().any(|output| {
+                resource_reference(output.value.as_json())
+                    .is_ok_and(|reference| reference.resource == resource.resource)
+            });
+            if !publishes_resource {
+                continue;
+            }
+            let matching_bindings = fixed_point
+                .bindings
+                .iter()
+                .filter(|(_, binding)| binding.request == *request_name)
+                .collect::<Vec<_>>();
+            ensure!(
+                matching_bindings.len() == 1,
+                "published resource request has no exact selected binding"
+            );
+            let (_, binding) = matching_bindings[0];
+            let (instance, identity, implementation) = selected_resource_implementation(
+                fixed_point,
+                packages,
+                &binding.provider_instance,
+                &binding.implementation,
+            )?;
+            let request = source_request(fixed_point, request_name)?;
+            materials.push(serde_json::json!({
+                "schema": "aos.ability.selected-published-resource/v1",
+                "instance": {
+                    "identity": identity,
+                    "configuration": instance.configuration,
+                },
+                "request": request,
+                "implementation": implementation,
+                "resource": resource_value,
+            }));
+        }
+        ensure!(
+            !materials.is_empty(),
+            "published resource has no exact fixed-point output"
+        );
+    }
+
+    let normalized = materials
+        .into_iter()
+        .map(normalize_revision_artifacts)
+        .collect::<AnyResult<Vec<_>>>()?;
+    ensure!(
+        normalized.windows(2).all(|pair| pair[0] == pair[1]),
+        "published resource has conflicting semantic publications"
+    );
+    Ok(RevisionId(Sha256Digest::of_canonical(
+        "aos.ability.resource-revision/v1",
+        &normalized[0],
+    )?))
+}
+
+fn source_request<'a>(
+    fixed_point: &'a SourceStageFixedPoint,
+    name: &str,
+) -> AnyResult<&'a SourceStageRequest> {
+    fixed_point
+        .requests
+        .get(name)
+        .or_else(|| fixed_point.composition_requests.get(name))
+        .with_context(|| format!("source resource request {name:?} is absent"))
+}
+
+fn resource_reference(value: &serde_json::Value) -> AnyResult<ResourceReference> {
+    let mut value = value.clone();
+    let fields = value
+        .as_object_mut()
+        .context("resource reference is not an object")?;
+    ensure!(
+        fields.get("_type").and_then(serde_json::Value::as_str) == Some("aos-resource-reference"),
+        "resource reference has no typed authoring marker"
+    );
+    fields.remove("_type");
+    serde_json::from_value(value).context("decoding resource reference")
+}
+
+fn selected_resource_implementation<'a>(
+    fixed_point: &'a SourceStageFixedPoint,
+    packages: &'a [PackageDocument],
+    instance_name: &str,
+    implementation_name: &str,
+) -> AnyResult<(&'a SourceStageInstance, &'a InstanceId, serde_json::Value)> {
+    let instance = fixed_point
+        .instances
+        .get(instance_name)
+        .with_context(|| format!("source resource instance {instance_name:?} is absent"))?;
+    ensure!(
+        instance.implementation.as_deref() == Some(implementation_name),
+        "source resource binding differs from its instance implementation"
+    );
+    let identity = fixed_point
+        .instance_identities
+        .get(instance_name)
+        .context("source resource instance has no canonical identity")?;
+    let (package_name, local_name) = implementation_name
+        .split_once(':')
+        .context("source resource implementation is not package-qualified")?;
+    ensure!(
+        instance.package.as_str() == package_name,
+        "source resource implementation crosses package provenance"
+    );
+    let package = packages
+        .iter()
+        .find(|package| package.package.name == instance.package)
+        .context("source resource implementation package is absent")?;
+    let implementation = package
+        .implementation
+        .providers
+        .iter()
+        .find(|implementation| implementation.name.as_str() == local_name)
+        .context("source resource implementation is absent")?;
+    let descriptor = implementation.descriptor_digest()?;
+    ensure!(
+        package.exports.iter().any(|export| {
+            export.implementation_name == implementation.name
+                && export.implementation == descriptor
+                && export.interface == implementation.interface
+        }),
+        "source resource implementation is not exported"
+    );
+    Ok((
+        instance,
+        identity,
+        serde_json::json!({
+            "package": package.package.name,
+            "name": implementation.name,
+            "interface": implementation.interface,
+            "descriptor": descriptor,
+            "artifact": implementation.artifact.identity(),
+        }),
+    ))
+}
+
+fn normalize_revision_artifacts(mut value: serde_json::Value) -> AnyResult<serde_json::Value> {
+    fn normalize(value: &mut serde_json::Value, depth: u32) -> AnyResult<()> {
+        ensure!(
+            depth <= ABILITY_LIMITS_V1.max_structural_depth,
+            "resource revision material exceeds the structural depth limit"
+        );
+        match value {
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    normalize(value, depth.saturating_add(1))?;
+                }
+            }
+            serde_json::Value::Object(fields)
+                if (fields.len() == 4 || fields.len() == 5)
+                    && fields.contains_key("content")
+                    && fields.contains_key("store_path")
+                    && fields.contains_key("nar_hash")
+                    && fields.contains_key("closure") =>
+            {
+                let mut artifact = fields.clone();
+                if artifact.len() == 5 {
+                    ensure!(
+                        artifact.get("_type").and_then(serde_json::Value::as_str)
+                            == Some("aos-artifact-reference"),
+                        "resource revision artifact has an invalid authoring marker"
+                    );
+                    artifact.remove("_type");
+                }
+                let artifact: aos_ability_model::ArtifactReference =
+                    serde_json::from_value(serde_json::Value::Object(artifact))
+                        .context("decoding resource revision artifact")?;
+                *value = serde_json::to_value(ArtifactIdentity {
+                    content: artifact.content,
+                    nar_hash: artifact.nar_hash,
+                    closure: artifact.closure,
+                })?;
+            }
+            serde_json::Value::Object(fields) => {
+                for value in fields.values_mut() {
+                    normalize(value, depth.saturating_add(1))?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    normalize(&mut value, 1)?;
+    Ok(value)
 }
 
 /// Retains pure transition construction performed under source authority.
@@ -551,8 +845,9 @@ impl SourceStageBundle {
             .fixed_point
             .resolved_resources
             .values()
-            .map(|value| value.revision.clone())
-            .collect::<Vec<_>>();
+            .map(SourceStageResolvedResource::resource_revision)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| SourceStageBundleError::FixedPointAuthority)?;
         projected_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
         let mut checked_resources = binding.desired_state().resources.clone();
         checked_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
@@ -886,7 +1181,12 @@ mod tests {
                 (
                     format!("resource-{index}"),
                     SourceStageResolvedResource {
-                        revision: resource.clone(),
+                        resource: resource.resource.clone(),
+                        kind: resource.kind.clone(),
+                        lifetime: resource.lifetime,
+                        value: resource.value.clone(),
+                        realization: resource.realization.clone(),
+                        revision: Some(resource.revision),
                         controller: None,
                     },
                 )
@@ -945,6 +1245,102 @@ mod tests {
         let bytes = aos_contract::canonical::to_vec(&value).expect("tampered bytes");
 
         assert!(SourceStageBundle::decode(&bytes).is_err());
+    }
+
+    fn centrally_derived_revision(
+        store_path: &str,
+        nar_material: &[u8],
+        request_marker: &str,
+    ) -> RevisionId {
+        let bundle = bundle();
+        let packages = bundle.packages.clone();
+        let mut fixed_point = bundle.fixed_point.clone();
+        let controllers = fixed_point
+            .resolved_resources
+            .iter()
+            .map(|(name, resource)| {
+                let controller = fixed_point
+                    .bindings
+                    .iter()
+                    .find(|(_, binding)| {
+                        fixed_point.instance_identities[&binding.provider_instance]
+                            == resource.resource.provider
+                    })
+                    .map(|(name, _)| name.clone())
+                    .expect("fixture resource must have a provider binding");
+                (name.clone(), controller)
+            })
+            .collect::<BTreeMap<_, _>>();
+        for (name, resource) in &mut fixed_point.resolved_resources {
+            resource.controller = Some(controllers[name].clone());
+            resource.revision = None;
+        }
+
+        let resource_name = fixed_point
+            .resolved_resources
+            .keys()
+            .next()
+            .cloned()
+            .expect("fixture resource");
+        let controller_name = controllers[&resource_name].clone();
+        let binding = fixed_point.bindings[&controller_name].clone();
+        let artifact = aos_ability_model::ArtifactReference {
+            content: Sha256Digest::of_bytes(b"semantic content"),
+            store_path: store_path.to_string(),
+            nar_hash: Sha256Digest::of_bytes(nar_material),
+            closure: Sha256Digest::of_bytes(b"semantic closure"),
+        };
+        fixed_point
+            .instances
+            .get_mut(&binding.provider_instance)
+            .expect("fixture provider instance")
+            .configuration = AbilityValue::new(serde_json::json!({"artifact": artifact}))
+            .expect("fixture provider configuration");
+        let request = if let Some(request) = fixed_point.requests.get_mut(&binding.request) {
+            request
+        } else {
+            fixed_point
+                .composition_requests
+                .get_mut(&binding.request)
+                .expect("fixture binding request")
+        };
+        request.parameters = AbilityValue::new(serde_json::json!({"marker": request_marker}))
+            .expect("fixture request parameters");
+
+        fixed_point
+            .derive_resource_revisions(&packages)
+            .expect("central resource revision derivation");
+        fixed_point.resolved_resources[&resource_name]
+            .revision
+            .expect("derived revision")
+    }
+
+    #[test]
+    fn resource_revisions_use_resolved_semantics_without_store_locators() {
+        let original = centrally_derived_revision(
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-provider",
+            b"provider nar",
+            "request-a",
+        );
+        let relocated = centrally_derived_revision(
+            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-provider",
+            b"provider nar",
+            "request-a",
+        );
+        let changed_artifact = centrally_derived_revision(
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-provider",
+            b"changed provider nar",
+            "request-a",
+        );
+        let changed_request = centrally_derived_revision(
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-provider",
+            b"provider nar",
+            "request-b",
+        );
+
+        assert_eq!(original, relocated);
+        assert_ne!(original, changed_artifact);
+        assert_ne!(original, changed_request);
     }
 
     #[test]

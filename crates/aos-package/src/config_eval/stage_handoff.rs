@@ -528,12 +528,15 @@ fn selected_transaction_storage(
         "source ability stage does not select the initrd environment"
     );
 
-    let matching_resources = checked
+    let resources = checked
         .bundle()
         .fixed_point()
         .resolved_resources
         .values()
-        .map(|value| &value.revision)
+        .map(aos_ability_plan::SourceStageResolvedResource::resource_revision)
+        .collect::<Result<Vec<_>>>()?;
+    let matching_resources = resources
+        .iter()
         .filter(|revision| {
             revision.kind.as_str() == TRANSACTION_STORAGE_INTERFACE
                 && revision
@@ -592,7 +595,7 @@ fn selected_transaction_storage(
         interface: binding.interface.clone(),
         resource: revision.resource.clone(),
         operations: vec![LocalKey::new("observe")?],
-        lifetime: revision.lifetime.clone(),
+        lifetime: revision.lifetime,
     };
     validate_transaction_storage_reference(&resource)?;
     Ok(TransactionStorageSelection { resource, root })

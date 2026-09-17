@@ -293,7 +293,7 @@ in
     cp ${initrdProviderModulesFile} "$out/initrd-provider-modules.json"
     cp ${initrdEvaluationInputsFile} "$out/initrd-evaluation-inputs.json"
     mkdir -p "$out/initrd-authenticated-roots"
-    ${lib.concatStringsSep "\n" (lib.imap0 (index: root: ''
+    ${lib.concatStringsSep "\n" (lib.imap (index: root: ''
         ln -s ${root} "$out/initrd-authenticated-roots/${toString index}"
       '')
       checkedInitrdAuthenticatedRoots)}

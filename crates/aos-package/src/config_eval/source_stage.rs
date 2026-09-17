@@ -16,10 +16,10 @@ use aos_ability_model::document::{
     ProviderState,
 };
 use aos_ability_model::{
-    AggregateId, AggregateOutput, AuthorityGrant, Binding, BindingId, BindingPlanDocument,
-    BindingRequest, BindingSource, ContributionPermission, ControllerAssignment,
-    DesiredStateDocument, EnvironmentDocument, ExecutionStage, InstanceId, InterfaceDocument,
-    InterfaceKey, LocalKey, PackageDocument, ProviderImplementation,
+    AbilityValue, AggregateId, AggregateOutput, ArtifactReference, AuthorityGrant, Binding,
+    BindingId, BindingPlanDocument, BindingRequest, BindingSource, ContributionPermission,
+    ControllerAssignment, DesiredStateDocument, EnvironmentDocument, ExecutionStage, InstanceId,
+    InterfaceDocument, InterfaceKey, LocalKey, PackageDocument, ProviderImplementation,
     ProviderImplementationReference, RequestId, RevisionId, ValueExpression, VersionedDocument,
 };
 use aos_ability_plan::{
@@ -27,7 +27,8 @@ use aos_ability_plan::{
     SourceStageStaticContract, TransitionPlanner,
 };
 use aos_ability_validate::{
-    BindingValidationInputs, ValidationContext, package_source_supported_features,
+    BindingValidationInputs, ConfigArtifactSelector, PackageOutputSelector, ValidationContext,
+    package_source_supported_features, resolve_artifact_selectors,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,7 @@ struct SourceCatalog {
     interfaces: Vec<InterfaceDocument>,
     package_by_name: BTreeMap<LocalKey, usize>,
     interface_by_key: BTreeMap<InterfaceKey, usize>,
+    package_outputs: BTreeMap<PackageOutputSelector, ArtifactReference>,
 }
 
 struct SelectedImplementation<'a> {
@@ -81,7 +83,7 @@ pub fn materialize_source_stage(spec_path: &Path, output_path: &Path) -> Result<
     let spec: SourceStageMaterializationSpec =
         read_canonical(spec_path, "source-stage materialization specification")?;
     validate_spec(&spec)?;
-    let fixed_point: SourceStageFixedPoint =
+    let mut fixed_point: SourceStageFixedPoint =
         read_canonical(&spec.fixed_point, "completed source ability fixed point")?;
     let environment_id = aos_ability_model::EnvironmentId {
         authority: spec.authority.clone(),
@@ -103,6 +105,8 @@ pub fn materialize_source_stage(spec_path: &Path, output_path: &Path) -> Result<
         sha256: Sha256Digest::of_bytes(&contract_bytes),
     };
     let catalog = load_static_catalog(&contract_bytes)?;
+    resolve_fixed_point_artifacts(&mut fixed_point, &catalog)?;
+    fixed_point.derive_resource_revisions(&catalog.packages)?;
     let context = ValidationContext::new(
         package_source_supported_features()?,
         catalog.interfaces.clone(),
@@ -222,6 +226,7 @@ fn load_static_catalog(contract_bytes: &[u8]) -> Result<SourceCatalog> {
     )?;
     let mut packages = Vec::new();
     let mut interfaces = BTreeMap::new();
+    let mut package_outputs = BTreeMap::new();
     for selected in checked.packages() {
         let package = selected
             .package_document()
@@ -233,6 +238,18 @@ fn load_static_catalog(contract_bytes: &[u8]) -> Result<SourceCatalog> {
                 ensure!(
                     existing == *interface,
                     "static contract repeats an interface identity with different content"
+                );
+            }
+        }
+        for output in selected.resolved_outputs() {
+            let selector = PackageOutputSelector {
+                package: output.package.clone(),
+                output: output.output.clone(),
+            };
+            if let Some(existing) = package_outputs.insert(selector, output.artifact.clone()) {
+                ensure!(
+                    existing == output.artifact,
+                    "static contract resolves one package output to different artifacts"
                 );
             }
         }
@@ -261,7 +278,73 @@ fn load_static_catalog(contract_bytes: &[u8]) -> Result<SourceCatalog> {
         interfaces,
         package_by_name,
         interface_by_key,
+        package_outputs,
     })
+}
+
+fn resolve_fixed_point_artifacts(
+    fixed_point: &mut SourceStageFixedPoint,
+    catalog: &SourceCatalog,
+) -> Result<()> {
+    fn resolve(value: &mut AbilityValue, catalog: &SourceCatalog) -> Result<()> {
+        let mut json = value.as_json().clone();
+        resolve_artifact_selectors(
+            &mut json,
+            |selector| {
+                catalog
+                    .package_outputs
+                    .get(selector)
+                    .cloned()
+                    .with_context(|| {
+                        format!(
+                            "source fixed point references unresolved package output ({}, {})",
+                            selector.package.as_str(),
+                            selector.output.as_str()
+                        )
+                    })
+            },
+            |selector: &ConfigArtifactSelector| {
+                bail!(
+                    "source fixed point references unresolved configuration artifact {:?}",
+                    selector.name
+                )
+            },
+        )?;
+        *value = AbilityValue::new(json)?;
+        Ok(())
+    }
+
+    for instance in fixed_point.instances.values_mut() {
+        resolve(&mut instance.configuration, catalog)?;
+    }
+    for request in fixed_point
+        .requests
+        .values_mut()
+        .chain(fixed_point.composition_requests.values_mut())
+    {
+        resolve(&mut request.parameters, catalog)?;
+    }
+    for requirement in fixed_point.composition_requirements.values_mut() {
+        if let Some(fallback) = requirement.requirement.fallback.as_mut() {
+            for output in fallback.outputs.values_mut() {
+                resolve(output, catalog)?;
+            }
+        }
+    }
+    for outputs in fixed_point.composition_outputs.values_mut() {
+        for output in outputs.values_mut() {
+            resolve(&mut output.value, catalog)?;
+        }
+    }
+    for resource in fixed_point.resolved_resources.values_mut() {
+        resolve(&mut resource.value, catalog)?;
+        resolve(&mut resource.realization, catalog)?;
+        ensure!(
+            resource.revision.is_none(),
+            "source fixed point must not supply a resource revision"
+        );
+    }
+    Ok(())
 }
 
 fn source_revision(
@@ -434,18 +517,19 @@ impl<'a> SourceComposition<'a> {
             .fixed_point
             .resolved_resources
             .values()
-            .map(|resource| resource.revision.clone())
-            .collect::<Vec<_>>();
+            .map(|resource| resource.resource_revision())
+            .collect::<Result<Vec<_>>>()?;
         resources.sort_by(|left, right| left.resource.cmp(&right.resource));
         let mut controllers = self
             .fixed_point
             .resolved_resources
             .values()
             .filter_map(|resource| {
-                resource
-                    .controller
-                    .as_deref()
-                    .map(|binding| self.controller(&resource.revision, binding))
+                resource.controller.as_deref().map(|binding| {
+                    resource
+                        .resource_revision()
+                        .and_then(|revision| self.controller(&revision, binding))
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         controllers.sort_by(|left, right| left.resource.cmp(&right.resource));

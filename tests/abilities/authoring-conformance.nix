@@ -550,15 +550,6 @@
     .aos
     .abilities;
   primaryRevisionEvaluation = revisionEvaluation {};
-  changedValueRevisionEvaluation = revisionEvaluation {value.enabled = false;};
-  changedRealizationRevisionEvaluation = revisionEvaluation {realization = false;};
-  changedImplementationRevisionEvaluation = revisionEvaluation {implementation = "secondary";};
-  changedLifetimeRevisionEvaluation = revisionEvaluation {lifetime = "persistent";};
-  changedControllerRevisionEvaluation = revisionEvaluation {slot = "alternate";};
-  unrelatedRevisionEvaluation = revisionEvaluation {unrelated = true;};
-  requirementProseRevisionEvaluation = revisionEvaluation {
-    requirementDescription = "Reworded lower-interface requirement documentation.";
-  };
   invalidRealizationEvaluation = builtins.tryEval (builtins.deepSeq
     (revisionEvaluation {realization = "invalid";}).resolvedResources
     true);
@@ -566,26 +557,6 @@
     (revisionEvaluation {desiredType = null;}).resolvedResources
     true);
 
-  semanticArtifact = storePath: narHash:
-    lib.abilities.artifactReference {
-      content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-      storePath = storePath;
-      narHash = narHash;
-      closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-    };
-  artifactRevision = storePath: narHash:
-    (revisionEvaluation {
-      value = {
-        enabled = true;
-        artifact = semanticArtifact storePath narHash;
-      };
-    })
-    .resolvedResources
-    ."authoring:resource"
-    .revision;
-  artifactRevisionA = artifactRevision "/nix/store/aaaaaaaa-source" "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-  artifactRevisionRelocated = artifactRevision "/nix/store/dddddddd-source" "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-  artifactRevisionChanged = artifactRevision "/nix/store/aaaaaaaa-source" "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
   missingCrossTarget = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
       modules = [
@@ -1515,6 +1486,8 @@ in
   assert !unrelatedArtifactSelection.success;
   assert transitiveOutputs.dependencies."{\"output\":\"out\",\"package\":\"leaf\"}"
   == "/nix/store/33333333333333333333333333333333-leaf";
+  assert transitiveOutputs.dependencies."{\"output\":\"out\",\"package\":\"middle\"}"
+  == "/nix/store/44444444444444444444444444444444-middle";
   assert !unrelatedOutput.success;
   assert !ambiguousOutput.success;
   assert !globallySelectedForeignOutput.success;
@@ -1728,24 +1701,8 @@ in
     provider = primaryRevisionEvaluation.instanceIdentities."authoring:provider";
     key = "resource";
   };
-  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
-  != changedValueRevisionEvaluation.resolvedResources."authoring:resource".revision;
-  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
-  != changedRealizationRevisionEvaluation.resolvedResources."authoring:resource".revision;
-  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
-  != changedImplementationRevisionEvaluation.resolvedResources."authoring:resource".revision;
-  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
-  != changedLifetimeRevisionEvaluation.resolvedResources."authoring:resource".revision;
-  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
-  != changedControllerRevisionEvaluation.resolvedResources."authoring:resource".revision;
-  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
-  == unrelatedRevisionEvaluation.resolvedResources."authoring:resource".revision;
-  assert primaryRevisionEvaluation.resolvedResources."authoring:resource".revision
-  == requirementProseRevisionEvaluation.resolvedResources."authoring:resource".revision;
   assert !invalidRealizationEvaluation.success;
   assert !missingDesiredTypeEvaluation.success;
-  assert artifactRevisionA == artifactRevisionRelocated;
-  assert artifactRevisionA != artifactRevisionChanged;
   assert rejectsAbilityModule (executableModule {
     entryPoint = "/bin/server";
     selector = selfOutput;

@@ -148,9 +148,6 @@
     then builtins.map normalizeSemanticValue value
     else value;
 
-  resourceRevision = material:
-    descriptorFor "aos.ability.resource-revision/v1" (normalizeSemanticValue material);
-
   singletonSchemaDiscriminator = context: valueType: let
     values = valueType._abilitySchema.fields.schema.values or [];
   in
@@ -550,11 +547,18 @@
     builtins.removeAttrs checked ["_type"];
 
   normalizeInstanceId = value: let
-    checked = requireMarker "instance identity" "aos-instance-id" value;
-  in {
-    environment = normalizeEnvironmentId checked.environment;
-    inherit (checked) key;
-  };
+    normalized = builtins.tryEval (
+      abilityTypes.normalize "instance identity" abilityTypes.instanceId value
+    );
+  in
+    if normalized.success
+    then normalized.value
+    else let
+      checked = requireMarker "instance identity" "aos-instance-id" value;
+    in {
+      environment = normalizeEnvironmentId checked.environment;
+      inherit (checked) key;
+    };
 
   sameInterface = left: right:
     left.name
@@ -775,7 +779,6 @@ in rec {
     packageProjectionFor
     packageAbilitiesFromProjection
     checkedProviderModuleEvaluation
-    resourceRevision
     identityKeyFor
     singletonSchemaDiscriminator
     transitionFragment
@@ -806,9 +809,7 @@ in rec {
         guaranteeIdentity
         identityKeyFor
         interfaceIdentity
-        normalizeSemanticValue
         normalizePackageOutputSelectors
-        resourceRevision
         ;
       coreInterfaceModule = interfaceRegistry.module;
       moduleTypes = moduleOptionTypes;
