@@ -42,11 +42,8 @@
   aos.image.budgets = {
     maxRootMiB = 704;
 
-    # AArch64's uncompressed kernel brings the diagnostic download to 772 MiB.
-    maxDownloadMiB =
-      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-      then 800
-      else 768;
+    # Diagnostic raw images reach 769 MiB on x86_64 and 772 MiB on AArch64.
+    maxDownloadMiB = 800;
 
     # Diagnostic VHDs reach 825 MiB on x86_64 and 879 MiB on AArch64.
     maxConvertedDownloadMiB =
