@@ -81,9 +81,9 @@ in
     path = "bin/pkexec";
   };
   assert config.aos.contributions.runtimeChecks.polkit.description
-  == "polkit service and privilege checks";
+  == "polkit policy and privilege checks";
   assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
-  assert config.systemd.services == {};
+  assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "polkit-1/rules.d/10-aos.rules");
   assert !(config.environment.etc ? "polkit-1/actions/org.freedesktop.policykit.policy");
   assert !(config.environment.etc ? "tmpfiles.d/aos-polkit.conf"); true

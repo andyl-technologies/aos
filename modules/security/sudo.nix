@@ -25,6 +25,37 @@
     %wheel ALL=(ALL:ALL) ${passwordTag}: ALL
     ${lib.concatStringsSep "\n" cfg.extraRules}
   '';
+  runtimeEntries = lib.abilities.interfaces.serviceManagement.forProducer {
+    consumerInstance = "sudo:runtime";
+    key = "runtime-entries";
+    interface = lib.abilities.interfaces.serviceManagement.interfaces.runtimeEntryPopulation;
+    methods = ["observe"];
+    parameters.entries = [
+      {
+        kind = "directory";
+        path = "/run/sudo";
+        mode = "0755";
+        owner = "root";
+        group = "root";
+      }
+      {
+        kind = "directory";
+        path = "/var/db/sudo";
+        mode = "0700";
+        owner = "root";
+        group = "root";
+      }
+      {
+        kind = "directory";
+        path = "/var/log/sudo-io";
+        mode = "0700";
+        owner = "root";
+        group = "root";
+      }
+    ];
+  };
+  runtimeEntryContribution =
+    lib.abilities.interfaces.serviceManagement.splitContribution runtimeEntries;
 in {
   options.aos.security.sudo = {
     enable = lib.mkOption {
@@ -46,80 +77,82 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    environment.systemPackages = [pkgs.sudo pkgs.util-linux];
+  config = lib.mkMerge [
+    {aos.abilities = runtimeEntryContribution.declarations;}
+    (lib.mkIf cfg.enable {
+      environment.systemPackages = [pkgs.sudo pkgs.util-linux];
 
-    aos.security.wrappers = {
-      sudo = {
-        source = sudoExecutable;
+      aos.abilities = lib.mkMerge [
+        {instances."sudo:runtime" = {};}
+        runtimeEntryContribution.configured
+      ];
+
+      aos.security.wrappers = {
+        sudo = {
+          source = sudoExecutable;
+        };
+        sudoedit = {
+          source = sudoExecutable;
+        };
       };
-      sudoedit = {
-        source = sudoExecutable;
+
+      aos.pam.services.sudo = {
+        unixAuth = true;
+        startSession = true;
+        setLoginUid = true;
       };
-    };
 
-    aos.pam.services.sudo = {
-      unixAuth = true;
-      startSession = true;
-      setLoginUid = true;
-    };
-
-    environment.etc."sudoers" = {
-      mode = "0440";
-      text = sudoersText;
-    };
-    environment.etc."tmpfiles.d/aos-sudo.conf".text = ''
-      d /run/sudo 0755 root root -
-      d /var/db/sudo 0700 root root -
-      d /var/log/sudo-io 0700 root root -
-    '';
-
-    system.checks.sudo = {
-      description = "sudo policy and privilege checks";
-      checks =
-        [
-          {
-            name = "sudo-policy";
-            description = "sudoers and PAM configuration are valid";
-            script = ''
-              vm.succeed("${pkgs.sudo}/sbin/visudo -cf /etc/sudoers")
-              vm.succeed("grep -q pam_unix.so /etc/pam.d/sudo")
-            '';
-          }
-          {
-            name = "sudo-wrapper";
-            description = "sudo is materialized as a root-owned setuid wrapper";
-            script = ''
-              vm.wait_until_succeeds("test -u /run/wrappers/bin/sudo", timeout=30)
-              vm.succeed("test $(stat -c %u:%g /run/wrappers/bin/sudo) = 0:0")
-              vm.succeed("sudo -n true")
-            '';
-          }
-          {
-            name = "sudo-unauthorized";
-            description = "a user outside wheel cannot run sudo";
-            script = ''
-              vm.fail("setpriv --reuid=65534 --regid=65534 --clear-groups sudo -n true")
-            '';
-          }
-        ]
-        ++ lib.optionals (!cfg.wheelNeedsPassword && wheelMembers != []) [
-          (let
-            userName = builtins.head wheelMembers;
-            user = config.aos.users.users.${userName};
-            group = config.aos.users.groups.${user.group};
-          in {
-            name = "sudo-wheel-authorized";
-            description = "a configured wheel member can run an authorized command";
-            script = ''
-              vm.succeed(
-                  "setpriv --reuid=${toString user.uid} --regid=${toString group.gid} "
-                  "--groups=${toString config.aos.users.groups.wheel.gid} "
-                  "sudo -n id -u | grep -Fx 0"
-              )
-            '';
-          })
-        ];
-    };
-  };
+      environment.etc."sudoers" = {
+        mode = "0440";
+        text = sudoersText;
+      };
+      system.checks.sudo = {
+        description = "sudo policy and privilege checks";
+        checks =
+          [
+            {
+              name = "sudo-policy";
+              description = "sudoers and PAM configuration are valid";
+              script = ''
+                vm.succeed("${pkgs.sudo}/sbin/visudo -cf /etc/sudoers")
+                vm.succeed("grep -q pam_unix.so /etc/pam.d/sudo")
+              '';
+            }
+            {
+              name = "sudo-wrapper";
+              description = "sudo is materialized as a root-owned setuid wrapper";
+              script = ''
+                vm.wait_until_succeeds("test -u /run/wrappers/bin/sudo", timeout=30)
+                vm.succeed("test $(stat -c %u:%g /run/wrappers/bin/sudo) = 0:0")
+                vm.succeed("sudo -n true")
+              '';
+            }
+            {
+              name = "sudo-unauthorized";
+              description = "a user outside wheel cannot run sudo";
+              script = ''
+                vm.fail("setpriv --reuid=65534 --regid=65534 --clear-groups sudo -n true")
+              '';
+            }
+          ]
+          ++ lib.optionals (!cfg.wheelNeedsPassword && wheelMembers != []) [
+            (let
+              userName = builtins.head wheelMembers;
+              user = config.aos.users.users.${userName};
+              group = config.aos.users.groups.${user.group};
+            in {
+              name = "sudo-wheel-authorized";
+              description = "a configured wheel member can run an authorized command";
+              script = ''
+                vm.succeed(
+                    "setpriv --reuid=${toString user.uid} --regid=${toString group.gid} "
+                    "--groups=${toString config.aos.users.groups.wheel.gid} "
+                    "sudo -n id -u | grep -Fx 0"
+                )
+              '';
+            })
+          ];
+      };
+    })
+  ];
 }

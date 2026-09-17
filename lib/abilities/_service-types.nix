@@ -1028,8 +1028,21 @@
       state = types.enum ["failed" "pending" "ready" "unknown"];
     };
   };
+  runtimeEntry = types.record {
+    fields = {
+      kind = types.enum ["directory" "file"];
+      path = executionPath;
+      mode = types.fileMode;
+      owner = principalName;
+      group = groupName;
+    };
+  };
   runtimeEntryPopulation = types.record {
-    fields.scope = types.enum ["runtime-entries"];
+    fields.entries = types.list {
+      element = runtimeEntry;
+      maxItems = 256;
+      unique = true;
+    };
   };
   runtimeEntryPopulationObservation = types.record {
     fields = {

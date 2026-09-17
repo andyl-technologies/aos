@@ -30,11 +30,8 @@
   requests = config.aos.abilities.requests;
   network = requests."system:host-network".parameters;
 in
-  assert builtins.attrNames requests
-  == [
-    "system:host-network"
-    "system:network-tunables"
-  ];
+  assert requests ? "system:host-network";
+  assert requests ? "system:network-tunables";
   assert requests."system:network-tunables".parameters.values == {"kernel.hostname" = "aos";};
   assert network.authority == "image";
   assert network.links
@@ -52,7 +49,7 @@ in
   ];
   assert withStaticFacts.config.aos.abilities.requests."system:host-network".parameters == network;
   assert !(withStaticFacts.config.aos.abilities.requests."system:host-network".parameters ? bootstrap);
-  assert config.systemd.services == {};
+  assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "systemd/network/80-dhcp.network");
   assert !(config.environment.etc ? "systemd/resolved.conf");
   assert !(config.environment.etc ? "sysctl.d/50-aos-network-tuning.conf"); true

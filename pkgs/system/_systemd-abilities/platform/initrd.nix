@@ -5,7 +5,7 @@
 ##! rendering the options through the stage-1 `*-ToUnit` helpers in
 ##! `pkgs/system/_systemd-abilities/platform/render.nix`, flattening the pure `generateUnits`
 ##! result, and materializing it for the cpio assembler in
-##! `../base/initrd-builder.nix`.
+##! `_initrd-builder.nix`.
 ##!
 ##! Uses the `stage1*` option + type variants from
 ##! `pkgs/system/_systemd-abilities/platform/unit-options.nix` / `pkgs/system/_systemd-abilities/platform/types.nix`,
@@ -25,7 +25,7 @@
 ##!     `/etc/systemd/system/` for the initrd, materialized from the pure
 ##!     unit plan. Consumed by the initrd builder.
 ##!   * `system.build.initrd` — the final gzip+cpio initramfs
-##!     derivation produced by `../base/initrd-builder.nix`.
+##!     derivation produced by `_initrd-builder.nix`.
 {
   abilitySelection ? null,
   config,
@@ -40,7 +40,8 @@
     then []
     else abilitySelection.bindingsForImplementation "system-manager";
   selected =
-    builtins.length managerBindings == 1
+    builtins.length managerBindings
+    == 1
     && (builtins.head managerBindings).binding.request == "system:manager";
   packageOutput = package: lib.abilities.packageOutput {inherit package;};
   packageRootFor = package: packageFor (packageOutput package);

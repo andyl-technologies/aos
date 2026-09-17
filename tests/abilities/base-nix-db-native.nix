@@ -103,4 +103,4 @@ in
   assert lib.hasInfix "${pkgs.coreutils}/bin/stat" (checkScript "gcroot-bridge");
   assert lib.hasInfix "${pkgs.nix}/bin/nix-store" (checkScript "current-system-valid");
   assert lib.hasInfix "${pkgs.coreutils}/bin/readlink" (checkScript "current-system-valid");
-  assert config.systemd.services == {}; true
+  assert (config.systemd.services or {}) == {}; true

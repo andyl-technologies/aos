@@ -53,6 +53,23 @@
       ''
       else ""
     );
+  runtimeEntries = lib.abilities.interfaces.serviceManagement.forProducer {
+    consumerInstance = "opkssh:runtime";
+    key = "runtime-entries";
+    interface = lib.abilities.interfaces.serviceManagement.interfaces.runtimeEntryPopulation;
+    methods = ["observe"];
+    parameters.entries = [
+      {
+        kind = "file";
+        path = "/var/log/opkssh.log";
+        mode = "0660";
+        owner = "root";
+        group = "opksshuser";
+      }
+    ];
+  };
+  runtimeEntryContribution =
+    lib.abilities.interfaces.serviceManagement.splitContribution runtimeEntries;
 in {
   options.aos.services.opkssh = {
     ## Enable opkssh OIDC SSH authentication.
@@ -176,48 +193,47 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    # Wire opkssh into sshd via AuthorizedKeysCommand.
-    aos.services.ssh.authorizedKeysCommand = "${pkgs.opkssh}/bin/opkssh verify %u %k %t";
-    aos.services.ssh.authorizedKeysCommandUser = "opksshuser";
+  config = lib.mkMerge [
+    {aos.abilities = runtimeEntryContribution.declarations;}
+    (lib.mkIf cfg.enable {
+      # Wire opkssh into sshd via AuthorizedKeysCommand.
+      aos.services.ssh.authorizedKeysCommand = "${pkgs.opkssh}/bin/opkssh verify %u %k %t";
+      aos.services.ssh.authorizedKeysCommandUser = "opksshuser";
 
-    # /etc/opk/providers — OIDC provider list.
-    environment.etc."opk/providers" = {
-      text = providersText + "\n";
-    };
+      # /etc/opk/providers — OIDC provider list.
+      environment.etc."opk/providers" = {
+        text = providersText + "\n";
+      };
 
-    # /etc/opk/auth_id — identity-to-principal mapping.
-    environment.etc."opk/auth_id" = {
-      text = authIdText + "\n";
-    };
+      # /etc/opk/auth_id — identity-to-principal mapping.
+      environment.etc."opk/auth_id" = {
+        text = authIdText + "\n";
+      };
 
-    # /etc/opk/config.yml — server config.
-    environment.etc."opk/config.yml" = {
-      text = configYaml;
-    };
+      # /etc/opk/config.yml — server config.
+      environment.etc."opk/config.yml" = {
+        text = configYaml;
+      };
 
-    # Ensure /etc/opk/ directory and log file exist.
-    environment.etc."tmpfiles.d/aos-opkssh.conf" = {
-      text = ''
-        # opkssh directories and log files.
-        d /etc/opk 0755 root root -
-        f /var/log/opkssh.log 0660 root opksshuser -
-      '';
-    };
+      aos.abilities = lib.mkMerge [
+        {instances."opkssh:runtime" = {};}
+        runtimeEntryContribution.configured
+      ];
 
-    # Create the opksshuser service account.
-    aos.users.users.opksshuser = {
-      uid = 993;
-      group = "opksshuser";
-      home = "/";
-      shell = "/sbin/nologin";
-      description = "opkssh AuthorizedKeysCommand user";
-      extraGroups = [];
-    };
+      # Create the opksshuser service account.
+      aos.users.users.opksshuser = {
+        uid = 993;
+        group = "opksshuser";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "opkssh AuthorizedKeysCommand user";
+        extraGroups = [];
+      };
 
-    aos.users.groups.opksshuser = {
-      gid = 993;
-      members = ["opksshuser"];
-    };
-  };
+      aos.users.groups.opksshuser = {
+        gid = 993;
+        members = ["opksshuser"];
+      };
+    })
+  ];
 }
