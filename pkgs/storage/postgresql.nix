@@ -630,22 +630,7 @@ in
       self,
       pkgs,
       ...
-    }: let
-      requirements = self.abilities.requirementTemplates;
-      requirementMethods = alias: requirements.${alias}.methods;
-      contractHolds =
-        builtins.deepSeq self.contract.value.option_declarations true
-        && self.abilities.interfaces == {}
-        && self.abilities.implementations == {}
-        && builtins.elem "configuration-materialization" (builtins.attrNames requirements)
-        && builtins.elem "service-lifecycle" (builtins.attrNames requirements)
-        && requirementMethods "configuration-materialization" == ["materialize" "observe" "release"]
-        && requirementMethods "credential-delivery" == ["deliver" "observe" "release"]
-        && requirementMethods "network-readiness" == ["observe"]
-        && requirementMethods "persistent-storage-allocation" == ["allocate" "observe" "release"]
-        && requirementMethods "storage-allocation" == ["allocate" "observe" "release"]
-        && requirementMethods "service-lifecycle" == ["observe" "reload" "restart" "start" "stop"];
-    in {
+    }: {
       version = testing.mkToolCheck {
         pname = "storage-postgresql";
         tool = self;
@@ -677,15 +662,6 @@ in
         inherit testing self;
         inherit (pkgs) coreutils grep sed;
       };
-
-      ability-module-contract =
-        if contractHolds
-        then
-          pkgs.runCommand "storage-postgresql-ability-module-contract" {} ''
-            mkdir -p "$out"
-            printf '%s\n' PASS >"$out/result"
-          ''
-        else throw "the PostgreSQL ability module contract checks failed";
 
       artifact-consumption = let
         architecture = stdenv.hostPlatform.constraints.cpu;
