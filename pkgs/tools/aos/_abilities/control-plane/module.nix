@@ -21,7 +21,7 @@
     interface = serviceManagement.interfaces.systemMilestoneReadiness;
     parameters.milestone = milestones.hostStageReceived;
   };
-  hostStageReceivedReadiness = resultOf "host-stage-received" "readiness-resource";
+  hostStageReceivedReadiness = resultOf "host-stage-received" "resource";
 
   command = artifact: entryPoint: arguments: {
     executable = {
@@ -45,7 +45,7 @@
       };
     };
   configGroup = activationGroup "aos-config" "AOS on-host config applied" [hostStageReceivedReadiness] [] [
-    (resultOf "aos-activate-lifecycle" "service-resource")
+    (resultOf "aos-activate-lifecycle" "resource")
   ];
 
   defaultDependencies = {
@@ -182,7 +182,7 @@
         after = [hostStageReceivedReadiness];
         prerequisites = [
           hostStageReceivedReadiness
-          (resultOf "configuration-evaluation-lifecycle" "service-resource")
+          (resultOf "configuration-evaluation-lifecycle" "resource")
         ];
       };
     conditions.all = [
@@ -228,10 +228,10 @@
     dependencies =
       defaultDependencies
       // {
-        after = [(resultOf "aos-graph-compile-lifecycle" "service-resource")];
+        after = [(resultOf "aos-graph-compile-lifecycle" "resource")];
         prerequisites = [
-          (resultOf "package-profile-convergence-lifecycle" "service-resource")
-          (resultOf "aos-graph-compile-lifecycle" "service-resource")
+          (resultOf "package-profile-convergence-lifecycle" "resource")
+          (resultOf "aos-graph-compile-lifecycle" "resource")
         ];
       };
     conditions.all = [

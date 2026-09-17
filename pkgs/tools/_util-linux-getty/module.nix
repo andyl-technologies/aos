@@ -36,8 +36,8 @@
     else "interactive-console"
   );
   userSessionsMilestone = milestone "user-sessions-milestone" "user-sessions-ready";
-  startupReadiness = resultOf "startup-milestone" "readiness-resource";
-  userSessionsReadiness = resultOf "user-sessions-milestone" "readiness-resource";
+  startupReadiness = resultOf "startup-milestone" "resource";
+  userSessionsReadiness = resultOf "user-sessions-milestone" "resource";
 
   consoleService = {
     service,

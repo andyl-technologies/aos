@@ -12,7 +12,8 @@
 }: let
   ownedNames = values:
     builtins.attrNames (lib.filterAttrs (_: value:
-      (value.package or null) == packageName
+      (value.package or null)
+      == packageName
       && value.localKey != null)
     values);
   declarationAliasFor = collection: name: let
@@ -147,7 +148,7 @@
     {
       name = implementation.localKey;
       inherit (implementation) description;
-      inherit (implementation) guarantees;
+      inherit (implementation) guarantees methods;
       inherit artifact interface;
       requirements = requirementsFor implementation;
       owns_resource_kinds = ownedResourceKinds implementation;
@@ -200,42 +201,41 @@
       };
     })
   implementationNames;
-  artifactSelectors =
-    abilities.canonicalizePackageOutputSelectors (
-      lib.optional
-      (packageModuleLocator != null)
-      (selector packageModuleLocator.artifact)
-      ++ lib.concatMap (name: let
-        implementation = semanticImplementations.${name};
-      in
-        [(implementationArtifact implementation)]
-        ++ map selector implementation.artifacts
-        ++ lib.optional
-        (implementation.providerModule != null)
-        (selector implementation.providerModule.artifact)
-        ++ lib.optional
-        (implementation.handlerDescriptor != null)
-        (selector implementation.handlerDescriptor.artifact)
-        ++ lib.optional
-        (implementation.qualification != null)
-        (selector implementation.qualification.observer.artifact))
-      implementationNames
-      ++ lib.optionals (projectedPackageProbe != null) projectedPackageProbe.selectors
-    );
-  implementationQualification = builtins.listToAttrs (lib.concatMap (name: let
+  artifactSelectors = abilities.canonicalizePackageOutputSelectors (
+    lib.optional
+    (packageModuleLocator != null)
+    (selector packageModuleLocator.artifact)
+    ++ lib.concatMap (name: let
       implementation = semanticImplementations.${name};
-      qualification = implementation.qualification;
     in
-      lib.optional (qualification != null) {
-        name = implementation.localKey;
-        value = {
-          inherit (qualification) adapter scope;
-          observation_kind = qualification.observationKind;
-          conformance_families = builtins.sort builtins.lessThan qualification.conformanceFamilies;
-          observer = projectedHandler "qualification observer" qualification.observer;
-        };
-      })
-    implementationNames);
+      [(implementationArtifact implementation)]
+      ++ map selector implementation.artifacts
+      ++ lib.optional
+      (implementation.providerModule != null)
+      (selector implementation.providerModule.artifact)
+      ++ lib.optional
+      (implementation.handlerDescriptor != null)
+      (selector implementation.handlerDescriptor.artifact)
+      ++ lib.optional
+      (implementation.qualification != null)
+      (selector implementation.qualification.observer.artifact))
+    implementationNames
+    ++ lib.optionals (projectedPackageProbe != null) projectedPackageProbe.selectors
+  );
+  implementationQualification = builtins.listToAttrs (lib.concatMap (name: let
+    implementation = semanticImplementations.${name};
+    qualification = implementation.qualification;
+  in
+    lib.optional (qualification != null) {
+      name = implementation.localKey;
+      value = {
+        inherit (qualification) adapter scope;
+        observation_kind = qualification.observationKind;
+        conformance_families = builtins.sort builtins.lessThan qualification.conformanceFamilies;
+        observer = projectedHandler "qualification observer" qualification.observer;
+      };
+    })
+  implementationNames);
   interfaceAliases = map (name: let
     document = interfaceDocuments.${name};
     identity = abilities.interfaceIdentity document;
@@ -244,33 +244,39 @@
     descriptor = identity.descriptor;
     value = document;
   }) (builtins.attrNames ownedInterfaceDocuments);
-  implementedInterfaceAliases = map (name: let
-    document = interfaceFor semanticImplementations.${name};
-    identity = abilities.interfaceIdentity document;
-  in {
-    name = semanticImplementations.${name}.localKey;
-    descriptor = identity.descriptor;
-    value = document;
-  }) implementationNames;
+  implementedInterfaceAliases =
+    map (name: let
+      document = interfaceFor semanticImplementations.${name};
+      identity = abilities.interfaceIdentity document;
+    in {
+      name = semanticImplementations.${name}.localKey;
+      descriptor = identity.descriptor;
+      value = document;
+    })
+    implementationNames;
   allInterfaceAliases = interfaceAliases ++ implementedInterfaceAliases;
   projectedInterfaces = builtins.listToAttrs (map (entry: {
       inherit (entry) name;
       value = abilities.interfaceIdentity entry.value;
     })
     allInterfaceAliases);
-  interfaceAliasesAgree = builtins.all (
-    entry: projectedInterfaces.${entry.name} == abilities.interfaceIdentity entry.value
-  ) allInterfaceAliases;
-  implementedInterfaceEntries = map (name: let
-    document = interfaceFor semanticImplementations.${name};
-    identity = abilities.interfaceIdentity document;
-  in {
-    name = identity.descriptor;
-    value = {
-      descriptor = identity.descriptor;
-      value = document;
-    };
-  }) implementationNames;
+  interfaceAliasesAgree =
+    builtins.all (
+      entry: projectedInterfaces.${entry.name} == abilities.interfaceIdentity entry.value
+    )
+    allInterfaceAliases;
+  implementedInterfaceEntries =
+    map (name: let
+      document = interfaceFor semanticImplementations.${name};
+      identity = abilities.interfaceIdentity document;
+    in {
+      name = identity.descriptor;
+      value = {
+        descriptor = identity.descriptor;
+        value = document;
+      };
+    })
+    implementationNames;
   interfaceEntries = builtins.attrValues (builtins.listToAttrs (
     (map (entry: {
         name = entry.descriptor;

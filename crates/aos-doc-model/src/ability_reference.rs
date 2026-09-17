@@ -563,6 +563,7 @@ mod tests {
             provider_module: None,
             handler: None,
             owns_resource_kinds: Vec::new(),
+            methods: Vec::new(),
             guarantees: Vec::new(),
             state_format: None,
         }

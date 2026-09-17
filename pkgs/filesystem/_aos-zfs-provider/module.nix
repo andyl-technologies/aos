@@ -217,7 +217,7 @@
     properties = lib.optionalAttrs (cfg.deduplicationTableQuota != null) {
       dedup_table_quota = cfg.deduplicationTableQuota;
     };
-    prerequisites = [(resultOf "memory-policy" "readiness-resource")];
+    prerequisites = [(resultOf "memory-policy" "resource")];
   };
   datasetKey = name: "dataset-${lib.abilities.identityKeyFor "aos.zfs.dataset-request/v1" {
     pool = cfg.poolName;
@@ -274,14 +274,14 @@
         inherit mountpoint;
         mount_options = attributes.mountOptions;
         properties = propertiesOf attributes;
-        prerequisites = [(resultOf "pool" "readiness-resource")];
+        prerequisites = [(resultOf "pool" "resource")];
       };
-      readiness = abilitySelection.resultOfRequest key "readiness-resource";
+      readiness = abilitySelection.resultOfRequest key "resource";
     })
     configuredDatasets;
   datasets = builtins.map (entry: entry.fragment) datasetEntries;
   readinessResources =
-    [(abilitySelection.resultOfRequest "pool" "readiness-resource")]
+    [(abilitySelection.resultOfRequest "pool" "resource")]
     ++ builtins.map (entry: entry.readiness) datasetEntries;
   largeRecordDatasets = builtins.filter (
     name: !(builtins.elem cfg.datasets.${name}.recordSize safeRecordSizes)

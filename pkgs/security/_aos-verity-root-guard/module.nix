@@ -67,35 +67,35 @@
       dependencies = {
         prerequisites = [];
         after = [
-          (resultOf "boot-identity" "readiness-resource")
-          (resultOf "verity-root-mapping" "readiness-resource")
-          (resultOf "initrd-stage" "readiness-resource")
-          (resultOf "device-events" "readiness-resource")
+          (resultOf "boot-identity" "resource")
+          (resultOf "verity-root-mapping" "resource")
+          (resultOf "initrd-stage" "resource")
+          (resultOf "device-events" "resource")
         ];
         before = [
-          (resultOf "persistent-state" "readiness-resource")
-          (resultOf "initrd-filesystems" "readiness-resource")
+          (resultOf "persistent-state" "resource")
+          (resultOf "initrd-filesystems" "resource")
         ];
         requires = [
-          (resultOf "boot-identity" "readiness-resource")
-          (resultOf "verity-root-mapping" "readiness-resource")
+          (resultOf "boot-identity" "resource")
+          (resultOf "verity-root-mapping" "resource")
         ];
-        wants = [(resultOf "device-events" "readiness-resource")];
+        wants = [(resultOf "device-events" "resource")];
         requisite = [];
         conflicts = [];
         binds_to = [];
         part_of = [];
         upholds = [];
         required_by = [
-          (resultOf "persistent-state" "readiness-resource")
-          (resultOf "initrd-filesystems" "readiness-resource")
+          (resultOf "persistent-state" "resource")
+          (resultOf "initrd-filesystems" "resource")
         ];
         wanted_by = [];
         required_mounts = [];
         implicit_dependencies = false;
       };
       failure_policy = {
-        handlers = [(resultOf "integrity-failure" "readiness-resource")];
+        handlers = [(resultOf "integrity-failure" "resource")];
         dispatch = "isolate-active-goal";
       };
       readiness = {

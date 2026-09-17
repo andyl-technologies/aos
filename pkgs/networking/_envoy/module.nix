@@ -315,7 +315,7 @@
   };
   adminLogView = producer "admin-log-view" serviceManagement.interfaces.storageView {
     name = "admin-access-log";
-    source = resultOf "log-storage" "retained-resource";
+    source = resultOf "log-storage" "resource";
     source_path = resultOf "log-storage" "planned-path";
     access = "read-write";
     relative_path = "admin-access.log";
@@ -411,10 +411,10 @@
         stop_timeout_millis = 60000;
       };
       dependencies = {
-        after = [(resultOf "network-readiness" "readiness-resource")];
+        after = [(resultOf "network-readiness" "resource")];
         before = [];
         requires = [];
-        wants = [(resultOf "network-readiness" "readiness-resource")];
+        wants = [(resultOf "network-readiness" "resource")];
       };
       supervision = {
         startup_protocol = "process";

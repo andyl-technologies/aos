@@ -62,7 +62,7 @@
         output "planning" "persistent"
         "Returns the authenticated locator for the selected immutable package-store view."
         locatorType;
-      read-view-resource =
+      resource =
         output "planning" "persistent"
         "References the selected immutable package-store read view."
         types.resourceReference;

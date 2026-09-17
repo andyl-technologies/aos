@@ -125,7 +125,7 @@ pub struct ConfigManifest {
     pub store_paths: Vec<String>,
     /// Shared module ABI used for evaluation.
     pub module_abi: u32,
-    /// The five deterministic evaluator inputs.
+    /// The deterministic evaluator inputs.
     pub inputs: ManifestInputs,
     /// Sorted package names in the converged fixpoint.
     pub packages: Vec<String>,
@@ -651,7 +651,7 @@ pub struct ManifestUser {
     pub supplementary_groups: Vec<String>,
 }
 
-/// The five inputs that fully determine the manifest.
+/// The inputs that fully determine the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestInputs {

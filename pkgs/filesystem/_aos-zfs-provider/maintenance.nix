@@ -26,7 +26,7 @@
     executable = program;
     ignore_failure = false;
   };
-  poolReadiness = resultOf "pool" "readiness-resource";
+  poolReadiness = resultOf "pool" "resource";
   schedule = {
     key,
     expression,
@@ -130,7 +130,7 @@
     bindings = [
       {
         name = "schedule";
-        resource = resultOf "${key}-schedule" "activation-resource";
+        resource = resultOf "${key}-schedule" "resource";
         relationship = "resource-triggers-service";
       }
     ];

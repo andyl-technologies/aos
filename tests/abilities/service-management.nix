@@ -8,8 +8,6 @@
     hostStageReceived = "aos.boot.host-stage-received";
     imageBootCommitted = "aos.boot.image-committed";
     espReady = "aos.boot.esp-ready";
-    packageProfileConverged = "aos.image.package-profile-converged";
-    imageMeasurementIndexed = "aos.image.measurement-indexed";
     initrdFilesystems = "aos.boot.initrd-filesystems";
     initrdRootFilesystems = "aos.boot.initrd-root-filesystems";
     rootDevice = "aos.boot.root-device";
@@ -119,7 +117,7 @@
         activation.bindings = [
           {
             name = "related-resource";
-            resource = resultOf "related" "activation-resource";
+            resource = resultOf "related" "resource";
             inherit relationship;
           }
         ];
@@ -182,7 +180,7 @@
   outputSchema = interface: method: output:
     interfaces.${interface}.document.interface.methods.${method}.outputs.${output}.schema;
   producerOutputsMatchConsumers =
-    interfaces.namedCredential.document.interface.outputs.credential-resource.schema
+    interfaces.namedCredential.document.interface.outputs.resource.schema
     == requestSchemas.credentialDelivery.fields.source
     && outputSchema "credentialDelivery" "deliver" "credential-path"
     == requestSchemas.credentials.fields.views.element.fields.reference
@@ -200,7 +198,7 @@
     == requestSchemas.storageAllocation.fields.owner.value
     && outputSchema "groupResolution" "resolve" "group-name"
     == requestSchemas.storageAllocation.fields.group.value
-    && outputSchema "groupMembership" "reconcile" "membership-resource"
+    && outputSchema "groupMembership" "reconcile" "retained-resource"
     == lib.abilities.types.resourceReference._abilitySchema
     && interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.schema
     == requestSchemas.principalResolution.fields.home_directory;
@@ -236,28 +234,28 @@
       builtins.all (target: builtins.elem target stoppingTargets) retainedTargets)
     (builtins.attrValues interfaces);
   activationOutputsAreReferences =
-    outputSchema "scheduledActivation" "realize" "activation-resource"
+    outputSchema "scheduledActivation" "realize" "retained-resource"
     == resourceReferenceSchema
-    && outputSchema "pathActivation" "realize" "activation-resource" == resourceReferenceSchema
-    && outputSchema "mountResource" "mount" "mount-resource" == resourceReferenceSchema
-    && outputSchema "automountResource" "realize" "automount-resource" == resourceReferenceSchema
-    && outputSchema "swapResource" "enable" "swap-resource" == resourceReferenceSchema
-    && outputSchema "activationGroup" "realize" "activation-resource" == resourceReferenceSchema;
+    && outputSchema "pathActivation" "realize" "retained-resource" == resourceReferenceSchema
+    && outputSchema "mountResource" "mount" "retained-resource" == resourceReferenceSchema
+    && outputSchema "automountResource" "realize" "retained-resource" == resourceReferenceSchema
+    && outputSchema "swapResource" "enable" "retained-resource" == resourceReferenceSchema
+    && outputSchema "activationGroup" "realize" "retained-resource" == resourceReferenceSchema;
   readinessOutputsAreReferences =
-    interfaces.networkReadiness.document.interface.outputs.readiness-resource.schema
+    interfaces.networkReadiness.document.interface.outputs.resource.schema
     == resourceReferenceSchema
-    && interfaces.filesystemReadiness.document.interface.outputs.readiness-resource.schema
+    && interfaces.filesystemReadiness.document.interface.outputs.resource.schema
     == resourceReferenceSchema
-    && interfaces.systemMilestoneReadiness.document.interface.outputs.readiness-resource.schema
+    && interfaces.systemMilestoneReadiness.document.interface.outputs.resource.schema
     == resourceReferenceSchema;
   plannedServiceOutputsAreReferences =
     builtins.all
     (interface:
-      interface.document.interface.outputs.service-resource.schema
+      interface.document.interface.outputs.resource.schema
       == resourceReferenceSchema
-      && interface.document.interface.outputs.service-resource.phase == "planning"
-      && interface.document.interface.outputs.service-resource.visibility == "protected"
-      && interface.document.interface.outputs.service-resource.lifetime == "instance")
+      && interface.document.interface.outputs.resource.phase == "planning"
+      && interface.document.interface.outputs.resource.visibility == "protected"
+      && interface.document.interface.outputs.resource.lifetime == "instance")
     [interfaces.lifecycle interfaces.templateDefinition];
 
   expanded = serviceManagement.forService {
@@ -387,19 +385,19 @@
           stop_timeout_unbounded = true;
         };
       dependencies = {
-        prerequisites = [(resultOf "dependency" "retained-resource")];
+        prerequisites = [(resultOf "dependency" "resource")];
         after = [];
         before = [];
         requires = [];
         wants = [];
-        requisite = [(resultOf "dependency" "retained-resource")];
+        requisite = [(resultOf "dependency" "resource")];
         conflicts = [];
         binds_to = [];
         part_of = [];
         upholds = [];
         required_by = [];
         wanted_by = [];
-        required_mounts = [(resultOf "mount" "mount-resource")];
+        required_mounts = [(resultOf "mount" "resource")];
         implicit_dependencies = false;
       };
       conditions.all = [
@@ -451,7 +449,7 @@
         rate_burst = 5;
       };
       failure_policy = {
-        handlers = [(resultOf "recovery" "activation-resource")];
+        handlers = [(resultOf "recovery" "resource")];
         dispatch = "replace-active-goal";
       };
       concurrency = {
@@ -509,7 +507,7 @@
       activation.bindings = [
         {
           name = "periodic";
-          resource = resultOf "schedule" "activation-resource";
+          resource = resultOf "schedule" "resource";
           relationship = "resource-triggers-service";
         }
       ];
@@ -644,7 +642,7 @@
     group = resultOf "service-group" "group-name";
     mode = "0750";
     prerequisites = [
-      (resultOf "runtime-root" "retained-resource")
+      (resultOf "runtime-root" "resource")
     ];
   };
   invalidFilesystemDirectory =
@@ -675,7 +673,7 @@
     interface = interfaces.credentialDelivery;
     parameters = {
       name = "jwt-secret";
-      source = resultOf "credential-source" "credential-resource";
+      source = resultOf "credential-source" "resource";
       encrypted = false;
     };
   };
@@ -797,7 +795,7 @@
         }
         {
           kind = "credential-content";
-          resource = lib.abilities.resultOf "root-password" "retained-resource";
+          resource = lib.abilities.resultOf "root-password" "resource";
           path = lib.abilities.resultOf "root-password" "credential-path";
         }
         {
@@ -1101,7 +1099,7 @@ in
               fragments = [
                 {
                   kind = "credential-content";
-                  resource = lib.abilities.resultOf "first" "retained-resource";
+                  resource = lib.abilities.resultOf "first" "resource";
                   path = lib.abilities.resultOf "second" "credential-path";
                 }
               ];
@@ -1121,8 +1119,8 @@ in
   assert activationOutputsAreReferences;
   assert readinessOutputsAreReferences;
   assert plannedServiceOutputsAreReferences;
-  assert interfaces.namedCredential.document.interface.outputs.credential-resource.phase == "planning";
-  assert interfaces.namedCredential.document.interface.outputs.credential-resource.lifetime == "instance";
+  assert interfaces.namedCredential.document.interface.outputs.resource.phase == "planning";
+  assert interfaces.namedCredential.document.interface.outputs.resource.lifetime == "instance";
   assert interfaces.namedCredential.methods == ["observe"];
   assert interfaces.principalResolution.methods == ["observe" "release" "resolve"];
   assert interfaces.groupResolution.methods == ["observe" "release" "resolve"];
@@ -1143,10 +1141,10 @@ in
   assert succeedsAs serviceTypes.storageAllocation ownedStorageAllocation;
   assert !succeedsAs serviceTypes.storageAllocation invalidOwnedStorageAllocation;
   assert interfaces.filesystemEntry.document.interface.outputs.planned-path.phase == "planning";
-  assert interfaces.filesystemEntry.document.interface.outputs.entry-resource.phase == "planning";
-  assert interfaces.filesystemEntry.document.interface.outputs.entry-resource.visibility == "protected";
-  assert interfaces.filesystemEntry.document.interface.outputs.entry-resource.lifetime == "instance";
-  assert interfaces.filesystemEntry.document.interface.outputs.entry-resource.schema == resourceReferenceSchema;
+  assert interfaces.filesystemEntry.document.interface.outputs.resource.phase == "planning";
+  assert interfaces.filesystemEntry.document.interface.outputs.resource.visibility == "protected";
+  assert interfaces.filesystemEntry.document.interface.outputs.resource.lifetime == "instance";
+  assert interfaces.filesystemEntry.document.interface.outputs.resource.schema == resourceReferenceSchema;
   assert interfaces.filesystemEntry.document.interface.methods.materialize.outputs.execution-path.phase == "runtime";
   assert interfaces.filesystemEntry.document.interface.methods.release.semantics.stops_provider;
   assert succeedsAs serviceTypes.storageAllocation placedStorageAllocation;
@@ -1173,10 +1171,10 @@ in
   assert builtins.attrNames splitExpanded.configured == ["requests"];
   assert splitExpanded.configured.requests == expanded.requests;
   assert builtins.attrNames expandedWithReload.requests == ["main-lifecycle" "main-reload"];
-  assert expanded.requirementTemplates.service-lifecycle.methods == ["observe" "restart" "start" "stop"];
-  assert expandedWithReload.requirementTemplates.service-lifecycle.methods == ["observe" "reload" "restart" "start" "stop"];
+  assert expanded.requirementTemplates.main-service-lifecycle.methods == ["observe" "restart" "start" "stop"];
+  assert expandedWithReload.requirementTemplates.main-service-lifecycle.methods == ["observe" "reload" "restart" "start" "stop"];
   assert expandedWithRestartToken.requests.main-lifecycle.parameters.restart_token == "operator-requested-restart";
-  assert multiServiceFixedPoint.config.aos.abilities.requirementTemplates."multi-service:service-lifecycle".methods
+  assert multiServiceFixedPoint.config.aos.abilities.requirementTemplates."multi-service:main-service-lifecycle".methods
   == ["observe" "restart" "start" "stop"];
   assert builtins.attrNames multiServiceFixedPoint.config.aos.abilities.requests
   == ["multi-service:helper-lifecycle" "multi-service:main-lifecycle"];
@@ -1185,10 +1183,10 @@ in
   assert validates staticTemplateService;
   assert validates publicStaticTemplate;
   assert builtins.attrNames expandedStaticTemplate.requirementTemplates
-  == ["service-instantiation" "service-template-definition"];
+  == ["main-service-instantiation" "main-service-template-definition"];
   assert builtins.attrNames expandedStaticTemplate.requests
   == ["main-instantiation" "main-template_definition"];
-  assert expandedStaticTemplate.requirementTemplates.service-template-definition.methods
+  assert expandedStaticTemplate.requirementTemplates.main-service-template-definition.methods
   == ["materialize" "observe" "release"];
   assert expandedStaticTemplate.requests.main-template_definition.parameters.service == "main";
   assert !(expandedStaticTemplate.requests.main-template_definition.parameters ? enabled);
@@ -1202,7 +1200,7 @@ in
   == {
     kind = "instance";
     instance = "blue";
-    template_resource = resultOf "main-template_definition" "service-resource";
+    template_resource = resultOf "main-template_definition" "resource";
   };
   assert builtins.attrNames expandedTemplateInstance.requests
   == ["worker-blue-instantiation" "worker-blue-lifecycle"];
@@ -1210,11 +1208,11 @@ in
   == templateInstanceService.instantiation;
   assert expandedSystemTemplateInstance.requests."system:worker-blue-instantiation".parameters.selection.template_resource.request
   == "system:main-template_definition";
-  assert expandedTemplateInstance.requirementTemplates.service-lifecycle.guarantees
+  assert expandedTemplateInstance.requirementTemplates.worker-blue-service-lifecycle.guarantees
   == ["core:service-template-exact-reuse"];
   assert interfaces.lifecycle.guarantees
   == ["core:service-template-exact-reuse"];
-  assert expandedTemplateInstance.requirementTemplates.service-instantiation.guarantees == [];
+  assert expandedTemplateInstance.requirementTemplates.worker-blue-service-instantiation.guarantees == [];
   assert !invalidTemplateInstanceSource.success;
   assert !validates (staticTemplateService // {enabled = true;});
   assert observeOnlyKernelModules.requirementTemplates.kernel-modules.methods == ["observe"];
@@ -1246,7 +1244,7 @@ in
   ];
   assert expandedDisabledSubservice.requests.administration-lifecycle.parameters.enabled == false;
   assert systemOwnedService.requests."system:main-lifecycle".consumer == "system:bind";
-  assert systemOwnedService.requests."system:main-lifecycle".requirement == "system:service-lifecycle";
+  assert systemOwnedService.requests."system:main-lifecycle".requirement == "system:main-service-lifecycle";
   assert (builtins.head systemOwnedService.requests."system:main-lifecycle".parameters.start).executable.arguments
   == [
     {
@@ -1257,8 +1255,8 @@ in
   ];
   assert expandedExtended.requests.main-lifecycle.parameters.start_timeout_unbounded;
   assert expandedExtended.requests.main-dependencies.parameters.prerequisites
-  == [(resultOf "dependency" "retained-resource")];
-  assert expandedExtended.requirementTemplates.service-conditions.guarantees
+  == [(resultOf "dependency" "resource")];
+  assert expandedExtended.requirementTemplates.main-service-conditions.guarantees
   == [
     "core:service-condition-kernel-argument"
     "core:service-condition-mandatory-access-control"
@@ -1309,7 +1307,7 @@ in
     enabled = true;
     description = "Ready resources";
     after = [];
-    members = [(resultOf "mount" "mount-resource")];
+    members = [(resultOf "mount" "resource")];
     required_members = [];
   };
   assert succeedsAs serviceTypes.devicePresence {
@@ -1319,7 +1317,7 @@ in
   };
   assert succeedsAs serviceTypes.storageView {
     name = "containerd-socket";
-    source = resultOf "runtime-storage" "retained-resource";
+    source = resultOf "runtime-storage" "resource";
     source_path = resultOf "runtime-storage" "planned-path";
     access = "read-write";
     relative_path = "containerd.sock";
@@ -1330,7 +1328,7 @@ in
       interface = interfaces.storageView;
       parameters = {
         name = "containerd-socket";
-        source = resultOf "runtime-storage" "retained-resource";
+        source = resultOf "runtime-storage" "resource";
         source_path = resultOf "runtime-storage" "planned-path";
         access = "read-write";
         relative_path = "containerd.sock";
@@ -1344,7 +1342,7 @@ in
       interface = interfaces.storageView;
       parameters = {
         name = "foreign-socket";
-        source = resultOf "runtime-storage" "retained-resource";
+        source = resultOf "runtime-storage" "resource";
         source_path = resultOf "foreign-storage" "planned-path";
         access = "read-write";
         relative_path = "containerd.sock";
@@ -1354,7 +1352,7 @@ in
   .success;
   assert !succeedsAs serviceTypes.storageView {
     name = "escaped-socket";
-    source = resultOf "runtime-storage" "retained-resource";
+    source = resultOf "runtime-storage" "resource";
     source_path = resultOf "runtime-storage" "planned-path";
     access = "read-write";
     relative_path = "../containerd.sock";
@@ -1388,7 +1386,7 @@ in
       activation.bindings = [
         {
           name = "periodic";
-          resource = resultOf "schedule" "activation-resource";
+          resource = resultOf "schedule" "resource";
           relationship = "trigger";
         }
       ];
@@ -1463,7 +1461,7 @@ in
   == {
     _type = "aos-request-output-reference";
     request = "system:credential-source";
-    output = "credential-resource";
+    output = "resource";
   };
   assert builtins.attrNames credentialReferences.requests
   == [
@@ -1477,7 +1475,7 @@ in
     source = {
       _type = "aos-request-output-reference";
       request = "system:signing-key-source";
-      output = "credential-resource";
+      output = "resource";
     };
     encrypted = true;
   };

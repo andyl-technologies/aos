@@ -58,7 +58,7 @@
         entries);
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
-          value.preparation-resource = resourceReference instance entry.binding.slot;
+          value.resource = resourceReference instance entry.binding.slot;
         })
         entries);
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {

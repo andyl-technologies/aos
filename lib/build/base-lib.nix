@@ -45,16 +45,28 @@
   hostPackageModules ? [],
   ## Exact authenticated provider modules selected by host bindings.
   hostProviderModules ? [],
+  ## Resolver-produced host provider instances.
+  hostAbilityInstances ? {},
   ## Exact source-composed host bindings.
   hostAbilityBindings ? {},
+  ## Concrete host child requests retained across bounded resolution rounds.
+  hostAbilityRequests ? {},
+  ## Exact host child requirements retained across bounded resolution rounds.
+  hostAbilityRequirements ? {},
   ## Typed host ability environment.
   hostAbilityEnvironment,
   ## Exact authenticated package modules selected for the initrd graph.
   initrdPackageModules ? [],
   ## Exact authenticated provider modules selected by initrd bindings.
   initrdProviderModules ? [],
+  ## Resolver-produced initrd provider instances.
+  initrdAbilityInstances ? {},
   ## Exact source-composed initrd bindings.
   initrdAbilityBindings ? {},
+  ## Concrete initrd child requests retained across bounded resolution rounds.
+  initrdAbilityRequests ? {},
+  ## Exact initrd child requirements retained across bounded resolution rounds.
+  initrdAbilityRequirements ? {},
   ## Typed initrd ability environment.
   initrdAbilityEnvironment,
   ## Exact static contract projected by the complete initrd fixed point.
@@ -71,7 +83,10 @@
     environment,
     packageModules,
     selectedProviderModules,
+    abilityInstances,
     abilityBindings,
+    abilityRequests,
+    abilityRequirements,
     extraModules ? [],
   }:
     lib.evalModules {
@@ -82,11 +97,18 @@
           {aos.system.moduleAbi = lib.mkForce moduleAbi;}
           {aos.abilities.environment = environment;}
         ]
-        ++ extraModules;
+        ++ extraModules
+        ++ lib.optional (abilityInstances != {} || abilityBindings != {}) {
+          aos.abilities = {
+            instances = abilityInstances;
+            bindings = abilityBindings;
+          };
+        };
       inherit pkgs lib packageModules selectedProviderModules;
       enableAbilitySelection = true;
-      runtimeModules = lib.optional (abilityBindings != {}) {
-        aos.abilities.bindings = abilityBindings;
+      specialArgs.abilityResolution = {
+        requests = abilityRequests;
+        requirements = abilityRequirements;
       };
     };
 
@@ -96,13 +118,19 @@
     environment = hostAbilityEnvironment;
     packageModules = checkedHostPackageModules;
     selectedProviderModules = checkedHostProviderModules;
+    abilityInstances = hostAbilityInstances;
     abilityBindings = hostAbilityBindings;
+    abilityRequests = hostAbilityRequests;
+    abilityRequirements = hostAbilityRequirements;
   };
   initrdSchemaEval = evaluationFor {
     environment = initrdAbilityEnvironment;
     packageModules = checkedInitrdPackageModules;
     selectedProviderModules = checkedInitrdProviderModules;
+    abilityInstances = initrdAbilityInstances;
     abilityBindings = initrdAbilityBindings;
+    abilityRequests = initrdAbilityRequests;
+    abilityRequirements = initrdAbilityRequirements;
   };
 
   # A base library is bound to the complete option schema it exposes, not to
@@ -133,7 +161,10 @@
     environment = hostAbilityEnvironment;
     packageModules = checkedHostPackageModules;
     selectedProviderModules = checkedHostProviderModules;
+    abilityInstances = hostAbilityInstances;
     abilityBindings = hostAbilityBindings;
+    abilityRequests = hostAbilityRequests;
+    abilityRequirements = hostAbilityRequirements;
     extraModules = [
       {
         aos.config.evalAtBoot = {
@@ -204,9 +235,16 @@
     builtins.toFile name (builtins.unsafeDiscardStringContext (builtins.toJSON value));
   initrdPackageModulesFile = plainJson "initrd-package-modules.json" checkedInitrdPackageModules;
   initrdProviderModulesFile = plainJson "initrd-provider-modules.json" checkedInitrdProviderModules;
+  hostPackageModulesFile = plainJson "host-package-modules.json" checkedHostPackageModules;
+  hostEvaluationInputsFile = plainJson "host-evaluation-inputs.json" {
+    environment = hostAbilityEnvironment;
+  };
   initrdEvaluationInputsFile = plainJson "initrd-evaluation-inputs.json" {
     environment = initrdAbilityEnvironment;
+    abilityInstances = initrdAbilityInstances;
     abilityBindings = initrdAbilityBindings;
+    abilityRequests = initrdAbilityRequests;
+    abilityRequirements = initrdAbilityRequirements;
     staticContractIdentity = builtins.toString initrdStaticAbilityContract + "/contract.json";
   };
   initrdAuthenticatedRoots = lib.unique (builtins.concatMap
@@ -215,12 +253,25 @@
       ++ builtins.attrValues record.outputs.dependencies)
     (checkedInitrdPackageModules ++ checkedInitrdProviderModules)
     ++ [initrdStaticAbilityContract]);
-  checkedInitrdAuthenticatedRoots = builtins.map
+  checkedInitrdAuthenticatedRoots =
+    builtins.map
     (root:
       if builtins.getContext (builtins.toString root) == {}
       then throw "base-lib: frozen initrd authenticated root '${builtins.toString root}' has no retained store identity"
       else root)
     initrdAuthenticatedRoots;
+  hostAuthenticatedRoots = lib.unique (builtins.concatMap
+    (record:
+      [record.configRoot record.outputs.self]
+      ++ builtins.attrValues record.outputs.dependencies)
+    checkedHostPackageModules);
+  checkedHostAuthenticatedRoots =
+    builtins.map
+    (root:
+      if builtins.getContext (builtins.toString root) == {}
+      then throw "base-lib: frozen host authenticated root '${builtins.toString root}' has no retained store identity"
+      else root)
+    hostAuthenticatedRoots;
   hostStaticAbilityContract = realEval.config.system.build.staticAbilityContract;
   stageContractsDistinct =
     if builtins.toString hostStaticAbilityContract == builtins.toString initrdStaticAbilityContract
@@ -267,51 +318,58 @@
 in
   assert stageContractsDistinct;
     pkgs.runCommand "aos-base-lib-${systemName}" {
-    passthru = {inherit frozenArtifacts optionSchema moduleAbi abiHash;};
-    inherit imageManifest placeholderBaseLibDigest;
-    passAsFile = ["imageManifest"];
-  } ''
-    mkdir -p "$out"
+      passthru = {inherit frozenArtifacts optionSchema moduleAbi abiHash;};
+      inherit imageManifest placeholderBaseLibDigest;
+      passAsFile = ["imageManifest"];
+    } ''
+      mkdir -p "$out"
 
-    # Bundle the source trees the on-host eval imports. `--no-preserve=mode` so
-    # the copied files are writable enough for the store (the originals are
-    # read-only store paths). Modules reference `../../pkgs/...` and
-    # `../../lib/...` path literals, so all four trees must be present even
-    # though no package is built.
-    cp -rL --no-preserve=mode ${../../lib} "$out/lib"
-    cp -rL --no-preserve=mode ${../../modules} "$out/modules"
-    cp -rL --no-preserve=mode ${../../systems} "$out/systems"
-    cp -rL --no-preserve=mode ${../../pkgs} "$out/pkgs"
+      # Bundle the source trees the on-host eval imports. `--no-preserve=mode` so
+      # the copied files are writable enough for the store (the originals are
+      # read-only store paths). Modules reference `../../pkgs/...` and
+      # `../../lib/...` path literals, so all four trees must be present even
+      # though no package is built.
+      cp -rL --no-preserve=mode ${../../lib} "$out/lib"
+      cp -rL --no-preserve=mode ${../../modules} "$out/modules"
+      cp -rL --no-preserve=mode ${../../systems} "$out/systems"
+      cp -rL --no-preserve=mode ${../../pkgs} "$out/pkgs"
 
-    ${pkgs.sed}/bin/sed \
-      -e "s|@system@|${system}|g" \
-      -e "s|@abiHash@|${abiHash}|g" \
-      ${./base-lib-entry.nix} > "$out/default.nix"
-    cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
-    cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
-    cp ${initrdPackageModulesFile} "$out/initrd-package-modules.json"
-    cp ${initrdProviderModulesFile} "$out/initrd-provider-modules.json"
-    cp ${initrdEvaluationInputsFile} "$out/initrd-evaluation-inputs.json"
-    mkdir -p "$out/initrd-authenticated-roots"
-    ${lib.concatStringsSep "\n" (lib.imap (index: root: ''
-        ln -s ${root} "$out/initrd-authenticated-roots/${toString index}"
-      '')
-      checkedInitrdAuthenticatedRoots)}
-    mkdir -p "$out/artifact-roots"
-    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: artifact: ''
-        ln -s ${artifact} "$out/artifact-roots/${name}"
-      '')
-      frozenArtifactSources)}
-    actual_base_lib_digest=$(printf '%s' "$out" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
-    ${pkgs.sed}/bin/sed \
-      -e "s|sha256:$placeholderBaseLibDigest|sha256:$actual_base_lib_digest|g" \
-      "$imageManifestPath" > "$out/image-manifest.json"
-    cp ${systemModulesFile} "$out/system-modules.nix"
-    cp ${moduleAbiFile} "$out/module-abi.nix"
+      ${pkgs.sed}/bin/sed \
+        -e "s|@system@|${system}|g" \
+        -e "s|@abiHash@|${abiHash}|g" \
+        ${./base-lib-entry.nix} > "$out/default.nix"
+      cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
+      cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
+      cp ${hostPackageModulesFile} "$out/host-package-modules.json"
+      cp ${hostEvaluationInputsFile} "$out/host-evaluation-inputs.json"
+      cp ${initrdPackageModulesFile} "$out/initrd-package-modules.json"
+      cp ${initrdProviderModulesFile} "$out/initrd-provider-modules.json"
+      cp ${initrdEvaluationInputsFile} "$out/initrd-evaluation-inputs.json"
+      mkdir -p "$out/initrd-authenticated-roots"
+      ${lib.concatStringsSep "\n" (lib.imap (index: root: ''
+          ln -s ${root} "$out/initrd-authenticated-roots/${toString index}"
+        '')
+        checkedInitrdAuthenticatedRoots)}
+      mkdir -p "$out/host-authenticated-roots"
+      ${lib.concatStringsSep "\n" (lib.imap (index: root: ''
+          ln -s ${root} "$out/host-authenticated-roots/${toString index}"
+        '')
+        checkedHostAuthenticatedRoots)}
+      mkdir -p "$out/artifact-roots"
+      ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: artifact: ''
+          ln -s ${artifact} "$out/artifact-roots/${name}"
+        '')
+        frozenArtifactSources)}
+      actual_base_lib_digest=$(printf '%s' "$out" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
+      ${pkgs.sed}/bin/sed \
+        -e "s|sha256:$placeholderBaseLibDigest|sha256:$actual_base_lib_digest|g" \
+        "$imageManifestPath" > "$out/image-manifest.json"
+      cp ${systemModulesFile} "$out/system-modules.nix"
+      cp ${moduleAbiFile} "$out/module-abi.nix"
 
-    echo ${lib.escapeShellArg systemName} > "$out/system-name"
-    echo ${lib.escapeShellArg abiHash} > "$out/abi-hash"
-    echo ${toString moduleAbi} > "$out/module-abi"
-    cp ${builtins.toFile "option-schema.json" (builtins.toJSON optionSchema)} "$out/option-schema.json"
-    cp ${builtins.toFile "system-roots.json" (builtins.toJSON bundledRoots)} "$out/system-roots.json"
-  ''
+      echo ${lib.escapeShellArg systemName} > "$out/system-name"
+      echo ${lib.escapeShellArg abiHash} > "$out/abi-hash"
+      echo ${toString moduleAbi} > "$out/module-abi"
+      cp ${builtins.toFile "option-schema.json" (builtins.toJSON optionSchema)} "$out/option-schema.json"
+      cp ${builtins.toFile "system-roots.json" (builtins.toJSON bundledRoots)} "$out/system-roots.json"
+    ''

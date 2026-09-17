@@ -40,6 +40,12 @@
     if builtins.length matches == 1
     then builtins.head matches
     else throw "systemd service transition requires one exact ${authorityFor change} resource state for '${change.resource.key}'";
+  referencedStateFor = snapshot: reference: let
+    matches = builtins.filter (resource: resource.resource == reference.resource) snapshot.resources;
+  in
+    if builtins.length matches == 1
+    then builtins.head matches
+    else throw "systemd service prerequisite must resolve one exact resource state";
   bindingFor = change: method: let
     authorityRole = authorityFor change;
     matches = builtins.filter (entry:
@@ -74,6 +80,20 @@
     method = methodFor change.kind;
     binding = bindingFor change method;
     desired = stateFor change;
+    prerequisiteReferences =
+      (desired.value.dependencies.prerequisites or [])
+      ++ (desired.realization.prerequisites or []);
+    uniquePrerequisites = builtins.attrValues (builtins.listToAttrs (builtins.map (reference: {
+        name = builtins.toJSON reference.resource;
+        value = reference;
+      })
+      prerequisiteReferences));
+    snapshot =
+      if change.kind == "remove"
+      then context.before
+      else context.after;
+    prerequisiteStates = builtins.map (referencedStateFor snapshot) uniquePrerequisites;
+    resourceLessThan = left: right: builtins.toJSON left.resource < builtins.toJSON right.resource;
   in {
     key = scopedKey "${method}-${change.resource.key}";
     branch_context = [];
@@ -96,13 +116,25 @@
         desired = desired.value;
       };
     };
-    preconditions = [];
-    accesses = [
-      {
-        resource = change.resource;
-        mode = "exclusive-write";
-      }
-    ];
+    preconditions = builtins.sort resourceLessThan (builtins.map (resource: {
+        inherit (resource) resource;
+        expected_revision = resource.revision;
+        expected_incarnation = null;
+      })
+      prerequisiteStates);
+    accesses = builtins.sort resourceLessThan (
+      [
+        {
+          resource = change.resource;
+          mode = "exclusive-write";
+        }
+      ]
+      ++ builtins.map (resource: {
+        inherit (resource) resource;
+        mode = "read";
+      })
+      prerequisiteStates
+    );
     controller = controllerFor change.resource;
     deadline = operationDeadline;
     recovery = {

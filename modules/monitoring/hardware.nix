@@ -5,39 +5,30 @@
   lib,
   ...
 }: let
-  cfg = config.aos.monitoring.hardware;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  managerWatchdog = lib.abilities.interfaces.managerWatchdog.interface;
-  watchdog = serviceManagement.forProducer {
-    consumerInstance = "watchdog";
-    key = "manager-watchdog";
-    interface = managerWatchdog;
-    inherit (managerWatchdog) methods;
-    parameters = {
-      enabled = cfg.watchdog;
-      runtime_timeout_millis = cfg.watchdogTimeout * 1000;
-      reboot_timeout_millis = cfg.watchdogTimeout * 2000;
-      kexec_timeout_millis = cfg.watchdogTimeout * 2000;
+  hardware = config.aos.monitoring.hardware;
+in {
+  options.aos.monitoring.hardware = {
+    enable = lib.mkOption {
+      type = lib.abilities.types.boolean;
+      default = false;
+      description = "Enable hardware health monitoring.";
+    };
+
+    watchdog = lib.mkOption {
+      type = lib.abilities.types.boolean;
+      default = true;
+      description = "Enable the selected service manager's hardware watchdog.";
+    };
+
+    watchdogTimeout = lib.mkOption {
+      type = lib.abilities.types.integer {
+        minimum = 1;
+        maximum = 86400;
+      };
+      default = 30;
+      description = "Watchdog timeout in seconds before hardware recovery.";
     };
   };
-  contribution = serviceManagement.splitContribution watchdog;
-in {
-  options.aos.monitoring.hardware.enable = lib.mkOption {
-    type = lib.abilities.types.boolean;
-    default = false;
-    description = "Enable package-owned hardware health monitoring abilities.";
-  };
 
-  config = lib.mkMerge [
-    {
-      aos.abilities = contribution.declarations;
-    }
-    (lib.mkIf cfg.enable {
-      environment.systemPackages = [pkgs.smartmontools];
-      aos.abilities = lib.mkMerge [
-        {instances.watchdog = {};}
-        contribution.configured
-      ];
-    })
-  ];
+  config.environment.systemPackages = lib.mkIf hardware.enable [pkgs.smartmontools];
 }

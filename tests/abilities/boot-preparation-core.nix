@@ -27,10 +27,10 @@
     parameters = {
       source_stage = "initrd";
       receiver_stage = "host";
-      completion = lib.abilities.resultOf "configuration-seed" "preparation-resource";
+      completion = lib.abilities.resultOf "configuration-seed" "resource";
       preparations = [
-        (lib.abilities.resultOf "configuration-seed" "preparation-resource")
-        (lib.abilities.resultOf "policy-seed" "preparation-resource")
+        (lib.abilities.resultOf "configuration-seed" "resource")
+        (lib.abilities.resultOf "policy-seed" "resource")
       ];
       preserved_mounts = [];
       durable_state_roots = [];
@@ -55,7 +55,7 @@
           {instances.host = {};}
           (prepare "policy-seed" [])
           (prepare "configuration-seed" [
-            (lib.abilities.resultOf "policy-seed" "preparation-resource")
+            (lib.abilities.resultOf "policy-seed" "resource")
           ])
           handoffRequest
         ];
@@ -68,7 +68,7 @@
   policySeedReference = {
     _type = "aos-request-output-reference";
     request = "consumer:policy-seed";
-    output = "preparation-resource";
+    output = "resource";
   };
   literalPreparationKeys = builtins.tryEval (builtins.deepSeq
     (
@@ -79,7 +79,7 @@
             config.request = {
               source_stage = "initrd";
               receiver_stage = "host";
-              completion = lib.abilities.resultOf "configuration-seed" "preparation-resource";
+              completion = lib.abilities.resultOf "configuration-seed" "resource";
               preparations = ["configuration-seed" "policy-seed"];
               preserved_mounts = [];
               durable_state_roots = [];
@@ -94,8 +94,8 @@
 in
   assert abilities.interfaces.boot-preparation.name == "aos.boot.preparation";
   assert abilities.interfaces.boot-preparation-handoff.name == "aos.boot.preparation-handoff";
-  assert preparation.declaration.outputs.preparation-resource.lifetime == "transaction";
-  assert handoff.declaration.outputs.readiness-resource.lifetime == "transaction";
+  assert preparation.declaration.outputs.resource.lifetime == "transaction";
+  assert handoff.declaration.outputs.resource.lifetime == "transaction";
   assert preparation.declaration.methods.prepare.semantics.requiredTargetAccess == "exclusive-write";
   assert preparation.declaration.methods.observe.semantics.requiredTargetAccess == "read";
   assert handoff.declaration.methods.receive.semantics.requiredTargetAccess == "exclusive-write";
@@ -105,7 +105,7 @@ in
     {
       _type = "aos-request-output-reference";
       request = "consumer:configuration-seed";
-      output = "preparation-resource";
+      output = "resource";
     }
     policySeedReference
   ];

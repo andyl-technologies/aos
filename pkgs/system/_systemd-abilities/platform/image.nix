@@ -45,8 +45,7 @@
     then []
     else abilitySelection.bindingsForImplementation "image-builder";
   selected =
-    builtins.length builderBindings == 1
-    && (builtins.head builderBindings).binding.request == "image:builder";
+    builtins.length builderBindings == 1;
   selectedBinding =
     if selected
     then builtins.head builderBindings
@@ -54,8 +53,14 @@
   providerReady =
     selected
     && selectedBinding.implementation.value.provide != null;
+  selectedRequest =
+    if selected
+    then selectedBinding.binding.request
+    else null;
   selectedBuilderOutput =
-    config.aos.abilities.compositionOutputs."image:builder"."selected-builder".value or null;
+    if selected
+    then config.aos.abilities.compositionOutputs.${selectedRequest}."selected-builder".value or null
+    else null;
 
   normalArtifactPath = let
     tries = config.aos.boot.bootAttemptLimit;
@@ -221,43 +226,45 @@ in {
 
     aos.image.platform = lib.mkIf checkedProviderReady authoredPlatform;
 
-    assertions = lib.optionals (selected && config.aos.boot.storage.backend == "zfs-zvol") [
-      {
-        assertion = config.aos.boot.secureBoot.measuredBoot.enable;
-        message = "zfs-zvol installation requires measured boot so the native ZFS key can be sealed";
-      }
-      {
-        assertion = builtins.length config.aos.boot.storage.espDevices >= 2;
-        message = "zfs-zvol installation requires at least two independently bootable firmware partitions";
-      }
-      {
-        assertion = lib.all (value: value == null) (builtins.attrValues config.aos.boot.storage.devices);
-        message = "the zfs-zvol installer does not permit immutable device-path overrides";
-      }
-      {
-        assertion = config.aos.boot.storage.zfs.encryptionRoot == config.aos.boot.storage.zfs.poolName;
-        message = "the zfs-zvol installer requires the pool root to be the native-encryption root";
-      }
-    ] ++ lib.optionals selected [
-      {
-        assertion =
-          config.aos.image.budgets.maxFirmwarePartitionMiB
-          >= 2 * config.aos.image.budgets.maxBootExecutableMiB + 32;
-        message = "the selected systemd firmware partition must hold two maximum-sized boot executables plus 32 MiB of loader and filesystem headroom";
-      }
-      {
-        assertion =
-          2
-          + config.aos.image.budgets.maxFirmwarePartitionMiB
-          + 2 * config.aos.image.rootPartitionMiB
-          + (
-            if config.aos.security.verity.enable
-            then 2 * config.aos.image.budgets.maxVerityMiB
-            else 0
-          )
-          <= 8192;
-        message = "the selected systemd disk layout exceeds the 8192 MiB publication safety limit";
-      }
-    ];
+    assertions =
+      lib.optionals (selected && config.aos.boot.storage.backend == "zfs-zvol") [
+        {
+          assertion = config.aos.boot.secureBoot.measuredBoot.enable;
+          message = "zfs-zvol installation requires measured boot so the native ZFS key can be sealed";
+        }
+        {
+          assertion = builtins.length config.aos.boot.storage.espDevices >= 2;
+          message = "zfs-zvol installation requires at least two independently bootable firmware partitions";
+        }
+        {
+          assertion = lib.all (value: value == null) (builtins.attrValues config.aos.boot.storage.devices);
+          message = "the zfs-zvol installer does not permit immutable device-path overrides";
+        }
+        {
+          assertion = config.aos.boot.storage.zfs.encryptionRoot == config.aos.boot.storage.zfs.poolName;
+          message = "the zfs-zvol installer requires the pool root to be the native-encryption root";
+        }
+      ]
+      ++ lib.optionals selected [
+        {
+          assertion =
+            config.aos.image.budgets.maxFirmwarePartitionMiB
+            >= 2 * config.aos.image.budgets.maxBootExecutableMiB + 32;
+          message = "the selected systemd firmware partition must hold two maximum-sized boot executables plus 32 MiB of loader and filesystem headroom";
+        }
+        {
+          assertion =
+            2
+            + config.aos.image.budgets.maxFirmwarePartitionMiB
+            + 2 * config.aos.image.rootPartitionMiB
+            + (
+              if config.aos.security.verity.enable
+              then 2 * config.aos.image.budgets.maxVerityMiB
+              else 0
+            )
+            <= 8192;
+          message = "the selected systemd disk layout exceeds the 8192 MiB publication safety limit";
+        }
+      ];
   };
 }

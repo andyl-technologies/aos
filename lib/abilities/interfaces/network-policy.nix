@@ -76,7 +76,7 @@
       schema = types.enum ["aos.ability.network-ruleset-observation/v1"];
       expected = aggregateRequest;
       observed_digest = types.optional types.digest;
-      state = types.enum ["applied" "drifted" "unmanaged" "unknown"];
+      state = types.enum ["applied" "drifted" "unmanaged"];
       discrepancies = canonicalList types.localKey 16;
     };
   };
@@ -134,7 +134,7 @@
   );
   aggregation = {
     scope = "provider-instance";
-    key = "slot";
+    key = "network-ruleset";
     rejectSlotCollisions = false;
     inherit mergeContract;
     controllerGroup = "network-ruleset";
@@ -148,7 +148,7 @@
     methods = controllerMethods;
     lifecycle = controllerLifecycle;
     inherit aggregation;
-    outputs.readiness-resource =
+    outputs.resource =
       readinessOutput "References readiness for the exact aggregate ruleset revision.";
     guarantees = [];
   };
@@ -162,7 +162,7 @@
     methods = ingressMethods;
     lifecycle = controllerLifecycle;
     inherit aggregation;
-    outputs.readiness-resource =
+    outputs.resource =
       readinessOutput "References the aggregate ruleset containing these ingress endpoints.";
     guarantees = [];
   };
@@ -176,7 +176,7 @@
     methods = forwardingMethods;
     lifecycle = controllerLifecycle;
     inherit aggregation;
-    outputs.readiness-resource =
+    outputs.resource =
       readinessOutput "References the aggregate ruleset containing this forwarding policy.";
     guarantees = [];
   };

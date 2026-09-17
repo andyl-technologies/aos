@@ -4,21 +4,35 @@
   mkSystem,
   serverModule,
 }: let
+  packageModuleRoot = builtins.path {
+    path = ../../tests/fixtures/config-provenance;
+    name = "aos-config-provenance-package-modules";
+  };
+  packageModule = name: module: {
+    inherit name;
+    version = "1";
+    configRoot = builtins.toString packageModuleRoot;
+    module = "${packageModuleRoot}/${module}";
+    outputs = {
+      self = builtins.toString packageModuleRoot;
+      dependencies = {};
+    };
+  };
   evaluated = mkSystem {
-    modules = [serverModule];
-    packageModules = [
+    modules = [
+      serverModule
       {
-        name = "provenance-demo";
-        module = {
-          environment.etc."provenance-demo.conf".text = "package-owned\n";
-          systemd.services.provenance-demo = {
-            description = "configuration provenance fixture";
-            wantedBy = ["multi-user.target"];
-            script = "echo provenance-demo";
-          };
+        aos.packages.nginx = {
+          package = pkgs.nginx;
+          bundle = true;
+        };
+        nginx = {
+          enable = true;
+          virtualHosts.default = {};
         };
       }
     ];
+    packageModules = [(packageModule "provenance-demo" "provenance-demo.nix")];
     operatorModules = [
       {
         _file = "forged-package-name.nix";
@@ -35,7 +49,10 @@
       modules = [serverModule];
       operatorModules = [
         {
-          environment.systemPackages = [pkgs.aos-test-agent];
+          aos.packages.aos-test-agent = {
+            package = pkgs.aos-test-agent;
+            bundle = true;
+          };
         }
       ];
     })
@@ -44,17 +61,7 @@
     .build
     .configManifest;
   testAgentPath = builtins.unsafeDiscardStringContext (builtins.toString pkgs.aos-test-agent);
-  selectedAbilityImplementations =
-    (mkSystem {
-      modules = [
-        serverModule
-        {environment.systemPackages = [pkgs.nginx];}
-      ];
-    })
-    .config
-    .aos
-    .abilities
-    .implementations;
+  selectedNginxAbilities = evaluated.config.aos.abilities;
   hostSessionManifest =
     (mkSystem {
       modules = [serverModule];
@@ -86,12 +93,7 @@
     .configManifest;
   packagePathContribution = builtins.tryEval (builtins.toJSON ((mkSystem {
       modules = [serverModule];
-      packageModules = [
-        {
-          name = "path-contributor";
-          module.environment.systemPackages = [pkgs.aos-test-agent];
-        }
-      ];
+      packageModules = [(packageModule "path-contributor" "path-contributor.nix")];
     })
     .config
     .system
@@ -101,12 +103,7 @@
     .etc));
   packageSessionContribution = builtins.tryEval (builtins.toJSON ((mkSystem {
       modules = [serverModule];
-      packageModules = [
-        {
-          name = "session-contributor";
-          module.environment.sessionVariables.PROVENANCE_TEST = "package";
-        }
-      ];
+      packageModules = [(packageModule "session-contributor" "session-contributor.nix")];
     })
     .config
     .system
@@ -114,10 +111,6 @@
     .configManifest
     .ownership
     .etc));
-  jobKeys =
-    builtins.filter
-    (key: builtins.match "provenance-demo\\.service:.*" key != null)
-    (builtins.attrNames manifest.jobScripts);
   ancestorEtcCollision = builtins.tryEval (builtins.toJSON ((mkSystem {
       modules = [serverModule];
       operatorModules = [
@@ -137,15 +130,7 @@
     .etc));
   mixedUserGroupOwner = builtins.tryEval (builtins.toJSON ((mkSystem {
       modules = [serverModule];
-      packageModules = [
-        {
-          name = "group-provider";
-          module.aos.users.groups.pkgonly = {
-            gid = 778;
-            members = [];
-          };
-        }
-      ];
+      packageModules = [(packageModule "group-provider" "group-provider.nix")];
       operatorModules = [
         {
           aos.users.users.hostuser = {
@@ -171,7 +156,9 @@ in
   assert hostComposedManifest.ownership.etc.profile == "@host";
   assert hostComposedManifest.ownership.etc."pam/environment" == "@host";
   assert hostComposedManifest.ownership.storePaths.${testAgentPath} == "@host";
-  assert builtins.attrNames selectedAbilityImplementations == ["nginx" "nginx-validation"];
+  assert selectedNginxAbilities.instances ? "nginx:nginx";
+  assert selectedNginxAbilities.requests ? "nginx:main-lifecycle";
+  assert selectedNginxAbilities.requests ? "nginx:server-configuration";
   assert hostSessionManifest.ownership.etc.profile == "@base";
   assert hostSessionManifest.ownership.etc."pam/environment" == "@host";
   assert directHostLoginManifest.ownership.etc.profile == "@host";
@@ -179,9 +166,6 @@ in
   assert !packagePathContribution.success;
   assert !packageSessionContribution.success;
   assert manifest.ownership.etc."provenance-demo.conf" == "provenance-demo";
-  assert manifest.ownership.etc."systemd/system/provenance-demo.service" == "provenance-demo";
-  assert builtins.length jobKeys == 1;
-  assert manifest.ownership.jobScripts.${builtins.head jobKeys} == "provenance-demo";
   assert !ancestorEtcCollision.success;
   assert !mixedUserGroupOwner.success;
     pkgs.mkDerivation {

@@ -4,8 +4,6 @@
   lib,
   ...
 }: let
-  consumer = "image:builder";
-  builderInterface = lib.abilities.interfaces.imageBuilder.interfaces.builder;
   artifactFilenameType = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._+-]*";
   pathSegments = path: lib.splitString "/" path;
   safeRelativePath = path:
@@ -43,7 +41,8 @@
       description = "Canonical selected kernel provider instance.";
     };
   };
-  imageIdentityType = lib.types.addCheck (strictSubmodule {
+  imageIdentityType =
+    lib.types.addCheck (strictSubmodule {
       schema = lib.mkOption {
         type = lib.types.enum ["aos.image.identity/v1"];
         description = "Immutable image identity schema.";
@@ -114,121 +113,125 @@
       };
     })
     (value:
-      value.target.system == lib.system
+      value.target.system
+      == lib.system
       && value.target.cpu == lib.platform.constraints.cpu
       && safeRelativePath value.boot."normal-artifact-path");
-  selectedBuilderType = lib.types.addCheck (lib.types.submodule {
-    config._module.strict = true;
+  selectedBuilderType =
+    lib.types.addCheck (lib.types.submodule {
+      config._module.strict = true;
 
-    options = {
-      _type = lib.mkOption {
-        type = lib.types.enum ["aos-image-builder"];
-        description = "Selected image-builder record discriminator.";
+      options = {
+        _type = lib.mkOption {
+          type = lib.types.enum ["aos-image-builder"];
+          description = "Selected image-builder record discriminator.";
+        };
+        artifact = lib.mkOption {
+          type = lib.abilities.types.artifactSelector;
+          description = "Checked symbolic output selector for the selected package.";
+        };
+        build = lib.mkOption {
+          type = lib.types.functionTo lib.types.attrs;
+          description = "Opaque package-owned immutable image artifact builder.";
+        };
+        name = lib.mkOption {
+          type = lib.types.nonEmptyStr;
+          description = "Human-readable selected image-builder name.";
+        };
+        normalArtifactPath = lib.mkOption {
+          type = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._+/-]*";
+          description = "Firmware-relative path of the normal boot artifact.";
+        };
+        package = lib.mkOption {
+          type = lib.types.pathInStore;
+          description = "Authenticated package output that owns the selected image builder.";
+        };
+        identity = lib.mkOption {
+          type = imageIdentityType;
+          description = "Pure image identity projected by the selected builder.";
+        };
       };
-      artifact = lib.mkOption {
-        type = lib.abilities.types.artifactSelector;
-        description = "Checked symbolic output selector for the selected package.";
-      };
-      build = lib.mkOption {
-        type = lib.types.functionTo lib.types.attrs;
-        description = "Opaque package-owned immutable image artifact builder.";
-      };
-      name = lib.mkOption {
-        type = lib.types.nonEmptyStr;
-        description = "Human-readable selected image-builder name.";
-      };
-      normalArtifactPath = lib.mkOption {
-        type = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._+/-]*";
-        description = "Firmware-relative path of the normal boot artifact.";
-      };
-      package = lib.mkOption {
-        type = lib.types.pathInStore;
-        description = "Authenticated package output that owns the selected image builder.";
-      };
-      identity = lib.mkOption {
-        type = imageIdentityType;
-        description = "Pure image identity projected by the selected builder.";
-      };
-    };
-  }) (value:
-    safeRelativePath value.normalArtifactPath
-    && value.identity.builder.artifact == value.artifact
-    && value.identity.builder.name == value.name
-    && value.identity.boot."normal-artifact-path" == value.normalArtifactPath);
+    }) (value:
+      safeRelativePath value.normalArtifactPath
+      && value.identity.builder.artifact == value.artifact
+      && value.identity.builder.name == value.name
+      && value.identity.boot."normal-artifact-path" == value.normalArtifactPath);
   nullableArtifact = lib.types.nullOr lib.types.package;
-  imagePlanType = lib.types.addCheck (lib.types.submodule {
-    config._module.strict = true;
+  imagePlanType =
+    lib.types.addCheck (lib.types.submodule {
+      config._module.strict = true;
 
-    options = {
-      _type = lib.mkOption {
-        type = lib.types.enum ["aos-image-build-plan"];
-        description = "Immutable image plan discriminator.";
+      options = {
+        _type = lib.mkOption {
+          type = lib.types.enum ["aos-image-build-plan"];
+          description = "Immutable image plan discriminator.";
+        };
+        budgetCheck = lib.mkOption {
+          type = lib.types.package;
+          description = "Selected provider's image budget check.";
+        };
+        finishConvertedImage = lib.mkOption {
+          type = lib.types.functionTo lib.types.package;
+          description = "Opaque provider finalizer for one converted disk image.";
+        };
+        initialBootExecutable = lib.mkOption {
+          type = lib.types.package;
+          description = "Initial boot executable emitted by the selected provider.";
+        };
+        installBundle = lib.mkOption {
+          type = nullableArtifact;
+          description = "Optional selected-provider installation bundle.";
+        };
+        rawDiskFilename = lib.mkOption {
+          type = artifactFilenameType;
+          description = "Filename of the compressed raw disk inside its artifact.";
+        };
+        rawImage = lib.mkOption {
+          type = lib.types.package;
+          description = "Selected provider's compressed raw disk artifact.";
+        };
+        rawMetadataFilename = lib.mkOption {
+          type = artifactFilenameType;
+          description = "Filename of image metadata inside the raw artifact.";
+        };
+        recoveryBootExecutableA = lib.mkOption {
+          type = nullableArtifact;
+          description = "Optional recovery boot executable for slot A.";
+        };
+        recoveryBootExecutableB = lib.mkOption {
+          type = nullableArtifact;
+          description = "Optional recovery boot executable for slot B.";
+        };
+        recoveryBundle = lib.mkOption {
+          type = nullableArtifact;
+          description = "Optional fixed-layout recovery artifact bundle.";
+        };
+        recoveryInitrd = lib.mkOption {
+          type = nullableArtifact;
+          description = "Optional selected-provider recovery initrd.";
+        };
+        recoverySlotManifest = lib.mkOption {
+          type = nullableArtifact;
+          description = "Optional recovery slot manifest.";
+        };
+        unsignedAssembly = lib.mkOption {
+          type = lib.types.package;
+          description = "Deterministic public-only image assembly inputs.";
+        };
       };
-      budgetCheck = lib.mkOption {
-        type = lib.types.package;
-        description = "Selected provider's image budget check.";
-      };
-      finishConvertedImage = lib.mkOption {
-        type = lib.types.functionTo lib.types.package;
-        description = "Opaque provider finalizer for one converted disk image.";
-      };
-      initialBootExecutable = lib.mkOption {
-        type = lib.types.package;
-        description = "Initial boot executable emitted by the selected provider.";
-      };
-      installBundle = lib.mkOption {
-        type = nullableArtifact;
-        description = "Optional selected-provider installation bundle.";
-      };
-      rawDiskFilename = lib.mkOption {
-        type = artifactFilenameType;
-        description = "Filename of the compressed raw disk inside its artifact.";
-      };
-      rawImage = lib.mkOption {
-        type = lib.types.package;
-        description = "Selected provider's compressed raw disk artifact.";
-      };
-      rawMetadataFilename = lib.mkOption {
-        type = artifactFilenameType;
-        description = "Filename of image metadata inside the raw artifact.";
-      };
-      recoveryBootExecutableA = lib.mkOption {
-        type = nullableArtifact;
-        description = "Optional recovery boot executable for slot A.";
-      };
-      recoveryBootExecutableB = lib.mkOption {
-        type = nullableArtifact;
-        description = "Optional recovery boot executable for slot B.";
-      };
-      recoveryBundle = lib.mkOption {
-        type = nullableArtifact;
-        description = "Optional fixed-layout recovery artifact bundle.";
-      };
-      recoveryInitrd = lib.mkOption {
-        type = nullableArtifact;
-        description = "Optional selected-provider recovery initrd.";
-      };
-      recoverySlotManifest = lib.mkOption {
-        type = nullableArtifact;
-        description = "Optional recovery slot manifest.";
-      };
-      unsignedAssembly = lib.mkOption {
-        type = lib.types.package;
-        description = "Deterministic public-only image assembly inputs.";
-      };
-    };
-  }) (value: let
-    recoveryArtifacts = [
-      value.recoveryBootExecutableA
-      value.recoveryBootExecutableB
-      value.recoveryBundle
-      value.recoveryInitrd
-      value.recoverySlotManifest
-    ];
-    present = builtins.map (artifact: artifact != null) recoveryArtifacts;
-  in
-    value.rawDiskFilename != value.rawMetadataFilename
-    && (lib.all (value: value) present || lib.all (value: !value) present));
+    }) (value: let
+      recoveryArtifacts = [
+        value.recoveryBootExecutableA
+        value.recoveryBootExecutableB
+        value.recoveryBundle
+        value.recoveryInitrd
+        value.recoverySlotManifest
+      ];
+      present = builtins.map (artifact: artifact != null) recoveryArtifacts;
+    in
+      value.rawDiskFilename
+      != value.rawMetadataFilename
+      && (lib.all (value: value) present || lib.all (value: !value) present));
 in {
   options.aos.image.platform = lib.mkOption {
     type = lib.types.nullOr (lib.types.uniq selectedBuilderType);
@@ -257,18 +260,5 @@ in {
 
   config = {
     aos.image.identity = lib.mkIf (config.aos.image.platform != null) config.aos.image.platform.identity;
-    aos.abilities = {
-      instances.${consumer} = {};
-      requirementTemplates.${consumer} = {
-        description = "Requires one package-owned immutable image builder.";
-        interface = builderInterface.identity.name;
-        inherit (builderInterface.identity) abi descriptor;
-      };
-      requests.${consumer} = {
-        requirement = consumer;
-        inherit consumer;
-        parameters = true;
-      };
-    };
   };
 }

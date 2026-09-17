@@ -65,7 +65,7 @@
   verityReadiness = {
     _type = "aos-request-output-reference";
     request = "aos-systemd-var-policy:verity-root";
-    output = "readiness-resource";
+    output = "resource";
   };
   ukiBMedia = effectiveSystem: let
     measuredImage = effectiveSystem.config.system.build.image.raw;

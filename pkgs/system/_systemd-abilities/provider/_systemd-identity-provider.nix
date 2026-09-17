@@ -74,10 +74,10 @@
             name = entry.requestName;
             value =
               if specification.outputName == null
-              then {membership-resource = entry.reference;}
+              then {resource = entry.reference;}
               else {
                 ${specification.outputName} = entry.parameters.name;
-                identity-resource = entry.reference;
+                resource = entry.reference;
               };
           })
           entries);

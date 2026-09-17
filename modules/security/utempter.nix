@@ -11,14 +11,6 @@
     description = "Allow terminal programs to update utmp through libutempter.";
   };
 
-  config = lib.mkIf config.aos.security.utempter.enable {
-    aos.security.wrappers.utempter = {
-      source = {
-        artifact = lib.abilities.packageOutput {package = "libutempter";};
-        path = "lib/utempter/utempter";
-      };
-      group = "utmp";
-      mode = "2711";
-    };
-  };
+  config.environment.systemPackages =
+    lib.mkIf config.aos.security.utempter.enable [pkgs.libutempter];
 }

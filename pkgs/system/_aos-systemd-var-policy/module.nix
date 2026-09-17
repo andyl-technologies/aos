@@ -28,7 +28,7 @@
   initrdFilesystems = systemMilestone "initrd-filesystems" milestones.initrdFilesystems;
   persistentState = systemMilestone "persistent-state" milestones.var;
   verityRoot = systemMilestone "verity-root" milestones.verityRootVerified;
-  verityReadiness = resultOf "verity-root" "readiness-resource";
+  verityReadiness = resultOf "verity-root" "resource";
 
   service = serviceManagement.forService {
     inherit serviceTypes consumerInstance;
@@ -74,18 +74,18 @@
         prerequisites = [];
         after =
           [
-            (resultOf "boot-identity" "readiness-resource")
-            (resultOf "initrd-stage" "readiness-resource")
-            (resultOf "device-events" "readiness-resource")
+            (resultOf "boot-identity" "resource")
+            (resultOf "initrd-stage" "resource")
+            (resultOf "device-events" "resource")
           ]
           ++ lib.optional cfg.requireVerity verityReadiness;
         before = [
-          (resultOf "persistent-state" "readiness-resource")
-          (resultOf "initrd-filesystems" "readiness-resource")
+          (resultOf "persistent-state" "resource")
+          (resultOf "initrd-filesystems" "resource")
         ];
         requires =
           [
-            (resultOf "boot-identity" "readiness-resource")
+            (resultOf "boot-identity" "resource")
           ]
           ++ lib.optional cfg.requireVerity verityReadiness;
         wants = [];
@@ -94,7 +94,7 @@
         binds_to = [];
         part_of = [];
         upholds = [];
-        required_by = [(resultOf "initrd-filesystems" "readiness-resource")];
+        required_by = [(resultOf "initrd-filesystems" "resource")];
         wanted_by = [];
         required_mounts = [];
         implicit_dependencies = true;

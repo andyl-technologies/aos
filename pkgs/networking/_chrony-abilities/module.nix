@@ -221,10 +221,10 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        after = [(resultOf "chrony-network-readiness" "readiness-resource")];
+        after = [(resultOf "chrony-network-readiness" "resource")];
         before = [];
         requires = [];
-        wants = [(resultOf "chrony-network-readiness" "readiness-resource")];
+        wants = [(resultOf "chrony-network-readiness" "resource")];
       };
       supervision = {
         startup_protocol = "notification";

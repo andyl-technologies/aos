@@ -73,10 +73,10 @@ in
   assert (request "aos-boot-preparations" "network-wait-online-unit").source.unit_file
   == "lib/systemd/system/systemd-networkd-wait-online.service";
   assert builtins.elem
-  (output "aos-boot-preparations" "initrd-stage" "readiness-resource")
+  (output "aos-boot-preparations" "initrd-stage" "resource")
   mountVar.requires;
   assert mountVar.required_by
-  == [(output "aos-boot-preparations" "initrd-filesystems" "readiness-resource")];
+  == [(output "aos-boot-preparations" "initrd-filesystems" "resource")];
   assert provisioningEffects.handlerDescriptor.entryPoint
   == "bin/aos-storage-provisioning-provider";
   assert implementations."aos-metadata-provider:storage-provisioning-platform-detector".handlerDescriptor.entryPoint

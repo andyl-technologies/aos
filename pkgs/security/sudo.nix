@@ -17,8 +17,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -77,6 +88,7 @@ in
     buildDeps = [gnumake];
     runtimeDeps = [linux-pam audit libselinux openldap cyrus-sasl openssl zlib];
     propagatedDeps = [];
+    abilities = ./_sudo;
     configureFlags = builtins.concatStringsSep " " [
       "--with-env-editor"
       "--with-editor=/run/current-system/sw/bin/vi"

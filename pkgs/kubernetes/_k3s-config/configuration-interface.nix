@@ -112,7 +112,7 @@
   };
   aggregation = {
     scope = "provider-instance";
-    key = "slot";
+    key = "configuration";
     rejectSlotCollisions = false;
     mergeContract = lib.abilities.descriptorFor "aos.ability.merge-contract/v1" {
       schema = types.schemaOf "K3s configuration aggregate" aggregateRequest;
@@ -129,7 +129,7 @@
     inherit aggregation;
     outputs = {
       execution-path = output "planning" "instance" "Returns the package-owned K3s configuration path." types.executionPath;
-      readiness-resource = readiness "References readiness for the exact K3s configuration revision.";
+      resource = readiness "References readiness for the exact K3s configuration revision.";
     };
     guarantees = [];
   };
@@ -143,7 +143,7 @@
     inherit aggregation;
     outputs = {
       execution-path = output "planning" "instance" "Returns the aggregate K3s configuration path." types.executionPath;
-      readiness-resource = readiness "References readiness for the aggregate K3s configuration revision.";
+      resource = readiness "References readiness for the aggregate K3s configuration revision.";
     };
     guarantees = [];
   };

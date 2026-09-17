@@ -869,6 +869,7 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
         name: LocalKey::new("pure").expect("valid implementation name"),
         description: "Pure test implementation.".to_string(),
         interface: binding.interface.clone(),
+        methods: Vec::new(),
         guarantees: Vec::new(),
         artifact: artifact.clone(),
         requirements: Vec::new(),

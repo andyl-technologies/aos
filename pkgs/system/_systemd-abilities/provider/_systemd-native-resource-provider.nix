@@ -25,21 +25,18 @@
       resourceKind = "aos.activation.group";
       effectsAlias = "systemd-activation-group-effects";
       backend = "activation-group-target";
-      outputName = "activation-resource";
     };
     mount = {
       selected = interfaces.mountResource;
       resourceKind = "aos.filesystem.mount";
       effectsAlias = "systemd-mount-effects";
       backend = "mount-unit";
-      outputName = null;
     };
     swap = {
       selected = interfaces.swapResource;
       resourceKind = "aos.memory.swap";
       effectsAlias = "systemd-swap-effects";
       backend = "swap-unit";
-      outputName = null;
     };
     schedule = {
       selected = interfaces.scheduledActivation;
@@ -56,7 +53,7 @@
   in {
     unit_name = "aos-${name}-${identity}.timer";
   };
-  triggerFor = resource: let
+  triggerFor = allResources: resource: let
     matches = builtins.filter (candidate:
       candidate.kind
       == "aos.service.instance"
@@ -65,7 +62,7 @@
         == "resource-triggers-service"
         && binding.resource.resource == resource.resource)
       ((candidate.value.activation or {bindings = [];}).bindings))
-    (builtins.attrValues config.aos.abilities.resolvedResources);
+    allResources;
   in
     if builtins.length matches != 1
     then throw "a systemd scheduled activation must trigger exactly one service resource"
@@ -86,23 +83,19 @@
     in
       emptyProvision
       // {
-        outputs =
-          if (specification.outputName or null) == null
-          then {}
-          else
-            builtins.listToAttrs (builtins.map (entry: {
-                name = entry.requestName;
-                value.${specification.outputName} = {
-                  interface = specification.selected.identity;
-                  resource = {
-                    provider = context.instance.id;
-                    key = entry.binding.slot;
-                  };
-                  operations = ["observe"];
-                  lifetime = "instance";
-                };
-              })
-              entries);
+        outputs = builtins.listToAttrs (builtins.map (entry: {
+            name = entry.requestName;
+            value.resource = {
+              interface = specification.selected.identity;
+              resource = {
+                provider = context.instance.id;
+                key = entry.binding.slot;
+              };
+              operations = ["observe"];
+              lifetime = "instance";
+            };
+          })
+          entries);
         resourceFragments = builtins.listToAttrs (builtins.map (entry: {
             name = entry.binding.slot;
             value = {
@@ -113,13 +106,13 @@
           })
           entries);
       };
-    realizationFor = allResources: resource:
+    realizationFor = planningOutputs: allResources: resource:
       {
         schema = "aos.systemd.native-resource-realization/v1";
         inherit (specification) backend;
       }
       // lib.optionalAttrs (kind == "schedule") (let
-        trigger = triggerFor resource;
+        trigger = triggerFor allResources resource;
       in {
         systemd_unit = scheduleUnitFor resource;
         target = trigger.realization.systemd_unit;
@@ -129,12 +122,13 @@
           kind = "unit";
           unit_name = "${resource.value.name}.target";
         };
-        after_units = builtins.map (unitIdentityForReference allResources) resource.value.after;
-        member_units = builtins.map (unitIdentityForReference allResources) resource.value.members;
-        required_member_units = builtins.map (unitIdentityForReference allResources) resource.value.required_members;
+        after_units = builtins.map (unitIdentityForReference planningOutputs allResources) resource.value.after;
+        member_units = builtins.map (unitIdentityForReference planningOutputs allResources) resource.value.members;
+        required_member_units = builtins.map (unitIdentityForReference planningOutputs allResources) resource.value.required_members;
       };
     compose = {
       allResources,
+      planningOutputs,
       resources,
       ...
     }: {
@@ -147,7 +141,7 @@
           parameters.desired = resource.value;
         })
         resources;
-      realizations = builtins.mapAttrs (_: realizationFor allResources) resources;
+      realizations = builtins.mapAttrs (_: realizationFor planningOutputs allResources) resources;
     };
     transition = import ./_systemd-native-resource-transition.nix {
       inherit effectsInterface;

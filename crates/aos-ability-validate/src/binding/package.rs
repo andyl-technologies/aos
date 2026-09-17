@@ -138,7 +138,8 @@ pub(super) fn validate_package_document(
             .child("implementation")
             .child("providers")
             .child(provider_index.to_string());
-        if context.interface(&provider.interface).is_none() {
+        let provider_interface = context.interface(&provider.interface);
+        if provider_interface.is_none() {
             push_diagnostic(
                 diagnostics,
                 diagnostic(
@@ -149,6 +150,34 @@ pub(super) fn validate_package_document(
                     "package provider interface is absent from the validated catalog".to_string(),
                 ),
             );
+        }
+        check_strict_order(
+            &provider.methods,
+            &provider_root.child("methods"),
+            diagnostics,
+        );
+        if let Some(interface) = provider_interface {
+            for (method_index, method) in provider.methods.iter().enumerate() {
+                if !interface.interface.methods.contains_key(method) {
+                    push_diagnostic(
+                        diagnostics,
+                        diagnostic(
+                            DiagnosticCode::MissingReference,
+                            DiagnosticClass::IncompatibleInterface,
+                            DiagnosticPhase::Binding,
+                            provider_root
+                                .child("methods")
+                                .child(method_index.to_string())
+                                .components()
+                                .to_vec(),
+                            format!(
+                                "provider method '{}' is absent from its exact interface",
+                                method.as_str()
+                            ),
+                        ),
+                    );
+                }
+            }
         }
         check_order_by(
             &provider.requirements,

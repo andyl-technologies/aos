@@ -77,7 +77,7 @@
   quoted = value: lib.replaceStrings ["\\" "\""] ["\\\\" "\\\""] value;
   credentialContent = name: {
     kind = "credential-content";
-    resource = resultOf "credential-${name}" "retained-resource";
+    resource = resultOf "credential-${name}" "resource";
     path = resultOf "credential-${name}" "credential-path";
   };
   producer = key: interface: parameters:
@@ -160,7 +160,7 @@
     };
     dataView = producer "data-view" serviceManagement.interfaces.storageView {
       name = "data";
-      source = resultOf "state-storage" "retained-resource";
+      source = resultOf "state-storage" "resource";
       source_path = resultOf "state-storage" "planned-path";
       access = "read-write";
       relative_path = "data";
@@ -283,10 +283,10 @@
           stop_timeout_millis = 90000;
         };
         dependencies = {
-          after = [(resultOf "network-readiness" "readiness-resource")];
+          after = [(resultOf "network-readiness" "resource")];
           before = [];
           requires = [];
-          wants = [(resultOf "network-readiness" "readiness-resource")];
+          wants = [(resultOf "network-readiness" "resource")];
         };
         credentials =
           if withTls

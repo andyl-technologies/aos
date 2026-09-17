@@ -242,9 +242,6 @@
   managedIdentityAllocation = import ./managed-identity-allocation.nix {
     inherit lib pkgs;
   };
-  systemServiceModules = import ./system-service-modules.nix {
-    inherit lib pkgs;
-  };
   dockerService = import ./docker-service.nix {
     inherit pkgs lib;
   };
@@ -285,7 +282,7 @@
     inherit lib;
   };
   securityWrappers = import ./security-wrappers.nix {
-    inherit lib;
+    inherit lib pkgs;
   };
   kernelTunables = import ./kernel-tunables.nix {
     inherit lib pkgs;
@@ -322,9 +319,6 @@
   };
   utilLinuxGetty = import ./util-linux-getty.nix {
     inherit pkgs lib mkSystem;
-  };
-  systemdDirectoryPreparation = import ./systemd-directory-preparation.nix {
-    inherit pkgs lib;
   };
   systemdIdentityRealization = import ./systemd-identity-realization.nix {
     inherit pkgs lib;
@@ -606,13 +600,11 @@ in
   assert zfstoolsService;
   assert serviceManagement;
   assert managedIdentityAllocation;
-  assert systemServiceModules;
   assert compositionDriver;
   assert systemdPackagedUnit;
   assert systemdServiceRealization;
   assert systemdQualificationChecks;
   assert utilLinuxGetty;
-  assert systemdDirectoryPreparation;
   assert systemdIdentityRealization;
   assert systemdNativeResources;
   assert aosControlPlane;

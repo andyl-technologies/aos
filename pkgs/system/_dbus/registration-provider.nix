@@ -8,11 +8,13 @@
   controllerAlias = "system-registration";
   contributionAlias = "system-registration-contribution";
   controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
+  aggregationSlot = controllerDeclaration.aggregation.key;
   controllerIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
   );
   controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
-  realizationSchema = lib.abilities.singletonSchemaDiscriminator
+  realizationSchema =
+    lib.abilities.singletonSchemaDiscriminator
     "D-Bus registration controller realization"
     controller.desiredType;
   emptyResult = {
@@ -29,7 +31,7 @@
       then builtins.head matches
       else throw "a D-Bus registration request must have exactly one selected binding";
   in
-    if binding.slot == "system-bus"
+    if binding.slot == aggregationSlot
     then binding
     else throw "the D-Bus registration provider accepts only its canonical system-bus slot";
   entriesFor = context:
@@ -45,7 +47,7 @@
     interface = controllerIdentity;
     resource = {
       provider = instance.id;
-      key = "system-bus";
+      key = aggregationSlot;
     };
     operations = ["observe"];
     lifetime = "instance";
@@ -53,7 +55,7 @@
   outputsFor = instance: entries:
     builtins.listToAttrs (builtins.map (entry: {
         name = entry.requestName;
-        value.registration-resource = registrationReference instance;
+        value.resource = registrationReference instance;
       })
       entries);
   exactlyOne = description: entries:
@@ -66,7 +68,7 @@
     emptyResult
     // {
       outputs = outputsFor context.instance [entry];
-      resourceFragments.system-bus = {
+      resourceFragments.${aggregationSlot} = {
         kind = controllerIdentity.name;
         lifetime = "instance";
         value = {
@@ -87,7 +89,7 @@
     // {
       outputs = outputsFor context.instance checked;
       resourceFragments = lib.optionalAttrs (checked != []) {
-        system-bus = {
+        ${aggregationSlot} = {
           kind = controllerIdentity.name;
           lifetime = "instance";
           value.contributions = builtins.listToAttrs (builtins.map (entry: {
@@ -159,13 +161,13 @@
     resources,
     ...
   }: let
-    resource = resources.system-bus or (throw "D-Bus system registration resource is absent");
+    resource = resources.${aggregationSlot} or (throw "D-Bus system registration resource is absent");
     configurationChild = children.configuration or null;
   in {
     requests.configuration = {
       requirement = "configuration-materialization";
-      scope = ["system-bus"];
-      slot = "system-bus";
+      scope = [aggregationSlot];
+      slot = aggregationSlot;
       parameters = {
         name = "dbus-system-configuration";
         source = {
@@ -176,22 +178,16 @@
         mode = "0444";
       };
     };
-    requests.reload = {
-      requirement = "service-reload";
-      scope = ["system-bus"];
-      slot = resource.value.base.reload.service;
-      parameters = resource.value.base.reload;
-    };
     outputs =
       if configurationChild == null
       then {}
       else
         builtins.mapAttrs (_: _: {
           configuration-path = configurationChild.outputs.planned-path.value;
-          configuration-resource = configurationChild.outputs.configuration-resource.value;
+          configuration-resource = configurationChild.outputs.resource.value;
         })
         requests;
-    realizations.system-bus.schema = realizationSchema;
+    realizations.${aggregationSlot}.schema = realizationSchema;
   };
 in {
   config.aos.abilities.implementations = {
@@ -200,7 +196,6 @@ in {
       inherit compose;
       transition = import ./registration-transition.nix {
         configurationInterface = lib.abilities.interfaces.serviceManagement.interfaces.managedConfiguration.identity;
-        reloadInterface = lib.abilities.interfaces.serviceManagement.interfaces.reload.identity;
         inherit (lib.abilities) transitionFragment;
       };
     };

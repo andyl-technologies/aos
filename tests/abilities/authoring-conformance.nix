@@ -944,11 +944,13 @@
           else abilitySelection.resultOfRequest "shared" "result";
         aos.abilities = {
           interfaces.shared = implementationInterface;
-          implementations.shared = implementation // {
-            interface = "shared";
-            compose = null;
-            transition = null;
-          };
+          implementations.shared =
+            implementation
+            // {
+              interface = "shared";
+              compose = null;
+              transition = null;
+            };
           requirementTemplates.shared = {
             description = "Requires the package-local provenance fixture.";
             interface = implementationInterface.name;
@@ -960,20 +962,21 @@
             implementation = "shared";
             configuration = true;
           };
-          requests = {
-            shared = {
-              requirement = "shared";
-              consumer = "provider";
-              parameters = true;
+          requests =
+            {
+              shared = {
+                requirement = "shared";
+                consumer = "provider";
+                parameters = true;
+              };
+            }
+            // lib.optionalAttrs (package == "alpha") {
+              foreign = {
+                requirement = "beta:shared";
+                consumer = "alpha:provider";
+                parameters = true;
+              };
             };
-          }
-          // lib.optionalAttrs (package == "alpha") {
-            foreign = {
-              requirement = "beta:shared";
-              consumer = "alpha:provider";
-              parameters = true;
-            };
-          };
         };
       };
     };
@@ -1066,7 +1069,13 @@
     name = package;
     outputs = {
       self = "/nix/store/00000000000000000000000000000000-${package}";
-      dependencies.${builtins.toJSON {inherit package; output = "module";}} = modulePath;
+      dependencies.${
+        builtins.toJSON {
+          inherit package;
+          output = "module";
+        }
+      } =
+        modulePath;
     };
     module = {packageArtifactFor, ...}: {
       options.artifactProbe.${package} = lib.mkOption {
@@ -1106,23 +1115,23 @@
     ];
   };
   unrelatedArtifactSelection = builtins.tryEval (builtins.deepSeq ((lib.evalModules {
-        modules = [];
-        packageModules = [
-          {
-            name = "alpha";
-            outputs = {
-              self = "/nix/store/00000000000000000000000000000000-alpha";
-              dependencies = {};
-            };
-            module = {packageArtifactFor, ...}: {
-              options.value = lib.mkOption {type = lib.types.str;};
-              config.value = packageArtifactFor (lib.abilities.packageOutput {
-                package = "beta";
-              });
-            };
-          }
-        ];
-      }).config.value)
+      modules = [];
+      packageModules = [
+        {
+          name = "alpha";
+          outputs = {
+            self = "/nix/store/00000000000000000000000000000000-alpha";
+            dependencies = {};
+          };
+          module = {packageArtifactFor, ...}: {
+            options.value = lib.mkOption {type = lib.types.str;};
+            config.value = packageArtifactFor (lib.abilities.packageOutput {
+              package = "beta";
+            });
+          };
+        }
+      ];
+    }).config.value)
     true);
   fakePackage = {
     name,
@@ -1154,7 +1163,12 @@
     name = "owner";
     path = "/nix/store/55555555555555555555555555555555-owner";
     runtimeDeps = [transitiveMiddle];
-    selectors = [{package = "leaf"; output = "out";}];
+    selectors = [
+      {
+        package = "leaf";
+        output = "out";
+      }
+    ];
   };
   transitiveOutputs = lib.abilities.authenticatedPackageOutputsFor transitiveOwner;
   uncontractedHelper = {
@@ -1166,7 +1180,12 @@
     name = "helper-owner";
     path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-helper-owner";
     runtimeDeps = [uncontractedHelper];
-    selectors = [{package = "leaf"; output = "out";}];
+    selectors = [
+      {
+        package = "leaf";
+        output = "out";
+      }
+    ];
   };
   helperTraversalOutputs = lib.abilities.authenticatedPackageOutputsFor helperOwner;
   unrelatedOutput = builtins.tryEval (builtins.deepSeq
@@ -1181,7 +1200,12 @@
   ambiguousOwner = fakePackage {
     name = "ambiguous-owner";
     path = "/nix/store/66666666666666666666666666666666-owner";
-    selectors = [{package = "duplicate"; output = "out";}];
+    selectors = [
+      {
+        package = "duplicate";
+        output = "out";
+      }
+    ];
     runtimeDeps = [
       (fakePackage {
         name = "duplicate";
@@ -1209,14 +1233,22 @@
   foreignSelectorOwner = fakePackage {
     name = "foreign-selector-owner";
     path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-foreign-selector-owner";
-    selectors = [{package = "foreign"; output = "out";}];
+    selectors = [
+      {
+        package = "foreign";
+        output = "out";
+      }
+    ];
   };
   globallySelectedPackages = [foreignSelectorOwner globallySelectedForeign];
   globallySelectedForeignOutput = builtins.tryEval (builtins.deepSeq
     globallySelectedPackages
     (lib.abilities.authenticatedPackageOutputFor {
       package = foreignSelectorOwner;
-      selector = {package = "foreign"; output = "out";};
+      selector = {
+        package = "foreign";
+        output = "out";
+      };
     }));
   callerModuleRecord = {
     name = "owner";
@@ -1228,7 +1260,8 @@
       dependencies = {};
     };
   };
-  selectedCallerRecords = lib.abilities.selectAuthenticatedPackageModuleRecords
+  selectedCallerRecords =
+    lib.abilities.selectAuthenticatedPackageModuleRecords
     [transitiveOwner]
     [callerModuleRecord];
   mismatchedCallerRecord = builtins.tryEval (builtins.deepSeq
@@ -1240,14 +1273,26 @@
     callerModuleRecord
     callerModuleRecord
   ];
+  secondaryCallerRecord =
+    callerModuleRecord
+    // {
+      module = "${callerModuleRecord.configRoot}/provider.nix";
+    };
+  canonicalPackageProviderRecords = lib.abilities.canonicalizeAuthenticatedModuleRecords [
+    callerModuleRecord
+    secondaryCallerRecord
+  ];
   conflictingCallerRecords = builtins.tryEval (builtins.deepSeq
     (lib.abilities.canonicalizeAuthenticatedModuleRecords [
       callerModuleRecord
-      (callerModuleRecord // {
-        outputs = callerModuleRecord.outputs // {
-          self = "/nix/store/66666666666666666666666666666666-other-owner";
-        };
-      })
+      (callerModuleRecord
+        // {
+          outputs =
+            callerModuleRecord.outputs
+            // {
+              self = "/nix/store/66666666666666666666666666666666-other-owner";
+            };
+        })
     ])
     true);
   providerTerminalBase = {
@@ -1266,17 +1311,21 @@
   providerIntroducedImplementation = builtins.tryEval (builtins.deepSeq
     (lib.abilities.checkedProviderModuleEvaluation {
       before = providerTerminalBase;
-      after = providerTerminalBase // {
-        implementations = providerTerminalBase.implementations // {nested = {};};
-      };
+      after =
+        providerTerminalBase
+        // {
+          implementations = providerTerminalBase.implementations // {nested = {};};
+        };
     })
     true);
   providerIntroducedBinding = builtins.tryEval (builtins.deepSeq
     (lib.abilities.checkedProviderModuleEvaluation {
       before = providerTerminalBase;
-      after = providerTerminalBase // {
-        bindings = providerTerminalBase.bindings // {nested = {request = "nested";};};
-      };
+      after =
+        providerTerminalBase
+        // {
+          bindings = providerTerminalBase.bindings // {nested = {request = "nested";};};
+        };
     })
     true);
   staticBinding = lib.abilities.staticBinding {
@@ -1292,7 +1341,8 @@
     read_root = "/read/store";
     static_contract = "/identity/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-contract/contract.json";
   };
-  mappedModulePath = storeViewLib.readPathFor checkedStoreView
+  mappedModulePath =
+    storeViewLib.readPathFor checkedStoreView
     "/identity/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-module/module.nix";
   mappedAuthenticatedModule = storeViewLib.mapAuthenticatedModule checkedStoreView {
     name = "caller";
@@ -1301,20 +1351,23 @@
     module = "/identity/store/cccccccccccccccccccccccccccccccc-caller-module/module.nix";
     outputs = {
       self = "/identity/store/dddddddddddddddddddddddddddddddd-caller";
-      dependencies."{\"output\":\"module\",\"package\":\"self\"}" =
-        "/identity/store/cccccccccccccccccccccccccccccccc-caller-module";
+      dependencies."{\"output\":\"module\",\"package\":\"self\"}" = "/identity/store/cccccccccccccccccccccccccccccccc-caller-module";
     };
   };
   escapedStorePath = builtins.tryEval (builtins.deepSeq
     (storeViewLib.readPathFor checkedStoreView "/different/store/module.nix")
     true);
-  initrdStaticContract = storeViewLib.staticContractFor
+  initrdStaticContract =
+    storeViewLib.staticContractFor
     checkedStoreView
     checkedStoreView.static_contract;
-  hostStoreView = checkedStoreView // {
-    static_contract = "/identity/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-host-contract/contract.json";
-  };
-  hostStaticContract = storeViewLib.staticContractFor
+  hostStoreView =
+    checkedStoreView
+    // {
+      static_contract = "/identity/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-host-contract/contract.json";
+    };
+  hostStaticContract =
+    storeViewLib.staticContractFor
     hostStoreView
     hostStoreView.static_contract;
   mismatchedStageContract = builtins.tryEval (builtins.deepSeq
@@ -1398,38 +1451,56 @@
     !(builtins.tryEval (builtins.deepSeq (evaluateSelectedManager value) true)).success;
   selectedManagerUnknownFieldRejections = [
     (selectedManagerProjection // {unknown = true;})
-    (selectedManagerProjection // {
-      configuration = selectedManagerProjection.configuration // {unknown = true;};
-    })
-    (selectedManagerProjection // {
-      configuration = selectedManagerProjection.configuration // {
-        executableScripts.activate = selectedManagerProjection.configuration.executableScripts.activate // {unknown = true;};
-      };
-    })
-    (selectedManagerProjection // {
-      configuration = selectedManagerProjection.configuration // {
-        filesystemEntries."manager.conf" = selectedManagerProjection.configuration.filesystemEntries."manager.conf" // {unknown = true;};
-      };
-    })
-    (selectedManagerProjection // {
-      configuration = selectedManagerProjection.configuration // {
-        ownership = selectedManagerProjection.configuration.ownership // {unknown = true;};
-      };
-    })
-    (selectedManagerProjection // {
-      configuration = selectedManagerProjection.configuration // {
-        rootfs = selectedManagerProjection.configuration.rootfs // {unknown = true;};
-      };
-    })
-    (selectedManagerProjection // {
-      configuration = selectedManagerProjection.configuration // {
-        rootfs = selectedManagerProjection.configuration.rootfs // {
-          trees = [
-            ((builtins.head selectedManagerProjection.configuration.rootfs.trees) // {unknown = true;})
-          ];
-        };
-      };
-    })
+    (selectedManagerProjection
+      // {
+        configuration = selectedManagerProjection.configuration // {unknown = true;};
+      })
+    (selectedManagerProjection
+      // {
+        configuration =
+          selectedManagerProjection.configuration
+          // {
+            executableScripts.activate = selectedManagerProjection.configuration.executableScripts.activate // {unknown = true;};
+          };
+      })
+    (selectedManagerProjection
+      // {
+        configuration =
+          selectedManagerProjection.configuration
+          // {
+            filesystemEntries."manager.conf" = selectedManagerProjection.configuration.filesystemEntries."manager.conf" // {unknown = true;};
+          };
+      })
+    (selectedManagerProjection
+      // {
+        configuration =
+          selectedManagerProjection.configuration
+          // {
+            ownership = selectedManagerProjection.configuration.ownership // {unknown = true;};
+          };
+      })
+    (selectedManagerProjection
+      // {
+        configuration =
+          selectedManagerProjection.configuration
+          // {
+            rootfs = selectedManagerProjection.configuration.rootfs // {unknown = true;};
+          };
+      })
+    (selectedManagerProjection
+      // {
+        configuration =
+          selectedManagerProjection.configuration
+          // {
+            rootfs =
+              selectedManagerProjection.configuration.rootfs
+              // {
+                trees = [
+                  ((builtins.head selectedManagerProjection.configuration.rootfs.trees) // {unknown = true;})
+                ];
+              };
+          };
+      })
   ];
   managerSelection = {
     bindingsForImplementation = implementation:
@@ -1624,11 +1695,13 @@ in
   assert builtins.length packageSelectionEvaluation.config.selectionProbe.beta == 1;
   assert !packageSelectionEvaluation.config.foreignSelectionProbe.alpha;
   assert !packageSelectionEvaluation.config.foreignSelectionProbe.beta;
-  assert packageSelectionEvaluation.config.requestSelectionProbe == {
+  assert packageSelectionEvaluation.config.requestSelectionProbe
+  == {
     alpha = "alpha:shared";
     beta = "beta:shared";
   };
-  assert packageSelectionEvaluation.config.interfaceSelectionProbe == {
+  assert packageSelectionEvaluation.config.interfaceSelectionProbe
+  == {
     alpha = "alpha:shared";
     beta = "beta:shared";
   };
@@ -1638,12 +1711,14 @@ in
   assert packageSelectionEvaluation.config.aos.abilities.requests."alpha:foreign".requirement == "beta:shared";
   assert packageSelectionEvaluation.config.aos.abilities.requests."alpha:foreign".consumer == "alpha:provider";
   assert !malformedQualifiedReference.success;
-  assert packageSelectionEvaluation.config.resultSelectionProbe.alpha == {
+  assert packageSelectionEvaluation.config.resultSelectionProbe.alpha
+  == {
     _type = "aos-request-output-reference";
     request = "alpha:shared";
     output = "result";
   };
-  assert alphaResultProvenance == {
+  assert alphaResultProvenance
+  == {
     package = "alpha";
     localKey = "shared";
     output = "result";
@@ -1655,7 +1730,8 @@ in
   assert alphaSelection.implementation.localKey == "shared";
   assert alphaSelection.binding.implementation == "alpha:shared";
   assert alphaSelection.providerInstance.declaration == "alpha:provider";
-  assert artifactSelectionEvaluation.config.artifactProbe == {
+  assert artifactSelectionEvaluation.config.artifactProbe
+  == {
     alpha = "/nix/store/11111111111111111111111111111111-alpha-module";
     beta = "/nix/store/22222222222222222222222222222222-beta-module";
   };
@@ -1673,11 +1749,13 @@ in
   assert selectedCallerRecords == [callerModuleRecord];
   assert !mismatchedCallerRecord.success;
   assert canonicalCallerRecords == [callerModuleRecord];
+  assert canonicalPackageProviderRecords == [callerModuleRecord secondaryCallerRecord];
   assert !conflictingCallerRecords.success;
   assert checkedProviderTerminal == providerTerminalBase;
   assert !providerIntroducedImplementation.success;
   assert !providerIntroducedBinding.success;
-  assert staticBinding.value == {
+  assert staticBinding.value
+  == {
     request = "consumer:request";
     implementation = "provider:implementation";
     providerInstance = "provider:instance";
@@ -1692,19 +1770,20 @@ in
   }).name;
   assert mappedModulePath
   == "/read/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-module/module.nix";
-  assert mappedAuthenticatedModule == {
+  assert mappedAuthenticatedModule
+  == {
     name = "caller";
     version = "1";
     configRoot = "/read/store/cccccccccccccccccccccccccccccccc-caller-module";
     module = "/read/store/cccccccccccccccccccccccccccccccc-caller-module/module.nix";
     outputs = {
       self = "/read/store/dddddddddddddddddddddddddddddddd-caller";
-      dependencies."{\"output\":\"module\",\"package\":\"self\"}" =
-        "/read/store/cccccccccccccccccccccccccccccccc-caller-module";
+      dependencies."{\"output\":\"module\",\"package\":\"self\"}" = "/read/store/cccccccccccccccccccccccccccccccc-caller-module";
     };
   };
   assert !escapedStorePath.success;
-  assert initrdStaticContract == {
+  assert initrdStaticContract
+  == {
     identity = checkedStoreView.static_contract;
     path = "/read/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-contract/contract.json";
   };
@@ -1829,7 +1908,8 @@ in
   assert !(evaluateSelectedManager selectedManagerProjection ? _module);
   assert !((evaluateSelectedManager selectedManagerProjection).configuration ? _module);
   assert builtins.all rejectsSelectedManager selectedManagerUnknownFieldRejections;
-  assert builtins.attrNames selectedSystemdUsers.users == [
+  assert builtins.attrNames selectedSystemdUsers.users
+  == [
     "systemd-coredump"
     "systemd-journal"
     "systemd-network"
@@ -1838,7 +1918,8 @@ in
     "systemd-timesync"
   ];
   assert builtins.attrNames selectedSystemdUsers.groups == builtins.attrNames selectedSystemdUsers.users;
-  assert unselectedSystemdUsers == {
+  assert unselectedSystemdUsers
+  == {
     groups = {};
     users = {};
   };

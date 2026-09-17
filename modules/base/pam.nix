@@ -14,7 +14,6 @@
 }: let
   cfg = config.aos.pam;
   parentConfig = config;
-  sessionTracking = lib.abilities.interfaces.loginSessionTracking.interface;
 
   autoOrderRules = rules:
     lib.pipe rules [
@@ -344,22 +343,7 @@ in {
 
   config = lib.mkMerge [
     {aos.pam.services = config.aos.contributions.pamServices;}
-    (lib.mkIf cfg.enable {
-      aos.abilities = {
-        instances."pam:session" = {};
-        requirementTemplates."pam:login-session-tracking" = {
-          description = "Requires integration with the selected system manager for login sessions.";
-          interface = sessionTracking.identity.name;
-          inherit (sessionTracking.identity) abi descriptor;
-        };
-        requests."pam:login-session-tracking" = {
-          requirement = "pam:login-session-tracking";
-          consumer = "pam:session";
-          scope = ["login-sessions"];
-          parameters.enabled = true;
-        };
-      };
-    })
+    {environment.systemPackages = [pkgs.linux-pam];}
     (lib.mkIf cfg.enable {
       # Register every distinct non-empty limit set as an image-fixed config
       # artifact keyed by its canonical limits identity. `makeLimitsConf`

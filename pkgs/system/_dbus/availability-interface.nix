@@ -45,7 +45,7 @@
     abi = 1;
     requestType = request;
     inherit methods lifecycle;
-    outputs.readiness-resource =
+    outputs.resource =
       output "planning" "instance"
       "References the exact configured system message bus service resource."
       types.resourceReference;

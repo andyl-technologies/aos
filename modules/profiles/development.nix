@@ -150,23 +150,6 @@ in {
 
     aos.security.sudo.enable = lib.mkDefault true;
     aos.security.utempter.enable = lib.mkDefault true;
-    aos.security.wrappers = let
-      inetutilsArtifact = lib.abilities.packageOutput {package = "inetutils";};
-    in {
-      ping = {
-        source = {
-          artifact = inetutilsArtifact;
-          path = "bin/ping";
-        };
-      };
-      ping6 = {
-        source = {
-          artifact = inetutilsArtifact;
-          path = "bin/ping6";
-        };
-      };
-    };
-
     system.checks.development = {
       description = "Development toolchain and library discovery checks";
       checks = [

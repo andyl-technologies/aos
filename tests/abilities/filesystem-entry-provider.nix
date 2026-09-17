@@ -89,7 +89,7 @@
       };
     });
   abilities = evaluation.config.aos.abilities;
-  output = abilities.compositionOutputs."consumer:entry".entry-resource;
+  output = abilities.compositionOutputs."consumer:entry".resource;
   resources = builtins.attrValues abilities.resolvedResources;
   resource = builtins.head (builtins.filter (candidate:
     candidate.resource == output.value.resource)

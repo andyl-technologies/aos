@@ -355,6 +355,8 @@ pub struct ProviderImplementation {
     pub description: String,
     /// Identifies the exact public interface implemented.
     pub interface: InterfaceKey,
+    /// Names the exact interface methods supported by this implementation.
+    pub methods: Vec<LocalKey>,
     /// Names exact execution guarantees supplied by this implementation.
     pub guarantees: Vec<GuaranteeKey>,
     /// Identifies the authenticated implementation artifact.
@@ -416,6 +418,7 @@ impl ProviderImplementation {
         #[derive(Serialize)]
         struct SemanticProviderImplementation<'a> {
             interface: &'a InterfaceKey,
+            methods: &'a [LocalKey],
             guarantees: &'a [GuaranteeKey],
             artifact: ArtifactIdentity,
             requirements: Vec<SemanticRequirement<'a>>,
@@ -429,6 +432,7 @@ impl ProviderImplementation {
 
         let semantic = SemanticProviderImplementation {
             interface: &self.interface,
+            methods: &self.methods,
             guarantees: &self.guarantees,
             artifact: self.artifact.identity(),
             requirements: self
@@ -480,6 +484,13 @@ fn validate_provider_implementation_limits(
         );
     }
     if implementation
+        .methods
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+    {
+        bail!("provider implementation methods are not unique and canonically ordered");
+    }
+    if implementation
         .guarantees
         .windows(2)
         .any(|pair| pair[0] >= pair[1])
@@ -518,6 +529,7 @@ fn consume_provider_implementation_items(
     consume_items(remaining_items, 3)?;
     consume_items(remaining_items, 4)?;
     consume_items(remaining_items, implementation.guarantees.len())?;
+    consume_items(remaining_items, implementation.methods.len())?;
     consume_items(
         remaining_items,
         implementation.guarantees.len().saturating_mul(3),
@@ -895,6 +907,7 @@ mod tests {
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
                 descriptor: digest(1),
             },
+            methods: Vec::new(),
             guarantees: Vec::new(),
             artifact: ArtifactReference {
                 content: digest(2),
@@ -1010,6 +1023,7 @@ mod tests {
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
                 descriptor: digest(1),
             },
+            methods: Vec::new(),
             guarantees: Vec::new(),
             artifact: ArtifactReference {
                 content: digest(2),
@@ -1025,7 +1039,7 @@ mod tests {
             owns_resource_kinds: Vec::new(),
             state_format: None,
         };
-        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/stateless-provider"},"description":"Stateless test provider.","guarantees":[],"handler":"run","interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.stateless"},"name":"stateless","owns_resource_kinds":[],"requirements":[]}"#;
+        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/stateless-provider"},"description":"Stateless test provider.","guarantees":[],"handler":"run","interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.stateless"},"methods":[],"name":"stateless","owns_resource_kinds":[],"requirements":[]}"#;
 
         let encoded = aos_contract::canonical::to_vec(&stateless)
             .expect("stateless provider implementation encodes canonically");

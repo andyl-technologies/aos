@@ -225,9 +225,36 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       role = "public-package";
     };
     pname = "mariadb";
@@ -849,7 +876,8 @@ in
       };
       configurationPathIdentity = localKey: let
         expectedIdentity = expectedRequestOutput localKey "planned-path";
-        executionPathIdentities = builtins.map
+        executionPathIdentities =
+          builtins.map
           (fragment:
             lib.abilities.requestOutputIdentity {
               requests = enabledAbilityConfig.requests;
@@ -858,7 +886,8 @@ in
           (builtins.filter
             (fragment: fragment.kind == "execution-path")
             serverSource.fragments);
-        matches = builtins.filter
+        matches =
+          builtins.filter
           (identity: identity == expectedIdentity)
           executionPathIdentities;
         matchCount = builtins.length matches;
@@ -956,7 +985,7 @@ in
           requests = enabledAbilityConfig.requests;
           reference = builtins.elemAt mainDependencies.after 0;
         }
-        == expectedRequestOutput "initialize-lifecycle" "service-resource"
+        == expectedRequestOutput "initialize-lifecycle" "resource"
         && !(enabledAbilityConfig.requests."mariadb:service-group".parameters ? requested_id)
         && !(enabledAbilityConfig.requests."mariadb:service-principal".parameters ? requested_id);
     in {

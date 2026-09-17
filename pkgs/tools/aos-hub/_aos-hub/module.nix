@@ -143,7 +143,7 @@
   credentialDelivery = name:
     producer "credential-${name}" serviceManagement.interfaces.credentialDelivery {
       name = credentialFields.${name}.handle;
-      source = resultOf "credential-${name}-source" "credential-resource";
+      source = resultOf "credential-${name}-source" "resource";
       encrypted = false;
     };
   credentialFragments =
@@ -252,12 +252,12 @@
         };
         dependencies = {
           after = [
-            (resultOf "network-readiness" "readiness-resource")
-            (resultOf "state-storage" "retained-resource")
+            (resultOf "network-readiness" "resource")
+            (resultOf "state-storage" "resource")
           ];
           before = [];
-          requires = [(resultOf "state-storage" "retained-resource")];
-          wants = [(resultOf "network-readiness" "readiness-resource")];
+          requires = [(resultOf "state-storage" "resource")];
+          wants = [(resultOf "network-readiness" "resource")];
         };
         supervision = {
           startup_protocol = "process";
@@ -323,7 +323,7 @@
   };
   potentialCredentialDelivery = producer "potential-credential" serviceManagement.interfaces.credentialDelivery {
     name = "potential-credential";
-    source = resultOf "potential-credential-source" "credential-resource";
+    source = resultOf "potential-credential-source" "resource";
     encrypted = false;
   };
   potentialService = serviceFor {

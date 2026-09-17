@@ -58,7 +58,7 @@
     requests = {};
     resourceFragments = {};
     outputs.${entry.requestName} = {
-      retained-resource = reference;
+      resource = reference;
       socket-path = entry.request.parameters.socket_path;
     };
   };

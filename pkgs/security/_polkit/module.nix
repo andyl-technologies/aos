@@ -2,7 +2,6 @@
 {
   config,
   lib,
-  packageName,
   ...
 }: let
   cfg = config.aos.security.polkit;
@@ -81,7 +80,7 @@
             kind = "copied-file";
             source = {
               kind = "execution-path";
-              resource = resultOf "local-rules-source" "retained-resource";
+              resource = resultOf "local-rules-source" "resource";
               path = resultOf "local-rules-source" "planned-path";
             };
             maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
@@ -91,8 +90,8 @@
           group = resultOf "service-group" "group-name";
           mode = "0640";
           prerequisites = [
-            (resultOf "local-rules-source" "retained-resource")
-            (resultOf "local-filesystems" "readiness-resource")
+            (resultOf "local-rules-source" "resource")
+            (resultOf "local-filesystems" "resource")
           ];
         };
       }
@@ -115,10 +114,47 @@
           owner = "root";
           group = "root";
           mode = "0444";
-          prerequisites = [(resultOf "local-filesystems" "readiness-resource")];
+          prerequisites = [(resultOf "local-filesystems" "resource")];
         };
       }
     ];
+  };
+  privilegedWrappers = serviceManagement.forProducers {
+    inherit consumerInstance;
+    interface = interfaces.filesystemEntry;
+    methods = ["materialize" "observe" "release"];
+    producers =
+      builtins.map (wrapper: {
+        key = "wrapper-${wrapper.name}";
+        parameters = {
+          inherit (wrapper) name;
+          entry = {
+            kind = "copied-file";
+            source = {
+              kind = "artifact-file";
+              reference = {
+                artifact = lib.abilities.packageOutput {};
+                path = wrapper.path;
+              };
+            };
+            maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
+          };
+          destination = "/run/wrappers/bin/${wrapper.name}";
+          owner = "root";
+          group = "root";
+          mode = "4755";
+          prerequisites = [(resultOf "aos:wrapper-bin" "resource")];
+        };
+      }) [
+        {
+          name = "pkexec";
+          path = "bin/pkexec";
+        }
+        {
+          name = "polkit-agent-helper-1";
+          path = "lib/polkit-1/polkit-agent-helper-1";
+        }
+      ];
   };
   service = serviceManagement.forService {
     featureContributions = [
@@ -215,14 +251,14 @@
       };
       dependencies = {
         after = [
-          (resultOf "system-bus-availability" "readiness-resource")
+          (resultOf "system-bus-availability" "resource")
         ];
         before = [];
-        requires = [(resultOf "system-bus-availability" "readiness-resource")];
+        requires = [(resultOf "system-bus-availability" "resource")];
         wants = [];
         prerequisites = [
-          (resultOf "local-rules-file" "retained-resource")
-          (resultOf "packaged-actions-file" "retained-resource")
+          (resultOf "local-rules-file" "resource")
+          (resultOf "packaged-actions-file" "resource")
         ];
       };
       supervision = {
@@ -296,6 +332,7 @@
     systemBusAvailability
     rulesConfiguration
     configurationFiles
+    privilegedWrappers
     service
   ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
@@ -329,28 +366,6 @@ in {
           unixAuth = true;
           startSession = false;
           setLoginUid = false;
-        };
-        wrappers = {
-          pkexec = {
-            source = {
-              artifact = lib.abilities.packageOutput {package = packageName;};
-              path = "bin/pkexec";
-            };
-            owner = "root";
-            group = "root";
-            mode = "4755";
-            maximumSizeBytes = abilityTypes.limits.maxSafeInteger;
-          };
-          polkit-agent-helper-1 = {
-            source = {
-              artifact = lib.abilities.packageOutput {package = packageName;};
-              path = "lib/polkit-1/polkit-agent-helper-1";
-            };
-            owner = "root";
-            group = "root";
-            mode = "4755";
-            maximumSizeBytes = abilityTypes.limits.maxSafeInteger;
-          };
         };
         runtimeChecks.polkit = {
           description = "polkit policy and privilege checks";

@@ -352,7 +352,7 @@
         {
           _type = "aos-request-output-reference";
           request = "aos:aos-activate-lifecycle";
-          output = "service-resource";
+          output = "resource";
         }
         imageBootCommitDependencies.after)
     then throw "image boot success must wait for configuration activation"
@@ -361,7 +361,7 @@
         {
           _type = "aos-request-output-reference";
           request = "aos:aos-graph-compile-lifecycle";
-          output = "service-resource";
+          output = "resource";
         }
         imageBootCommitDependencies.requires)
     then throw "image boot assessment must wait for successful no-input or operator-input evaluation"
@@ -450,7 +450,7 @@
     then throw "DHCP-less metadata acquisition requires an initrd route to link-local IMDS"
     else if
       !(builtins.elem
-        (initrdOutput "aos-boot-preparations" "initrd-filesystems" "readiness-resource")
+        (initrdOutput "aos-boot-preparations" "initrd-filesystems" "resource")
         (initrdRequest "aos-boot-preparations" "mount-var-dependencies").required_by)
     then throw "initrd-fs.target must require the persistent /var substrate"
     else if (initrdRequest "aos-boot-preparations" "mount-var-dependencies").implicit_dependencies
@@ -847,7 +847,7 @@
         {
           _type = "aos-request-output-reference";
           request = "aos-boot-storage:aos-mount-esp-lifecycle";
-          output = "service-resource";
+          output = "resource";
         }
         bareMetalStorageSystem.config.aos.abilities.requests."aos:image-boot-commit-dependencies".parameters.requires)
     then throw "image blessing must require authoritative booted-ESP discovery"

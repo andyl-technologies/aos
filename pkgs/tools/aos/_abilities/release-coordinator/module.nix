@@ -173,7 +173,7 @@
           key = "${role}-credential-${name}";
           parameters = {
             inherit name;
-            source = resultOf "${role}-credential-${name}-source" "credential-resource";
+            source = resultOf "${role}-credential-${name}-source" "resource";
             encrypted = false;
           };
         })
@@ -293,12 +293,12 @@
     stop_timeout_millis = 90000;
   };
   failureHandler = serviceName:
-    resultOf "${serviceName}-lifecycle" "service-resource";
+    resultOf "${serviceName}-lifecycle" "resource";
   scheduledActivation = name: {
     bindings = [
       {
         name = "schedule";
-        resource = resultOf "${name}-schedule" "activation-resource";
+        resource = resultOf "${name}-schedule" "resource";
         relationship = "resource-triggers-service";
       }
     ];
@@ -330,8 +330,8 @@
         timeoutMillis = 604800000;
       };
       dependencies = dependencies {
-        after = [(resultOf "network-readiness" "readiness-resource")];
-        wants = [(resultOf "network-readiness" "readiness-resource")];
+        after = [(resultOf "network-readiness" "resource")];
+        wants = [(resultOf "network-readiness" "resource")];
       };
       failure_policy = {
         handlers = [(failureHandler "alert-release")];
@@ -362,8 +362,8 @@
         timeoutMillis = 900000;
       };
       dependencies = dependencies {
-        after = [(resultOf "network-readiness" "readiness-resource")];
-        wants = [(resultOf "network-readiness" "readiness-resource")];
+        after = [(resultOf "network-readiness" "resource")];
+        wants = [(resultOf "network-readiness" "resource")];
       };
       failure_policy = {
         handlers = [(failureHandler "alert-timestamp")];
@@ -422,7 +422,7 @@
         timeoutMillis = 21600000;
       };
       dependencies = dependencies {
-        after = [(resultOf "backup-lifecycle" "service-resource")];
+        after = [(resultOf "backup-lifecycle" "resource")];
       };
       failure_policy = {
         handlers = [(failureHandler "alert-restore-check")];

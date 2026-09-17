@@ -1314,7 +1314,10 @@
     reference = output.value;
     binding = bindingForPublishedRequest requestName;
     implementation = config.aos.abilities.implementations.${binding.value.implementation};
-    declaration = config.aos.abilities.interfaces.${implementation.interface};
+    declaration =
+      interfaceDeclarationForReference
+      "published resource implementation '${binding.value.implementation}'"
+      implementation.interface;
     request =
       config.aos.abilities.requests.${requestName}
       or config.aos.abilities.compositionRequests.${requestName}
@@ -1385,16 +1388,23 @@
     then desired // published
     else throw "Desired resources contain a duplicate logical ResourceId.";
 
-  desiredResourceAccepted = resource:
+  desiredResourceAcceptance = resource:
     if config == null
-    then true
+    then {accepted = true;}
     else if !(builtins.hasAttr resource.controller config.aos.abilities.bindings)
-    then false
+    then {
+      accepted = false;
+      reason = "controller-binding-absent";
+    }
     else let
       binding = config.aos.abilities.bindings.${resource.controller};
     in
       if !(builtins.hasAttr binding.implementation config.aos.abilities.implementations)
-      then false
+      then {
+        accepted = false;
+        reason = "controller-implementation-absent";
+        implementation = binding.implementation;
+      }
       else let
         implementation = config.aos.abilities.implementations.${binding.implementation};
         controllerDeclaration =
@@ -1419,14 +1429,27 @@
           if implementation.compositionType == null
           then resourceDeclaration.requestType
           else implementation.compositionType;
-      in
-        resourceDeclaration
-        != null
-        && resource.resource.provider == config.aos.abilities.instanceIdentities.${binding.providerInstance}
-        && controlsKind
-        && typeAccepts resourceType resource.value
-        && implementation.desiredType != null
-        && typeAccepts implementation.desiredType resource.realization;
+        providerMatches =
+          resource.resource.provider
+          == config.aos.abilities.instanceIdentities.${binding.providerInstance};
+        valueAccepted = typeAccepts resourceType resource.value;
+        realizationAccepted =
+          implementation.desiredType
+          != null
+          && typeAccepts implementation.desiredType resource.realization;
+        accepted =
+          resourceDeclaration
+          != null
+          && providerMatches
+          && controlsKind
+          && valueAccepted
+          && realizationAccepted;
+      in {
+        inherit accepted controlsKind providerMatches realizationAccepted valueAccepted;
+        implementation = binding.implementation;
+        resourceDeclarationFound = resourceDeclaration != null;
+      };
+  desiredResourceAccepted = resource: (desiredResourceAcceptance resource).accepted;
 
   compositionOutputType = strictSubmodule {
     value = mkOption {
@@ -1444,7 +1467,7 @@
     };
     resourceOutput = mkOption {
       type = localKeyType;
-      description = "Protected retained-resource output from the observer provider.";
+      description = "Protected planning resource output from the observer provider.";
     };
     socketOutput = mkOption {
       type = localKeyType;
@@ -1677,7 +1700,8 @@ in {
         else
           throw "Desired ability resources do not match their controller contracts: ${builtins.toJSON (builtins.map (name: {
               inherit name;
-              inherit (resources.${name}) kind resource;
+              inherit (resources.${name}) controller kind realization resource value;
+              validation = desiredResourceAcceptance resources.${name};
             })
             rejected)}.";
       description = "Provider-owned desired resources derived during module evaluation.";

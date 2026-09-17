@@ -691,14 +691,14 @@
       then [featureInterfaces.lifecycle.guaranteesByKind.instance]
       else [];
     coreRequirementTemplates = builtins.listToAttrs (builtins.map (feature: {
-        name = declarationReferenceFor consumerInstance featureInterfaces.${feature}.alias;
+        name = declarationReferenceFor consumerInstance "${checked.service}-${featureInterfaces.${feature}.alias}";
         value = requirementFor featureInterfaces.${feature} (methodsFor feature) (guaranteesFor feature);
       })
       enabledFeatures);
     coreRequests = builtins.listToAttrs (builtins.map (feature: {
         name = declarationReferenceFor consumerInstance "${checked.service}-${feature}";
         value = {
-          requirement = declarationReferenceFor consumerInstance featureInterfaces.${feature}.alias;
+          requirement = declarationReferenceFor consumerInstance "${checked.service}-${featureInterfaces.${feature}.alias}";
           consumer = consumerInstance;
           scope = [checked.service];
           parameters = requestParameters consumerInstance checked feature;
@@ -708,14 +708,14 @@
     featureKeys = builtins.map (feature: feature.key) featureContributions;
     requirementAliases = builtins.map (feature: feature.requirementAlias) featureContributions;
     externalRequirementTemplates = builtins.listToAttrs (builtins.map (feature: {
-        name = declarationReferenceFor consumerInstance feature.requirementAlias;
+        name = declarationReferenceFor consumerInstance "${checked.service}-${feature.requirementAlias}";
         value = feature.requirement;
       })
       featureContributions);
     externalRequests = builtins.listToAttrs (builtins.map (feature: {
         name = declarationReferenceFor consumerInstance "${checked.service}-${feature.key}";
         value = {
-          requirement = declarationReferenceFor consumerInstance feature.requirementAlias;
+          requirement = declarationReferenceFor consumerInstance "${checked.service}-${feature.requirementAlias}";
           consumer = consumerInstance;
           scope = [checked.service];
           parameters = qualifyRequestReferences consumerInstance (
@@ -758,7 +758,7 @@
           template_resource = {
             _type = "aos-request-output-reference";
             request = templateRequest;
-            output = "service-resource";
+            output = "resource";
           };
         };
       };
@@ -786,7 +786,7 @@
       == "aos-request-output-reference"
       && (path._type or null) == "aos-request-output-reference"
       && resource.request == path.request
-      && resource.output == "retained-resource"
+      && resource.output == "resource"
       && path.output == "credential-path")
     credentialFragments;
     checked = serviceTypes.configurationMaterialization.merge ["managed configuration" declaration.name] [
@@ -837,14 +837,14 @@
         == "aos-request-output-reference"
         && (sourcePath._type or null) == "aos-request-output-reference"
         && source.request == sourcePath.request
-        && source.output == "retained-resource"
+        && source.output == "resource"
         && sourcePath.output == "planned-path")
       producers;
     contribution =
       if !uniqueBy "key" producers
       then throw "producer request keys must be unique"
       else if !storageViewPairsValid
-      then throw "storage views must pair retained-resource and planned-path outputs from one allocation request"
+      then throw "storage views must pair resource and planned-path outputs from one allocation request"
       else {
         requirementTemplates.${declarationReferenceFor consumerInstance selectedInterface.alias} = requirementFor selectedInterface selectedMethods [];
         requests = builtins.listToAttrs (builtins.map (producer: {
@@ -922,7 +922,7 @@
               else {
                 _type = "aos-request-output-reference";
                 request = "${entry.key}-source";
-                output = "credential-resource";
+                output = "resource";
               };
             inherit (entry.reference) encrypted;
           };

@@ -75,6 +75,7 @@ pub fn package_reference() -> PackageAbilityReference {
         name: local_key("service"),
         description: "Implements the shared inspection test interface.".to_string(),
         interface: interface_key.clone(),
+        methods: Vec::new(),
         guarantees: Vec::new(),
         artifact: artifact.clone(),
         requirements: vec![implementation_requirement],

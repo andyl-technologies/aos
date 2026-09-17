@@ -4,7 +4,7 @@
   pkgs,
 }: let
   buildRootfs = import ../platform/_rootfs-builder.nix;
-  closureInfoFor = import ../../../../lib/build/closure-info.nix {inherit lib pkgs;};
+  closureInfoFor = lib.build.closureInfo {inherit pkgs;};
 in
   arguments:
     buildRootfs (

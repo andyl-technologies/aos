@@ -90,7 +90,7 @@ in
     "service-logging"
     "service-readiness"
     "service-reload"
-    "service-resources"
+    "resources"
     "service-storage"
     "service-supervision"
     "service-termination"

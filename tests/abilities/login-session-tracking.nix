@@ -60,6 +60,7 @@
   };
 in
   assert evaluated.config.aos.abilities.requests."pam:login-session-tracking".parameters.enabled;
+  assert evaluated.config.aos.abilities.requests."pam:login-session-tracking".lifetime == "instance";
   assert implementation.interface == interface.identity;
   assert selectedProjection.config.aos.pam.sessionTrackingRule.modulePath
   == "/systemd/lib/security/pam_systemd.so";

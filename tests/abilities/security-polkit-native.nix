@@ -42,7 +42,7 @@ in
     {
       _type = "aos-request-output-reference";
       request = "polkit:system-bus-availability";
-      output = "readiness-resource";
+      output = "resource";
     }
   ];
   assert dependencies.wants == [];
@@ -75,11 +75,13 @@ in
     startSession = false;
     setLoginUid = false;
   };
-  assert config.aos.contributions.wrappers.pkexec.source
+  assert requests."polkit:wrapper-pkexec".parameters.entry.source.reference
   == {
     artifact = lib.abilities.packageOutput {package = "polkit";};
     path = "bin/pkexec";
   };
+  assert requests."polkit:wrapper-pkexec".parameters.prerequisites
+  == [(lib.abilities.resultOf "aos:wrapper-bin" "resource")];
   assert config.aos.contributions.runtimeChecks.polkit.description
   == "polkit policy and privilege checks";
   assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;

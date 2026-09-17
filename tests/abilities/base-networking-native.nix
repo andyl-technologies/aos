@@ -7,14 +7,14 @@
   evaluated = evaluate {
     name = "base-networking";
     module = ../../modules/base/networking.nix;
-    packages = [pkgs.systemd pkgs.aos-kernel-tunable-provider];
+    packages = [pkgs.aos pkgs.systemd pkgs.aos-kernel-tunable-provider];
     extraModules = [../../modules/base/host-facts.nix];
   };
   config = evaluated.config;
   withStaticFacts = evaluate {
     name = "base-networking-static-facts";
     module = ../../modules/base/networking.nix;
-    packages = [pkgs.systemd pkgs.aos-kernel-tunable-provider];
+    packages = [pkgs.aos pkgs.systemd pkgs.aos-kernel-tunable-provider];
     extraModules = [
       ../../modules/base/host-facts.nix
       {
@@ -28,11 +28,11 @@
     ];
   };
   requests = config.aos.abilities.requests;
-  network = requests."system:host-network".parameters;
+  network = requests."aos:host-network".parameters;
 in
-  assert requests ? "system:host-network";
-  assert requests ? "system:network-tunables";
-  assert requests."system:network-tunables".parameters.values == {"kernel.hostname" = "aos";};
+  assert requests ? "aos:host-network";
+  assert requests ? "aos:network-tunables";
+  assert requests."aos:network-tunables".parameters.values == {"kernel.hostname" = "aos";};
   assert network.authority == "image";
   assert network.links
   == [
@@ -47,8 +47,8 @@ in
       };
     }
   ];
-  assert withStaticFacts.config.aos.abilities.requests."system:host-network".parameters == network;
-  assert !(withStaticFacts.config.aos.abilities.requests."system:host-network".parameters ? bootstrap);
+  assert withStaticFacts.config.aos.abilities.requests."aos:host-network".parameters == network;
+  assert !(withStaticFacts.config.aos.abilities.requests."aos:host-network".parameters ? bootstrap);
   assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "systemd/network/80-dhcp.network");
   assert !(config.environment.etc ? "systemd/resolved.conf");

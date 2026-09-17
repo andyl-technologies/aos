@@ -45,8 +45,8 @@ in {
     pkgs.coreutils
   ];
   # Note: `pkgs.nftables` is intentionally NOT here. It's the
-  # host-firewall tool (consumed by `nftables.service` from
-  # `modules/security/firewall.nix`); k3s itself only needs
+  # host-firewall tool consumed by the selected network-ruleset provider;
+  # k3s itself only needs
   # `iptables`. Including nftables would also make k3s's
   # iptables-availability probe potentially auto-detect nftables
   # mode in some k3s versions — best avoided.

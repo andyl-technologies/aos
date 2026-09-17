@@ -98,7 +98,7 @@
     description = "Converges exact bounded kernel-tunable maps without exposing a manager backend.";
     abi = 1;
     inherit requestType methods lifecycle aggregation;
-    outputs.readiness-resource =
+    outputs.resource =
       output "planning" "instance" "References readiness for this exact tunable-map revision." types.resourceReference;
     guarantees = [];
   };

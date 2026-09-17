@@ -86,8 +86,8 @@
       };
       dependencies = {
         prerequisites = [
-          (resultOf "runtime-storage" "retained-resource")
-          (resultOf "configuration-file" "retained-resource")
+          (resultOf "runtime-storage" "resource")
+          (resultOf "configuration-file" "resource")
         ];
         after = [];
         before = [];

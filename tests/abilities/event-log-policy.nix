@@ -8,8 +8,15 @@
     name = "event-log-policy";
     module = ../../modules/base/journald.nix;
     packages = [pkgs.systemd];
+    extraPackageModules = [
+      {
+        name = "aos";
+        version = pkgs.aos.version;
+        module = pkgs.aos.module + "/event-log-policy.nix";
+      }
+    ];
   };
-  request = evaluated.config.aos.abilities.requests."event-log:policy";
+  request = evaluated.config.aos.abilities.requests."aos:event-log-policy";
   rendered = import ../../pkgs/system/_systemd-abilities/platform/_event-log-configuration.nix {
     policy = request.parameters;
   };
@@ -25,7 +32,8 @@ in
     forward_to_syslog = false;
     compress = true;
   };
-  assert request.requirement == "event-log:policy";
+  assert request.requirement == "aos:event-log-policy";
+  assert request.lifetime == "instance";
   assert evaluated.config.aos.abilities.implementations."systemd:event-log-policy".interface
   == lib.abilities.interfaces.eventLogPolicy.interface.identity;
   assert !(evaluated.config.environment.etc ? "systemd/journald.conf");

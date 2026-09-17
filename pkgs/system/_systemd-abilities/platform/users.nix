@@ -8,9 +8,7 @@
     if abilitySelection == null
     then []
     else abilitySelection.bindingsForImplementation "system-manager";
-  selected =
-    builtins.length managerBindings == 1
-    && (builtins.head managerBindings).binding.request == "system:manager";
+  selected = builtins.length managerBindings == 1;
   systemdUsers = {
     systemd-journal = {
       uid = 190;
@@ -61,10 +59,12 @@
       extraGroups = [];
     };
   };
-  systemdGroups = builtins.mapAttrs (_: user: {
-    gid = user.uid;
-    members = [];
-  }) systemdUsers;
+  systemdGroups =
+    builtins.mapAttrs (_: user: {
+      gid = user.uid;
+      members = [];
+    })
+    systemdUsers;
 in {
   config = lib.mkIf selected {
     aos.users.users = systemdUsers;

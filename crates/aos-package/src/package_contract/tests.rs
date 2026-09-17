@@ -221,6 +221,7 @@ fn stateful_package() -> PackageDocument {
         name: LocalKey::new("stateful").unwrap(),
         description: "Stateful package test provider.".to_string(),
         interface: interface.clone(),
+        methods: Vec::new(),
         guarantees: Vec::new(),
         artifact: artifact.clone(),
         requirements: Vec::new(),

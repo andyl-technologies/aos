@@ -9,10 +9,7 @@
     if abilitySelection == null
     then []
     else abilitySelection.bindingsForImplementation "system-manager";
-  selected =
-    builtins.length managerBindings
-    == 1
-    && (builtins.head managerBindings).binding.request == "system:manager";
+  selected = builtins.length managerBindings == 1;
   cryptsetup = packageArtifactFor (lib.abilities.packageOutput {package = "cryptsetup";});
 in {
   config.environment.etc = lib.mkIf selected {

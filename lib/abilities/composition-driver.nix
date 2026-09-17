@@ -4,6 +4,7 @@
 ##! projection, invokes selected pure constructors, merges compatible resource
 ##! facets, and attaches the sole write controller's realization.
 {
+  abilityResolution ? {},
   abilityIdentityKeyFor,
   config,
   lib,
@@ -11,6 +12,8 @@
 }: let
   abilities = config.aos.abilities;
   authoredRequests = abilities.requests;
+  resolvedRequests = abilityResolution.requests or {};
+  resolvedRequirements = abilityResolution.requirements or {};
 
   providerSelectionKey = binding:
     abilityIdentityKeyFor "aos.ability.provider-selection-key/v1" {
@@ -128,7 +131,8 @@
         slot = authored.slot;
         request = requestKey;
         declaration = {
-          package = null;
+          package = builtins.head (lib.splitString ":" group.implementationKey);
+          localKey = localRequestKey;
           requirement = requirementKey;
           consumer = group.providerInstance;
           inherit (authored) scope parameters;
@@ -162,7 +166,9 @@
       };
     }) (builtins.attrNames implementation.requirements))
   selectedImplementationNames);
-  generatedRequirements = builtins.listToAttrs nestedRequirementEntries;
+  generatedRequirements =
+    resolvedRequirements
+    // builtins.listToAttrs nestedRequirementEntries;
 
   requestKeyCollisions = builtins.filter (
     requestName: builtins.hasAttr requestName generatedRequests
@@ -173,9 +179,10 @@
     request =
       if builtins.hasAttr binding.request authoredRequests
       then authoredRequests.${binding.request}
+      else if builtins.hasAttr binding.request resolvedRequests
+      then resolvedRequests.${binding.request}
       else provisionGeneratedRequests.${binding.request}
-        or compositionGeneratedRequests.${binding.request}
-        or (fail "binding '${bindingName}' selects an absent request");
+        or (fail "binding '${bindingName}' selects request '${binding.request}' absent from authored, resolved, and provision-generated inputs");
     implementation = semanticImplementations.${binding.implementation} or (fail "binding '${bindingName}' selects an absent implementation");
     interface = interfaceForImplementation binding.implementation implementation;
     instance = abilities.instances.${binding.providerInstance} or (fail "binding '${bindingName}' selects an absent provider instance");
@@ -231,6 +238,7 @@
       })
       entries);
     children = childContextFor groupKey;
+    planningOutputs = provisionPlanningOutputs;
   };
 
   provisionGroup = entries: let
@@ -262,6 +270,23 @@
       inherit (first) implementation interface provider;
     };
   provisionGroups = builtins.map provisionGroup (builtins.attrValues selectionGroups);
+  provisionOutputEntries = builtins.concatLists (builtins.map (group:
+    builtins.concatLists (builtins.map (requestName:
+      builtins.map (outputName: {
+        inherit requestName outputName;
+        output = outputFor group requestName outputName group.result.outputs.${requestName}.${outputName};
+      })
+      (builtins.attrNames group.result.outputs.${requestName}))
+    (builtins.attrNames group.result.outputs)))
+  provisionGroups);
+  provisionPlanningOutputs =
+    builtins.foldl' (outputs: entry:
+      outputs
+      // {
+        ${entry.requestName} = (outputs.${entry.requestName} or {}) // {${entry.outputName} = entry.output;};
+      })
+    {}
+    provisionOutputEntries;
   provisionChildEntries = childEntriesForGroups provisionGroups;
   provisionGeneratedRequests = requestMapForChildren provisionChildEntries;
 
@@ -323,6 +348,25 @@
         && entry.interface.aggregation.controllerGroup == first.aggregation.controllerGroup
         && controlsKind first.fragment.kind entry)
       selections;
+    controllerDiagnostics =
+      builtins.map (entry: {
+        binding = entry.bindingName;
+        controller_group = entry.interface.aggregation.controllerGroup;
+        request = entry.binding.request;
+        requirement = entry.request.requirement;
+        methods = requestedMethods entry;
+        targets =
+          builtins.mapAttrs (_: method: {
+            target = method.targetResource;
+            access = method.semantics.requiredTargetAccess;
+          })
+          entry.interface.methods;
+      }) (builtins.filter
+        (entry:
+          entry.provider
+          == first.resource.provider
+          && entry.binding.slot == first.key)
+        selections);
   in
     if !compatible
     then fail "resource '${builtins.toJSON first.resource}' has incompatible aggregation contracts"
@@ -333,7 +377,9 @@
     else if !(builtins.all (lifetime: lifetime == first.fragment.lifetime) lifetimes)
     then fail "resource '${builtins.toJSON first.resource}' has conflicting lifetimes"
     else if builtins.length controllerCandidates != 1
-    then fail "resource '${builtins.toJSON first.resource}' must have exactly one selected exclusive-write controller"
+    then
+      fail
+      "resource '${builtins.toJSON first.resource}' must have exactly one selected exclusive-write controller; candidates: ${builtins.toJSON (builtins.map (entry: entry.bindingName) controllerCandidates)}; matching selections: ${builtins.toJSON controllerDiagnostics}"
     else {
       inherit (first) resource;
       kind = first.fragment.kind;
@@ -526,7 +572,14 @@
   childDeclarationsValid = invalidChildDeclarations == [];
   childDeclarationMismatch = builtins.toJSON (builtins.map (child: {
       inherit (child) implementation localRequestKey requirement;
-      parameterNames = builtins.attrNames child.authored.parameters;
+      parameters = child.authored.parameters;
+      acceptedInterfaces =
+        builtins.map
+        (interface:
+          lib.abilities.interfaceIdentity (
+            lib.abilities.interfaceDocumentFromDeclaration interface
+          ))
+        (acceptedDeclarationsFor child);
     })
     invalidChildDeclarations);
   childBindingsValid =

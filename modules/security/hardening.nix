@@ -13,21 +13,6 @@
   ...
 }: let
   cfg = config.aos.security.hardening;
-  consumerInstance = "system:security-hardening";
-  crashDumpPolicy = lib.abilities.interfaces.crashDumpPolicy.interface;
-  kernelTunables = lib.abilities.interfaces.serviceManagement.forProducer {
-    inherit consumerInstance;
-    key = "security-tunables";
-    interface = {
-      alias = lib.abilities.interfaces.kernelTunables.interface.alias;
-      declaration = lib.abilities.interfaces.kernelTunables.interface.declaration;
-    };
-    methods = ["apply" "observe" "remove"];
-    parameters = {
-      values = cfg.sysctl;
-      dependencies = [];
-    };
-  };
 in {
   options.aos.security.hardening = {
     ## Enable system hardening (sysctl, core dump restrictions).
@@ -132,24 +117,6 @@ in {
         "randomize_kstack_offset=on"
       ]
       ++ lib.optional (lib.hasPrefix "x86_64" pkgs.stdenv.system) "vsyscall=none";
-
-    aos.abilities = lib.mkMerge [
-      kernelTunables
-      {
-        instances.${consumerInstance} = {};
-        requirementTemplates."system:crash-dump-policy" = {
-          description = "Requires the selected crash-dump policy implementation.";
-          interface = crashDumpPolicy.identity.name;
-          inherit (crashDumpPolicy.identity) abi descriptor;
-        };
-        requests."system:crash-dump-policy" = {
-          requirement = "system:crash-dump-policy";
-          consumer = consumerInstance;
-          scope = ["crash-dumps"];
-          parameters.enabled = cfg.coreDump.enable;
-        };
-      }
-    ];
 
     system.checks.kernel-security = {
       description = "Kernel sysctl hardening checks";

@@ -271,16 +271,29 @@
       builtins.groupBy
       (record: (authenticatedModuleRecordIdentity record).name)
       records;
-  in
-    builtins.map
-    (name: let
-      candidates = grouped.${name};
-      identities = builtins.map authenticatedModuleRecordIdentity candidates;
-      expected = builtins.head identities;
+    canonicalizePackage = name: candidates: let
+      byEntrypoint =
+        builtins.groupBy
+        (record:
+          builtins.unsafeDiscardStringContext
+          (
+            authenticatedModuleRecordIdentity record
+          ).module)
+        candidates;
     in
-      if !builtins.all (identity: identity == expected) identities
-      then throw "authenticated module records conflict for package '${name}'"
-      else builtins.head candidates)
+      builtins.map
+      (entrypoint: let
+        entrypointCandidates = byEntrypoint.${entrypoint};
+        identities = builtins.map authenticatedModuleRecordIdentity entrypointCandidates;
+        expected = builtins.head identities;
+      in
+        if !builtins.all (identity: identity == expected) identities
+        then throw "authenticated module records conflict for package '${name}' entrypoint '${entrypoint}'"
+        else builtins.head entrypointCandidates)
+      (builtins.attrNames byEntrypoint);
+  in
+    builtins.concatMap
+    (name: canonicalizePackage name grouped.${name})
     (builtins.attrNames grouped);
 
   selectAuthenticatedPackageModuleRecords = packages: records:

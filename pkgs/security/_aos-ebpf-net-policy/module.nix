@@ -91,7 +91,7 @@
     description = "Selects exact immutable BPF policy artifacts for named cgroups.";
     abi = 1;
     inherit requestType methods aggregation;
-    outputs.readiness-resource = output "planning" "instance" "References readiness for the exact policy set." types.resourceReference;
+    outputs.resource = output "planning" "instance" "References readiness for the exact policy set." types.resourceReference;
     lifecycle.persistentDeleteMethod = null;
     guarantees = [];
   };

@@ -36,7 +36,7 @@
       builtins.mapAttrs
       (_: request:
         if request.parameters.scope == "system-bus"
-        then {readiness-resource = reference;}
+        then {resource = reference;}
         else throw "D-Bus availability accepts only the system-bus scope")
       context.requests;
   };

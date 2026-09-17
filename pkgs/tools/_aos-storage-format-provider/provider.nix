@@ -45,7 +45,7 @@
     // {
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
-          value.readiness-resource = reference instance entry.binding.slot;
+          value.resource = reference instance entry.binding.slot;
         })
         entries);
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {

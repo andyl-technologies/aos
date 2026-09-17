@@ -189,7 +189,7 @@
   };
   grpcSocket = producer "grpc-socket-view" serviceManagement.interfaces.storageView {
     name = "grpc-socket";
-    source = resultOf "state-storage" "retained-resource";
+    source = resultOf "state-storage" "resource";
     source_path = statePath;
     access = "read-write";
     relative_path = cfg.grpcSocketName;
@@ -319,18 +319,18 @@
       };
       dependencies = {
         after = [
-          (resultOf "kernel-modules" "readiness-resource")
-          (resultOf "network-readiness" "readiness-resource")
-          (resultOf "root-storage" "retained-resource")
-          (resultOf "state-storage" "retained-resource")
+          (resultOf "kernel-modules" "resource")
+          (resultOf "network-readiness" "resource")
+          (resultOf "root-storage" "resource")
+          (resultOf "state-storage" "resource")
         ];
         before = [];
         requires = [
-          (resultOf "kernel-modules" "readiness-resource")
-          (resultOf "root-storage" "retained-resource")
-          (resultOf "state-storage" "retained-resource")
+          (resultOf "kernel-modules" "resource")
+          (resultOf "root-storage" "resource")
+          (resultOf "state-storage" "resource")
         ];
-        wants = [(resultOf "network-readiness" "readiness-resource")];
+        wants = [(resultOf "network-readiness" "resource")];
       };
       supervision = {
         startup_protocol = "notification";

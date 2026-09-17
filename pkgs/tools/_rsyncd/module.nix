@@ -154,7 +154,7 @@
         key = "export-${name}";
         parameters = {
           inherit name;
-          source = resultOf "state-storage" "retained-resource";
+          source = resultOf "state-storage" "resource";
           source_path = resultOf "state-storage" "planned-path";
           access = "read-write";
           relative_path = "exports/${name}";
@@ -257,10 +257,10 @@
           stop_timeout_millis = 90000;
         };
         dependencies = {
-          after = [(resultOf "network-readiness" "readiness-resource")];
+          after = [(resultOf "network-readiness" "resource")];
           before = [];
           requires = [];
-          wants = [(resultOf "network-readiness" "readiness-resource")];
+          wants = [(resultOf "network-readiness" "resource")];
         };
         credentials =
           if withCredential

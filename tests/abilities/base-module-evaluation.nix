@@ -6,6 +6,7 @@
   name,
   module,
   packages,
+  extraPackageModules ? [],
   extraModules ? [],
   enableAbilitySelection ? false,
 }:
@@ -81,5 +82,7 @@ lib.evalModules {
       })
     ]
     ++ extraModules;
-  packageModules = builtins.map lib.abilities.authenticatedPackageModuleRecordFor packages;
+  packageModules =
+    builtins.map lib.abilities.authenticatedPackageModuleRecordFor packages
+    ++ extraPackageModules;
 }

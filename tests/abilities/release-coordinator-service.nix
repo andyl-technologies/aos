@@ -161,7 +161,7 @@ in
     == [
       {
         name = "schedule";
-        resource = resultOf "${name}-schedule" "activation-resource";
+        resource = resultOf "${name}-schedule" "resource";
         relationship = "resource-triggers-service";
       }
     ])
@@ -178,11 +178,11 @@ in
   concurrentNames;
   assert !(requests enabled) ? "aos:timestamp-concurrency";
   assert (request "restore-check-dependencies").after
-  == [(resultOf "backup-lifecycle" "service-resource")];
+  == [(resultOf "backup-lifecycle" "resource")];
   assert (request "release-dependencies").after
-  == [(resultOf "network-readiness" "readiness-resource")];
+  == [(resultOf "network-readiness" "resource")];
   assert (request "timestamp-dependencies").wants
-  == [(resultOf "network-readiness" "readiness-resource")];
+  == [(resultOf "network-readiness" "resource")];
   assert (request "restore-check-isolation").network == "none";
   assert (request "restore-check-linux_isolation").network_address_families == ["unix"];
   assert (request "release-isolation").home_access == "inaccessible";
@@ -245,7 +245,7 @@ in
   assert (request "release-credential-signing-key")
   == {
     name = "signing-key";
-    source = resultOf "release-credential-signing-key-source" "credential-resource";
+    source = resultOf "release-credential-signing-key-source" "resource";
     encrypted = false;
   };
   assert (request "release-credentials").views
@@ -260,7 +260,7 @@ in
   assert builtins.all
   (failedOperation:
     (request "${failedOperation}-failure_policy").handlers
-    == [(resultOf "alert-${failedOperation}-lifecycle" "service-resource")])
+    == [(resultOf "alert-${failedOperation}-lifecycle" "resource")])
   failedOperations;
   assert builtins.all
   (failedOperation:

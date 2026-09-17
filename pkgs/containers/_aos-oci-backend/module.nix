@@ -22,8 +22,6 @@
   selected =
     if selectedBinding == null
     then false
-    else if selectedBinding.binding.request != "system:artifact-backend"
-    then throw "the OCI artifact backend implementation requires the system:artifact-backend request"
     else
       config.aos.abilities.environment
       != null
@@ -66,7 +64,7 @@
       abilityContractValidator = buildPackages.aos-ability-contract-validator;
     };
   selectedBackendOutput =
-    config.aos.abilities.compositionOutputs."system:artifact-backend".artifact-reference.value
+    config.aos.abilities.compositionOutputs.${selectedBinding.binding.request}.artifact-reference.value
     or null;
   authoredBackend = {
     _type = "aos-package-artifact-backend";

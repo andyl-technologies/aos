@@ -43,7 +43,7 @@
       if request.parameters.scope == "boot-image"
       then {
         inherit locator;
-        read-view-resource = resource;
+        inherit resource;
       }
       else throw "the systemd package-store provider accepts only boot-image scope")
     requests;

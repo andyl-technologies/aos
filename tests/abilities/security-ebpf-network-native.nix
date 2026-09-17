@@ -18,62 +18,86 @@
     package = pkgs.aos-ebpf-net-policy;
     implementation = controllerAlias;
   };
-  evaluated = lib.evalModules {
-    inherit lib;
-    modules = [
-      lib.abilities.module
-      {
-        aos.security.ebpfNetworkPolicy.enable = true;
-        aos.security.ebpfNetworkPolicy.policies = [
-          {
-            name = "sample";
-            cgroup = "/sys/fs/cgroup/aos/sample.service";
-            policy = {
-              artifact = lib.abilities.packageOutput {package = packageName;};
-              path = "share/aos/ebpf-net/sample-policy.json";
+  evaluate = {
+    includeTerminal,
+    abilityResolution,
+  }:
+    lib.evalModules {
+      inherit lib;
+      modules = [
+        lib.abilities.module
+        {
+          aos.security.ebpfNetworkPolicy.enable = true;
+          aos.security.ebpfNetworkPolicy.policies = [
+            {
+              name = "sample";
+              cgroup = "/sys/fs/cgroup/aos/sample.service";
+              policy = {
+                artifact = lib.abilities.packageOutput {package = packageName;};
+                path = "share/aos/ebpf-net/sample-policy.json";
+              };
+              object = {
+                artifact = lib.abilities.packageOutput {package = packageName;};
+                path = "lib/bpf/aos-ebpf-net-policy.bpf.o";
+              };
+            }
+          ];
+          aos.abilities = {
+            environment = {
+              authority = "test";
+              key = "ebpf-network";
+              stage = "host";
             };
-            object = {
-              artifact = lib.abilities.packageOutput {package = packageName;};
-              path = "lib/bpf/aos-ebpf-net-policy.bpf.o";
-            };
-          }
-        ];
-        aos.abilities = {
-          environment = {
-            authority = "test";
-            key = "ebpf-network";
-            stage = "host";
+            bindings =
+              {
+                "test:controller" = {
+                  request = requestKey;
+                  implementation = "${packageName}:${controllerAlias}";
+                  providerInstance = instance;
+                  slot = "cgroup-policy-set";
+                };
+              }
+              // lib.optionalAttrs includeTerminal {
+                "test:terminal" = {
+                  request = childRequestKey;
+                  implementation = "${packageName}:${terminalAlias}";
+                  providerInstance = instance;
+                  slot = "cgroup-policy-set";
+                };
+              };
           };
-          bindings."test:controller" = {
-            request = requestKey;
-            implementation = "${packageName}:${controllerAlias}";
-            providerInstance = instance;
-            slot = "cgroup-policy-set";
-          };
-          bindings."test:terminal" = {
-            request = childRequestKey;
-            implementation = "${packageName}:${terminalAlias}";
-            providerInstance = instance;
-            slot = "cgroup-policy-set";
-          };
-        };
-      }
-    ];
-    packageModules = [
-      {
-        name = packageName;
-        inherit (pkgs.aos-ebpf-net-policy) version;
-        module = pkgs.aos-ebpf-net-policy.module + "/module.nix";
-      }
-    ];
-    selectedProviderModules = [selectedProvider];
+        }
+      ];
+      packageModules = [
+        {
+          name = packageName;
+          inherit (pkgs.aos-ebpf-net-policy) version;
+          module = pkgs.aos-ebpf-net-policy.module + "/module.nix";
+        }
+      ];
+      selectedProviderModules = [selectedProvider];
+      specialArgs = {inherit abilityResolution;};
+    };
+  initial = evaluate {
+    includeTerminal = false;
+    abilityResolution = {
+      requests = {};
+      requirements = {};
+    };
+  };
+  evaluated = evaluate {
+    includeTerminal = true;
+    abilityResolution = import ./_composition-resolution.nix {
+      abilities = initial.config.aos.abilities;
+      requestKeys = [childRequestKey];
+    };
   };
   abilities = evaluated.config.aos.abilities;
   request = abilities.requests.${requestKey};
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
   controller = abilities.implementations."${packageName}:${controllerAlias}";
   terminal = abilities.implementations."${packageName}:${terminalAlias}";
-  output = abilities.compositionOutputs.${requestKey}.readiness-resource;
+  output = abilities.compositionOutputs.${requestKey}.resource;
   effectsIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."${packageName}:${terminalAlias}"
   );

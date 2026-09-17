@@ -778,6 +778,7 @@ mod tests {
             name: LocalKey::new("lifecycle-provider").expect("implementation name"),
             description: "Implements the test lifecycle interface.".to_string(),
             interface: interface_key.clone(),
+            methods: Vec::new(),
             guarantees: Vec::new(),
             artifact: ArtifactReference {
                 content: Sha256Digest::of_bytes("provider-content"),

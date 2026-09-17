@@ -95,9 +95,9 @@ in
   == "libexec/aos-systemd-verity-root-setup";
   assert systemdVerityDependencies.requires
   == [
-    (output "systemd:boot-identity" "readiness-resource")
-    (output "systemd:device-manager" "readiness-resource")
-    (output "systemd:device-events" "readiness-resource")
+    (output "systemd:boot-identity" "resource")
+    (output "systemd:device-manager" "resource")
+    (output "systemd:device-events" "resource")
   ];
   assert (builtins.head measuredVarLifecycle.start).executable.entry_point == "bin/aos-var-crypt";
   assert (builtins.head measuredVarLifecycle.start).executable.arguments
@@ -109,15 +109,15 @@ in
   ];
   assert measuredVarDependencies.after
   == [
-    (output "aos-systemd-var-policy:boot-identity" "readiness-resource")
-    (output "aos-systemd-var-policy:initrd-stage" "readiness-resource")
-    (output "aos-systemd-var-policy:device-events" "readiness-resource")
-    (output "aos-systemd-var-policy:verity-root" "readiness-resource")
+    (output "aos-systemd-var-policy:boot-identity" "resource")
+    (output "aos-systemd-var-policy:initrd-stage" "resource")
+    (output "aos-systemd-var-policy:device-events" "resource")
+    (output "aos-systemd-var-policy:verity-root" "resource")
   ];
   assert measuredVarDependencies.requires
   == [
-    (output "aos-systemd-var-policy:boot-identity" "readiness-resource")
-    (output "aos-systemd-var-policy:verity-root" "readiness-resource")
+    (output "aos-systemd-var-policy:boot-identity" "resource")
+    (output "aos-systemd-var-policy:verity-root" "resource")
   ];
   assert measuredVarDependencies.implicit_dependencies;
   assert measuredVarCondition.all
@@ -144,31 +144,31 @@ in
   assert !(lib.hasInfix "aos.systemd.packaged-unit" bootIdentityModule);
   assert !(lib.hasInfix ''{package = "systemd";}'' bootIdentityModule);
   assert identityGuardDependencies.required_by
-  == [(output "aos-boot-identity:initrd-filesystems" "readiness-resource")];
+  == [(output "aos-boot-identity:initrd-filesystems" "resource")];
   assert identityGuardFailure.dispatch == "isolate-active-goal";
   assert identityGuardFailure.handlers
-  == [(output "aos-boot-identity:integrity-failure" "readiness-resource")];
+  == [(output "aos-boot-identity:integrity-failure" "resource")];
   assert builtins.elem "systemd" secureVerityPackages;
   assert builtins.elem "aos-systemd-var-policy" secureVerityPackages;
   assert !(lib.hasInfix "pkgs.systemd" secureBootModule);
   assert !(lib.hasInfix "pkgs.aos-systemd-var-policy" secureBootModule);
   assert guardDependencies.required_by
   == [
-    (output "aos-verity-root-guard:persistent-state" "readiness-resource")
-    (output "aos-verity-root-guard:initrd-filesystems" "readiness-resource")
+    (output "aos-verity-root-guard:persistent-state" "resource")
+    (output "aos-verity-root-guard:initrd-filesystems" "resource")
   ];
   assert guardDependencies.after
   == [
-    (output "aos-verity-root-guard:boot-identity" "readiness-resource")
-    (output "aos-verity-root-guard:verity-root-mapping" "readiness-resource")
-    (output "aos-verity-root-guard:initrd-stage" "readiness-resource")
-    (output "aos-verity-root-guard:device-events" "readiness-resource")
+    (output "aos-verity-root-guard:boot-identity" "resource")
+    (output "aos-verity-root-guard:verity-root-mapping" "resource")
+    (output "aos-verity-root-guard:initrd-stage" "resource")
+    (output "aos-verity-root-guard:device-events" "resource")
   ];
   assert guardFailure
   == {
     service = "aos-verity-root-verify";
     enabled = true;
-    handlers = [(output "aos-verity-root-guard:integrity-failure" "readiness-resource")];
+    handlers = [(output "aos-verity-root-guard:integrity-failure" "resource")];
     dispatch = "isolate-active-goal";
   };
   assert builtins.all (command: !(lib.hasInfix command bootIdentityScript)) managerCommands;

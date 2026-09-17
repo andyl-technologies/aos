@@ -13,69 +13,93 @@
     providerInstance = "aos-kernel-tunable-provider:manager";
     key = "network-forwarding";
   };
-  evaluated = lib.evalModules {
-    inherit lib;
-    modules = [
-      lib.abilities.module
-      {
-        aos.abilities = {
-          environment = {
-            authority = "test";
-            key = "kernel-tunables";
-            stage = "host";
-          };
-          instances."aos-kernel-tunable-provider:manager" = {};
-          bindings."test:kernel-tunables" = {
-            request = "consumer:network-forwarding";
-            implementation = "aos-kernel-tunable-provider:kernel-tunables";
-            providerInstance = "aos-kernel-tunable-provider:manager";
-            slot = "network-forwarding";
-          };
-          bindings."test:kernel-tunable-effects" = {
-            request = childRequestKey;
-            implementation = "aos-kernel-tunable-provider:kernel-tunable-effects";
-            providerInstance = "aos-kernel-tunable-provider:manager";
-            slot = "network-forwarding";
-          };
-        };
-      }
-    ];
-    packageModules = [
-      {
-        name = "aos-kernel-tunable-provider";
-        inherit (pkgs.aos-kernel-tunable-provider) version;
-        module = pkgs.aos-kernel-tunable-provider.module + "/module.nix";
-      }
-      {
-        name = "consumer";
-        module.imports = [
-          {
-            config.aos.abilities = lib.abilities.interfaces.serviceManagement.forProducer {
-              consumerInstance = "workload";
-              key = "network-forwarding";
-              interface = {
-                alias = "kernel-tunables";
-                declaration = lib.abilities.interfaces.kernelTunables.interface.declaration;
-              };
-              methods = ["apply" "observe" "remove"];
-              parameters = {
-                values = {
-                  "net.bridge.bridge-nf-call-iptables" = "1";
-                  "net.ipv4.ip_forward" = "1";
-                };
-                dependencies = [];
-              };
+  evaluate = {
+    includeEffects,
+    abilityResolution,
+  }:
+    lib.evalModules {
+      inherit lib;
+      modules = [
+        lib.abilities.module
+        {
+          aos.abilities = {
+            environment = {
+              authority = "test";
+              key = "kernel-tunables";
+              stage = "host";
             };
-          }
-          {config.aos.abilities.instances.workload = {};}
-        ];
-      }
-    ];
-    selectedProviderModules = [selectedProvider];
+            instances."aos-kernel-tunable-provider:manager" = {};
+            bindings =
+              {
+                "test:kernel-tunables" = {
+                  request = "consumer:network-forwarding";
+                  implementation = "aos-kernel-tunable-provider:kernel-tunables";
+                  providerInstance = "aos-kernel-tunable-provider:manager";
+                  slot = "network-forwarding";
+                };
+              }
+              // lib.optionalAttrs includeEffects {
+                "test:kernel-tunable-effects" = {
+                  request = childRequestKey;
+                  implementation = "aos-kernel-tunable-provider:kernel-tunable-effects";
+                  providerInstance = "aos-kernel-tunable-provider:manager";
+                  slot = "network-forwarding";
+                };
+              };
+          };
+        }
+      ];
+      packageModules = [
+        {
+          name = "aos-kernel-tunable-provider";
+          inherit (pkgs.aos-kernel-tunable-provider) version;
+          module = pkgs.aos-kernel-tunable-provider.module + "/module.nix";
+        }
+        {
+          name = "consumer";
+          module.imports = [
+            {
+              config.aos.abilities = lib.abilities.interfaces.serviceManagement.forProducer {
+                consumerInstance = "workload";
+                key = "network-forwarding";
+                interface = {
+                  alias = "kernel-tunables";
+                  declaration = lib.abilities.interfaces.kernelTunables.interface.declaration;
+                };
+                methods = ["apply" "observe" "remove"];
+                parameters = {
+                  values = {
+                    "net.bridge.bridge-nf-call-iptables" = "1";
+                    "net.ipv4.ip_forward" = "1";
+                  };
+                  dependencies = [];
+                };
+              };
+            }
+            {config.aos.abilities.instances.workload = {};}
+          ];
+        }
+      ];
+      selectedProviderModules = [selectedProvider];
+      specialArgs = {inherit abilityResolution;};
+    };
+  initial = evaluate {
+    includeEffects = false;
+    abilityResolution = {
+      requests = {};
+      requirements = {};
+    };
+  };
+  evaluated = evaluate {
+    includeEffects = true;
+    abilityResolution = import ./_composition-resolution.nix {
+      abilities = initial.config.aos.abilities;
+      requestKeys = [childRequestKey];
+    };
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
-  output = abilities.compositionOutputs."consumer:network-forwarding".readiness-resource;
+  output = abilities.compositionOutputs."consumer:network-forwarding".resource;
   transition = abilities.implementations."aos-kernel-tunable-provider:kernel-tunables".transition;
   effectsInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."aos-kernel-tunable-provider:kernel-tunable-effects"

@@ -53,23 +53,6 @@
       ''
       else ""
     );
-  runtimeEntries = lib.abilities.interfaces.serviceManagement.forProducer {
-    consumerInstance = "opkssh:runtime";
-    key = "runtime-entries";
-    interface = lib.abilities.interfaces.serviceManagement.interfaces.runtimeEntryPopulation;
-    methods = ["observe"];
-    parameters.entries = [
-      {
-        kind = "file";
-        path = "/var/log/opkssh.log";
-        mode = "0660";
-        owner = "root";
-        group = "opksshuser";
-      }
-    ];
-  };
-  runtimeEntryContribution =
-    lib.abilities.interfaces.serviceManagement.splitContribution runtimeEntries;
 in {
   options.aos.services.opkssh = {
     ## Enable opkssh OIDC SSH authentication.
@@ -194,7 +177,6 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = runtimeEntryContribution.declarations;}
     (lib.mkIf cfg.enable {
       # Wire opkssh into sshd via AuthorizedKeysCommand.
       aos.services.ssh.authorizedKeysCommand = "${pkgs.opkssh}/bin/opkssh verify %u %k %t";
@@ -214,11 +196,6 @@ in {
       environment.etc."opk/config.yml" = {
         text = configYaml;
       };
-
-      aos.abilities = lib.mkMerge [
-        {instances."opkssh:runtime" = {};}
-        runtimeEntryContribution.configured
-      ];
 
       # Create the opksshuser service account.
       aos.users.users.opksshuser = {

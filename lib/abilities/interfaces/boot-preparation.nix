@@ -106,7 +106,7 @@
       alias = "boot-preparation";
       inherit name requestType observationType realizationType methods;
       description = "Executes and retains exact preparation evidence within one boot transaction.";
-      outputs.preparation-resource =
+      outputs.resource =
         output "planning" "transaction"
         "References the exact preparation resource selected before execution."
         types.resourceReference;
@@ -194,7 +194,7 @@
       alias = "boot-preparation-handoff";
       inherit name requestType observationType realizationType methods;
       description = "Transfers exact successful boot-preparation evidence from an initrd transaction to its host stage.";
-      outputs.readiness-resource =
+      outputs.resource =
         output "planning" "transaction"
         "References host receipt of the exact boot-preparation transaction."
         types.resourceReference;

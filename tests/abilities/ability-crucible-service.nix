@@ -72,7 +72,7 @@
           };
           executionObserver = {
             request = "aos-ability-crucible:observer-endpoint";
-            resourceOutput = "retained-resource";
+            resourceOutput = "resource";
             socketOutput = "socket-path";
           };
         };
@@ -115,15 +115,15 @@ in
     requiredTargetAccess = "read";
     stopsProvider = false;
   };
-  assert endpointDeclaration.outputs.retained-resource.description == "References the endpoint and authorizes only observation.";
-  assert endpointDeclaration.outputs.retained-resource.lifetime == "instance";
-  assert endpointDeclaration.outputs.retained-resource.phase == "planning";
-  assert endpointDeclaration.outputs.retained-resource.schema._abilitySchema == lib.abilities.schemas.resourceReference;
-  assert endpointDeclaration.outputs.retained-resource.visibility == "protected";
+  assert endpointDeclaration.outputs.resource.description == "References the endpoint and authorizes only observation.";
+  assert endpointDeclaration.outputs.resource.lifetime == "instance";
+  assert endpointDeclaration.outputs.resource.phase == "planning";
+  assert endpointDeclaration.outputs.resource.schema._abilitySchema == lib.abilities.schemas.resourceReference;
+  assert endpointDeclaration.outputs.resource.visibility == "protected";
   assert endpointDeclaration.outputs.socket-path.schema._abilitySchema == lib.abilities.types.executionPath._abilitySchema;
   assert provided.outputs."aos-ability-crucible:observer-endpoint"
   == {
-    retained-resource = endpointReference;
+    resource = endpointReference;
     socket-path = runtimePath;
   };
   assert provided.resourceFragments == {};
@@ -179,8 +179,8 @@ in
   ];
   assert requests."aos-ability-crucible:adapter-dependencies".parameters.prerequisites
   == [
-    (outputReference "aos-ability-crucible:configuration-file" "retained-resource")
-    (outputReference "aos-ability-crucible:runtime-storage" "retained-resource")
+    (outputReference "aos-ability-crucible:configuration-file" "resource")
+    (outputReference "aos-ability-crucible:runtime-storage" "resource")
   ];
   assert requests."aos-ability-crucible:adapter-supervision".parameters.notification_access == "none";
   assert requests."aos-ability-crucible:adapter-readiness".parameters.mechanism == "process-running";

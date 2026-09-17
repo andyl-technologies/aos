@@ -61,17 +61,17 @@ in
     {
       _type = "aos-request-output-reference";
       request = "openssh:sshd-keygen-lifecycle";
-      output = "service-resource";
+      output = "resource";
     }
     {
       _type = "aos-request-output-reference";
       request = "openssh:sshd-config";
-      output = "retained-resource";
+      output = "resource";
     }
     {
       _type = "aos-request-output-reference";
       request = "openssh:privilege-separation-directory";
-      output = "retained-resource";
+      output = "resource";
     }
   ];
   assert requests."openssh:sshd-config".parameters.destination == "/etc/ssh/sshd_config";

@@ -73,8 +73,8 @@
       };
       dependencies = let
         readiness = [
-          (resultOf "ingress" "readiness-resource")
-          (resultOf "kernel-tunables" "readiness-resource")
+          (resultOf "ingress" "resource")
+          (resultOf "kernel-tunables" "resource")
         ];
       in {
         prerequisites = readiness;

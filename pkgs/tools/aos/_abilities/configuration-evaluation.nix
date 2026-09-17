@@ -39,7 +39,7 @@
   hostStageReceived = producer "host-stage-received" interfaces.systemMilestoneReadiness {
     milestone = milestones.hostStageReceived;
   };
-  hostStageReceivedReadiness = resultOf "host-stage-received" "readiness-resource";
+  hostStageReceivedReadiness = resultOf "host-stage-received" "resource";
   storeDatabase = {
     requirementTemplates.nix-store-database =
       lib.abilities.interfaceSelector {
@@ -93,7 +93,7 @@
     value = resultOf "package-store-read-view" "locator";
     maxBytes = 4096;
   };
-  storeViewResource = resultOf "package-store-read-view" "read-view-resource";
+  storeViewResource = resultOf "package-store-read-view" "resource";
   registrySynchronization = serviceManagement.forService {
     featureContributions = [
       (serviceManagement.featureContribution {
@@ -169,14 +169,14 @@
       dependencies = {
         prerequisites = [];
         after = [
-          (resultOf "local-filesystems" "readiness-resource")
-          (resultOf "network-readiness" "readiness-resource")
+          (resultOf "local-filesystems" "resource")
+          (resultOf "network-readiness" "resource")
         ];
         before = [];
         requires = [
-          (resultOf "local-filesystems" "readiness-resource")
+          (resultOf "local-filesystems" "resource")
         ];
-        wants = [(resultOf "network-readiness" "readiness-resource")];
+        wants = [(resultOf "network-readiness" "resource")];
         requisite = [];
         conflicts = [];
         binds_to = [];
@@ -224,7 +224,7 @@
       };
     };
   };
-  registryReadiness = resultOf "registry-synchronization-lifecycle" "service-resource";
+  registryReadiness = resultOf "registry-synchronization-lifecycle" "resource";
   packageRuntimeCommand = arguments: {
     executable = {
       artifact = lib.abilities.packageOutput {output = "packageRuntime";};
@@ -307,12 +307,12 @@
   mountEsp = {
     _type = "aos-request-output-reference";
     request = "aos-boot-storage:aos-mount-esp-lifecycle";
-    output = "service-resource";
+    output = "resource";
   };
-  activationPreflight = resultOf "aos-graph-compile-lifecycle" "service-resource";
-  activation = resultOf "aos-activate-lifecycle" "service-resource";
-  configurationReady = resultOf "aos-config" "activation-resource";
-  multiUserReadiness = resultOf "multi-user" "readiness-resource";
+  activationPreflight = resultOf "aos-graph-compile-lifecycle" "resource";
+  activation = resultOf "aos-activate-lifecycle" "resource";
+  configurationReady = resultOf "aos-config" "resource";
+  multiUserReadiness = resultOf "multi-user" "resource";
   bootCommit = oneshot {
     serviceName = "image-boot-commit";
     managerName = "aos-image-boot-commit";
@@ -431,22 +431,22 @@
       };
       dependencies = {
         prerequisites = [
-          (resultOf "nix-store-database" "readiness-resource")
+          (resultOf "nix-store-database" "resource")
           storeViewResource
         ];
         after = [
           hostStageReceivedReadiness
-          (resultOf "local-filesystems" "readiness-resource")
-          (resultOf "network-readiness" "readiness-resource")
+          (resultOf "local-filesystems" "resource")
+          (resultOf "network-readiness" "resource")
           registryReadiness
         ];
-        before = [(resultOf "user-sessions-ready" "readiness-resource")];
+        before = [(resultOf "user-sessions-ready" "resource")];
         requires = [
           hostStageReceivedReadiness
-          (resultOf "local-filesystems" "readiness-resource")
+          (resultOf "local-filesystems" "resource")
         ];
         wants = [
-          (resultOf "network-readiness" "readiness-resource")
+          (resultOf "network-readiness" "resource")
           registryReadiness
         ];
         requisite = [];
@@ -455,7 +455,7 @@
         part_of = [];
         upholds = [];
         required_by = [];
-        wanted_by = [(resultOf "user-sessions-ready" "readiness-resource")];
+        wanted_by = [(resultOf "user-sessions-ready" "resource")];
         required_mounts = [];
         implicit_dependencies = false;
       };

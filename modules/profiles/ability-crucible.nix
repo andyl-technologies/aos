@@ -34,7 +34,7 @@ in {
     };
     aos.abilities.executionObserver = lib.mkDefault {
       request = "aos-ability-crucible:observer-endpoint";
-      resourceOutput = "retained-resource";
+      resourceOutput = "resource";
       socketOutput = "socket-path";
     };
   };

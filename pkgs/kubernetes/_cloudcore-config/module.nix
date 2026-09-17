@@ -275,12 +275,12 @@
       };
       dependencies = {
         after = [
-          (resultOf "network" "readiness-resource")
-          (resultOf "ingress-policy" "readiness-resource")
+          (resultOf "network" "resource")
+          (resultOf "ingress-policy" "resource")
         ];
         before = [];
-        requires = [(resultOf "ingress-policy" "readiness-resource")];
-        wants = [(resultOf "network" "readiness-resource")];
+        requires = [(resultOf "ingress-policy" "resource")];
+        wants = [(resultOf "network" "resource")];
       };
       directories.managed = [
         {

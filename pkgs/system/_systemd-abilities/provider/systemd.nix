@@ -137,6 +137,16 @@
     requests = {};
   };
 
+  provideSelectedPolicy = context:
+    emptyProvideResult
+    // {
+      outputs =
+        builtins.mapAttrs (_: request: {
+          selected-policy = request.parameters;
+        })
+        context.requests;
+    };
+
   provideCrashDumpPolicy = context: let
     entries = builtins.map (requestName: let
       binding = bindingFor context.bindings requestName;
@@ -152,6 +162,7 @@
   in
     emptyProvideResult
     // {
+      outputs = (provideSelectedPolicy context).outputs;
       requests = builtins.listToAttrs (builtins.map (entry: {
           name = "${entry.binding.slot}-kernel-tunables";
           value = {
@@ -240,17 +251,27 @@
   provide = context: let
     entries = builtins.map (requestName: let
       binding = bindingFor context.bindings requestName;
-      parameters = normalize context.requests.${requestName}.parameters;
+      request = context.requests.${requestName};
+      parameters = normalize request.parameters;
+      requirement =
+        config.aos.abilities.requirementTemplates.${request.requirement}
+        or (config.aos.abilities.compositionRequirements.${request.requirement}.requirement
+          or (throw "systemd packaged-unit request '${requestName}' has no exact requirement"));
+      controlsResource =
+        builtins.any
+        (methodName:
+          interface.methods.${methodName}.semantics.requiredTargetAccess == "exclusive-write")
+        requirement.methods;
       reference = referenceFor context.instance binding.slot;
     in {
-      inherit requestName binding parameters reference;
+      inherit requestName binding parameters reference controlsResource;
     }) (builtins.attrNames context.requests);
   in
     emptyProvideResult
     // {
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
-          value.unit-resource = entry.reference;
+          value.resource = entry.reference;
         })
         entries);
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {
@@ -261,7 +282,7 @@
             value = entry.parameters;
           };
         })
-        entries);
+        (builtins.filter (entry: entry.controlsResource) entries));
     };
 
   compose = {resources, ...}:
@@ -329,7 +350,7 @@
   provideServiceFacet = featureName: context: let
     selected = allServiceInterfaces.${featureName};
     projection = facetProjectionFor selected;
-    publishesServiceResource = builtins.hasAttr "service-resource" selected.declaration.outputs;
+    publishesServiceResource = builtins.hasAttr "resource" selected.declaration.outputs;
     entries = builtins.map (requestName: let
       binding = bindingFor context.bindings requestName;
     in {
@@ -346,30 +367,15 @@
         lifetime = "instance";
       };
     }) (builtins.attrNames context.requests);
-    preparations =
-      if selected.alias != serviceInterfaces.directories.alias
-      then []
-      else
-        builtins.concatMap (entry:
-          preparationsFor {
-            resource = entry.reference.resource;
-            value.directories.managed = entry.parameters.managed;
-          })
-        entries;
   in
     emptyProvideResult
     // {
-      requests = builtins.listToAttrs (builtins.map (preparation: {
-          name = preparation.key;
-          value = preparation.request;
-        })
-        preparations);
       outputs =
         if publishesServiceResource
         then
           builtins.listToAttrs (builtins.map (entry: {
               name = entry.requestName;
-              value.service-resource = entry.reference;
+              value.resource = entry.reference;
             })
             entries)
         else {};
@@ -544,7 +550,7 @@
     // {
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
-          value.readiness-resource = entry.reference;
+          value.resource = entry.reference;
         })
         entries);
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {
@@ -648,11 +654,11 @@
       resources;
     };
 
-  resolveReference = value:
+  resolveReference = planningOutputs: value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
     then let
       output =
-        config.aos.abilities.compositionOutputs.${value.request}.${value.output}
+        planningOutputs.${value.request}.${value.output}
         or (throw "systemd provider cannot resolve ${value.request}.${value.output}");
     in
       if output.phase != "planning"
@@ -728,7 +734,7 @@
       && lib.hasSuffix "@.service" identity.template_unit_name
     );
   unitIdentityForReference = deferred: let
-    reference = resolveReference deferred;
+    reference = resolveReference config.aos.abilities.compositionOutputs deferred;
     identity = resourceIdentity reference.resource;
     matches = resourcesByIdentity.${identity} or [];
     resource =
@@ -804,7 +810,7 @@
     // {
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
-          value.readiness-resource = referenceForHandoff entry.binding.slot;
+          value.resource = referenceForHandoff entry.binding.slot;
         })
         entries);
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {
@@ -820,6 +826,7 @@
 
   composeBootPreparationHandoff = {
     allResources,
+    planningOutputs,
     resources,
     ...
   }:
@@ -829,12 +836,12 @@
         builtins.mapAttrs (_: resource: {
           schema = "aos.systemd.boot-preparation-handoff-realization/v1";
           mechanism = "systemd-switch-root";
-          completion_unit = unitIdentityForPlannedReference allResources resource.value.completion;
+          completion_unit = unitIdentityForPlannedReference planningOutputs allResources resource.value.completion;
           required_units =
             builtins.sort
             (left: right: builtins.toJSON left < builtins.toJSON right)
             (builtins.map
-              (unitIdentityForPlannedReference allResources)
+              (unitIdentityForPlannedReference planningOutputs allResources)
               resource.value.preparations);
         })
         resources;
@@ -860,10 +867,10 @@
       inherit lib serviceFacets;
       unitNameForReference = resolver;
     };
-  unitIdentityForPlannedResource = allResources: resource:
+  unitIdentityForPlannedResource = planningOutputs: allResources: resource:
     if resource.kind == "aos.service.instance"
     then
-      (serviceRendererFor (unitIdentityForPlannedReference allResources))
+      (serviceRendererFor (optionalUnitIdentityForPlannedReference planningOutputs allResources))
       .serviceIdentityFor
       (builtins.removeAttrs resource ["controller"])
     else if resource.kind == "aos.systemd.packaged-unit"
@@ -885,8 +892,8 @@
         resource.value;
     }
     else null;
-  unitIdentityForPlannedReference = allResources: deferred: let
-    reference = resolveReference deferred;
+  plannedUnitIdentityForReference = planningOutputs: allResources: deferred: let
+    reference = resolveReference planningOutputs deferred;
     matches =
       builtins.filter (
         resource: resource.resource == reference.resource
@@ -898,7 +905,7 @@
       else
         throw
         "systemd dependency ${builtins.toJSON reference.resource} must resolve to exactly one planned resource; found ${builtins.toString (builtins.length matches)}";
-    unitIdentity = unitIdentityForPlannedResource allResources resource;
+    unitIdentity = unitIdentityForPlannedResource planningOutputs allResources resource;
   in
     if resource.resource != reference.resource
     then throw "systemd dependency resolved to another planned ResourceId"
@@ -906,130 +913,41 @@
     then throw "systemd dependency planning does not match its ResourceReference authority"
     else if !requireReferenceAuthority reference resource
     then throw "systemd dependency has invalid planned ResourceReference authority"
-    else if !validServiceUnitIdentity unitIdentity
-    then throw "systemd dependency has no valid planned systemd unit identity"
-    else unitIdentity;
-  directoryRoot = {
-    cache = "/var/cache";
-    configuration = "/etc";
-    logs = "/var/log";
-    runtime = "/run";
-    state = "/var/lib";
-  };
-  needsDirectoryPreparation = value: directory: let
-    identity = value.identity or {};
-    owner = directory.owner or null;
-    group = directory.group or null;
-  in
-    (owner != null && owner != (identity.principal or null))
-    || (group != null && group != (identity.primary_group or null));
-  preparationFor = resource: directory: let
-    destination = "${directoryRoot.${directory.purpose}}/${directory.path}";
-    key = "directory-${lib.abilities.identityKeyFor "aos.systemd.directory-preparation-request/v1" {
-      inherit (resource) resource;
-      directory = {
-        inherit (directory) purpose path;
-      };
-    }}";
-  in {
-    inherit key destination directory;
-    request = {
-      requirement = "directory-preparation";
-      scope = ["managed-directory"];
-      slot = key;
-      parameters =
-        {
-          name = key;
-          entry.kind = "directory";
-          inherit destination;
-          inherit (directory) mode;
-          prerequisites = [];
-        }
-        // lib.optionalAttrs ((directory.owner or null) != null) {
-          inherit (directory) owner;
-        }
-        // lib.optionalAttrs ((directory.group or null) != null) {
-          inherit (directory) group;
-        };
+    else if unitIdentity != null && !validServiceUnitIdentity unitIdentity
+    then throw "systemd dependency ${builtins.toJSON reference.resource} has an invalid planned systemd unit identity"
+    else {
+      inherit reference resource unitIdentity;
     };
-  };
-  preparationsFor = resource:
-    builtins.map (preparationFor resource) (
-      builtins.filter
-      (needsDirectoryPreparation resource.value)
-      ((resource.value.directories or {managed = [];}).managed)
-    );
-  withoutPreparedDirectories = resource: let
-    value = resource.value;
-    directories = value.directories or null;
+  optionalUnitIdentityForPlannedReference = planningOutputs: allResources: deferred:
+    (plannedUnitIdentityForReference planningOutputs allResources deferred).unitIdentity;
+  unitIdentityForPlannedReference = planningOutputs: allResources: deferred: let
+    resolved = plannedUnitIdentityForReference planningOutputs allResources deferred;
   in
-    if directories == null
-    then resource
-    else
-      resource
-      // {
-        value =
-          value
-          // {
-            directories =
-              directories
-              // {
-                managed =
-                  builtins.filter
-                  (directory: !needsDirectoryPreparation value directory)
-                  directories.managed;
-              };
-          };
-      };
-  preparationReference = implementation: providerInstance: preparation: let
-    requestKey = lib.abilities.compositionRequestKey {
-      inherit implementation;
-      inherit providerInstance;
-      key = preparation.key;
-    };
-    outputs = config.aos.abilities.compositionOutputs.${requestKey};
-    plannedPath = outputs.planned-path or (throw "systemd directory preparation omitted planned-path");
-    entryResource = outputs.entry-resource or (throw "systemd directory preparation omitted entry-resource");
-  in
-    if plannedPath.phase != "planning" || plannedPath.value != preparation.destination
-    then throw "systemd directory preparation planned another destination"
-    else if entryResource.phase != "planning" || !lib.abilities.types.resolvedResourceReference.check entryResource.value
-    then throw "systemd directory preparation omitted an exact planning ResourceReference"
-    else entryResource.value;
+    if resolved.unitIdentity == null
+    then throw "systemd dependency ${builtins.toJSON resolved.reference.resource} of kind '${resolved.resource.kind}' has no planned systemd unit identity"
+    else resolved.unitIdentity;
   composeServices = featureName: {
     allResources,
     bindings,
+    planningOutputs,
     resources,
     ...
   }: let
     selected = allServiceInterfaces.${featureName};
-    implementation = "${packageName}:${selected.alias}";
     selectedBindings = builtins.attrValues bindings;
     providerInstance =
       if selectedBindings == []
       then throw "systemd service controller has no selected binding"
       else (builtins.head selectedBindings).providerInstance;
-    preparationsByResource = builtins.mapAttrs (_: preparationsFor) resources;
-    preparations = builtins.concatLists (builtins.attrValues preparationsByResource);
-    destinations = builtins.map (preparation: preparation.destination) preparations;
-    referencesFor = resourceName:
-      builtins.map (preparationReference implementation providerInstance) preparationsByResource.${resourceName};
-    serviceRenderer = serviceRendererFor (unitIdentityForPlannedReference allResources);
+    serviceRenderer = serviceRendererFor (optionalUnitIdentityForPlannedReference planningOutputs allResources);
   in
     if !builtins.all (binding: binding.providerInstance == providerInstance) selectedBindings
     then throw "systemd service controller received several provider instances"
-    else if builtins.length destinations != builtins.length (lib.unique destinations)
-    then throw "systemd service directories select the same prepared destination more than once"
     else
       emptyComposeResult
       // {
         requests =
-          builtins.listToAttrs (builtins.map (preparation: {
-              name = preparation.key;
-              value = preparation.request;
-            })
-            preparations)
-          // builtins.mapAttrs (key: resource: {
+          builtins.mapAttrs (key: resource: {
             requirement = "service-effects";
             scope = ["service-effects"];
             slot = key;
@@ -1039,9 +957,9 @@
             };
           })
           resources;
-        realizations = builtins.mapAttrs (resourceName: resource:
-          (serviceRenderer.realizationFor selected.identity (withoutPreparedDirectories resource))
-          // {prerequisites = referencesFor resourceName;})
+        realizations = builtins.mapAttrs (_: resource:
+          (serviceRenderer.realizationFor selected.identity resource)
+          // {prerequisites = [];})
         resources;
       };
 
@@ -1226,11 +1144,7 @@
   readinessProviderImplementations = builtins.listToAttrs (builtins.map (selected: {
       name = selected.alias;
       value = {
-        provide = provideReadiness selected (
-          if selected.alias == runtimeEntryPopulationAlias
-          then "lifecycle-resource"
-          else "readiness-resource"
-        );
+        provide = provideReadiness selected "resource";
         transition = _: lib.abilities.transitionFragment {};
       };
     })
@@ -1284,13 +1198,13 @@ in {
         provide = provideImageBuilder;
       };
       ${eventLogPolicyAlias} = {
-        provide = _: emptyProvideResult;
+        provide = provideSelectedPolicy;
       };
       ${crashDumpPolicyAlias} = {
         provide = provideCrashDumpPolicy;
       };
       ${loginSessionTrackingAlias} = {
-        provide = _: emptyProvideResult;
+        provide = provideSelectedPolicy;
       };
       ${implementationAlias} = {
         inherit provide compose;
@@ -1345,7 +1259,7 @@ in {
           }
         ];
       };
-      systemd-service-resources = {
+      systemd-resources = {
         description = "Resolved logical service observations through the selected systemd provider";
         checks = builtins.map qualificationChecks.serviceCheck qualifiedServiceResources;
       };

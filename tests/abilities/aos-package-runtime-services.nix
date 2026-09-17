@@ -52,9 +52,14 @@
   snapshotImplementation = enabled.config.aos.abilities.implementations."aos:synchronized-registry-snapshot";
 in
   assert !(disabledRequests ? "aos:package-profile-specification");
+  assert !(disabledRequests ? "aos:package-profile-readiness");
   assert disabledRequests ? "aos:package-profile-convergence-lifecycle";
   assert disabledRequests ? "systemd:aos-attest-lifecycle";
   assert !(initrd.config.aos.abilities.requests ? "systemd:aos-attest-lifecycle");
+  assert !(initrd.config.aos.abilities.requests ? "aos:package-profile-readiness");
+  assert requests."aos:package-profile-readiness".parameters == "system-profile";
+  assert enabled.config.aos.abilities.implementations."aos:package-profile-readiness".providerModule.path
+  == "package-profile-readiness-provider.nix";
   assert enabled.config.aos.abilities.instances."aos:synchronized-registry-snapshot".implementation
   == "aos:synchronized-registry-snapshot";
   assert !(initrd.config.aos.abilities.instances ? "aos:synchronized-registry-snapshot");
@@ -86,8 +91,8 @@ in
   ];
   assert requests."aos:package-profile-convergence-dependencies".parameters.prerequisites
   == [
-    (resultOf "aos:package-profile-specification" "retained-resource")
-    (resultOf "aos:configuration-evaluation-lifecycle" "service-resource")
+    (resultOf "aos:configuration-evaluation-lifecycle" "resource")
+    (resultOf "aos:package-profile-specification" "resource")
   ];
   assert quoteLifecycle.start
   == [
@@ -101,5 +106,5 @@ in
     }
   ];
   assert requests."systemd:aos-attest-dependencies".parameters.prerequisites
-  == [(resultOf "systemd:package-profile-converged" "readiness-resource")];
+  == [(resultOf "aos:package-profile-readiness" "resource")];
   assert !(enabled.config ? systemd); true

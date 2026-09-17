@@ -1,7 +1,6 @@
 ##! Pure transition from a D-Bus registration aggregate to its configuration child.
 {
   configurationInterface,
-  reloadInterface,
   transitionFragment,
 }: context: let
   deadline = {
@@ -118,33 +117,9 @@
   operationsFor = change:
     if change.kind == "remove"
     then [(operationFor change configurationInterface "release")]
-    else if change.kind == "create"
-    then [(operationFor change configurationInterface "materialize")]
-    else if builtins.elem change.kind ["update" "reconcile-divergent"]
-    then [
-      (operationFor change configurationInterface "materialize")
-      (operationFor change reloadInterface "reload")
-    ]
     else [(operationFor change configurationInterface "materialize")];
   operations = builtins.concatMap operationsFor actionable;
-  edgeFor = change: let
-    configuration = childFor change configurationInterface "materialize";
-    reload = childFor change reloadInterface "reload";
-  in {
-    from = {
-      kind = "operation";
-      key = scopedKey "materialize-${configuration.resource.resource.key}";
-    };
-    to = {
-      kind = "operation";
-      key = scopedKey "reload-${reload.resource.resource.key}";
-    };
-    kind = "required-success";
-  };
-  edges = builtins.map edgeFor (builtins.filter (change:
-    builtins.elem change.kind ["update" "reconcile-divergent"])
-  actionable);
 in
   transitionFragment {
-    inherit operations edges;
+    inherit operations;
   }

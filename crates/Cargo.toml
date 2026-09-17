@@ -43,6 +43,7 @@ members = [
     "aos-filesystem-provider",
     "aos-kubernetes-provider",
     "aos-kernel-tunable-provider",
+    "aos-network-ruleset-provider",
     "aos-ebpf-lsm-provider",
     "aos-ebpf-net-policy-provider",
     "aos-nix-store-provider",

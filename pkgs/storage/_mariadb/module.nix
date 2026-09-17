@@ -74,7 +74,7 @@
   };
   credentialContent = name: {
     kind = "credential-content";
-    resource = resultOf "credential-${name}" "retained-resource";
+    resource = resultOf "credential-${name}" "resource";
     path = resultOf "credential-${name}" "credential-path";
   };
   command = entry_point: arguments: {
@@ -435,10 +435,10 @@
           stop_timeout_millis = 60000;
         };
         dependencies = {
-          after = [(resultOf "initialize-lifecycle" "service-resource") (resultOf "network-readiness" "readiness-resource")];
+          after = [(resultOf "initialize-lifecycle" "resource") (resultOf "network-readiness" "resource")];
           before = [];
-          requires = [(resultOf "initialize-lifecycle" "service-resource")];
-          wants = [(resultOf "network-readiness" "readiness-resource")];
+          requires = [(resultOf "initialize-lifecycle" "resource")];
+          wants = [(resultOf "network-readiness" "resource")];
         };
         supervision = {
           startup_protocol = "notification";

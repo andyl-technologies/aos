@@ -7,8 +7,15 @@
   evaluateStore = selection:
     evaluate ({
         name = "base-nix-db";
-        module = ../../modules/base/nix-db.nix;
+        module = {};
         packages = [pkgs.aos-nix-store-provider];
+        extraPackageModules = [
+          {
+            name = "aos";
+            version = pkgs.aos.version;
+            module = pkgs.aos.module + "/nix-store-database.nix";
+          }
+        ];
       }
       // selection);
   unselected = evaluateStore {};
@@ -19,7 +26,7 @@
         aos.abilities = {
           instances."aos-nix-store-provider:manager".implementation = "aos-nix-store-provider:nix-store-database";
           bindings."test:nix-store-database" = {
-            request = "system:nix-store-database";
+            request = "aos:nix-store-database";
             implementation = "aos-nix-store-provider:nix-store-database";
             providerInstance = "aos-nix-store-provider:manager";
             slot = "database";
@@ -30,7 +37,7 @@
   };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
-  baseRequests = lib.filterAttrs (_: request: request.package == null) requests;
+  policyRequests = lib.filterAttrs (_: request: request.package == "aos") requests;
   providerRequests = lib.filterAttrs (_: request: request.package == "aos-nix-store-provider") requests;
   configurationEntry = providerRequests."aos-nix-store-provider:nix-configuration-entry".parameters;
   configurationSource = configurationEntry.entry.source;
@@ -40,8 +47,8 @@
 in
   assert lib.filterAttrs (_: request: request.package == "aos-nix-store-provider") unselected.config.aos.abilities.requests == {};
   assert unselected.config.aos.contributions.runtimeChecks == {};
-  assert builtins.attrNames baseRequests == ["system:nix-store-database"];
-  assert baseRequests."system:nix-store-database".parameters
+  assert builtins.attrNames policyRequests == ["aos:nix-store-database"];
+  assert policyRequests."aos:nix-store-database".parameters
   == {
     scope = "local";
     registration = {
@@ -75,7 +82,7 @@ in
   assert configurationEntry.mode == "0444";
   assert configurationSource.kind == "execution-path";
   assert configurationSource.resource.request == "aos-nix-store-provider:nix-configuration";
-  assert configurationSource.resource.output == "retained-resource";
+  assert configurationSource.resource.output == "resource";
   assert configurationSource.path.request == "aos-nix-store-provider:nix-configuration";
   assert configurationSource.path.output == "planned-path";
   assert builtins.head configurationEntry.prerequisites == configurationSource.resource;

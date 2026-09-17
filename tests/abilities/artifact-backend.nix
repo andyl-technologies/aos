@@ -4,6 +4,11 @@
   pkgs,
 }: let
   packageModule = lib.abilities.authenticatedPackageModuleRecordFor pkgs.aos-oci-backend;
+  policyModule = {
+    name = "aos";
+    version = pkgs.aos.version;
+    module = pkgs.aos.module + "/artifact-backend.nix";
+  };
   providerModule = import ./_selected-package-provider.nix {
     inherit lib;
     package = pkgs.aos-oci-backend;
@@ -24,9 +29,9 @@
     inherit lib;
     enableAbilitySelection = true;
     modules = baseModules;
-    packageModules = [packageModule];
+    packageModules = [packageModule policyModule];
   };
-  evaluateSelected = {request ? "system:artifact-backend"}:
+  evaluateSelected = {request ? "aos:artifact-backend"}:
     lib.evalModules {
       inherit lib;
       enableAbilitySelection = true;
@@ -46,16 +51,16 @@
                 providerInstance = "aos-oci-backend:artifact-backend-provider";
                 slot = "artifact-backend";
               };
-              requirementTemplates = lib.mkIf (request != "system:artifact-backend") {
+              requirementTemplates = lib.mkIf (request != "aos:artifact-backend") {
                 ${request} = {
                   interface = lib.abilities.interfaces.artifactBackend.interfaces.backend.identity.name;
                   inherit (lib.abilities.interfaces.artifactBackend.interfaces.backend.identity) abi descriptor;
                 };
               };
-              instances = lib.mkIf (request != "system:artifact-backend") {
+              instances = lib.mkIf (request != "aos:artifact-backend") {
                 ${request} = {};
               };
-              requests = lib.mkIf (request != "system:artifact-backend") {
+              requests = lib.mkIf (request != "aos:artifact-backend") {
                 ${request} = {
                   requirement = request;
                   consumer = request;
@@ -64,20 +69,22 @@
               };
             };
           }
-      ];
-      packageModules = [packageModule];
+        ];
+      packageModules =
+        [packageModule]
+        ++ lib.optional (request == "aos:artifact-backend") policyModule;
       selectedProviderModules = [providerModule];
     };
   selected = evaluateSelected {};
-  wrongRequest = builtins.tryEval (builtins.deepSeq
+  alternateRequest = builtins.tryEval (builtins.deepSeq
     (evaluateSelected {request = "system:wrong-artifact-backend";}).config.aos.artifacts.backend
     true);
   backend = selected.config.aos.artifacts.backend;
-  output = selected.config.aos.abilities.compositionOutputs."system:artifact-backend".artifact-reference;
+  output = selected.config.aos.abilities.compositionOutputs."aos:artifact-backend".artifact-reference;
 in
   assert static.config.aos.artifacts.backend == null;
   assert !(static.config.aos.abilities.instances ? "aos-oci-backend:artifact-backend-provider");
-  assert !wrongRequest.success;
+  assert alternateRequest.success;
   assert backend._type == "aos-package-artifact-backend";
   assert backend.package == builtins.toString pkgs.aos-oci-backend;
   assert backend.artifact == output.value;

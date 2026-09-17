@@ -1027,6 +1027,8 @@ mod tests {
                 abi: 1.try_into().unwrap(),
                 descriptor: digest(1),
             },
+            methods: Vec::new(),
+            methods: Vec::new(),
             guarantees: Vec::new(),
             artifact: ArtifactReference {
                 content: digest(2),

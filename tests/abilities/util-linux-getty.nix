@@ -82,10 +82,14 @@ in
   assert builtins.attrNames pkgs.util-linux.abilities.requirementTemplates
   == [
     "activation-milestone"
-    "service-dependencies"
-    "service-lifecycle"
-    "service-readiness"
-    "service-terminal"
+    "serial-console-service-dependencies"
+    "serial-console-service-lifecycle"
+    "serial-console-service-readiness"
+    "serial-console-service-terminal"
+    "virtual-console-service-dependencies"
+    "virtual-console-service-lifecycle"
+    "virtual-console-service-readiness"
+    "virtual-console-service-terminal"
   ];
   assert portableOptionTree host.options.aos.services.getty.autologin;
   assert !invalidStage.success;
@@ -103,8 +107,8 @@ in
       ignore_failure = false;
     }
   ];
-  assert hostVirtualDependencies.after == [(qualifiedResultOf "util-linux:user-sessions-milestone" "readiness-resource")];
-  assert hostVirtualDependencies.wanted_by == [(qualifiedResultOf "util-linux:startup-milestone" "readiness-resource")];
+  assert hostVirtualDependencies.after == [(qualifiedResultOf "util-linux:user-sessions-milestone" "resource")];
+  assert hostVirtualDependencies.wanted_by == [(qualifiedResultOf "util-linux:startup-milestone" "resource")];
   assert hostVirtualDependencies.implicit_dependencies;
   assert hostVirtualTerminal
   == {
@@ -124,7 +128,7 @@ in
   assert (request initrdRequests "startup-milestone").milestone == "early-system";
   assert (builtins.head initrdVirtual.start).executable.arguments == ["--noclear" "tty0" "linux"];
   assert initrdVirtualDependencies.after == [];
-  assert initrdVirtualDependencies.wanted_by == [(qualifiedResultOf "util-linux:startup-milestone" "readiness-resource")];
+  assert initrdVirtualDependencies.wanted_by == [(qualifiedResultOf "util-linux:startup-milestone" "resource")];
   assert !initrdVirtualDependencies.implicit_dependencies;
   assert initrdVirtualTerminal.device == "/dev/tty0";
   assert !initrdVirtualTerminal.deallocate;

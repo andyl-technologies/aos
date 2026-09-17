@@ -41,14 +41,16 @@
   in
     emptyResult
     // {
-      requests = builtins.foldl' (
-        requests: entry:
-          requests
-          // authorizedInputChildRequests entry.binding.slot entry.parameters
-      ) {} entries;
+      requests =
+        builtins.foldl' (
+          requests: entry:
+            requests
+            // authorizedInputChildRequests entry.binding.slot entry.parameters
+        ) {}
+        entries;
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
-          value.readiness-resource = reference instance entry.binding.slot;
+          value.resource = reference instance entry.binding.slot;
         })
         entries);
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {
@@ -159,7 +161,8 @@
       else throw "storage provisioning requires one exact desired revision for ${change.resource.key}";
     revisionForResource = resource: kind: let
       matches = builtins.filter (revision:
-        revision.resource == resource
+        revision.resource
+        == resource
         && revision.kind == kind)
       context.after.resources;
     in
@@ -348,12 +351,15 @@
       contentOwnerEntry = selectedExternalBinding change "authorized-input-object" "observe" "read";
       contentOwnerBinding = contentOwnerEntry.binding;
       contentOwnerPermissions = builtins.filter (permission:
-        permission.access == "read"
+        permission.access
+        == "read"
         && builtins.elem "observe" permission.operations)
       contentOwnerBinding.caller_grant.resources;
       contentResource =
-        if contentOwnerBinding.interface == contentObject.identity
-        && builtins.length contentOwnerPermissions == 1
+        if
+          contentOwnerBinding.interface
+          == contentObject.identity
+          && builtins.length contentOwnerPermissions == 1
         then (builtins.head contentOwnerPermissions).resource
         else throw "storage provisioning requires one exact authorized-input content owner";
       contentRevision = revisionForResource contentResource contentObject.identity.name;
@@ -365,17 +371,21 @@
       contentOperationsEntry = selectedExternalBinding change "authorized-input-object-operations" "commit" "exclusive-write";
       contentOperationsBinding = contentOperationsEntry.binding;
       contentOperationsPermissions = builtins.filter (permission:
-        permission.resource == contentResource
+        permission.resource
+        == contentResource
         && permission.access == "exclusive-write"
         && builtins.elem "commit" permission.operations)
       contentOperationsBinding.caller_grant.resources;
       checkedContentResource =
-        if contentOperationsBinding.interface == contentObject.operationInterface.identity
-        && builtins.length contentOperationsPermissions == 1
+        if
+          contentOperationsBinding.interface
+          == contentObject.operationInterface.identity
+          && builtins.length contentOperationsPermissions == 1
         then (builtins.head contentOperationsPermissions).resource
         else throw "storage provisioning requires one exact authorized-input content operation resource";
       hostNetworkRevisions = builtins.filter (revision:
-        revision.resource == hostNetworkResource
+        revision.resource
+        == hostNetworkResource
         && revision.kind == networkConfiguration.identity.name)
       context.after.resources;
       hostNetworkRevision =
@@ -604,22 +614,23 @@
           };
         }
       ];
-      edges = [
-        (edge "operation" detectKey "decision" decisionKey "data")
-        (edge "decision" decisionKey "operation" offlineAcquisitionKey "branch-guard")
-        (edge "decision" decisionKey "operation" networkKey "branch-guard")
-        (edge "decision" decisionKey "operation" onlineAcquisitionKey "branch-guard")
-        (edge "operation" networkKey "operation" onlineAcquisitionKey "readiness")
-        (edge "operation" offlineAcquisitionKey "merge" acquisitionMergeKey "branch-merge")
-        (edge "operation" onlineAcquisitionKey "merge" acquisitionMergeKey "branch-merge")
-        (edge "merge" acquisitionMergeKey "operation" authorizationKey "data")
-        (edge "operation" authorizationKey "operation" evaluationKey "data")
-        (edge "operation" markerKey "operation" evaluationKey "data")
-        (edge "operation" authorizationKey "operation" authorizedInputCommitKey "data")
-        (edge "operation" authorizedInputCommitKey "operation" commitKey "readiness")
-        (edge "operation" evaluationKey "operation" commitKey "data")
-      ]
-      ++ bootstrapEdges;
+      edges =
+        [
+          (edge "operation" detectKey "decision" decisionKey "data")
+          (edge "decision" decisionKey "operation" offlineAcquisitionKey "branch-guard")
+          (edge "decision" decisionKey "operation" networkKey "branch-guard")
+          (edge "decision" decisionKey "operation" onlineAcquisitionKey "branch-guard")
+          (edge "operation" networkKey "operation" onlineAcquisitionKey "readiness")
+          (edge "operation" offlineAcquisitionKey "merge" acquisitionMergeKey "branch-merge")
+          (edge "operation" onlineAcquisitionKey "merge" acquisitionMergeKey "branch-merge")
+          (edge "merge" acquisitionMergeKey "operation" authorizationKey "data")
+          (edge "operation" authorizationKey "operation" evaluationKey "data")
+          (edge "operation" markerKey "operation" evaluationKey "data")
+          (edge "operation" authorizationKey "operation" authorizedInputCommitKey "data")
+          (edge "operation" authorizedInputCommitKey "operation" commitKey "readiness")
+          (edge "operation" evaluationKey "operation" commitKey "data")
+        ]
+        ++ bootstrapEdges;
     };
     fragments = builtins.map fragmentFor activeChanges;
   in

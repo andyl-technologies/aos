@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, ensure};
 use aos_ability_model::{InterfaceDocument, PackageDocument};
 use aos_ability_validate::{
-    CheckedStaticAbilityContract, StaticAbilityArtifactClass, StaticAbilityContractExpectation,
-    StaticAbilityExecutionStage, validate_static_ability_artifacts_at_store_root,
+    CheckedStaticAbilityContract, ResolvedPackageOutput, StaticAbilityArtifactClass,
+    StaticAbilityContractExpectation, StaticAbilityExecutionStage,
+    validate_static_ability_artifacts_at_store_root,
 };
 use aos_contract::Sha256Digest;
 
@@ -29,6 +30,7 @@ const MAX_STATIC_CONTRACT_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) struct ResolvedContract {
     pub(crate) document: PackageDocument,
     pub(crate) interfaces: Vec<InterfaceDocument>,
+    pub(crate) resolved_outputs: Vec<ResolvedPackageOutput>,
     pub(crate) manifest_store_path: String,
     pub(crate) manifest_nar_hash: String,
     pub(crate) manifest_digest: Sha256Digest,
@@ -139,6 +141,19 @@ pub(super) fn resolve(
             Ok(ResolvedContract {
                 document,
                 interfaces,
+                resolved_outputs: metadata
+                    .selectors
+                    .iter()
+                    .map(|selector| {
+                        Ok(ResolvedPackageOutput {
+                            package: aos_ability_model::LocalKey::new(&selector.package)?,
+                            output: aos_ability_model::LocalKey::new(&selector.output)?,
+                            artifact: crate::package_contract::artifact_reference(
+                                &selector.artifact,
+                            )?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
                 manifest_store_path: metadata.document.store_path.clone(),
                 manifest_nar_hash: metadata.document.nar_hash.clone(),
                 manifest_digest: Sha256Digest::parse(&metadata.document.document_sha256)?,
@@ -194,6 +209,7 @@ pub(super) fn resolve(
             Ok(ResolvedContract {
                 document,
                 interfaces: selected.retained_interfaces().to_vec(),
+                resolved_outputs: selected.resolved_outputs().to_vec(),
                 manifest_store_path: selected.manifest().store_path().to_string(),
                 manifest_nar_hash: manifest.nar_hash.to_string(),
                 manifest_digest: selected.manifest().digest(),
@@ -254,6 +270,7 @@ pub(super) fn verified_initrd_packages(
         let resolved = ResolvedContract {
             document,
             interfaces: selected.retained_interfaces().to_vec(),
+            resolved_outputs: selected.resolved_outputs().to_vec(),
             manifest_store_path: selected.manifest().store_path().to_string(),
             manifest_nar_hash: manifest.nar_hash.to_string(),
             manifest_digest: selected.manifest().digest(),

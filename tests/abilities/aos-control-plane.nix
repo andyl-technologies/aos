@@ -71,7 +71,7 @@
     package = pkgs.systemd;
     implementation = "service-lifecycle";
   };
-  evaluate = bindings:
+  evaluate = selection:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -84,8 +84,8 @@
                 key = "aos-control-plane";
                 stage = "host";
               };
-              instances."systemd:manager" = {};
-              inherit bindings;
+              instances = {"systemd:manager" = {};} // selection.instances;
+              inherit (selection) bindings;
             };
             aos.config.unitGraph.enable = true;
           };
@@ -101,70 +101,37 @@
       selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
         inherit pkgs;
+        abilityResolution = {
+          inherit (selection) requests requirements;
+        };
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
         };
       };
     };
-  initial = evaluate {};
-  authoredRequestNames =
-    builtins.filter
-    (requestName: initial.config.aos.abilities.requests.${requestName}.package == "aos")
-    (builtins.attrNames initial.config.aos.abilities.requests);
-  authoredBindings = builtins.listToAttrs (builtins.map (requestName: let
-      request = initial.config.aos.abilities.requests.${requestName};
-      implementation = "systemd:${lib.removePrefix "aos:" request.requirement}";
-      slot = builtins.head request.scope;
-      bindingKey =
-        lib.abilities.identityKeyFor "aos.test.authored-binding-key/v1" requestName;
-    in {
-      name = "test:authored-${bindingKey}";
-      value = {
-        request = requestName;
-        inherit implementation slot;
-        providerInstance = "systemd:manager";
-      };
-    })
-    authoredRequestNames);
-  composed = evaluate authoredBindings;
-  implementations = composed.config.aos.abilities.implementations;
-  interfaces = composed.config.aos.abilities.interfaces;
-  implementationInterfaceIdentity = implementation:
-    if builtins.isAttrs implementation.interface
-    then implementation.interface
-    else
-      lib.abilities.interfaceIdentity (
-        lib.abilities.interfaceDocumentFromDeclaration interfaces.${implementation.interface}
-      );
-  childImplementationFor = pending: let
-    requirement = implementations.${pending.implementation}.requirements.${pending.requirement};
-    candidates = builtins.filter (implementationName: let
-      implementation = implementations.${implementationName};
-      identity = implementationInterfaceIdentity implementation;
-    in
-      builtins.any
-      (selector: lib.abilities.interfaceSelectorMatches selector identity)
-      requirement.accepted_interfaces
-      && builtins.all (method: builtins.elem method implementation.methods) requirement.methods
-      && builtins.all (guarantee: builtins.elem guarantee implementation.guarantees) requirement.guarantees)
-    (builtins.attrNames implementations);
-  in
-    assert builtins.length candidates == 1; builtins.head candidates;
-  childBindings =
-    lib.mapAttrs' (requestName: pending: let
-      bindingKey =
-        lib.abilities.identityKeyFor "aos.test.child-binding-key/v1" requestName;
-    in {
-      name = "test:child-${bindingKey}";
-      value = {
-        request = requestName;
-        implementation = childImplementationFor pending;
-        inherit (pending) providerInstance slot;
-      };
-    })
-    composed.config.aos.abilities.compositionPendingRequests;
-  complete = evaluate (authoredBindings // childBindings);
+  emptySelection = {
+    instances = {};
+    bindings = {};
+    requests = {};
+    requirements = {};
+  };
+  select = abilities:
+    import ../../lib/build/select-ability-bindings.nix {
+      inherit lib abilities;
+    };
+  mergeSelection = current: additions: {
+    instances = current.instances // additions.instances;
+    bindings = current.bindings // additions.bindings;
+    requests = current.requests // additions.requests;
+    requirements = current.requirements // additions.requirements;
+  };
+  initial = evaluate emptySelection;
+  authoredSelection = select initial.config.aos.abilities;
+  composedSelection = mergeSelection emptySelection authoredSelection;
+  composed = evaluate composedSelection;
+  completeSelection = mergeSelection composedSelection (select composed.config.aos.abilities);
+  complete = evaluate completeSelection;
   abilities = complete.config.aos.abilities;
   resources = builtins.attrValues abilities.desiredResources;
   realizedUnitName = resource: let

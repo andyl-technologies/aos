@@ -27,10 +27,12 @@
     zstd = artifactFor "zstd";
   };
   providerPackage = artifactFor "aos-systemd-provider";
-  rendererPackages = runtimePackages // {
-    inherit (buildContext) runCommand writeTextFile;
-    sed = artifactFor "sed";
-  };
+  rendererPackages =
+    runtimePackages
+    // {
+      inherit (buildContext) runCommand writeTextFile;
+      sed = artifactFor "sed";
+    };
   systemdLib = import ./render.nix {
     inherit lib;
     pkgs = rendererPackages;
@@ -81,8 +83,7 @@
       && (selectedArtifactBackend._type or null) == "aos-package-artifact-backend"
     then selectedArtifactBackend
     else throw "systemd initrd requires one selected package-owned artifact backend";
-  mkReferenceGraph = import ../../../../lib/build/reference-graph.nix {
-    inherit lib;
+  mkReferenceGraph = lib.build.referenceGraph {
     inherit (buildContext) mkDerivation;
     inherit (buildContext.buildTools) coreutils jq;
   };
@@ -99,24 +100,11 @@
     if initrdAbilityEvaluation == null
     then throw "systemd initrd requires the completed initrd ability fixed point"
     else initrdAbilityEvaluation.config.aos.abilities;
+  sourceGraph = lib.abilities.sourceStageFixedPoint abilityGraph;
   sourceFixedPoint = buildContext.writeTextFile {
     name = "aos-initrd-source-fixed-point";
     destination = "/fixed-point.json";
-    text = builtins.toJSON {
-      inherit (abilityGraph)
-        environment
-        instances
-        instanceIdentities
-        requests
-        compositionRequests
-        compositionRequirements
-        bindings
-        compositionOutputs
-        compositionPendingRequests
-        resolvedResources
-        ;
-      executionObserver = abilityGraph.resolvedExecutionObserver;
-    };
+    text = builtins.toJSON sourceGraph;
   };
   expectedContractIdentity = "${staticContractBuild.artifact}/contract.json";
   checkedStaticContract =
@@ -125,22 +113,26 @@
     else if initrdStaticContract.identity == expectedContractIdentity
     then initrdStaticContract
     else throw "systemd initrd static contract differs from the completed initrd fixed point";
-  specification = builtins.toFile "aos-initrd-source-stage-materialization.json" (builtins.toJSON {
-    schema = "aos.ability.source-stage-materialization/v1";
-    stage = "initrd";
-    authority = abilityGraph.environment.authority;
-    key = abilityGraph.environment.key;
-    platform = {
-      system = buildContext.targetPlatform.os;
-      architecture = buildContext.targetPlatform.cpu;
+  specification = buildContext.writeTextFile {
+    name = "aos-initrd-source-stage-materialization";
+    destination = "/specification.json";
+    text = builtins.toJSON {
+      schema = "aos.ability.source-stage-materialization/v1";
+      stage = "initrd";
+      authority = abilityGraph.environment.authority;
+      key = abilityGraph.environment.key;
+      platform = {
+        system = buildContext.targetPlatform.os;
+        architecture = buildContext.targetPlatform.cpu;
+      };
+      staticContract = checkedStaticContract;
+      fixedPoint = "${sourceFixedPoint}/fixed-point.json";
     };
-    staticContract = checkedStaticContract;
-    fixedPoint = "${sourceFixedPoint}/fixed-point.json";
-  });
+  };
   sourceStageBundle = buildContext.runCommand "aos-initrd-source-stage-bundle.json" {} ''
     ${buildContext.buildTools.packageRuntime}/bin/.aos-package-runtime-unwrapped \
       __ability-materialize-source-stage \
-      --spec ${specification} \
+      --spec ${specification}/specification.json \
       --out "$out"
   '';
   handoff =
