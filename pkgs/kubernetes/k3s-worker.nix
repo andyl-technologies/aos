@@ -1,5 +1,6 @@
 {
   lib,
+  callPackage,
   mkDerivation,
   k3s,
   containerd,
@@ -18,6 +19,7 @@
   writeShellScriptBin,
 }: let
   mkK3sExposePackage = import ./_k3s-expose-package.nix {
+    pause = callPackage ./_k3s-pause-image.nix {};
     inherit
       lib
       mkDerivation
@@ -45,6 +47,7 @@ in
     description = "Lightweight Kubernetes (agent / worker)";
     command = "agent";
     requiredEnv = ["K3S_URL"];
+    evidenceSources = [./k3s-worker.nix];
     firewall = {
       allowedTCP = [10250];
       allowedUDP = [8472];

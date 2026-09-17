@@ -9,6 +9,8 @@ mkDerivation {
 
   runtimeDeps = [python3];
 
+  passthru.evidenceSources = [./test-http-server.nix];
+
   phases = [
     {
       name = "install";

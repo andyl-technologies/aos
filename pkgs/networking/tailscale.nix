@@ -3,7 +3,7 @@
   mkDerivation,
   fetchurl,
   fetchGoModules,
-  go,
+  buildPackages,
   getent,
   iproute2,
   iptables,
@@ -25,10 +25,10 @@ in
     pname = "tailscale";
     inherit version src;
 
-    buildDeps = [go];
+    buildDeps = [buildPackages.go];
     runtimeDeps = [getent iproute2 iptables procps-ng];
     propagatedDeps = [];
-    disallowedReferences = [go goModules];
+    disallowedReferences = [buildPackages.go goModules];
 
     phases = [
       {
@@ -46,6 +46,10 @@ in
           export GOFLAGS="-trimpath -mod=readonly"
           export GOPROXY=off
           export CGO_ENABLED=0
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           mkdir -p "$GOCACHE"
         '';
       }

@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  patch,
   autoconf,
   autoconf-archive,
   automake,
@@ -16,6 +17,7 @@
   setuptools,
   ncurses,
   libxcrypt,
+  stdenv,
 }: let
   version = "4.1.7";
 in
@@ -27,6 +29,7 @@ in
       hash = "sha256-3tTNQZuKBQAqEIoJEiCOIJhpV1JmTGpZRk0t2kGOBFI=";
     };
     buildDeps = [
+      patch
       autoconf
       autoconf-archive
       automake
@@ -55,19 +58,32 @@ in
         name = "patch";
         script = ''
           sed -i 's/install_vendor/install_site/' swig/perl/Makefile.am
+          patch -p1 < ${./libapparmor-swig-copy.patch}
         '';
       }
       {
         name = "configure";
-        script = ''
-          export ACLOCAL_PATH="${autoconf-archive}/share/aclocal:${libtool}/share/aclocal:${pkg-config}/share/aclocal"
-          export PYTHONPATH=${setuptools}/lib/python3.14/site-packages
-          autoreconf -fiv
-          ./configure $configureFlags \
-            --prefix="$out" \
-            --with-perl \
-            --with-python
-        '';
+        script =
+          (
+            if stdenv.isCross
+            then ''
+              # Binding suffixes, headers, and install paths belong to the target
+              # interpreters. They run through the configured process emulator.
+              export PYTHON=${python3}/bin/python3
+              export PYTHON_CONFIG=${python3}/bin/python3-config
+              export PERL=${perl}/bin/perl
+            ''
+            else ""
+          )
+          + ''
+            export ACLOCAL_PATH="${autoconf-archive}/share/aclocal:${libtool}/share/aclocal:${pkg-config}/share/aclocal"
+            export PYTHONPATH=${setuptools}/lib/python3.14/site-packages
+            autoreconf -fiv
+            ./configure $configureFlags \
+              --prefix="$out" \
+              --with-perl \
+              --with-python
+          '';
       }
       {
         name = "build";
@@ -84,13 +100,23 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-          test -f "$out/lib/libapparmor.so"
-          python_path=$(find "$out" -type d -name site-packages -print -quit)
-          test -n "$python_path"
-          PYTHONPATH="$python_path" ${python3}/bin/python3 -c 'import LibAppArmor'
-        '';
+        script =
+          ''
+            make install
+            test -f "$out/lib/libapparmor.so"
+            python_path=$(find "$out" -type d -name site-packages -print -quit)
+            test -n "$python_path"
+            PYTHONPATH="$python_path" ${python3}/bin/python3 -c 'import LibAppArmor'
+          ''
+          + (
+            if stdenv.isCross
+            then ''
+              perl_path=$(find "$out" -type f -name LibAppArmor.pm -print -quit)
+              test -n "$perl_path"
+              PERL5LIB="''${perl_path%/*}" ${perl}/bin/perl -MLibAppArmor -e 1
+            ''
+            else ""
+          );
       }
     ];
     checks = {

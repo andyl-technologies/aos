@@ -45,6 +45,24 @@
     "${pkgs.kmod}/bin"
     "${pkgs.kmod}/sbin"
   ];
+
+  # The transfer service must unpack into the snapshotter selected by nerdctl.
+  # Its default unpack configuration covers only overlayfs.
+  containerPlatform =
+    if pkgs.stdenv.hostPlatform.isAarch64
+    then "linux/arm64"
+    else "linux/amd64";
+  containerdConfig = pkgs.writeTextFile {
+    name = "aos-container-runtime-test.toml";
+    destination = "/config.toml";
+    text = ''
+      version = 3
+      [[plugins."io.containerd.transfer.v1.local".unpack_config]]
+        platform = "${containerPlatform}"
+        snapshotter = "native"
+    '';
+  };
+
   runtimeSystem = mkSystem [
     ../../systems/server-test.nix
     {
@@ -58,6 +76,7 @@
           Type = "notify";
           ExecStart =
             "${pkgs.containerd}/bin/containerd"
+            + " --config ${containerdConfig}/config.toml"
             + " --address /run/aos-containerd/containerd.sock"
             + " --root /var/lib/aos-containerd"
             + " --state /run/aos-containerd";
@@ -85,6 +104,9 @@
 in {
   name = "container-runtime";
   timeout = 1200;
+  # Host configuration evaluation precedes agent startup and has taken 185s
+  # while the native package builds run concurrently.
+  bootTimeout = 300;
 
   machines.runtime = {
     system = runtimeSystem;
@@ -205,9 +227,20 @@ in {
     )
     assert literal_output.strip() == literal, literal_output
 
-    runtime.succeed("${nerdctl} run --rm --net none aos:latest /usr/bin/aos --version")
-    runtime.succeed("${nerdctl} run --rm --net none aos:latest /usr/bin/apm --help")
-    runtime.succeed("${nerdctl} run --rm --net none aos:latest /usr/bin/apr --help")
+    # Each invocation first copies the native snapshot, just like the workload
+    # launches above; the short default command timeout only suits exec calls.
+    runtime.succeed(
+        "${nerdctl} run --rm --net none aos:latest /usr/bin/aos --version",
+        timeout=120,
+    )
+    runtime.succeed(
+        "${nerdctl} run --rm --net none aos:latest /usr/bin/apm --help",
+        timeout=120,
+    )
+    runtime.succeed(
+        "${nerdctl} run --rm --net none aos:latest /usr/bin/apr --help",
+        timeout=120,
+    )
 
     mounts = " --volume /var/lib/aos-container-fixtures/registry:/fixtures/registry:ro"
     runtime.succeed(
@@ -286,7 +319,8 @@ in {
     # A read-only root advertises the init-derived marker. Mutation is rejected
     # by APM before config or Nix state access, while help remains executable.
     runtime.succeed(
-        "${nerdctl} run --rm --read-only --net none aos:latest /usr/bin/apm --help"
+        "${nerdctl} run --rm --read-only --net none aos:latest /usr/bin/apm --help",
+        timeout=120,
     )
     runtime.succeed(
         "set -eu; "
@@ -294,7 +328,8 @@ in {
         "/usr/bin/apm install container-runtime-tool --yes "
         ">/tmp/aos-container-read-only.out 2>&1; then exit 1; fi; "
         "grep -F 'this AOS container is read-only; user-scope package mutations are unavailable' "
-        "/tmp/aos-container-read-only.out"
+        "/tmp/aos-container-read-only.out",
+        timeout=120,
     )
     runtime.succeed(
         "${nerdctl} run --detach --name aos-runtime-read-only "

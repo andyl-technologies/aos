@@ -58,23 +58,29 @@ in
       }
       {
         name = "patch";
-        script = ''
-          # Fix implicit function declarations for GCC 14 (C23 default)
-          sed -i '1i #include <stdlib.h>' native/fdlibm/dtoa.c
-
-          # Disable -Werror — old code triggers many new GCC 14 warnings
-          find . -name Makefile.in -exec sed -i 's/-Werror//g' {} +
-          find . -name configure -exec sed -i 's/-Werror//g' {} +${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isDarwin) ''
-
-            # This 2006 release predates AArch64. Refresh only config.sub; the
-            # generated configure logic remains upstream and cross-aware.
-            cp ${buildPackages.automake}/share/automake-*/config.sub config.sub
-
-            # GNU Classpath's fdlibm predates AArch64 but uses the standard
-            # little-endian IEEE-754 word layout on that architecture.
+        script =
+          lib.optionalString (stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
+            # The bundled fdlibm predates AArch64's IEEE-754 word layout.
             sed -i '/#ifdef __alpha__/i #ifdef __aarch64__\n#define __IEEE_LITTLE_ENDIAN\n#endif\n' \
-              native/fdlibm/ieeefp.h''}
-        '';
+              native/fdlibm/ieeefp.h
+          ''
+          + ''
+            # Fix implicit function declarations for GCC 14 (C23 default)
+            sed -i '1i #include <stdlib.h>' native/fdlibm/dtoa.c
+
+            # Disable -Werror — old code triggers many new GCC 14 warnings
+            find . -name Makefile.in -exec sed -i 's/-Werror//g' {} +
+            find . -name configure -exec sed -i 's/-Werror//g' {} +${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isDarwin) ''
+
+              # This 2006 release predates AArch64. Refresh only config.sub; the
+              # generated configure logic remains upstream and cross-aware.
+              cp ${buildPackages.automake}/share/automake-*/config.sub config.sub
+
+              # GNU Classpath's fdlibm predates AArch64 but uses the standard
+              # little-endian IEEE-754 word layout on that architecture.
+              sed -i '/#ifdef __alpha__/i #ifdef __aarch64__\n#define __IEEE_LITTLE_ENDIAN\n#endif\n' \
+                native/fdlibm/ieeefp.h''}
+          '';
       }
       {
         name = "configure";

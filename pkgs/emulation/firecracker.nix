@@ -11,8 +11,32 @@
   gnumake,
   bootstrapTools,
   glibc,
+  stdenv,
+  buildPackages,
 }: let
   version = "1.14.1";
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  buildLlvm =
+    if isLinuxCross
+    then buildPackages.llvm
+    else llvm;
+  buildTargetPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
+
+  # Firecracker's build script compiles seccomp policies on the build machine.
+  # Its seccompiler dependency must link and load native libseccomp while the
+  # final binary continues to use the target library.
+  buildLinker = buildPackages.writeShellScriptBin "firecracker-build-cc" ''
+    unset AOS_CROSS_COMPILING AOS_GOARCH AOS_GOOS
+    unset AOS_HARDENING_DISABLE AOS_HARDENING_ENABLE
+    unset AOS_OBJECT_FORMAT AOS_RUST_TARGET AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+    unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH LIBRARY_PATH
+    unset MACOSX_DEPLOYMENT_TARGET SDKROOT
+    unset NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
+    exec ${buildPackages.cc}/bin/cc \
+      -L${buildPackages.libseccomp}/lib \
+      -Wl,-rpath,${buildPackages.libseccomp}/lib "$@"
+  '';
+
   src = fetchurl {
     urls = [
       "https://github.com/firecracker-microvm/firecracker/archive/refs/tags/v${version}.tar.gz"
@@ -48,15 +72,20 @@ in
     # Pass gitDeps so cargo build config also replaces the git source
     gitDeps = microHttpGitDeps;
 
-    buildDeps = [
-      llvm
-      linux-headers
-      cmake
-      gnumake
-    ];
+    buildDeps =
+      [llvm]
+      # Splicing Linux headers as a build dependency selects native syscall
+      # numbers. Cross compilation uses the target sysroot and bindgen flags.
+      ++ lib.optionals (!isLinuxCross) [linux-headers]
+      ++ [cmake gnumake]
+      ++ lib.optionals isLinuxCross [buildPackages.libseccomp];
+
+    cargoEnv = lib.optionalAttrs isLinuxCross {
+      "CARGO_TARGET_${buildTargetPrefix}_LINKER" = "${buildLinker}/bin/firecracker-build-cc";
+    };
 
     # bindgen needs libclang.so and system headers
-    LIBCLANG_PATH = "${llvm}/lib";
+    LIBCLANG_PATH = "${buildLlvm}/lib";
     BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${glibc.dev}/include -isystem ${linux-headers}/include";
 
     # Build only the firecracker binary from the workspace

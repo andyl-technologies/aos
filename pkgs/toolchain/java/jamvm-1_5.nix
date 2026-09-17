@@ -2,7 +2,9 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
   gnumake,
+  patch,
   stdenv,
   buildPackages,
   classpath-0_93,
@@ -11,6 +13,9 @@
 }: let
   version = "1.5.1";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  # The AArch64 interpreter reuses operand slots through integer and floating
+  # pointers; its compiler must preserve those aliased accesses.
+  isLinuxAarch64 = stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
   aarch64Patch = fetchurl {
     urls = [
       "https://cgit.git.savannah.gnu.org/cgit/guix.git/plain/gnu/packages/patches/jamvm-1.5.1-aarch64-support.patch?id=f23b95a3b24003f46293d67ce2ab4c2d1785853d"
@@ -30,15 +35,20 @@ in
     };
 
     buildDeps =
-      [gnumake]
+      [gnumake patch]
       ++ (
-        if isDarwinCross
+        if isDarwinCross || isLinuxAarch64
         then [
           buildPackages.autoconf
           buildPackages.automake
           buildPackages.libtool
           buildPackages.m4
         ]
+        else []
+      )
+      ++ (
+        if isLinuxAarch64
+        then [buildPackages.patch]
         else []
       );
     runtimeDeps =
@@ -89,9 +99,21 @@ in
 
             ACLOCAL_PATH=${buildPackages.libtool}/share/aclocal autoreconf -fi
           ''
+          else if isLinuxAarch64
+          then ''
+            # This release predates AArch64; use the existing reviewed Guix
+            # port, including its native-call assembly, for the Linux target.
+            sed -i '1i #define _GNU_SOURCE' src/os/linux/os.c
+            patch -p1 < ${aarch64Patch}
+            ACLOCAL_PATH=${buildPackages.libtool}/share/aclocal autoreconf -fi
+          ''
           else ''
             # Add _GNU_SOURCE for pthread_getattr_np (GNU extension)
             sed -i '1i #define _GNU_SOURCE' src/os/linux/os.c
+
+            # The x86_64 JNI bridge must extend narrow native return values;
+            # unused register bits otherwise turn false booleans into true.
+            patch -p1 < ${./jamvm-1_5-jni-returns.patch}
           '';
       }
       {
@@ -108,7 +130,7 @@ in
               --with-classpath-install-dir=${classpath-0_93}
           ''
           else ''
-            CFLAGS="-O2 -std=gnu11 -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types" \
+            CFLAGS="-O2${lib.optionalString isLinuxAarch64 " -fno-strict-aliasing"} -std=gnu11 -Wno-error -Wno-implicit-function-declaration -Wno-incompatible-pointer-types" \
             ./configure \
               --prefix=$out \
               --with-classpath-install-dir=${classpath-0_93}
@@ -129,6 +151,60 @@ in
         '';
       }
     ];
+
+    checks = {
+      self,
+      pkgs,
+      ...
+    }:
+      lib.optionalAttrs (stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isx86_64) {
+        jni-returns = pkgs.mkDerivation {
+          pname = "jamvm-jni-narrow-returns";
+          version = "1";
+          src = null;
+          buildDeps = [self pkgs.jikes];
+          phases = [
+            {
+              name = "check";
+              script = ''
+                cp ${./tests/JniReturns.java} JniReturns.java
+                ${pkgs.jikes}/bin/jikes \
+                  -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
+                  JniReturns.java
+                "$CC" -shared -fPIC ${./tests/jni-returns.S} -o libjni-returns.so
+
+                mkdir -p "$out"
+                ${self}/bin/jamvm -cp "$PWD" JniReturns "$PWD/libjni-returns.so" \
+                  > "$out/result"
+                grep -Fxq 'JNI narrow returns passed' "$out/result"
+              '';
+            }
+          ];
+        };
+      }
+      // lib.optionalAttrs isLinuxAarch64 {
+        float-conversions = pkgs.mkDerivation {
+          pname = "jamvm-floating-conversions";
+          version = "1";
+          src = null;
+          buildDeps = [self buildPackages.jikes];
+          phases = [
+            {
+              name = "check";
+              script = ''
+                cp ${./tests/FloatConversions.java} FloatConversions.java
+                ${buildPackages.jikes}/bin/jikes \
+                  -bootclasspath ${classpath-0_93}/share/classpath/glibj.zip \
+                  FloatConversions.java
+
+                mkdir -p "$out"
+                ${self}/bin/jamvm -cp "$PWD" FloatConversions > "$out/result"
+                grep -Fxq 'Floating conversions passed' "$out/result"
+              '';
+            }
+          ];
+        };
+      };
 
     meta = {
       description = "JamVM 1.5.1 — compact pure-C Java Virtual Machine";

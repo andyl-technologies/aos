@@ -19,6 +19,7 @@
   libaio,
   libevent,
   liburing,
+  libxcrypt,
   linux-pam,
   lz4,
   ncurses,
@@ -41,6 +42,9 @@
 }: let
   version = "12.3.3";
   isDarwin = stdenv.hostPlatform.isDarwin;
+  # MariaDB's CPU-specific sources recognize aarch64 rather than arm64.
+  # Keep the cross toolchain and execution wrapper while using that spelling.
+  linuxCrossCmakeFlags = lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) " $cmakeFlags -DCMAKE_SYSTEM_PROCESSOR=${stdenv.hostPlatform.parsed.cpu.name}";
   source = fetchurl {
     urls = [
       "https://archive.mariadb.org/mariadb-${version}/source/mariadb-${version}.tar.gz"
@@ -448,6 +452,8 @@ in
           ncurses
           numactl
           linux-pam
+          # The server and backup tool link crypt directly on Linux.
+          libxcrypt
           openssl
           pcre2
           snappy
@@ -600,7 +606,7 @@ in
           else ''
             mkdir build
             cd build
-            cmake .. \
+            cmake ..${linuxCrossCmakeFlags} \
               -DCMAKE_INSTALL_PREFIX=$out \
               -DINSTALL_SYSCONFDIR=$out/etc \
               -DINSTALL_SYSCONF2DIR=$out/etc/my.cnf.d \
@@ -765,6 +771,13 @@ in
             ln -s ${control}/bin/mariadb-control "$out/bin/mariadb-control"
             test -x "$out/bin/mariadb-install-db"
             test -x "$out/bin/mariadb-control"
+          ''
+          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # These installed test helpers sit outside the usual binary
+            # directories. Drop compiler paths retained in their DWARF data.
+            for helper in my_safe_process wsrep_check_version; do
+              "${stdenv.cc}/bin/strip" --strip-debug "$out/mariadb-test/lib/My/SafeProcess/$helper"
+            done
           '';
       }
     ];

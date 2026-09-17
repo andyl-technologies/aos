@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  patch,
   perl,
   python3,
   autoconf,
@@ -16,6 +17,7 @@
   bash,
   stdenv,
   buildPackages,
+  lib,
 }: let
   version = "2.42.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -69,6 +71,7 @@ in
       [
         gnumake
         pkg-config
+        patch
         perl
         python3
         autoconf
@@ -76,7 +79,7 @@ in
       ++ (
         if isDarwinCross
         then [buildPackages.gettext]
-        else []
+        else [gettext]
       );
     runtimeDeps = [
       curl
@@ -104,8 +107,22 @@ in
         '';
       }
       {
+        name = "patch";
+        script = ''
+          # OpenSSL 4 hides ASN.1 string fields behind its public accessors.
+          patch -p1 < ${./git-patches/2.42-openssl-asn1-accessors.patch}
+        '';
+      }
+      {
         name = "configure";
         script = ''
+          # This compatibility release predates C23's unreachable macro,
+          # which conflicts with its reflog helper under newer GCC defaults.
+          export CFLAGS="''${CFLAGS:--g -O2 -Wall} -std=gnu11"
+
+          # Runtime dependencies do not add their configuration tools to PATH.
+          export CURL_CONFIG=${curl}/bin/curl-config
+
           make configure${
             if isDarwinCross
             then ''
@@ -117,7 +134,13 @@ in
               export ac_cv_iconv_omits_bom=no
             ''
             else ""
-          }
+          }${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+
+            # Git's libc probes accept directory fopen and C99 truncation
+            # results on the target; configure cannot execute them itself.
+            export ac_cv_fread_reads_directories=yes
+            export ac_cv_snprintf_returns_bogus=no
+          ''}
           ./configure \
             $configureFlags \
             --prefix=$out \

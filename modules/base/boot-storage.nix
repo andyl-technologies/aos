@@ -35,7 +35,7 @@
         else cfg.devices.${name}
     )
     defaultDevices;
-  zfsPackage = pkgs.zfsForKernel config.system.build.kernel;
+  zfsPackage = config.aos.config.artifacts.zfs-for-running-kernel;
 
   # `zfs create -p aos/slots` creates `aos` as well as `aos/slots`, so both are
   # datasets this system owns and has to account for.

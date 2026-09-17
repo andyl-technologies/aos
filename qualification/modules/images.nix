@@ -78,7 +78,11 @@ in {
       method = "automated";
       phase = "staging";
       production_only = false;
-      regressions = ["checks.fleet.system-image-rollback" "checks.fleet.boot-identity-fail-closed"];
+      regressions = [
+        "checks.fleet.system-image-rollback"
+        "checks.fleet.boot-identity-fail-closed"
+        "checks.fleet.measured-boot"
+      ];
       scope = "images";
     };
     image-observation = {

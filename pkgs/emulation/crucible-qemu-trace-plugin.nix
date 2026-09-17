@@ -28,6 +28,8 @@ in
         name = "build";
         script = ''
           cp "$sourcePath" plugin.c
+
+          export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
           cc -fPIC -shared -O2 -Wall -Wextra \
             $(pkg-config --cflags glib-2.0) \
             -I${qemu-crucible}/include \
@@ -45,6 +47,11 @@ in
             "$out/share/licenses/crucible-qemu-trace-plugin/GPL-2.0.txt"
         '';
       }
+    ];
+
+    passthru.evidenceSources = [
+      ./crucible-qemu-trace-plugin.nix
+      ./crucible-qemu-trace-plugin.c
     ];
 
     meta = {

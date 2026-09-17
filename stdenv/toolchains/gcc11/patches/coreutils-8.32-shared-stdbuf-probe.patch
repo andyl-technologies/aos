@@ -1,0 +1,18 @@
+--- a/configure
++++ b/configure
+@@ -73598,7 +73598,14 @@
+ { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether this system supports stdbuf" >&5
+ $as_echo_n "checking whether this system supports stdbuf... " >&6; }
+ CFLAGS="-fPIC $CFLAGS"
+-LDFLAGS="-shared $LDFLAGS"
++# Test shared-library support without the executable's static-link flag.
++shared_ldflags=
++for stdbuf_flag in $LDFLAGS; do
++  if test "$stdbuf_flag" != -static; then
++    shared_ldflags="$shared_ldflags $stdbuf_flag"
++  fi
++done
++LDFLAGS="-shared $shared_ldflags"
+ stdbuf_supported=no
+ # Note we only LINK here rather than RUN to support cross compilation
+ cat confdefs.h - <<_ACEOF >conftest.$ac_ext

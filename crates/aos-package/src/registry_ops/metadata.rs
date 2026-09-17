@@ -264,6 +264,90 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
     }
 }
 
+/// Records one non-`out` derivation output beside an authored platform entry.
+///
+/// Supplemental outputs retain their own store-graph roots without replacing
+/// the installable output or duplicating package documentation and provenance.
+///
+/// # Errors
+///
+/// Returns an error when the output identity is invalid, the exact package
+/// coordinate is absent, or an existing output name is bound to another path.
+pub(crate) fn record_named_output(
+    existing: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    output: &str,
+    store_path: &str,
+) -> Result<String> {
+    if output == "out"
+        || output.is_empty()
+        || output.len() > 256
+        || !output
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+'))
+    {
+        bail!("invalid supplemental Nix output name '{output}'");
+    }
+    if !store_path.starts_with("/nix/store/") {
+        bail!("invalid supplemental store path '{store_path}'");
+    }
+
+    let mut document: toml::Value =
+        toml::from_str(existing).context("parsing package TOML for supplemental output")?;
+    let package_name = document
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .context("package TOML is missing package.name")?;
+    if package_name != name {
+        bail!("package TOML name '{package_name}' does not match '{name}'");
+    }
+
+    let versions = document
+        .get_mut("versions")
+        .and_then(toml::Value::as_array_mut)
+        .context("package TOML is missing versions")?;
+    let mut matching_versions = versions.iter_mut().filter(|candidate| {
+        candidate.get("version").and_then(toml::Value::as_str) == Some(version)
+    });
+    let version_entry = matching_versions
+        .next()
+        .with_context(|| format!("package {name} is missing version {version}"))?;
+    if matching_versions.next().is_some() {
+        bail!("package {name} repeats version {version}");
+    }
+
+    let platform_entry = version_entry
+        .get_mut("platforms")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|platforms| platforms.get_mut(platform))
+        .and_then(toml::Value::as_table_mut)
+        .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
+    platform_entry
+        .get("store_path")
+        .and_then(toml::Value::as_str)
+        .context("package platform entry is missing store_path")?;
+
+    let named_outputs = platform_entry
+        .entry("named_outputs")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("package platform named_outputs is not a table")?;
+    if let Some(previous) = named_outputs.get(output).and_then(toml::Value::as_str)
+        && previous != store_path
+    {
+        bail!("package {name} {version} {platform} output {output} is already bound to {previous}");
+    }
+    named_outputs.insert(
+        output.to_string(),
+        toml::Value::String(store_path.to_string()),
+    );
+
+    toml::to_string_pretty(&document).context("serializing package TOML with supplemental output")
+}
+
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 fn build_package_toml(

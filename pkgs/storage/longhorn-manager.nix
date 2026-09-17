@@ -2,7 +2,7 @@
 {
   mkDerivation,
   fetchurl,
-  go,
+  buildPackages,
   longhorn-engine,
   longhorn-instance-manager,
   lib,
@@ -20,7 +20,7 @@ in
       hash = "sha256-dZLMYwijkUDyxKh8wVoHIrCvVkuzHnOYgakF012u3Tc=";
     };
 
-    buildDeps = [go];
+    buildDeps = [buildPackages.go];
     # The signed add-on resource bundle refers to these payloads as its
     # authenticated runtime companions. Keep them in the package closure so
     # publication, installation, rollback, and GC retain one complete add-on.
@@ -41,6 +41,10 @@ in
           export GOCACHE=$TMPDIR/go-cache
           export CGO_ENABLED=0
           export GOPROXY=off
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           export GOFLAGS="-trimpath -mod=vendor"
           mkdir -p "$GOPATH" "$GOCACHE"
 
@@ -108,7 +112,7 @@ in
       version = testing.mkToolCheck {
         pname = "tool-longhorn-manager";
         tool = self;
-        command = "longhorn-manager version";
+        command = "longhorn-manager --help";
       };
     };
 

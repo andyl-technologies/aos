@@ -749,7 +749,7 @@ mod entry {
             crate::e2e_surface::DoE2eSurfaceProvider::new(state.storage().sql())
                 .map_err(|error| worker::Error::RustError(format!("e2e storage: {error:#}")))?,
         );
-        let mut service = RpcService::new(
+        let service = RpcService::new(
             Arc::clone(&db),
             jwt_keys.clone(),
             external_url.clone(),
@@ -764,9 +764,7 @@ mod entry {
             None,
         )
         .with_container_rollout(container_rollout(env)?);
-        if let Some(delivery_url) = default_public_delivery_url(env)? {
-            service = service.with_default_public_delivery_url(delivery_url);
-        }
+
         let service = Arc::new(service);
         let egress = worker_egress(env)?;
         let sealer = sealer_from_secret(&env.secret(HUB_SEAL_KEY)?.to_string())

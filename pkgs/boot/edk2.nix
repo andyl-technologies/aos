@@ -1,11 +1,13 @@
-##! edk2 — TianoCore EDK2 UEFI firmware: OVMF for QEMU (x86_64)
+##! edk2 — TianoCore EDK2 UEFI firmware for QEMU
 ##!
-##! Builds OvmfPkgX64 from source, producing the split-flash pair the
-##! test harness (and any QEMU UEFI boot) consumes:
+##! Builds the firmware matching the package's target architecture. x86_64 uses
+##! OVMF's split pflash, while aarch64 uses ArmVirt's code image and QEMU's
+##! persistent paravirtual variable store:
 ##!
 ##!   $out/FV/OVMF_CODE.fd  — read-only firmware code flash
 ##!   $out/FV/OVMF_VARS.fd  — writable NVRAM variable store template
 ##!   $out/FV/OVMF.fd       — combined image (single-pflash use)
+##!   $out/FV/AAVMF_CODE.fd — aarch64 ArmVirt code flash
 ##!
 ##! Two toolchains are deliberately in play:
 ##!
@@ -30,6 +32,8 @@
   mkDerivation,
   fetchurl,
   bootstrapTools,
+  gccUnwrapped,
+  firmwarePackages ? null,
   buildPackages,
   stdenv,
   gnumake,
@@ -39,6 +43,23 @@
   util-linux,
 }: let
   version = "edk2-stable202602";
+  buildAarch64Firmware = stdenv.hostPlatform.isAarch64;
+  firmwareGccUnwrapped =
+    if firmwarePackages != null
+    then firmwarePackages.gccUnwrapped
+    else gccUnwrapped;
+  firmwareBinutils =
+    if firmwarePackages != null
+    then firmwarePackages.binutils
+    else stdenv.binutils;
+  firmwareTargetConfig =
+    if firmwarePackages != null
+    then firmwarePackages.stdenv.hostPlatform.config
+    else stdenv.hostPlatform.config;
+  firmwareBuildDirectory =
+    if buildAarch64Firmware
+    then "Build/ArmVirtQemu-AArch64/RELEASE_GCC5"
+    else "Build/OvmfX64/RELEASE_GCC";
   buildPython =
     if stdenv.isCross
     then buildPackages.python3
@@ -51,6 +72,10 @@
     if stdenv.isCross
     then buildPackages.acpica
     else acpica;
+  buildUtilLinux =
+    if stdenv.isCross
+    then buildPackages.util-linux
+    else util-linux;
   src = fetchurl {
     urls = [
       "https://github.com/tianocore/edk2/archive/b7a715f7c03c45c6b4575bf88596bfd79658b8ce.tar.gz"
@@ -178,6 +203,11 @@ in
     pname = "edk2";
     inherit version src;
 
+    patches =
+      if buildAarch64Firmware
+      then [./edk2-armvirt-lpa2-early-map.patch]
+      else [];
+
     buildDeps = [
       gnumake
       python3
@@ -197,6 +227,26 @@ in
           cd edk2
           ${unpackSubmodules}
           chmod -R u+w .
+
+          # VfrCompile's multi-output parser rules race under parallel make,
+          # and its object rules omit generated lexer header dependencies.
+          # Serialize this small tool while keeping other BaseTools parallel.
+          sed -i '1i .NOTPARALLEL:' BaseTools/Source/C/VfrCompile/GNUmakefile
+
+          # GenFw ignores SOURCE_DATE_EPOCH while translating ELF modules and
+          # writes wall-clock PE timestamps into every firmware volume. Make
+          # the two converter paths consume the epoch exported by the build.
+          for converter in \
+            BaseTools/Source/C/GenFw/Elf32Convert.c \
+            BaseTools/Source/C/GenFw/Elf64Convert.c; do
+            sed -i \
+              's|(UINT32) time(NULL)|(UINT32) strtoul (getenv ("SOURCE_DATE_EPOCH"), NULL, 10)|' \
+              "$converter"
+            if grep -q 'TimeDateStamp = (UINT32) time(NULL)' "$converter"; then
+              echo "failed to patch GenFw timestamp source in $converter" >&2
+              exit 1
+            fi
+          done
         '';
       }
       {
@@ -220,7 +270,8 @@ in
               # toolchains. EXTRA_OPTFLAGS lands after the makefiles' own
               # -W flags, so these suppressions win.
               make -C BaseTools/Source/C -j$NIX_BUILD_CORES \
-                EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer"
+                EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer" \
+              EXTRA_LDFLAGS="-Wl,-rpath,${buildUtilLinux}/lib"
             )
           ''
           else ''
@@ -233,7 +284,8 @@ in
             # toolchains. EXTRA_OPTFLAGS lands after the makefiles' own
             # -W flags, so these suppressions win.
             make -C BaseTools/Source/C -j$NIX_BUILD_CORES \
-              EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer"
+              EXTRA_OPTFLAGS="-Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-dangling-pointer" \
+              EXTRA_LDFLAGS="-Wl,-rpath,${buildUtilLinux}/lib"
           '';
       }
       {
@@ -244,6 +296,39 @@ in
           export CONF_PATH=$PWD/Conf
           export PYTHON_COMMAND=${buildPython}/bin/python3
           export PYTHONPATH=$PWD/BaseTools/Source/Python
+
+          # EDK2 otherwise initializes SOURCE_DATE_EPOCH from wall-clock time,
+          # and ArmVirt embeds that value through __DATE__ and __TIME__.
+          export SOURCE_DATE_EPOCH=1
+          export PYTHONHASHSEED=0
+
+          # New EDK2 releases generate random per-module stack cookies during
+          # every clean build. Released firmware is already public, so those
+          # build-time values cannot remain secret; derive them from the fixed
+          # source identity to preserve diversity between source revisions and
+          # make independently rebuilt firmware byte-identical.
+          mkdir -p ${firmwareBuildDirectory}
+          $PYTHON_COMMAND - ${firmwareBuildDirectory} "${src}" <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import sys
+
+          output_directory = Path(sys.argv[1])
+          source_identity = sys.argv[2].encode("utf-8")
+
+          for bit_width in (32, 64):
+              byte_width = bit_width // 8
+              values = []
+
+              for index in range(100):
+                  label = f":aos-edk2-stack-cookie-v1:{bit_width}:{index}".encode("ascii")
+                  digest = hashlib.sha256(source_identity + label).digest()
+                  values.append(int.from_bytes(digest[:byte_width], "big") or 1)
+
+              destination = output_directory / f"StackCookieValues{bit_width}.json"
+              destination.write_text(json.dumps(values), encoding="utf-8")
+          PY
 
           mkdir -p Conf
           cp BaseTools/Conf/tools_def.template Conf/tools_def.txt
@@ -256,8 +341,17 @@ in
           # or the append lands before the \r and the tools_def parser
           # skips the whole assignment.
           sed -i 's/\r$//' Conf/tools_def.txt
-          sed -i 's/^\(RELEASE_GCC_X64_CC_FLAGS *=.*\)$/\1 -Wno-maybe-uninitialized/' \
-            Conf/tools_def.txt
+          ${
+            if buildAarch64Firmware
+            then ''
+              sed -i 's/^\(RELEASE_GCC5_AARCH64_CC_FLAGS *=.*\)$/\1 -Wno-maybe-uninitialized/' \
+                Conf/tools_def.txt
+            ''
+            else ''
+              sed -i 's/^\(RELEASE_GCC_X64_CC_FLAGS *=.*\)$/\1 -Wno-maybe-uninitialized/' \
+                Conf/tools_def.txt
+            ''
+          }
 
           # The generated module makefiles invoke BaseTools by bare name
           # (Trim, GenFw, GenFv, ...) — normally edksetup.sh puts the
@@ -271,7 +365,11 @@ in
           # ccWrapper flag injection) plus binutils from the bootstrap
           # PATH. tools_def resolves every tool as <prefix><name>.
           ${
-            if stdenv.isCross
+            if buildAarch64Firmware
+            then ''
+              ORIG_CC=${firmwareGccUnwrapped}
+            ''
+            else if stdenv.isCross
             then "ORIG_CC=${buildPackages.gccUnwrapped}"
             else "ORIG_CC=$(cat ${bootstrapTools}/nix-support/orig-cc)"
           }
@@ -285,6 +383,24 @@ in
               [ -n "$src" ] && ln -sf "$src" "$PWD/fw-toolchain/$t"
             fi
           done
+          ${
+            if buildAarch64Firmware
+            then ''
+              # The cross GCC output carries the prefixed compiler drivers,
+              # while the matching target binutils are a separate stdenv
+              # output. EDK2 expects both sets under one GCC5 prefix.
+              for t in ${firmwareBinutils}/bin/*; do
+                ln -sf "$t" "$PWD/fw-toolchain/$(basename "$t")"
+              done
+              # GCC's prefixed gcc-ar/gcc-ranlib drivers resolve their
+              # underlying binutils by name, independently of EDK2's prefix.
+              # Put the combined tool directory on PATH as well as exposing
+              # it through GCC5_AARCH64_PREFIX.
+              export PATH="$PWD/fw-toolchain:$PATH"
+              export GCC5_AARCH64_PREFIX="$PWD/fw-toolchain/${firmwareTargetConfig}-"
+            ''
+            else ""
+          }
           export GCC_BIN="$PWD/fw-toolchain/"
           export GCC5_BIN="$PWD/fw-toolchain/"
           export NASM_PREFIX="${buildNasm}/bin/"
@@ -311,31 +427,56 @@ in
           # firmware does no measurement and TPM-sealed /var (RFC-0006
           # phase 3) cannot bind to PCR 7/11. Harmless when no TPM is
           # attached (the measurement calls just no-op).
-          $PYTHON_COMMAND BaseTools/Source/Python/build/build.py \
-            -a X64 \
-            -t GCC \
-            -b RELEASE \
-            -p OvmfPkg/OvmfPkgX64.dsc \
-            -D SECURE_BOOT_ENABLE=TRUE \
-            -D SMM_REQUIRE=TRUE \
-            -D TPM2_ENABLE=TRUE \
-            -D TPM2_CONFIG_ENABLE=TRUE \
-            -n $NIX_BUILD_CORES
+          ${
+            if buildAarch64Firmware
+            then ''
+              $PYTHON_COMMAND BaseTools/Source/Python/build/build.py \
+                -a AARCH64 \
+                -t GCC5 \
+                -b RELEASE \
+                -p ArmVirtPkg/ArmVirtQemu.dsc \
+                -D SECURE_BOOT_ENABLE=TRUE \
+                -D TPM2_ENABLE=TRUE \
+                -D TPM2_CONFIG_ENABLE=TRUE \
+                -D QEMU_PV_VARS=TRUE \
+                -n $NIX_BUILD_CORES
+            ''
+            else ''
+              $PYTHON_COMMAND BaseTools/Source/Python/build/build.py \
+                -a X64 \
+                -t GCC \
+                -b RELEASE \
+                -p OvmfPkg/OvmfPkgX64.dsc \
+                -D SECURE_BOOT_ENABLE=TRUE \
+                -D SMM_REQUIRE=TRUE \
+                -D TPM2_ENABLE=TRUE \
+                -D TPM2_CONFIG_ENABLE=TRUE \
+                -n $NIX_BUILD_CORES
+            ''
+          }
         '';
       }
       {
         name = "install";
-        script = ''
-          mkdir -p $out/FV
-          cp Build/OvmfX64/RELEASE_GCC/FV/OVMF.fd $out/FV/
-          cp Build/OvmfX64/RELEASE_GCC/FV/OVMF_CODE.fd $out/FV/
-          cp Build/OvmfX64/RELEASE_GCC/FV/OVMF_VARS.fd $out/FV/
-        '';
+        script =
+          if buildAarch64Firmware
+          then ''
+            mkdir -p $out/FV
+            cp Build/ArmVirtQemu-AArch64/RELEASE_GCC5/FV/QEMU_EFI.fd \
+              $out/FV/AAVMF_CODE.fd
+            truncate -s 64M $out/FV/AAVMF_CODE.fd
+          ''
+          else ''
+            mkdir -p $out/FV
+            cp Build/OvmfX64/RELEASE_GCC/FV/OVMF.fd $out/FV/
+            cp Build/OvmfX64/RELEASE_GCC/FV/OVMF_CODE.fd $out/FV/
+            cp Build/OvmfX64/RELEASE_GCC/FV/OVMF_VARS.fd $out/FV/
+          '';
       }
     ];
 
     meta = {
-      description = "edk2 — TianoCore UEFI firmware (OVMF for QEMU x86_64)";
+      description = "edk2 — TianoCore UEFI firmware for QEMU";
       homepage = "https://github.com/tianocore/edk2";
       license = "BSD-2-Clause-Patent";
     };

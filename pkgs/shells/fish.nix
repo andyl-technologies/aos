@@ -3,6 +3,9 @@
   mkDerivation,
   fetchurl,
   fetchCargoDeps,
+  lib,
+  stdenv,
+  buildPackages,
   rust,
   cmake,
   ninja,
@@ -19,6 +22,21 @@
   getent,
 }: let
   version = "4.9.2";
+
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  nativeCargoTarget = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
+  rustForBuild =
+    if isLinuxCross
+    then rust.passthru.buildTool
+    else rust;
+  crossRustCmakeFlags = lib.optionalString isLinuxCross (
+    lib.concatMapStrings (flag: " " + flag) [
+      "-DRust_COMPILER=${rustForBuild}/bin/rustc"
+      "-DRust_CARGO=${rustForBuild}/bin/cargo"
+      "-DRust_CARGO_TARGET=${stdenv.hostPlatform.config}"
+    ]
+  );
+
   src = fetchurl {
     urls = ["https://github.com/fish-shell/fish-shell/releases/download/${version}/fish-${version}.tar.xz"];
     hash = "sha256-JrlXac4XqJYrIguj8gdxEX2/6cssO6b07ROeDL/fArE=";
@@ -32,7 +50,9 @@ in
     pname = "fish";
     inherit version src;
 
-    buildDeps = [rust cmake ninja gettext pkg-config python3];
+    buildDeps =
+      [rust cmake ninja gettext pkg-config python3]
+      ++ lib.optionals isLinuxCross [rustForBuild];
     runtimeDeps = [
       pcre2
       ncurses
@@ -107,11 +127,26 @@ in
           offline = true
           EOF
 
-          cmake -S . -B build -G Ninja \
+          ${lib.optionalString isLinuxCross ''
+            # Cargo runs build scripts on the builder. Their linker must not
+            # inherit the target compiler's headers, libraries, or hardening.
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/cc-for-build <<'EOF'
+            #!${buildPackages.bash}/bin/bash
+            unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset AOS_OBJECT_FORMAT AOS_RUST_TARGET AOS_GOARCH AOS_GOOS
+            unset AOS_HARDENING_DISABLE AOS_HARDENING_ENABLE
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH
+            unset LIBRARY_PATH NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
+            exec ${buildPackages.cc}/bin/cc "$@"
+            EOF
+            chmod +x .aos-build-tools/cc-for-build
+            export CARGO_TARGET_${nativeCargoTarget}_LINKER="$PWD/.aos-build-tools/cc-for-build"
+          ''}cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$out" \
             -DCMAKE_INSTALL_LIBDIR=lib \
-            -DCMAKE_INSTALL_DOCDIR="$out/share/doc/fish"
+            -DCMAKE_INSTALL_DOCDIR="$out/share/doc/fish"${crossRustCmakeFlags}
         '';
       }
       {

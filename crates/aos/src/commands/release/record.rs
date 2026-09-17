@@ -44,7 +44,7 @@ pub(super) fn run(args: &ReleaseRecordArgs, printer: &Printer) -> Result<()> {
         &manifest_keys,
     )?;
     let plan: ReleasePlanV1 = canonical::from_slice(&captured.plan_bytes, "release plan")?;
-    plan.require_current_qualification()?;
+    plan.require_publishable_qualification()?;
     let manifest: ManifestEnvelopeV1 =
         canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
     let bundle_digest =

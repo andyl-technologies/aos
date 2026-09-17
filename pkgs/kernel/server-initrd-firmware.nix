@@ -14,6 +14,8 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
+    passthru.evidenceSources = [./server-initrd-firmware.nix];
+
     phases = [
       {
         name = "install";

@@ -68,6 +68,7 @@ extern SEL NSSelectorFromString(NSString *aSelectorName);
                        reason:(NSString *)aReason
                      userInfo:(NSDictionary *)aUserInfo;
 - (void)raise;
+- (NSExceptionName)name;
 - (NSString *)reason;
 - (NSString *)description;
 @end
@@ -220,6 +221,7 @@ extern NSString *const NSURLIsRegularFileKey;
 - (BOOL)isEqualToString:(NSString *)string;
 - (NSString *)lastPathComponent;
 - (NSString *)lowercaseString;
+- (NSRange)rangeOfString:(NSString *)aString;
 - (NSRange)rangeOfString:(NSString *)aString options:(NSStringCompareOptions)mask;
 - (NSString *)stringByAppendingString:(NSString *)aString;
 - (NSString *)stringByDeletingPathExtension;

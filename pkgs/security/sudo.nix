@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  patch,
   linux-pam,
   audit,
   libselinux,
@@ -23,7 +24,7 @@ in
       hash = "sha256-SjihqzrbEZklftwqfEor1xRmXrYFsENohDsG2tos/Ps=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps = [gnumake patch];
     runtimeDeps = [linux-pam audit libselinux openldap cyrus-sasl openssl zlib];
     propagatedDeps = [];
     configureFlags = builtins.concatStringsSep " " [
@@ -43,6 +44,9 @@ in
     ];
 
     postPatch = ''
+      # Use the public ASN.1 length accessor for IP certificate names.
+      patch -p1 < ${./sudo-openssl4.patch}
+
       # Privilege is assigned to a runtime wrapper by the system module.
       sed -i 's/04755/0755/g' src/Makefile.in plugins/sudoers/Makefile.in
     '';

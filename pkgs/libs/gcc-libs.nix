@@ -10,9 +10,9 @@
 ##! build environment — the cc-wrapper interferes with GMP's CC_FOR_BUILD.
 {
   mkDerivation,
-  lib,
   stdenv,
   bootstrapTools,
+  patchelf,
 }: let
   # Use the same sources as the gcc16 tier (builtins.fetchTarball)
   gcc-src = builtins.fetchTarball {
@@ -33,14 +33,13 @@
   };
 
   # Pull derivations (not just paths) from cc-wrapper's passthru so we
-  # can reach the multi-output glibc's $dev / $static. orig-libc /
-  # orig-cc in nix-support/ are string paths; reading them via readFile
-  # would lose the attribute set. The dynamic-linker file remains a
-  # readFile since it's a plain path to ld-linux.so inside glibc.$out.
+  # can reach the multi-output glibc's $dev / $static. The dynamic linker is
+  # determined by the structured target platform. Reading the same value from
+  # cc-wrapper's generated nix-support file would force that wrapper to build
+  # during cross-package evaluation.
   glibc = bootstrapTools.libc;
   gcc = bootstrapTools.cc;
-  trim = s: lib.removeSuffix "\n" s;
-  interp = trim (builtins.readFile "${bootstrapTools}/nix-support/dynamic-linker");
+  interp = "${glibc}/lib/${stdenv.hostPlatform.dynamicLinker}";
   platformConfig = stdenv.hostPlatform.config;
 in
   # Use mkDerivation but bypass the cc-wrapper by setting CC/CXX directly
@@ -51,7 +50,7 @@ in
     # No fetchurl source — we use builtins.fetchTarball inline
     src = null;
 
-    buildDeps = [];
+    buildDeps = [patchelf];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -198,6 +197,13 @@ in
           fi
           rm -rf "$out/${platformConfig}" 2>/dev/null || true
           find "$out/lib" -type d -name 'gcc' -exec rm -rf {} + 2>/dev/null || true
+
+          # A consumer's RUNPATH does not resolve transitive dependencies.
+          # Let libstdc++ find the matching libgcc_s beside itself.
+          for library in "$out"/lib/*.so.*; do
+            [ -L "$library" ] && continue
+            patchelf --add-rpath '$ORIGIN' "$library"
+          done
 
           echo "gcc-libs installed to $out"
           find "$out" -name '*.so*' -type f -o -name '*.so*' -type l | sort

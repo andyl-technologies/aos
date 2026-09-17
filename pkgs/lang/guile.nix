@@ -9,10 +9,15 @@
   gc,
   gmp,
   libffi,
+  libatomic_ops,
   libtool,
   libunistring,
   libxcrypt,
   readline,
+  ncurses,
+  lib,
+  stdenv,
+  buildPackages,
 }: let
   version = "3.0.11";
 in
@@ -25,9 +30,20 @@ in
       hash = "sha256-gYx50jZlen+pb7NkE3zHtBs73uDWXGF0ygN2lVlXlGA=";
     };
 
-    buildDeps = [gnumake pkg-config gawk patch];
-    runtimeDeps = [gc gmp libffi libtool libunistring libxcrypt readline];
-    propagatedDeps = [gc gmp libffi libtool libunistring libxcrypt readline];
+    # Cross builds use the matching native Guile to compile Scheme sources.
+    buildDeps =
+      [gnumake pkg-config gawk patch]
+      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [buildPackages.guile];
+    # Linux cross GC exposes libatomic_ops in its link interface. Guile
+    # links it directly, so retain its runtime path through reference scrubbing.
+    runtimeDeps =
+      [gc gmp libffi libtool libunistring libxcrypt readline]
+      # The Linux readline extension links ncurses directly.
+      ++ lib.optionals stdenv.hostPlatform.isLinux [ncurses]
+      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [libatomic_ops];
+    propagatedDeps =
+      [gc gmp libffi libtool libunistring libxcrypt readline]
+      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [libatomic_ops];
 
     # Guile bytecode uses ELF containers that ordinary stripping corrupts.
     dontStrip = true;
@@ -44,6 +60,10 @@ in
         name = "patch";
         script = ''
           patch -p1 < ${./guile-patches/high-wakeup-fd.patch}
+
+          # The suspendable-port suite includes the ordinary port tests in a
+          # separate process. Give each process its own files during make -j.
+          patch -p1 < ${./guile-patches/parallel-port-fixtures.patch}
 
           # The Nix build filesystem may allocate the nominally sparse extent,
           # in which case SEEK_DATA correctly returns the current offset.
@@ -67,18 +87,48 @@ in
       }
       {
         name = "check";
-        script = ''
-          # Thread wakeup pipes need two descriptors each. Let the suite use
-          # the available descriptor budget without restricting its CPU set.
-          ulimit -S -n "$(ulimit -H -n)"
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # Build helpers select native Guile while cross-compiling. Runtime
+            # checks must instead load the new target interpreter and bytecode.
+            for helper in meta/guile meta/uninstalled-env meta/build-env; do
+              cp "$helper" "$helper.for-build"
+              sed -i 's/if test "yes" = "no"/if test "no" = "no"/g' "$helper"
+            done
+          ''
+          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.system == "aarch64-linux") ''
+            # QEMU user mode deliberately ignores memory resource limits.
+            # The resource-limits package check runs these unchanged under a
+            # target kernel; running them here allocates without bound. Its
+            # forked signal-delivery check also requires target-kernel signal
+            # semantics that user-mode emulation does not preserve.
+            printf '\nTESTS := $(filter-out test-out-of-memory test-stack-overflow test-sigaction-fork,$(TESTS))\n' \
+              >> test-suite/standalone/Makefile
 
-          $CONFIG_SHELL ./libtool --mode=link "$CC" -I. \
-            ${./guile-tests/high-wakeup-fd.c} libguile/libguile-3.0.la \
-            -o high-wakeup-fd
-          $CONFIG_SHELL ./meta/uninstalled-env ./high-wakeup-fd
+            # User-mode vfork becomes fork, losing glibc's shared spawn errno;
+            # spawned native tools also report the build machine architecture.
+            # QEMU's plugin state also cannot survive the REPL server's fork.
+            # Run both suites in the same target-kernel check.
+            printf '\nTESTS := $(filter-out tests/posix.test tests/00-repl-server.test,$(TESTS))\n' \
+              >> test-suite/Makefile
+          ''
+          + ''
+            # Thread wakeup pipes need two descriptors each. Let the suite use
+            # the available descriptor budget without restricting its CPU set.
+            ulimit -S -n "$(ulimit -H -n)"
 
-          make -j"$NIX_BUILD_CORES" check
-        '';
+            $CONFIG_SHELL ./libtool --mode=link "$CC" -I. \
+              ${./guile-tests/high-wakeup-fd.c} libguile/libguile-3.0.la \
+              -o high-wakeup-fd
+            $CONFIG_SHELL ./meta/uninstalled-env ./high-wakeup-fd
+
+            make -j"$NIX_BUILD_CORES" check
+          ''
+          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            for helper in meta/guile meta/uninstalled-env meta/build-env; do
+              mv "$helper.for-build" "$helper"
+            done
+          '';
       }
       {
         name = "install";
@@ -95,28 +145,36 @@ in
 
     checks = {
       testing,
+      pkgs,
       self,
       ...
-    }: {
-      link = testing.mkLinkCheck {
-        pname = "lib-guile";
-        library = self;
-        libs = ["-lguile-3.0"];
-        testSource = ''
-          #include <libguile.h>
+    }:
+      {
+        link = testing.mkLinkCheck {
+          pname = "lib-guile";
+          library = self;
+          libs = ["-lguile-3.0"];
+          testSource = ''
+            #include <libguile.h>
 
-          int main(void) {
-              scm_init_guile();
-              return 0;
-          }
-        '';
+            int main(void) {
+                scm_init_guile();
+                return 0;
+            }
+          '';
+        };
+        tool = testing.mkToolCheck {
+          pname = "tool-guile";
+          tool = self;
+          command = "guile --version && guile -c '(exit (if (= (+ 20 22) 42) 0 1))'";
+        };
+      }
+      // lib.optionalAttrs (stdenv.hostPlatform.system == "aarch64-linux") {
+        resource-limits = import ../../tests/build/guile-resource-limits.nix {
+          inherit pkgs;
+          guile = self;
+        };
       };
-      tool = testing.mkToolCheck {
-        pname = "tool-guile";
-        tool = self;
-        command = "guile --version && guile -c '(exit (if (= (+ 20 22) 42) 0 1))'";
-      };
-    };
 
     meta = {
       description = "Embeddable implementation of the Scheme programming language";

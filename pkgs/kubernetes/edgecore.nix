@@ -3,7 +3,7 @@
   lib,
   mkDerivation,
   fetchurl,
-  go,
+  buildPackages,
   kubeedgeSource,
   writeShellScriptBin,
 }: let
@@ -21,7 +21,7 @@ in
     inherit version;
     inherit src;
 
-    buildDeps = [go];
+    buildDeps = [buildPackages.go];
     runtimeDeps = [control];
 
     expose = {
@@ -181,6 +181,10 @@ in
           export GOCACHE=$TMPDIR/go-cache
           export CGO_ENABLED=0
           export GOPROXY=off
+          if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
+            export GOOS="$AOS_GOOS"
+            export GOARCH="$AOS_GOARCH"
+          fi
           # KubeEdge uses a Go workspace (go.work) but the vendor dir was
           # created from go.mod replace directives. Disable workspace mode
           # so -mod=vendor uses go.mod consistently with vendor/modules.txt.

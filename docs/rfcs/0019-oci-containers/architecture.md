@@ -135,6 +135,15 @@ uncompressed sha256:6e30729d0413d5fb0dba4d0573093a4950e81cd45d7a9ebc2f62f09746b0
 gzip        sha256:1ec9791d8b0b3458830e5156881293d288941e793bb73790f85ad35f168a51d0
 ```
 
+The current builder uses `aos.container.layer/v2`: AOS GNU tar 1.35 and
+AOS gzip 1.14 with the same archive commands, ownership rules, and timestamps.
+Version 1 remains the historical gzip 1.13 policy above. Version 2 retains the
+original fixture payload (including its literal `v1` text) and both frozen
+hashes: a source-built gzip 1.14 produces those exact bytes. This fixture proves
+that vector's compatibility, not universal output equivalence between gzip
+versions. New image configuration history identifies layer ABI v2. The layer
+inventory JSON schemas remain v1 because their data shape is unchanged.
+
 Changing any command, version, flag, fixture byte, or expected hash is a layer
 ABI change. Metadata requiring non-root ownership will use an explicit second
 archive policy version rather than silently changing v1.

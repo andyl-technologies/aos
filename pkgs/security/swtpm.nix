@@ -18,10 +18,12 @@
   libtasn1,
   libseccomp,
   openssl,
+  gmp,
   stdenv,
+  buildPackages,
 }: let
   version = "0.10.2";
-  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isCross = stdenv.isCross;
 in
   mkDerivation {
     pname = "swtpm";
@@ -47,8 +49,8 @@ in
         python3
       ]
       ++ (
-        if isDarwinCross
-        then [glib.tools]
+        if isCross
+        then [buildPackages.glib.tools]
         else [glib.dev glib.tools]
       );
     runtimeDeps =
@@ -60,18 +62,20 @@ in
         libtasn1
         openssl
         bash
+        python3
       ]
       ++ (
         # GLib generators run on the build machine, but swtpm compiles and
         # links against the target headers and package metadata.
-        if isDarwinCross
+        if isCross
         then [glib.dev]
         else []
       )
       ++ (
+        # swtpm_localca links GMP directly; retain it through reference cleanup.
         if stdenv.hostPlatform.isDarwin
         then []
-        else [libseccomp]
+        else [libseccomp gmp]
       );
     propagatedDeps = [libtpms];
 
@@ -83,7 +87,7 @@ in
           cd swtpm-${version}
           # `make install` executes helper scripts (notably fileinstall), so
           # they must use the native shell while cross-compiling.  Installed
-          # scripts are retargeted to the Darwin Bash after installation.
+          # scripts are retargeted to the selected Bash after installation.
           grep -rlZ \
             -e '^#!/usr/bin/env bash' \
             -e '^#!/usr/bin/env sh' \
@@ -149,6 +153,13 @@ in
           grep -rlZ "^#!$CONFIG_SHELL" "$out" 2>/dev/null \
             | while IFS= read -r -d "" f; do
               sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$f"
+            done
+          grep -rlZ \
+            -e '^#!/usr/bin/env python3' \
+            -e '^#!/usr/bin/python3' \
+            "$out" 2>/dev/null \
+            | while IFS= read -r -d "" f; do
+              sed -i "1s|^#!.*|#!${python3}/bin/python3|" "$f"
             done
         '';
       }

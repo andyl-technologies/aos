@@ -14,9 +14,22 @@
   hostPlatform,
   targetPlatform,
 }: let
+  # The cross-built Bash 4.4 mishandles consecutive subshells under RISC-V
+  # execution. Build a private shell without changing the completed GCC 8 tier.
+  constructionPrev =
+    if hostPlatform.constraints.cpu == "riscv64"
+    then
+      prev
+      // {
+        bash = import ./bootstrap-bash.nix {
+          inherit prev buildPlatform hostPlatform targetPlatform;
+        };
+      }
+    else prev;
+
   lib = import ../../../lib {
     system = buildPlatform.system;
-    bash = prev.bash;
+    bash = constructionPrev.bash;
   };
 
   phases = import ../../phases.nix;
@@ -39,8 +52,8 @@
   in
     fn (auto // overrides);
 
-  # Phase 1: Raw GCC 11.5.0 built with prev.gcc (8.5.0)
-  # Has prev.glibc (2.28) crt*.o in its specs dir — NOT compatible with
+  # Phase 1: Raw GCC 11.5.0 built with constructionPrev.gcc (8.5.0)
+  # Has constructionPrev.glibc (2.28) crt*.o in its specs dir — NOT compatible with
   # glibc 2.34 which removed __libc_csu_init/__libc_csu_fini.
   gccRaw = callPackage ./gcc.nix {};
 
@@ -69,32 +82,32 @@
   ];
 
   baseScope = {
+    prev = constructionPrev;
     inherit
-      prev
       buildPlatform
       hostPlatform
       targetPlatform
       ;
 
     # GCC wrapper: adds -B${glibc}/lib so gcc finds glibc 2.34's crt*.o
-    # instead of the old crt*.o from prev.glibc (2.28) in GCC's specs dir.
+    # instead of the old crt*.o from constructionPrev.glibc (2.28) in GCC's specs dir.
     gcc = builtins.derivation {
       name = "gcc-11.5.0-wrapped";
       system = buildPlatform.system;
-      builder = "${prev.bash}/bin/bash";
+      builder = "${constructionPrev.bash}/bin/bash";
       args = [
         "-c"
         ''
           set -eu
-          export PATH="${prev.coreutils}/bin"
+          export PATH="${constructionPrev.coreutils}/bin"
           mkdir -p $out/bin
 
-          echo '#!${prev.bash}/bin/bash' > $out/bin/gcc
+          echo '#!${constructionPrev.bash}/bin/bash' > $out/bin/gcc
           echo 'exec ${gccRaw}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc}/include "$@"' >> $out/bin/gcc
           chmod +x $out/bin/gcc
 
           if [ -f "${gccRaw}/bin/g++" ]; then
-            echo '#!${prev.bash}/bin/bash' > $out/bin/g++
+            echo '#!${constructionPrev.bash}/bin/bash' > $out/bin/g++
             echo 'exec ${gccRaw}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc}/include "$@"' >> $out/bin/g++
             chmod +x $out/bin/g++
           fi
@@ -131,7 +144,7 @@
       tc = {
         inherit (scope) gcc binutils glibc;
         inherit
-          (prev)
+          (constructionPrev)
           coreutils
           findutils
           gnumake
@@ -181,33 +194,26 @@
   };
 
   scope = baseScope // manifestTools;
-in {
-  inherit
-    (scope)
-    gcc
-    binutils
-    glibc
-    linuxHeaders
-    m4
-    flex
-    bison
-    perl
-    autoconf
-    automake
-    texinfo
-    help2man
-    gperf
-    python3
-    bash
-    coreutils
-    gnumake
-    sed
-    grep
-    gawk
-    findutils
-    diffutils
-    tar
-    gzip
-    patch
-    ;
-}
+in
+  import ../lib/finalize-native.nix {
+    privateTools = scope;
+    directory = ./.;
+    gccVersion = "11.5.0";
+    manifestNames = manifestToolNames;
+    extraToolNames = [];
+    compiler = gccRaw;
+    compilerSource = ./gcc-export.nix;
+    manifestToolOverrides =
+      if hostPlatform.constraints.cpu == "riscv64"
+      then {
+        coreutils.preConfigure = ''
+          patch -p1 < ${./patches/coreutils-8.32-shared-stdbuf-probe.patch}
+        '';
+      }
+      else {};
+    publicScriptFilter =
+      if hostPlatform.constraints.cpu != "x86_64"
+      then scope.perl
+      else null;
+    inherit buildPlatform hostPlatform targetPlatform;
+  }

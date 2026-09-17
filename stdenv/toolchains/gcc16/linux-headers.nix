@@ -9,6 +9,34 @@
   buildPlatform,
   hostPlatform,
 }: let
+  # Header installation has independent per-file targets; avoid serial emulation.
+  headerJobs =
+    if hostPlatform.constraints.cpu != "x86_64"
+    then " -j\"$NIX_BUILD_CORES\""
+    else "";
+
+  # Reuse the source filter so emulated builds do not fork for every kernel file.
+  filterSourceScripts = hostPlatform.constraints.cpu != "x86_64";
+  sourceScriptFilterSetup =
+    if filterSourceScripts
+    then ''
+      source_runtime_inputs="$TMPDIR/kernel-runtime-scripts"
+      mkdir -p "$source_runtime_inputs"
+      ${prev.perl}/bin/perl ${../../filter-runtime-scripts.pl} . "$source_runtime_inputs"
+    ''
+    else "";
+  sourceScriptRoot =
+    if filterSourceScripts
+    then ''"$source_runtime_inputs"''
+    else ".";
+  sourceScriptFilterCleanup =
+    if filterSourceScripts
+    then ''
+
+      rm -rf "$source_runtime_inputs"
+    ''
+    else "";
+
   src = builtins.fetchTarball {
     # Canonical kernel.org CDN: builtins.fetchTarball takes a single
     # URL with no fallback, and independent mirrors prune old
@@ -37,12 +65,12 @@ in
               # keep gccRaw's $out free of the pre-tier chain), so this build must
               # supply them itself at build time.
               mkdir -p "$TMPDIR/fakebin"
-              printf '#!/bin/sh\nexec ${gcc}/bin/gcc -static -no-pie -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} "$@"\n' > "$TMPDIR/fakebin/gcc"
+              printf '#!${prev.bash}/bin/bash\nexec ${gcc}/bin/gcc -static -no-pie -L${prev.glibc}/lib -idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} "$@"\n' > "$TMPDIR/fakebin/gcc"
               chmod +x "$TMPDIR/fakebin/gcc"
 
               # Linux 5.3+ uses rsync for headers_install. Provide a minimal replacement.
               cat > "$TMPDIR/fakebin/rsync" << 'RSYNC_EOF'
-        #!/bin/sh
+        #!${prev.bash}/bin/bash
         # Minimal rsync replacement for kernel headers_install.
         # Handles: rsync -mrl --include='*.h' --exclude='*' src/ dst/
         src="" dst=""
@@ -66,7 +94,11 @@ in
               cd linux-6.12
               chmod -R u+w .
 
-              make ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
+              # Pin source helpers that configure or make can execute directly.
+              ${sourceScriptFilterSetup}AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+                "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} ${sourceScriptRoot}${sourceScriptFilterCleanup}
+
+              make${headerJobs} SHELL="${prev.bash}/bin/bash" ARCH=${hostPlatform.linuxArch} INSTALL_HDR_PATH="$out" headers_install
 
               echo "Linux 6.12 headers installed to $out"
       ''

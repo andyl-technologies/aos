@@ -29,6 +29,10 @@ in
         cp -r ${src} "$TMPDIR/src"
         chmod -R u+w "$TMPDIR/src"
 
+        # Pin source helpers that configure or make can execute directly.
+        AOS_RUNTIME_SHELL="${prev.bash}/bin/bash" \
+          "${prev.bash}/bin/bash" ${../../runtime-scripts.sh} "$TMPDIR/src"
+
         # Pre-generated yacc/lex files must be newer than sources
         touch "$TMPDIR/src/gcc/gengtype-yacc.c" \
               "$TMPDIR/src/gcc/gengtype-yacc.h" \
@@ -48,7 +52,7 @@ in
         CC="${prev.gcc}/bin/gcc" \
         CFLAGS="-O2 -static -DSSIZE_MAX=0x7fffffff" \
         LDFLAGS="-static" \
-        "$TMPDIR/src/configure" \
+        "${prev.bash}/bin/bash" "$TMPDIR/src/configure" \
           --prefix="$out" \
           --build=${buildPlatform.config} \
           --host=${buildPlatform.config} \
@@ -64,7 +68,7 @@ in
         # Patch SYSTEM_HEADER_DIR to avoid /usr/include — use an empty
         # directory so fixincludes doesn't error on missing path
         mkdir -p "$TMPDIR/empty-headers"
-        make configure-gcc
+        make SHELL="${prev.bash}/bin/bash" configure-gcc
         sed -i \
           "s|^SYSTEM_HEADER_DIR.*|SYSTEM_HEADER_DIR = $TMPDIR/empty-headers|" \
           gcc/Makefile
@@ -86,10 +90,10 @@ in
             "$out/${hostPlatform.config}/bin/$tool" 2>/dev/null || true
         done
 
-        make -j"$NIX_BUILD_CORES" all-gcc \
+        make SHELL="${prev.bash}/bin/bash" -j"$NIX_BUILD_CORES" all-gcc \
           BOOT_CFLAGS="-O2 -static"
 
-        make install-gcc
+        make SHELL="${prev.bash}/bin/bash" install-gcc
 
         # GCC's install for cross builds doesn't create $target-gcc when
         # gcc-cross exists — create the expected symlink

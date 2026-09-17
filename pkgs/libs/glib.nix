@@ -133,34 +133,69 @@ in
       }
       {
         name = "configure";
-        script = ''
-          meson setup build \
-            $mesonFlags \
-            --prefix=$out \
-            --buildtype=release \
-            -Dselinux=disabled \
-            -Dxattr=false \
-            -Dlibmount=${
-            if stdenv.hostPlatform.isDarwin
-            then "disabled"
-            else "enabled"
-          } \
-            -Dman-pages=disabled \
-            -Ddtrace=disabled \
-            -Dsystemtap=disabled \
-            -Ddocumentation=false \
-            -Dintrospection=${
-            if enableIntrospection
-            then "enabled"
-            else "disabled"
-          } \
-            -Dinstalled_tests=false \
-            -Dnls=disabled \
-            -Doss_fuzz=disabled \
-            -Dglib_checks=true \
-            -Dglib_assert=false \
-            -Dtests=false
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # Meson records explicit linker flags in every target, including
+            # GLib's shared libraries whose dependencies load transitively.
+            export LDFLAGS="$NIX_LDFLAGS ''${LDFLAGS:-}"
+          ''
+          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux && enableIntrospection) ''
+            # The scanner runs on the build machine but links a target dumper.
+            # Keep its executable native while advertising target GI libraries.
+            mkdir -p .aos-introspection
+            cat > .aos-introspection/ldd-target <<'EOF'
+            #!${buildPackages.bash}/bin/bash
+            exec ${stdenv.glibc}/lib/${stdenv.hostPlatform.dynamicLinker} --list "$@"
+            EOF
+            cat > .aos-introspection/g-ir-scanner <<EOF
+            #!${buildPackages.bash}/bin/bash
+            exec ${buildPackages.gobject-introspection}/bin/g-ir-scanner --use-ldd-wrapper="$PWD/.aos-introspection/ldd-target" "\$@"
+            EOF
+            chmod 0755 .aos-introspection/ldd-target .aos-introspection/g-ir-scanner
+            cp ${gobject-introspection}/lib/pkgconfig/gobject-introspection-1.0.pc \
+              .aos-introspection/gobject-introspection-1.0.pc
+            # The target scanner library was built against bootstrap GLib, but
+            # this replacement GLib cannot resolve its own not-yet-installed
+            # pkg-config files. Meson's in-tree GLib dependencies already
+            # supply those headers and libraries to the GIR targets.
+            test "$(grep -Ec '^Requires: glib-2\.0 .*gobject-2\.0 ' \
+              .aos-introspection/gobject-introspection-1.0.pc)" -eq 1
+            sed -i '/^Requires: glib-2\.0 .*gobject-2\.0 /d' \
+              .aos-introspection/gobject-introspection-1.0.pc
+            sed -i \
+              -e "s|^g_ir_scanner=.*|g_ir_scanner=$PWD/.aos-introspection/g-ir-scanner|" \
+              -e 's|^g_ir_compiler=.*|g_ir_compiler=${buildPackages.gobject-introspection}/bin/g-ir-compiler|' \
+              .aos-introspection/gobject-introspection-1.0.pc
+            export PKG_CONFIG_PATH="$PWD/.aos-introspection:$PKG_CONFIG_PATH"
+          ''
+          + ''
+            meson setup build \
+              $mesonFlags \
+              --prefix=$out \
+              --buildtype=release \
+              -Dselinux=disabled \
+              -Dxattr=false \
+              -Dlibmount=${
+              if stdenv.hostPlatform.isDarwin
+              then "disabled"
+              else "enabled"
+            } \
+              -Dman-pages=disabled \
+              -Ddtrace=disabled \
+              -Dsystemtap=disabled \
+              -Ddocumentation=false \
+              -Dintrospection=${
+              if enableIntrospection
+              then "enabled"
+              else "disabled"
+            } \
+              -Dinstalled_tests=false \
+              -Dnls=disabled \
+              -Doss_fuzz=disabled \
+              -Dglib_checks=true \
+              -Dglib_assert=false \
+              -Dtests=false
+          '';
       }
       {
         name = "build";

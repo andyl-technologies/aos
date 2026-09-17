@@ -3938,6 +3938,7 @@ in
                 - _class_copyPropertyList
                 - _class_copyProtocolList
                 - _class_getClassMethod
+                - _class_getImageName
                 - _class_getInstanceMethod
                 - _class_getInstanceSize
                 - _class_getInstanceVariable

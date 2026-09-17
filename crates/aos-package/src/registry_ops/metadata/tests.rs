@@ -1,7 +1,8 @@
 //! Tests for package catalog TOML construction and platform metadata recording.
 
 use super::{
-    build_package_toml, build_package_toml_with_documentation, record_config_module_platform_fields,
+    build_package_toml, build_package_toml_with_documentation,
+    record_config_module_platform_fields, record_named_output,
 };
 use crate::registry_ops::attestation::{package_nar_root_digest, publish_config_attestation_meta};
 use crate::registry_ops::mac::{PublishExposeManifest, PublishMacProfileManifest};
@@ -235,6 +236,58 @@ fn build_package_toml_new() {
     assert!(!content.contains("nar_size"));
     assert!(content.contains("source_drv = \"\""));
     assert!(content.contains("source_nar_hash = \"\""));
+}
+
+#[test]
+fn named_output_extends_the_exact_primary_platform() {
+    let existing = r#"
+[package]
+name = "curl"
+description = "URL transfer tool"
+license = "curl"
+maintainer = "aos"
+
+[[versions]]
+version = "8.5.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/nix/store/abc123-curl-8.5.0"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+"#;
+    let content = record_named_output(
+        existing,
+        "curl",
+        "8.5.0",
+        "x86_64-linux",
+        "dev",
+        "/nix/store/def456-curl-8.5.0-dev",
+    )
+    .expect("record named output");
+    let package: aos_registry_surface::manifest::PackageToml =
+        toml::from_str(&content).expect("parse extended package");
+    let platform = package.versions[0]
+        .platforms
+        .get("x86_64-linux")
+        .expect("platform entry");
+
+    assert_eq!(platform.store_path, "/nix/store/abc123-curl-8.5.0");
+    assert_eq!(
+        platform.named_outputs.get("dev").map(String::as_str),
+        Some("/nix/store/def456-curl-8.5.0-dev")
+    );
+
+    let error = record_named_output(
+        &content,
+        "curl",
+        "8.5.0",
+        "x86_64-linux",
+        "dev",
+        "/nix/store/ghi789-curl-8.5.0-tools",
+    )
+    .expect_err("conflicting named output");
+    assert!(format!("{error:#}").contains("already bound"));
 }
 
 #[test]

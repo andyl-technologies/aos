@@ -446,7 +446,7 @@ in {
       # records any retention evidence. The initrd copies an explicit package
       # closure, so both PE verification tools must be named here.
       aos.boot.initrd.extraPackages = lib.mkIf config.aos.boot.recovery.enable [
-        pkgs.binutils
+        pkgs.pe-tools
         pkgs.sbsigntools
       ];
     })

@@ -19,6 +19,7 @@
   lib,
 }: let
   aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
+  imagePlatformChecks = import ./image-platform.nix;
 
   # --- Assertion enforcement ------------------------------------------
   #
@@ -64,10 +65,10 @@
   healthyTryBuild = builtins.tryEval healthySystem.config.system.build.toplevel.name;
   healthyBuildSucceeds = healthyTryBuild.success;
   imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
-  defaultRootPartitionHasHeadroom =
+  serverRootPartitionHasHeadroom =
     healthySystem.config.aos.image.rootPartitionMiB
     == 1024
-    && healthySystem.config.aos.image.budgets.maxRootMiB == 512;
+    && healthySystem.config.aos.image.budgets.maxRootMiB == 640;
 
   overriddenRootPartitionSystem = aos.mkSystem {
     modules = [
@@ -1213,8 +1214,12 @@
         message = "per-image budget check must be exposed";
       }
       {
-        ok = defaultRootPartitionHasHeadroom;
-        message = "default root partition must retain headroom above the artifact budget";
+        ok = imagePlatformChecks;
+        message = "cross images must retain target identity and native construction tools";
+      }
+      {
+        ok = serverRootPartitionHasHeadroom;
+        message = "server root partition must retain headroom above its declared artifact budget";
       }
       {
         ok = rootPartitionOverridePropagates;
@@ -1243,6 +1248,10 @@
       {
         ok = packageOptDefaultName == "coreutils";
         message = "mkPackageOption default";
+      }
+      {
+        ok = import ./type-addcheck.nix {inherit lib;};
+        message = "additional type predicates validate merged, default, and nested values";
       }
       {
         ok = pathInStoreAccepts && pathInStoreRejectsHost && pathInStoreRejectsRelative && pathInStoreRejectsNumber;
