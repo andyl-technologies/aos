@@ -716,122 +716,27 @@
     strength = "required";
     fallback = null;
   };
-  managerWatchdogFields = {
-    enabled = types.boolean;
-    runtime_timeout_millis = types.integer {
-      minimum = 1000;
-      maximum = 86400000;
-    };
-    reboot_timeout_millis = types.integer {
-      minimum = 1000;
-      maximum = 172800000;
-    };
-    kexec_timeout_millis = types.integer {
-      minimum = 1000;
-      maximum = 172800000;
-    };
-  };
-  managerWatchdogRequest = types.record {
-    fields = managerWatchdogFields;
-  };
+  managerWatchdog = lib.abilities.interfaces.managerWatchdog.interface;
   managerWatchdogRealization = types.record {
     fields =
       {
         schema = types.enum ["aos.systemd.manager-watchdog-realization/v1"];
       }
-      // managerWatchdogFields;
-  };
-  managerWatchdogObservation = types.record {
-    fields = {
-      schema = types.enum ["aos.ability.systemd-manager-watchdog-observation/v1"];
-      expected = managerWatchdogRequest;
-      observed = {
-        type = types.optional managerWatchdogRequest;
-        optional = true;
-      };
-      state = types.enum ["absent" "configured" "divergent" "unknown"];
-      manager_incarnation_changed = types.boolean;
-      discrepancies = types.list {
-        element = types.localKey;
-        maxItems = 16;
-        unique = true;
-        canonicalOrder = true;
-      };
-    };
-  };
-  managerWatchdogMethod = name: description: access: stopsProvider: retained: {
-    inherit description;
-    semantics = {
-      requiredTargetAccess = access;
-      inherit stopsProvider;
-    };
-    parameters = managerWatchdogRequest;
-    targetResource = "aos.systemd.manager-watchdog";
-    outputs =
-      {
-        observation =
-          output
-          (
-            if name == "observe"
-            then "observation"
-            else "runtime"
-          )
-          "attempt"
-          "Reports exact manager watchdog configuration and reload state."
-          managerWatchdogObservation;
-      }
-      // lib.optionalAttrs retained {
-        retained-resource =
-          output
-          "runtime"
-          "instance"
-          "References the retained manager watchdog configuration."
-          types.resourceReference;
-      };
-    permittedOperations = [name];
-    guarantees = [];
-    outcome = {
-      completionEvidence = managerWatchdogObservation;
-      observationEvidence = managerWatchdogObservation;
-      supportsRejectedBeforeEffect = true;
-      indeterminate = "reconcile";
-    };
-  };
-  managerWatchdogDeclaration = lib.abilities.declareInterface {
-    name = "aos.systemd.manager-watchdog";
-    description = "Controls systemd manager hardware-watchdog configuration with re-execution.";
-    abi = 1;
-    requestType = managerWatchdogRequest;
-    outputs = {};
-    methods = {
-      apply = managerWatchdogMethod "apply" "Applies watchdog configuration and re-executes the manager." "exclusive-write" false true;
-      observe = managerWatchdogMethod "observe" "Observes exact watchdog configuration." "read" false false;
-      remove = managerWatchdogMethod "remove" "Removes owned watchdog configuration and re-executes the manager." "exclusive-write" true false;
-    };
-    lifecycle = lifecycle;
-    aggregation = {
-      scope = "provider-instance";
-      key = "slot";
-      rejectSlotCollisions = true;
-      mergeContract = null;
-      controllerGroup = "systemd-manager-watchdog";
-    };
-    configurationType = null;
-    guarantees = [];
+      // managerWatchdog.fields;
   };
   managerWatchdogEffectsRequest = types.taggedUnion {
     tag = "kind";
     variants.manager-watchdog = types.record {
       fields = {
         kind = types.enum ["manager-watchdog"];
-        desired = managerWatchdogRequest;
+        desired = managerWatchdog.requestType;
       };
     };
   };
   managerWatchdogEffectsObservation = types.record {
     fields = {
       kind = types.enum ["manager-watchdog"];
-      observation = managerWatchdogObservation;
+      observation = managerWatchdog.observationType;
     };
   };
   managerWatchdogEffectMethod = name: description: access: stopsProvider: {
@@ -841,7 +746,7 @@
       inherit stopsProvider;
     };
     parameters = managerWatchdogEffectsRequest;
-    targetResource = "aos.systemd.manager-watchdog";
+    targetResource = managerWatchdog.name;
     outputs.observation =
       output
       (
@@ -1571,7 +1476,6 @@ in {
       {
         systemd-packaged-unit = packagedUnitDeclaration;
         systemd-packaged-unit-effects = packagedUnitEffectsDeclaration;
-        systemd-manager-watchdog = managerWatchdogDeclaration;
         systemd-manager-watchdog-effects = managerWatchdogEffectsDeclaration;
         ${networkConfigurationEffectsAlias} = networkConfigurationEffects.declaration;
         systemd-service-effects = serviceEffectsDeclaration;
@@ -1604,9 +1508,9 @@ in {
       // {
         systemd-manager-watchdog = {
           description = "Controls systemd manager watchdog configuration through a pure package-owned controller.";
-          interface = "systemd-manager-watchdog";
+          interface = managerWatchdog.identity;
           inherit artifact;
-          methods = ["apply" "observe" "remove"];
+          inherit (managerWatchdog) methods;
           guarantees = [];
           requirements.manager-watchdog-effects = managerWatchdogEffectsRequirement;
           providerModule = {

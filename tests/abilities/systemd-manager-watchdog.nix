@@ -17,16 +17,14 @@
       slot = "watchdog";
     };
   };
-  consumer = {config, ...}: let
+  consumer = {...}: let
     serviceManagement = lib.abilities.interfaces.serviceManagement;
+    managerWatchdog = lib.abilities.interfaces.managerWatchdog.interface;
     request = serviceManagement.forProducer {
       consumerInstance = "application";
       key = "watchdog";
-      interface = {
-        alias = "watchdog";
-        declaration = config.aos.abilities.interfaces.${controllerName};
-      };
-      methods = ["apply" "observe" "remove"];
+      interface = managerWatchdog;
+      inherit (managerWatchdog) methods;
       parameters = {
         enabled = true;
         runtime_timeout_millis = 30000;
@@ -94,6 +92,8 @@ in
   assert child.requirement == "manager-watchdog-effects";
   assert abilities.compositionPendingRequests == {};
   assert resource.value.enabled;
+  assert resource.kind == "aos.system.manager-watchdog";
+  assert controller.interface == lib.abilities.interfaces.managerWatchdog.interface.identity;
   assert resource.realization
   == {
     schema = "aos.systemd.manager-watchdog-realization/v1";

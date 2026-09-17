@@ -7,14 +7,12 @@
 }: let
   cfg = config.aos.monitoring.hardware;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  managerWatchdog = lib.abilities.interfaces.managerWatchdog.interface;
   watchdog = serviceManagement.forProducer {
     consumerInstance = "watchdog";
     key = "manager-watchdog";
-    interface = {
-      alias = "manager-watchdog";
-      declaration = config.aos.abilities.interfaces."systemd:systemd-manager-watchdog";
-    };
-    methods = ["apply" "observe" "remove"];
+    interface = managerWatchdog;
+    inherit (managerWatchdog) methods;
     parameters = {
       enabled = cfg.watchdog;
       runtime_timeout_millis = cfg.watchdogTimeout * 1000;
