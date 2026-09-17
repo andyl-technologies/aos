@@ -11,15 +11,20 @@
       then seen
       else let
         package = builtins.head pending;
-        name = packageNameFor package;
         remaining = builtins.tail pending;
+        dependencies = remaining ++ (package.runtimeDeps or []);
       in
-        if builtins.hasAttr name seen
-        then
-          if builtins.toString seen.${name} == builtins.toString package
-          then visit seen remaining
-          else throw "package '${packageNameFor owner}' has ambiguous authenticated dependency outputs for '${name}'"
-        else visit (seen // {${name} = package;}) (remaining ++ (package.runtimeDeps or []));
+        if !(package ? contract)
+        then visit seen dependencies
+        else let
+          name = packageNameFor package;
+        in
+          if builtins.hasAttr name seen
+          then
+            if builtins.toString seen.${name} == builtins.toString package
+            then visit seen remaining
+            else throw "package '${packageNameFor owner}' has ambiguous authenticated dependency outputs for '${name}'"
+          else visit (seen // {${name} = package;}) dependencies;
   in
     visit {} [owner];
 

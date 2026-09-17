@@ -83,6 +83,7 @@
   composedAbilities = composed.config.aos.abilities;
   resolvedResources = builtins.attrValues composedAbilities.resolvedResources;
   endpointReference = {
+    _type = "aos-resource-reference";
     interface = lib.abilities.interfaceIdentity (
       lib.abilities.interfaceDocumentFromDeclaration endpointDeclaration
     );
@@ -178,8 +179,8 @@ in
   ];
   assert requests."aos-ability-crucible:adapter-dependencies".parameters.prerequisites
   == [
-    (outputReference "aos-ability-crucible:runtime-storage" "retained-resource")
     (outputReference "aos-ability-crucible:configuration-file" "retained-resource")
+    (outputReference "aos-ability-crucible:runtime-storage" "retained-resource")
   ];
   assert requests."aos-ability-crucible:adapter-supervision".parameters.notification_access == "none";
   assert requests."aos-ability-crucible:adapter-readiness".parameters.mechanism == "process-running";

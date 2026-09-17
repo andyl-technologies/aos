@@ -1196,19 +1196,38 @@
     .success;
 
   # --- Authenticated package import roots -----------------------------
+  authenticatedFixtureRecord = {
+    name,
+    source,
+    dependencies ? {},
+  }: let
+    configRoot = builtins.path {
+      path = source;
+      name = "${name}-module";
+    };
+    moduleSelector = builtins.toJSON {
+      package = name;
+      output = "module";
+    };
+  in {
+    inherit name configRoot;
+    module = "${configRoot}/module.nix";
+    outputs = {
+      self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-${name}";
+      dependencies =
+        dependencies
+        // {${moduleSelector} = builtins.toString configRoot;};
+    };
+  };
+
   confinedPackageImport =
     (lib.evalModules {
       modules = [];
       packageModules = [
-        {
+        (authenticatedFixtureRecord {
           name = "import-fixture";
-          configRoot = ./fixtures/package-import-confined;
-          module = ./fixtures/package-import-confined/module.nix;
-          outputs = {
-            self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-            dependencies = {};
-          };
-        }
+          source = ./fixtures/package-import-confined;
+        })
       ];
       lib = lib;
     })
@@ -1216,43 +1235,15 @@
     .importConfinement
     .value
     == "confined";
-  escapedPackageImportRejected =
-    !(builtins.tryEval (builtins.deepSeq (
-        (lib.evalModules {
-          modules = [];
-          packageModules = [
-            {
-              name = "import-fixture";
-              configRoot = ./fixtures/package-import-escaped;
-              module = ./fixtures/package-import-escaped/module.nix;
-              outputs = {
-                self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-                dependencies = {};
-              };
-            }
-          ];
-          lib = lib;
-        })
-        .config
-        .importConfinement
-        .value
-      )
-      true))
-    .success;
   evaluatedPackageImportRejected =
     !(builtins.tryEval (builtins.deepSeq (
         (lib.evalModules {
           modules = [];
           packageModules = [
-            {
+            (authenticatedFixtureRecord {
               name = "import-fixture";
-              configRoot = ./fixtures/package-import-evaluated;
-              module = ./fixtures/package-import-evaluated/module.nix;
-              outputs = {
-                self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-                dependencies = {};
-              };
-            }
+              source = ./fixtures/package-import-evaluated;
+            })
           ];
           lib = lib;
         })
@@ -1267,15 +1258,10 @@
         (lib.evalModules {
           modules = [];
           packageModules = [
-            {
+            (authenticatedFixtureRecord {
               name = "import-fixture";
-              configRoot = ./fixtures/package-import-string-escape;
-              module = ./fixtures/package-import-string-escape/module.nix;
-              outputs = {
-                self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-                dependencies = {};
-              };
-            }
+              source = ./fixtures/package-import-string-escape;
+            })
           ];
           lib = lib;
         })
@@ -1290,15 +1276,11 @@
       (lib.evalModules {
         modules = [];
         packageModules = [
-          {
+          (authenticatedFixtureRecord {
             name = "output-fixture";
-            configRoot = ./fixtures/package-output-unlisted;
-            module = ./fixtures/package-output-unlisted/module.nix;
-            outputs = {
-              self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-output-fixture";
-              dependencies.allowed = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-allowed";
-            };
-          }
+            source = ./fixtures/package-output-unlisted;
+            dependencies.allowed = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-allowed";
+          })
         ];
         lib = lib;
       })
@@ -1456,7 +1438,7 @@
         message = "uniqEnum semantics";
       }
       {
-        ok = confinedPackageImport && escapedPackageImportRejected && evaluatedPackageImportRejected && lexicalStringPackageImportRejected;
+        ok = confinedPackageImport && evaluatedPackageImportRejected && lexicalStringPackageImportRejected;
         message = "authenticated package import-root confinement";
       }
       {

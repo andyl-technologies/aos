@@ -173,13 +173,13 @@ in
   ];
   assert measurementDependencies.after
   == [
-    (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "service-resource")
-    (resultOf "aos:local-filesystems" "readiness-resource")
-    (resultOf "aos:runtime-entry-population" "lifecycle-resource")
+    (resultOf "systemd:measurement-esp-ready" "readiness-resource")
+    (resultOf "systemd:measurement-local-filesystems" "readiness-resource")
+    (resultOf "systemd:measurement-runtime-entries" "lifecycle-resource")
   ];
   assert measurementDependencies.before
   == [
-    (resultOf "aos:configuration-evaluation-lifecycle" "service-resource")
-    (resultOf "aos:multi-user" "readiness-resource")
+    (resultOf "systemd:measurement-indexed" "readiness-resource")
+    (resultOf "systemd:measurement-multi-user" "readiness-resource")
   ];
   assert measurementDependencies.requires == measurementDependencies.after; true

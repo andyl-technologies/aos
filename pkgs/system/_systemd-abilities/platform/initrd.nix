@@ -32,6 +32,7 @@
   initrdAbilityEvaluation ? null,
   lib,
   packageArtifactFor,
+  packageFor,
   ...
 }: let
   managerBindings =
@@ -42,6 +43,7 @@
     builtins.length managerBindings == 1
     && (builtins.head managerBindings).binding.request == "system:manager";
   packageOutput = package: lib.abilities.packageOutput {inherit package;};
+  packageRootFor = package: packageFor (packageOutput package);
   rendererPackages = {
     bash = packageArtifactFor (packageOutput "bash");
     coreutils = packageArtifactFor (packageOutput "coreutils");
@@ -213,7 +215,7 @@ in {
     # policy contributes only provider-neutral intent; it does not select a
     # manager or a TPM token format from the generic secure-boot module.
     aos.boot.initrd.packageRoots =
-      (builtins.map packageArtifactFor (builtins.map packageOutput [
+      (builtins.map packageRootFor [
         "bash"
         "coreutils"
         "cryptsetup"
@@ -224,8 +226,10 @@ in {
         "kmod"
         "less"
         "util-linux"
-      ]))
-      ++ [rendererPackages.systemd];
+      ])
+      ++ [
+        (packageFor (lib.abilities.packageOutput {}))
+      ];
 
     # Re-run stage-1 config oneshots against the real /etc in stage-2.
     #

@@ -1061,12 +1061,11 @@
     package = "self";
     output = "module";
   };
-  moduleSelectorKey = builtins.toJSON (builtins.removeAttrs moduleSelector ["_type"]);
   artifactPackageModuleFor = package: modulePath: {
     name = package;
     outputs = {
       self = "/nix/store/00000000000000000000000000000000-${package}";
-      dependencies.${moduleSelectorKey} = modulePath;
+      dependencies.${builtins.toJSON {inherit package; output = "module";}} = modulePath;
     };
     module = {packageArtifactFor, ...}: {
       options.artifactProbe.${package} = lib.mkOption {
@@ -1080,6 +1079,29 @@
     packageModules = [
       (artifactPackageModuleFor "alpha" "/nix/store/11111111111111111111111111111111-alpha-module")
       (artifactPackageModuleFor "beta" "/nix/store/22222222222222222222222222222222-beta-module")
+    ];
+  };
+  nativeAlphaPackage = {
+    pname = "alpha";
+    version = "1";
+    outputName = "out";
+    outPath = "/nix/store/00000000000000000000000000000000-alpha";
+  };
+  nativePackageEvaluation = lib.evalModules {
+    pkgs.alpha = nativeAlphaPackage;
+    modules = [];
+    packageModules = [
+      {
+        name = "alpha";
+        outputs = {
+          self = nativeAlphaPackage.outPath;
+          dependencies = {};
+        };
+        module = {packageFor, ...}: {
+          options.nativePackageProbe = lib.mkOption {type = lib.types.anything;};
+          config.nativePackageProbe = packageFor (lib.abilities.packageOutput {});
+        };
+      }
     ];
   };
   unrelatedArtifactSelection = builtins.tryEval (builtins.deepSeq ((lib.evalModules {
@@ -1134,6 +1156,18 @@
     selectors = [{package = "leaf"; output = "out";}];
   };
   transitiveOutputs = lib.abilities.authenticatedPackageOutputsFor transitiveOwner;
+  uncontractedHelper = {
+    pname = "helper-owner";
+    outPath = "/nix/store/99999999999999999999999999999999-helper";
+    runtimeDeps = [transitiveMiddle];
+  };
+  helperOwner = fakePackage {
+    name = "helper-owner";
+    path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-helper-owner";
+    runtimeDeps = [uncontractedHelper];
+    selectors = [{package = "leaf"; output = "out";}];
+  };
+  helperTraversalOutputs = lib.abilities.authenticatedPackageOutputsFor helperOwner;
   unrelatedOutput = builtins.tryEval (builtins.deepSeq
     (lib.abilities.authenticatedPackageOutputFor {
       package = transitiveOwner;
@@ -1624,11 +1658,14 @@ in
     alpha = "/nix/store/11111111111111111111111111111111-alpha-module";
     beta = "/nix/store/22222222222222222222222222222222-beta-module";
   };
+  assert nativePackageEvaluation.config.nativePackageProbe == nativeAlphaPackage;
   assert !unrelatedArtifactSelection.success;
   assert transitiveOutputs.dependencies."{\"output\":\"out\",\"package\":\"leaf\"}"
   == "/nix/store/33333333333333333333333333333333-leaf";
   assert transitiveOutputs.dependencies."{\"output\":\"out\",\"package\":\"middle\"}"
   == "/nix/store/44444444444444444444444444444444-middle";
+  assert helperTraversalOutputs.dependencies."{\"output\":\"out\",\"package\":\"leaf\"}"
+  == "/nix/store/33333333333333333333333333333333-leaf";
   assert !unrelatedOutput.success;
   assert !ambiguousOutput.success;
   assert !globallySelectedForeignOutput.success;

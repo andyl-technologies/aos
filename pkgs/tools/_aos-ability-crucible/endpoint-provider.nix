@@ -33,6 +33,7 @@
   provide = context: let
     entries = builtins.map checkedEntry (entriesFor context);
     reference = {
+      _type = "aos-resource-reference";
       interface = identity;
       resource = {
         provider = context.instance.id;

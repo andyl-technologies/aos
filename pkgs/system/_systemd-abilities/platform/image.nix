@@ -47,6 +47,13 @@
   selected =
     builtins.length builderBindings == 1
     && (builtins.head builderBindings).binding.request == "image:builder";
+  selectedBinding =
+    if selected
+    then builtins.head builderBindings
+    else null;
+  providerReady =
+    selected
+    && selectedBinding.implementation.value.provide != null;
   selectedBuilderOutput =
     config.aos.abilities.compositionOutputs."image:builder"."selected-builder".value or null;
 
@@ -189,8 +196,7 @@
   platform =
     if
       selectedBuilderOutput != null
-      && selectedBuilderOutput._type == "aos-artifact-reference"
-      && selectedBuilderOutput.store_path == builtins.toString systemdPackage
+      && selectedBuilderOutput == builderArtifact
     then authoredPlatform
     else throw "selected image builder projection differs from its checked planning output";
 in {
@@ -203,12 +209,12 @@ in {
       methods = [];
       guarantees = [];
       providerModule = {
-        artifact = builderArtifact;
-        path = "share/aos/providers/systemd.nix";
+        artifact = lib.abilities.packageOutput {output = "module";};
+        path = "provider/systemd.nix";
       };
     };
 
-    aos.image.platform = lib.mkIf selected platform;
+    aos.image.platform = lib.mkIf providerReady platform;
 
     assertions = lib.optionals (selected && config.aos.boot.storage.backend == "zfs-zvol") [
       {

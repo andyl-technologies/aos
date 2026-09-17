@@ -120,17 +120,23 @@
     nativeResourceInterfaces;
   interface = config.aos.abilities.interfaces.${implementationName};
 
-  emptyResult = {
-    requests = {};
+  emptyProvideResult = {
     outputs = {};
+    requests = {};
+    resourceFragments = {};
+  };
+
+  emptyComposeResult = {
+    outputs = {};
+    realizations = {};
+    requests = {};
   };
 
   provideSystemManager = context: let
     managerArtifact = lib.abilities.packageOutput {};
   in
-    emptyResult
+    emptyProvideResult
     // {
-      resourceFragments = {};
       outputs =
         builtins.mapAttrs (_: _: {
           selected-manager = managerArtifact;
@@ -139,15 +145,12 @@
     };
 
   provideImageBuilder = context: let
-    builderReference = {
-      _type = "aos-artifact-reference";
-    }
-    // (artifactLocatorFor (lib.abilities.packageOutput {})).artifactReference;
+    builderArtifact = lib.abilities.packageOutput {};
   in
-    emptyResult
+    emptyProvideResult
     // {
       outputs = builtins.mapAttrs (_: _: {
-        selected-builder = builderReference;
+        selected-builder = builderArtifact;
       }) context.requests;
     };
 
@@ -206,7 +209,7 @@
       inherit requestName binding parameters reference;
     }) (builtins.attrNames context.requests);
   in
-    emptyResult
+    emptyProvideResult
     // {
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
@@ -225,7 +228,7 @@
     };
 
   compose = {resources, ...}:
-    emptyResult
+    emptyComposeResult
     // {
       requests =
         builtins.mapAttrs (key: resource: {
@@ -317,7 +320,7 @@
           })
         entries;
   in
-    emptyResult
+    emptyProvideResult
     // {
       requests = builtins.listToAttrs (builtins.map (preparation: {
           name = preparation.key;
@@ -369,7 +372,7 @@
       };
     }) (builtins.attrNames context.requests);
   in
-    emptyResult
+    emptyProvideResult
     // {
       resourceFragments = {};
       requests = builtins.listToAttrs (builtins.map (entry: let
@@ -469,7 +472,7 @@
       parameters = context.requests.${requestName}.parameters;
     }) (builtins.attrNames context.requests);
   in
-    emptyResult
+    emptyProvideResult
     // {
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {
           name = entry.binding.slot;
@@ -500,7 +503,7 @@
       inherit requestName binding parameters reference;
     }) (builtins.attrNames context.requests);
   in
-    emptyResult
+    emptyProvideResult
     // {
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
@@ -561,7 +564,7 @@
         resolved = packagedUnit "systemd-resolved" "lib/systemd/system/systemd-resolved.service";
       };
   in
-    emptyResult
+    emptyComposeResult
     // {
       requests = lib.foldlAttrs (requests: key: resource:
         requests
@@ -587,7 +590,7 @@
     };
 
   composeManagerWatchdog = {resources, ...}:
-    emptyResult
+    emptyComposeResult
     // {
       requests =
         builtins.mapAttrs (key: resource: {
@@ -758,7 +761,7 @@
       lifetime = "transaction";
     };
   in
-    emptyResult
+    emptyProvideResult
     // {
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
@@ -781,7 +784,7 @@
     resources,
     ...
   }:
-    emptyResult
+    emptyComposeResult
     // {
       realizations =
         builtins.mapAttrs (_: resource: {
@@ -979,7 +982,7 @@
     else if builtins.length destinations != builtins.length (lib.unique destinations)
     then throw "systemd service directories select the same prepared destination more than once"
     else
-      emptyResult
+      emptyComposeResult
       // {
         requests =
           builtins.listToAttrs (builtins.map (preparation: {
@@ -1201,6 +1204,14 @@
     unitIdentityForReference = unitIdentityForPlannedReference;
   };
 in {
+  imports = [
+    ../platform/system.nix
+    ../platform/initrd.nix
+    ../platform/nsswitch.nix
+    ../platform/presets.nix
+    ../platform/users.nix
+  ];
+
   config.aos.abilities.implementations =
     serviceProviderImplementations
     // readinessProviderImplementations

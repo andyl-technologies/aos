@@ -12,6 +12,22 @@
     if types.declarationKey.check consumerInstance && qualified != null
     then "${builtins.head qualified}:${localKey}"
     else localKey;
+  qualifyRequestReference = consumerInstance: reference:
+    reference
+    // {
+      request =
+        if types.declarationKey.check reference.request
+        then reference.request
+        else declarationReferenceFor consumerInstance reference.request;
+    };
+  qualifyRequestReferences = consumerInstance: value:
+    if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
+    then qualifyRequestReference consumerInstance value
+    else if builtins.isAttrs value
+    then builtins.mapAttrs (_: qualifyRequestReferences consumerInstance) value
+    else if builtins.isList value
+    then builtins.map (qualifyRequestReferences consumerInstance) value
+    else value;
   featureInterfaces = {
     lifecycle = serviceInterfaces.lifecycle;
     template_definition = serviceInterfaces.templateDefinition;
@@ -413,7 +429,7 @@
     };
   };
 
-  requestParameters = declaration: feature: let
+  requestParameters = consumerInstance: declaration: feature: let
     featureValue =
       if feature == "template_definition"
       then declaration.lifecycle
@@ -421,13 +437,15 @@
       then {selection = declaration.instantiation;}
       else declaration.${feature};
   in
-    {inherit (declaration) service;}
-    // (
-      if feature == "template_definition"
-      then {}
-      else {inherit (declaration) enabled;}
-    )
-    // featureValue;
+    qualifyRequestReferences consumerInstance (
+      {inherit (declaration) service;}
+      // (
+        if feature == "template_definition"
+        then {}
+        else {inherit (declaration) enabled;}
+      )
+      // featureValue
+    );
 
   structuredSource = {
     format,
@@ -683,7 +701,7 @@
           requirement = declarationReferenceFor consumerInstance featureInterfaces.${feature}.alias;
           consumer = consumerInstance;
           scope = [checked.service];
-          parameters = requestParameters checked feature;
+          parameters = requestParameters consumerInstance checked feature;
         };
       })
       enabledFeatures);
@@ -700,11 +718,12 @@
           requirement = declarationReferenceFor consumerInstance feature.requirementAlias;
           consumer = consumerInstance;
           scope = [checked.service];
-          parameters =
+          parameters = qualifyRequestReferences consumerInstance (
             {
               inherit (checked) service enabled;
             }
-            // feature.parameters;
+            // feature.parameters
+          );
         };
       })
       featureContributions);
@@ -789,7 +808,7 @@
         requirement = declarationReferenceFor consumerInstance interface.alias;
         consumer = consumerInstance;
         scope = [validated.name];
-        parameters = validated;
+        parameters = qualifyRequestReferences consumerInstance validated;
       };
     };
   in
@@ -834,7 +853,7 @@
               requirement = declarationReferenceFor consumerInstance selectedInterface.alias;
               consumer = consumerInstance;
               scope = [producer.key];
-              inherit (producer) parameters;
+              parameters = qualifyRequestReferences consumerInstance producer.parameters;
             };
           })
           producers);

@@ -339,22 +339,26 @@ in rec {
       else last.value;
   };
 
-  ## A function whose result is merged through the supplied result type.
-  ## Multiple definitions remain composable: each function receives the same
-  ## argument and the result type owns conflict handling for their outputs.
+  ## An opaque function with one authoritative definition whose result is
+  ## checked through the supplied result type.
   ## # Type
   ## `type -> type`
   functionTo = resultType: {
     name = "functionTo(${resultType.name})";
     description = "function returning ${resultType.description}";
     check = builtins.isFunction;
-    merge = loc: defs: argument:
-      resultType.merge
-      (loc ++ ["<function result>"])
-      (builtins.map (definition:
-        definition
-        // {value = definition.value argument;})
-      defs);
+    merge = loc: defs:
+      if builtins.length defs != 1
+      then throw "The option '${showLoc loc}' must have one authoritative function definition."
+      else let
+        definition = builtins.head defs;
+      in
+        argument: let
+          result = definition.value argument;
+        in
+          if resultType.check result
+          then result
+          else throw "The function at option '${showLoc loc}' returned a value outside ${resultType.description}.";
     _aosDocType = {
       kind = "opaque";
       signature = "function returning ${resultType.description}";
@@ -507,6 +511,7 @@ in rec {
     # Without this marker a tier-75 host definition of one `/etc` entry would
     # discard every unrelated package/base entry in the attrsOf option.
     mergeProvenanceByKey = true;
+    _elementType = elemType;
     check = v: builtins.isAttrs v && builtins.all elemType.check (builtins.attrValues v);
     merge = loc: defs: let
       allKeys = builtins.concatLists (builtins.map (d: builtins.attrNames d.value) defs);
@@ -781,31 +786,6 @@ in rec {
   };
 
   ## # Type combinators
-
-  ## A function whose result conforms to the selected option type.
-  ## # Type
-  ## `type -> type`
-  functionTo = resultType: {
-    name = "functionTo(${resultType.name})";
-    description = "function returning ${resultType.description}";
-    check = builtins.isFunction;
-    merge = loc: defs: let
-      value = lastValue loc defs;
-    in
-      if !builtins.isFunction value
-      then throw "The option '${showLoc loc}' must be a function."
-      else
-        argument: let
-          result = value argument;
-        in
-          if resultType.check result
-          then result
-          else throw "The function at option '${showLoc loc}' returned a value outside ${resultType.description}.";
-    _aosDocType = {
-      kind = "opaque";
-      signature = "function returning ${resultType.description}";
-    };
-  };
 
   ## # Type
   ## `type -> (a -> b) -> type -> type`

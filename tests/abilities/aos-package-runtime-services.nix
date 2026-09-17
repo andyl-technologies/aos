@@ -101,7 +101,7 @@ in
     }
   ];
   assert requests."systemd:aos-attest-dependencies".parameters.prerequisites
-  == [(resultOf "aos:package-profile-convergence-lifecycle" "service-resource")];
+  == [(resultOf "systemd:package-profile-converged" "readiness-resource")];
   assert enabled.config.systemd.providerUnitPlans == [];
   assert enabled.config.systemd.providerManagerConfigurationPlans == [];
   assert enabled.config.systemd.providerNetworkConfigurationPlans == []; true
