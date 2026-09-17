@@ -11565,7 +11565,7 @@ impl RpcService {
         })
     }
 
-    /// Returns the ability view derived from the signed package reference.
+    /// Returns a compatibility ability view derived from the signed package reference.
     ///
     /// The response keeps the release contract's manifest and semantic package
     /// identities separate from package-authored documentation identity.
