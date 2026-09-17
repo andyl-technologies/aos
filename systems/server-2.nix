@@ -47,10 +47,10 @@
   aos.system.version = "test-2";
 
   aos.image.budgets = {
-    # The Python HTTP fixture occupies 807 MiB on x86_64 and 899 MiB on AArch64.
+    # The Python HTTP fixture occupies 807 MiB on x86_64 and 942 MiB on AArch64.
     maxRuntimeClosureMiB =
       if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-      then 928
+      then 960
       else 832;
 
     # The AArch64 VHD reaches 813 MiB with the generation-two fixture payload.

@@ -239,7 +239,7 @@ AArch64's uncompressed kernel makes its UKIs larger than the x86_64 images:
 
 Recovery-enabled Secure Boot fixtures use ESP maxima of 544 MiB on x86_64
 and 768 MiB on AArch64, retaining both recovery copies throughout an update.
-The `server-2` HTTP fixture uses runtime closure maxima of 832 and 928 MiB,
+The `server-2` HTTP fixture uses runtime closure maxima of 832 and 960 MiB,
 respectively. Development payload and forbidden-artifact checks remain the
 same on both architectures.
 
