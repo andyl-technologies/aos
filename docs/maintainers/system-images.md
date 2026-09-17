@@ -247,13 +247,14 @@ The server and edge golden images cap compressed raw downloads at 768 MiB
 with `maxDownloadMiB`. The uncompressed qcow2, VMDK, and VHD encodings use
 `maxConvertedDownloadMiB`, which defaults to the raw limit. Secure Boot test
 fixtures allow 800 MiB compressed raw because their recovery UKIs remain in
-the disk. Converted limits follow the measured target payloads:
+the disk. The diagnostic server-test images also allow 800 MiB compressed raw
+on both architectures. Converted limits follow the measured target payloads:
 
 | Converted maximum (MiB) | x86_64 | AArch64 |
 | --- | ---: | ---: |
 | Server and edge | 768 | 801 |
 | Server-2 | 768 | 832 |
-| Diagnostic server-test | 832 | 864 |
+| Diagnostic server-test | 832 | 896 |
 | Secure Boot and recovery fixtures | 896 | 1024 |
 
 Each format manifest records its own limit in `artifactBudgetsMiB.download`.
