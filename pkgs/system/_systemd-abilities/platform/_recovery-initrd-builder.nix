@@ -1,4 +1,4 @@
-##! Dedicated signed-recovery initrd builder
+##! Dedicated signed systemd recovery-initrd builder
 ##!
 ##! This sibling of `_initrd-builder.nix` deliberately owns a smaller static
 ##! unit graph and executable set. It never imports normal initrd units or

@@ -841,10 +841,20 @@
           builtins.map (navigationKey: let
             binding = packageConfig.aos.abilities.bindings.${navigationKey};
             providerDeclaration = binding.providerInstance;
+            requestDeclaration = binding.request;
+            requestValue =
+              packageConfig.aos.abilities.requests.${requestDeclaration}
+              or packageConfig.aos.abilities.compositionRequests.${requestDeclaration}
+              or (throw
+                "evalModules: selected binding '${navigationKey}' refers to absent request '${requestDeclaration}'");
           in {
             # This key locates authored Nix data only. Runtime identity comes
             # from the checked request, implementation, instance and slot.
             inherit navigationKey binding implementation;
+            request = {
+              declaration = requestDeclaration;
+              value = requestValue;
+            };
             providerInstance = {
               declaration = providerDeclaration;
               value = packageConfig.aos.abilities.instances.${providerDeclaration};

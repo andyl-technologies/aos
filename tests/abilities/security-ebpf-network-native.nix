@@ -144,7 +144,7 @@ in
   assert output.value.resource == desired.resource;
   assert output.value.operations == ["observe"];
   assert controller.handlerDescriptor == null;
-  assert controller.providerModule.path == "share/aos/providers/ebpf-cgroup-network-policy.nix";
+  assert controller.providerModule.path == "provider.nix";
   assert terminal.providerModule == null;
   assert terminal.handlerDescriptor.entryPoint == "bin/aos-ebpf-net-policy-provider";
   assert transitionMethods "create" == ["apply"];

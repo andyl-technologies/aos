@@ -39,7 +39,7 @@
     milestone = "early-system";
   };
   runtimeEntryPopulation = producer "runtime-entry-population" interfaces.runtimeEntryPopulation {
-    scope = "runtime-entries";
+    entries = [];
   };
 
   selinuxConfiguration = serviceManagement.forConfiguration {

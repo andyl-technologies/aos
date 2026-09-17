@@ -35,6 +35,6 @@ in
   == "/etc/audit/auditd.conf";
   assert requests."audit:audit-rules-file".parameters.destination
   == "/etc/audit/audit.rules";
-  assert config.systemd.services == {};
+  assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "audit/auditd.conf");
   assert !(config.environment.etc ? "audit/audit.rules"); true

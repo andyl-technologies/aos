@@ -149,9 +149,11 @@
   in
     emptyProvideResult
     // {
-      outputs = builtins.mapAttrs (_: _: {
-        selected-builder = builderArtifact;
-      }) context.requests;
+      outputs =
+        builtins.mapAttrs (_: _: {
+          selected-builder = builderArtifact;
+        })
+        context.requests;
     };
 
   bindingFor = bindings: requestName: let
@@ -1211,6 +1213,8 @@ in {
     ../platform/initrd.nix
     ../platform/nsswitch.nix
     ../platform/presets.nix
+    ../platform/runtime-entries.nix
+    ../platform/tmpfiles.nix
     ../platform/users.nix
   ];
 

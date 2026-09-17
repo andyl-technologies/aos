@@ -24,7 +24,7 @@
     scope = "local-filesystems";
   };
   runtimeEntryPopulation = producer "runtime-entry-population" interfaces.runtimeEntryPopulation {
-    scope = "runtime-entries";
+    entries = [];
   };
   networkReadiness = producer "network-readiness" interfaces.networkReadiness {
     scope = "configured-connectivity";

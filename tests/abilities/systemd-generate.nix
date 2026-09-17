@@ -197,7 +197,8 @@
   evalChecks = [
     {
       cond =
-        unselectedResult.config.system.build.systemdUnitBodies == {}
+        unselectedResult.config.system.build.systemdUnitBodies
+        == {}
         && unselectedResult.config.systemd.units == {};
       msg = "systemd-generate: unselected systemd manager emitted platform configuration";
     }
@@ -295,12 +296,23 @@
   # a differently named one-file derivation) while retaining relative link
   # targets verbatim. This pins the authored-unit materialization semantics
   # rather than merely checking a few expected filenames.
-  legacyUnitDrvs =
-    lib.mapAttrs (
-      name: unit:
-        systemdLib.makeUnit name unit
-    )
-    result.config.systemd.units;
+  legacyJobScriptDrvs = lib.mapAttrs (key: script:
+    pkgs.writeTextFile {
+      name = "aos-job-script-${script.name}";
+      executable = true;
+      destination = "/aos-job-scripts/${key}";
+      text = script.text;
+      checkPhase = ''${pkgs.bash}/bin/bash -n "$target"'';
+    })
+  manifest.jobScripts;
+  legacyUnitDrvs = lib.mapAttrs (name: unit: let
+    unitJobScripts = lib.mapAttrsToList (key: scriptDrv: {
+      placeholder = "#aos-jobscript:${key}#";
+      path = "${scriptDrv}/aos-job-scripts/${key}";
+    }) (lib.filterAttrs (key: _: lib.hasPrefix "${name}:" key) legacyJobScriptDrvs);
+  in
+    systemdLib.makeUnit name (unit // {jobScripts = unitJobScripts;}))
+  result.config.systemd.units;
   autoUnitDrvs = lib.mapAttrsToList (name: _unit: legacyUnitDrvs.${name}) (
     lib.filterAttrs (
       _name: unit:

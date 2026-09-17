@@ -17,6 +17,13 @@
     strength = "required";
     fallback = null;
   };
+  testRuntimeEntry = {
+    kind = "directory";
+    path = "/run/example";
+    mode = "0750";
+    owner = "root";
+    group = "root";
+  };
   baseBindings = {
     "test:network" = {
       request = "consumer:network";
@@ -78,7 +85,7 @@
           requirement = "runtime-entries";
           consumer = "application";
           scope = ["runtime-entries"];
-          parameters.scope = "runtime-entries";
+          parameters.entries = [testRuntimeEntry];
         };
       };
     };
@@ -130,7 +137,7 @@
   milestoneChild = childFor "milestone";
   runtimeEntriesChild = builtins.head (builtins.filter
     (child:
-      (child.declaration.parameters.expected.scope or null) == "runtime-entries")
+      (child.declaration.parameters.expected.entries or []) != [])
     pendingChildren);
   evaluation = evaluate (baseBindings
     // {
@@ -174,6 +181,23 @@
   milestone = resourceFor outputs.milestone;
   runtimeEntries = resourceFor outputs.runtimeEntries;
   effectsRequests = abilities.compositionRequests;
+  runtimeEntryConfiguration =
+    (lib.evalModules {
+      inherit lib;
+      modules = [
+        {
+          options.environment.etc = lib.mkOption {
+            type = lib.types.attrsOf lib.types.anything;
+            default = {};
+          };
+        }
+        ../../pkgs/system/_systemd-abilities/platform/runtime-entries.nix
+      ];
+      specialArgs.abilitySelection.bindingsForImplementation = localKey:
+        lib.optional (localKey == "runtime-entry-population") {
+          request.value.parameters.entries = [testRuntimeEntry];
+        };
+    }).config.environment.etc."tmpfiles.d/aos-runtime-entries.conf".text;
 in
   assert builtins.length resources == 4;
   assert network.realization == null;
@@ -183,19 +207,24 @@ in
   assert network.value.scope == "configured-connectivity";
   assert filesystems.value.scope == "local-filesystems";
   assert milestone.value.milestone == "interactive-console";
-  assert runtimeEntries.value.scope == "runtime-entries";
+  assert runtimeEntries.value.entries
+  == [testRuntimeEntry];
   assert network.lifetime == "instance";
   assert milestone.lifetime == "instance";
   assert runtimeEntries.lifetime == "instance";
-  assert effectsRequests.${networkChild.request}.parameters == {
+  assert lib.hasInfix "d /run/example 0750 root root -" runtimeEntryConfiguration;
+  assert effectsRequests.${networkChild.request}.parameters
+  == {
     expected = network.value;
     systemd_unit.unit_name = "network-online.target";
   };
-  assert effectsRequests.${milestoneChild.request}.parameters == {
+  assert effectsRequests.${milestoneChild.request}.parameters
+  == {
     expected = milestone.value;
     systemd_unit.unit_name = "getty.target";
   };
-  assert effectsRequests.${runtimeEntriesChild.request}.parameters == {
+  assert effectsRequests.${runtimeEntriesChild.request}.parameters
+  == {
     expected = runtimeEntries.value;
     systemd_unit.unit_name = "systemd-tmpfiles-setup.service";
   };
@@ -206,5 +235,4 @@ in
   assert abilities.implementations."systemd:systemd-network-readiness-effects".providerModule == null;
   assert abilities.implementations."systemd:systemd-filesystem-readiness-effects".providerModule == null;
   assert abilities.implementations."systemd:systemd-activation-milestone-effects".providerModule == null;
-  assert abilities.implementations."systemd:systemd-runtime-entry-population-effects".providerModule == null;
-  true
+  assert abilities.implementations."systemd:systemd-runtime-entry-population-effects".providerModule == null; true

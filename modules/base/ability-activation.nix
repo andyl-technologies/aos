@@ -149,6 +149,56 @@
       __toString = _: path;
     }
     else staticAbilityContractSource;
+  runtimeEntries = lib.abilities.interfaces.serviceManagement.forProducer {
+    consumerInstance = "ability-runtime:runtime";
+    key = "runtime-entries";
+    interface = lib.abilities.interfaces.serviceManagement.interfaces.runtimeEntryPopulation;
+    methods = ["observe"];
+    parameters.entries = [
+      {
+        kind = "directory";
+        path = "/var/lib/aos/ability-runtime";
+        mode = "0711";
+        owner = "root";
+        group = "root";
+      }
+      {
+        kind = "directory";
+        path = "/var/lib/aos/ability-runtime/credential-sources";
+        mode = "0700";
+        owner = "root";
+        group = "root";
+      }
+      {
+        kind = "directory";
+        path = "/var/lib/aos/ability-runtime/credentials";
+        mode = "0700";
+        owner = "root";
+        group = "root";
+      }
+      {
+        kind = "directory";
+        path = "/var/lib/aos/ability-runtime/endpoints";
+        mode = "0700";
+        owner = "root";
+        group = "root";
+      }
+      {
+        kind = "directory";
+        path = "/var/lib/aos/ability-runtime/network-policy";
+        mode = "0700";
+        owner = "root";
+        group = "root";
+      }
+      {
+        kind = "directory";
+        path = "/var/lib/aos/ability-runtime/storage";
+        mode = "0711";
+        owner = "root";
+        group = "root";
+      }
+    ];
+  };
 in {
   options = {
     aos.abilities.activationInput = lib.mkOption {
@@ -178,17 +228,10 @@ in {
   };
 
   config = {
-    # Runtime providers own their private subdirectories. The generic engine
-    # owns only the shared roots and keeps credential and policy material
-    # inaccessible to provider identities.
-    environment.etc."tmpfiles.d/aos-ability-runtime.conf".text = ''
-      d /var/lib/aos/ability-runtime                    0711 root root -
-      d /var/lib/aos/ability-runtime/credential-sources 0700 root root                   -
-      d /var/lib/aos/ability-runtime/credentials        0700 root root                   -
-      d /var/lib/aos/ability-runtime/endpoints          0700 root root                   -
-      d /var/lib/aos/ability-runtime/network-policy     0700 root root                   -
-      d /var/lib/aos/ability-runtime/storage            0711 root root                   -
-    '';
+    aos.abilities = lib.mkMerge [
+      {instances."ability-runtime:runtime" = {};}
+      runtimeEntries
+    ];
 
     system.build.staticAbilityContract = staticAbilityContract;
     aos.boot.initrd.packageRoots = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable [

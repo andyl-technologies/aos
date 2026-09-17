@@ -38,7 +38,7 @@ in
   assert requests."system:kernel-tunables".parameters.values."vm.swappiness" == "10";
   assert requests."system:kernel-tunables".parameters.values."vm.vfs_cache_pressure" == "50";
   assert requests."system:kernel-tunables".parameters.values."net.core.somaxconn" == "32768";
-  assert config.systemd.services == {};
+  assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "modules-load.d/10-aos-kernel.conf");
   assert !(config.environment.etc ? "sysctl.d/10-aos-kernel.conf");
   assert !(config.environment.etc ? "sysctl.d/60-aos-bbr.conf"); true

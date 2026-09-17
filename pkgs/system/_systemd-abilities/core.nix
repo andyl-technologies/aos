@@ -93,7 +93,7 @@
     consumerInstance = "image-measurement-index";
     key = "measurement-runtime-entries";
     interface = serviceInterfaces.runtimeEntryPopulation;
-    parameters.scope = "runtime-entries";
+    parameters.entries = [];
   };
   measurementEspReadyResource = resultOf "measurement-esp-ready" "readiness-resource";
   measurementLocalFilesystemsResource = resultOf "measurement-local-filesystems" "readiness-resource";

@@ -33,4 +33,4 @@ in
   assert !(config.environment.etc ? "sysctl.d/80-aos-hardening.conf");
   assert !(config.environment.etc ? "sysctl.d/81-aos-coredump.conf");
   assert config.environment.etc ? "systemd/coredump.conf";
-  assert config.systemd.services == {}; true
+  assert (config.systemd.services or {}) == {}; true

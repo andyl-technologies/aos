@@ -53,7 +53,7 @@
     request = requestName;
     inherit output;
   };
-  bootCommit = resultOf "aos:image-boot-commit-lifecycle" "service-resource";
+  imageBootCommitted = resultOf "aos-boot-storage:image-boot-committed" "readiness-resource";
   bootStorageEarlySystem = resultOf "aos-boot-storage:early-system" "readiness-resource";
   preparationsEarlySystem = resultOf "aos-boot-preparations:early-system" "readiness-resource";
   storageMilestone = key: resultOf "aos-boot-storage:${key}" "readiness-resource";
@@ -102,12 +102,12 @@ in
   assert mountDependencies.before
   == [
     (storageMilestone "local-filesystems")
-    bootCommit
+    (storageMilestone "esp-ready")
   ];
   assert mountDependencies.wanted_by == [(storageMilestone "local-filesystems")];
   assert !mountDependencies.implicit_dependencies;
-  assert syncDependencies.after == [bootCommit];
-  assert syncDependencies.requires == [bootCommit];
+  assert syncDependencies.after == [imageBootCommitted];
+  assert syncDependencies.requires == [imageBootCommitted];
   assert syncDependencies.wanted_by == [(storageMilestone "multi-user")];
   assert syncDependencies.implicit_dependencies;
   assert unlockLifecycle.start
@@ -209,7 +209,7 @@ in
   assert transactionStorageInterface.outputs.storage-resource.schema
   == lib.abilities.types.resourceReference;
   assert transactionStorageImplementation.providerModule.path
-  == "share/aos/providers/boot-transaction-storage.nix";
+  == "provider.nix";
   assert transactionStorageEffects.handlerDescriptor.artifact
   == lib.abilities.packageOutput {package = "aos-boot-transaction-storage-provider";};
   assert transactionStorageEffects.handlerDescriptor.entryPoint

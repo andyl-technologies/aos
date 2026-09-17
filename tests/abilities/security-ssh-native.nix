@@ -97,6 +97,6 @@ in
   };
   assert config.aos.contributions.runtimeChecks.ssh.description == "SSH server checks";
   assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
-  assert config.systemd.services == {};
+  assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "ssh/sshd_config");
   assert !(config.environment.etc ? "tmpfiles.d/aos-ssh.conf"); true
