@@ -126,6 +126,32 @@
 
   initrdAbilityGraph = config.system.build.initrdAbilityGraph;
   handoffInterface = lib.abilities.interfaces.bootPreparation.interfaces.handoff;
+  abilityTypes = lib.abilities.types;
+  handoffResourceType = abilityTypes.record {
+    fields = {
+      resource = abilityTypes.resourceId;
+      kind = abilityTypes.qualifiedName;
+      lifetime = abilityTypes.lifetime;
+      value = handoffInterface.requestType;
+      controller = abilityTypes.declarationKey;
+      realization = handoffInterface.realizationType;
+    };
+  };
+  handoffSelectionType = abilityTypes.record {
+    fields = {
+      schema = abilityTypes.enum ["aos.boot.preparation-handoff-selection/v1"];
+      binding = abilityTypes.record {
+        fields = {
+          name = abilityTypes.declarationKey;
+          request = abilityTypes.declarationKey;
+          implementation = abilityTypes.declarationKey;
+          providerInstance = abilityTypes.declarationKey;
+          slot = abilityTypes.localKey;
+        };
+      };
+      resource = handoffResourceType;
+    };
+  };
   handoffResources =
     if initrdAbilityGraph == null
     then []
@@ -159,29 +185,7 @@
     };
 in {
   options.aos.boot.preparationHandoff = lib.mkOption {
-    type = lib.types.nullOr (lib.types.submodule {
-      config._module.strict = true;
-      options = {
-        schema = lib.mkOption {
-          type = lib.types.enum ["aos.boot.preparation-handoff-selection/v1"];
-        };
-        binding = lib.mkOption {
-          type = lib.types.submodule {
-            config._module.strict = true;
-            options = {
-              name = lib.mkOption {type = lib.types.str;};
-              request = lib.mkOption {type = lib.types.str;};
-              implementation = lib.mkOption {type = lib.types.str;};
-              providerInstance = lib.mkOption {type = lib.types.str;};
-              slot = lib.mkOption {type = lib.types.str;};
-            };
-          };
-        };
-        resource = lib.mkOption {
-          type = lib.types.attrs;
-        };
-      };
-    });
+    type = lib.types.nullOr handoffSelectionType;
     readOnly = true;
     internal = true;
     description = ''
