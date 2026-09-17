@@ -136,7 +136,7 @@ aos hub registry create \
   --name testing \
   --visibility public \
   --trust-key "$ANDYL_TESTING_TRUST_KEY" \
-  --if-version absent \
+  --if-version "" \
   --idempotency-key create-andyl-testing-v1 \
   --plan
 ```
