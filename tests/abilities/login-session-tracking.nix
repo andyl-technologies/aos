@@ -39,7 +39,7 @@
             type = lib.types.nullOr lib.types.anything;
             default = null;
           };
-          aos.contributions.pamServices = lib.mkOption {
+          environment.etc = lib.mkOption {
             type = lib.types.attrsOf lib.types.anything;
             default = {};
           };
@@ -64,4 +64,4 @@ in
   assert selectedProjection.config.aos.pam.sessionTrackingRule.modulePath
   == "/systemd/lib/security/pam_systemd.so";
   assert lib.hasInfix "/systemd/lib/security/pam_systemd.so"
-  selectedProjection.config.aos.contributions.pamServices.systemd-user.text; true
+  selectedProjection.config.environment.etc."pam.d/systemd-user".text; true

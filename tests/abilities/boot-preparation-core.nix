@@ -27,10 +27,13 @@
     parameters = {
       source_stage = "initrd";
       receiver_stage = "host";
+      completion = lib.abilities.resultOf "configuration-seed" "preparation-resource";
       preparations = [
         (lib.abilities.resultOf "configuration-seed" "preparation-resource")
         (lib.abilities.resultOf "policy-seed" "preparation-resource")
       ];
+      preserved_mounts = [];
+      durable_state_roots = [];
     };
   };
   evaluated = lib.evalModules {
@@ -67,7 +70,8 @@
     request = "consumer:policy-seed";
     output = "preparation-resource";
   };
-  literalPreparationKeys = builtins.tryEval (builtins.deepSeq (
+  literalPreparationKeys = builtins.tryEval (builtins.deepSeq
+    (
       lib.evalModules {
         modules = [
           {
@@ -75,7 +79,10 @@
             config.request = {
               source_stage = "initrd";
               receiver_stage = "host";
+              completion = lib.abilities.resultOf "configuration-seed" "preparation-resource";
               preparations = ["configuration-seed" "policy-seed"];
+              preserved_mounts = [];
+              durable_state_roots = [];
             };
           }
         ];
@@ -93,7 +100,8 @@ in
   assert preparation.declaration.methods.observe.semantics.requiredTargetAccess == "read";
   assert handoff.declaration.methods.receive.semantics.requiredTargetAccess == "exclusive-write";
   assert authoredSeed.parameters.prerequisites == [policySeedReference];
-  assert authoredHandoff.parameters.preparations == [
+  assert authoredHandoff.parameters.preparations
+  == [
     {
       _type = "aos-request-output-reference";
       request = "consumer:configuration-seed";
@@ -105,5 +113,4 @@ in
   assert abilities.requirementTemplates."consumer:boot-preparation".methods
   == ["observe" "prepare"];
   assert abilities.requirementTemplates."consumer:boot-preparation-handoff".methods
-  == ["observe" "receive"];
-  true
+  == ["observe" "receive"]; true

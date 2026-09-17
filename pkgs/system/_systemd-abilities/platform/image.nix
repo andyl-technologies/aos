@@ -58,7 +58,7 @@
     config.aos.abilities.compositionOutputs."image:builder"."selected-builder".value or null;
 
   normalArtifactPath = let
-    tries = config.aos.boot.bootCountingTries;
+    tries = config.aos.boot.bootAttemptLimit;
   in "EFI/Linux/aos-generation-0000000001${lib.optionalString (tries != null) "+${toString tries}"}.efi";
 
   buildImage = {
@@ -193,12 +193,17 @@
     inherit normalArtifactPath;
     build = buildImage;
   };
-  platform =
-    if
-      selectedBuilderOutput != null
-      && selectedBuilderOutput == builderArtifact
-    then authoredPlatform
-    else throw "selected image builder projection differs from its checked planning output";
+  builderProjectionReady =
+    selectedBuilderOutput
+    != null
+    && selectedBuilderOutput == builderArtifact;
+  checkedProviderReady =
+    providerReady
+    && (
+      if builderProjectionReady
+      then true
+      else throw "selected image builder projection differs from its checked planning output"
+    );
 in {
   config = {
     aos.abilities.implementations.image-builder = {
@@ -214,7 +219,7 @@ in {
       };
     };
 
-    aos.image.platform = lib.mkIf providerReady platform;
+    aos.image.platform = lib.mkIf checkedProviderReady authoredPlatform;
 
     assertions = lib.optionals (selected && config.aos.boot.storage.backend == "zfs-zvol") [
       {

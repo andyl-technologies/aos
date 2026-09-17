@@ -76,7 +76,7 @@ in
   assert packageContract.package_module
   == {
     artifact = {
-      package = "self";
+      package = "nftables";
       output = "module";
     };
     path = "module.nix";

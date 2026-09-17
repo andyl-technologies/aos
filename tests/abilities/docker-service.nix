@@ -112,7 +112,7 @@ in
   assert packageContract.package_module
   == {
     artifact = {
-      package = "self";
+      package = "docker-engine";
       output = "module";
     };
     path = "module.nix";

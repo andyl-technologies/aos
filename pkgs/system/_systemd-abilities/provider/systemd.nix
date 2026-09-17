@@ -3,6 +3,7 @@
   config,
   lib,
   options,
+  packageArtifactFor ? _: throw "systemd provider composition requires authenticated package artifacts",
   packageName,
   ...
 }: let
@@ -135,6 +136,36 @@
     realizations = {};
     requests = {};
   };
+
+  provideCrashDumpPolicy = context: let
+    entries = builtins.map (requestName: let
+      binding = bindingFor context.bindings requestName;
+      policy = context.requests.${requestName}.parameters;
+      rendered = import ../platform/_crash-dump-configuration.nix {
+        inherit policy;
+        systemd = packageArtifactFor (lib.abilities.packageOutput {});
+        coreutils = packageArtifactFor (lib.abilities.packageOutput {package = "coreutils";});
+      };
+    in {
+      inherit binding rendered;
+    }) (builtins.attrNames context.requests);
+  in
+    emptyProvideResult
+    // {
+      requests = builtins.listToAttrs (builtins.map (entry: {
+          name = "${entry.binding.slot}-kernel-tunables";
+          value = {
+            requirement = "kernel-tunables";
+            scope = ["crash-dump-policy"];
+            slot = entry.binding.slot;
+            parameters = {
+              values."kernel.core_pattern" = entry.rendered.corePattern;
+              dependencies = [];
+            };
+          };
+        })
+        entries);
+    };
 
   provideSystemManager = context: let
     managerArtifact = lib.abilities.packageOutput {};
@@ -1218,6 +1249,9 @@ in {
     ../platform/nsswitch.nix
     ../platform/presets.nix
     ../platform/runtime-entries.nix
+    ../platform/crash-dump.nix
+    ../platform/event-log.nix
+    ../platform/pam.nix
     ../platform/tmpfiles.nix
     ../platform/users.nix
   ];
@@ -1253,7 +1287,7 @@ in {
         provide = _: emptyProvideResult;
       };
       ${crashDumpPolicyAlias} = {
-        provide = _: emptyProvideResult;
+        provide = provideCrashDumpPolicy;
       };
       ${loginSessionTrackingAlias} = {
         provide = _: emptyProvideResult;

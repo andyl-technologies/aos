@@ -14,17 +14,19 @@
       pkgs.aos-storage-format-provider
       pkgs.aos-zfs-provider
     ];
-    extraModules = [{
-      aos.filesystems.zfs = {
-        enable = true;
-        systemState = false;
-        datasets."srv/data" = {
-          mountPoint = "/srv/data";
-          quota = "16G";
-          compression = "zstd-7";
+    extraModules = [
+      {
+        aos.filesystems.zfs = {
+          enable = true;
+          systemState = false;
+          datasets."srv/data" = {
+            mountPoint = "/srv/data";
+            quota = "16G";
+            compression = "zstd-7";
+          };
         };
-      };
-    }];
+      }
+    ];
   };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
@@ -48,7 +50,7 @@ in
   == resultOf "cryptsetup:encrypted-swap-mapping" "mapped-device";
   assert requests."cryptsetup:encrypted-swap".parameters.source
   == resultOf "cryptsetup:encrypted-swap-format" "formatted-path";
-  assert !(config.systemd.services ? cryptswap);
+  assert !(config ? systemd);
   assert requests ? "aos-zfs-provider:pool";
   assert requests ? "aos-zfs-provider:zfs-kernel-module";
   assert requests ? "aos-zfs-provider:zfs-kernel-tunables";
@@ -82,11 +84,4 @@ in
   ];
   assert lib.hasInfix "/dev/disk/by-partlabel/var  /var  ext4" config.environment.etc.fstab.text;
   assert builtins.elem "spl.spl_kmem_cache_obj_per_slab=1" config.aos.boot.kernelParams;
-  assert requests."aos-zfs-provider:zfs-kernel-tunables".parameters.values."vm.defrag_mode" == "1";
-  assert !(config.systemd.services ? "aos-zfs-memory-policy");
-  assert !(config.systemd.services ? "aos-zfs-verify-parameters");
-  assert !(config.systemd.services ? "zfs-zed");
-  assert !(config.systemd.services ? "aos-zfs-scrub");
-  assert !(config.systemd ? timers) || !(config.systemd.timers ? "aos-zfs-scrub");
-  assert !(config.systemd.services ? "zfs-import");
-  assert !(config.systemd.services ? "zfs-mount"); true
+  assert requests."aos-zfs-provider:zfs-kernel-tunables".parameters.values."vm.defrag_mode" == "1"; true

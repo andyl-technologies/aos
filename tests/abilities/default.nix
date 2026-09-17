@@ -431,6 +431,9 @@
   disabledRsyncProjection = pkgs.rsync.abilities;
   selectedChronySystem = mkSystem {
     modules = [
+      ../../systems/_artifact-backend.nix
+      ../../systems/_kernel.nix
+      ../../systems/_system-manager.nix
       {
         aos.abilities.environment = {
           authority = "test";
@@ -640,15 +643,15 @@ in
   == [
     {
       package = "ability-package-smoke";
+      output = "module";
+    }
+    {
+      package = "ability-package-smoke";
       output = "out";
     }
     {
       package = "ability-package-smoke-provider";
       output = "out";
-    }
-    {
-      package = "self";
-      output = "module";
     }
   ];
   assert builtins.length (builtins.attrNames disabledRsyncProjection.requirementTemplates) > 0;

@@ -38,12 +38,16 @@
       ../../systems
     ]
     ++ [../../default.nix];
-  legacyInitrdIntentFiles = builtins.filter
+  legacyInitrdIntentFiles =
+    builtins.filter
     (path: hasLegacyInitrdIntent (builtins.readFile path))
     productionNixFiles;
   system = mkSystem {
     systemName = "staged-environment-test";
     modules = [
+      ../../systems/_artifact-backend.nix
+      ../../systems/_kernel.nix
+      ../../systems/_system-manager.nix
       {
         aos.abilities.stages.initrd.modules = [
           ({config, ...}: {
@@ -79,7 +83,8 @@ in
     };
   '';
   assert legacyInitrdIntentFiles == [];
-  assert initrd.environment == {
+  assert initrd.environment
+  == {
     authority = "system-image";
     key = "staged-environment-test";
     stage = "initrd";
@@ -89,5 +94,4 @@ in
   == "libexec/fixture-preparation";
   assert !(host.requests ? "system:fixture-preparation");
   assert !(builtins.any (name: lib.hasPrefix "chrony:" name) (builtins.attrNames initrd.requests));
-  assert !(builtins.any (name: lib.hasPrefix "openssh:" name) (builtins.attrNames initrd.requests));
-  true
+  assert !(builtins.any (name: lib.hasPrefix "openssh:" name) (builtins.attrNames initrd.requests)); true
