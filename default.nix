@@ -252,6 +252,9 @@
             kernel = evaluated.config.system.build.kernel;
             initrd = evaluated.config.system.build.initrd;
             image = evaluated.config.system.build.image;
+            # Null unless the variant defers signing to the release finalizer,
+            # in which case it replaces `image` as the variant's only output.
+            unsignedImageAssembly = evaluated.config.system.build.unsignedImageAssembly;
             containers = evaluated.config.system.build.containers;
             defaultContainer = evaluated.config.system.build.defaultContainer;
           };
