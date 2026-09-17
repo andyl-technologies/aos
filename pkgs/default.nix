@@ -1293,6 +1293,7 @@
     "aos-landlock"
     "aos-recovery"
     "aos-registry-server"
+    "aos-release-signer"
     "aos-secret-reference-test"
     "aos-selinux-run"
     "aos-service-root"

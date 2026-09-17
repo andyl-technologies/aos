@@ -359,6 +359,7 @@ let
     "aos-agent-rpc"
     "aos-hub"
     "aos-hub-cloudflare"
+    "aos-release-signer"
     "aos-test-driver"
     "aos-vm"
     "chrony"
