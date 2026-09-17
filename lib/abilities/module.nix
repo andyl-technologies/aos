@@ -1453,9 +1453,7 @@
   };
   resolvedExecutionObserverType = strictSubmodule {
     request = mkOption {type = declarationKeyType;};
-    resource = mkOption {
-      type = checkedType "resource reference" "a typed ability resource reference" abilityTypes.resourceReference.check;
-    };
+    resource = mkOption {type = abilityTypes.resolvedResourceReference;};
     socket = mkOption {type = abilityTypes.executionPath;};
   };
   resolvedExecutionObserver = let
@@ -1483,7 +1481,7 @@
     else if
       protectedPlanningOutput resource
       && protectedPlanningOutput socket
-      && abilityTypes.resourceReference.check resource.value
+      && abilityTypes.resolvedResourceReference.check resource.value
       && abilityTypes.executionPath.check socket.value
       && builtins.elem resource.value.lifetime ["transaction" "instance" "persistent"]
     then {

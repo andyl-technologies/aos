@@ -348,7 +348,7 @@
         value = group.result.outputs.${requestName}.${outputName};
       in
         lib.optional
-        (lib.abilities.types.resourceReference.check value
+        (lib.abilities.types.resolvedResourceReference.check value
           && !builtins.any (resource: resource.resource == value.resource) mergedResources) {
           inherit (value) resource lifetime;
           kind = value.interface.name;
