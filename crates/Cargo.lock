@@ -880,7 +880,6 @@ dependencies = [
  "rayon",
  "regex",
  "reqwest",
- "rnix",
  "rusqlite",
  "rustix 1.1.4",
  "semver",

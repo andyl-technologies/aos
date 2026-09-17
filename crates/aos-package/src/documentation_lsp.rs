@@ -209,30 +209,17 @@ impl Server {
                 respond(output, id, self.option_hints(&params))?;
             }
             "aos/packageDocumentation/abilities" => {
-                respond(
-                    output,
-                    id,
-                    self.ability_catalog.hints(&params),
-                )?;
+                respond(output, id, self.ability_catalog.hints(&params))?;
             }
             "aos/packageDocumentation/abilityReferences" => {
-                respond(
-                    output,
-                    id,
-                    self.ability_catalog.references(&params),
-                )?;
+                respond(output, id, self.ability_catalog.references(&params))?;
             }
-            "aos/packageDocumentation/abilityGraph" => {
-                match self.ability_catalog.graph(&params) {
-                    Ok(graph) => respond(output, id, graph)?,
-                    Err(error) => respond_error(output, id, -32602, &error.to_string())?,
-                }
-            }
+            "aos/packageDocumentation/abilityGraph" => match self.ability_catalog.graph(&params) {
+                Ok(graph) => respond(output, id, graph)?,
+                Err(error) => respond_error(output, id, -32602, &error.to_string())?,
+            },
             "aos/packageDocumentation/resolveAbility" => {
-                let result = self
-                    .ability_catalog
-                    .resolve(&params)
-                    .unwrap_or(Value::Null);
+                let result = self.ability_catalog.resolve(&params).unwrap_or(Value::Null);
                 respond(output, id, result)?;
             }
             "aos/packageDocumentation/abilityDocument" => {
@@ -385,7 +372,7 @@ impl Server {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let mut actions = diagnostics
+        let actions = diagnostics
             .iter()
             .filter(|diagnostic| {
                 diagnostic.get("code").and_then(Value::as_str) == Some("aos-unknown-option")
@@ -409,10 +396,6 @@ impl Server {
                 }))
             })
             .collect::<Vec<_>>();
-        actions.extend(
-            self.ability_catalog
-                .code_actions(&diagnostics, text_document_uri(params).as_deref()),
-        );
         Value::Array(actions)
     }
 
@@ -462,7 +445,6 @@ impl Server {
                 "data": { "candidate": candidate }
             }));
         }
-        diagnostics.extend(self.ability_catalog.diagnostics(text));
         diagnostics
     }
 
@@ -954,7 +936,13 @@ mod tests {
     #[test]
     fn ability_catalog_rejects_an_invalid_authenticated_reference() {
         let mut loaded = loaded_document();
-        loaded.tooling.as_mut().unwrap().ability_reference.version.clear();
+        loaded
+            .tooling
+            .as_mut()
+            .unwrap()
+            .ability_reference
+            .version
+            .clear();
 
         let error = match AbilityCatalog::new(&[loaded]) {
             Ok(_) => panic!("invalid ability reference unexpectedly entered the catalog"),
@@ -1048,110 +1036,6 @@ mod tests {
                 .as_str()
                 .is_some_and(|text| text.contains("Authenticated manifest"))
         );
-    }
-
-    #[test]
-    fn ability_diagnostics_are_static_exact_and_offer_standard_workspace_edits() {
-        let loaded = loaded_document();
-        let key = loaded
-            .projection
-            .ability_reference
-            .as_ref()
-            .unwrap()
-            .exports[0]
-            .interface
-            .clone();
-        let server = Server::new(vec![loaded]).unwrap();
-
-        let unknown = server.diagnostics(
-            r#"lib.abilities.request { interface = "aos.missing"; abi = 1; descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; request = config.value; }"#,
-        );
-        assert_eq!(unknown.len(), 1);
-        assert_eq!(unknown[0]["code"], "aos-ability-missing-reference");
-        assert!(
-            unknown[0]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("loaded authenticated ability catalog"))
-        );
-
-        let partial = server.diagnostics(
-            r#"lib.abilities.request { interface = "test.lifecycle"; abi = 1; request = config.value; }"#,
-        );
-        assert!(partial.is_empty());
-
-        let dynamic = server.diagnostics(&format!(
-            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = config.unit; }}; }}",
-            key.name, key.abi, key.descriptor,
-        ));
-        assert!(dynamic.is_empty());
-
-        let shadowable_literal = server.diagnostics(&format!(
-            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = 1; extra = true; }}; }}",
-            key.name, key.abi, key.descriptor,
-        ));
-        assert!(shadowable_literal.is_empty());
-
-        let invalid_literal = server.diagnostics(&format!(
-            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = 1; extra = 2; }}; }}",
-            key.name, key.abi, key.descriptor,
-        ));
-        assert!(invalid_literal.len() >= 2);
-        assert!(invalid_literal.iter().all(|diagnostic| {
-            diagnostic["code"] == "aos-ability-value-type-mismatch"
-                && diagnostic
-                    .pointer("/data/contractDiagnostic/code")
-                    .is_some()
-        }));
-
-        let mismatched = server.diagnostics(&format!(
-            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"sha256:{}\"; request = config.value; }}",
-            key.name,
-            key.abi,
-            "0".repeat(64),
-        ));
-        assert_eq!(mismatched.len(), 1);
-        assert_eq!(mismatched[0]["code"], "aos-ability-interface-mismatch");
-        let actions = server.code_actions(&json!({
-            "textDocument": { "uri": "file:///workspace/configuration.nix" },
-            "context": { "diagnostics": mismatched }
-        }));
-        assert_eq!(actions.as_array().unwrap().len(), 1);
-        assert!(actions[0].get("command").is_none());
-        assert_eq!(
-            actions[0]["edit"]["changes"]["file:///workspace/configuration.nix"][0]["newText"],
-            format!("\"{}\"", key.descriptor)
-        );
-    }
-
-    #[test]
-    fn contextual_ability_completion_uses_the_authenticated_request_schema() {
-        let documents = vec![loaded_document()];
-        let catalog = AbilityCatalog::new(&documents).unwrap();
-        let key = documents[0]
-            .projection
-            .ability_reference
-            .as_ref()
-            .unwrap()
-            .exports[0]
-            .interface
-            .clone();
-        let nested = format!(
-            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{  }}; }}",
-            key.name, key.abi, key.descriptor,
-        );
-        let cursor = nested.rfind("{  }").unwrap() + 2;
-        assert!(
-            catalog
-                .contextual_completions(&nested, 0, cursor)
-                .is_some_and(|items| items.iter().any(|item| item["label"] == "unit"))
-        );
-
-        let value = format!(
-            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = \"demo.service\"; }}; }}",
-            key.name, key.abi, key.descriptor,
-        );
-        let cursor = value.find("demo.service").unwrap() + 2;
-        assert!(catalog.contextual_completions(&value, 0, cursor).is_none());
     }
 
     #[test]
