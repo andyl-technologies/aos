@@ -22,8 +22,10 @@
         "systemd.journald.max_level_kmsg=info"
       ];
       aos.image.erofsCompressionLevel = 1;
-      # Fast compression with the test agent produces a roughly 666 MiB root.
+      # Fast compression with the test agent produces a roughly 666 MiB root
+      # and 769 MiB compressed image.
       aos.image.budgets.maxRootMiB = 704;
+      aos.image.budgets.maxDownloadMiB = 800;
 
       # This negative boot fixture deliberately bundles the fleet agent.
       aos.image.allowTestArtifacts = true;
