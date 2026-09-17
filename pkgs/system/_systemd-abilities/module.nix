@@ -10,6 +10,7 @@
     ./platform/crash-dump.nix
     ./platform/event-log.nix
     ./platform/image.nix
+    ./platform/pam.nix
     ./verity-root.nix
   ];
 }

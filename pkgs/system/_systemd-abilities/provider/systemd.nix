@@ -78,6 +78,7 @@
   systemManagerAlias = lib.abilities.interfaces.systemManager.interfaces.manager.alias;
   eventLogPolicyAlias = lib.abilities.interfaces.eventLogPolicy.interface.alias;
   crashDumpPolicyAlias = lib.abilities.interfaces.crashDumpPolicy.interface.alias;
+  loginSessionTrackingAlias = lib.abilities.interfaces.loginSessionTracking.interface.alias;
   serviceResourceFields = serviceManagement.types.serviceDeclaration._abilitySchema.fields;
   serviceImplementationNames = builtins.filter (featureName: let
     selected = allServiceInterfaces.${featureName};
@@ -1252,6 +1253,9 @@ in {
         provide = _: emptyProvideResult;
       };
       ${crashDumpPolicyAlias} = {
+        provide = _: emptyProvideResult;
+      };
+      ${loginSessionTrackingAlias} = {
         provide = _: emptyProvideResult;
       };
       ${implementationAlias} = {
