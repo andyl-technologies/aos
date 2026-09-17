@@ -8,7 +8,7 @@
   providerStateQualification ? false,
 }: let
   packageSet = import ../abilities/reference-nginx/package.nix {
-    inherit (pkgs) mkDerivation;
+    inherit (pkgs) bash coreutils mkDerivation nginx python3;
   };
 
   orderedPackages = [
@@ -23,6 +23,10 @@
     {
       name = "ability-reference-http-backend-registry";
       package = packageSet.backend-registry;
+    }
+    {
+      name = "ability-reference-runtime-services";
+      package = packageSet.runtime-services;
     }
     {
       name = pkgs.nginx.pname;
@@ -40,122 +44,16 @@
 
   packageRoots = lib.concatMap (entry: [entry.package entry.package.contract.document]) orderedPackages;
 
-  reloadWrapper = pkgs.writeShellScriptBin "ability-nginx-reload" ''
-    set -eu
-
-    instance=$1
-    printf '%s\n' "$instance" >> /run/ability-nginx-reload.calls
-    if [ "$instance" = nginx-secondary ] \
-        && [ -e /run/ability-force-native-reload-failure ]; then
-      echo "deliberate native reload failure for $instance" >&2
-      exit 70
-    fi
-
-    exec ${pkgs.nginx}/bin/nginx \
-      -c "/var/lib/aos/ability-reference/$instance.conf" \
-      -p "/var/lib/aos/ability-reference/$instance" \
-      -s reload
-  '';
-
   runtimeModules = [
     ../../systems/server-test.nix
     {
-      environment.systemPackages = [pkgs.nginx pkgs.openssl pkgs.python3 reloadWrapper];
-      systemd.services = let
-        matrixUnit = name: {
-          description = "Disposable ${name} native systemd-manager fixture";
-          serviceConfig = {
-            Type = "simple";
-            ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
-            ExecReload = "${pkgs.coreutils}/bin/touch /run/${name}.reloaded";
-          };
-        };
-        applicationService = application: let
-          port =
-            {
-              app-a = 19001;
-              app-b = 19002;
-              app-c = 19003;
-            }.${
-              application
-            };
-        in {
-          description = "Reference HTTP backend ${application}";
-          wantedBy = ["multi-user.target"];
-          after = ["systemd-tmpfiles-setup.service"];
-          serviceConfig = {
-            ExecStart = "${pkgs.python3}/bin/python3 -m http.server ${builtins.toString port} --bind 127.0.0.1 --directory /var/lib/aos/ability-reference/backends/${application}";
-            Restart = "on-failure";
-          };
-        };
-      in
-        {
-          aos-matrix-primary = matrixUnit "aos-matrix-primary";
-          aos-matrix-secondary = matrixUnit "aos-matrix-secondary";
-          aos-matrix-witness = matrixUnit "aos-matrix-witness";
-          aos-matrix-foreign = matrixUnit "aos-matrix-foreign";
-        }
-        // lib.genAttrs ["app-a" "app-b" "app-c"] applicationService;
-      environment.etc."tmpfiles.d/ability-reference.conf".text = ''
-        d /var/lib/aos 0700 root root - -
-        d /var/lib/aos/ability-reference 0700 root root - -
-        d /var/lib/aos/ability-reference/nginx-main 0700 root root - -
-        d /var/lib/aos/ability-reference/nginx-secondary 0700 root root - -
-        d /var/lib/aos/ability-reference/backends 0755 root root - -
-        d /var/lib/aos/ability-reference/backends/app-a 0755 root root - -
-        d /var/lib/aos/ability-reference/backends/app-b 0755 root root - -
-        d /var/lib/aos/ability-reference/backends/app-c 0755 root root - -
-        d /var/lib/aos/ability-runtime 0700 root root - -
-        d /var/lib/aos/ability-runtime/managed-configuration 0700 root root - -
-        d /var/lib/aos/ability-runtime/managed-configuration/candidates 0700 root root - -
-        d /var/lib/aos/ability-runtime/managed-configuration/revisions 0700 root root - -
-        d /var/lib/aos/ability-runtime/nginx 0700 root root - -
-        d /var/lib/aos/ability-runtime/nginx/candidates 0700 root root - -
-        d /var/lib/aos/ability-runtime/nginx/validations 0700 root root - -
-        d /var/lib/aos/ability-runtime/nginx/associations 0700 root root - -
-        d /var/lib/aos/ability-runtime/nginx/sandbox 0700 root root - -
-      '';
+      environment.systemPackages = [packageSet.runtime-services pkgs.openssl];
     }
   ];
   runtimeSystem = mkSystem runtimeModules;
-  qualificationMatrixUnit = name: ''
-    systemd.services.${name} = {
-      description = "Disposable ${name} native systemd-manager fixture";
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
-        ExecReload = "${pkgs.coreutils}/bin/touch /run/${name}.reloaded";
-      };
-    };
+  qualificationSetupBody = ''
+    environment.systemPackages = [ ${packageSet.runtime-services} ];
   '';
-  qualificationSetupBody =
-    ''
-      environment.etc."tmpfiles.d/ability-reference.conf".text = ${builtins.toJSON ''
-        d /var/lib/aos 0700 root root - -
-        d /var/lib/aos/ability-reference 0700 root root - -
-        d /var/lib/aos/ability-reference/nginx-main 0700 root root - -
-        d /var/lib/aos/ability-reference/nginx-secondary 0700 root root - -
-        d /var/lib/aos/ability-reference/backends 0755 root root - -
-        d /var/lib/aos/ability-reference/backends/app-a 0755 root root - -
-        d /var/lib/aos/ability-reference/backends/app-b 0755 root root - -
-        d /var/lib/aos/ability-reference/backends/app-c 0755 root root - -
-        d /var/lib/aos/ability-runtime 0700 root root - -
-        d /var/lib/aos/ability-runtime/managed-configuration 0700 root root - -
-        d /var/lib/aos/ability-runtime/managed-configuration/candidates 0700 root root - -
-        d /var/lib/aos/ability-runtime/managed-configuration/revisions 0700 root root - -
-        d /var/lib/aos/ability-runtime/nginx 0700 root root - -
-        d /var/lib/aos/ability-runtime/nginx/candidates 0700 root root - -
-        d /var/lib/aos/ability-runtime/nginx/validations 0700 root root - -
-        d /var/lib/aos/ability-runtime/nginx/associations 0700 root root - -
-        d /var/lib/aos/ability-runtime/nginx/sandbox 0700 root root - -
-      ''};
-    ''
-    + lib.concatMapStrings qualificationMatrixUnit [
-      "aos-matrix-primary"
-      "aos-matrix-secondary"
-      "aos-matrix-witness"
-      "aos-matrix-foreign"
-    ];
   qualificationExtraClosures =
     packageRoots
     ++ [
@@ -172,7 +70,6 @@
       pkgs.openssl
       pkgs.python3
       pkgs.util-linux
-      reloadWrapper
     ];
   qualificationCandidateRuntimeCompanions =
     map (name: let
@@ -244,10 +141,8 @@ in {
       JQ = "${pkgs.jq}/bin/jq"
       NIX_BIN = "${pkgs.nix}/bin"
       NIX_INSTANTIATE = "${pkgs.nix}/bin/nix-instantiate"
-      NGINX = "${pkgs.nginx}/bin/nginx"
       OPENSSL = "${pkgs.openssl}/bin/openssl"
       PRLIMIT = "${pkgs.util-linux}/bin/prlimit"
-      RELOAD_WRAPPER = "${reloadWrapper}/bin/ability-nginx-reload"
 
       REFERENCE_PACKAGES = ${
         if guestTools
@@ -493,32 +388,6 @@ in {
               + json.dumps(activation_json)
               + ";\n"
               + extra_module
-              + "  systemd.services.nginx-nginx-main = {\n"
-              "    description = \"Reference ability nginx service\";\n"
-              "    after = [ \"local-fs.target\" ];\n"
-              "    serviceConfig = {\n"
-              "      Type = \"simple\";\n"
-              f"      ExecStart = \"{NGINX} -c "
-              "/var/lib/aos/ability-reference/nginx-main.conf -p "
-              "/var/lib/aos/ability-reference/nginx-main "
-              "-g 'daemon off;'\";\n"
-              f"      ExecReload = \"{RELOAD_WRAPPER} nginx-main\";\n"
-              "      Restart = \"on-failure\";\n"
-              "    };\n"
-              "  };\n"
-              "  systemd.services.nginx-nginx-secondary = {\n"
-              "    description = \"Secondary reference ability nginx service\";\n"
-              "    after = [ \"local-fs.target\" ];\n"
-              "    serviceConfig = {\n"
-              "      Type = \"simple\";\n"
-              f"      ExecStart = \"{NGINX} -c "
-              "/var/lib/aos/ability-reference/nginx-secondary.conf -p "
-              "/var/lib/aos/ability-reference/nginx-secondary "
-              "-g 'daemon off;'\";\n"
-              f"      ExecReload = \"{RELOAD_WRAPPER} nginx-secondary\";\n"
-              "      Restart = \"on-failure\";\n"
-              "    };\n"
-              "  };\n"
               + "}\n"
           )
           encoded = base64.b64encode(host_module.encode()).decode()
