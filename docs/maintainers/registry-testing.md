@@ -6,7 +6,9 @@ and may be rebuilt from scratch. It supports `edge`, `candidate`, and `stable`;
 these classify software maturity, not pipeline provenance. The default is `edge`.
 Its signing material remains separate from `andyl/main`.
 
-`andyl/testing` does not use an HSM. The intended key management for
+`andyl/testing` does not use an HSM. Its release signer is the
+[file-backed adapter](canonical-releases.md#file-backed-signer-for-registries-without-an-hsm)
+reading operator-held key files. The intended key management for
 `andyl/main` is documented in [Registry key management](registry-key-management.md).
 
 The [public key inventory](registry-testing-public-keys.json) records separate
