@@ -9,6 +9,8 @@
       inherit lib;
       modules = [
         lib.abilities.module
+        ../../modules/base/_manager-contributions.nix
+        ../../modules/image/_platform.nix
         ../../modules/services/zfs-auto-snapshot.nix
         {
           options = {
@@ -149,4 +151,4 @@ in
   };
   assert portableOptionTree enabled.options.aos.services.zfsAutoSnapshot;
   assert portableOptionTree enabled.options.aos.filesystems.zfs;
-  assert enabled.config.systemd.services == {}; true
+  assert !(enabled.config ? systemd); true

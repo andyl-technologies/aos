@@ -102,6 +102,4 @@ in
   ];
   assert requests."systemd:aos-attest-dependencies".parameters.prerequisites
   == [(resultOf "systemd:package-profile-converged" "readiness-resource")];
-  assert enabled.config.systemd.providerUnitPlans == [];
-  assert enabled.config.systemd.providerManagerConfigurationPlans == [];
-  assert enabled.config.systemd.providerNetworkConfigurationPlans == []; true
+  assert !(enabled.config ? systemd); true
