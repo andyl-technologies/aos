@@ -102,6 +102,8 @@ MAX_RECOVERY_EXECUTABLE_BYTES = 128 * 1024 * 1024
 BOOT_READY_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 600
 REBOOT_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 720
 REBOOT_READY_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 420
+POWEROFF_TIMEOUT = 3600 if PLATFORM == "aarch64-linux" else 180
+PROCESS_STOP_TIMEOUT = 120 if PLATFORM == "aarch64-linux" else 20
 
 
 def canonical(value: Any) -> bytes:
@@ -557,7 +559,7 @@ class VirtualMachine:
     def power_cycle(self) -> None:
         response = self.ssh("systemctl poweroff", timeout=30, check=False)
         try:
-            self._wait_exit(180)
+            self._wait_exit(POWEROFF_TIMEOUT)
         except RuntimeError as error:
             raise RuntimeError(f"{error}\npoweroff request output:\n{response}") from error
 
@@ -605,10 +607,10 @@ class VirtualMachine:
             if process is not None and process.poll() is None:
                 process.terminate()
                 try:
-                    process.wait(timeout=20)
+                    process.wait(timeout=PROCESS_STOP_TIMEOUT)
                 except subprocess.TimeoutExpired:
                     process.kill()
-                    process.wait(timeout=20)
+                    process.wait(timeout=PROCESS_STOP_TIMEOUT)
         self.qemu = None
         self.swtpm = None
 
