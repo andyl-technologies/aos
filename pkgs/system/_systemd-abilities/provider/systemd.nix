@@ -54,6 +54,7 @@
   };
   managerWatchdogAlias = "systemd-manager-watchdog";
   managerWatchdogImplementation = "${packageName}:${managerWatchdogAlias}";
+  managerWatchdogInterface = lib.abilities.interfaces.managerWatchdog.interface;
   managerWatchdogEffectsInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-manager-watchdog-effects"
   );
@@ -479,7 +480,7 @@
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {
           name = entry.binding.slot;
           value = {
-            kind = "aos.systemd.manager-watchdog";
+            kind = managerWatchdogInterface.name;
             lifetime = "instance";
             value = entry.parameters;
           };
