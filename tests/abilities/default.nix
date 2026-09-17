@@ -362,6 +362,9 @@
   baseNetworkingNative = import ./base-networking-native.nix {
     inherit pkgs lib;
   };
+  eventLogPolicy = import ./event-log-policy.nix {
+    inherit pkgs lib;
+  };
   baseHardeningNative = import ./base-hardening-native.nix {
     inherit pkgs lib;
   };
@@ -615,6 +618,7 @@ in
   assert baseKernelNative;
   assert baseNixDbNative;
   assert baseNetworkingNative;
+  assert eventLogPolicy;
   assert baseHardeningNative;
   assert securityAuditNative;
   assert securityEbpfLsmNative;

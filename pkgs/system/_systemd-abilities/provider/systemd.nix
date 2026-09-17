@@ -76,6 +76,7 @@
   bootPreparationHandoffAlias = bootPreparationHandoff.alias;
   imageBuilderAlias = lib.abilities.interfaces.imageBuilder.interfaces.builder.alias;
   systemManagerAlias = lib.abilities.interfaces.systemManager.interfaces.manager.alias;
+  eventLogPolicyAlias = lib.abilities.interfaces.eventLogPolicy.interface.alias;
   serviceResourceFields = serviceManagement.types.serviceDeclaration._abilitySchema.fields;
   serviceImplementationNames = builtins.filter (featureName: let
     selected = allServiceInterfaces.${featureName};
@@ -1245,6 +1246,9 @@ in {
       };
       ${imageBuilderAlias} = {
         provide = provideImageBuilder;
+      };
+      ${eventLogPolicyAlias} = {
+        provide = _: emptyProvideResult;
       };
       ${implementationAlias} = {
         inherit provide compose;
