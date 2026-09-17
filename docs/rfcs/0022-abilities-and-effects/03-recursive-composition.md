@@ -51,9 +51,13 @@ authorized provider instance. The application uses the provider's public
 interface without inheriting its implementation handles:
 
 ```nix
-config.aos.abilities.requests."my-app.web" =
-  lib.abilities.request {
-    requirement = "package:my-app/web";
+config.aos.abilities = {
+  instances."my-app".configuration = {};
+
+  requests."my-app.web" = {
+    requirement = "my-app:web";
+    consumer = "my-app:my-app";
+    scope = [];
     parameters = {
       serverNames = ["app.example.com"];
       listen = [8080];
@@ -61,10 +65,12 @@ config.aos.abilities.requests."my-app.web" =
     };
   };
 
-config.aos.abilities.bindings."my-app.web" = {
-  implementation = "package:nginx/virtual-hosts";
-  providerInstance = "container:web/nginx:edge";
-  slot = "my-app";
+  bindings."my-app.web" = {
+    request = "my-app:my-app.web";
+    implementation = "nginx:virtual-hosts";
+    providerInstance = "nginx:edge";
+    slot = "my-app";
+  };
 };
 ```
 
@@ -74,68 +80,52 @@ context. Other topologies need an explicit endpoint binding and corresponding
 rendering. Names above stand for exact instance-qualified identities, not
 unrestricted global attribute paths.
 
-The following illustrates the authoring model supplied by `lib.abilities`.
-It intentionally abbreviates the concrete `requestSchema`, `outputs`,
-`methods`, lifecycle, and entry-point fields used by executable package
-definitions. Type values and rendering functions denote package-owned schema
-and pure rendering helpers. It shows the desired-state facet; credential
-binding and transition operations follow below.
+The package module declares the implementation directly in the typed option
+tree. The selected provider module supplies only its pure `provide`, `compose`,
+and `transition` functions; it does not redeclare the public contract. The
+following abbreviates the concrete method and schema fields:
 
 ```nix
-config.aos.abilities.implementations.virtualHosts =
-  lib.abilities.implementation {
-  interface = "nginx.virtual-host";
-  abi = 1;
-  requestType = virtualHostContributionType;
-  resultType = virtualHostResultsType;
+config.aos.abilities.implementations.virtual-hosts = {
+  description = "Composes authorized nginx virtual-host contributions.";
+  interface = "virtual-host";
+  methods = ["observe"];
+  guarantees = [];
+  requirements = {
+    configuration = configurationRequirement;
+    service-manager = serviceManagerRequirement;
+    execution = validationRequirement;
+  };
+  providerModule = {
+    artifact = lib.abilities.packageOutput { output = "module"; };
+    path = "provider.nix";
+  };
+  desiredType = virtualHostRealizationType;
+};
 
-  aggregation = {
-    scope = "provider-instance";
-    key = "authorized-slot";
-    conflicts = "reject";
+# provider.nix, loaded only after this implementation is selected
+config.aos.abilities.implementations.virtual-hosts = {
+  provide = { requests, ... }: {
+    requests = {};
+    outputs = describeVirtualHosts requests;
+    resourceFragments = renderVirtualHostResources requests;
   };
 
-  requires = {
-    configuration = {
-      interface = "managed-files.configuration";
-      abi = 1;
-    };
-
-    serviceManager = {
-      interface = "systemd.service";
-      abi = 1;
-    };
-
-    execution = {
-      interface = "process.validation";
-      abi = 1;
-    };
-  };
-
-  compose = { requests, bindings, instance }: let
-    configuration = lib.abilities.resultOf
-      "configuration" "publishedConfiguration";
-  in {
-    requests.configuration = {
-      through = bindings.configuration;
-      parameters = {
-        owner = instance.resourceOwner;
-        files = renderVirtualHosts requests;
+  compose = { requests, resources, children, ... }: {
+    requests = {
+      configuration = {
+        requirement = "configuration";
+        scope = ["configuration"];
+        slot = "nginx";
+        parameters = {
+          files = renderVirtualHosts requests;
+        };
       };
     };
-
-    requests.service = {
-      through = bindings.serviceManager;
-      parameters = {
-        name = instance.serviceName;
-        executable = "${nginx}/bin/nginx";
-        configuration = configuration;
-      };
-    };
-
-    outputs.virtualHosts = describeVirtualHosts requests;
+    outputs = projectVirtualHostOutputs requests children;
+    realizations = realizeVirtualHosts resources children;
   };
-  };
+};
 ```
 
 This definition appears once in nginx's package ability module. Its normalized
@@ -174,8 +164,8 @@ resolution supplies equivalent exact instance-qualified bindings.
 
 The nginx author refers to interface aliases, not ambient package names or
 unchecked global `config` paths. A binding may constrain an exact implementation
-when its semantics are necessary. Adding `requires` does not import a module
-from the network or authorize its use.
+when its semantics are necessary. Adding a named implementation requirement
+does not import a module from the network or authorize its use.
 
 ## Nix values and results have different phases
 
@@ -254,52 +244,29 @@ cannot be an undeclared root command. A candidate-validation failure prevents
 publication. A reload failure after publication records the new configuration
 and a failed or uncertain service transition.
 
-For an already-running instance whose configuration changes, an illustrative
-transition constructor has this shape. It is another facet of the export
-definition above; initial activation, deletion, and payload changes need their
-own cases. Helper names and method schemas remain proposed API:
+For an already-running instance whose configuration changes, the selected
+provider returns the standard transition-fragment record. Package-local
+helpers may construct the checked operation records, but there is no second
+effects DSL or evaluator:
 
 ```nix
-transition = { changes, resources, bindings, ... }:
-  lib.effects.when changes.configuration (
-    lib.effects.graph {
-      candidate = lib.effects.invoke resources.configuration "prepare" {
-        revision = changes.desiredRevision;
-      };
-
-      validate = lib.effects.invoke bindings.execution "validate" {
-        executable = "${nginx}/bin/nginx";
-        candidate = lib.effects.result "candidate" "configuration";
-      };
-
-      publish = lib.effects.after ["validate"] (
-        lib.effects.invoke resources.configuration "publish" {
-          candidate = lib.effects.result "candidate" "configuration";
-        }
-      );
-
-      reload = lib.effects.after ["publish"] (
-        lib.effects.invoke resources.service "reload" {}
-      );
-
-      ready = lib.effects.after ["reload"] (
-        lib.effects.invoke resources.service "awaitReady" {
-          revision = lib.effects.result "publish" "revision";
-        }
-      );
-    }
-  );
+transition = context:
+  lib.abilities.transitionFragment {
+    operations = operationsFor context;
+    edges = requiredSuccessEdgesFor context;
+    imports = resultImportsFor context;
+    links = resultLinksFor context;
+  };
 ```
 
-`resources` contains typed references to the resources from this instance's
-child requests; it is not an ambient resource lookup. `invoke` checks the
-selected interface method and allowed resource scope. `result` adds a typed
-data dependency, and `after` requires successful completion rather than merely
-scheduling one operation later. The operation implementations supply their
-declared preconditions, retry, completion, and recovery semantics. The full
-nginx implementation also supplies credential views, validation arguments,
-and a readiness check that can establish the claimed revision; a manager's
-reload acknowledgement alone is insufficient.
+Each operation names its exact checked binding, interface method, target
+resource, accesses, deadline, recovery behavior, and typed inputs. An edge of
+kind `required-success` makes publication, reload, or readiness depend on the
+successful predecessor. Imports and links carry typed results between
+operations without exposing a runtime value to Nix evaluation. The full nginx
+implementation also supplies credential views, validation arguments, and a
+readiness check that can establish the claimed revision; a manager's reload
+acknowledgement alone is insufficient.
 
 The transition constructor receives a bounded snapshot of inputs available at
 planning time. A later health result is not a value Nix can read while building
