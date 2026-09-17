@@ -212,6 +212,14 @@ in {
   };
 
   config = lib.mkIf selected {
+    aos.contributions.kernelParameters.systemd-manager = [
+      "systemd.unified_cgroup_hierarchy=1"
+      "systemd.gpt-auto=0"
+      "systemd.mask=systemd-boot-random-seed.service"
+      "systemd.mask=systemd-boot-update.service"
+      "systemd.mask=systemd-bless-boot.service"
+    ];
+
     # The selected initrd manager owns its package implementations. Security
     # policy contributes only provider-neutral intent; it does not select a
     # manager or a TPM token format from the generic secure-boot module.

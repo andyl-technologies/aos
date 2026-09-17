@@ -15,7 +15,6 @@
   cfg = config.aos.pam;
   parentConfig = config;
   sessionTracking = lib.abilities.interfaces.loginSessionTracking.interface;
-  needsSessionTracking = builtins.any (service: service.startSession) (builtins.attrValues cfg.services);
 
   autoOrderRules = rules:
     lib.pipe rules [
@@ -345,7 +344,7 @@ in {
 
   config = lib.mkMerge [
     {aos.pam.services = config.aos.contributions.pamServices;}
-    (lib.mkIf (cfg.enable && needsSessionTracking) {
+    (lib.mkIf cfg.enable {
       aos.abilities = {
         instances."pam:session" = {};
         requirementTemplates."pam:login-session-tracking" = {

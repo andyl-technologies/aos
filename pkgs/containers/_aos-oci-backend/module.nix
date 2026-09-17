@@ -25,7 +25,8 @@
     else if selectedBinding.binding.request != "system:artifact-backend"
     then throw "the OCI artifact backend implementation requires the system:artifact-backend request"
     else
-      config.aos.abilities.environment != null
+      config.aos.abilities.environment
+      != null
       && config.aos.abilities.environment.stage == "host";
   providerReady =
     selected
@@ -120,14 +121,17 @@
         inherit oci;
       };
   };
-  backend =
-    if !selected
-    then null
-    else if
-      selectedBackendOutput != null
-      && selectedBackendOutput == backendArtifact
-    then authoredBackend // {artifact = selectedBackendOutput;}
-    else throw "selected artifact backend projection differs from its checked planning output";
+  backendProjectionReady =
+    selectedBackendOutput
+    != null
+    && selectedBackendOutput == backendArtifact;
+  checkedProviderReady =
+    providerReady
+    && (
+      if backendProjectionReady
+      then true
+      else throw "selected artifact backend projection differs from its checked planning output"
+    );
 in {
   options = {
     aos.containers = {
@@ -170,7 +174,7 @@ in {
       };
     };
 
-    aos.artifacts.backend = lib.mkIf providerReady backend;
+    aos.artifacts.backend = lib.mkIf checkedProviderReady (authoredBackend // {artifact = selectedBackendOutput;});
     aos.containers = lib.mkIf selected {
       enable = true;
       default = "aos";

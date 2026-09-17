@@ -66,19 +66,8 @@
   requests = evaluated: (abilities evaluated).requests;
   releaseCoordinatorRequests = evaluated:
     lib.filterAttrs
-    (_: request:
-      request.package == "aos"
-      && !(builtins.elem request.localKey packageProfileRequestKeys))
+    (_: request: request.consumer == "aos:release-coordinator")
     (requests evaluated);
-  packageProfileRequestKeys = [
-    "package-profile-convergence-conditions"
-    "package-profile-convergence-dependencies"
-    "package-profile-convergence-environment"
-    "package-profile-convergence-isolation"
-    "package-profile-convergence-lifecycle"
-    "package-profile-convergence-linux_isolation"
-    "package-profile-convergence-readiness"
-  ];
   request = name: (requests enabled)."aos:${name}".parameters;
   assertionsHold = evaluated:
     builtins.all (assertion: assertion.assertion) evaluated.config.assertions;

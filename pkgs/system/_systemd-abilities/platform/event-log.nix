@@ -1,4 +1,4 @@
-##! Systemd implementation of the provider-neutral event-log policy.
+##! Selected systemd projection of the provider-neutral event-log policy.
 {
   abilitySelection ? null,
   lib,
@@ -24,21 +24,5 @@
     then {}
     else import ./_event-log-configuration.nix {inherit policy;};
 in {
-  config = lib.mkMerge [
-    {
-      aos.abilities.implementations.${interface.alias} = {
-        description = "Realizes provider-neutral event-log policy through systemd-journald.";
-        interface = interface.identity;
-        artifact = lib.abilities.packageOutput {};
-        methods = [];
-        guarantees = [];
-        providerModule = {
-          artifact = lib.abilities.packageOutput {output = "module";};
-          path = "provider/systemd.nix";
-        };
-        requiredFeatures = [];
-      };
-    }
-    (lib.mkIf (selected != null) {environment.etc = configuration;})
-  ];
+  config = lib.mkIf (selected != null) {environment.etc = configuration;};
 }

@@ -39,6 +39,8 @@
     modules = [
       lib.abilities.module
       ../../modules/base/_kernel-parameter-contributions.nix
+      ../../modules/base/_manager-contributions.nix
+      ../../modules/image/_platform.nix
       {
         options.system.build.staticAbilityContract = lib.mkOption {
           type = lib.types.package;
@@ -102,7 +104,8 @@
     lifetime = "persistent";
   };
 in
-  assert provided.outputs."consumer:package-store-read-view" == {
+  assert provided.outputs."consumer:package-store-read-view"
+  == {
     inherit locator;
     read-view-resource = expectedResource;
   };

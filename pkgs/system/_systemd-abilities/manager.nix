@@ -128,13 +128,17 @@
       };
     };
   };
-  manager =
-    if
-      selectedManagerOutput
-      != null
-      && selectedManagerOutput == managerArtifact
-    then authoredManager
-    else throw "selected system manager projection differs from its checked planning output";
+  managerProjectionReady =
+    selectedManagerOutput
+    != null
+    && selectedManagerOutput == managerArtifact;
+  checkedProviderReady =
+    providerReady
+    && (
+      if managerProjectionReady
+      then true
+      else throw "selected system manager projection differs from its checked planning output"
+    );
 in {
   config = {
     aos.abilities = {
@@ -151,6 +155,6 @@ in {
       };
     };
 
-    aos.manager.selected = lib.mkIf providerReady manager;
+    aos.manager.selected = lib.mkIf checkedProviderReady authoredManager;
   };
 }

@@ -1,9 +1,6 @@
 ##! modules/base/boot.nix — Boot configuration module
 ##!
-##! Configures kernel command line parameters and the systemd-based
-##! initrd. The image builder composes these into a Unified Kernel
-##! Image and drops it onto a 512 MiB ESP alongside sd-boot; no
-##! per-generation loader entries, no syslinux/grub fallbacks.
+##! Configures provider-neutral kernel command line and initial runtime inputs.
 ##!
 ##! The UKI's .cmdline section is baked into a signed binary, so
 ##! changes to `aos.boot.kernelParams` require an image rebuild (not
@@ -68,39 +65,22 @@ in {
       '';
     };
 
-    ## sd-boot boot-counting tries for durable image rollback.
-    ##
-    ## When non-null, the UKI staged into the ESP is named with the sd-boot
-    ## tries-suffix `aos-generation-<number>+<tries>.efi`. sd-boot decrements the
-    ## counter on each boot attempt and auto-demotes (`+0-<tries>`) a UKI that
-    ## fails to boot, so a bad new image falls back to the other A/B slot
-    ## without operator action. Staging clears any exact persistent default so
-    ## the `default aos-*.efi` loader pattern can sort the exhausted entry
-    ## behind the known-good slot. Explicit rollback to an older good slot uses
-    ## `bootctl set-default` at runtime.
-    ##
-    ## The default of three attempts enables automatic fallback on every image.
-    ## `null` is retained only as an explicit compatibility escape hatch.
-    bootCountingTries = lib.mkOption {
+    ## Maximum attempts before a selected boot implementation demotes an image.
+    bootAttemptLimit = lib.mkOption {
       type = lib.types.nullOr lib.types.int;
       default = 3;
       description = ''
-        sd-boot boot-counting tries suffix for durable image rollback. When
-        set to N, the ESP UKI is named
-        `aos-generation-<number>+N.efi`; sd-boot assesses the boot and demotes a
-        UKI that fails to start, falling back to the other A/B slot. Staging
-        relies on the loader's `aos-*.efi` pattern while explicit rollback uses
-        `bootctl set-default`. Set `null` only for compatibility with boot
-        managers that lack boot counting.
+        Maximum number of attempts before the selected image and boot manager
+        implementation demotes a deployment. Null disables attempt counting.
       '';
     };
 
     initrd = {
-      ## Whether to generate a systemd-based initrd.
+      ## Whether to generate an initial runtime image.
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Whether to generate a systemd-based initrd (initial ramdisk).";
+        description = "Whether to generate the selected initial runtime image.";
       };
 
       ## Kernel modules to include in the initrd.
@@ -216,51 +196,16 @@ in {
       ++ config.aos.boot.initrd.nonPackageRuntimeArtifacts
     ));
 
-    # Base kernel command line — always present.
-    aos.boot.kernelParams = [
-      "console=ttyS0,115200"
-      "console=tty0"
-      "systemd.unified_cgroup_hierarchy=1"
-      # Turn off systemd-gpt-auto-generator — it synthesises .swap /
-      # .mount units at boot with `ExecStart=/usr/sbin/swapon`, a path
-      # AOS's rootfs doesn't populate. AOS owns swap (cryptswap.service)
-      # and root (root=/dev/disk/by-partlabel/root-a → systemd-fstab-
-      # generator) explicitly, so there's nothing for the auto-generator
-      # to contribute that's not already covered. Both `systemd.gpt-auto=`
-      # (hyphenated) and `systemd.gpt_auto=` (underscored) are accepted
-      # by systemd's parameter parser; ship the hyphenated spelling to
-      # match the upstream man page.
-      "systemd.gpt-auto=0"
-      # root= + ro for systemd-fstab-generator. The UKI's baked
-      # cmdline is the only cmdline the kernel sees (sd-boot passes
-      # no kargs of its own), so without an explicit root= systemd
-      # cannot synthesise sysroot.mount. Partition labels are stable
-      # across disk renaming (vda vs. nvme0n1) and match what the
-      # image builder writes via sfdisk (name="root-a"). Driven off
-      # `aos.filesystems.rootDevice` (default = the root-a partlabel, so
-      # unchanged) so dm-verity (modules/security/verity.nix) can retarget
-      # it to /dev/mapper/root by setting rootDevice — no mkForce surgery.
-      "root=${config.aos.filesystems.rootDevice}"
-      "ro"
-      # Mask systemd-boot-random-seed.service: with efivarfs now built-in
-      # (CONFIG_EFIVAR_FS=y, base.config) its ConditionPathExists is met,
-      # so it activates and then fails trying to write /loader/random-seed
-      # to the read-only ESP. AOS images are immutable and don't maintain
-      # an sd-boot random seed, so mask it rather than leave a failed unit
-      # on every UEFI boot (RFC-0006).
-      "systemd.mask=systemd-boot-random-seed.service"
-      # Same immutable-ESP rationale: the image builder owns sd-boot and
-      # UKI placement, so the guest must not attempt a runtime bootloader
-      # update and leave systemd-boot-update.service failed.
-      "systemd.mask=systemd-boot-update.service"
-      # The stock blessing service runs as soon as systemd considers boot
-      # complete. AOS instead keeps a counted image pending until
-      # host policy has evaluated, activated, and produced its attestation;
-      # aos-image-boot-commit performs that delayed blessing explicitly.
-      "systemd.mask=systemd-bless-boot.service"
-    ]
-    ++ lib.concatMap (name: config.aos.contributions.kernelParameters.${name})
-    (builtins.attrNames config.aos.contributions.kernelParameters);
+    # Provider-neutral kernel command line intent.
+    aos.boot.kernelParams =
+      [
+        "console=ttyS0,115200"
+        "console=tty0"
+        "root=${config.aos.filesystems.rootDevice}"
+        "ro"
+      ]
+      ++ lib.concatMap (name: config.aos.contributions.kernelParameters.${name})
+      (builtins.attrNames config.aos.contributions.kernelParameters);
 
     aos.boot.initrd.loadModules = lib.mkDefault (
       lib.filter (
@@ -269,11 +214,10 @@ in {
       config.aos.boot.initrd.modules
     );
 
-    # systemd-initrd kernel modules configuration.
-    # Written to /etc/initrd-modules.conf for the image builder.
+    # Initial-runtime kernel module manifest consumed by the selected builder.
     environment.etc."initrd-modules.conf" = lib.mkIf config.aos.boot.initrd.enable {
       text = ''
-        # Kernel modules to include in the systemd-based initrd.
+        # Kernel modules to include in the selected initial runtime.
         # Generated by modules/base/boot.nix
         ${builtins.concatStringsSep "\n" config.aos.boot.initrd.modules}
       '';

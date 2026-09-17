@@ -131,7 +131,7 @@ in
   assert packageContract.package_module
   == {
     artifact = {
-      package = "self";
+      package = "zram-generator";
       output = "module";
     };
     path = "module.nix";
@@ -237,19 +237,17 @@ in
       reload_triggers = [
         {
           _type = "aos-request-output-reference";
-          request = "zram-generator:zram-generator-executable";
+          request = "zram-generator:zram-generator-configuration";
           output = "planned-path";
         }
         {
           _type = "aos-request-output-reference";
-          request = "zram-generator:zram-generator-configuration";
+          request = "zram-generator:zram-generator-executable";
           output = "planned-path";
         }
       ];
       search_path = [(lib.abilities.packageOutput {package = "util-linux";})];
     };
   };
-  assert baseline.config.systemd.providerUnitPlans == [];
-  assert baseline.config.systemd.providerManagerConfigurationPlans == [];
-  assert baseline.config.systemd.providerNetworkConfigurationPlans == [];
+  assert !(baseline.config ? systemd);
   assert !(baseline.config.aos ? kernel); true

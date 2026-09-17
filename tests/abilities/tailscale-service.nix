@@ -99,7 +99,7 @@ in
   assert packageContract.package_module
   == {
     artifact = {
-      package = "self";
+      package = "tailscale";
       output = "module";
     };
     path = "module.nix";

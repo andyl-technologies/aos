@@ -15,7 +15,8 @@
     then []
     else abilitySelection.bindingsForImplementation "kernel";
   selected =
-    builtins.length selectedBindings == 1
+    builtins.length selectedBindings
+    == 1
     && (builtins.head selectedBindings).binding.request == "system:kernel";
   selectedBinding =
     if selected
@@ -50,12 +51,17 @@
       release = packageVersion;
     };
   };
-  kernel =
-    if
-      selectedKernelOutput != null
-      && selectedKernelOutput == kernelArtifactSelector
-    then authoredKernel
-    else throw "selected kernel projection differs from its checked planning output";
+  kernelProjectionReady =
+    selectedKernelOutput
+    != null
+    && selectedKernelOutput == kernelArtifactSelector;
+  checkedProviderReady =
+    providerReady
+    && (
+      if kernelProjectionReady
+      then true
+      else throw "selected kernel projection differs from its checked planning output"
+    );
 in {
   config = {
     aos.abilities = {
@@ -72,6 +78,6 @@ in {
       };
     };
 
-    aos.kernel.selected = lib.mkIf providerReady kernel;
+    aos.kernel.selected = lib.mkIf checkedProviderReady authoredKernel;
   };
 }
