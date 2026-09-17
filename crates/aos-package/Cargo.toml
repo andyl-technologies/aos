@@ -43,7 +43,6 @@ base64 = { workspace = true }
 humantime = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
-rnix = { workspace = true }
 clap = { workspace = true }
 semver = { workspace = true }
 zstd = { workspace = true }
