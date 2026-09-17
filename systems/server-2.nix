@@ -53,7 +53,10 @@
       then 960
       else 832;
 
-    # The AArch64 VHD reaches 813 MiB with the generation-two fixture payload.
+    # The x86_64 VHD reaches 768.19 MiB with the generation-two fixture payload.
+    maxDownloadMiB = 800;
+
+    # The AArch64 VHD reaches 813 MiB with the same payload.
     maxConvertedDownloadMiB =
       lib.mkIf
       (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64")
