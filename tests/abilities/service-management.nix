@@ -789,7 +789,7 @@
           text = "rootpw {CLEARTEXT}";
         }
         {
-          kind = "artifact-path";
+          kind = "artifact-file-path";
           reference = {
             artifact = lib.abilities.packageOutput {};
             path = "etc/openldap/schema/core.schema";

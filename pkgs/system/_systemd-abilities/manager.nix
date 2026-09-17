@@ -136,17 +136,6 @@
     then authoredManager
     else throw "selected system manager projection differs from its checked planning output";
 in {
-  # Package imports are a static ownership declaration. Exact binding
-  # selection gates their contributed values without making import discovery
-  # depend on the module fixed point.
-  imports = [
-    ./platform/system.nix
-    ./platform/initrd.nix
-    ./platform/nsswitch.nix
-    ./platform/presets.nix
-    ./platform/users.nix
-  ];
-
   config = {
     aos.abilities = {
       implementations.system-manager = {

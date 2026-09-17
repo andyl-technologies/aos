@@ -51,8 +51,8 @@
       builder = lib.mkOption {
         type = strictSubmodule {
           artifact = lib.mkOption {
-            type = lib.abilities.types.artifactReference;
-            description = "Authenticated selected image-builder package.";
+            type = lib.abilities.types.artifactSelector;
+            description = "Symbolic output selector for the authenticated image-builder package.";
           };
           name = lib.mkOption {
             type = lib.types.nonEmptyStr;
@@ -126,8 +126,8 @@
         description = "Selected image-builder record discriminator.";
       };
       artifact = lib.mkOption {
-        type = lib.abilities.types.artifactReference;
-        description = "Checked planning output that authenticates the selected package.";
+        type = lib.abilities.types.artifactSelector;
+        description = "Checked symbolic output selector for the selected package.";
       };
       build = lib.mkOption {
         type = lib.types.functionTo lib.types.attrs;
@@ -151,8 +151,7 @@
       };
     };
   }) (value:
-    value.artifact.store_path == builtins.toString value.package
-    && safeRelativePath value.normalArtifactPath
+    safeRelativePath value.normalArtifactPath
     && value.identity.builder.artifact == value.artifact
     && value.identity.builder.name == value.name
     && value.identity.boot."normal-artifact-path" == value.normalArtifactPath);

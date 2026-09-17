@@ -933,7 +933,7 @@
                         }
                         // (
                           if packageIdentity ? packageArtifactFor
-                          then {inherit (packageIdentity) packageArtifactFor;}
+                          then {inherit (packageIdentity) packageArtifactFor packageFor;}
                           else {}
                         )
                     );
@@ -1014,17 +1014,42 @@
             || (selector._type or null) != "aos-package-output-selector"
           then throw "evalModules: package '${package}' requested an invalid package-output selector"
           else builtins.removeAttrs selector ["_type"];
-        key = builtins.toJSON checked;
-        selectsOwnDefault =
-          builtins.elem checked.package ["self" package]
-          && checked.output == "out";
+        selected =
+          checked
+          // {
+            package =
+              if checked.package == "self"
+              then package
+              else checked.package;
+          };
+        key = builtins.toJSON selected;
+        selectsOwnDefault = selected.package == package && selected.output == "out";
       in
         outputs.dependencies.${key}
         or (
           if selectsOwnDefault
           then outputs.self
-          else throw "evalModules: package '${package}' requested artifact ${builtins.toJSON checked} outside its authenticated dependency view"
+          else throw "evalModules: package '${package}' requested artifact ${builtins.toJSON selected} outside its authenticated dependency view"
         );
+
+      packageFor = package: outputs: selector: let
+        artifact = packageArtifactFor package outputs selector;
+        selectedName =
+          if builtins.elem selector.package ["self" package]
+          then package
+          else selector.package;
+        selectedPackage =
+          pkgs.${selectedName}
+          or (throw "evalModules: package '${package}' selected unknown package '${selectedName}'");
+        defaultOutput = selectedPackage.outputName or "out";
+      in
+        if selector.output != defaultOutput
+        then throw "evalModules: package '${package}' requested package metadata for non-default output '${selector.output}'"
+        else if !builtins.isAttrs selectedPackage || !(selectedPackage ? outPath)
+        then throw "evalModules: authenticated package '${selectedName}' has no native package record"
+        else if builtins.toString selectedPackage != builtins.toString artifact
+        then throw "evalModules: authenticated package '${selectedName}' differs from its selected artifact"
+        else selectedPackage;
 
       validatedPackageModules = builtins.map (record: let
         keys =
@@ -1110,6 +1135,7 @@
         collectModules "package:${record.name}" record.configRoot record.outputs {
           inherit (record) name version;
           packageArtifactFor = packageArtifactFor record.name record.outputs;
+          packageFor = packageFor record.name record.outputs;
         }
         true [record.module])
       validatedPackageModules);
@@ -1122,6 +1148,7 @@
         {
           inherit (record) name version;
           packageArtifactFor = packageArtifactFor record.name record.outputs;
+          packageFor = packageFor record.name record.outputs;
         }
         true
         [record.module])
@@ -1140,16 +1167,109 @@
       # Enumerate the concrete leaf paths authored by each package module.
       # Authority is derived from declarations in this graph, while imports
       # retain the parent's resolver stamp. A forged `_file` is irrelevant.
-      configLeafPaths = path: value:
+      # Walk both branches structurally without forcing `mkIf` conditions:
+      # those conditions may depend on the configuration fixed point, while
+      # authorship must reject an unauthorized path even when it is inactive.
+      submoduleDeclaresImmediateEnable = optionType: let
+        elementType = optionType._elementType or null;
+        moduleSpec =
+          if elementType != null
+          then elementType._submodule or null
+          else null;
+        modules =
+          if builtins.isList moduleSpec
+          then moduleSpec
+          else lists.optional (moduleSpec != null) moduleSpec;
+        declaresEnable = module: let
+          evaluated = builtins.tryEval (
+            if builtins.isFunction module
+            then module {
+              config = {};
+              options = {};
+              inherit lib pkgs;
+              name = "<authorship-entry>";
+            }
+            else module
+          );
+          declaredOptions =
+            if evaluated.success && builtins.isAttrs evaluated.value
+            then evaluated.value.options or {}
+            else {};
+        in
+          builtins.hasAttr "enable" declaredOptions;
+      in
+        builtins.any declaresEnable modules;
+
+      contributionEntryPaths = detectNestedEnable: path: name: value:
         if isMkIf value
         then
-          if value._condition
+          if enableAbilitySelection
+          then contributionEntryPaths detectNestedEnable path name value._value
+          else []
+        else if isMkMerge value
+        then builtins.concatLists (builtins.map (contributionEntryPaths detectNestedEnable path name) value._values)
+        else if isOverride value || isOrder value
+        then contributionEntryPaths detectNestedEnable path name value._value
+        else if detectNestedEnable && builtins.isAttrs value && value ? enable
+        then [(path ++ [name "enable"])]
+        else [(path ++ [name])];
+
+      contributionPaths = detectNestedEnable: path: value:
+        if isMkIf value
+        then
+          if enableAbilitySelection
+          then contributionPaths detectNestedEnable path value._value
+          else []
+        else if isMkMerge value
+        then builtins.concatLists (builtins.map (contributionPaths detectNestedEnable path) value._values)
+        else if isOverride value || isOrder value
+        then contributionPaths detectNestedEnable path value._value
+        else if builtins.isAttrs value
+        then
+          builtins.concatLists (builtins.map
+            (name: contributionEntryPaths detectNestedEnable path name value.${name})
+            (builtins.attrNames value))
+        else [path];
+
+      configLeafPaths = path: value: let
+        key = builtins.concatStringsSep "." path;
+        declaration =
+          if path != [] && optionMap ? ${key}
+          then optionMap.${key}
+          else null;
+        documentType =
+          if declaration != null
+          then declaration.option.type._aosDocType or {}
+          else {};
+        containsNamedContributions = (documentType.kind or null) == "attrs-of";
+        detectsNestedEnable =
+          declaration != null
+          && containsNamedContributions
+          && submoduleDeclaresImmediateEnable declaration.option.type;
+      in
+        # A declared option is one authored leaf unless it is an attribute-set
+        # contribution surface. Those dynamic entries must remain visible so
+        # packages cannot hide writes to nested foreign `enable` options.
+        if declaration != null
+        then
+          if containsNamedContributions
+          then contributionPaths detectsNestedEnable path value
+          else [path]
+        else if isMkIf value
+        then
+          if enableAbilitySelection
           then configLeafPaths path value._value
           else []
         else if isMkMerge value
         then builtins.concatLists (builtins.map (configLeafPaths path) value._values)
         else if isOverride value || isOrder value
         then configLeafPaths path value._value
+        # Derivations and package-like output records are option leaves even
+        # though Nix represents them as attribute sets. Walking their internal
+        # graph would confuse implementation metadata with authored config and
+        # can recurse through cyclic package sets.
+        else if builtins.isAttrs value && (value ? outPath || (value.type or null) == "derivation")
+        then [path]
         else if builtins.isAttrs value
         then
           builtins.concatLists (builtins.map

@@ -83,6 +83,7 @@
       pkgs.mariadb
       pkgs.garage
       pkgs.krb5
+      pkgs.systemd
     ];
   };
   requests = fixedPoint.config.aos.abilities.requests;

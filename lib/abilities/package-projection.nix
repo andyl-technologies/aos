@@ -21,7 +21,16 @@
     if declaration.package == packageName && declaration.localKey != null
     then declaration.localKey
     else throw "Package '${packageName}' cannot project foreign ${collection} declaration '${name}'.";
-  selector = value: builtins.removeAttrs value ["_type"];
+  selector = value: let
+    selected = builtins.removeAttrs value ["_type"];
+  in
+    selected
+    // {
+      package =
+        if selected.package == "self"
+        then packageName
+        else selected.package;
+    };
   defaultArtifact = abilities.packageOutput {};
   implementationNames = ownedNames evaluated.implementations;
   structuredEffects = builtins.any (name: let

@@ -149,4 +149,4 @@ in
   };
   assert portableOptionTree enabled.options.aos.services.zfsAutoSnapshot;
   assert portableOptionTree enabled.options.aos.filesystems.zfs;
-  assert !(enabled.config ? systemd); true
+  assert enabled.config.systemd.services == {}; true

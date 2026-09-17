@@ -15,7 +15,7 @@
       lifetime = "persistent";
       visibility = "protected";
       description = "References the authenticated package selected to realize immutable image artifacts.";
-      schema = types.artifactReference;
+      schema = types.artifactSelector;
     };
     methods = {};
     lifecycle.persistentDeleteMethod = null;
