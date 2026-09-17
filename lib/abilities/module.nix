@@ -1295,7 +1295,7 @@
     identityKeyFor "aos.ability.resource-id-key/v1" resource;
   isResourceReference = value:
     builtins.isAttrs value
-    && typeAccepts abilityTypes.resourceReference value;
+    && abilityTypes.resolvedResourceReference.check value;
 
   bindingForPublishedRequest = requestName: let
     matching =
