@@ -41,10 +41,9 @@ pub use package_contract::{
     package_uses_effects,
 };
 pub use package_projection::{
-    CONFIG_ARTIFACT_SELECTOR_MARKER, ConfigArtifactSelector, InterfaceDocumentProjection,
-    PACKAGE_OUTPUT_SELECTOR_MARKER, PACKAGE_PROJECTION_SCHEMA, PackageAbilityProjection,
-    PackageOutputSelector, ResolvedPackageOutput, decode_package_projection,
-    resolve_artifact_selectors, resolve_package_projection,
+    InterfaceDocumentProjection, PACKAGE_OUTPUT_SELECTOR_MARKER, PACKAGE_PROJECTION_SCHEMA,
+    PackageAbilityProjection, PackageOutputSelector, ResolvedPackageOutput,
+    decode_package_projection, resolve_artifact_selectors, resolve_package_projection,
 };
 pub use schema::{SchemaPath, validate_schema, validate_value};
 pub use static_contract::{

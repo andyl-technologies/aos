@@ -27,7 +27,7 @@ use aos_ability_plan::{
     SourceStageStaticContract, TransitionPlanner,
 };
 use aos_ability_validate::{
-    BindingValidationInputs, ConfigArtifactSelector, PackageOutputSelector, ValidationContext,
+    BindingValidationInputs, PackageOutputSelector, ValidationContext,
     package_source_supported_features, resolve_artifact_selectors,
 };
 use aos_contract::Sha256Digest;
@@ -288,28 +288,19 @@ fn resolve_fixed_point_artifacts(
 ) -> Result<()> {
     fn resolve(value: &mut AbilityValue, catalog: &SourceCatalog) -> Result<()> {
         let mut json = value.as_json().clone();
-        resolve_artifact_selectors(
-            &mut json,
-            |selector| {
-                catalog
-                    .package_outputs
-                    .get(selector)
-                    .cloned()
-                    .with_context(|| {
-                        format!(
-                            "source fixed point references unresolved package output ({}, {})",
-                            selector.package.as_str(),
-                            selector.output.as_str()
-                        )
-                    })
-            },
-            |selector: &ConfigArtifactSelector| {
-                bail!(
-                    "source fixed point references unresolved configuration artifact {:?}",
-                    selector.name
-                )
-            },
-        )?;
+        resolve_artifact_selectors(&mut json, |selector| {
+            catalog
+                .package_outputs
+                .get(selector)
+                .cloned()
+                .with_context(|| {
+                    format!(
+                        "source fixed point references unresolved package output ({}, {})",
+                        selector.package.as_str(),
+                        selector.output.as_str()
+                    )
+                })
+        })?;
         *value = AbilityValue::new(json)?;
         Ok(())
     }

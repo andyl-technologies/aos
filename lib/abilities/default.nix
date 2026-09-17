@@ -974,13 +974,6 @@ in rec {
     output = requireLocalKey "package output output" (checked.output or "out");
   };
 
-  configArtifact = args: let
-    checked = requireAttrs "configuration artifact selector" ["name"] args;
-  in {
-    _type = "aos-config-artifact-selector";
-    name = requireLocalKey "configuration artifact name" checked.name;
-  };
-
   environmentId = args: let
     checked = requireAttrs "environment identity" ["authority" "key" "stage"] args;
   in {
