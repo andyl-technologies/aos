@@ -200,15 +200,25 @@
     '')
     (builtins.length retainedBootReferences));
   runtimeRootPaths = map builtins.toString runtimeRoots;
+  validRuntimeRoot = root: let
+    path = builtins.toString root;
+  in
+    builtins.match "/nix/store/[0-9a-z]+-[^/]+" path
+    != null
+    && (
+      (builtins.isAttrs root && root ? outPath)
+      || builtins.isPath root
+      || (builtins.isString root && builtins.getContext root != {})
+    );
   checkedRuntimeRoots =
     if
       platformMode
-      && lib.all (root: builtins.isAttrs root && root ? outPath) runtimeRoots
+      && lib.all validRuntimeRoot runtimeRoots
       && builtins.length runtimeRootPaths == builtins.length (lib.unique runtimeRootPaths)
     then runtimeRoots
     else if combinedMode
     then []
-    else common.fail "static ability contract runtimeRoots must contain unique derivations";
+    else common.fail "static ability contract runtimeRoots must contain unique retained store objects";
   validated =
     if platformMode || combinedMode
     then

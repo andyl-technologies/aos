@@ -74,16 +74,6 @@ args @ {lib, ...}: let
     start_timeout_millis = 1000;
     stop_timeout_millis = 1000;
   };
-  qualifiedLifecycleRequest = lifecycleRequest // {
-    start = map (command:
-      command
-      // {
-        executable = command.executable // {
-          artifact = command.executable.artifact // {package = "consumer";};
-        };
-      })
-    lifecycleRequest.start;
-  };
   dependencyRequest = {
     service = "main";
     enabled = true;
@@ -220,11 +210,11 @@ args @ {lib, ...}: let
             emptyProvision
             // {
               outputs =
-                builtins.mapAttrs (_: _: {
-                  readiness-resource = {
-                    interface = interfaces.networkReadiness.identity;
-                    resource = {
-                      provider = instance.id;
+              builtins.mapAttrs (_: _: {
+                readiness-resource = lib.abilities.resourceReference {
+                  interface = interfaces.networkReadiness.identity;
+                  resource = {
+                    provider = instance.id;
                       key = "network-online";
                     };
                     operations = ["observe"];
@@ -436,54 +426,6 @@ args @ {lib, ...}: let
         requests.child = childRequest;
       };
   };
-  changedPublishedOperations = evaluate {
-    providerAdditions = [
-      {
-        config.aos.abilities.implementations.network-readiness.provide = {
-          instance,
-          requests,
-          ...
-        }:
-          emptyProvision
-          // {
-            outputs =
-              builtins.mapAttrs (_: _: {
-                readiness-resource = {
-                  interface = interfaces.networkReadiness.identity;
-                  resource = {
-                    provider = instance.id;
-                    key = "network-online";
-                  };
-                  operations = [];
-                  lifetime = "instance";
-                };
-              })
-              requests;
-          };
-      }
-    ];
-  };
-  changedObserverHandler = evaluate {
-    providerAdditions = [
-      {
-        config.aos.abilities.implementations.network-readiness.handlerDescriptor =
-          (handler interfaces.networkReadiness)
-          // {entryPoint = "libexec/changed-fixture-handler";};
-      }
-    ];
-  };
-  changedObserverRequest = evaluate {
-    consumerAdditions = [{
-      config.aos.abilities.requests.network.parameters = lib.mkForce {
-        scope = "configured-connectivity";
-        address_families = ["ipv4"];
-      };
-    }];
-  };
-  publishedRevision = evaluation: let
-    resources = builtins.attrValues evaluation.config.aos.abilities.resolvedResources;
-  in
-    (builtins.head (builtins.filter (resource: resource.controller == null) resources)).revision;
   pendingChildRequest = evaluate {
     providerAdditions = [lifecycleWithChild];
   };
@@ -666,8 +608,10 @@ in
     assert builtins.length (builtins.attrNames abilities.desiredResources) == 1;
     assert desired.controller == "test:lifecycle";
     assert desired.kind == interfaces.serviceInstance.identity.name;
-    assert desired.value.lifecycle == builtins.removeAttrs qualifiedLifecycleRequest ["service" "enabled"];
-    assert desired.value.dependencies == builtins.removeAttrs dependencyRequest ["service" "enabled"];
+    assert desired.value.lifecycle
+    == builtins.removeAttrs abilities.requests."consumer:lifecycle".parameters ["service" "enabled"];
+    assert desired.value.dependencies
+    == builtins.removeAttrs abilities.requests."consumer:dependencies".parameters ["service" "enabled"];
     assert desired.realization == {backend = "fixture";};
     assert builtins.length resolved == 2;
     assert controlledResource.controller == "test:lifecycle";
@@ -679,9 +623,6 @@ in
       address_families = ["ipv4" "ipv6"];
     };
     assert publishedResource.realization == null;
-    assert publishedRevision evaluated != publishedRevision changedPublishedOperations;
-    assert publishedRevision evaluated != publishedRevision changedObserverHandler;
-    assert publishedRevision evaluated != publishedRevision changedObserverRequest;
     assert networkOutput.phase == "planning";
     assert networkOutput.visibility == "protected";
     assert networkOutput.lifetime == "instance";

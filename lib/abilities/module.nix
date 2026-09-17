@@ -15,8 +15,6 @@
   identityKeyFor,
   interfaceDocumentFromDeclaration,
   interfaceIdentity,
-  normalizeSemanticValue,
-  resourceRevision,
   coreInterfaceModule,
   normalizePackageOutputSelectors,
 }: let
@@ -1286,92 +1284,18 @@
     realization = mkOption {
       type = canonicalValueType;
     };
-    revision = mkOption {
-      type = digestType;
-      description = "Semantic revision of the complete selected resource projection.";
-    };
   };
 
-  semanticImplementation = name: implementation: let
-    declaration = interfaceDeclarationForReference "implementation '${name}'" implementation.interface;
-    normalizeHandler = handler:
-      if handler == null
-      then null
-      else {
-        artifact = handler.artifact;
-        entry_point = handler.entryPoint;
-        arguments = abilityTypes.schemaOf "handler arguments" handler.arguments;
-        result = abilityTypes.schemaOf "handler result" handler.result;
-      };
-  in {
-    declaration = name;
-    package = implementation.package;
-    interface = interfaceIdentityForDeclaration "implementation '${name}' interface" declaration;
-    requirements = builtins.mapAttrs (requirementName: requirement:
-      (builtins.removeAttrs requirement ["description"])
-      // {
-        guarantees =
-          builtins.map
-          (guarantee: guaranteeForReference "implementation '${name}' requirement '${requirementName}' guarantee" guarantee)
-          requirement.guarantees;
-      })
-    implementation.requirements;
-    guarantees =
-      builtins.map
-      (guarantee: guaranteeForReference "implementation '${name}' guarantee" guarantee)
-      implementation.guarantees;
-    inherit
-      (implementation)
-      methods
-      state_format
-      artifact
-      artifacts
-      providerModule
-      requiredFeatures
-      ;
-    handler = normalizeHandler implementation.handlerDescriptor;
-    desired_schema =
-      if implementation.desiredType == null
-      then null
-      else abilityTypes.schemaOf "provider realization" implementation.desiredType;
-    composition_schema =
-      if implementation.compositionType == null
-      then null
-      else abilityTypes.schemaOf "provider composition resource" implementation.compositionType;
-  };
-
-  resolveResource = _: authored: let
-    binding = config.aos.abilities.bindings.${authored.controller};
-    providerDeclaration = binding.providerInstance;
-    provider = config.aos.abilities.instances.${providerDeclaration};
-    implementationName = binding.implementation;
-    implementation = config.aos.abilities.implementations.${implementationName};
-    resource = authored.resource;
-    selected = {
-      schema = "aos.ability.selected-resource/v1";
-      instance = {
-        inherit providerDeclaration;
-        identity = resource.provider;
-        configuration = provider.configuration;
-      };
-      controller = {
-        binding = authored.controller;
-        inherit (binding) slot;
-      };
-      implementation = semanticImplementation implementationName implementation;
-      resource = {
-        inherit resource;
-        inherit (authored) kind controller lifetime value realization;
-      };
-    };
-  in {
-    inherit resource;
+  resolveResource = _: authored: {
+    inherit (authored) resource;
     inherit (authored) kind controller lifetime value realization;
-    revision = resourceRevision (normalizeSemanticValue selected);
   };
 
   resourceIdentityKey = resource:
     identityKeyFor "aos.ability.resource-id-key/v1" resource;
+  isResourceReference = value:
+    builtins.isAttrs value
+    && typeAccepts abilityTypes.resourceReference value;
 
   bindingForPublishedRequest = requestName: let
     matching =
@@ -1404,25 +1328,12 @@
           }
         ];
       }).config.value;
-    selectedImplementation = semanticImplementation binding.value.implementation implementation;
-    publication = {
-      schema = "aos.ability.resource-publication/v1";
-      inherit (reference) interface resource operations lifetime;
-      implementation = selectedImplementation;
-    };
-    selected = {
-      schema = "aos.ability.selected-published-resource/v1";
-      inherit publication;
-      value = normalizedRequest;
-      realization = null;
-    };
   in {
     inherit (reference) resource lifetime;
     kind = reference.interface.name;
     controller = null;
     value = normalizedRequest;
     realization = null;
-    revision = resourceRevision (normalizeSemanticValue selected);
   };
 
   publishedResourceCandidates = builtins.concatLists (builtins.map
@@ -1431,7 +1342,7 @@
         (outputName: let
           output = config.aos.abilities.compositionOutputs.${requestName}.${outputName};
         in
-          if abilityTypes.resourceReference.check output.value
+          if isResourceReference output.value
           then [(resolvePublishedResource requestName output)]
           else [])
         (builtins.attrNames config.aos.abilities.compositionOutputs.${requestName})))

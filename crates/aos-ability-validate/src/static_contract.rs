@@ -22,6 +22,8 @@ use aos_contract::Sha256Digest;
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::ResolvedPackageOutput;
+
 const MAX_STATIC_ABILITY_CONTRACT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_STATIC_ABILITY_ITEMS: usize = 100_000;
 
@@ -107,6 +109,7 @@ pub struct CheckedStaticAbilityPackage {
     manifest: CheckedStaticPackageManifest,
     package_document: Option<PackageDocument>,
     retained_interfaces: Vec<InterfaceDocument>,
+    resolved_outputs: Vec<ResolvedPackageOutput>,
 }
 
 impl CheckedStaticAbilityPackage {
@@ -147,6 +150,12 @@ impl CheckedStaticAbilityPackage {
     #[must_use]
     pub fn retained_interfaces(&self) -> &[InterfaceDocument] {
         &self.retained_interfaces
+    }
+
+    /// Returns the artifact-validated symbolic package output resolutions.
+    #[must_use]
+    pub fn resolved_outputs(&self) -> &[ResolvedPackageOutput] {
+        &self.resolved_outputs
     }
 }
 
@@ -352,6 +361,9 @@ fn checked_static_ability_contract(
             retained_interfaces: package_documents
                 .get(&manifest_key(&package.manifest))
                 .map_or_else(Vec::new, |checked| checked.interfaces.clone()),
+            resolved_outputs: package_documents
+                .get(&manifest_key(&package.manifest))
+                .map_or_else(Vec::new, |checked| checked.resolved_outputs.clone()),
         })
         .collect();
 
@@ -364,6 +376,7 @@ fn checked_static_ability_contract(
 #[derive(Clone)]
 struct StaticPackageArtifacts {
     manifest: Vec<u8>,
+    resolved_outputs: Vec<u8>,
     retained_interfaces: Vec<Vec<u8>>,
 }
 
@@ -371,6 +384,7 @@ struct StaticPackageArtifacts {
 struct ArtifactBackedPackage {
     document: PackageDocument,
     interfaces: Vec<InterfaceDocument>,
+    resolved_outputs: Vec<ResolvedPackageOutput>,
 }
 
 fn read_package_artifacts(store_path: &str) -> Result<StaticPackageArtifacts> {
@@ -392,6 +406,9 @@ fn read_package_artifacts_at_store_root(
 fn read_package_artifacts_from_path(package_path: &Path) -> Result<StaticPackageArtifacts> {
     let manifest_path = package_path.join("package.json");
     let manifest = read_bounded_regular_file(&manifest_path, "static package manifest")?;
+    let resolved_outputs_path = package_path.join("selectors.json");
+    let resolved_outputs =
+        read_bounded_regular_file(&resolved_outputs_path, "static package output selectors")?;
     let interface_directory = package_path.join("interfaces");
     let mut interface_paths = interface_directory
         .read_dir()
@@ -416,6 +433,7 @@ fn read_package_artifacts_from_path(package_path: &Path) -> Result<StaticPackage
 
     Ok(StaticPackageArtifacts {
         manifest,
+        resolved_outputs,
         retained_interfaces,
     })
 }
@@ -478,6 +496,8 @@ fn validate_artifact_projections(
                 &artifacts.retained_interfaces,
             )
             .context("validating artifact-backed static package companion")?;
+            let resolved_outputs =
+                validate_resolved_outputs(&artifacts.resolved_outputs, checked_package.package())?;
 
             validate_package_projection(platform, static_package, checked_package.package())?;
             let checked = ArtifactBackedPackage {
@@ -487,6 +507,7 @@ fn validate_artifact_projections(
                     .into_values()
                     .cloned()
                     .collect(),
+                resolved_outputs,
             };
             let manifest = manifest_key(&static_package.manifest);
             if let Some(previous) = package_documents.insert(manifest, checked.clone()) {
@@ -498,6 +519,39 @@ fn validate_artifact_projections(
         }
     }
     Ok(package_documents)
+}
+
+fn validate_resolved_outputs(
+    bytes: &[u8],
+    package: &PackageDocument,
+) -> Result<Vec<ResolvedPackageOutput>> {
+    aos_contract::canonical::require_canonical(bytes, "resolved package output selectors")?;
+    let outputs: Vec<ResolvedPackageOutput> =
+        aos_contract::canonical::from_slice(bytes, "resolved package output selectors")?;
+    ensure!(
+        u64::try_from(outputs.len())? <= ABILITY_LIMITS_V1.max_collection_items,
+        "resolved package output selector catalog contains excessive records"
+    );
+    ensure_strict_order_by(
+        &outputs,
+        |left, right| {
+            (left.package.as_str(), left.output.as_str())
+                .cmp(&(right.package.as_str(), right.output.as_str()))
+        },
+        "resolved package output selectors",
+    )?;
+
+    for output in &outputs {
+        validate_artifact_reference(&output.artifact)?;
+        ensure!(
+            package
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.identity() == output.artifact.identity()),
+            "resolved package output is absent from the authenticated package artifact catalog"
+        );
+    }
+    Ok(outputs)
 }
 
 fn validate_package_projection(

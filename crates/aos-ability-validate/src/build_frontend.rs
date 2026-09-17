@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    AbilityContractData, PackageOutputSelector, StaticAbilityArtifactClass,
+    AbilityContractData, PackageOutputSelector, ResolvedPackageOutput, StaticAbilityArtifactClass,
     StaticAbilityContractExpectation, StaticAbilityExecutionStage, StaticAbilityPlatform,
     decode_package_projection, resolve_package_projection, validate_ability_contract,
     validate_static_ability_artifacts,
@@ -44,18 +44,6 @@ struct SelectedArtifact {
     output: Option<String>,
     path: String,
     graph: String,
-}
-
-/// Retains one resolved symbolic package output for downstream build evaluators.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResolvedPackageOutput {
-    /// Names the package from the original symbolic selector.
-    pub package: String,
-    /// Names the selected output from the original symbolic selector.
-    pub output: String,
-    /// Carries the authenticated artifact selected from the exported Nix graph.
-    pub artifact: ArtifactReference,
 }
 
 #[derive(Deserialize)]
@@ -449,8 +437,8 @@ pub fn resolve_package_projection_file(
         .iter()
         .map(|((package, output), selected)| {
             Ok(ResolvedPackageOutput {
-                package: package.clone(),
-                output: output.clone(),
+                package: aos_ability_model::LocalKey::new(package.clone())?,
+                output: aos_ability_model::LocalKey::new(output.clone())?,
                 artifact: resolve_selected_artifact(selected, &exported_graph)?.artifact,
             })
         })

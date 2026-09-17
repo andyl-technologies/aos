@@ -47,7 +47,25 @@
       or (throw "package '${ownerName}' selector '${builtins.toJSON normalizedSelector}' names a missing output");
 
   authenticatedPackageOutputsFor = package: let
-    dependencies = builtins.listToAttrs (builtins.map (selector: {
+    ownerName = packageNameFor package;
+    closure = dependencyClosureFor package;
+    runtimeDependencies = builtins.listToAttrs (builtins.concatMap (name:
+      if name == ownerName
+      then []
+      else let
+        dependency = closure.${name};
+        selector = {
+          package = name;
+          output = dependency.outputName or "out";
+        };
+      in [
+        {
+          name = builtins.toJSON selector;
+          value = builtins.toString dependency;
+        }
+      ])
+    (builtins.attrNames closure));
+    declaredDependencies = builtins.listToAttrs (builtins.map (selector: {
         name = builtins.toJSON selector;
         value = builtins.toString (authenticatedPackageOutputFor {
           inherit package selector;
@@ -56,7 +74,7 @@
       package.contract.selectors);
   in {
     self = builtins.toString package;
-    inherit dependencies;
+    dependencies = runtimeDependencies // declaredDependencies;
   };
 
   authenticatedPackageModuleRecordFor = package: {

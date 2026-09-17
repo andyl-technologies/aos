@@ -27,6 +27,7 @@
   treeContributions = config.aos.contributions.filesystemTrees;
   treeTargets = builtins.map (entry: entry.target) treeContributions;
   uniqueTreeTargets = lib.unique treeTargets;
+  uniquePackages = lib.uniqueBy (package: builtins.toString package);
   treeContributionEntries =
     if builtins.length treeTargets != builtins.length uniqueTreeTargets
     then throw "filesystem tree contributions must use distinct /etc target paths"
@@ -123,7 +124,7 @@ in {
     environment.systemPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
-      apply = lib.unique;
+      apply = uniquePackages;
       description = ''
         The set of packages that appear in the system profile. These packages
         are made available in the system PATH and are included in the Nix store

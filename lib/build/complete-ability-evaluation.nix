@@ -72,9 +72,6 @@
     );
   finalPackageModules = withSelectedPackageRecords hostSelectedAbilityPackages;
   allPackageModules = withSelectedPackageRecords allSelectedAbilityPackages;
-  initrdPackageModules = lib.abilities.selectAuthenticatedPackageModuleRecords
-    initrdSelectedAbilityPackages
-    allPackageModules;
   selectedImplementations = builtins.listToAttrs (builtins.concatMap (package: let
       packageName = package.contract.value.package.name;
     in
@@ -135,6 +132,46 @@
       specialArgs = moduleSpecialArgs;
     };
   forceBindings = bindings: builtins.deepSeq (builtins.attrValues bindings) bindings;
+  selectedPackagesForBindings = bindings:
+    selectedAbilityPackagesFrom (builtins.map
+      (binding:
+        (selectedImplementations.${binding.implementation}
+          or (throw "binding selects implementation '${binding.implementation}' outside the authenticated package set")).package)
+      (builtins.attrValues bindings));
+  selectStagePackageModules = {
+    environment,
+    configurationModules,
+    initialPackages,
+    round ? 0,
+  }: let
+    selectedPackages = selectedAbilityPackagesFrom initialPackages;
+    selectedModules = lib.abilities.selectAuthenticatedPackageModuleRecords
+      selectedPackages
+      allPackageModules;
+    evaluation = evaluateCompleteConfiguration {
+      inherit environment configurationModules;
+      authenticatedPackageModules = selectedModules;
+    };
+    bindings = forceBindings evaluation.config.aos.abilities.bindings;
+    nextPackages = selectedAbilityPackagesFrom (
+      selectedPackages ++ selectedPackagesForBindings bindings
+    );
+    selectedNames = selectedPackageNamesFor selectedPackages;
+    nextNames = selectedPackageNamesFor nextPackages;
+  in
+    if selectedNames == nextNames
+    then {
+      inherit evaluation bindings;
+      packageModules = selectedModules;
+    }
+    else if round >= 15
+    then throw "stage package selection did not converge within 16 authenticated provider expansions"
+    else
+      selectStagePackageModules {
+        inherit environment configurationModules;
+        initialPackages = nextPackages;
+        round = round + 1;
+      };
   hostEnvironment = abilityEnvironment "host";
   hostPackageEvaluation = evaluateCompleteConfiguration {
     environment = hostEnvironment;
@@ -142,14 +179,34 @@
   };
   hostAbilityBindings = forceBindings hostPackageEvaluation.config.aos.abilities.bindings;
   hostProviderModules = selectedProviderModulesFor hostAbilityBindings;
+  # Provider-backed build projections are needed while assembling the base
+  # library, before that library can be injected into the final host graph.
+  # This checked probe carries the inert base-library locator; the system
+  # constructor's final host evaluation remains authoritative.
+  uncheckedHostAbilityEvaluation = evaluateCompleteConfiguration {
+    environment = hostEnvironment;
+    authenticatedPackageModules = finalPackageModules;
+    authenticatedProviderModules = hostProviderModules;
+  };
+  hostAbilityEvaluation = builtins.seq
+    (lib.abilities.checkedProviderModuleEvaluation {
+      before = hostPackageEvaluation.config.aos.abilities;
+      after = uncheckedHostAbilityEvaluation.config.aos.abilities;
+    })
+    uncheckedHostAbilityEvaluation;
   initrdEnvironment = abilityEnvironment "initrd";
   initrdConfigurationModules = selectionEvaluation.config.aos.abilities.stages.initrd.modules;
-  initrdPackageEvaluation = evaluateCompleteConfiguration {
+  selectionBindings = forceBindings selectionEvaluation.config.aos.abilities.bindings;
+  initrdPackageSelection = selectStagePackageModules {
     environment = initrdEnvironment;
-    authenticatedPackageModules = initrdPackageModules;
     configurationModules = initrdConfigurationModules;
+    initialPackages =
+      initrdSelectedAbilityPackages
+      ++ selectedPackagesForBindings selectionBindings;
   };
-  initrdAbilityBindings = forceBindings initrdPackageEvaluation.config.aos.abilities.bindings;
+  initrdPackageModules = initrdPackageSelection.packageModules;
+  initrdPackageEvaluation = initrdPackageSelection.evaluation;
+  initrdAbilityBindings = initrdPackageSelection.bindings;
   initrdProviderModules = selectedProviderModulesFor initrdAbilityBindings;
   uncheckedInitrdAbilityEvaluation = evaluateCompleteConfiguration {
     environment = initrdEnvironment;
@@ -174,6 +231,7 @@ in {
   inherit
     finalPackageModules
     hostPackageEvaluation
+    hostAbilityEvaluation
     hostAbilityBindings
     hostProviderModules
     hostEnvironment

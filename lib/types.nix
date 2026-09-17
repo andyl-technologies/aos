@@ -760,6 +760,31 @@ in rec {
 
   ## # Type combinators
 
+  ## A function whose result conforms to the selected option type.
+  ## # Type
+  ## `type -> type`
+  functionTo = resultType: {
+    name = "functionTo(${resultType.name})";
+    description = "function returning ${resultType.description}";
+    check = builtins.isFunction;
+    merge = loc: defs: let
+      value = lastValue loc defs;
+    in
+      if !builtins.isFunction value
+      then throw "The option '${showLoc loc}' must be a function."
+      else
+        argument: let
+          result = value argument;
+        in
+          if resultType.check result
+          then result
+          else throw "The function at option '${showLoc loc}' returned a value outside ${resultType.description}.";
+    _aosDocType = {
+      kind = "opaque";
+      signature = "function returning ${resultType.description}";
+    };
+  };
+
   ## # Type
   ## `type -> (a -> b) -> type -> type`
   coercedTo = fromType: coercion: toType: {

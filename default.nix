@@ -222,6 +222,7 @@
     inherit (abilityEvaluation)
       finalPackageModules
       hostPackageEvaluation
+      hostAbilityEvaluation
       hostAbilityBindings
       hostProviderModules
       hostEnvironment
@@ -241,7 +242,7 @@
       .aos
       .system
       .moduleAbi;
-    initrdStaticAbilityContract = hostPackageEvaluation.config.system.build.initrdStaticAbilityContract;
+    initrdStaticAbilityContract = hostAbilityEvaluation.config.system.build.initrdStaticAbilityContract;
     initrdStaticContractPath = "${initrdStaticAbilityContract}/contract.json";
     initrdStaticContract = let
       storeViewLib = import ./lib/build/store-view.nix {inherit lib;};

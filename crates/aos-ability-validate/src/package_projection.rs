@@ -48,6 +48,18 @@ pub struct ConfigArtifactSelector {
     pub name: LocalKey,
 }
 
+/// Retains one resolved symbolic package output for downstream evaluators.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedPackageOutput {
+    /// Names the package from the original symbolic selector.
+    pub package: LocalKey,
+    /// Names the selected output from the original symbolic selector.
+    pub output: LocalKey,
+    /// Carries the authenticated artifact selected from the exported Nix graph.
+    pub artifact: ArtifactReference,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TaggedPackageOutputSelector {
