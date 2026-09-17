@@ -156,6 +156,7 @@
     "aos-registry-spa"
     "aos-registry-surface"
     "aos-release"
+    "aos-release-signer"
     "aos-remote"
     "aos-server"
     "aos-systemd"
