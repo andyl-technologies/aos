@@ -2,11 +2,10 @@
 
 ## One resource model
 
-The canonical documentation object and package ability reference remain
-independent authenticated inputs. `aos-doc-model` defines one bounded
-`aos.package-tooling-response/v1` projection that Connect, CLI, and LSP share.
-It carries both unchanged source objects, their checked identities, and option
-and exported-method schemas derived only from `PackageAbilityReference`.
+`aos-doc-model` defines one bounded `aos.package-reference/v1` signed object
+that Connect, CLI, and LSP share. It retains package metadata and the exact
+checked `PackageAbilityReference`. Readers derive option and exported-method
+views directly from that reference.
 
 `aos-hub-core` also defines bounded view resources for browsing and search:
 
@@ -53,10 +52,9 @@ bounded streamed response plus identity metadata. It does not expose an
 unverified cache object merely because a caller knows a store hash.
 
 `GetPackageDocumentationSchema` selects an exact package/version/platform,
-loads both authenticated source objects at the same registry commit, and
-returns the canonical tooling response plus the existing documentation and
-ability-reference identities. It never adds ability fields to the canonical
-documentation artifact.
+loads its package reference at that registry commit, and returns those exact
+canonical bytes. A compatibility ability endpoint derives its response from
+the nested checked reference and never joins a second catalog.
 
 The Connect service is the authenticated and administrative API. Normal Hub
 resource-access policy applies to private registries, internal options, source
@@ -133,7 +131,7 @@ rather than duplicating the complete renderer.
 
 All commands support existing AOS output conventions where meaningful: human
 terminal, table, `--json`, JSON Lines for streams, `--quiet`, and stable exit
-codes. `apm schema <package>` returns the exact same versioned tooling response
+codes. `apm schema <package>` returns the exact same signed package reference
 as Hub and the LSP custom schema request. JSON returns the shared
 resource/schema model, not terminal formatting internals or a reconstructed
 option catalog.

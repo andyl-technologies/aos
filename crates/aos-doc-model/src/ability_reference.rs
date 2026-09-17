@@ -1,8 +1,9 @@
 //! Canonical public reference data derived from a checked signed package projection.
 //!
-//! This object is deliberately separate from [`crate::PackageDocumentation`].
-//! Its identity follows the signed ability manifest, while package-authored
-//! prose retains the documentation object's independent byte identity.
+//! This object is retained inside [`crate::PackageDocumentationProjection`].
+//! Its identity follows the checked ability manifest, while package-authored
+//! prose keeps its own semantic and artifact identities inside the same signed
+//! package reference.
 
 use std::collections::{BTreeMap, BTreeSet};
 

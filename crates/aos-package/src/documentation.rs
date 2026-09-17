@@ -12,19 +12,16 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use aos_ability_validate::{
-    AbilityContractData, CheckedAbilityContract, validate_ability_contract,
-};
 use aos_core::output::{OutputMode, Printer};
+#[cfg(test)]
+use aos_doc_model::PackageAbilityReference;
 use aos_doc_model::{
-    DocumentationComparison, MAX_DOCUMENT_BYTES, OptionDocument, PackageAbilityReference,
-    PackageDocumentation, PackageDocumentationProjection, PackageToolingResponse, SearchDocument,
-    document_json_schema, tokenize,
+    DocumentationComparison, MAX_DOCUMENT_BYTES, OptionDocument, PackageDocumentation,
+    PackageDocumentationProjection, SearchDocument, document_json_schema, tokenize,
 };
 use aos_proto_types::{
-    ComparePackageDocumentationRequest, GetPackageAbilityReferenceRequest,
-    GetPackageDocumentationRequest, GetPackageDocumentationSchemaRequest,
-    SearchPackageDocumentationRequest,
+    ComparePackageDocumentationRequest, GetPackageDocumentationRequest,
+    GetPackageDocumentationSchemaRequest, SearchPackageDocumentationRequest,
 };
 use aos_remote::{HubClient, hub_rpc};
 use serde::Serialize;
@@ -38,31 +35,30 @@ use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput
 /// One reverified canonical document and its signed installed locator.
 #[derive(Clone)]
 pub(crate) struct LoadedDocumentation {
-    /// The one checked view shared by rendering, search, Hub, and editor paths.
+    /// The one signed package reference shared by every consumer.
     pub(crate) projection: PackageDocumentationProjection,
-    /// The checked serialized tooling response when an ability reference exists.
-    pub(crate) tooling: Option<PackageToolingResponse>,
 }
 
 /// One Hub document tied to the exact indexed registry commit that served it.
 struct VerifiedRemoteDocumentation {
-    document: PackageDocumentation,
+    projection: PackageDocumentationProjection,
     registry_commit: String,
 }
 
 impl LoadedDocumentation {
+    #[cfg(test)]
     pub(crate) fn from_parts(
         document: PackageDocumentation,
-        ability_reference: Option<PackageAbilityReference>,
+        ability_reference: PackageAbilityReference,
     ) -> Result<Self> {
-        let tooling = ability_reference
-            .as_ref()
-            .map(|reference| PackageToolingResponse::new(document.clone(), reference.clone()))
-            .transpose()?;
         Ok(Self {
             projection: PackageDocumentationProjection::new(document, ability_reference)?,
-            tooling,
         })
+    }
+
+    pub(crate) fn from_projection(projection: PackageDocumentationProjection) -> Result<Self> {
+        projection.validate()?;
+        Ok(Self { projection })
     }
 
     fn render_plain(&self) -> Result<String> {
@@ -160,7 +156,7 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
         DocumentationCommand::Schema { hub, token } => {
             if hub.is_some() || token.is_some() {
                 bail!(
-                    "the canonical documentation artifact schema is local; use `apm schema <package> --hub ... --registry ...` for a checked package tooling response"
+                    "the canonical package-reference schema is local; use `apm schema <package> --hub ... --registry ...` for an exact signed package reference"
                 );
             }
             let bytes = document_json_schema()?;
@@ -273,7 +269,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                     matches.extend(
                         loaded
                             .projection
-                            .options
+                            .options()
                             .into_iter()
                             .filter(|option| option.display_path == *path),
                     );
@@ -287,7 +283,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                             .as_ref()
                             .is_none_or(|name| loaded.projection.document.package.name == *name)
                     })
-                    .flat_map(|loaded| loaded.projection.options)
+                    .flat_map(|loaded| loaded.projection.options())
                     .filter(|option| option.display_path == *path)
                     .collect()
             };
@@ -336,7 +332,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
         OptionsCommand::Complete { prefix, system } => {
             let mut paths = load_installed_documents(scope(*system))?
                 .into_iter()
-                .flat_map(|loaded| loaded.projection.options)
+                .flat_map(|loaded| loaded.projection.options())
                 .map(|option| option.display_path)
                 .filter(|path| path.starts_with(prefix))
                 .collect::<Vec<_>>();
@@ -350,7 +346,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
     }
 }
 
-/// Exports the canonical documentation schema or one exact package tooling response.
+/// Exports the canonical documentation schema or one exact signed package reference.
 ///
 /// # Errors
 ///
@@ -379,11 +375,7 @@ pub async fn run_schema(
                     )
                     .await?
                 }
-                None => local_document(scope(system), package, version, platform)?
-                    .tooling
-                    .context(
-                        "selected package does not publish an authenticated ability reference",
-                    )?,
+                None => local_document(scope(system), package, version, platform)?.projection,
             };
             write_bytes(&response.canonical_json()?, None)
         }
@@ -437,17 +429,7 @@ pub(crate) fn load_installed_documents(scope: ProfileScope) -> Result<Vec<Loaded
                 loaded.projection.document.package.version
             );
         }
-        let ability_reference = apm
-            .contract
-            .as_ref()
-            .map(|ability| {
-                load_ability_reference(ability, &apm.name, &apm.version, &installed.store_path)
-            })
-            .transpose()?;
-        documents.push(LoadedDocumentation::from_parts(
-            loaded.projection.document,
-            ability_reference,
-        )?);
+        documents.push(loaded);
     }
     documents.sort_by(|left, right| {
         (
@@ -490,53 +472,20 @@ fn load_document_file(
             path.display()
         )
     })?;
-    let document = PackageDocumentation::from_canonical_json(&bytes)
+    let projection = PackageDocumentationProjection::from_canonical_json(&bytes)
         .with_context(|| format!("validating documentation object for {source}"))?;
 
     if let Some(expected) = expected {
         let actual = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
         if expected.document_sha256 != actual
             || expected.document_size != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            || expected.semantic_schema_sha256 != document.identity.semantic_schema_sha256
+            || expected.semantic_schema_sha256
+                != projection.document.identity.semantic_schema_sha256
         {
             bail!("documentation object identity mismatch for {source}");
         }
     }
-    LoadedDocumentation::from_parts(document, None)
-}
-
-fn load_ability_reference(
-    contract: &crate::types::PackageContractMeta,
-    package_name: &str,
-    package_version: &str,
-    primary_store_path: &str,
-) -> Result<PackageAbilityReference> {
-    let coordinate = crate::package_contract::PackageContractCoordinate {
-        name: package_name,
-        version: package_version,
-        platform: "installed",
-        store_path: primary_store_path,
-        nar_hash: &contract.payload.nar_hash,
-    };
-    let (package, interfaces) =
-        crate::package_contract::resolve_pinned_package_document(coordinate, contract)
-            .context("resolving installed package contract for documentation")?;
-    let manifest = aos_ability_model::encode_canonical(&package)?;
-    let interfaces = interfaces
-        .iter()
-        .map(|document| Ok(aos_ability_model::encode_canonical(document)?))
-        .collect::<Result<Vec<_>>>()?;
-    let checked = validate_ability_contract(AbilityContractData::PackageSource {
-        manifest: &manifest,
-        retained_interfaces: &interfaces,
-    })
-    .context("checking installed signed package ability projection")?;
-    let CheckedAbilityContract::PackageSource(checked) = checked else {
-        bail!("package source validation returned another contract family");
-    };
-
-    PackageAbilityReference::from_checked_contract(&checked)
-        .context("generating authenticated package ability reference")
+    LoadedDocumentation::from_projection(projection)
 }
 
 fn local_document(
@@ -706,58 +655,9 @@ async fn remote_loaded_document(
 ) -> Result<LoadedDocumentation> {
     let remote =
         remote_document_selection(hub, registry, token, package, version, platform).await?;
-    let client = hub_client(hub, token)?;
-    let response = client
-        .call_topology_optional(
-            hub_rpc::GetPackageAbilityReference,
-            &GetPackageAbilityReferenceRequest {
-                registry: registry.to_string(),
-                package: remote.document.package.name.clone(),
-                version: remote.document.package.version.clone(),
-                platform: remote.document.package.platform.clone(),
-                release: String::new(),
-            },
-        )
-        .await?;
-    let ability_reference = response
-        .map(|response| {
-            verify_remote_ability_reference(response, &remote.document, &remote.registry_commit)
-        })
-        .transpose()?;
-
-    LoadedDocumentation::from_parts(remote.document, ability_reference)
-}
-
-fn verify_remote_ability_reference(
-    response: aos_proto_types::GetPackageAbilityReferenceResponse,
-    document: &PackageDocumentation,
-    documentation_registry_commit: &str,
-) -> Result<PackageAbilityReference> {
-    let identity = response
-        .identity
-        .context("Hub ability reference response omitted its signed identity")?;
-    crate::types::validate_commit_hash(documentation_registry_commit)
-        .context("Hub documentation response has an invalid registry commit")?;
-    crate::types::validate_commit_hash(&identity.registry_commit)
-        .context("Hub ability reference response has an invalid registry commit")?;
-    let supported_features = aos_doc_model::ability_reference_supported_features()?;
-    let reference =
-        PackageAbilityReference::from_canonical_json(&response.canonical_json, &supported_features)
-            .context("validating Hub package ability reference")?;
-    let etag = hex::encode(Sha256::digest(&response.canonical_json));
-    if reference.package.as_str() != identity.package
-        || reference.version != identity.version
-        || identity.registry_commit != documentation_registry_commit
-        || identity.package != document.package.name
-        || identity.version != document.package.version
-        || identity.platform != document.package.platform
-        || reference.manifest_sha256.to_string() != identity.manifest_sha256
-        || reference.package_digest.to_string() != identity.package_digest
-        || response.etag != etag
-    {
-        bail!("Hub ability reference response identity mismatch");
-    }
-    Ok(reference)
+    crate::types::validate_commit_hash(&remote.registry_commit)
+        .context("Hub package reference response has an invalid registry commit")?;
+    LoadedDocumentation::from_projection(remote.projection)
 }
 
 async fn remote_document_selection(
@@ -784,19 +684,19 @@ async fn remote_document_selection(
         .context("Hub documentation response omitted its signed identity")?;
     crate::types::validate_commit_hash(&identity.registry_commit)
         .context("Hub documentation response has an invalid registry commit")?;
-    let document = PackageDocumentation::from_canonical_json(&response.canonical_json)
-        .context("validating Hub package documentation")?;
-    if document.package.name != identity.package
-        || document.package.version != identity.version
-        || document.package.platform != identity.platform
-        || document.document_sha256()? != identity.document_sha256
-        || document.identity.semantic_schema_sha256 != identity.semantic_schema_sha256
+    let projection = PackageDocumentationProjection::from_canonical_json(&response.canonical_json)
+        .context("validating Hub package reference")?;
+    if projection.document.package.name != identity.package
+        || projection.document.package.version != identity.version
+        || projection.document.package.platform != identity.platform
+        || projection.document_sha256()? != identity.document_sha256
+        || projection.document.identity.semantic_schema_sha256 != identity.semantic_schema_sha256
         || response.etag != identity.document_sha256
     {
         bail!("Hub documentation response identity mismatch");
     }
     Ok(VerifiedRemoteDocumentation {
-        document,
+        projection,
         registry_commit: identity.registry_commit,
     })
 }
@@ -808,7 +708,7 @@ async fn remote_schema(
     package: &str,
     version: Option<&str>,
     platform: Option<&str>,
-) -> Result<PackageToolingResponse> {
+) -> Result<PackageDocumentationProjection> {
     let response = hub_client(hub, token)?
         .call_topology(
             hub_rpc::GetPackageDocumentationSchema,
@@ -823,32 +723,22 @@ async fn remote_schema(
         .await?;
     let documentation_identity = response
         .documentation_identity
-        .context("Hub tooling response omitted its documentation identity")?;
-    let ability_identity = response
-        .ability_reference_identity
-        .context("Hub tooling response omitted its ability reference identity")?;
-    let tooling = PackageToolingResponse::from_canonical_json(&response.canonical_json)
-        .context("validating Hub package tooling response")?;
+        .context("Hub package reference response omitted its signed identity")?;
     crate::types::validate_commit_hash(&documentation_identity.registry_commit)
-        .context("Hub tooling response has an invalid documentation registry commit")?;
-    crate::types::validate_commit_hash(&ability_identity.registry_commit)
-        .context("Hub tooling response has an invalid ability registry commit")?;
-    if documentation_identity.registry_commit != ability_identity.registry_commit
-        || documentation_identity.package != tooling.documentation.package.name
-        || documentation_identity.version != tooling.documentation.package.version
-        || documentation_identity.platform != tooling.documentation.package.platform
-        || documentation_identity.document_sha256 != tooling.identity.documentation_sha256
-        || documentation_identity.semantic_schema_sha256 != tooling.identity.semantic_schema_sha256
-        || ability_identity.package != tooling.ability_reference.package.as_str()
-        || ability_identity.version != tooling.ability_reference.version
-        || ability_identity.platform != tooling.documentation.package.platform
-        || ability_identity.manifest_sha256 != tooling.identity.ability_manifest_sha256.to_string()
-        || ability_identity.package_digest != tooling.identity.ability_package_digest.to_string()
-        || response.etag != tooling.response_sha256()?
+        .context("Hub package reference response has an invalid registry commit")?;
+    let projection = PackageDocumentationProjection::from_canonical_json(&response.canonical_json)
+        .context("validating Hub package reference")?;
+    if documentation_identity.package != projection.document.package.name
+        || documentation_identity.version != projection.document.package.version
+        || documentation_identity.platform != projection.document.package.platform
+        || documentation_identity.document_sha256 != projection.document_sha256()?
+        || documentation_identity.semantic_schema_sha256
+            != projection.document.identity.semantic_schema_sha256
+        || response.etag != projection.response_sha256()?
     {
-        bail!("Hub package tooling response identity mismatch");
+        bail!("Hub package reference response identity mismatch");
     }
-    Ok(tooling)
+    Ok(projection)
 }
 
 fn hub_client(hub: &str, token: Option<&str>) -> Result<HubClient> {
@@ -1114,10 +1004,7 @@ fn write_rendered(
 fn rendered_bytes(loaded: &LoadedDocumentation, format: DocumentationOutput) -> Result<Vec<u8>> {
     let bytes = match format {
         DocumentationOutput::Plain => loaded.render_plain()?.into_bytes(),
-        // Package documentation and ability declarations have independent
-        // authenticated identities. Preserve the existing canonical document
-        // schema rather than silently inventing an unversioned JSON envelope.
-        DocumentationOutput::Json => loaded.projection.document.canonical_json()?,
+        DocumentationOutput::Json => loaded.projection.canonical_json()?,
         DocumentationOutput::Html => loaded.render_html()?.into_bytes(),
         DocumentationOutput::Man => loaded.render_roff()?.into_bytes(),
     };
@@ -1289,14 +1176,16 @@ mod tests {
         let temporary = TempDir::new().unwrap();
         let path = temporary.path().join("doc.json");
         let document = fixture();
-        let bytes = document.canonical_json().unwrap();
+        let projection =
+            PackageDocumentationProjection::new(document.clone(), ability_reference()).unwrap();
+        let bytes = projection.canonical_json().unwrap();
         fs::write(&path, &bytes).unwrap();
         let mut artifact = DocumentationArtifactMeta {
             format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
             store_path: path.to_string_lossy().into_owned(),
             nar_hash: "sha256:unused".to_string(),
             nar_size: 0,
-            document_sha256: document.document_sha256().unwrap(),
+            document_sha256: projection.document_sha256().unwrap(),
             document_size: bytes.len() as u64,
             semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
             references: Vec::new(),
@@ -1310,7 +1199,7 @@ mod tests {
     fn local_search_is_weighted_and_man_cache_is_profile_scoped() {
         let document = fixture();
         let reference = ability_reference();
-        let loaded = LoadedDocumentation::from_parts(document, Some(reference)).unwrap();
+        let loaded = LoadedDocumentation::from_parts(document, reference).unwrap();
         let row = loaded
             .projection
             .search_documents()
@@ -1355,7 +1244,7 @@ mod tests {
     #[test]
     fn documentation_loopback_browser_is_content_bearing_and_bounded() {
         let reference = ability_reference();
-        let loaded = LoadedDocumentation::from_parts(fixture(), Some(reference)).unwrap();
+        let loaded = LoadedDocumentation::from_parts(fixture(), reference).unwrap();
         let index = local_http_response(
             std::slice::from_ref(&loaded),
             b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
@@ -1388,7 +1277,7 @@ mod tests {
     #[test]
     fn ordinary_renderers_show_only_the_static_public_declaration() {
         let reference = ability_reference();
-        let loaded = LoadedDocumentation::from_parts(fixture(), Some(reference)).unwrap();
+        let loaded = LoadedDocumentation::from_parts(fixture(), reference).unwrap();
 
         let plain = loaded.render_plain().unwrap();
         assert!(plain.contains("DECLARED ABILITIES"));
@@ -1421,11 +1310,7 @@ mod tests {
         assert!(!roff.contains("\n.handler"));
 
         let mut without_configuration = loaded.clone();
-        let reference = without_configuration
-            .projection
-            .ability_reference
-            .as_mut()
-            .unwrap();
+        let reference = &mut without_configuration.projection.ability_reference;
         let interface = reference.interfaces.values_mut().next().unwrap();
         interface.interface.configuration = None;
         let interface_key = interface.interface_key().unwrap();
@@ -1445,11 +1330,11 @@ mod tests {
 
         let canonical_document = rendered_bytes(&loaded, DocumentationOutput::Json).unwrap();
         assert_eq!(
-            PackageDocumentation::from_canonical_json(&canonical_document).unwrap(),
-            loaded.projection.document
+            PackageDocumentationProjection::from_canonical_json(&canonical_document).unwrap(),
+            loaded.projection
         );
         assert!(
-            !String::from_utf8(canonical_document)
+            String::from_utf8(canonical_document)
                 .unwrap()
                 .contains("package-ability-reference")
         );
@@ -1457,11 +1342,21 @@ mod tests {
 
     #[test]
     fn packages_without_ability_projections_document_empty_ability_directions() {
-        let loaded = LoadedDocumentation::from_parts(fixture(), None).unwrap();
+        let mut reference = ability_reference();
+        reference.interfaces.clear();
+        reference.guarantees.clear();
+        reference.option_declarations.clear();
+        reference.implementations.clear();
+        reference.exports.clear();
+        reference.requirements.clear();
+        reference.handlers.clear();
+        let loaded = LoadedDocumentation::from_parts(fixture(), reference).unwrap();
 
         let plain = loaded.render_plain().unwrap();
-        assert!(plain.contains("PROVIDED ABILITIES\nNo provided abilities are declared."));
-        assert!(plain.contains("CONSUMED ABILITIES\nNo consumed abilities are declared."));
+        assert!(plain.contains("PROVIDED ABILITIES\nNo provider interfaces are declared."));
+        assert!(
+            plain.contains("CONSUMED ABILITIES\nNo consumed ability requirements are declared.")
+        );
 
         let html = loaded.render_html().unwrap();
         assert!(html.contains("<h3>Provided abilities</h3>"));
@@ -1470,58 +1365,5 @@ mod tests {
         let roff = loaded.render_roff().unwrap();
         assert!(roff.contains("PROVIDED ABILITIES"));
         assert!(roff.contains("CONSUMED ABILITIES"));
-    }
-
-    #[test]
-    fn remote_reference_requires_exact_document_identity_and_etag() {
-        let document = fixture();
-        let reference = ability_reference();
-        let canonical_json = reference.canonical_json().unwrap();
-        let response = aos_proto_types::GetPackageAbilityReferenceResponse {
-            identity: Some(aos_proto_types::PackageAbilityReferenceIdentity {
-                registry_commit: "a".repeat(64),
-                package: document.package.name.clone(),
-                version: document.package.version.clone(),
-                platform: document.package.platform.clone(),
-                manifest_sha256: reference.manifest_sha256.to_string(),
-                package_digest: reference.package_digest.to_string(),
-            }),
-            etag: hex::encode(Sha256::digest(&canonical_json)),
-            canonical_json,
-        };
-
-        assert_eq!(
-            verify_remote_ability_reference(response.clone(), &document, &"a".repeat(64)).unwrap(),
-            reference
-        );
-
-        let mut empty_ability_commit = response.clone();
-        empty_ability_commit
-            .identity
-            .as_mut()
-            .unwrap()
-            .registry_commit
-            .clear();
-        assert!(
-            verify_remote_ability_reference(empty_ability_commit, &document, &"a".repeat(64))
-                .is_err()
-        );
-        assert!(
-            verify_remote_ability_reference(response.clone(), &document, "not-a-commit").is_err()
-        );
-
-        let mut wrong_platform = response.clone();
-        wrong_platform.identity.as_mut().unwrap().platform = "aarch64-linux".to_string();
-        assert!(
-            verify_remote_ability_reference(wrong_platform, &document, &"a".repeat(64)).is_err()
-        );
-
-        assert!(
-            verify_remote_ability_reference(response.clone(), &document, &"b".repeat(64)).is_err()
-        );
-
-        let mut wrong_etag = response;
-        wrong_etag.etag = "0".repeat(64);
-        assert!(verify_remote_ability_reference(wrong_etag, &document, &"a".repeat(64)).is_err());
     }
 }

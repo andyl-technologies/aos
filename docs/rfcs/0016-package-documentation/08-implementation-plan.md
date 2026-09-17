@@ -24,7 +24,7 @@ one coordinated cutover.
       compatibility boundary between mutable developer docs and authenticated
       package-release docs.
 - [x] Decide exact v1 size/count limits from native and Worker measurements; the
-      initial design ceiling is 4 MiB per uncompressed document NAR.
+      initial design ceiling is 12 MiB per uncompressed package-reference NAR.
 - [x] Add a repository policy that new package option reference content is
       authored in Nix data while transitional Markdown remains readable.
 - [x] Require every published package reference to derive from its checked

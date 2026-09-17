@@ -184,7 +184,7 @@ WASM bundle enhances navigation, composer state, keyboard search, and diagrams.
 If it fails to load, reading and searching still work.
 
 The shared renderer produces the same page model on native and Worker. The Hub
-documentation workspace consumes the checked package tooling response when it
+documentation workspace consumes the signed package reference when it
 shows option or method schemas.
 
 The standalone registry Web generator and its SPA are explicitly a distribution
@@ -192,7 +192,7 @@ listing. Their same-origin snapshots contain registry metadata, versions,
 platforms, and artifact coordinates; they do not publish a second option or
 method schema. A configured Hub link may open the schema-aware documentation
 workspace. This narrower static surface remains content-bearing without Hub and
-does not duplicate the verified tooling projection. No page references a
+does not duplicate the verified package reference. No page references a
 third-party script, font, analytics endpoint, or CDN asset.
 
 ## Accessibility and interaction requirements

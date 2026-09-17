@@ -9,7 +9,7 @@ use crate::package_contract::{
     collect_distinct_artifacts, decode_package_manifest, read_package_manifest, retained_artifacts,
 };
 use crate::registry::release::RegistryReleaseEntry;
-use crate::registry_ops::metadata::build_package_toml_with_documentation;
+use crate::registry_ops::metadata::build_package_toml;
 use crate::registry_ops::release::ReleaseStorePublish;
 use crate::registry_ops::store_paths::introspect_store_path;
 use crate::registry_ops::test_support::{
@@ -73,7 +73,7 @@ async fn package_contract_publication_accepts_a_transitive_self_referencing_clos
     init_authoring_clone(registry.path());
     let primary = introspect_store_path(&payload_path).unwrap();
     let source = introspect_store_path(&source_path).unwrap();
-    let package_toml = build_package_toml_with_documentation(
+    let package_toml = build_package_toml(
         "",
         projection.package.name.as_str(),
         &projection.package.version,
@@ -87,8 +87,6 @@ async fn package_contract_publication_accepts_a_transitive_self_referencing_clos
         None,
         &[],
         Some(&source),
-        None,
-        None,
     )
     .unwrap();
     let package_dir = registry.path().join("packages/a");

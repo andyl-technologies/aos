@@ -233,18 +233,6 @@ pub(crate) fn plain(reference: &PackageAbilityReference) -> String {
     output
 }
 
-pub(crate) fn plain_absent() -> String {
-    concat!(
-        "\nDECLARED ABILITIES\n------------------\n",
-        "No checked signed ability projection is available for this package.\n",
-        "\nPROVIDED ABILITIES\n",
-        "No provided abilities are declared.\n",
-        "\nCONSUMED ABILITIES\n",
-        "No consumed abilities are declared.\n",
-    )
-    .to_string()
-}
-
 pub(crate) fn html(reference: &PackageAbilityReference) -> String {
     let mut output =
         String::from("<section id=\"declared-abilities\"><h2>Declared abilities</h2><p>");
@@ -497,10 +485,6 @@ pub(crate) fn html_absent() -> String {
 
 pub(crate) fn roff(reference: &PackageAbilityReference) -> String {
     plain_to_roff(&plain(reference))
-}
-
-pub(crate) fn roff_absent() -> String {
-    plain_to_roff(&plain_absent())
 }
 
 fn plain_to_roff(plain: &str) -> String {

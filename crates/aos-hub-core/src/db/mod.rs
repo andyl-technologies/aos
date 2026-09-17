@@ -527,8 +527,6 @@ mod oci_admin;
 pub use oci_admin::*;
 mod oci_gc;
 pub use oci_gc::*;
-mod package_ability_reference_reads;
-pub use package_ability_reference_reads::*;
 mod ability_deployment_overlays;
 pub use ability_deployment_overlays::*;
 mod package_documentation_reads;
@@ -1752,20 +1750,22 @@ pub struct IndexedPackageDocumentation {
     pub options: Vec<IndexedDocumentationOption>,
 }
 
-/// Canonical public ability reference derived from a verified signed companion.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IndexedPackageAbilityReference {
-    /// Package name bound inside the ability manifest.
+/// Derived view of the ability reference inside one signed package reference.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PackageAbilityReferenceLocator {
+    /// Registry commit that authenticated the enclosing package reference.
+    pub indexed_commit: String,
+    /// Package name.
     pub package_name: String,
-    /// Package version bound inside the ability manifest.
+    /// Package version.
     pub package_version: String,
-    /// Platform whose signed registry entry selected the companion.
+    /// Platform triple.
     pub platform: String,
-    /// SHA-256 of the exact canonical package manifest.
+    /// SHA-256 of the exact ability package manifest.
     pub manifest_sha256: String,
-    /// Domain-separated semantic package identity.
+    /// Domain-separated package identity.
     pub package_digest: String,
-    /// Canonical `aos.package-ability-reference/v1` bytes.
+    /// Canonical derived ability-reference bytes.
     pub canonical_json: Vec<u8>,
 }
 
@@ -3074,8 +3074,6 @@ pub struct IndexSnapshot {
     pub packages: Vec<aos_registry_surface::manifest::PackageToml>,
     /// Verified canonical documentation locators and search projections.
     pub package_documentation: Vec<IndexedPackageDocumentation>,
-    /// Canonical ability references derived from verified signed companions.
-    pub package_ability_references: Vec<IndexedPackageAbilityReference>,
     /// Verified releases.
     pub releases: Vec<ReleaseRow>,
     /// Complete immutable artifact snapshots for verified releases.
@@ -4395,35 +4393,6 @@ impl Database {
             &documentation_rows,
             "",
         )?;
-        let ability_reference_rows = snapshot
-            .package_ability_references
-            .iter()
-            .map(|reference| {
-                vals![
-                    registry_id,
-                    snapshot.commit,
-                    reference.package_name,
-                    reference.package_version,
-                    reference.platform,
-                    reference.manifest_sha256,
-                    reference.package_digest,
-                    reference.canonical_json,
-                ]
-            })
-            .collect::<Vec<_>>();
-        stmts.push(Statement::new(
-            "INSERT INTO package_ability_reference_catalogs (registry_id, indexed_commit)
-             VALUES (?1, ?2)",
-            vals![registry_id, snapshot.commit].to_vec(),
-        ));
-        extend_multirow_insert(
-            &mut stmts,
-            "INSERT INTO package_ability_references
-             (registry_id, indexed_commit, package_name, package_version, platform,
-              manifest_sha256, package_digest, canonical_json)",
-            &ability_reference_rows,
-            "",
-        )?;
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO package_documentation_search
@@ -4717,9 +4686,9 @@ impl Database {
                 if artifact.format != aos_doc_model::DOCUMENT_FORMAT
                     || artifact.references.len() != 0
                     || artifact.nar_size == 0
-                    || artifact.nar_size > 4 * 1024 * 1024
+                    || artifact.nar_size > aos_doc_model::MAX_DOCUMENT_BYTES as u64
                     || artifact.document_size == 0
-                    || artifact.document_size > 4 * 1024 * 1024
+                    || artifact.document_size > aos_doc_model::MAX_DOCUMENT_BYTES as u64
                 {
                     bail!("release documentation locator is malformed");
                 }
@@ -26530,20 +26499,6 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
             })
         })
         .collect::<Vec<_>>();
-    let package_ability_references = snapshot
-        .package_ability_references
-        .iter()
-        .map(|reference| {
-            serde_json::json!({
-                "package_name": reference.package_name,
-                "package_version": reference.package_version,
-                "platform": reference.platform,
-                "manifest_sha256": reference.manifest_sha256,
-                "package_digest": reference.package_digest,
-                "canonical_json_sha256": hex::encode(sha2::Sha256::digest(&reference.canonical_json)),
-            })
-        })
-        .collect::<Vec<_>>();
     let document = serde_json::json!({
         "commit": snapshot.commit,
         "name": snapshot.name,
@@ -26554,7 +26509,6 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
         "roster": snapshot.roster,
         "packages": format!("{:?}", snapshot.packages),
         "package_documentation": package_documentation,
-        "package_ability_references": package_ability_references,
         "releases": releases,
         "release_artifacts": release_artifacts,
         "release_images": release_images,
@@ -27603,7 +27557,7 @@ source_nar_hash = ""
             dev = "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
 
             [versions.platforms.x86_64-linux.documentation]
-            format = "aos.package-documentation/v1+json"
+            format = "aos.package-reference/v1+json"
             store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-docs.json"
             nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
             nar_size = 4096
@@ -27683,7 +27637,6 @@ source_nar_hash = ""
             roster: vec![("alice".into(), "demo:Ed25519:AA".into(), "active".into())],
             packages: vec![package],
             package_documentation: vec![documentation.clone()],
-            package_ability_references: Vec::new(),
             releases: vec![ReleaseRow {
                 semver: "1.0.0".into(),
                 tag_oid: "a".repeat(64),
@@ -33477,7 +33430,6 @@ source_nar_hash = ""
             roster: Vec::new(),
             packages: Vec::new(),
             package_documentation: Vec::new(),
-            package_ability_references: Vec::new(),
             releases: Vec::new(),
             release_artifact_snapshots: Vec::new(),
             release_images: Vec::new(),

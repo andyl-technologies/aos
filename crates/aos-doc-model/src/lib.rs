@@ -1,15 +1,15 @@
-//! Canonical package documentation shared by APM, Hub, Web, and tooling.
+//! Canonical signed package references shared by APM, Hub, Web, and tooling.
 //!
-//! This crate owns the closed `aos.package-documentation/v1` data contract,
-//! its canonical JSON encoding, semantic schema identity, deterministic search
-//! projection, and safe plain-text, HTML, and roff renderers. It performs no
-//! I/O and has no native-only dependencies, so the native Hub, Cloudflare
-//! Worker, browser tooling, and local APM consume the same semantics.
+//! This crate owns the closed `aos.package-reference/v1` data contract. The
+//! signed reference retains package-authored prose and the public ability
+//! projection derived from the checked package fixed point. Search rows,
+//! options, and method presentations are derived when read instead of stored
+//! as parallel machine facts.
 //!
-//! A canonical document is a single UTF-8 JSON file. Unknown fields are
+//! A canonical reference is a single UTF-8 JSON file. Unknown fields are
 //! rejected by Serde, floating-point literals and Nix store references are
-//! forbidden, and [`PackageDocumentation::validate`] enforces the bounded
-//! collection and cross-field invariants before any renderer sees content.
+//! forbidden, and [`PackageDocumentationProjection::validate`] enforces the
+//! bounded collection and cross-field invariants before any renderer sees it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -30,7 +30,6 @@ mod ability_nar;
 mod ability_reference;
 mod ability_render;
 mod nar;
-mod tooling;
 
 pub use ability_deployment::{
     ABILITY_DEPLOYMENT_OVERLAY_SCHEMA, AbilityDeploymentExport, AbilityDeploymentObservation,
@@ -47,11 +46,6 @@ pub use ability_reference::{
     MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference, ability_reference_supported_features,
 };
 pub use nar::decode_single_file_nar;
-pub use tooling::{
-    MAX_PACKAGE_TOOLING_RESPONSE_BYTES, PACKAGE_TOOLING_RESPONSE_FORMAT,
-    PACKAGE_TOOLING_RESPONSE_SCHEMA, PackageToolingIdentity, PackageToolingMethodSchema,
-    PackageToolingResponse,
-};
 
 /// Renders one checked package ability reference as a safe HTML fragment.
 ///
@@ -122,7 +116,10 @@ pub fn documentation_anchor(kind: &str, key: &str) -> String {
 pub const DOCUMENT_SCHEMA: &str = "aos.package-documentation/v1";
 
 /// Media/format identifier advertised by signed registry metadata.
-pub const DOCUMENT_FORMAT: &str = "aos.package-documentation/v1+json";
+pub const DOCUMENT_FORMAT: &str = "aos.package-reference/v1+json";
+
+/// Canonical schema identifier for the one signed package reference.
+pub const PACKAGE_REFERENCE_SCHEMA: &str = "aos.package-reference/v1";
 
 /// Generates the closed JSON Schema served to editors and language tooling.
 ///
@@ -152,7 +149,7 @@ pub fn document_json_schema() -> Result<Vec<u8>> {
 }
 
 /// Maximum canonical document size admitted by version 1.
-pub const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_DOCUMENT_BYTES: usize = 12 * 1024 * 1024;
 
 const MAX_OPTIONS: usize = 16_384;
 const MAX_TEXT_BYTES: usize = 256 * 1024;
@@ -185,20 +182,20 @@ pub struct PackageDocumentation {
     pub identity: DocumentationIdentity,
 }
 
-/// Transient package documentation view derived from one metadata document and
-/// its checked signed package ability projection.
+/// One signed package reference derived from package metadata and the checked
+/// package module fixed point.
 ///
-/// This transient view supports human rendering and search. Serialized schema
-/// consumers use [`PackageToolingResponse`], which additionally binds both
-/// source identities and revalidates every derived option and method row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Option and method rows are derived when read. They are never serialized as
+/// parallel machine facts alongside the checked ability reference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackageDocumentationProjection {
-    /// Retains the separately signed package metadata document.
+    /// Closed package-reference schema identifier.
+    pub schema: String,
+    /// Retains package-authored prose and artifact identities.
     pub document: PackageDocumentation,
-    /// Retains the checked package ability reference when the package publishes one.
-    pub ability_reference: Option<PackageAbilityReference>,
-    /// Carries public option rows derived from the checked package projection.
-    pub options: Vec<OptionDocument>,
+    /// Retains the exact checked package ability projection.
+    pub ability_reference: PackageAbilityReference,
 }
 
 /// Package identity and short catalog metadata embedded in a document.
@@ -724,23 +721,101 @@ impl PackageDocumentationProjection {
     /// reference belongs to a different package selection.
     pub fn new(
         document: PackageDocumentation,
-        ability_reference: Option<PackageAbilityReference>,
+        ability_reference: PackageAbilityReference,
     ) -> Result<Self> {
         document.validate()?;
-        if let Some(reference) = &ability_reference {
-            reference.validate()?;
-            if reference.package.as_str() != document.package.name
-                || reference.version != document.package.version
-            {
-                return Err(invalid(
-                    "package metadata and ability reference coordinates differ",
-                ));
-            }
+        ability_reference.validate()?;
+        if ability_reference.package.as_str() != document.package.name
+            || ability_reference.version != document.package.version
+        {
+            return Err(invalid(
+                "package metadata and ability reference coordinates differ",
+            ));
         }
 
-        let options = ability_reference
-            .as_ref()
-            .map_or_else(Vec::new, PackageAbilityReference::documented_options);
+        let reference = Self {
+            schema: PACKAGE_REFERENCE_SCHEMA.to_string(),
+            document,
+            ability_reference,
+        };
+        reference.validate()?;
+        Ok(reference)
+    }
+
+    /// Decodes the one canonical signed package reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, noncanonical, oversized, unsupported,
+    /// or internally inconsistent bytes.
+    pub fn from_canonical_json(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > MAX_DOCUMENT_BYTES {
+            return Err(invalid("package reference exceeds the 12 MiB limit"));
+        }
+        let reference: Self = serde_json::from_slice(bytes)?;
+        reference.validate()?;
+        if reference.canonical_json()? != bytes {
+            return Err(invalid("package reference is not canonical JSON"));
+        }
+        Ok(reference)
+    }
+
+    /// Encodes the exact signed package reference bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reference is invalid or exceeds its bound.
+    pub fn canonical_json(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        let bytes = serde_json::to_vec(self)?;
+        if bytes.len() > MAX_DOCUMENT_BYTES {
+            return Err(invalid("package reference exceeds the 12 MiB limit"));
+        }
+        Ok(bytes)
+    }
+
+    /// Returns the SHA-256 identity of the exact signed package reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reference cannot be encoded.
+    pub fn document_sha256(&self) -> Result<String> {
+        Ok(sha256(&self.canonical_json()?))
+    }
+
+    /// Returns the response identity used by existing editor transports.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reference cannot be encoded.
+    pub fn response_sha256(&self) -> Result<String> {
+        self.document_sha256()
+    }
+
+    /// Validates the complete package reference and its derived option view.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when identities differ, a source is invalid, or a
+    /// derived option collection violates its bounds.
+    pub fn validate(&self) -> Result<()> {
+        if self.schema != PACKAGE_REFERENCE_SCHEMA {
+            return Err(invalid(format!(
+                "unsupported package reference schema '{}'",
+                self.schema
+            )));
+        }
+        self.document.validate()?;
+        self.ability_reference.validate()?;
+        if self.ability_reference.package.as_str() != self.document.package.name
+            || self.ability_reference.version != self.document.package.version
+        {
+            return Err(invalid(
+                "package metadata and ability reference coordinates differ",
+            ));
+        }
+
+        let options = self.options();
         if options.len() > MAX_OPTIONS {
             return Err(invalid("too many projected options"));
         }
@@ -754,20 +829,22 @@ impl PackageDocumentationProjection {
                 )));
             }
         }
+        Ok(())
+    }
 
-        Ok(Self {
-            document,
-            ability_reference,
-            options,
-        })
+    /// Derives public option rows from the retained checked ability reference.
+    #[must_use]
+    pub fn options(&self) -> Vec<OptionDocument> {
+        self.ability_reference.documented_options()
     }
 
     /// Derives deterministic bounded package and option search rows.
     #[must_use]
     pub fn search_documents(&self) -> Vec<SearchDocument> {
         let mut rows = self.document.search_documents();
-        rows.reserve(self.options.len());
-        for option in &self.options {
+        let options = self.options();
+        rows.reserve(options.len());
+        for option in &options {
             let summary = render_prose_plain(&option.description);
             rows.push(search_row(
                 "option",
@@ -782,7 +859,8 @@ impl PackageDocumentationProjection {
             ));
         }
 
-        if let Some(reference) = &self.ability_reference {
+        {
+            let reference = &self.ability_reference;
             for export in &reference.exports {
                 let interface = reference
                     .interface_for_export(export)
@@ -837,13 +915,13 @@ impl PackageDocumentationProjection {
             )));
         }
 
-        let before = self
-            .options
+        let before_options = self.options();
+        let after_options = other.options();
+        let before = before_options
             .iter()
             .map(|option| (option.display_path.as_str(), option))
             .collect::<BTreeMap<_, _>>();
-        let after = other
-            .options
+        let after = after_options
             .iter()
             .map(|option| (option.display_path.as_str(), option))
             .collect::<BTreeMap<_, _>>();
@@ -895,9 +973,10 @@ impl PackageDocumentationProjection {
     #[must_use]
     pub fn render_plain(&self) -> String {
         let mut output = self.document.render_plain();
-        if !self.options.is_empty() {
+        let options = self.options();
+        if !options.is_empty() {
             output.push_str("\nOPTIONS\n-------\n");
-            for option in &self.options {
+            for option in &options {
                 output.push_str(&format!(
                     "\n{} ({})\n{}\n",
                     option.display_path,
@@ -906,10 +985,7 @@ impl PackageDocumentationProjection {
                 ));
             }
         }
-        match &self.ability_reference {
-            Some(reference) => output.push_str(&ability_render::plain(reference)),
-            None => output.push_str(&ability_render::plain_absent()),
-        }
+        output.push_str(&ability_render::plain(&self.ability_reference));
         output
     }
 
@@ -943,12 +1019,13 @@ impl PackageDocumentationProjection {
 
     fn render_html_fragment_with_options(&self, include_options: bool) -> String {
         let mut output = self.document.render_html_fragment();
+        let options = self.options();
         let closing = "</main>";
         if output.ends_with(closing) {
             output.truncate(output.len() - closing.len());
-            if include_options && !self.options.is_empty() {
+            if include_options && !options.is_empty() {
                 output.push_str("<section id=\"options\"><h2>Options</h2><dl>");
-                for option in &self.options {
+                for option in &options {
                     output.push_str("<dt id=\"");
                     output.push_str(&documentation_anchor("option", &option.display_path));
                     output.push_str("\"><code>");
@@ -961,10 +1038,7 @@ impl PackageDocumentationProjection {
                 }
                 output.push_str("</dl></section>");
             }
-            match &self.ability_reference {
-                Some(reference) => output.push_str(&ability_render::html(reference)),
-                None => output.push_str(&ability_render::html_absent()),
-            }
+            output.push_str(&ability_render::html(&self.ability_reference));
             output.push_str("</main>");
         }
         output
@@ -974,9 +1048,10 @@ impl PackageDocumentationProjection {
     #[must_use]
     pub fn render_roff(&self) -> String {
         let mut output = self.document.render_roff();
-        if !self.options.is_empty() {
+        let options = self.options();
+        if !options.is_empty() {
             output.push_str(".SH OPTIONS\n");
-            for option in &self.options {
+            for option in &options {
                 output.push_str(".TP\n.B \"");
                 escape_roff_into(&option.display_path, &mut output);
                 output.push_str("\"\n");
@@ -986,10 +1061,7 @@ impl PackageDocumentationProjection {
                 output.push('\n');
             }
         }
-        match &self.ability_reference {
-            Some(reference) => output.push_str(&ability_render::roff(reference)),
-            None => output.push_str(&ability_render::roff_absent()),
-        }
+        output.push_str(&ability_render::roff(&self.ability_reference));
         output
     }
 }
@@ -1723,56 +1795,56 @@ mod tests {
 
     fn option_fixture() -> OptionDocument {
         OptionDocument {
-                path: vec![
-                    PathSegment::Literal {
-                        value: "nginx".to_string(),
-                    },
-                    PathSegment::Literal {
-                        value: "virtualHosts".to_string(),
-                    },
-                    PathSegment::Wildcard {
-                        name: "name".to_string(),
-                    },
-                    PathSegment::Literal {
-                        value: "listenPort".to_string(),
-                    },
-                ],
-                display_path: "nginx.virtualHosts.<name>.listenPort".to_string(),
-                option_type: OptionType::Port,
-                type_signature: "unsigned 16-bit TCP port".to_string(),
-                description: vec![paragraph("Port on which this virtual host listens.")],
-                default: Some(DocumentedValue::Literal {
-                    value: aos_ability_model::AbilityValue::new(Value::from(80))
-                        .expect("valid default"),
-                }),
-                example: Some(DocumentedValue::Literal {
-                    value: aos_ability_model::AbilityValue::new(Value::from(8080))
-                        .expect("valid example"),
-                }),
-                visibility: Visibility::Public,
-                read_only: false,
-                deprecated: None,
-                replacement: None,
-                owner: OptionOwner {
-                    package: "nginx".to_string(),
-                    root: "nginx".to_string(),
-                    interface_abi: Some(1),
+            path: vec![
+                PathSegment::Literal {
+                    value: "nginx".to_string(),
                 },
-                contributable: true,
-                source: Some(SourceLocator {
-                    path: aos_ability_model::RelativePath::new(
-                        "pkgs/networking/_nginx-config/module.nix",
-                    )
-                    .expect("valid source path"),
-                }),
-            }
+                PathSegment::Literal {
+                    value: "virtualHosts".to_string(),
+                },
+                PathSegment::Wildcard {
+                    name: "name".to_string(),
+                },
+                PathSegment::Literal {
+                    value: "listenPort".to_string(),
+                },
+            ],
+            display_path: "nginx.virtualHosts.<name>.listenPort".to_string(),
+            option_type: OptionType::Port,
+            type_signature: "unsigned 16-bit TCP port".to_string(),
+            description: vec![paragraph("Port on which this virtual host listens.")],
+            default: Some(DocumentedValue::Literal {
+                value: aos_ability_model::AbilityValue::new(Value::from(80))
+                    .expect("valid default"),
+            }),
+            example: Some(DocumentedValue::Literal {
+                value: aos_ability_model::AbilityValue::new(Value::from(8080))
+                    .expect("valid example"),
+            }),
+            visibility: Visibility::Public,
+            read_only: false,
+            deprecated: None,
+            replacement: None,
+            owner: OptionOwner {
+                package: "nginx".to_string(),
+                root: "nginx".to_string(),
+                interface_abi: Some(1),
+            },
+            contributable: true,
+            source: Some(SourceLocator {
+                path: aos_ability_model::RelativePath::new(
+                    "pkgs/networking/_nginx-config/module.nix",
+                )
+                .expect("valid source path"),
+            }),
+        }
     }
 
     fn projection_fixture() -> PackageDocumentationProjection {
         PackageDocumentationProjection {
+            schema: PACKAGE_REFERENCE_SCHEMA.to_string(),
             document: fixture(),
-            ability_reference: None,
-            options: vec![option_fixture()],
+            ability_reference: checked_reference_with_option(),
         }
     }
 
@@ -1816,15 +1888,19 @@ mod tests {
     fn checked_contract_is_the_only_source_of_projected_option_rows() {
         let reference = checked_reference_with_option();
         let expected = reference.documented_options();
-        let projection = PackageDocumentationProjection::new(fixture(), Some(reference.clone()))
+        let projection = PackageDocumentationProjection::new(fixture(), reference.clone())
             .expect("matching checked package projection");
 
-        assert_eq!(projection.options, expected);
-        assert_eq!(projection.ability_reference, Some(reference));
+        assert_eq!(projection.options(), expected);
+        assert_eq!(projection.ability_reference, reference);
+        let encoded = projection.canonical_json().expect("canonical reference");
+        let value: Value = serde_json::from_slice(&encoded).expect("reference JSON");
+        assert!(value.get("options").is_none());
+        assert!(value.get("methods").is_none());
 
         let mut foreign = checked_reference_with_option();
         foreign.package = LocalKey::new("foreign").expect("valid foreign package name");
-        assert!(PackageDocumentationProjection::new(fixture(), Some(foreign)).is_err());
+        assert!(PackageDocumentationProjection::new(fixture(), foreign).is_err());
     }
 
     #[test]
@@ -1887,11 +1963,12 @@ mod tests {
         assert!(comparison.option_changes.is_empty());
 
         let mut changed = prose_only.clone();
-        changed.options[0].option_type = OptionType::Unsigned {
+        changed.ability_reference.option_declarations[0].structured_type = OptionType::Unsigned {
             min: Some(1),
             max: Some(65_535),
         };
-        changed.options[0].type_signature = "unsigned integer".to_string();
+        changed.ability_reference.option_declarations[0].type_signature =
+            "unsigned integer".to_string();
         let comparison = before.compare(&changed).expect("comparison");
         assert!(comparison.semantic_changed);
         assert_eq!(comparison.option_changes.len(), 1);
@@ -1918,7 +1995,8 @@ mod tests {
     fn renderers_escape_untrusted_content() {
         let mut projection = projection_fixture();
         projection.document.package.summary = "<script>alert('x')</script>".into();
-        projection.options[0].description = vec![paragraph(".danger \\ macro")];
+        projection.ability_reference.option_declarations[0].description =
+            ".danger \\ macro".to_string();
         let html = projection.render_html();
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
@@ -1995,7 +2073,7 @@ mod tests {
         for anchor in anchors {
             assert!(
                 anchor
-                .bytes()
+                    .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b':')
             );
             assert!(validate_token("section id", &anchor).is_err());
@@ -2010,8 +2088,8 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.iter().any(|row| {
             row.kind == "option"
-                && row.terms.contains_key("listenport")
-                && row.terms.contains_key("virtualhosts")
+                && row.terms.contains_key("enable")
+                && row.terms.contains_key("nginx")
         }));
     }
 

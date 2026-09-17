@@ -3,7 +3,7 @@
 ## Format choice
 
 The initial wire format is canonical UTF-8 JSON with the media/schema identifier
-`aos.package-documentation/v1+json`. JSON is selected over CBOR and Protobuf
+`aos.package-reference/v1+json`. JSON is selected over CBOR and Protobuf
 because it is directly constructible from restricted Nix values, supported by
 Serde and browsers, inspectable with ordinary AOS tools, and usable as an offline
 interchange format without generated bindings.
@@ -44,7 +44,7 @@ retention edges. The signed platform metadata and API view resource carry exact
 store paths; the document may repeat non-reference NAR/content digests for
 cross-checking.
 
-The first implementation should cap the uncompressed NAR and document at 4 MiB,
+The first implementation caps the uncompressed NAR and package reference at 12 MiB,
 with tighter per-field and per-collection limits. Raising the cap is a format
 policy change, not an operator-tunable way to bypass Worker resource limits.
 
@@ -73,29 +73,20 @@ catalog.
 }
 ```
 
-Options and abilities are deliberately absent. They remain in the separately
-authenticated `PackageAbilityReference`. Tooling receives a checked canonical
-projection with this outer shape:
+The package metadata remains a nested value inside the one signed package
+reference. The checked package fixed point supplies its ability reference:
 
 ```json
 {
-  "schema": "aos.package-tooling-response/v1",
-  "identity": {
-    "documentation_sha256": "sha256:...",
-    "semantic_schema_sha256": "sha256:...",
-    "ability_manifest_sha256": "sha256:...",
-    "ability_package_digest": "sha256:..."
-  },
-  "documentation": { "schema": "aos.package-documentation/v1" },
-  "ability_reference": { "schema": "aos.package-ability-reference/v1" },
-  "options": [],
-  "methods": []
+  "schema": "aos.package-reference/v1",
+  "document": { "schema": "aos.package-documentation/v1" },
+  "ability_reference": { "schema": "aos.package-ability-reference/v1" }
 }
 ```
 
-The complete source objects occupy the abbreviated fields above. The validator
-recomputes the identity block, option rows, and exported method rows from those
-objects and rejects a response containing independently authored schema data.
+The complete values occupy the abbreviated fields above. The validator checks
+their package/version agreement. Readers derive option and method rows from
+`ability_reference`; the signed object has no copied schema-row collection.
 
 ## Structured prose
 
@@ -144,7 +135,7 @@ There is no second `declares` inventory or documentation type mirror.
 
 ## Option fields
 
-Each option row mechanically derived into the tooling response records:
+Each option row mechanically derived from the signed package reference records:
 
 - exact path segments and derived display path;
 - structured type and stable type signature;
@@ -168,7 +159,7 @@ never forced merely to improve documentation.
 
 ## Ownership and contribution
 
-The tooling response explains authenticated configuration authority without
+The signed package reference explains authenticated configuration authority without
 becoming that authority. Each option belongs to the package whose authenticated
 module declares it and retains the exact evaluated declaration's contribution
 flag and source provenance.
@@ -180,8 +171,8 @@ ownership or mark a forbidden path contributable through prose.
 ## Abilities and deployment observations
 
 `PackageAbilityReference` carries package-owned interfaces, implementations,
-requirements, and guarantees from the checked package contract. The tooling
-response retains that exact reference and derives one method row for each
+requirements, and guarantees from the checked package contract. The package
+reference retains that exact projection; readers derive one method row for each
 exported interface method, including its exact `InterfaceKey` and complete
 provider-neutral `MethodDescriptor`. Implementations and requirements carry
 their own authored descriptions. Guarantee documentation carries the authored

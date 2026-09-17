@@ -45,8 +45,7 @@ impl AbilityCatalog {
     pub(super) fn new(documents: &[LoadedDocumentation]) -> Result<Self> {
         let references = documents
             .iter()
-            .filter_map(|document| document.tooling.as_ref())
-            .map(|tooling| &tooling.ability_reference)
+            .map(|document| &document.projection.ability_reference)
             .map(|reference| {
                 let identity = format!("{} {}", reference.package.as_str(), reference.version);
                 let input = ReferenceInspectionInput::new(reference.clone())
