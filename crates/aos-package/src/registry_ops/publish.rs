@@ -275,7 +275,6 @@ pub(crate) async fn publish_to_registry_directory(
             &platform,
         )?);
     }
-
     let letter = first_letter(pkg_name);
     let pkg_dir = dir.join("packages").join(&letter);
 
