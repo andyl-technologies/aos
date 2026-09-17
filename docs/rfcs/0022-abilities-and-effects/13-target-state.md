@@ -207,17 +207,34 @@ mkDerivation {
 ```
 
 The referenced module is ordinary module source shipped in the package's
-authenticated module output:
+authenticated module output. It contributes typed options and ability values
+through the standard module fixed point:
 
 ```nix
-{ lib, ... }: {
-  options.services.example.enable =
-    lib.mkEnableOption "the example service";
+{ config, lib, ... }: let
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  activation = serviceManagement.forProducer {
+    consumerInstance = "example";
+    key = "activation";
+    interface = serviceManagement.interfaces.activationMilestone;
+    parameters.milestone = "example-ready";
+  };
+  contribution = serviceManagement.splitContribution activation;
+in {
+  options.services.example.enable = lib.mkEnableOption "the example service";
 
-  config.aos.abilities.requirementTemplates.service =
-    lib.abilities.requirement {
-      interface = lib.abilities.interfaces.serviceLifecycle;
-    };
+  config = lib.mkMerge [
+    {
+      # Static declarations remain available to package discovery.
+      aos.abilities = contribution.declarations;
+    }
+    (lib.mkIf config.services.example.enable {
+      aos.abilities = lib.mkMerge [
+        { instances.example = {}; }
+        contribution.configured
+      ];
+    })
+  ];
 }
 ```
 
