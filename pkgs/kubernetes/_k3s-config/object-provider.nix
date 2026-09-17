@@ -8,11 +8,13 @@
   controllerAlias = "kubernetes-object-set";
   contributionAlias = "kubernetes-objects";
   controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
+  aggregationSlot = controllerDeclaration.aggregation.key;
   controllerIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
   );
   controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
-  realizationSchema = lib.abilities.singletonSchemaDiscriminator
+  realizationSchema =
+    lib.abilities.singletonSchemaDiscriminator
     "K3s object controller realization"
     controller.desiredType;
   effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
@@ -30,14 +32,14 @@
       then builtins.head matches
       else throw "a Kubernetes object request must have exactly one selected binding";
   in
-    if binding.slot == "objects"
+    if binding.slot == aggregationSlot
     then binding
     else throw "the K3s provider accepts only its canonical 'objects' aggregate slot";
   resourceReference = instance: {
     interface = controllerIdentity;
     resource = {
       provider = instance.id;
-      key = "objects";
+      key = aggregationSlot;
     };
     operations = ["observe"];
     lifetime = "instance";
@@ -45,8 +47,8 @@
   requestOutput = instance: let
     reference = resourceReference instance;
   in {
-    readiness-resource = reference;
-    cluster-readiness-resource = reference;
+    resource = reference;
+    cluster-resource = reference;
     kubeconfig-resource = reference;
   };
   entriesFor = context:
@@ -85,7 +87,7 @@
     emptyResult
     // {
       outputs = outputsFor context.instance [entry];
-      resourceFragments.objects = {
+      resourceFragments.${aggregationSlot} = {
         kind = controllerIdentity.name;
         lifetime = "instance";
         value = entry.request.parameters;
@@ -105,7 +107,7 @@
     // {
       outputs = outputsFor context.instance entries;
       resourceFragments = lib.optionalAttrs (entries != []) {
-        objects = {
+        ${aggregationSlot} = {
           kind = controllerIdentity.name;
           lifetime = "instance";
           value.contributions = contributions;
@@ -119,7 +121,7 @@
     parameters = resource.value;
   };
   compose = {resources, ...}: let
-    resource = resources.objects or (throw "K3s did not receive its canonical object-set resource");
+    resource = resources.${aggregationSlot} or (throw "K3s did not receive its canonical object-set resource");
     objects = lib.concatMap (entry: entry.objects) (builtins.attrValues resource.value.contributions);
     identities =
       map (
@@ -132,7 +134,7 @@
     else {
       requests = builtins.mapAttrs effectRequest resources;
       outputs = {};
-      realizations.objects = {
+      realizations.${aggregationSlot} = {
         schema = realizationSchema;
         kubeconfig = "/etc/rancher/k3s/k3s.yaml";
       };

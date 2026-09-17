@@ -171,6 +171,22 @@
         lib = finalLib;
       }
     );
+  build = {
+    referenceGraph = args:
+      import ./build/reference-graph.nix (
+        args
+        // {
+          lib = finalLib;
+        }
+      );
+    closureInfo = args:
+      import ./build/closure-info.nix (
+        args
+        // {
+          lib = finalLib;
+        }
+      );
+  };
 
   platformMod = import ./platform.nix;
   derivations = import ./derivations.nix {inherit system bash;};
@@ -195,6 +211,7 @@
       inherit qualification;
       inherit packagePlatform;
       inherit mkArtifactConsumptionAudit;
+      inherit build;
       literalExpression = text: {
         _type = "literalExpression";
         inherit text;

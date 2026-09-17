@@ -9,19 +9,40 @@
   serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "package-profile-convergence";
+  readinessAlias = "package-profile-readiness";
   specificationRequest = "package-profile-specification";
-  evaluationReadiness = resultOf "configuration-evaluation-lifecycle" "service-resource";
+  evaluationReadiness = resultOf "configuration-evaluation-lifecycle" "resource";
   hostStage =
     config.aos.abilities.environment
     != null
     && config.aos.abilities.environment.stage == "host";
-  packageProfileConverged = serviceManagement.forProducer {
-    inherit consumerInstance;
-    key = "package-profile-converged";
-    interface = serviceManagement.interfaces.systemMilestoneReadiness;
-    parameters.milestone = serviceManagement.milestones.packageProfileConverged;
+  readinessDeclaration = lib.abilities.declareInterface {
+    name = "aos.package.profile-convergence-readiness";
+    description = "Publishes the exact service resource that completed convergence of the selected system package profile.";
+    abi = 1;
+    requestType = lib.abilities.types.enum ["system-profile"];
+    configurationType = null;
+    outputs.resource = {
+      description = "References the package-profile convergence service resource.";
+      schema = serviceTypes.resourceReference;
+      phase = "planning";
+      visibility = "protected";
+      lifetime = "instance";
+    };
+    methods = {};
+    lifecycle.persistentDeleteMethod = null;
+    guarantees = [];
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = readinessAlias;
+    };
   };
-  packageProfileConvergedReadiness = resultOf "package-profile-converged" "readiness-resource";
+  readinessIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration readinessDeclaration
+  );
 
   specification = serviceManagement.forConfiguration {
     inherit serviceTypes consumerInstance;
@@ -35,7 +56,7 @@
     };
   };
   specificationPath = resultOf specificationRequest "planned-path";
-  specificationResource = resultOf specificationRequest "retained-resource";
+  specificationResource = resultOf specificationRequest "resource";
   packageManager = {
     executable = {
       artifact = lib.abilities.packageOutput {output = "apm";};
@@ -132,10 +153,10 @@
           [evaluationReadiness]
           ++ lib.optional cfg.enable specificationResource;
         after = [];
-        before = [packageProfileConvergedReadiness];
+        before = [];
         requires = [];
         wants = [];
-        required_by = [packageProfileConvergedReadiness];
+        required_by = [];
       };
       conditions.all = lib.optionals cfg.enable [
         {
@@ -183,7 +204,7 @@
       };
     };
   };
-  fragments = [specification packageProfileConverged service];
+  fragments = [specification service];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.aos.packageRuntime.packageProfile = {
@@ -208,7 +229,25 @@ in {
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) contributions
+        [
+          {
+            interfaces.${readinessAlias} = readinessDeclaration;
+            implementations.${readinessAlias} = {
+              description = "Publishes package-profile convergence through the package-owned lifecycle resource.";
+              interface = readinessIdentity;
+              artifact = lib.abilities.packageOutput {};
+              methods = [];
+              guarantees = [];
+              providerModule = {
+                artifact = lib.abilities.packageOutput {output = "module";};
+                path = "package-profile-readiness-provider.nix";
+              };
+              desiredType = null;
+              requiredFeatures = [];
+            };
+          }
+        ]
+        ++ builtins.map (contribution: contribution.declarations) contributions
       );
     }
     (lib.mkIf hostStage {

@@ -107,10 +107,10 @@ in
   assert provided.outputs."consumer:package-store-read-view"
   == {
     inherit locator;
-    read-view-resource = expectedResource;
+    resource = expectedResource;
   };
   assert outputs.locator.value == locator;
-  assert outputs.read-view-resource.value == expectedResource;
+  assert outputs.resource.value == expectedResource;
   assert !(outputs ? identity-root);
   assert !(outputs ? read-root);
   assert !(outputs ? static-contract); true

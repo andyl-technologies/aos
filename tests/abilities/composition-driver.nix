@@ -8,29 +8,31 @@ args @ {lib, ...}: let
   lifecycleDeclaration =
     interfaces.lifecycle.declaration
     // {
-      outputs = interfaces.lifecycle.declaration.outputs // {
-        marker = {
-          description = "Marks completion of merged lifecycle composition.";
-          schema = lib.abilities.types.boolean;
-          phase = "planning";
-          visibility = "protected";
-          lifetime = "instance";
+      outputs =
+        interfaces.lifecycle.declaration.outputs
+        // {
+          marker = {
+            description = "Marks completion of merged lifecycle composition.";
+            schema = lib.abilities.types.boolean;
+            phase = "planning";
+            visibility = "protected";
+            lifetime = "instance";
+          };
+          runtime-marker = {
+            description = "Proves pure composition cannot manufacture runtime evidence.";
+            schema = lib.abilities.types.boolean;
+            phase = "runtime";
+            visibility = "protected";
+            lifetime = "instance";
+          };
+          observer-socket = {
+            description = "Publishes the protected execution observer socket for the fixture.";
+            schema = lib.abilities.types.executionPath;
+            phase = "planning";
+            visibility = "protected";
+            lifetime = "instance";
+          };
         };
-        runtime-marker = {
-          description = "Proves pure composition cannot manufacture runtime evidence.";
-          schema = lib.abilities.types.boolean;
-          phase = "runtime";
-          visibility = "protected";
-          lifetime = "instance";
-        };
-        observer-socket = {
-          description = "Publishes the protected execution observer socket for the fixture.";
-          schema = lib.abilities.types.executionPath;
-          phase = "planning";
-          visibility = "protected";
-          lifetime = "instance";
-        };
-      };
     };
   lifecycleModuleDeclaration =
     moduleDeclarationFor interfaces.lifecycle
@@ -88,7 +90,8 @@ args @ {lib, ...}: let
     resourceFragments = {};
   };
   bindingFor = bindings: requestName: let
-    matches = builtins.filter
+    matches =
+      builtins.filter
       (binding: binding.request == requestName)
       (builtins.attrValues bindings);
   in
@@ -103,23 +106,27 @@ args @ {lib, ...}: let
   }:
     emptyProvision
     // {
-      outputs =
-        if facet != "lifecycle"
-        then {}
-        else
-          builtins.mapAttrs (requestName: _: {
-            service-resource = {
-              interface = lifecycleInterface.identity;
-              resource = {
-                provider = instance.id;
-                key = (bindingFor bindings requestName).slot;
-              };
-              operations = ["observe"];
-              lifetime = "instance";
+      outputs = builtins.mapAttrs (requestName: _: let
+        selectedInterface =
+          if facet == "lifecycle"
+          then lifecycleInterface
+          else interfaces.${facet};
+      in
+        {
+          resource = {
+            interface = selectedInterface.identity;
+            resource = {
+              provider = instance.id;
+              key = (bindingFor bindings requestName).slot;
             };
-            observer-socket = "/run/aos-observer/control.sock";
-          })
-          requests;
+            operations = ["observe"];
+            lifetime = "instance";
+          };
+        }
+        // lib.optionalAttrs (facet == "lifecycle") {
+          observer-socket = "/run/aos-observer/control.sock";
+        })
+      requests;
       resourceFragments = builtins.listToAttrs (builtins.map (request: {
           name = request.parameters.service;
           value = {
@@ -210,11 +217,11 @@ args @ {lib, ...}: let
             emptyProvision
             // {
               outputs =
-              builtins.mapAttrs (_: _: {
-                readiness-resource = lib.abilities.resourceReference {
-                  interface = interfaces.networkReadiness.identity;
-                  resource = {
-                    provider = instance.id;
+                builtins.mapAttrs (_: _: {
+                  resource = lib.abilities.resourceReference {
+                    interface = interfaces.networkReadiness.identity;
+                    resource = {
+                      provider = instance.id;
                       key = "network-online";
                     };
                     operations = ["observe"];
@@ -321,15 +328,17 @@ args @ {lib, ...}: let
   resolved = builtins.attrValues abilities.resolvedResources;
   controlledResource = builtins.head (builtins.filter (resource: resource.controller != null) resolved);
   publishedResource = builtins.head (builtins.filter (resource: resource.controller == null) resolved);
-  networkOutput = abilities.compositionOutputs."consumer:network".readiness-resource;
+  networkOutput = abilities.compositionOutputs."consumer:network".resource;
   observerSelection = evaluate {
-    roundAdditions = [{
-      config.aos.abilities.executionObserver = {
-        request = "consumer:lifecycle";
-        resourceOutput = "service-resource";
-        socketOutput = "observer-socket";
-      };
-    }];
+    roundAdditions = [
+      {
+        config.aos.abilities.executionObserver = {
+          request = "consumer:lifecycle";
+          resourceOutput = "resource";
+          socketOutput = "observer-socket";
+        };
+      }
+    ];
   };
   rejects = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
 
@@ -464,7 +473,7 @@ args @ {lib, ...}: let
           requests = {};
           outputs = assert context.children.child.request == childRequestKey;
           assert context.children.child.binding == "test:child-network";
-          assert context.children.child.outputs.readiness-resource.phase == "planning";
+          assert context.children.child.outputs.resource.phase == "planning";
             builtins.mapAttrs (_: _: {marker = true;}) context.requests;
           realizations = builtins.mapAttrs (_: _: {backend = "fixture";}) context.resources;
         };
@@ -584,7 +593,8 @@ args @ {lib, ...}: let
 in
   if returnPending
   then {
-    requests = builtins.mapAttrs
+    requests =
+      builtins.mapAttrs
       (_: request:
         request
         // {
@@ -597,7 +607,8 @@ in
         })
       pendingChildRequest.config.aos.abilities.compositionPendingRequests;
     requirements = pendingChildRequest.config.aos.abilities.compositionRequirements;
-    providerInstances = builtins.mapAttrs
+    providerInstances =
+      builtins.mapAttrs
       (name: instance: {
         inherit (instance) implementation;
         identity = pendingChildRequest.config.aos.abilities.instanceIdentities.${name};
@@ -628,9 +639,10 @@ in
     assert networkOutput.lifetime == "instance";
     assert networkOutput.value.resource.provider == abilities.instanceIdentities."provider:manager";
     assert networkOutput.value.resource.key == "network-online";
-    assert observerSelection.config.aos.abilities.resolvedExecutionObserver == {
+    assert observerSelection.config.aos.abilities.resolvedExecutionObserver
+    == {
       request = "consumer:lifecycle";
-      resource = observerSelection.config.aos.abilities.compositionOutputs."consumer:lifecycle".service-resource.value;
+      resource = observerSelection.config.aos.abilities.compositionOutputs."consumer:lifecycle".resource.value;
       socket = "/run/aos-observer/control.sock";
     };
     assert abilities.compositionOutputs."consumer:lifecycle".marker.value;

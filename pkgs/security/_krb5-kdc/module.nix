@@ -152,7 +152,7 @@
       key = "master-password";
       parameters = {
         name = "master-password";
-        source = resultOf "master-password-source" "credential-resource";
+        source = resultOf "master-password-source" "resource";
         encrypted = cfg.masterPassword.encrypted;
       };
     };
@@ -251,7 +251,7 @@
         port = kdcPort;
       }
     ];
-    prerequisites = [(resultOf "network-readiness" "readiness-resource")];
+    prerequisites = [(resultOf "network-readiness" "resource")];
   };
   administrationIngress = producer "administration-ingress" lib.abilities.interfaces.networkPolicy.interfaces.ingress {
     endpoints = [
@@ -260,7 +260,7 @@
         port = administrationPort;
       }
     ];
-    prerequisites = [(resultOf "network-readiness" "readiness-resource")];
+    prerequisites = [(resultOf "network-readiness" "resource")];
   };
 
   runtimeSearchPath =
@@ -442,9 +442,9 @@
         (command "bin/krb5-kdc-control" ["run-kdc" runtimePath])
       ];
       dependencies = {
-        prerequisites = [(resultOf "kdc-ingress" "readiness-resource")];
-        after = [(resultOf "initialize-lifecycle" "service-resource")];
-        requires = [(resultOf "initialize-lifecycle" "service-resource")];
+        prerequisites = [(resultOf "kdc-ingress" "resource")];
+        after = [(resultOf "initialize-lifecycle" "resource")];
+        requires = [(resultOf "initialize-lifecycle" "resource")];
         before = [];
         wants = [];
       };
@@ -486,9 +486,9 @@
         (command "bin/krb5-kdc-control" ["run-administration" runtimePath])
       ];
       dependencies = {
-        prerequisites = [(resultOf "administration-ingress" "readiness-resource")];
-        after = [(resultOf "initialize-lifecycle" "service-resource")];
-        requires = [(resultOf "initialize-lifecycle" "service-resource")];
+        prerequisites = [(resultOf "administration-ingress" "resource")];
+        after = [(resultOf "initialize-lifecycle" "resource")];
+        requires = [(resultOf "initialize-lifecycle" "resource")];
         before = [];
         wants = [];
       };

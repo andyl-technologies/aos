@@ -149,7 +149,7 @@
   };
   aggregation = {
     scope = "provider-instance";
-    key = "slot";
+    key = "objects";
     rejectSlotCollisions = false;
     inherit mergeContract;
     controllerGroup = controllerAlias;
@@ -163,8 +163,8 @@
     lifecycle = controllerLifecycle;
     inherit aggregation;
     outputs = {
-      readiness-resource = readinessOutput "References readiness for the exact aggregate object-set revision.";
-      cluster-readiness-resource = readinessOutput "References the exact observed Kubernetes cluster incarnation.";
+      resource = readinessOutput "References readiness for the exact aggregate object-set revision.";
+      cluster-resource = readinessOutput "References the exact observed Kubernetes cluster incarnation.";
       kubeconfig-resource = readinessOutput "References the protected kubeconfig context bound to this cluster.";
     };
     guarantees = [];
@@ -178,8 +178,8 @@
     lifecycle = contributionLifecycle;
     inherit aggregation;
     outputs = {
-      readiness-resource = readinessOutput "References the aggregate containing these exact objects.";
-      cluster-readiness-resource = readinessOutput "References the exact observed Kubernetes cluster incarnation.";
+      resource = readinessOutput "References the aggregate containing these exact objects.";
+      cluster-resource = readinessOutput "References the exact observed Kubernetes cluster incarnation.";
       kubeconfig-resource = readinessOutput "References the protected kubeconfig context bound to this cluster.";
     };
     guarantees = [];

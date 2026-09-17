@@ -1,4 +1,4 @@
-##! Pure evaluation checks for the package-owned nftables firewall declaration.
+##! Pure evaluation checks for the provider-neutral host firewall policy.
 {
   lib,
   pkgs,
@@ -48,15 +48,21 @@
     forwardPolicy = "accept";
     trustedInterfaces = ["lo" "tailscale0"];
   };
+  changed = evaluate {
+    enable = true;
+    defaultPolicy = "drop";
+    allowedTCP = [22 443 8443];
+    allowedUDP = [41641];
+    forwardPolicy = "accept";
+    trustedInterfaces = ["lo" "tailscale0"];
+  };
   packageProjection = pkgs.nftables.abilities;
   packageContract = pkgs.nftables.contract.value;
   documentedOptionPaths =
     builtins.map
     (option: lib.concatStringsSep "." option.path)
     packageContract.option_declarations;
-  requests = enabled.config.aos.abilities.requests;
-  configuration = requests."nftables:ruleset".parameters.source.content;
-  lifecycle = requests."nftables:nftables-lifecycle".parameters;
+  request = enabled.config.aos.abilities.requests."nftables:ruleset";
 in
   assert enabled.config.environment.systemPackages == [pkgs.nftables];
   assert builtins.attrNames packageProjection.interfaces == [];
@@ -84,29 +90,33 @@ in
   assert pkgs.nftables ? module;
   assert disabled.config.aos.abilities.instances == {};
   assert disabled.config.aos.abilities.requests == {};
-  assert enabled.config.aos.abilities.instances ? "nftables:service";
-  assert requests ? "nftables:local-filesystems";
-  assert requests ? "nftables:network-readiness";
-  assert requests ? "nftables:ruleset";
-  assert lib.hasInfix "elements = { 22, 443 }" configuration;
-  assert lib.hasInfix "elements = { 41641 }" configuration;
-  assert lib.hasInfix ''iifname "tailscale0" accept'' configuration;
-  assert lib.hasInfix "type filter hook forward priority 0; policy accept;" configuration;
-  assert lifecycle.start
-  == [
-    {
-      executable = {
-        artifact = lib.abilities.packageOutput {package = "nftables";};
-        entry_point = "sbin/nft";
-        arguments = [
-          "-f"
-          {
-            _type = "aos-request-output-reference";
-            request = "nftables:ruleset";
-            output = "planned-path";
-          }
-        ];
-      };
-      ignore_failure = false;
-    }
-  ]; true
+  assert enabled.config.aos.abilities.instances ? "nftables:firewall";
+  assert builtins.attrNames enabled.config.aos.abilities.requests == ["nftables:ruleset"];
+  assert request.parameters
+  == {
+    base = {
+      input_policy = "drop";
+      forward_policy = "accept";
+      trusted_interfaces = ["lo" "tailscale0"];
+      prerequisites = [];
+    };
+    ingress.firewall-defaults = {
+      endpoints = [
+        {
+          transport = "tcp";
+          port = 22;
+        }
+        {
+          transport = "tcp";
+          port = 443;
+        }
+        {
+          transport = "udp";
+          port = 41641;
+        }
+      ];
+      prerequisites = [];
+    };
+    forwarding = {};
+  };
+  assert request.parameters != changed.config.aos.abilities.requests."nftables:ruleset".parameters; true

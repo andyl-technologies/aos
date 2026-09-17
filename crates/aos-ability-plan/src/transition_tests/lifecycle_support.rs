@@ -12,6 +12,7 @@ pub(super) fn pure_service_package(
         name: key("service"),
         description: "Pure service test implementation.".to_string(),
         interface: interface.clone(),
+        methods: Vec::new(),
         guarantees: Vec::new(),
         artifact: module.clone(),
         requirements: Vec::new(),

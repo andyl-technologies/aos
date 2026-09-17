@@ -169,7 +169,7 @@
   };
   ingress = producer "network-ingress" lib.abilities.interfaces.networkPolicy.interfaces.ingress {
     endpoints = ingressEndpoints;
-    prerequisites = [(resultOf "network-readiness" "readiness-resource")];
+    prerequisites = [(resultOf "network-readiness" "resource")];
   };
   service = serviceManagement.forService {
     featureContributions = [
@@ -234,7 +234,7 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        prerequisites = [(resultOf "network-ingress" "readiness-resource")];
+        prerequisites = [(resultOf "network-ingress" "resource")];
         after = [];
         before = [];
         requires = [];

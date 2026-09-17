@@ -227,6 +227,7 @@ fn implementation_at(store_path: &str, nar_hash: Sha256Digest) -> ProviderImplem
             abi: NonZeroU32::new(1).unwrap(),
             descriptor: digest('1'),
         },
+        methods: Vec::new(),
         guarantees: Vec::new(),
         artifact: ArtifactReference {
             content: digest('2'),

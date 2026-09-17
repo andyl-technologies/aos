@@ -14,7 +14,13 @@
     abi = 1;
     description = "Selects whether the system collects process crash dumps.";
     inherit requestType;
-    outputs = {};
+    outputs.selected-policy = {
+      schema = requestType;
+      phase = "planning";
+      lifetime = "instance";
+      visibility = "protected";
+      description = "Returns the selected crash-dump policy for this system instance.";
+    };
     methods = {};
     lifecycle.persistentDeleteMethod = null;
     guarantees = [];

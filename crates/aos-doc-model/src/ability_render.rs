@@ -146,7 +146,14 @@ pub(crate) fn plain(reference: &PackageAbilityReference) -> String {
             );
             let _ = writeln!(output, "    description\t{}", declared_output.description);
         }
-        for (name, method) in &interface.methods {
+        let supported_methods = reference
+            .implementation_for_export(export)
+            .map(|implementation| implementation.methods.as_slice())
+            .unwrap_or_default();
+        for name in supported_methods {
+            let Some(method) = interface.methods.get(name) else {
+                continue;
+            };
             let operations = method
                 .permitted_operations
                 .iter()
@@ -371,9 +378,16 @@ pub(crate) fn html(reference: &PackageAbilityReference) -> String {
             }
             output.push_str("</ul>");
         }
-        if !interface.methods.is_empty() {
+        let supported_methods = reference
+            .implementation_for_export(export)
+            .map(|implementation| implementation.methods.as_slice())
+            .unwrap_or_default();
+        if !supported_methods.is_empty() {
             output.push_str("<h5>Declared methods</h5><ul>");
-            for (name, method) in &interface.methods {
+            for name in supported_methods {
+                let Some(method) = interface.methods.get(name) else {
+                    continue;
+                };
                 output.push_str("<li><code>");
                 escape_html_into(name.as_str(), &mut output);
                 output.push_str("</code> - ");

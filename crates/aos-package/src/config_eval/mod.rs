@@ -490,6 +490,7 @@ where
         seed.config_realization = resolved.realization;
         seed.version = Some(resolved.version);
         seed.outputs.self_output = Some(resolved.runtime_output);
+        seed.outputs.dependencies = resolved.selector_outputs;
         seed.contract = Some(resolved.contract);
     }
     Ok(())
@@ -500,18 +501,6 @@ fn assign_runtime_outputs(members: &mut [WorkingSetMember], runtime: &runtime::R
     for member in members {
         if let Some(package) = runtime.packages.get(&member.package) {
             member.outputs.self_output = Some(package.store_path.clone());
-            member.outputs.dependencies.clear();
-            for dependency in runtime.edges.get(&member.package).into_iter().flatten() {
-                if let Some(pin) = runtime.packages.get(dependency) {
-                    member
-                        .outputs
-                        .dependencies
-                        .entry(dependency.clone())
-                        .or_insert_with(|| pin.store_path.clone());
-                }
-            }
-        } else {
-            member.outputs.dependencies.clear();
         }
     }
 }

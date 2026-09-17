@@ -158,7 +158,7 @@
             kind = "copied-file";
             source = {
               kind = "execution-path";
-              resource = resultOf "selinux-config-source" "retained-resource";
+              resource = resultOf "selinux-config-source" "resource";
               path = resultOf "selinux-config-source" "planned-path";
             };
             maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
@@ -168,8 +168,8 @@
           group = "root";
           mode = "0444";
           prerequisites = [
-            (resultOf "selinux-config-source" "retained-resource")
-            (resultOf "local-filesystems" "readiness-resource")
+            (resultOf "selinux-config-source" "resource")
+            (resultOf "local-filesystems" "resource")
           ];
         };
       }
@@ -181,7 +181,7 @@
             kind = "copied-file";
             source = {
               kind = "execution-path";
-              resource = resultOf "semanage-config-source" "retained-resource";
+              resource = resultOf "semanage-config-source" "resource";
               path = resultOf "semanage-config-source" "planned-path";
             };
             maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
@@ -191,8 +191,8 @@
           group = "root";
           mode = "0444";
           prerequisites = [
-            (resultOf "semanage-config-source" "retained-resource")
-            (resultOf "local-filesystems" "readiness-resource")
+            (resultOf "semanage-config-source" "resource")
+            (resultOf "local-filesystems" "resource")
           ];
         };
       }
@@ -235,20 +235,20 @@
       ];
       dependencies = {
         after = [
-          (resultOf "local-filesystems" "readiness-resource")
-          (resultOf "policy-state" "retained-resource")
+          (resultOf "local-filesystems" "resource")
+          (resultOf "policy-state" "resource")
         ];
         before = [
-          (resultOf "early-system" "readiness-resource")
-          (resultOf "runtime-entry-population" "lifecycle-resource")
+          (resultOf "early-system" "resource")
+          (resultOf "runtime-entry-population" "resource")
         ];
         requires = [
-          (resultOf "policy-state" "retained-resource")
-          (resultOf "selinux-config" "retained-resource")
-          (resultOf "semanage-config" "retained-resource")
+          (resultOf "policy-state" "resource")
+          (resultOf "selinux-config" "resource")
+          (resultOf "semanage-config" "resource")
         ];
         wants = [];
-        wanted_by = [(resultOf "early-system" "readiness-resource")];
+        wanted_by = [(resultOf "early-system" "resource")];
       };
       readiness = {
         mechanism = "successful-exit";
@@ -296,13 +296,13 @@
       };
       dependencies = {
         after = [
-          (resultOf "selinux-policy-load-lifecycle" "service-resource")
-          (resultOf "local-filesystems" "readiness-resource")
+          (resultOf "selinux-policy-load-lifecycle" "resource")
+          (resultOf "local-filesystems" "resource")
         ];
-        before = [(resultOf "early-system" "readiness-resource")];
-        requires = [(resultOf "selinux-policy-load-lifecycle" "service-resource")];
+        before = [(resultOf "early-system" "resource")];
+        requires = [(resultOf "selinux-policy-load-lifecycle" "resource")];
         wants = [];
-        wanted_by = [(resultOf "early-system" "readiness-resource")];
+        wanted_by = [(resultOf "early-system" "resource")];
       };
       readiness = {
         mechanism = "successful-exit";

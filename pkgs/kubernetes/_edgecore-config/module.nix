@@ -279,16 +279,16 @@
       };
       dependencies = {
         after = [
-          (resultOf "network" "readiness-resource")
-          (resultOf "kernel-modules" "readiness-resource")
-          (resultOf "kernel-tunables" "readiness-resource")
+          (resultOf "network" "resource")
+          (resultOf "kernel-modules" "resource")
+          (resultOf "kernel-tunables" "resource")
         ];
         before = [];
         requires = [
-          (resultOf "kernel-modules" "readiness-resource")
-          (resultOf "kernel-tunables" "readiness-resource")
+          (resultOf "kernel-modules" "resource")
+          (resultOf "kernel-tunables" "resource")
         ];
-        wants = [(resultOf "network" "readiness-resource")];
+        wants = [(resultOf "network" "resource")];
       };
       resources = {
         open_files = {

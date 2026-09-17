@@ -21,7 +21,6 @@
     requests = {};
     outputs = {};
     resourceFragments = {};
-    conditionalRequirements = [];
   };
   parentBinding = bindings: requestName: let
     matches =
@@ -102,7 +101,7 @@
           name = requestName;
           value = {
             planned-path = pathForResource reference.resource;
-            configuration-resource = reference;
+            resource = reference;
           };
         })
         (builtins.attrNames requests));
@@ -139,7 +138,6 @@
     else {
       requests = {};
       outputs = {};
-      conditionalRequirements = [];
       inherit realizations;
     };
   provideRollout = {
@@ -166,7 +164,6 @@
   composeRollout = {resources, ...}: {
     requests = {};
     outputs = {};
-    conditionalRequirements = [];
     realizations =
       builtins.mapAttrs (_: _: {
         schema = "aos.image-rollout.realization/v1";

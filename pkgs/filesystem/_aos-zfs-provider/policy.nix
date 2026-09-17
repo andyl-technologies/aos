@@ -20,27 +20,32 @@
   ceilingDirtyDataMax = memory.maxBytes * memory.dirtyDataPercent / 100;
   budgetShare = memory.arcPercent + memory.scrubPercent + memory.dirtyDataPercent;
 
-  loadTimeParameters = {
-    "spl.spl_kmem_cache_obj_per_slab" = 1;
-    "zfs.zfs_arc_max" = ceilingArcMax;
-    "zfs.zfs_arc_sys_free" = memory.systemFreeReserve;
-    "zfs.zfs_arc_dnode_limit" = ceilingDnodeLimit;
-    "zfs.zfs_dirty_data_max" = ceilingDirtyDataMax;
-  } // lib.optionalAttrs memory.limitAbdScatter {
-    "zfs.zfs_abd_scatter_max_order" = 0;
-  };
+  loadTimeParameters =
+    {
+      "spl.spl_kmem_cache_obj_per_slab" = 1;
+      "zfs.zfs_arc_max" = ceilingArcMax;
+      "zfs.zfs_arc_sys_free" = memory.systemFreeReserve;
+      "zfs.zfs_arc_dnode_limit" = ceilingDnodeLimit;
+      "zfs.zfs_dirty_data_max" = ceilingDirtyDataMax;
+    }
+    // lib.optionalAttrs memory.limitAbdScatter {
+      "zfs.zfs_abd_scatter_max_order" = 0;
+    };
   packagedVersion = builtins.unsafeDiscardStringContext cfg.packagedVersion;
-  knownIssueParameters = lib.optionalAttrs (
-    cfg.knownIssueWorkarounds
-    && builtins.compareVersions packagedVersion "2.4.4" <= 0
-  ) {
-    # OpenZFS 2.4.x can fault in its LZ4 trial pass before Zstd compression.
-    "zfs.zstd_earlyabort_pass" = 0;
-  };
+  knownIssueParameters =
+    lib.optionalAttrs (
+      cfg.knownIssueWorkarounds
+      && builtins.compareVersions packagedVersion "2.4.4" <= 0
+    ) {
+      # OpenZFS 2.4.x can fault in its LZ4 trial pass before Zstd compression.
+      "zfs.zstd_earlyabort_pass" = 0;
+    };
   effectiveParameters = loadTimeParameters // knownIssueParameters;
-  parameterArguments = lib.mapAttrsToList (
-    name: value: "${name}=${toString value}"
-  ) effectiveParameters;
+  parameterArguments =
+    lib.mapAttrsToList (
+      name: value: "${name}=${toString value}"
+    )
+    effectiveParameters;
 
   producer = key: interface: parameters:
     serviceManagement.forProducer {
@@ -58,7 +63,7 @@
     };
   tunables = producer "zfs-kernel-tunables" lib.abilities.interfaces.kernelTunables.interface {
     values = runtimeTunables;
-    dependencies = [(resultOf "zfs-kernel-module" "readiness-resource")];
+    dependencies = [(resultOf "zfs-kernel-module" "resource")];
   };
 
   program = {
@@ -124,11 +129,11 @@
       };
     };
   memoryPolicy = service "zfs-memory-policy" "Apply the bounded OpenZFS memory policy" (["apply"] ++ policyArguments) [
-    (resultOf "zfs-kernel-module" "readiness-resource")
-    (resultOf "zfs-kernel-tunables" "readiness-resource")
+    (resultOf "zfs-kernel-module" "resource")
+    (resultOf "zfs-kernel-tunables" "resource")
   ];
   verification = service "zfs-verify-parameters" "Verify the running OpenZFS memory and failure policy" (["verify"] ++ policyArguments) [
-    (resultOf "zfs-memory-policy" "readiness-resource")
+    (resultOf "zfs-memory-policy" "resource")
   ];
   fragments = [kernelModules tunables memoryPolicy] ++ lib.optional failure.verifyParameters verification;
   contributions = builtins.map serviceManagement.splitContribution fragments;
@@ -136,42 +141,66 @@ in {
   options.aos.filesystems.zfs = {
     memory = {
       maxBytes = lib.mkOption {
-        type = abilityTypes.integer {minimum = 512 * mib; maximum = abilityTypes.limits.maxSafeInteger;};
+        type = abilityTypes.integer {
+          minimum = 512 * mib;
+          maximum = abilityTypes.limits.maxSafeInteger;
+        };
         default = 8 * gib;
         description = "Absolute ceiling in bytes on OpenZFS kernel memory.";
       };
       maxPercent = lib.mkOption {
-        type = abilityTypes.integer {minimum = 1; maximum = 80;};
+        type = abilityTypes.integer {
+          minimum = 1;
+          maximum = 80;
+        };
         default = 25;
         description = "Additional OpenZFS memory ceiling as a percentage of installed RAM.";
       };
       arcPercent = lib.mkOption {
-        type = abilityTypes.integer {minimum = 1; maximum = 100;};
+        type = abilityTypes.integer {
+          minimum = 1;
+          maximum = 100;
+        };
         default = 70;
         description = "Share of the memory budget available to the ARC.";
       };
       dnodePercent = lib.mkOption {
-        type = abilityTypes.integer {minimum = 1; maximum = 100;};
+        type = abilityTypes.integer {
+          minimum = 1;
+          maximum = 100;
+        };
         default = 25;
         description = "Share of the ARC available to dnode metadata.";
       };
       scrubPercent = lib.mkOption {
-        type = abilityTypes.integer {minimum = 1; maximum = 100;};
+        type = abilityTypes.integer {
+          minimum = 1;
+          maximum = 100;
+        };
         default = 10;
         description = "Share of the memory budget available to scrub and resilver queues.";
       };
       dirtyDataPercent = lib.mkOption {
-        type = abilityTypes.integer {minimum = 1; maximum = 100;};
+        type = abilityTypes.integer {
+          minimum = 1;
+          maximum = 100;
+        };
         default = 15;
         description = "Share of the memory budget available to dirty write data.";
       };
       systemFreeReserve = lib.mkOption {
-        type = abilityTypes.integer {minimum = 0; maximum = abilityTypes.limits.maxSafeInteger;};
+        type = abilityTypes.integer {
+          minimum = 0;
+          maximum = abilityTypes.limits.maxSafeInteger;
+        };
         default = 1 * gib;
         description = "Bytes of system memory the ARC keeps free by shrinking.";
       };
       committedPercentLimit = lib.mkOption {
-        type = abilityTypes.integer {minimum = 1; maximum = 90;};
+        type = abilityTypes.integer {
+          minimum = 1;
+          maximum = 90;
+        };
         default = 60;
         description = "Maximum installed-RAM share committed by OpenZFS and compressed swap.";
       };
@@ -188,7 +217,10 @@ in {
         description = "Panic and reboot when a kernel oops can leave the storage stack wedged.";
       };
       panicTimeout = lib.mkOption {
-        type = abilityTypes.integer {minimum = 0; maximum = 3600;};
+        type = abilityTypes.integer {
+          minimum = 0;
+          maximum = 3600;
+        };
         default = 10;
         description = "Seconds to wait after a panic before rebooting.";
       };
@@ -205,7 +237,10 @@ in {
     };
     moduleParameters = lib.mkOption {
       type = abilityTypes.list {
-        element = abilityTypes.string {maxLength = 4096; syntax = null;};
+        element = abilityTypes.string {
+          maxLength = 4096;
+          syntax = null;
+        };
         maxItems = 64;
         unique = true;
         canonicalOrder = true;
@@ -220,7 +255,10 @@ in {
       description = "Apply version-bound parameters for known defects in the packaged OpenZFS release.";
     };
     packagedVersion = lib.mkOption {
-      type = abilityTypes.string {maxLength = 128; syntax = null;};
+      type = abilityTypes.string {
+        maxLength = 128;
+        syntax = null;
+      };
       default = "0";
       internal = true;
       description = "OpenZFS release whose kernel module and userland are retained together.";

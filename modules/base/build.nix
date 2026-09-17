@@ -326,7 +326,7 @@ in {
           The `aos.config-manifest/v1` value: a pure attrset (no
           derivations forced, no secrets) describing the rendered `/etc`
           tree, F2-A job-script texts, users, pinned store paths, the module
-          ABI, and the five
+          ABI, and the six
           content-addressed eval inputs. This is the data contract the on-host
           evaluator emits and the imperative materializer consumes
           (architecture.md §"The manifest"). The builder-side systemd unit
@@ -430,488 +430,529 @@ in {
   config = lib.mkMerge [
     {environment.etc = treeContributionEntries;}
     {
-    system.build.initrd = managerInitrd.artifact;
-    system.build.initrdStaticAbilityContract = managerInitrd.staticAbilityContract;
-    system.build.initrdSourceStageBundle = managerInitrd.sourceStageBundle;
-    system.build.managerConfiguration = managerConfigurationOutput;
+      system.build.initrd = managerInitrd.artifact;
+      system.build.initrdStaticAbilityContract = managerInitrd.staticAbilityContract;
+      system.build.initrdSourceStageBundle = managerInitrd.sourceStageBundle;
+      system.build.managerConfiguration = managerConfigurationOutput;
 
-    # --- composefs lower for /etc (spec v12 §5.3) --------------------
-    #
-    # `etcBasedir` materialises octal-mode entries as regular files
-    # under a flat tree. Symlink-mode entries don't appear here — the
-    # composefs metadata image embeds those as symlinks pointing
-    # directly into /nix/store. Mirrors nixos/modules/system/etc/
-    # etc.nix:367-388 (MIT, Eelco Dolstra et al.).
-    system.build.etcBasedir = pkgs.runCommand "etc-basedir" {} ''
-      set -euo pipefail
+      # --- composefs lower for /etc (spec v12 §5.3) --------------------
+      #
+      # `etcBasedir` materialises octal-mode entries as regular files
+      # under a flat tree. Symlink-mode entries don't appear here — the
+      # composefs metadata image embeds those as symlinks pointing
+      # directly into /nix/store. Mirrors nixos/modules/system/etc/
+      # etc.nix:367-388 (MIT, Eelco Dolstra et al.).
+      system.build.etcBasedir = pkgs.runCommand "etc-basedir" {} ''
+        set -euo pipefail
 
-      makeEtcEntry() {
-        src="$1"
-        target="$2"
+        makeEtcEntry() {
+          src="$1"
+          target="$2"
 
-        mkdir -p "$out/$(dirname "$target")"
-        cp "$src" "$out/$target"
-      }
+          mkdir -p "$out/$(dirname "$target")"
+          cp "$src" "$out/$target"
+        }
 
-      mkdir -p "$out"
-      ${lib.concatMapStringsSep "\n" (
-          entry:
-            lib.escapeShellArgs [
-              "makeEtcEntry"
-              "${entry.source}"
-              entry.target
-            ]
-        )
-        etcHardlinks}
-    '';
-
-    # `etcDump` runs build-composefs-dump.py against the JSON
-    # description of every enabled entry. Plain text output so the
-    # merge-safety check (§5.7) can inspect it without mounting EROFS.
-    system.build.etcDump = let
-      etcJson = pkgs.writeTextFile {
-        name = "etc-json";
-        text = builtins.toJSON etc';
-        destination = "/etc.json";
-      };
-    in
-      pkgs.runCommand "etc-dump" {} ''
-        # AOS stdenv pre-creates $out as a directory (stdenv/setup.sh).
-        # The dump is a single text file, so drop the dir and write
-        # straight to $out.
-        rmdir "$out"
-        ${pkgs.python3}/bin/python3 \
-          ${../../pkgs/system/build-composefs-dump.py} \
-          ${etcJson}/etc.json > $out
+        mkdir -p "$out"
+        ${lib.concatMapStringsSep "\n" (
+            entry:
+              lib.escapeShellArgs [
+                "makeEtcEntry"
+                "${entry.source}"
+                entry.target
+              ]
+          )
+          etcHardlinks}
       '';
 
-    # `etcMetadataImage` is the EROFS image consumed by overlayfs
-    # `lowerdir+=`. The `fsck.erofs` sanity check is wired in once
-    # `pkgs.erofs-utils` lands (delegated to a separate task; see
-    # spec v12 step 3).
-    system.build.etcMetadataImage = pkgs.runCommand "etc-metadata.erofs" {} ''
-      # AOS stdenv pre-creates $out as a directory; the EROFS image is
-      # a single file, so drop the dir first.
-      rmdir "$out"
-      ${pkgs.composefs}/bin/mkcomposefs --from-file ${config.system.build.etcDump} $out
-      ${pkgs.erofs-utils}/bin/fsck.erofs $out
-    '';
-
-    # Enforce `config.assertions` and surface `config.warnings` at
-    # `system.build.toplevel` construction time. Matches the nixpkgs
-    # convention (`nixos/modules/system/activation/top-level.nix`):
-    # a broken config is still inspectable via `config.*` — only
-    # forcing `system.build.toplevel` triggers the assertion throw,
-    # which lets `aos repl` / `aos show` / debugging tools still work
-    # on a config that would refuse to build.
-    system.build.toplevel = let
-      failedAssertions = builtins.filter (a: !a.assertion) config.assertions;
-      assertionCheck =
-        if failedAssertions == []
-        then null
-        else
-          throw ''
-            Failed assertions:
-            ${lib.concatStringsSep "\n" (builtins.map (a: "  - ${a.message}") failedAssertions)}
-          '';
-      # Emit every warning via `builtins.trace` in a single fold. The
-      # trace writes to stderr during evaluation and returns its second
-      # argument unchanged, so the chain produces a sentinel value we
-      # can `seq` against the derivation construction.
-      warningTrace = builtins.foldl' (acc: w: builtins.trace "warning: ${w}" acc) null config.warnings;
-    in
-      # `seq` forces both sides of the checks before the derivation
-      # is constructed. If `assertionCheck` throws, the toplevel
-      # derivation is never built.
-      builtins.seq assertionCheck (
-        builtins.seq warningTrace (pkgs.mkDerivation {
-          name = "aos-system-toplevel";
-          src = null;
-
-          buildDeps = [pkgs.coreutils];
-
-          phases = [
-            {
-              name = "build-toplevel";
-              # Named-output layout per spec v12 §1. No more
-              # `${toplevel}/etc` tree — the system /etc content lives
-              # entirely in the composefs metadata image plus basedir,
-              # mounted as the bottom lower of the /etc overlay at
-              # boot. Consumers read named-output paths directly:
-              #   etc-metadata.erofs, etc-basedir/, etc-dump,
-              #   systemd-units/, os-release,
-              #   meta/{package-name,version}, kernel, initrd.
-              script = ''
-                mkdir -p $out/meta $out/nix-support
-
-                ln -sfn ${config.system.build.etcMetadataImage} $out/etc-metadata.erofs
-                ln -sfn ${config.system.build.etcBasedir} $out/etc-basedir
-                ln -sfn ${config.system.build.etcDump} $out/etc-dump
-                for managerEntry in ${managerConfigurationOutput}/*; do
-                  ln -sfn "$managerEntry" "$out/''${managerEntry##*/}"
-                done
-                ln -sfn ${config.environment.etc."os-release".source} $out/os-release
-                ln -sfn ${config.system.build.kernel} $out/kernel
-                ln -sfn ${config.system.build.initrd} $out/initrd
-                ln -sfn ${config.aos.config.evalAtBoot.baseLib} $out/base-lib
-                ${lib.optionalString (config.aos.apm.drainScript != null) ''
-                  ln -sfn ${config.aos.apm.drainScript} $out/drain
-                ''}
-                ${lib.optionalString (config.aos.apm.healthScript != null) ''
-                  ln -sfn ${config.aos.apm.healthScript} $out/health
-                ''}
-
-                # Resolve trusted booted-image commands through the immutable
-                # rootfs command farm. The absolute target deliberately adds no
-                # package closure to the toplevel; early boot authenticates the
-                # target and every rollout command before publishing
-                # `/run/current-system`.
-                ln -s /usr $out/sw
-
-                # `aos-seed-profiles.service` reads these on first boot
-                # to populate `state.json`. Plain text — `read_meta`
-                # in the service script strips the trailing newline.
-                printf '%s' "${config.aos.system.name}" > $out/meta/package-name
-                printf '%s' "${config.aos.system.version}" > $out/meta/version
-                printf '%s' "${config.aos.system.stateVersion}" > $out/meta/state-version
-                printf '%s' "${toString config.aos.system.moduleAbi}" > $out/meta/module-abi
-                printf '%s' "${toString config.aos.system.configInputAbi}" > $out/meta/config-input-abi
-                printf '%s' "${config.aos.config.evalAtBoot.baseLibAbiHash}" > $out/meta/base-lib-abi-hash
-                printf '%s' "${pkgs.aos.packageRuntime}" > $out/meta/native-executor-ref
-                printf '%s' ${lib.escapeShellArg (
-                  if config.aos.image.platform == null
-                  then ""
-                  else config.aos.image.platform.normalArtifactPath
-                )} > $out/meta/uki-path
-                printf '%s' ${lib.escapeShellArg config.aos.filesystems.espDevice} > $out/meta/esp-device
-                printf '%s\n' ${lib.escapeShellArg (builtins.toJSON {
-                  backend = config.aos.boot.storage.backend;
-                  espDevices = config.aos.boot.storage.espDevices;
-                  devices = config.aos.boot.storage.resolvedDevices;
-                })} > $out/meta/boot-storage.json
-
-                # Closure tracking: list every systemPackage as a
-                # /nix/store path so Nix's reference scanner pulls
-                # them into the toplevel's closure (and thereby the
-                # rootfs's, via `allClosures = [toplevel kernel] ++
-                # extraClosures` in lib/build/rootfs.nix).
-                ${lib.concatStringsSep "\n" (
-                  builtins.map (
-                    p: "echo ${builtins.toString p} >> $out/nix-support/system-packages"
-                  )
-                  config.environment.systemPackages
-                )}
-              '';
-            }
-          ];
-
-          meta = {
-            description = "AOS system toplevel";
-          };
-        })
-      );
-
-    # --- aos.config-manifest/v1 (pure data) ----------------------------
-    #
-    # The builder-side toplevel consumes these same selected-manager entries;
-    # there is no parallel derivation-bearing assembly path.
-    system.build.configManifest = let
-      jobScripts = managerConfiguration.executableScripts;
-
-      isOctal = m: builtins.match "[0-7]{3,4}" m != null;
-
-      # `/etc` entries contributed by `environment.etc`, minus the
-      # `systemd/system` directory (expanded per-unit below).
-      renderEtc = e:
-        if e.runtimeCertificateBundle != null
-        then {
-          kind = "certificate-bundle";
-          mode =
-            if isOctal e.mode
-            then e.mode
-            else "0644";
-          parts = builtins.map (part:
-            if part.source != null && part.text == null
-            then {
-              kind = "store-file";
-              path = part.source;
-            }
-            else if part.source == null && part.text != null
-            then {
-              kind = "text";
-              inherit (part) text;
-            }
-            else throw "runtimeCertificateBundle parts must set exactly one of source or text")
-          e.runtimeCertificateBundle;
-        }
-        else if e.text != null
-        then {
-          kind = "text";
-          text = e.text;
-          mode =
-            if isOctal e.mode
-            then e.mode
-            else "0644";
-        }
-        else if isOctal e.mode
-        then {
-          # Octal-mode, store-sourced: content lives in the EROFS basedir;
-          # v1 manifest pins the source path (the materializer recovers
-          # mode/uid/gid from the metadata image). Documented limitation.
-          kind = "store-symlink";
-          target = builtins.toString e.source;
-        }
-        else {
-          kind = "store-symlink";
-          target = builtins.toString e.source;
+      # `etcDump` runs build-composefs-dump.py against the JSON
+      # description of every enabled entry. Plain text output so the
+      # merge-safety check (§5.7) can inspect it without mounting EROFS.
+      system.build.etcDump = let
+        etcJson = pkgs.writeTextFile {
+          name = "etc-json";
+          text = builtins.toJSON etc';
+          destination = "/etc.json";
         };
-      pathString = value: builtins.unsafeDiscardStringContext (builtins.toString value);
-      systemPackageOwners = lib.unique (builtins.map
-        (package: provenance.ownerOfListString ["environment" "systemPackages"] (pathString package))
-        config.environment.systemPackages);
-      sessionVariableOwners = lib.unique (lib.concatMap
-        (name: provenance.dependencyOwnersOfAttr ["environment" "sessionVariables"] name)
-        (builtins.attrNames config.environment.sessionVariables));
-      # The login environment is rendered by image modules, but its bytes are
-      # a projection of shared operator configuration. A package must not make
-      # one of these global artifacts survive after that package is removed,
-      # so package-owned contributions fail closed instead of being promoted
-      # to host ownership.
-      sharedArtifactOwner = description: owners: let
-        uniqueOwners = lib.unique owners;
-        packageOwners = builtins.filter (owner: !builtins.elem owner ["@base" "@host"]) uniqueOwners;
       in
-        if packageOwners != []
-        then throw "config manifest shared artifact ${description} depends on package owner(s): ${lib.concatStringsSep ", " packageOwners}"
-        else if builtins.elem "@host" uniqueOwners
-        then "@host"
-        else "@base";
-      artifactOwner = path: name: let
-        owners = provenance.dependencyOwnersOfAttr path name;
-      in
-        if path == ["environment" "etc"] && name == "profile"
-        then sharedArtifactOwner "environment.etc.profile" (owners ++ systemPackageOwners)
-        else if path == ["environment" "etc"] && name == "pam/environment"
-        then sharedArtifactOwner "environment.etc.pam/environment" (owners ++ systemPackageOwners ++ sessionVariableOwners)
-        else if builtins.length owners == 1
-        then builtins.head owners
-        else if owners == []
-        then "@base"
-        else throw "config manifest artifact ${builtins.concatStringsSep "." path}.${name} depends on multiple owners: ${lib.concatStringsSep ", " owners}";
-      envEtcRecords = lib.concatLists (lib.mapAttrsToList (name: e:
-        lib.optional (e.enable && e.target != "systemd/system") {
-          path = e.target;
-          value = renderEtc e;
-          owner =
-            if e.runtimeCertificateBundle != null
-            then config.aos.security.pki._runtimeBundleOwner
-            else artifactOwner ["environment" "etc"] name;
-        })
-      config.environment.etc);
-      envEtcTargets = builtins.map (record: record.path) envEtcRecords;
-      pathsOverlap = left: right:
-        left
-        == right
-        || lib.hasPrefix "${left}/" right
-        || lib.hasPrefix "${right}/" left;
-      duplicateEnvEtcTargets =
-        builtins.filter
-        (target: builtins.length (builtins.filter (candidate: pathsOverlap target candidate) envEtcTargets) > 1)
-        (lib.unique envEtcTargets);
-      envEtc =
-        if duplicateEnvEtcTargets != []
-        then throw "environment.etc entries collide at final /etc target(s): ${lib.concatStringsSep ", " duplicateEnvEtcTargets}"
-        else
-          builtins.listToAttrs (builtins.map (record:
-            lib.nameValuePair record.path record.value)
-          envEtcRecords);
-      envEtcOwnership = builtins.listToAttrs (builtins.map (record:
-        lib.nameValuePair record.path record.owner)
-      envEtcRecords);
-      managerEtcOwnership = managerConfiguration.ownership.filesystemEntries;
+        pkgs.runCommand "etc-dump" {} ''
+          # AOS stdenv pre-creates $out as a directory (stdenv/setup.sh).
+          # The dump is a single text file, so drop the dir and write
+          # straight to $out.
+          rmdir "$out"
+          ${pkgs.python3}/bin/python3 \
+            ${../../pkgs/system/build-composefs-dump.py} \
+            ${etcJson}/etc.json > $out
+        '';
 
-      etcCollisions =
-        builtins.filter
-        (target:
-          builtins.any
-          (systemdTarget: pathsOverlap target systemdTarget)
-          (builtins.attrNames managerConfiguration.filesystemEntries))
-        (builtins.attrNames envEtc);
-      etc =
-        if etcCollisions != []
-        then throw "environment.etc and selected manager entries collide at final /etc target(s): ${lib.concatStringsSep ", " etcCollisions}"
-        else envEtc // managerConfiguration.filesystemEntries;
-      etcOwnership = envEtcOwnership // managerEtcOwnership;
+      # `etcMetadataImage` is the EROFS image consumed by overlayfs
+      # `lowerdir+=`. The `fsck.erofs` sanity check is wired in once
+      # `pkgs.erofs-utils` lands (delegated to a separate task; see
+      # spec v12 step 3).
+      system.build.etcMetadataImage = pkgs.runCommand "etc-metadata.erofs" {} ''
+        # AOS stdenv pre-creates $out as a directory; the EROFS image is
+        # a single file, so drop the dir first.
+        rmdir "$out"
+        ${pkgs.composefs}/bin/mkcomposefs --from-file ${config.system.build.etcDump} $out
+        ${pkgs.erofs-utils}/bin/fsck.erofs $out
+      '';
 
-      # Users from `aos.users.*` (best-effort; `or` fallbacks keep this
-      # robust if the users module isn't imported by a given variant).
-      users = lib.mapAttrsToList (uname: u: {
-        name = uname;
-        uid = u.uid;
-        group = u.group;
-        gid = config.aos.users.groups.${u.group}.gid or null;
-        home = u.home;
-        shell = u.shell;
-        system = u.uid < 1000;
-        description = u.description or "";
-        supplementaryGroups = u.extraGroups or [];
-      }) (config.aos.users.users or {});
-      userDependencyOwners = user: let
-        userOwners = provenance.dependencyOwnersOfAttr ["aos" "users" "users"] user.name;
-        groupNames = lib.unique ([user.group] ++ user.supplementaryGroups);
-        groupOwners = lib.concatLists (builtins.map
-          (group: provenance.dependencyOwnersOfAttr ["aos" "users" "groups"] group)
-          groupNames);
+      # Enforce `config.assertions` and surface `config.warnings` at
+      # `system.build.toplevel` construction time. Matches the nixpkgs
+      # convention (`nixos/modules/system/activation/top-level.nix`):
+      # a broken config is still inspectable via `config.*` — only
+      # forcing `system.build.toplevel` triggers the assertion throw,
+      # which lets `aos repl` / `aos show` / debugging tools still work
+      # on a config that would refuse to build.
+      system.build.toplevel = let
+        failedAssertions = builtins.filter (a: !a.assertion) config.assertions;
+        assertionCheck =
+          if failedAssertions == []
+          then null
+          else
+            throw ''
+              Failed assertions:
+              ${lib.concatStringsSep "\n" (builtins.map (a: "  - ${a.message}") failedAssertions)}
+            '';
+        # Emit every warning via `builtins.trace` in a single fold. The
+        # trace writes to stderr during evaluation and returns its second
+        # argument unchanged, so the chain produces a sentinel value we
+        # can `seq` against the derivation construction.
+        warningTrace = builtins.foldl' (acc: w: builtins.trace "warning: ${w}" acc) null config.warnings;
       in
-        lib.unique (userOwners ++ groupOwners);
-      userOwnership = builtins.listToAttrs (builtins.map (user: let
-        owners = userDependencyOwners user;
-      in
-        if builtins.length owners == 1
-        then lib.nameValuePair user.name (builtins.head owners)
-        else throw "config manifest user ${user.name} depends on multiple owners (including referenced groups): ${lib.concatStringsSep ", " owners}")
-      users);
+        # `seq` forces both sides of the checks before the derivation
+        # is constructed. If `assertionCheck` throws, the toplevel
+        # derivation is never built.
+        builtins.seq assertionCheck (
+          builtins.seq warningTrace (pkgs.mkDerivation {
+            name = "aos-system-toplevel";
+            src = null;
 
-      # Find every canonical store root embedded in an emitted manifest string.
-      # Runtime role modules deliberately reference their tools by absolute
-      # path instead of adding them to environment.systemPackages, so their
-      # unit bodies and job scripts are closure-bearing artifacts too. Keep
-      # this pattern byte-for-byte aligned with the accepted store-name
-      # alphabet in the Rust manifest validator.
-      storeRootsInString = value:
-        lib.concatLists (builtins.map
-          (part:
-            if builtins.isList part
-            then builtins.filter (match: match != null) part
-            else [])
-          (builtins.split
-            "(/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+)"
-            (pathString value)));
-      storeRecordsInString = owner: value:
-        builtins.map (path: {inherit path owner;}) (storeRootsInString value);
-      storeRoot = target: let
-        parts = lib.splitString "/" target;
-      in
-        if builtins.length parts >= 4 && builtins.elemAt parts 1 == "nix" && builtins.elemAt parts 2 == "store"
-        then "/nix/store/${builtins.elemAt parts 3}"
-        else throw "config manifest store-symlink target is outside /nix/store: ${target}";
-      packageStoreRecords =
-        builtins.map (package: let
-          path = pathString package;
-        in {
-          inherit path;
-          owner = provenance.ownerOfListString ["environment" "systemPackages"] path;
-        })
-        config.environment.systemPackages;
-      etcStoreRecords = lib.concatMap (record:
-        if record.value.kind == "store-symlink"
-        then [
-          {
-            path = storeRoot record.value.target;
-            inherit (record) owner;
+            buildDeps = [pkgs.coreutils];
+
+            phases = [
+              {
+                name = "build-toplevel";
+                # Named-output layout per spec v12 §1. No more
+                # `${toplevel}/etc` tree — the system /etc content lives
+                # entirely in the composefs metadata image plus basedir,
+                # mounted as the bottom lower of the /etc overlay at
+                # boot. Consumers read named-output paths directly:
+                #   etc-metadata.erofs, etc-basedir/, etc-dump,
+                #   systemd-units/, os-release,
+                #   meta/{package-name,version}, kernel, initrd.
+                script = ''
+                  mkdir -p $out/meta $out/nix-support
+
+                  ln -sfn ${config.system.build.etcMetadataImage} $out/etc-metadata.erofs
+                  ln -sfn ${config.system.build.etcBasedir} $out/etc-basedir
+                  ln -sfn ${config.system.build.etcDump} $out/etc-dump
+                  for managerEntry in ${managerConfigurationOutput}/*; do
+                    ln -sfn "$managerEntry" "$out/''${managerEntry##*/}"
+                  done
+                  ln -sfn ${config.environment.etc."os-release".source} $out/os-release
+                  ln -sfn ${config.system.build.kernel} $out/kernel
+                  ln -sfn ${config.system.build.initrd} $out/initrd
+                  ln -sfn ${config.aos.config.evalAtBoot.baseLib} $out/base-lib
+                  ${lib.optionalString (config.aos.apm.drainScript != null) ''
+                    ln -sfn ${config.aos.apm.drainScript} $out/drain
+                  ''}
+                  ${lib.optionalString (config.aos.apm.healthScript != null) ''
+                    ln -sfn ${config.aos.apm.healthScript} $out/health
+                  ''}
+
+                  # Resolve trusted booted-image commands through the immutable
+                  # rootfs command farm. The absolute target deliberately adds no
+                  # package closure to the toplevel; early boot authenticates the
+                  # target and every rollout command before publishing
+                  # `/run/current-system`.
+                  ln -s /usr $out/sw
+
+                  # `aos-seed-profiles.service` reads these on first boot
+                  # to populate `state.json`. Plain text — `read_meta`
+                  # in the service script strips the trailing newline.
+                  printf '%s' "${config.aos.system.name}" > $out/meta/package-name
+                  printf '%s' "${config.aos.system.version}" > $out/meta/version
+                  printf '%s' "${config.aos.system.stateVersion}" > $out/meta/state-version
+                  printf '%s' "${toString config.aos.system.moduleAbi}" > $out/meta/module-abi
+                  printf '%s' "${toString config.aos.system.configInputAbi}" > $out/meta/config-input-abi
+                  printf '%s' "${config.aos.config.evalAtBoot.baseLibAbiHash}" > $out/meta/base-lib-abi-hash
+                  printf '%s' "${pkgs.aos.packageRuntime}" > $out/meta/native-executor-ref
+                  printf '%s' ${lib.escapeShellArg (
+                    if config.aos.image.platform == null
+                    then ""
+                    else config.aos.image.platform.normalArtifactPath
+                  )} > $out/meta/uki-path
+                  printf '%s' ${lib.escapeShellArg config.aos.filesystems.espDevice} > $out/meta/esp-device
+                  printf '%s\n' ${lib.escapeShellArg (builtins.toJSON {
+                    backend = config.aos.boot.storage.backend;
+                    espDevices = config.aos.boot.storage.espDevices;
+                    devices = config.aos.boot.storage.resolvedDevices;
+                  })} > $out/meta/boot-storage.json
+
+                  # Closure tracking: list every systemPackage as a
+                  # /nix/store path so Nix's reference scanner pulls
+                  # them into the toplevel's closure (and thereby the
+                  # rootfs's, via `allClosures = [toplevel kernel] ++
+                  # extraClosures` in lib/build/rootfs.nix).
+                  ${lib.concatStringsSep "\n" (
+                    builtins.map (
+                      p: "echo ${builtins.toString p} >> $out/nix-support/system-packages"
+                    )
+                    config.environment.systemPackages
+                  )}
+                '';
+              }
+            ];
+
+            meta = {
+              description = "AOS system toplevel";
+            };
+          })
+        );
+
+      # --- aos.config-manifest/v1 (pure data) ----------------------------
+      #
+      # The builder-side toplevel consumes these same selected-manager entries;
+      # there is no parallel derivation-bearing assembly path.
+      system.build.configManifest = let
+        jobScripts = managerConfiguration.executableScripts;
+
+        isOctal = m: builtins.match "[0-7]{3,4}" m != null;
+
+        # `/etc` entries contributed by `environment.etc`, minus the
+        # `systemd/system` directory (expanded per-unit below).
+        renderEtc = e:
+          if e.runtimeCertificateBundle != null
+          then {
+            kind = "certificate-bundle";
+            mode =
+              if isOctal e.mode
+              then e.mode
+              else "0644";
+            parts = builtins.map (part:
+              if part.source != null && part.text == null
+              then {
+                kind = "store-file";
+                path = part.source;
+              }
+              else if part.source == null && part.text != null
+              then {
+                kind = "text";
+                inherit (part) text;
+              }
+              else throw "runtimeCertificateBundle parts must set exactly one of source or text")
+            e.runtimeCertificateBundle;
           }
-        ]
-        else if record.value.kind == "certificate-bundle"
-        then
-          builtins.map (part: {
-            path = storeRoot part.path;
-            inherit (record) owner;
-          }) (builtins.filter (part: part.kind == "store-file") record.value.parts)
-        else [])
-      envEtcRecords;
-      emittedEtcStoreRecords = lib.concatMap (path: let
-        entry = etc.${path};
-        owner = etcOwnership.${path};
-        strings =
-          if entry.kind == "text"
-          then [entry.text]
-          else if entry.kind == "store-symlink"
-          then [entry.target]
-          else if entry.kind == "certificate-bundle"
-          then
-            builtins.map
-            (part:
-              if part.kind == "store-file"
-              then part.path
-              else part.text)
-            entry.parts
-          else [];
-      in
-        lib.concatMap (storeRecordsInString owner) strings)
-      (builtins.attrNames etc);
-      emittedJobStoreRecords = lib.concatMap (key:
-        storeRecordsInString jobScriptOwnership.${key} jobScripts.${key}.text)
-      (builtins.attrNames jobScripts);
-      emittedUserStoreRecords = lib.concatMap (user:
-        storeRecordsInString userOwnership.${user.name} "${user.home}\n${user.shell}")
-      users;
-      storeRecords =
-        packageStoreRecords
-        ++ etcStoreRecords
-        ++ emittedEtcStoreRecords
-        ++ emittedJobStoreRecords
-        ++ emittedUserStoreRecords;
-      storePaths =
-        builtins.sort (a: b: a < b)
-        (lib.unique (builtins.map (record: record.path) storeRecords));
-      storeOwner = path: let
-        owners =
-          lib.unique (builtins.map (record: record.owner)
-            (builtins.filter (record: record.path == path) storeRecords));
-        nonHostOwners = builtins.filter (owner: owner != "@host") owners;
-      in
-        # @base is the least-privileged classification: every authenticated
-        # artifact may reference image-owned content. @host is the most
-        # permissive artifact owner and therefore never overrides a more
-        # constrained package owner merely because host.nix selected the
-        # feature. Two unrelated package owners remain an ambiguity and fail
-        # closed rather than silently laundering either package's closure.
-        if builtins.elem "@base" owners
-        then "@base"
-        else if builtins.length nonHostOwners == 1
-        then builtins.head nonHostOwners
-        else if nonHostOwners == [] && owners == ["@host"]
-        then "@host"
-        else throw "config manifest store path ${path} has multiple package owners: ${lib.concatStringsSep ", " owners}";
-      storeOwnership = builtins.listToAttrs (builtins.map (path:
-        lib.nameValuePair path (storeOwner path))
-      storePaths);
-      jobScriptOwnership = managerConfiguration.ownership.executableScripts;
-      hashIdentity = value: "sha256:${builtins.hashString "sha256" value}";
-      baseLibPath = pathString config.aos.config.evalAtBoot.baseLib;
-      # The private package runtime executes `__eval`; record the artifact that
-      # actually evaluates the manifest rather than the repository CLI.
-      evaluatorPath = pathString pkgs.aos.packageRuntime;
-      evaluatorStoreHash =
-        "sha256:"
-        + builtins.convertHash {
-          hash = builtins.substring 0 32 (baseNameOf evaluatorPath);
-          # A Nix store-path component is exactly 20 bytes. `convertHash`
-          # needs an algorithm solely to select that width; the RFC wire label
-          # remains `sha256:` for the store identity field.
-          hashAlgo = "sha1";
-          toHashFormat = "base16";
-        };
-      emptyHost = builtins.toFile "aos-empty-host.nix" "{}";
-      emptyHostPath = pathString emptyHost;
-      defaultFacts = builtins.toJSON (config.host.facts or {});
-      defaultFactsFile = builtins.toFile "aos-default-instance-facts.json" defaultFacts;
-      baseAbilityActivationInput = config.aos.abilities.activationInput;
-      abilityActivationInput =
-        if baseAbilityActivationInput == null
-        then null
-        else
-          baseAbilityActivationInput
-          // {
-            execution_observer = config.aos.abilities.resolvedExecutionObserver;
+          else if e.text != null
+          then {
+            kind = "text";
+            text = e.text;
+            mode =
+              if isOctal e.mode
+              then e.mode
+              else "0644";
+          }
+          else if isOctal e.mode
+          then {
+            # Octal-mode, store-sourced: content lives in the EROFS basedir;
+            # v1 manifest pins the source path (the materializer recovers
+            # mode/uid/gid from the metadata image). Documented limitation.
+            kind = "store-symlink";
+            target = builtins.toString e.source;
+          }
+          else {
+            kind = "store-symlink";
+            target = builtins.toString e.source;
           };
-      ownership = {
-        etc = etcOwnership;
-        jobScripts = jobScriptOwnership;
-        users = userOwnership;
-        storePaths = storeOwnership;
-      };
-    in ({
+        pathString = value: builtins.unsafeDiscardStringContext (builtins.toString value);
+        # The login environment is rendered by image modules, but its bytes are
+        # a projection of shared operator configuration. A package must not make
+        # one of these global artifacts survive after that package is removed,
+        # so package-owned contributions fail closed instead of being promoted
+        # to host ownership.
+        sharedArtifactOwner = description: owners: let
+          uniqueOwners = lib.unique owners;
+          packageOwners = builtins.filter (owner: !builtins.elem owner ["@base" "@host"]) uniqueOwners;
+        in
+          if packageOwners != []
+          then throw "config manifest shared artifact ${description} depends on package owner(s): ${lib.concatStringsSep ", " packageOwners}"
+          else if builtins.elem "@host" uniqueOwners
+          then "@host"
+          else "@base";
+        bundledPackageNamesFor = package:
+          builtins.filter
+          (name:
+            config.aos.packages.${name}.bundle
+            && pathString config.aos.packages.${name}.package == pathString package)
+          (builtins.attrNames config.aos.packages);
+        systemPackageOwner = package: let
+          selectedNames = bundledPackageNamesFor package;
+          selectionOwners =
+            lib.concatMap
+            (name: provenance.dependencyOwnersOfAttr ["aos" "packages"] name)
+            selectedNames;
+        in
+          if selectedNames == []
+          then provenance.ownerOfListString ["environment" "systemPackages"] (pathString package)
+          else sharedArtifactOwner "selected package ${pathString package}" selectionOwners;
+        systemPackageOwners = lib.unique (builtins.map
+          systemPackageOwner
+          config.environment.systemPackages);
+        sessionVariableOwners = lib.unique (lib.concatMap
+          (name: provenance.dependencyOwnersOfAttr ["environment" "sessionVariables"] name)
+          (builtins.attrNames config.environment.sessionVariables));
+        artifactOwner = path: name: let
+          owners = provenance.dependencyOwnersOfAttr path name;
+        in
+          if path == ["environment" "etc"] && name == "profile"
+          then sharedArtifactOwner "environment.etc.profile" (owners ++ systemPackageOwners)
+          else if path == ["environment" "etc"] && name == "pam/environment"
+          then sharedArtifactOwner "environment.etc.pam/environment" (owners ++ systemPackageOwners ++ sessionVariableOwners)
+          else if builtins.length owners == 1
+          then builtins.head owners
+          else if owners == []
+          then "@base"
+          else throw "config manifest artifact ${builtins.concatStringsSep "." path}.${name} depends on multiple owners: ${lib.concatStringsSep ", " owners}";
+        envEtcRecords = lib.concatLists (lib.mapAttrsToList (name: e:
+          lib.optional (e.enable && e.target != "systemd/system") {
+            path = e.target;
+            value = renderEtc e;
+            owner =
+              if e.runtimeCertificateBundle != null
+              then config.aos.security.pki._runtimeBundleOwner
+              else artifactOwner ["environment" "etc"] name;
+          })
+        config.environment.etc);
+        envEtcTargets = builtins.map (record: record.path) envEtcRecords;
+        pathsOverlap = left: right:
+          left
+          == right
+          || lib.hasPrefix "${left}/" right
+          || lib.hasPrefix "${right}/" left;
+        duplicateEnvEtcTargets =
+          builtins.filter
+          (target: builtins.length (builtins.filter (candidate: pathsOverlap target candidate) envEtcTargets) > 1)
+          (lib.unique envEtcTargets);
+        envEtc =
+          if duplicateEnvEtcTargets != []
+          then throw "environment.etc entries collide at final /etc target(s): ${lib.concatStringsSep ", " duplicateEnvEtcTargets}"
+          else
+            builtins.listToAttrs (builtins.map (record:
+              lib.nameValuePair record.path record.value)
+            envEtcRecords);
+        envEtcOwnership = builtins.listToAttrs (builtins.map (record:
+          lib.nameValuePair record.path record.owner)
+        envEtcRecords);
+        managerEtcOwnership = managerConfiguration.ownership.filesystemEntries;
+
+        etcCollisions =
+          builtins.filter
+          (target:
+            builtins.any
+            (systemdTarget: pathsOverlap target systemdTarget)
+            (builtins.attrNames managerConfiguration.filesystemEntries))
+          (builtins.attrNames envEtc);
+        etc =
+          if etcCollisions != []
+          then throw "environment.etc and selected manager entries collide at final /etc target(s): ${lib.concatStringsSep ", " etcCollisions}"
+          else envEtc // managerConfiguration.filesystemEntries;
+        etcOwnership = envEtcOwnership // managerEtcOwnership;
+
+        # Users from `aos.users.*` (best-effort; `or` fallbacks keep this
+        # robust if the users module isn't imported by a given variant).
+        users = lib.mapAttrsToList (uname: u: {
+          name = uname;
+          uid = u.uid;
+          group = u.group;
+          gid = config.aos.users.groups.${u.group}.gid or null;
+          home = u.home;
+          shell = u.shell;
+          system = u.uid < 1000;
+          description = u.description or "";
+          supplementaryGroups = u.extraGroups or [];
+        }) (config.aos.users.users or {});
+        userDependencyOwners = user: let
+          userOwners = provenance.dependencyOwnersOfAttr ["aos" "users" "users"] user.name;
+          groupNames = lib.unique ([user.group] ++ user.supplementaryGroups);
+          groupOwners = lib.concatLists (builtins.map
+            (group: provenance.dependencyOwnersOfAttr ["aos" "users" "groups"] group)
+            groupNames);
+        in
+          lib.unique (userOwners ++ groupOwners);
+        userOwnership = builtins.listToAttrs (builtins.map (user: let
+          owners = userDependencyOwners user;
+        in
+          if builtins.length owners == 1
+          then lib.nameValuePair user.name (builtins.head owners)
+          else throw "config manifest user ${user.name} depends on multiple owners (including referenced groups): ${lib.concatStringsSep ", " owners}")
+        users);
+
+        # Find every canonical store root embedded in an emitted manifest string.
+        # Runtime role modules deliberately reference their tools by absolute
+        # path instead of adding them to environment.systemPackages, so their
+        # unit bodies and job scripts are closure-bearing artifacts too. Keep
+        # this pattern byte-for-byte aligned with the accepted store-name
+        # alphabet in the Rust manifest validator.
+        storeRootsInString = value:
+          lib.concatLists (builtins.map
+            (part:
+              if builtins.isList part
+              then builtins.filter (match: match != null) part
+              else [])
+            (builtins.split
+              "(/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+)"
+              (pathString value)));
+        storeRecordsInString = owner: value:
+          builtins.map (path: {inherit path owner;}) (storeRootsInString value);
+        storeRoot = target: let
+          parts = lib.splitString "/" target;
+        in
+          if builtins.length parts >= 4 && builtins.elemAt parts 1 == "nix" && builtins.elemAt parts 2 == "store"
+          then "/nix/store/${builtins.elemAt parts 3}"
+          else throw "config manifest store-symlink target is outside /nix/store: ${target}";
+        packageStoreRecords =
+          builtins.map (package: let
+            path = pathString package;
+          in {
+            inherit path;
+            owner = systemPackageOwner package;
+          })
+          config.environment.systemPackages;
+        etcStoreRecords = lib.concatMap (record:
+          if record.value.kind == "store-symlink"
+          then [
+            {
+              path = storeRoot record.value.target;
+              inherit (record) owner;
+            }
+          ]
+          else if record.value.kind == "certificate-bundle"
+          then
+            builtins.map (part: {
+              path = storeRoot part.path;
+              inherit (record) owner;
+            }) (builtins.filter (part: part.kind == "store-file") record.value.parts)
+          else [])
+        envEtcRecords;
+        emittedEtcStoreRecords = lib.concatMap (path: let
+          entry = etc.${path};
+          owner = etcOwnership.${path};
+          strings =
+            if entry.kind == "text"
+            then [entry.text]
+            else if entry.kind == "store-symlink"
+            then [entry.target]
+            else if entry.kind == "certificate-bundle"
+            then
+              builtins.map
+              (part:
+                if part.kind == "store-file"
+                then part.path
+                else part.text)
+              entry.parts
+            else [];
+        in
+          lib.concatMap (storeRecordsInString owner) strings)
+        (builtins.attrNames etc);
+        emittedJobStoreRecords = lib.concatMap (key:
+          storeRecordsInString jobScriptOwnership.${key} jobScripts.${key}.text)
+        (builtins.attrNames jobScripts);
+        emittedUserStoreRecords = lib.concatMap (user:
+          storeRecordsInString userOwnership.${user.name} "${user.home}\n${user.shell}")
+        users;
+        storeRecords =
+          packageStoreRecords
+          ++ etcStoreRecords
+          ++ emittedEtcStoreRecords
+          ++ emittedJobStoreRecords
+          ++ emittedUserStoreRecords;
+        storePaths =
+          builtins.sort (a: b: a < b)
+          (lib.unique (builtins.map (record: record.path) storeRecords));
+        storeOwner = path: let
+          owners =
+            lib.unique (builtins.map (record: record.owner)
+              (builtins.filter (record: record.path == path) storeRecords));
+          nonHostOwners = builtins.filter (owner: owner != "@host") owners;
+        in
+          # @base is the least-privileged classification: every authenticated
+          # artifact may reference image-owned content. @host is the most
+          # permissive artifact owner and therefore never overrides a more
+          # constrained package owner merely because host.nix selected the
+          # feature. Two unrelated package owners remain an ambiguity and fail
+          # closed rather than silently laundering either package's closure.
+          if builtins.elem "@base" owners
+          then "@base"
+          else if builtins.length nonHostOwners == 1
+          then builtins.head nonHostOwners
+          else if nonHostOwners == [] && owners == ["@host"]
+          then "@host"
+          else throw "config manifest store path ${path} has multiple package owners: ${lib.concatStringsSep ", " owners}";
+        storeOwnership = builtins.listToAttrs (builtins.map (path:
+          lib.nameValuePair path (storeOwner path))
+        storePaths);
+        jobScriptOwnership = managerConfiguration.ownership.executableScripts;
+        hashIdentity = value: "sha256:${builtins.hashString "sha256" value}";
+        baseLibPath = pathString config.aos.config.evalAtBoot.baseLib;
+        # The private package runtime executes `__eval`; record the artifact that
+        # actually evaluates the manifest rather than the repository CLI.
+        evaluatorPath = pathString pkgs.aos.packageRuntime;
+        evaluatorStoreHash =
+          "sha256:"
+          + builtins.convertHash {
+            hash = builtins.substring 0 32 (baseNameOf evaluatorPath);
+            # A Nix store-path component is exactly 20 bytes. `convertHash`
+            # needs an algorithm solely to select that width; the RFC wire label
+            # remains `sha256:` for the store identity field.
+            hashAlgo = "sha1";
+            toHashFormat = "base16";
+          };
+        emptyHost = builtins.toFile "aos-empty-host.nix" "{}";
+        emptyHostPath = pathString emptyHost;
+        defaultFacts = builtins.toJSON (config.host.facts or {});
+        defaultFactsFile = builtins.toFile "aos-default-instance-facts.json" defaultFacts;
+        packageStoreReadView = lib.abilities.interfaces.packageStoreReadView.interfaces.readView;
+        requestsForPackageStoreReadView = builtins.filter (requestName: let
+          request = config.aos.abilities.requests.${requestName};
+          requirement = config.aos.abilities.requirementTemplates.${request.requirement};
+          selectors =
+            requirement.accepted_interfaces or [
+              ({
+                  name = requirement.interface;
+                  inherit (requirement) abi;
+                }
+                // lib.optionalAttrs ((requirement.descriptor or null) != null) {
+                  inherit (requirement) descriptor;
+                })
+            ];
+        in
+          builtins.any
+          (selector: lib.abilities.interfaceSelectorMatches selector packageStoreReadView.identity)
+          selectors)
+        (builtins.attrNames config.aos.abilities.requests);
+        packageStoreReadViewRequest =
+          if builtins.length requestsForPackageStoreReadView == 1
+          then builtins.head requestsForPackageStoreReadView
+          else throw "system configuration requires exactly one package-store read-view request";
+        storeView =
+          config.aos.abilities.compositionOutputs.${packageStoreReadViewRequest}.locator.value;
+        baseAbilityActivationInput = config.aos.abilities.activationInput;
+        abilityActivationInput =
+          if baseAbilityActivationInput == null
+          then null
+          else
+            baseAbilityActivationInput
+            // {
+              execution_observer = config.aos.abilities.resolvedExecutionObserver;
+            };
+        ownership = {
+          etc = etcOwnership;
+          jobScripts = jobScriptOwnership;
+          users = userOwnership;
+          storePaths = storeOwnership;
+        };
+      in {
         schema = "aos.config-manifest/v1";
         inherit etc users storePaths;
         jobScripts = jobScripts;
@@ -942,6 +983,7 @@ in {
               platform = "image";
               store_path = pathString defaultFactsFile;
             };
+            store_view = storeView;
           }
           // lib.optionalAttrs (abilityActivationInput != null) {
             ability_activation = abilityActivationInput;
@@ -951,94 +993,94 @@ in {
         graph.edges = {};
         config = {};
         inherit ownership;
-      });
+      };
 
-    system.build.kernel = pkgs.linux;
-    system.build.systemPath =
-      "/run/wrappers/bin:"
-      + makeBinPath config.environment.systemPackages
-      + ":"
-      + makeSbinPath config.environment.systemPackages;
+      system.build.kernel = pkgs.linux;
+      system.build.systemPath =
+        "/run/wrappers/bin:"
+        + makeBinPath config.environment.systemPackages
+        + ":"
+        + makeSbinPath config.environment.systemPackages;
 
-    # The minimal-distro baseline on the interactive PATH. This is the single
-    # intentional place for it; feature modules must NOT add to systemPackages
-    # (their services reference tools by absolute store path), so the login
-    # PATH stays a deliberate core set rather than an accretion of every
-    # feature's tools. Anything beyond this is an apm install.
-    environment.systemPackages = [
-      pkgs.bash
-      pkgs.coreutils
-      pkgs.findutils
-      pkgs.grep
-      pkgs.sed
-      pkgs.gawk
-      pkgs.util-linux
-      pkgs.kmod
-      # The provider installs only libexec/module artifacts. Selecting it here
-      # makes the four shared filesystem implementations available to the
-      # final ability fixed point without adding commands to the login PATH.
-      pkgs.aos-filesystem-provider
-      # Block-storage controllers and their terminal effects are selected
-      # through the packages that ship their authenticated provider modules.
-      pkgs.aos-cryptsetup-provider
-      pkgs.aos-storage-format-provider
-      pkgs.aos-storage-provisioning-provider
-      pkgs.aos-zfs-provider
-      # Kernel-tunable effects are selected through the provider package that
-      # ships both its authenticated module and handler.
-      pkgs.aos-kernel-tunable-provider
-      # The package owns the Nix store-database contract, provider module, and
-      # handler while selecting the exact Nix executable symbolically.
-      pkgs.aos-nix-store-provider
-      # Boot preparations are selected through this package's authenticated
-      # module and transaction-scoped command handler.
-      pkgs.aos-boot-preparation-provider
-      pkgs.aos-boot-preparations
-      pkgs.e2fsprogs
-      pkgs.less
-    ];
+      # The minimal-distro baseline on the interactive PATH. This is the single
+      # intentional place for it; feature modules must NOT add to systemPackages
+      # (their services reference tools by absolute store path), so the login
+      # PATH stays a deliberate core set rather than an accretion of every
+      # feature's tools. Anything beyond this is an apm install.
+      environment.systemPackages = [
+        pkgs.bash
+        pkgs.coreutils
+        pkgs.findutils
+        pkgs.grep
+        pkgs.sed
+        pkgs.gawk
+        pkgs.util-linux
+        pkgs.kmod
+        # The provider installs only libexec/module artifacts. Selecting it here
+        # makes the four shared filesystem implementations available to the
+        # final ability fixed point without adding commands to the login PATH.
+        pkgs.aos-filesystem-provider
+        # Block-storage controllers and their terminal effects are selected
+        # through the packages that ship their authenticated provider modules.
+        pkgs.aos-cryptsetup-provider
+        pkgs.aos-storage-format-provider
+        pkgs.aos-storage-provisioning-provider
+        pkgs.aos-zfs-provider
+        # Kernel-tunable effects are selected through the provider package that
+        # ships both its authenticated module and handler.
+        pkgs.aos-kernel-tunable-provider
+        # The package owns the Nix store-database contract, provider module, and
+        # handler while selecting the exact Nix executable symbolically.
+        pkgs.aos-nix-store-provider
+        # Boot preparations are selected through this package's authenticated
+        # module and transaction-scoped command handler.
+        pkgs.aos-boot-preparation-provider
+        pkgs.aos-boot-preparations
+        pkgs.e2fsprogs
+        pkgs.less
+      ];
 
-    environment.etc."profile" = {
-      text = ''
-        if [ -n "$__ETC_PROFILE_SOURCED" ]; then return; fi
-        __ETC_PROFILE_SOURCED=1
-        export __ETC_PROFILE_DONE=1
+      environment.etc."profile" = {
+        text = ''
+          if [ -n "$__ETC_PROFILE_SOURCED" ]; then return; fi
+          __ETC_PROFILE_SOURCED=1
+          export __ETC_PROFILE_DONE=1
 
-        export PATH="${config.system.build.systemPath}"
-        export PAGER=less
+          export PATH="${config.system.build.systemPath}"
+          export PAGER=less
 
-        if [ -f /etc/profile.local ]; then
-          . /etc/profile.local
-        fi
-
-        if [ -n "''${BASH_VERSION:-}" ]; then
-          . /etc/bashrc
-        fi
-      '';
-    };
-
-    environment.etc."bashrc" = {
-      text = ''
-        if [ -z "$__ETC_PROFILE_DONE" ]; then
-          . /etc/profile
-        fi
-
-        if [ -n "$PS1" ]; then
-          if [ "$TERM" != "dumb" ]; then
-            PROMPT_COLOR="1;31m"
-            ((UID)) && PROMPT_COLOR="1;32m"
-            PS1="\n\[\033[$PROMPT_COLOR\][\[\e]0;\u@\h: \w\a\]\u@\h:\w]\\$\[\033[0m\] "
-            if [ "$TERM" = "xterm" ]; then
-              PS1="\[\033]2;\h:\u:\w\007\]$PS1"
-            fi
+          if [ -f /etc/profile.local ]; then
+            . /etc/profile.local
           fi
 
-          alias ls='ls -NFh --group-directories-first --color=auto'
-        fi
-      '';
-    };
+          if [ -n "''${BASH_VERSION:-}" ]; then
+            . /etc/bashrc
+          fi
+        '';
+      };
 
-    # The exactly selected manager package contributes `system.build.initrd`.
+      environment.etc."bashrc" = {
+        text = ''
+          if [ -z "$__ETC_PROFILE_DONE" ]; then
+            . /etc/profile
+          fi
+
+          if [ -n "$PS1" ]; then
+            if [ "$TERM" != "dumb" ]; then
+              PROMPT_COLOR="1;31m"
+              ((UID)) && PROMPT_COLOR="1;32m"
+              PS1="\n\[\033[$PROMPT_COLOR\][\[\e]0;\u@\h: \w\a\]\u@\h:\w]\\$\[\033[0m\] "
+              if [ "$TERM" = "xterm" ]; then
+                PS1="\[\033]2;\h:\u:\w\007\]$PS1"
+              fi
+            fi
+
+            alias ls='ls -NFh --group-directories-first --color=auto'
+          fi
+        '';
+      };
+
+      # The exactly selected manager package contributes `system.build.initrd`.
     }
   ];
 }

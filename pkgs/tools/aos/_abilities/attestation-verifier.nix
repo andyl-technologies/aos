@@ -120,9 +120,9 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        after = [(resultOf "local-filesystems" "readiness-resource")];
+        after = [(resultOf "local-filesystems" "resource")];
         before = [];
-        requires = [(resultOf "local-filesystems" "readiness-resource")];
+        requires = [(resultOf "local-filesystems" "resource")];
         wants = [];
       };
       readiness = {

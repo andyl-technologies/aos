@@ -184,88 +184,104 @@
       };
     };
   };
-  evaluation = lib.evalModules {
-    inherit lib;
-    modules = [
-      lib.abilities.module
-      {
-        config.aos.abilities = {
-          environment = {
-            authority = "test";
-            key = "systemd-service";
-            stage = "host";
-          };
-          instances."systemd:manager" = {};
-          bindings = {
-            "test:lifecycle" = {
-              request = "consumer:lifecycle";
-              implementation = "systemd:service-lifecycle";
-              providerInstance = "systemd:manager";
-              slot = "main";
-            };
-            "test:logging" = {
-              request = "consumer:logging";
-              implementation = "systemd:service-logging";
-              providerInstance = "systemd:manager";
-              slot = "main";
-            };
-            "test:start-policy" = {
-              request = "consumer:start-policy";
-              implementation = "systemd:service-start-policy";
-              providerInstance = "systemd:manager";
-              slot = "main";
-            };
-            "test:watchdog" = {
-              request = "consumer:watchdog";
-              implementation = "systemd:service-watchdog";
-              providerInstance = "systemd:manager";
-              slot = "main";
-            };
-            "test:manager-identity" = {
-              request = "consumer:manager-identity";
-              implementation = "systemd:service-manager-identity";
-              providerInstance = "systemd:manager";
-              slot = "main";
-            };
-            "test:socket-activation" = {
-              request = "consumer:socket-activation";
-              implementation = "systemd:service-socket-activation";
-              providerInstance = "systemd:manager";
-              slot = "main";
-            };
-            "test:terminal" = {
-              request = "consumer:terminal";
-              implementation = "systemd:service-terminal";
-              providerInstance = "systemd:manager";
-              slot = "main";
-            };
-            "test:service-effects" = {
-              request = serviceEffectsRequest;
-              implementation = "systemd:systemd-service-effects";
-              providerInstance = "systemd:manager";
-              slot = "main";
-            };
-          };
-        };
-      }
-    ];
-    packageModules = [
-      (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
-      {
-        name = "consumer";
-        module = consumerModule;
-      }
-    ];
-    selectedProviderModules = [
-      selectedSystemdProvider
-    ];
-    specialArgs = {
-      inherit pkgs;
-      provenance = {
-        dependencyOwnersOfAttr = _: _: [];
-        ownerOfListAttr = _: _: _: "@test";
+  baseBindings = {
+    environment = {
+      authority = "test";
+      key = "systemd-service";
+      stage = "host";
+    };
+    instances."systemd:manager" = {};
+    bindings = {
+      "test:lifecycle" = {
+        request = "consumer:lifecycle";
+        implementation = "systemd:service-lifecycle";
+        providerInstance = "systemd:manager";
+        slot = "main";
+      };
+      "test:logging" = {
+        request = "consumer:logging";
+        implementation = "systemd:service-logging";
+        providerInstance = "systemd:manager";
+        slot = "main";
+      };
+      "test:start-policy" = {
+        request = "consumer:start-policy";
+        implementation = "systemd:service-start-policy";
+        providerInstance = "systemd:manager";
+        slot = "main";
+      };
+      "test:watchdog" = {
+        request = "consumer:watchdog";
+        implementation = "systemd:service-watchdog";
+        providerInstance = "systemd:manager";
+        slot = "main";
+      };
+      "test:manager-identity" = {
+        request = "consumer:manager-identity";
+        implementation = "systemd:service-manager-identity";
+        providerInstance = "systemd:manager";
+        slot = "main";
+      };
+      "test:socket-activation" = {
+        request = "consumer:socket-activation";
+        implementation = "systemd:service-socket-activation";
+        providerInstance = "systemd:manager";
+        slot = "main";
+      };
+      "test:terminal" = {
+        request = "consumer:terminal";
+        implementation = "systemd:service-terminal";
+        providerInstance = "systemd:manager";
+        slot = "main";
       };
     };
+  };
+  evaluate = bindings: abilityResolution:
+    lib.evalModules {
+      inherit lib;
+      modules = [
+        lib.abilities.module
+        {
+          config.aos.abilities = baseBindings // {inherit bindings;};
+        }
+      ];
+      packageModules = [
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
+        {
+          name = "consumer";
+          module = consumerModule;
+        }
+      ];
+      selectedProviderModules = [
+        selectedSystemdProvider
+      ];
+      specialArgs = {
+        inherit pkgs abilityResolution;
+        provenance = {
+          dependencyOwnersOfAttr = _: _: [];
+          ownerOfListAttr = _: _: _: "@test";
+        };
+      };
+    };
+  initial = evaluate baseBindings.bindings {
+    requests = {};
+    requirements = {};
+  };
+  effectsChild = initial.config.aos.abilities.compositionPendingRequests.${serviceEffectsRequest};
+  resolvedBindings =
+    baseBindings.bindings
+    // {
+      "test:service-effects" = {
+        request = serviceEffectsRequest;
+        implementation = "systemd:systemd-service-effects";
+        providerInstance = "systemd:manager";
+        slot = effectsChild.slot;
+      };
+    };
+  evaluation = evaluate resolvedBindings {
+    requests.${serviceEffectsRequest} = effectsChild.declaration;
+    requirements.${effectsChild.declaration.requirement} =
+      initial.config.aos.abilities.compositionRequirements.${effectsChild.declaration.requirement};
   };
   resources = builtins.attrValues evaluation.config.aos.abilities.desiredResources;
   resource = builtins.head resources;
@@ -333,18 +349,53 @@
     lifecycleImplementation.compose {
       allResources = [selectedResource];
       bindings.lifecycle.providerInstance = "systemd:manager";
+      planningOutputs = {};
       resources.main = selectedResource;
     };
   matchedOwnership = ownershipComposition "example";
   mismatchedOwnership = ownershipComposition "another-principal";
-  ownershipPreparation = builtins.head (builtins.filter
-    (request: request.requirement == "directory-preparation")
-    (builtins.attrValues mismatchedOwnership.requests));
-  ownershipPreparationRequest = lib.abilities.compositionRequestKey {
-    implementation = "systemd:service-lifecycle";
-    providerInstance = "systemd:manager";
-    key = ownershipPreparation.parameters.name;
+  ownershipDirectoryUnit = composition:
+    builtins.head (builtins.filter
+      (unit: lib.hasPrefix "aos-directory-" unit.systemd_unit.unit_name)
+      composition.realizations.main.units);
+  matchedDirectoryUnit = ownershipDirectoryUnit matchedOwnership;
+  mismatchedDirectoryUnit = ownershipDirectoryUnit mismatchedOwnership;
+  matchedDirectoryService = sectionFor matchedDirectoryUnit "Service";
+  mismatchedDirectoryService = sectionFor mismatchedDirectoryUnit "Service";
+  dependencyReference = {
+    _type = "aos-request-output-reference";
+    request = "consumer:dependency";
+    output = "resource";
   };
+  dependencyRenderer = import ../../pkgs/system/_systemd-abilities/provider/_systemd-service-document.nix {
+    inherit lib;
+    serviceFacets = [];
+    unitNameForReference = _: null;
+  };
+  resourceWithDependencies = prerequisites:
+    resource
+    // {
+      value =
+        resource.value
+        // {
+          dependencies =
+            (resource.value.dependencies or {})
+            // {
+              after = [dependencyReference];
+              inherit prerequisites;
+            };
+        };
+    };
+  unrepresentedDependency = builtins.tryEval (builtins.deepSeq (
+      dependencyRenderer.realizationFor
+      serviceManagement.interfaces.lifecycle.identity
+      (resourceWithDependencies [])
+    )
+    true);
+  neutralPrerequisite =
+    dependencyRenderer.realizationFor
+    serviceManagement.interfaces.lifecycle.identity
+    (resourceWithDependencies [dependencyReference]);
   effectsRequest = evaluation.config.aos.abilities.compositionRequests.${serviceEffectsRequest};
   conditionImplementation = evaluation.config.aos.abilities.implementations."systemd:service-conditions";
   rejectedProviderSelection = selectedProvider:
@@ -479,24 +530,17 @@ in
   assert lifecycleImplementation.guarantees == ["core:service-template-exact-reuse"];
   assert lifecycleImplementation.handlerDescriptor == null;
   assert builtins.isFunction lifecycleImplementation.transition;
-  assert lifecycleImplementation.requirements.directory-preparation.strength == "required";
-  assert builtins.length matchedOwnership.realizations.main.units == 3;
-  assert ownershipPreparation
-  == {
-    requirement = "directory-preparation";
-    scope = ["managed-directory"];
-    slot = ownershipPreparation.parameters.name;
-    parameters = {
-      name = ownershipPreparation.parameters.name;
-      entry.kind = "directory";
-      destination = "/var/lib/example/nested";
-      mode = "0750";
-      owner = "another-principal";
-      group = "example";
-      prerequisites = [];
-    };
-  };
-  assert !builtins.hasAttr ownershipPreparationRequest evaluation.config.aos.abilities.compositionOutputs;
+  assert builtins.attrNames lifecycleImplementation.requirements == ["service-effects"];
+  assert builtins.length matchedOwnership.realizations.main.units == 4;
+  assert builtins.length mismatchedOwnership.realizations.main.units == 4;
+  assert templates "StateDirectory" matchedDirectoryService == ["example/nested"];
+  assert templates "StateDirectoryMode" matchedDirectoryService == ["0750"];
+  assert templates "User" matchedDirectoryService != [];
+  assert templates "User" mismatchedDirectoryService != [];
+  assert (builtins.head (directives "User" mismatchedDirectoryService)).value
+  != (builtins.head (directives "User" matchedDirectoryService)).value;
+  assert !unrepresentedDependency.success;
+  assert neutralPrerequisite.schema == "aos.systemd.service-realization/v1";
   assert effectsRequest.parameters.kind == "service";
   assert effectsRequest.parameters.desired.service == "main";
   assert conditionImplementation.guarantees

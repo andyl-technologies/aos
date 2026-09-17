@@ -44,7 +44,7 @@
     };
   };
 
-  setupResource = resultOf "setup-lifecycle" "service-resource";
+  setupResource = resultOf "setup-lifecycle" "resource";
   dependencies = {
     prerequisites = [setupResource];
     after = [setupResource];
@@ -63,43 +63,44 @@
     serviceManagement.forService {
       inherit serviceTypes;
       consumerInstance = "runtime-services";
-      declaration = {
-        service = name;
-        enabled = true;
-        lifecycle = {
-          inherit description;
-          execution_model = "foreground";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          inherit start;
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "on-failure";
-          restart_token = null;
-          restart_delay_millis = 1000;
-          configuration_change_action =
-            if reload == null
-            then "restart"
-            else "reload";
-          remain_after_exit = false;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 90000;
+      declaration =
+        {
+          service = name;
+          enabled = true;
+          lifecycle = {
+            inherit description;
+            execution_model = "foreground";
+            environment_files = [];
+            condition = [];
+            pre_start = [];
+            inherit start;
+            post_start = [];
+            stop = [];
+            post_stop = [];
+            restart = "on-failure";
+            restart_token = null;
+            restart_delay_millis = 1000;
+            configuration_change_action =
+              if reload == null
+              then "restart"
+              else "reload";
+            remain_after_exit = false;
+            start_timeout_millis = 90000;
+            stop_timeout_millis = 90000;
+          };
+          inherit dependencies;
+          manager_identity = {
+            name = managerName;
+            aliases = [];
+          };
+        }
+        // lib.optionalAttrs (reload != null) {
+          reload = {
+            strategy = "command";
+            commands = reload;
+            completion = "command-exit";
+          };
         };
-        inherit dependencies;
-        manager_identity = {
-          name = managerName;
-          aliases = [];
-        };
-      }
-      // lib.optionalAttrs (reload != null) {
-        reload = {
-          strategy = "command";
-          commands = reload;
-          completion = "command-exit";
-        };
-      };
     };
 
   matrixService = name:

@@ -88,18 +88,16 @@
   measurementEspReady = measurementMilestone "measurement-esp-ready" milestones.espReady;
   measurementLocalFilesystems = measurementMilestone "measurement-local-filesystems" milestones.localFilesystems;
   measurementMultiUser = measurementMilestone "measurement-multi-user" milestones.multiUser;
-  measurementIndexed = measurementMilestone "measurement-indexed" milestones.imageMeasurementIndexed;
   measurementRuntimeEntries = serviceManagement.forProducer {
     consumerInstance = "image-measurement-index";
     key = "measurement-runtime-entries";
     interface = serviceInterfaces.runtimeEntryPopulation;
     parameters.entries = [];
   };
-  measurementEspReadyResource = resultOf "measurement-esp-ready" "readiness-resource";
-  measurementLocalFilesystemsResource = resultOf "measurement-local-filesystems" "readiness-resource";
-  measurementMultiUserResource = resultOf "measurement-multi-user" "readiness-resource";
-  measurementIndexedResource = resultOf "measurement-indexed" "readiness-resource";
-  measurementRuntimeEntriesResource = resultOf "measurement-runtime-entries" "lifecycle-resource";
+  measurementEspReadyResource = resultOf "measurement-esp-ready" "resource";
+  measurementLocalFilesystemsResource = resultOf "measurement-local-filesystems" "resource";
+  measurementMultiUserResource = resultOf "measurement-multi-user" "resource";
+  measurementRuntimeEntriesResource = resultOf "measurement-runtime-entries" "resource";
   imageMeasurementService = serviceManagement.forService {
     inherit serviceTypes;
     consumerInstance = "image-measurement-index";
@@ -143,10 +141,7 @@
           measurementLocalFilesystemsResource
           measurementRuntimeEntriesResource
         ];
-        before = [
-          measurementIndexedResource
-          measurementMultiUserResource
-        ];
+        before = [measurementMultiUserResource];
         requires = [
           measurementEspReadyResource
           measurementLocalFilesystemsResource
@@ -158,7 +153,7 @@
         binds_to = [];
         part_of = [];
         upholds = [];
-        required_by = [measurementIndexedResource];
+        required_by = [];
         wanted_by = [measurementMultiUserResource];
         required_mounts = [];
         implicit_dependencies = false;
@@ -182,7 +177,6 @@
     measurementEspReady
     measurementLocalFilesystems
     measurementMultiUser
-    measurementIndexed
     measurementRuntimeEntries
     imageMeasurementService
   ];
@@ -206,16 +200,6 @@
       == dbusRegistrationInterface.name
       && declaration.abi == dbusRegistrationInterface.abi)
     (builtins.attrValues config.aos.abilities.interfaces);
-  directoryPreparationRequirement = {
-    alias = "directory-preparation";
-    description = "Prepares service directories whose ownership differs from the selected service identity.";
-    accepted_interfaces = [serviceInterfaces.filesystemEntry.identity];
-    methods = ["materialize" "observe" "release"];
-    guarantees = [];
-    strength = "required";
-    fallback = null;
-  };
-
   systemManagerServiceFacets =
     if config == null
     then {}
@@ -608,7 +592,7 @@
     description = "Activates and augments one authenticated unit shipped by a package.";
     abi = 1;
     requestType = packagedUnitRequest;
-    outputs.unit-resource =
+    outputs.resource =
       output
       "planning"
       "instance"
@@ -1336,7 +1320,6 @@
       inherit guarantees;
       requirements = lib.optionalAttrs controlsService {
         service-effects = serviceEffectsRequirement;
-        directory-preparation = directoryPreparationRequirement;
       };
       providerModule = {
         artifact = lib.abilities.packageOutput {output = "module";};
@@ -1443,22 +1426,6 @@
     })
     readinessControllers);
 in {
-  options.aos.monitoring.hardware = {
-    watchdog = lib.mkOption {
-      type = types.boolean;
-      default = true;
-      description = "Enable the systemd manager hardware watchdog when hardware monitoring is selected.";
-    };
-    watchdogTimeout = lib.mkOption {
-      type = types.integer {
-        minimum = 1;
-        maximum = 86400;
-      };
-      default = 30;
-      description = "Watchdog timeout in seconds before hardware recovery.";
-    };
-  };
-
   config.aos.abilities = {
     instances = lib.mkMerge [
       (lib.mkIf dbusRegistrationAvailable {manager = {};})

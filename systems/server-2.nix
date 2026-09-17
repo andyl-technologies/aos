@@ -60,6 +60,6 @@
   # dbus over its own bus" hang: the D-Bus declaration requests reload on
   # configuration changes, preserving the daemon's PID and the live bus. The
   # fleet test asserts exactly that. The added limit is innocuous; only the
-  # resulting service-resource change matters.
+  # resulting resource change matters.
   aos.services.dbus.openFileLimit = 16384;
 }

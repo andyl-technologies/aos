@@ -82,7 +82,7 @@ in
   assert endpoint.parameters
   == {
     hosting = "managed-service";
-    service_resource = outputReference "aos-ability-boundary-observer:controller-lifecycle" "service-resource";
+    service_resource = outputReference "aos-ability-boundary-observer:controller-lifecycle" "resource";
     socket_path = "/run/aos-instrumentation/controller.sock";
   };
   assert external.config.aos.abilities.requests."aos-ability-boundary-observer:endpoint".parameters
@@ -107,9 +107,9 @@ in
   assert forwardedAbilities.requests."aos-ability-boundary-observer:forward-endpoint".parameters
   == {endpoint = "default";};
   assert forwardedAbilities.requests."aos-ability-boundary-observer:controller-dependencies".parameters.after
-  == [(forwardReference "retained-resource")];
+  == [(forwardReference "resource")];
   assert forwardedAbilities.requests."aos-ability-boundary-observer:controller-dependencies".parameters.requires
-  == [(forwardReference "retained-resource")];
+  == [(forwardReference "resource")];
   assert forwardedAbilities.requests."aos-ability-boundary-observer:controller-environment".parameters.variables.AOS_ABILITY_FORWARD_SOCKET
   == forwardReference "socket-path";
   assert lifecycle.start
@@ -142,7 +142,7 @@ in
       after = [];
       binds_to = [];
       prerequisites = [
-        (outputReference "aos-ability-boundary-observer:runtime-storage" "retained-resource")
+        (outputReference "aos-ability-boundary-observer:runtime-storage" "resource")
       ];
     }
   ];
@@ -157,6 +157,6 @@ in
   };
   assert provided.resourceFragments == {};
   assert provided.outputs."aos-ability-boundary-observer:endpoint".socket-path == "/run/aos-instrumentation/controller.sock";
-  assert provided.outputs."aos-ability-boundary-observer:endpoint".retained-resource.operations == ["observe"];
+  assert provided.outputs."aos-ability-boundary-observer:endpoint".resource.operations == ["observe"];
   assert portableOptionTree managed.options.aos.tests.executionObserver;
   assert !(managed.config ? systemd); true

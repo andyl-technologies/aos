@@ -49,12 +49,12 @@
     cfg.allowedUsers;
   accessMembership = producer "access-membership" interfaces.groupMembership {
     name = "libvirt-access";
-    group = resultOf "access-group" "identity-resource";
+    group = resultOf "access-group" "resource";
     principals =
       builtins.sort
       (left: right: builtins.toJSON left < builtins.toJSON right)
       (builtins.map
-        (name: resultOf (allowedPrincipalKey name) "identity-resource")
+        (name: resultOf (allowedPrincipalKey name) "resource")
         cfg.allowedUsers);
   };
   localFilesystems = producer "local-filesystems" interfaces.filesystemReadiness {
@@ -142,14 +142,14 @@
   directory = key: let
     value = directoryDefinitions.${key};
     prerequisites =
-      [(resultOf "local-filesystems" "readiness-resource")]
-      ++ lib.optional (value.parent != null) (resultOf "directory-${value.parent}" "entry-resource");
+      [(resultOf "local-filesystems" "resource")]
+      ++ lib.optional (value.parent != null) (resultOf "directory-${value.parent}" "resource");
   in
     filesystemEntry "directory-${key}" value.path value.mode value.owner value.group prerequisites;
   directories = builtins.map directory (builtins.attrNames directoryDefinitions);
   directoryResources =
     builtins.map
-    (key: resultOf "directory-${key}" "entry-resource")
+    (key: resultOf "directory-${key}" "resource")
     (builtins.attrNames directoryDefinitions);
 
   socket = {
@@ -172,7 +172,7 @@
     owner = "root";
     group = groupName;
     remove_on_stop = true;
-    prerequisites = [(resultOf "directory-runtime" "entry-resource")];
+    prerequisites = [(resultOf "directory-runtime" "resource")];
     inherit after;
     binds_to = bindsTo;
   };
@@ -444,15 +444,15 @@
     inherit searchPath;
     dependencies = {
       after = [
-        (resultOf "system-bus-availability" "readiness-resource")
-        (resultOf "virtlogd-lifecycle" "service-resource")
-        (resultOf "virtlockd-lifecycle" "service-resource")
+        (resultOf "system-bus-availability" "resource")
+        (resultOf "virtlogd-lifecycle" "resource")
+        (resultOf "virtlockd-lifecycle" "resource")
       ];
       requires = [
-        (resultOf "system-bus-availability" "readiness-resource")
-        (resultOf "virtlogd-lifecycle" "service-resource")
+        (resultOf "system-bus-availability" "resource")
+        (resultOf "virtlogd-lifecycle" "resource")
       ];
-      wants = [(resultOf "virtlockd-lifecycle" "service-resource")];
+      wants = [(resultOf "virtlockd-lifecycle" "resource")];
     };
     sockets = [
       (socket {

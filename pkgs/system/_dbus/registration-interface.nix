@@ -6,7 +6,6 @@
   contributionAlias = "system-registration-contribution";
   resourceKind = "aos.dbus.system-registration";
   serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   packageArtifact = lib.abilities.packageOutput {};
   moduleArtifact = lib.abilities.packageOutput {output = "module";};
   artifactDirectories = types.list {
@@ -20,7 +19,6 @@
       name = types.localKey;
       stock_configuration = types.artifactPathReference;
       operator_policy_directory = types.executionPath;
-      reload = serviceTypes.reload;
     };
   };
   contributionRequest = types.record {
@@ -97,7 +95,7 @@
   };
   aggregation = {
     scope = "provider-instance";
-    key = "slot";
+    key = "system-bus";
     rejectSlotCollisions = false;
     mergeContract = lib.abilities.descriptorFor "aos.ability.merge-contract/v1" {
       schema = types.schemaOf "D-Bus system registration aggregate" aggregateRequest;
@@ -111,7 +109,7 @@
     requestType = baseRequest;
     methods = controllerMethods;
     inherit lifecycle aggregation;
-    outputs.registration-resource =
+    outputs.resource =
       output "planning" "instance"
       "References the exact aggregate system-bus registration resource."
       types.resourceReference;
@@ -133,7 +131,7 @@
     methods = contributionMethods;
     inherit lifecycle;
     inherit aggregation;
-    outputs.registration-resource =
+    outputs.resource =
       output "planning" "instance"
       "References the aggregate system-bus registration resource."
       types.resourceReference;
@@ -159,15 +157,6 @@ in {
             description = "Materializes the assembled system-bus configuration.";
             accepted_interfaces = [serviceManagement.interfaces.managedConfiguration.identity];
             methods = ["materialize" "observe" "release"];
-            guarantees = [];
-            strength = "required";
-            fallback = null;
-          };
-          service-reload = {
-            alias = "service-reload";
-            description = "Reloads the system bus after registration changes.";
-            accepted_interfaces = [serviceManagement.interfaces.reload.identity];
-            methods = ["observe" "reload"];
             guarantees = [];
             strength = "required";
             fallback = null;

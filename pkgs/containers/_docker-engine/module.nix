@@ -117,16 +117,16 @@
       };
       dependencies = {
         after = [
-          (resultOf "docker-network-readiness" "readiness-resource")
-          (resultOf "docker-data-storage" "retained-resource")
-          (resultOf "docker-runtime-storage" "retained-resource")
+          (resultOf "docker-network-readiness" "resource")
+          (resultOf "docker-data-storage" "resource")
+          (resultOf "docker-runtime-storage" "resource")
         ];
         before = [];
         requires = [
-          (resultOf "docker-data-storage" "retained-resource")
-          (resultOf "docker-runtime-storage" "retained-resource")
+          (resultOf "docker-data-storage" "resource")
+          (resultOf "docker-runtime-storage" "resource")
         ];
-        wants = [(resultOf "docker-network-readiness" "readiness-resource")];
+        wants = [(resultOf "docker-network-readiness" "resource")];
       };
       supervision = {
         startup_protocol = "notification";

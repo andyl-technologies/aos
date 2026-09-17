@@ -14,10 +14,7 @@
     if abilitySelection == null
     then []
     else abilitySelection.bindingsForImplementation "system-manager";
-  selected =
-    builtins.length managerBindings
-    == 1
-    && (builtins.head managerBindings).binding.request == "system:manager";
+  selected = builtins.length managerBindings == 1;
   selectedBinding =
     if selected
     then builtins.head managerBindings
@@ -101,7 +98,7 @@
     inherit config initrdAbilityEvaluation initrdStaticContract lib packageArtifactFor;
   };
   selectedManagerOutput =
-    config.aos.abilities.compositionOutputs."system:manager"."selected-manager".value or null;
+    config.aos.abilities.compositionOutputs.${selectedBinding.binding.request}."selected-manager".value or null;
   authoredManager = {
     _type = "aos-selected-manager";
     name = "systemd";

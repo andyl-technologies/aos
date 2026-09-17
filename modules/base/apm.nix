@@ -72,56 +72,6 @@
         registries))
     )
   );
-  runtimeEntries = lib.abilities.interfaces.serviceManagement.forProducer {
-    consumerInstance = "apm:runtime";
-    key = "runtime-entries";
-    interface = lib.abilities.interfaces.serviceManagement.interfaces.runtimeEntryPopulation;
-    methods = ["observe"];
-    parameters.entries = [
-      {
-        kind = "directory";
-        path = "/etc/aos/packages.d";
-        mode = "0755";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/run/apm";
-        mode = "0700";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/run/aos-attest";
-        mode = "0700";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/var/lib/apm";
-        mode = "0755";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/var/lib/apm/config";
-        mode = "0755";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/var/lib/apm/config/registries.d";
-        mode = "0755";
-        owner = "root";
-        group = "root";
-      }
-    ];
-  };
 in {
   options.aos.apm.drainScript = lib.mkOption {
     type = lib.types.nullOr lib.types.path;
@@ -201,11 +151,6 @@ in {
       desiredText = desiredToml;
     };
     aos.packageRuntime.packageAttestationQuote.packageProfileEnabled = cfg.enable;
-    aos.abilities = lib.mkMerge [
-      {instances."apm:runtime" = {};}
-      runtimeEntries
-    ];
-
     # The consumer CLI is the only AOS command surface on the system PATH.
     # Repository construction (`aos`) and registry authoring (`apr`) remain
     # host tools. Rollout hooks are addressed by checked immutable-image

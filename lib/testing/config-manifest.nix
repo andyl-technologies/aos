@@ -14,6 +14,7 @@
       "host_nix"
       "instance_facts"
       "package_modules"
+      "store_view"
     ];
   ownershipNames = value:
     builtins.attrNames value.ownership
@@ -59,7 +60,11 @@
     && builtins.match "/nix/store/.*" value.inputs.base_lib.store_path != null
     && builtins.match "/nix/store/.*" value.inputs.evaluator.store_path != null
     && builtins.match "/nix/store/.*" value.inputs.host_nix.store_path != null
-    && builtins.match "/nix/store/.*" value.inputs.instance_facts.store_path != null;
+    && builtins.match "/nix/store/.*" value.inputs.instance_facts.store_path != null
+    && value.inputs.store_view.schema == "aos.package-store.read-view-locator/v1"
+    && builtins.isString value.inputs.store_view.identity_root
+    && builtins.isString value.inputs.store_view.read_root
+    && builtins.isString value.inputs.store_view.static_contract;
 in
   assert validShape fixture;
   assert exactOwnershipCoverage fixture;

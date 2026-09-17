@@ -12,8 +12,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -81,6 +97,7 @@ in
     buildDeps = [gnumake perl];
     runtimeDeps = [ncurses libxcrypt];
     propagatedDeps = [];
+    abilities = ./_inetutils;
     configureFlags = "--with-ncurses-include-dir=${ncurses}/include";
     # Inetutils 2.8 adds -Wno-format, which conflicts with the stdenv's
     # mandatory -Wformat-security hardening. Keep format checking enabled.

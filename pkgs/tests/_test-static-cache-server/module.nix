@@ -91,7 +91,7 @@
         permit_core_dumps = false;
       };
       dependencies.prerequisites = [
-        (resultOf "ingress" "readiness-resource")
+        (resultOf "ingress" "resource")
       ];
     };
   };

@@ -26,7 +26,7 @@
   deviceEvents = milestone "device-events" milestones.deviceEventsTriggered;
   deviceSettle = milestone "device-settle" milestones.deviceSettle;
   integrityFailure = milestone "integrity-failure" milestones.bootIntegrityFailure;
-  readiness = key: resultOf key "readiness-resource";
+  readiness = key: resultOf key "resource";
 
   setup = serviceManagement.forService {
     inherit serviceTypes consumerInstance;

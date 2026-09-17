@@ -352,10 +352,10 @@
           stop_timeout_millis = 90000;
         };
         dependencies = {
-          after = [(resultOf "network-readiness" "readiness-resource")];
+          after = [(resultOf "network-readiness" "resource")];
           before = [];
           requires = [];
-          wants = [(resultOf "network-readiness" "readiness-resource")];
+          wants = [(resultOf "network-readiness" "resource")];
         };
         readiness = {
           mechanism = "process-signal";

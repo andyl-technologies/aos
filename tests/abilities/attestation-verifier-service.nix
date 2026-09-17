@@ -45,7 +45,7 @@
   dependency = {
     _type = "aos-request-output-reference";
     request = "aos:local-filesystems";
-    output = "readiness-resource";
+    output = "resource";
   };
   portableOptionTree = options:
     builtins.all

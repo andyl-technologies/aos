@@ -96,7 +96,7 @@
   kernelReadiness = {
     _type = "aos-request-output-reference";
     request = "zram-generator:zram-kernel-modules";
-    output = "readiness-resource";
+    output = "resource";
   };
 in
   assert baseline.config.environment.systemPackages == [zramGenerator];
@@ -188,7 +188,7 @@ in
     {
       _type = "aos-request-output-reference";
       request = "zram-generator:zram-generator-directory";
-      output = "retained-resource";
+      output = "resource";
     }
   ];
   assert configurationEntry.entry
@@ -199,7 +199,7 @@ in
       resource = {
         _type = "aos-request-output-reference";
         request = "zram-generator:zram-generator-config";
-        output = "retained-resource";
+        output = "resource";
       };
       path = {
         _type = "aos-request-output-reference";
@@ -215,7 +215,7 @@ in
     {
       _type = "aos-request-output-reference";
       request = "zram-generator:zram-generator-config";
-      output = "retained-resource";
+      output = "resource";
     }
   ];
   assert packagedUnit

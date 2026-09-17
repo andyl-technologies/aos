@@ -67,7 +67,7 @@
       slot = "example";
     };
   };
-  evaluate = consumerModule: bindings:
+  evaluate = consumerModule: bindings: abilityResolution:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -93,7 +93,7 @@
       ];
       selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
-        inherit pkgs;
+        inherit pkgs abilityResolution;
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
@@ -101,8 +101,17 @@
       };
     };
 
-  pending = evaluate (consumerModuleFor "lib/systemd/system/example.service") baseBindings;
+  emptyResolution = {
+    requests = {};
+    requirements = {};
+  };
+  pending = evaluate (consumerModuleFor "lib/systemd/system/example.service") baseBindings emptyResolution;
   effectsChild = builtins.head (builtins.attrValues pending.config.aos.abilities.compositionPendingRequests);
+  resolvedAbilityInputs = {
+    requests.${effectsChild.request} = effectsChild.declaration;
+    requirements.${effectsChild.declaration.requirement} =
+      pending.config.aos.abilities.compositionRequirements.${effectsChild.declaration.requirement};
+  };
   resolvedBindings =
     baseBindings
     // {
@@ -113,7 +122,7 @@
         slot = effectsChild.slot;
       };
     };
-  evaluateResolved = consumerModule: evaluate consumerModule resolvedBindings;
+  evaluateResolved = consumerModule: evaluate consumerModule resolvedBindings resolvedAbilityInputs;
   evaluation = evaluateResolved (consumerModuleFor "lib/systemd/system/example.service");
   invalidUnitName = builtins.tryEval (builtins.deepSeq (
       builtins.head (
@@ -131,11 +140,11 @@
   abilities = evaluation.config.aos.abilities;
   declaration = abilities.interfaces."systemd:systemd-packaged-unit";
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
-  dependencyReference = abilities.compositionOutputs."consumer:unit".unit-resource.value;
+  dependencyReference = abilities.compositionOutputs."consumer:unit".resource.value;
   deferredDependency = {
     _type = "aos-request-output-reference";
     request = "consumer:unit";
-    output = "unit-resource";
+    output = "resource";
   };
   targetResource =
     desired

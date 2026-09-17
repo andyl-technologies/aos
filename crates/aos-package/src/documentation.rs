@@ -1109,6 +1109,7 @@ mod tests {
             name: LocalKey::new("server").unwrap(),
             description: "Implements the test server interface.".to_string(),
             interface: interface_key.clone(),
+            methods: Vec::new(),
             guarantees: Vec::new(),
             artifact: ArtifactReference {
                 content: Sha256Digest::of_bytes("provider-content"),

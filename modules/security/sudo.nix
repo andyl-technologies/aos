@@ -6,10 +6,6 @@
   ...
 }: let
   cfg = config.aos.security.sudo;
-  sudoExecutable = {
-    artifact = lib.abilities.packageOutput {package = "sudo";};
-    path = "bin/sudo";
-  };
   wheelMembers = config.aos.users.groups.wheel.members;
   passwordTag =
     if cfg.wheelNeedsPassword
@@ -25,37 +21,6 @@
     %wheel ALL=(ALL:ALL) ${passwordTag}: ALL
     ${lib.concatStringsSep "\n" cfg.extraRules}
   '';
-  runtimeEntries = lib.abilities.interfaces.serviceManagement.forProducer {
-    consumerInstance = "sudo:runtime";
-    key = "runtime-entries";
-    interface = lib.abilities.interfaces.serviceManagement.interfaces.runtimeEntryPopulation;
-    methods = ["observe"];
-    parameters.entries = [
-      {
-        kind = "directory";
-        path = "/run/sudo";
-        mode = "0755";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/var/db/sudo";
-        mode = "0700";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/var/log/sudo-io";
-        mode = "0700";
-        owner = "root";
-        group = "root";
-      }
-    ];
-  };
-  runtimeEntryContribution =
-    lib.abilities.interfaces.serviceManagement.splitContribution runtimeEntries;
 in {
   options.aos.security.sudo = {
     enable = lib.mkOption {
@@ -78,23 +43,8 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = runtimeEntryContribution.declarations;}
     (lib.mkIf cfg.enable {
       environment.systemPackages = [pkgs.sudo pkgs.util-linux];
-
-      aos.abilities = lib.mkMerge [
-        {instances."sudo:runtime" = {};}
-        runtimeEntryContribution.configured
-      ];
-
-      aos.security.wrappers = {
-        sudo = {
-          source = sudoExecutable;
-        };
-        sudoedit = {
-          source = sudoExecutable;
-        };
-      };
 
       aos.pam.services.sudo = {
         unixAuth = true;

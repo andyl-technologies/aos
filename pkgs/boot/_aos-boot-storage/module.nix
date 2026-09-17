@@ -34,7 +34,7 @@
     interface = interfaces.activationMilestone;
     parameters.milestone = "early-system";
   };
-  earlySystemReadiness = resultOf "early-system" "readiness-resource";
+  earlySystemReadiness = resultOf "early-system" "resource";
   systemMilestone = key: milestone:
     serviceManagement.forProducer {
       inherit consumerInstance key;
@@ -50,15 +50,15 @@
   initrdStage = systemMilestone "initrd-stage" milestones.initrdStageExecuted;
   espReady = systemMilestone "esp-ready" milestones.espReady;
   imageBootCommitted = systemMilestone "image-boot-committed" milestones.imageBootCommitted;
-  localFilesystemsReadiness = resultOf "local-filesystems" "readiness-resource";
-  multiUserReadiness = resultOf "multi-user" "readiness-resource";
-  sysrootReadiness = resultOf "sysroot" "readiness-resource";
-  deviceSettleReadiness = resultOf "device-settle" "readiness-resource";
-  kernelModulesReadiness = resultOf "kernel-modules" "readiness-resource";
-  bootIdentityReadiness = resultOf "boot-identity" "readiness-resource";
-  initrdStageReadiness = resultOf "initrd-stage" "readiness-resource";
-  espReadyReadiness = resultOf "esp-ready" "readiness-resource";
-  imageBootCommittedReadiness = resultOf "image-boot-committed" "readiness-resource";
+  localFilesystemsReadiness = resultOf "local-filesystems" "resource";
+  multiUserReadiness = resultOf "multi-user" "resource";
+  sysrootReadiness = resultOf "sysroot" "resource";
+  deviceSettleReadiness = resultOf "device-settle" "resource";
+  kernelModulesReadiness = resultOf "kernel-modules" "resource";
+  bootIdentityReadiness = resultOf "boot-identity" "resource";
+  initrdStageReadiness = resultOf "initrd-stage" "resource";
+  espReadyReadiness = resultOf "esp-ready" "resource";
+  imageBootCommittedReadiness = resultOf "image-boot-committed" "resource";
   service = {
     key,
     description,
@@ -193,7 +193,7 @@
       ];
     };
   };
-  stagedZfsCredentialReadiness = resultOf "aos-stage-zfs-credential-lifecycle" "service-resource";
+  stagedZfsCredentialReadiness = resultOf "aos-stage-zfs-credential-lifecycle" "resource";
   unlockArguments = [cfg.zfs.poolName cfg.zfs.encryptionRoot] ++ cfg.zfs.expectedDevices;
   zfsUnlock = service {
     key = "aos-zfs-unlock";
@@ -399,7 +399,9 @@ in {
             };
           };
         }
+        (serviceManagement.splitContribution bootIdentity).configured
         (serviceManagement.splitContribution deviceSettle).configured
+        (serviceManagement.splitContribution initrdStage).configured
         (serviceManagement.splitContribution sysroot).configured
         (serviceManagement.splitContribution transactionStorageMount).configured
       ];

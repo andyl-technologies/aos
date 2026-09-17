@@ -26,7 +26,7 @@
   output = name: {
     _type = "aos-request-output-reference";
     request = "aos-verity-root-guard:${name}";
-    output = "readiness-resource";
+    output = "resource";
   };
   rootVerifyLifecycle = request "aos-verity-root-verify-lifecycle";
   rootVerifyDependencies = request "aos-verity-root-verify-dependencies";
@@ -36,7 +36,7 @@ in
   assert builtins.elem {
     _type = "aos-request-output-reference";
     request = "aos-boot-preparations:boot-identity";
-    output = "readiness-resource";
+    output = "resource";
   }
   mountVarDependencies.requires;
   assert (builtins.head rootVerifyLifecycle.start).executable.entry_point == "bin/aos-verity-root-verify";

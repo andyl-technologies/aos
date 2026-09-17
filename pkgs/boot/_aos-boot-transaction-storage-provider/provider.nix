@@ -14,10 +14,15 @@
     lib.abilities.interfaceDocumentFromDeclaration effects
   );
   transactionStoragePath = "/run/aos-boot-transaction-storage/aos/initrd-stage-journal";
-  empty = {
+  emptyProvision = {
     requests = {};
     outputs = {};
     resourceFragments = {};
+  };
+  emptyComposition = {
+    requests = {};
+    outputs = {};
+    realizations = {};
   };
   bindingFor = bindings: requestName: let
     matches = builtins.filter (binding: binding.request == requestName) (builtins.attrValues bindings);
@@ -48,7 +53,7 @@
       reference = resourceReference instance binding.slot;
     }) (builtins.attrNames requests);
   in
-    empty
+    emptyProvision
     // {
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
@@ -69,7 +74,7 @@
         entries);
     };
   compose = {resources, ...}:
-    empty
+    emptyComposition
     // {
       requests =
         builtins.mapAttrs (key: resource: {

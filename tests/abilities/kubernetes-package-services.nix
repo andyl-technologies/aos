@@ -222,7 +222,7 @@ in
     dependencies = [];
   };
   assert builtins.elem
-  (outputReference "edgecore:kernel-tunables" "readiness-resource")
+  (outputReference "edgecore:kernel-tunables" "resource")
   (requests edgecore)."edgecore:edgecore-dependencies".parameters.requires;
   assert let
     requirement = edgecorePackageAbilities.requirementTemplates.kernel-tunables;
@@ -302,7 +302,7 @@ in
     dependencies = [];
   };
   assert builtins.elem
-  (outputReference "k3s-worker:kernel-tunables" "readiness-resource")
+  (outputReference "k3s-worker:kernel-tunables" "resource")
   (requests k3sWorker)."k3s-worker:k3s-dependencies".parameters.requires;
   assert let
     requirement = k3sWorkerPackageAbilities.requirementTemplates.kernel-tunables;
@@ -346,7 +346,7 @@ in
     {
       _type = "aos-request-output-reference";
       request = "k3s-combined:lifecycle";
-      output = "retained-resource";
+      output = "resource";
     }
   ];
   assert builtins.any
@@ -381,9 +381,9 @@ in
   };
   assert builtins.attrNames objectControllerDeclaration.outputs
   == [
-    "cluster-readiness-resource"
+    "cluster-resource"
     "kubeconfig-resource"
-    "readiness-resource"
+    "resource"
   ];
   assert k3sPackageAbilities.implementations.kubernetes-object-set ? provider_module;
   assert !(k3sPackageAbilities.implementations.kubernetes-object-set ? handler);

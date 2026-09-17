@@ -199,7 +199,7 @@
           request.parameters.expected.milestone == milestoneFor name)
         (builtins.attrValues abilities.compositionRequests));
     outputFor = name:
-      abilities.compositionOutputs."consumer:${name}".readiness-resource.value;
+      abilities.compositionOutputs."consumer:${name}".resource.value;
     resourceFor = reference:
       builtins.head (builtins.filter
         (resource: resource.resource == reference.resource)

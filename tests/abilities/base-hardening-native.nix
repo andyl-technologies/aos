@@ -8,6 +8,13 @@
     name = "base-hardening";
     module = ../../modules/security/hardening.nix;
     packages = [pkgs.aos-kernel-tunable-provider pkgs.systemd];
+    extraPackageModules = [
+      {
+        name = "aos";
+        version = pkgs.aos.version;
+        module = pkgs.aos.module + "/hardening-policy.nix";
+      }
+    ];
   };
   enabledCoreDump = evaluate {
     name = "base-hardening-coredump";
@@ -16,12 +23,19 @@
       aos.security.hardening.coreDump.enable = true;
     };
     packages = [pkgs.aos-kernel-tunable-provider pkgs.systemd];
+    extraPackageModules = [
+      {
+        name = "aos";
+        version = pkgs.aos.version;
+        module = pkgs.aos.module + "/hardening-policy.nix";
+      }
+    ];
   };
   config = evaluated.config;
-  request = config.aos.abilities.requests."system:security-tunables";
-  requirement = config.aos.abilities.requirementTemplates."system:kernel-tunables";
-  crashDumpRequest = config.aos.abilities.requests."system:crash-dump-policy";
-  enabledCrashDumpRequest = enabledCoreDump.config.aos.abilities.requests."system:crash-dump-policy";
+  request = config.aos.abilities.requests."aos:security-tunables";
+  requirement = config.aos.abilities.requirementTemplates."aos:kernel-tunables";
+  crashDumpRequest = config.aos.abilities.requests."aos:crash-dump-policy";
+  enabledCrashDumpRequest = enabledCoreDump.config.aos.abilities.requests."aos:crash-dump-policy";
   render = enabled:
     import ../../pkgs/system/_systemd-abilities/platform/_crash-dump-configuration.nix {
       policy = {inherit enabled;};
@@ -36,6 +50,7 @@ in
   assert request.parameters.values."kernel.kptr_restrict" == "2";
   assert !(request.parameters.values ? "kernel.core_pattern");
   assert !crashDumpRequest.parameters.enabled;
+  assert crashDumpRequest.lifetime == "instance";
   assert enabledCrashDumpRequest.parameters.enabled;
   assert config.aos.abilities.implementations."systemd:crash-dump-policy".interface
   == lib.abilities.interfaces.crashDumpPolicy.interface.identity;

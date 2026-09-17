@@ -5,6 +5,8 @@
 //! locator is the sole configuration-module authority; registry-era module
 //! metadata is not represented at this boundary.
 
+use std::collections::BTreeMap;
+
 /// Keeps one resolved package document with its authenticated public interfaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedPackageContract {
@@ -31,6 +33,8 @@ pub struct ResolvedPackageModule {
     pub platform: String,
     /// Authenticated runtime payload output.
     pub runtime_output: String,
+    /// Canonical symbolic output selector JSON mapped to authenticated paths.
+    pub selector_outputs: BTreeMap<String, String>,
     /// Resolved package contract and authenticated public interfaces.
     pub contract: ResolvedPackageContract,
 }

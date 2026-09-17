@@ -15,69 +15,81 @@
     package = pkgs.systemd;
     implementation = "group-resolution";
   };
-  evaluation = lib.evalModules {
-    inherit lib;
-    modules = [
-      lib.abilities.module
-      {
-        aos.abilities = {
-          environment = {
-            authority = "test";
-            key = "systemd-identity";
-            stage = "host";
-          };
-          bindings = {
-            "test:group" = {
-              request = "consumer:group";
-              implementation = "systemd:group-resolution";
-              providerInstance = "systemd:manager";
-              slot = "operators";
-            };
-            "test:group-effects" = {
-              request = effectsRequestKey;
-              implementation = "systemd:systemd-group-effects";
-              providerInstance = "systemd:manager";
-              slot = "operators";
-            };
-          };
-          instances."systemd:manager" = {};
-        };
-      }
-    ];
-    packageModules = [
-      (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
-      {
-        name = "consumer";
-        module.config.aos.abilities = {
-          instances.identity-client = {};
-          requirementTemplates.group = {
-            interface = groupInterface.identity.name;
-            inherit (groupInterface.identity) abi descriptor;
-            methods = groupInterface.methods;
-            guarantees = [];
-            strength = "required";
-            fallback = null;
-          };
-          requests.group = {
-            requirement = "group";
-            consumer = "identity-client";
-            scope = ["operators"];
-            parameters = {
-              name = "operators";
-              allocation = "managed";
-            };
-          };
-        };
-      }
-    ];
-    selectedProviderModules = [selectedSystemdProvider];
-    specialArgs = {
-      inherit pkgs;
-      provenance = {
-        dependencyOwnersOfAttr = _: _: [];
-        ownerOfListAttr = _: _: _: "@test";
+  baseAbilities = {
+    environment = {
+      authority = "test";
+      key = "systemd-identity";
+      stage = "host";
+    };
+    bindings = {
+      "test:group" = {
+        request = "consumer:group";
+        implementation = "systemd:group-resolution";
+        providerInstance = "systemd:manager";
+        slot = "operators";
       };
     };
+    instances."systemd:manager" = {};
+  };
+  evaluate = bindings: abilityResolution:
+    lib.evalModules {
+      inherit lib;
+      modules = [
+        lib.abilities.module
+        {aos.abilities = baseAbilities // {inherit bindings;};}
+      ];
+      packageModules = [
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
+        {
+          name = "consumer";
+          module.config.aos.abilities = {
+            instances.identity-client = {};
+            requirementTemplates.group = {
+              interface = groupInterface.identity.name;
+              inherit (groupInterface.identity) abi descriptor;
+              methods = groupInterface.methods;
+              guarantees = [];
+              strength = "required";
+              fallback = null;
+            };
+            requests.group = {
+              requirement = "group";
+              consumer = "identity-client";
+              scope = ["operators"];
+              parameters = {
+                name = "operators";
+                allocation = "managed";
+              };
+            };
+          };
+        }
+      ];
+      selectedProviderModules = [selectedSystemdProvider];
+      specialArgs = {
+        inherit pkgs abilityResolution;
+        provenance = {
+          dependencyOwnersOfAttr = _: _: [];
+          ownerOfListAttr = _: _: _: "@test";
+        };
+      };
+    };
+  initial = evaluate baseAbilities.bindings {
+    requests = {};
+    requirements = {};
+  };
+  effectsChild = initial.config.aos.abilities.compositionPendingRequests.${effectsRequestKey};
+  evaluation = evaluate (baseAbilities.bindings
+    // {
+      "test:group-effects" = {
+        request = effectsRequestKey;
+        implementation = "systemd:systemd-group-effects";
+        providerInstance = "systemd:manager";
+        slot = effectsChild.slot;
+      };
+    }) {
+    requests.${effectsRequestKey} = effectsChild.declaration;
+    requirements.${effectsChild.declaration.requirement} =
+      initial.config.aos.abilities.compositionRequirements.${effectsChild.declaration.requirement};
   };
   resources = builtins.attrValues evaluation.config.aos.abilities.desiredResources;
   resource = builtins.head resources;

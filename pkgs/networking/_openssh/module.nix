@@ -210,7 +210,7 @@
             kind = "copied-file";
             source = {
               kind = "execution-path";
-              resource = resultOf "sshd-config-source" "retained-resource";
+              resource = resultOf "sshd-config-source" "resource";
               path = resultOf "sshd-config-source" "planned-path";
             };
             maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
@@ -220,8 +220,8 @@
           group = "root";
           mode = "0444";
           prerequisites = [
-            (resultOf "sshd-config-source" "retained-resource")
-            (resultOf "local-filesystems" "readiness-resource")
+            (resultOf "sshd-config-source" "resource")
+            (resultOf "local-filesystems" "resource")
           ];
         };
       }
@@ -234,7 +234,7 @@
           owner = "root";
           group = "root";
           mode = "0755";
-          prerequisites = [(resultOf "local-filesystems" "readiness-resource")];
+          prerequisites = [(resultOf "local-filesystems" "resource")];
         };
       }
       {
@@ -246,7 +246,7 @@
           owner = "root";
           group = "root";
           mode = "0755";
-          prerequisites = [(resultOf "local-filesystems" "readiness-resource")];
+          prerequisites = [(resultOf "local-filesystems" "resource")];
         };
       }
     ];
@@ -269,9 +269,9 @@
         ];
       };
       dependencies = {
-        after = [(resultOf "host-key-storage" "retained-resource")];
+        after = [(resultOf "host-key-storage" "resource")];
         before = [];
-        requires = [(resultOf "host-key-storage" "retained-resource")];
+        requires = [(resultOf "host-key-storage" "resource")];
         wants = [];
       };
       readiness = {
@@ -331,21 +331,21 @@
       };
       dependencies = {
         after = [
-          (resultOf "network-readiness" "readiness-resource")
-          (resultOf "sshd-keygen-lifecycle" "service-resource")
-          (resultOf "aos-ssh-ready-lifecycle" "service-resource")
+          (resultOf "network-readiness" "resource")
+          (resultOf "sshd-keygen-lifecycle" "resource")
+          (resultOf "aos-ssh-ready-lifecycle" "resource")
         ];
         before = [];
         requires = [
-          (resultOf "sshd-keygen-lifecycle" "service-resource")
-          (resultOf "sshd-config" "retained-resource")
-          (resultOf "privilege-separation-directory" "retained-resource")
+          (resultOf "sshd-keygen-lifecycle" "resource")
+          (resultOf "sshd-config" "resource")
+          (resultOf "privilege-separation-directory" "resource")
         ];
         wants = [
-          (resultOf "network-readiness" "readiness-resource")
-          (resultOf "aos-ssh-ready-lifecycle" "service-resource")
+          (resultOf "network-readiness" "resource")
+          (resultOf "aos-ssh-ready-lifecycle" "resource")
         ];
-        prerequisites = [(resultOf "authorized-keys-directory" "retained-resource")];
+        prerequisites = [(resultOf "authorized-keys-directory" "resource")];
       };
       supervision = {
         startup_protocol = "notification";

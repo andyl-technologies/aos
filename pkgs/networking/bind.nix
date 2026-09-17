@@ -30,8 +30,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -254,7 +270,7 @@ in
         && builtins.map
         (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
         dependencies.prerequisites
-        == [(expectedRequestOutput "dns-ingress" "readiness-resource")]
+        == [(expectedRequestOutput "dns-ingress" "resource")]
         && dependencies.after == []
         && dependencies.requires == [];
     in {

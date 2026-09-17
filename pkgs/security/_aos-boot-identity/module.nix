@@ -26,8 +26,8 @@
   deviceSettle = systemMilestone "device-settle" milestones.deviceSettle;
   initrdFilesystems = systemMilestone "initrd-filesystems" milestones.initrdFilesystems;
   integrityFailure = systemMilestone "integrity-failure" milestones.bootIntegrityFailure;
-  readiness = key: resultOf key "readiness-resource";
-  serviceResource = key: resultOf "${key}-lifecycle" "service-resource";
+  readiness = key: resultOf key "resource";
+  serviceResource = key: resultOf "${key}-lifecycle" "resource";
   command = key: {
     executable = {
       artifact = packageArtifact;

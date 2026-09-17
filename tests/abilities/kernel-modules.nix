@@ -24,52 +24,76 @@
     providerInstance = "kmod:manager";
     key = "required-modules";
   };
-  evaluated = lib.evalModules {
-    inherit lib;
-    modules = [
-      lib.abilities.module
-      {
-        aos.abilities = {
-          environment = {
-            authority = "test";
-            key = "kernel-modules";
-            stage = "host";
+  evaluate = {
+    includeEffects,
+    abilityResolution,
+  }:
+    lib.evalModules {
+      inherit lib;
+      modules = [
+        lib.abilities.module
+        {
+          aos.abilities = {
+            environment = {
+              authority = "test";
+              key = "kernel-modules";
+              stage = "host";
+            };
+            instances."kmod:manager" = {};
+            bindings =
+              {
+                "test:kernel-modules" = {
+                  request = "consumer:required-modules";
+                  implementation = "kmod:kernel-modules";
+                  providerInstance = "kmod:manager";
+                  slot = "required-modules";
+                };
+              }
+              // lib.optionalAttrs includeEffects {
+                "test:kernel-module-effects" = {
+                  request = childRequestKey;
+                  implementation = "kmod:kernel-module-effects";
+                  providerInstance = "kmod:manager";
+                  slot = "required-modules";
+                };
+              };
           };
-          instances."kmod:manager" = {};
-          bindings."test:kernel-modules" = {
-            request = "consumer:required-modules";
-            implementation = "kmod:kernel-modules";
-            providerInstance = "kmod:manager";
-            slot = "required-modules";
-          };
-          bindings."test:kernel-module-effects" = {
-            request = childRequestKey;
-            implementation = "kmod:kernel-module-effects";
-            providerInstance = "kmod:manager";
-            slot = "required-modules";
-          };
-        };
-      }
-    ];
-    packageModules = [
-      {
-        name = "kmod";
-        inherit (pkgs.kmod) version;
-        module = pkgs.kmod.module + "/module.nix";
-      }
-      {
-        name = "consumer";
-        module.imports = [
-          {config.aos.abilities.instances.workload = {};}
-          {config.aos.abilities = request;}
-        ];
-      }
-    ];
-    selectedProviderModules = [selectedProvider];
+        }
+      ];
+      packageModules = [
+        {
+          name = "kmod";
+          inherit (pkgs.kmod) version;
+          module = pkgs.kmod.module + "/module.nix";
+        }
+        {
+          name = "consumer";
+          module.imports = [
+            {config.aos.abilities.instances.workload = {};}
+            {config.aos.abilities = request;}
+          ];
+        }
+      ];
+      selectedProviderModules = [selectedProvider];
+      specialArgs = {inherit abilityResolution;};
+    };
+  initial = evaluate {
+    includeEffects = false;
+    abilityResolution = {
+      requests = {};
+      requirements = {};
+    };
+  };
+  evaluated = evaluate {
+    includeEffects = true;
+    abilityResolution = import ./_composition-resolution.nix {
+      abilities = initial.config.aos.abilities;
+      requestKeys = [childRequestKey];
+    };
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
-  output = abilities.compositionOutputs."consumer:required-modules".readiness-resource;
+  output = abilities.compositionOutputs."consumer:required-modules".resource;
   transition = abilities.implementations."kmod:kernel-modules".transition;
   effectsInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."kmod:kernel-module-effects"

@@ -35,7 +35,7 @@
     format = "swap";
     policy = "always";
     prerequisites = [
-      (resultOf "encrypted-swap-mapping" "readiness-resource")
+      (resultOf "encrypted-swap-mapping" "resource")
     ];
   };
   swap = producer "encrypted-swap" serviceInterfaces.swapResource {

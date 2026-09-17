@@ -149,56 +149,6 @@
       __toString = _: path;
     }
     else staticAbilityContractSource;
-  runtimeEntries = lib.abilities.interfaces.serviceManagement.forProducer {
-    consumerInstance = "ability-runtime:runtime";
-    key = "runtime-entries";
-    interface = lib.abilities.interfaces.serviceManagement.interfaces.runtimeEntryPopulation;
-    methods = ["observe"];
-    parameters.entries = [
-      {
-        kind = "directory";
-        path = "/var/lib/aos/ability-runtime";
-        mode = "0711";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/var/lib/aos/ability-runtime/credential-sources";
-        mode = "0700";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/var/lib/aos/ability-runtime/credentials";
-        mode = "0700";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/var/lib/aos/ability-runtime/endpoints";
-        mode = "0700";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/var/lib/aos/ability-runtime/network-policy";
-        mode = "0700";
-        owner = "root";
-        group = "root";
-      }
-      {
-        kind = "directory";
-        path = "/var/lib/aos/ability-runtime/storage";
-        mode = "0711";
-        owner = "root";
-        group = "root";
-      }
-    ];
-  };
 in {
   options = {
     aos.abilities.activationInput = lib.mkOption {
@@ -228,11 +178,6 @@ in {
   };
 
   config = {
-    aos.abilities = lib.mkMerge [
-      {instances."ability-runtime:runtime" = {};}
-      runtimeEntries
-    ];
-
     system.build.staticAbilityContract = staticAbilityContract;
     aos.boot.initrd.packageRoots = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable [
       pkgs.aos.packageRuntime

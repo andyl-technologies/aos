@@ -18,6 +18,7 @@
   controllerMethods = builtins.attrNames controllerDeclaration.methods;
   packageArtifact = lib.abilities.packageOutput {};
   registrationConfigurationPath = resultOf "system-registration" "configuration-path";
+  registrationResource = resultOf "system-registration" "resource";
   registrationConfigurationResource = resultOf "system-registration" "configuration-resource";
 
   producer = key: interface: parameters:
@@ -79,22 +80,6 @@
         path = "share/dbus-1/system.conf";
       };
       operator_policy_directory = "/etc/dbus-1/system.d";
-      reload = {
-        service = "dbus";
-        enabled = true;
-        strategy = "command";
-        commands = [
-          (command "bin/dbus-send" [
-            "--print-reply"
-            "--system"
-            "--type=method_call"
-            "--dest=org.freedesktop.DBus"
-            "/"
-            "org.freedesktop.DBus.ReloadConfig"
-          ])
-        ];
-        completion = "command-exit";
-      };
     };
   };
   socketPath = pathWithin {
@@ -174,9 +159,9 @@
         };
         dependencies = {
           prerequisites = [
-            (resultOf "runtime-storage" "retained-resource")
-            (resultOf "state-storage" "retained-resource")
-            (resultOf "system-registration" "registration-resource")
+            (resultOf "runtime-storage" "resource")
+            (resultOf "state-storage" "resource")
+            registrationResource
             registrationConfigurationResource
           ];
           after = [];
@@ -197,7 +182,20 @@
           signal_scope = "main-process";
           timeout_millis = 90000;
         };
-        reload = null;
+        reload = {
+          strategy = "command";
+          commands = [
+            (command "bin/dbus-send" [
+              "--print-reply"
+              "--system"
+              "--type=method_call"
+              "--dest=org.freedesktop.DBus"
+              "/"
+              "org.freedesktop.DBus.ReloadConfig"
+            ])
+          ];
+          completion = "command-exit";
+        };
         configuration.views = [
           {
             name = "system";
@@ -230,7 +228,7 @@
             ];
             mode = "0666";
             remove_on_stop = false;
-            prerequisites = [(resultOf "runtime-storage" "retained-resource")];
+            prerequisites = [(resultOf "runtime-storage" "resource")];
           }
         ];
         logging = {

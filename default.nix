@@ -219,16 +219,23 @@
         systemName
         ;
     };
-    inherit (abilityEvaluation)
+    inherit
+      (abilityEvaluation)
       finalPackageModules
       hostPackageEvaluation
       hostAbilityEvaluation
+      hostAbilityInstances
       hostAbilityBindings
+      hostAbilityRequests
+      hostAbilityRequirements
       hostProviderModules
       hostEnvironment
       initrdPackageModules
       initrdProviderModules
+      initrdAbilityInstances
       initrdAbilityBindings
+      initrdAbilityRequests
+      initrdAbilityRequirements
       initrdEnvironment
       initrdAbilityEvaluation
       ;
@@ -258,12 +265,21 @@
       baseModules = modules;
       inherit systemModules systemName moduleAbi;
       hostPackageModules = finalPackageModules;
-      inherit hostProviderModules hostAbilityBindings;
+      inherit
+        hostProviderModules
+        hostAbilityInstances
+        hostAbilityBindings
+        hostAbilityRequests
+        hostAbilityRequirements
+        ;
       hostAbilityEnvironment = hostEnvironment;
       inherit
         initrdPackageModules
         initrdProviderModules
+        initrdAbilityInstances
         initrdAbilityBindings
+        initrdAbilityRequests
+        initrdAbilityRequirements
         ;
       initrdAbilityEnvironment = initrdEnvironment;
       inherit initrdStaticAbilityContract;
@@ -280,17 +296,28 @@
               baseLibAbiHash = baseLib.passthru.abiHash;
             };
             aos.abilities.environment = hostEnvironment;
+            aos.abilities.instances = hostAbilityInstances;
+            aos.abilities.bindings = hostAbilityBindings;
           }
         ];
       inherit pkgs lib operatorModules runtimeModules;
       packageModules = finalPackageModules;
       selectedProviderModules = hostProviderModules;
       enableAbilitySelection = true;
-      specialArgs = moduleSpecialArgs // {inherit initrdAbilityEvaluation initrdStaticContract;};
+      specialArgs =
+        moduleSpecialArgs
+        // {
+          inherit initrdAbilityEvaluation initrdStaticContract;
+          abilityResolution = {
+            requests = hostAbilityRequests;
+            requirements = hostAbilityRequirements;
+          };
+        };
     };
   in {
     qualificationProjection = abilityEvaluation.qualificationProjection;
-    system = builtins.seq
+    system =
+      builtins.seq
       (lib.abilities.checkedProviderModuleEvaluation {
         before = hostPackageEvaluation.config.aos.abilities;
         after = finalHostEvaluation.config.aos.abilities;
@@ -465,15 +492,15 @@
     };
   in
     testing.mkQualificationAbilityScenario ({
-      name = "aos-qualification-${scenarioId}";
-      identity = qualificationExecutorIdentity;
-      inherit scenarioId;
-      checks = qualificationRequirementChecks scenarioId;
-      testScript = spec.qualification.testScript or spec.testScript;
-      stagingHubUrl = spec.qualification.stagingHubUrl or null;
-      inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
-    }
-    // lib.optionalAttrs (cohorts != null) {inherit cohorts;});
+        name = "aos-qualification-${scenarioId}";
+        identity = qualificationExecutorIdentity;
+        inherit scenarioId;
+        checks = qualificationRequirementChecks scenarioId;
+        testScript = spec.qualification.testScript or spec.testScript;
+        stagingHubUrl = spec.qualification.stagingHubUrl or null;
+        inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
+      }
+      // lib.optionalAttrs (cohorts != null) {inherit cohorts;});
   predecessorMatrixCohort = cohort:
     cohort
     // {
@@ -637,11 +664,10 @@
     assert postconditions == expectedPostconditions; selected;
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
-    ability-crucible-baseline =
-      mkNativeAbilityScenario {
-        scenarioId = "ability-crucible-baseline";
-        source = ./tests/fleet/ability-crucible-baseline.nix;
-      };
+    ability-crucible-baseline = mkNativeAbilityScenario {
+      scenarioId = "ability-crucible-baseline";
+      source = ./tests/fleet/ability-crucible-baseline.nix;
+    };
     ability-native-adapter-matrix = testing.mkQualificationAbilityScenario {
       name = "aos-qualification-ability-native-adapter-matrix";
       identity = qualificationExecutorIdentity;
@@ -662,12 +688,13 @@
             inherit (nativeEffectReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
-        ++ lib.imap (index: cohort: predecessorMatrixCohort {
-          id = "provider-effect-boundary-rollout-${builtins.toString index}";
-          qualifiedCells = [(builtins.elemAt nativeEffectBoundaryCells.groups.rollout index)];
-          inherit (cohort) testScript;
-          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-        })
+        ++ lib.imap (index: cohort:
+          predecessorMatrixCohort {
+            id = "provider-effect-boundary-rollout-${builtins.toString index}";
+            qualifiedCells = [(builtins.elemAt nativeEffectBoundaryCells.groups.rollout index)];
+            inherit (cohort) testScript;
+            inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          })
         nativeEffectRolloutCohorts
         ++ [
           {
@@ -691,12 +718,13 @@
             inherit (nativeCancellationReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
-        ++ lib.imap (index: cohort: predecessorMatrixCohort {
-          id = "provider-cancellation-rollout-${builtins.toString index}";
-          qualifiedCells = [(builtins.elemAt nativeCancellationCells.groups.rollout index)];
-          inherit (cohort) testScript;
-          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-        })
+        ++ lib.imap (index: cohort:
+          predecessorMatrixCohort {
+            id = "provider-cancellation-rollout-${builtins.toString index}";
+            qualifiedCells = [(builtins.elemAt nativeCancellationCells.groups.rollout index)];
+            inherit (cohort) testScript;
+            inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          })
         nativeCancellationRolloutCohorts
         ++ [
           {
@@ -716,11 +744,10 @@
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
-    ability-native-recovery =
-      mkNativeAbilityScenario {
-        scenarioId = "ability-native-recovery";
-        source = ./tests/fleet/runtime-module-composition.nix;
-      };
+    ability-native-recovery = mkNativeAbilityScenario {
+      scenarioId = "ability-native-recovery";
+      source = ./tests/fleet/runtime-module-composition.nix;
+    };
   };
   recoveryPackageScenario =
     if hostPlatform.isLinux

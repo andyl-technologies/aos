@@ -168,10 +168,10 @@
     });
   abilities = evaluation.config.aos.abilities;
   outputs = {
-    network = abilities.compositionOutputs."consumer:network".readiness-resource.value;
-    filesystems = abilities.compositionOutputs."consumer:filesystems".readiness-resource.value;
-    milestone = abilities.compositionOutputs."consumer:milestone".readiness-resource.value;
-    runtimeEntries = abilities.compositionOutputs."consumer:runtime-entries".lifecycle-resource.value;
+    network = abilities.compositionOutputs."consumer:network".resource.value;
+    filesystems = abilities.compositionOutputs."consumer:filesystems".resource.value;
+    milestone = abilities.compositionOutputs."consumer:milestone".resource.value;
+    runtimeEntries = abilities.compositionOutputs."consumer:runtime-entries".resource.value;
   };
   resources = builtins.attrValues abilities.resolvedResources;
   resourceFor = reference:

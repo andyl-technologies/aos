@@ -21,7 +21,29 @@
     builtins.sort
     (left: right: builtins.toJSON left < builtins.toJSON right)
     (lib.unique identities);
-  dependencyIdentities = values: builtins.map unitNameForReference values;
+  dependencyIdentities = values:
+    builtins.filter (identity: identity != null) (builtins.map unitNameForReference values);
+  validatedDependencyIdentities = relationship: prerequisites: values: let
+    prerequisiteKeys = builtins.map builtins.toJSON prerequisites;
+    resolved =
+      builtins.map (reference: {
+        inherit reference;
+        identity = unitNameForReference reference;
+      })
+      values;
+    unrepresented =
+      builtins.filter
+      (entry:
+        entry.identity
+        == null
+        && !(builtins.elem (builtins.toJSON entry.reference) prerequisiteKeys))
+      resolved;
+  in
+    if unrepresented != []
+    then
+      throw
+      "systemd cannot represent service dependency '${relationship}' for ${builtins.toJSON (builtins.head unrepresented).reference}; declare it as a manager-neutral prerequisite"
+    else builtins.map (entry: entry.identity) (builtins.filter (entry: entry.identity != null) resolved);
   unitIdentityList = name: identities:
     repeated name (builtins.map (identity: semantic.systemdUnitName {inherit identity;}) identities);
   join = separator: documents:
@@ -61,10 +83,14 @@
 
   dependencyDirectives = value: let
     dependencies = value.dependencies or null;
+    prerequisites =
+      if dependencies == null
+      then []
+      else dependencies.prerequisites or [];
     unitsFor = name:
       if dependencies == null
       then []
-      else dependencyIdentities (dependencies.${name} or []);
+      else validatedDependencyIdentities name prerequisites (dependencies.${name} or []);
     requiredMounts = unitsFor "required_mounts";
   in
     if dependencies == null
@@ -218,66 +244,6 @@
       preserve = null;
     };
   };
-  directoryDirectives = value: let
-    managed = (value.directories or {managed = [];}).managed;
-    identity = value.identity or null;
-    matchesServiceIdentity = entry:
-      (entry.owner or null)
-      == null
-      || (
-        identity
-        != null
-        && (identity.principal or null) != null
-        && entry.owner == identity.principal
-      );
-    matchesServiceGroup = entry:
-      (entry.group or null)
-      == null
-      || (
-        identity
-        != null
-        && (identity.primary_group or null) != null
-        && entry.group == identity.primary_group
-      );
-    ownershipIsExact =
-      builtins.all
-      (entry: matchesServiceIdentity entry && matchesServiceGroup entry)
-      managed;
-    forPurpose = purpose: let
-      entries = builtins.filter (entry: entry.purpose == purpose) managed;
-      modes = lib.unique (builtins.map (entry: entry.mode) entries);
-      retentions = lib.unique (builtins.map (entry: entry.retention) entries);
-      mapping = directoryPurpose.${purpose};
-      preserve =
-        if retentions == [] || mapping.preserve == null
-        then []
-        else if builtins.length retentions != 1
-        then throw "systemd managed ${purpose} directories require one retention policy"
-        else
-          one mapping.preserve
-          {
-            persistent = "yes";
-            restart = "restart";
-            service-lifetime = "no";
-          }.${
-            builtins.head retentions
-          };
-    in
-      if entries == []
-      then []
-      else if builtins.length modes != 1
-      then throw "systemd managed ${purpose} directories require one mode"
-      else if mapping.preserve == null && retentions != ["persistent"]
-      then throw "systemd managed ${purpose} directories support only persistent retention"
-      else
-        literalList mapping.directory (builtins.map (entry: entry.path) entries)
-        ++ one mapping.mode (builtins.head modes)
-        ++ preserve;
-  in
-    if !ownershipIsExact
-    then throw "systemd managed-directory ownership must be absent or exactly match the selected service identity"
-    else builtins.concatMap forPurpose ["runtime" "state" "cache" "logs" "configuration"];
-
   identityDirectives = value: let
     identity = value.identity or null;
   in
@@ -798,7 +764,6 @@
       then []
       else one "IOSchedulingPriority" scheduling.io_priority
     )
-    ++ directoryDirectives value
     ++ storageDirectives value
     ++ configurationDirectives value
     ++ credentialDirectives value
@@ -883,6 +848,71 @@
     ];
   };
 
+  directoryUnitName = resource: directory: let
+    selection = resource.value.instantiation or {kind = "singleton";};
+    identity = lib.abilities.identityKeyFor "aos.systemd.managed-directory-unit/v1" {
+      inherit (resource) resource;
+      inherit directory;
+    };
+    templateMarker = lib.optionalString (selection.kind == "template") "@";
+  in "aos-directory-${identity}${templateMarker}.service";
+  concreteDirectoryUnitName = selection: unitName:
+    if selection.kind == "template"
+    then "${lib.removeSuffix "@.service" unitName}@%i.service"
+    else unitName;
+  directoryDocument = serviceUnitName: resource: directory: let
+    mapping = directoryPurpose.${directory.purpose};
+    identity = resource.value.identity or {};
+    owner = directory.owner or (identity.principal or null);
+    group = directory.group or (identity.primary_group or null);
+    selection = resource.value.instantiation or {kind = "singleton";};
+    unitName = directoryUnitName resource directory;
+    serviceDependency =
+      if selection.kind == "template"
+      then "${lib.removeSuffix "@.service" serviceUnitName}@%i.service"
+      else serviceUnitName;
+    preserve =
+      if mapping.preserve == null
+      then
+        if directory.retention == "persistent"
+        then []
+        else throw "systemd ${directory.purpose} directory '${directory.path}' supports only persistent retention"
+      else
+        one mapping.preserve
+        {
+          persistent = "yes";
+          restart = "restart";
+          service-lifetime = "no";
+        }.${
+          directory.retention
+        };
+  in {
+    systemd_unit.unit_name = unitName;
+    sections = [
+      (semantic.section "Unit" [
+        (semantic.directive "Description" (semantic.quotedLiteral "Managed directory ${directory.path} for ${resource.value.lifecycle.description}"))
+        (semantic.directive "Before" serviceDependency)
+        (semantic.directive "BindsTo" serviceDependency)
+        (semantic.directive "PartOf" serviceDependency)
+      ])
+      (semantic.section "Service" (
+        [
+          (semantic.directive "Type" "oneshot")
+          (semantic.directive "RemainAfterExit" "yes")
+          (semantic.directive mapping.directory directory.path)
+          (semantic.directive mapping.mode directory.mode)
+        ]
+        ++ preserve
+        ++ lib.optional (owner != null) (
+          semantic.directive "User" (semantic.principalName {value = owner;})
+        )
+        ++ lib.optional (group != null) (
+          semantic.directive "Group" (semantic.groupName {value = group;})
+        )
+      ))
+    ];
+  };
+
   serviceIdentityFor = resource: let
     value = resource.value;
     selection = value.instantiation or {kind = "singleton";};
@@ -926,10 +956,21 @@
       ++ socketUnitIdentityList "BindsTo" resource socketsByName (socketServiceDependencies.binds_to or [])
       ++ socketUnitIdentityList "Requires" resource socketsByName (socketServiceDependencies.requires or [])
       ++ socketUnitIdentityList "Wants" resource socketsByName (socketServiceDependencies.wants or []);
-    auxiliary =
+    socketUnits =
       if selection.kind != "singleton" && sockets != []
       then throw "systemd template services cannot own instance-specific socket activation"
       else builtins.map (socketDocument serviceUnitName resource socketsByName) sockets;
+    directories = (value.directories or {managed = [];}).managed;
+    directoryUnits =
+      if selection.kind == "instance"
+      then []
+      else builtins.map (directoryDocument serviceUnitName resource) directories;
+    directoryUnitNames = builtins.map (unit: unit.systemd_unit.unit_name) directoryUnits;
+    concreteDirectoryUnits = builtins.map (concreteDirectoryUnitName selection) directoryUnitNames;
+    directoryDependencies =
+      literalList "After" concreteDirectoryUnits
+      ++ literalList "Requires" concreteDirectoryUnits
+      ++ literalList "BindsTo" concreteDirectoryUnits;
     facets =
       builtins.filter
       (facet:
@@ -942,6 +983,7 @@
         (semantic.section "Unit" (
           [(semantic.directive "Description" (semantic.quotedLiteral value.lifecycle.description))]
           ++ dependencyDirectives value
+          ++ directoryDependencies
           ++ socketServiceDependencyDirectives
           ++ activationDirectives value
           ++ conditionDirectives value
@@ -955,7 +997,7 @@
     units =
       builtins.sort
       (left: right: left.systemd_unit.unit_name < right.systemd_unit.unit_name)
-      (lib.optional (selection.kind != "instance") primary ++ auxiliary);
+      (lib.optional (selection.kind != "instance") primary ++ socketUnits ++ directoryUnits);
     links =
       builtins.sort
       (left: right: builtins.toJSON left < builtins.toJSON right)
@@ -978,7 +1020,7 @@
             }
           ]
           else [])
-        auxiliary);
+        socketUnits);
     aliases =
       if managerIdentity == null
       then []
@@ -988,13 +1030,16 @@
           target = serviceIdentity;
         })
         managerIdentity.aliases;
-  in {
-    schema = "aos.systemd.service-realization/v1";
-    systemd_unit = serviceIdentity;
-    inherit aliases facets links;
-    inherit units;
-    enabled = value.enabled;
-  };
+  in
+    if builtins.length directoryUnitNames != builtins.length (lib.unique directoryUnitNames)
+    then throw "systemd service '${value.service}' declares the same managed directory more than once"
+    else {
+      schema = "aos.systemd.service-realization/v1";
+      systemd_unit = serviceIdentity;
+      inherit aliases facets links;
+      inherit units;
+      enabled = value.enabled;
+    };
 in {
   inherit realizationFor serviceIdentityFor;
 }

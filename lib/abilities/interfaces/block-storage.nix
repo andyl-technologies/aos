@@ -79,7 +79,7 @@
     declaration = declareInterface {
       inherit name description requestType methods lifecycle aggregation;
       abi = 1;
-      outputs.readiness-resource =
+      outputs.resource =
         output "planning" "instance" "References readiness for this exact resource revision." types.resourceReference;
       guarantees = [];
     };
@@ -470,7 +470,7 @@
       mergeContract = null;
       controllerGroup = "storage-provisioning";
     };
-    outputs.readiness-resource = output "planning" "transaction" "References readiness for this exact provisioning transaction." types.resourceReference;
+    outputs.resource = output "planning" "transaction" "References readiness for this exact provisioning transaction." types.resourceReference;
     guarantees = [];
   };
   provisioningDocument = interfaceDocumentFromDeclaration provisioningDeclaration;

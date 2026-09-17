@@ -88,13 +88,13 @@
       dependencies = {
         prerequisites =
           [
-            (resultOf "runtime-storage" "retained-resource")
-            (resultOf "state-storage" "retained-resource")
+            (resultOf "runtime-storage" "resource")
+            (resultOf "state-storage" "resource")
           ]
-          ++ lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "retained-resource");
-        after = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "retained-resource");
+          ++ lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
+        after = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
         before = [];
-        requires = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "retained-resource");
+        requires = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
         wants = [];
       };
       environment = {
@@ -128,7 +128,7 @@
           ];
           mode = "0600";
           remove_on_stop = true;
-          prerequisites = [(resultOf "runtime-storage" "retained-resource")];
+          prerequisites = [(resultOf "runtime-storage" "resource")];
         }
       ];
       manager_identity = {
@@ -167,7 +167,7 @@
     hosting = cfg.mode;
     service_resource =
       if cfg.mode == "managed-service"
-      then resultOf "controller-lifecycle" "service-resource"
+      then resultOf "controller-lifecycle" "resource"
       else null;
     socket_path = settings.socketPath;
   };

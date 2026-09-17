@@ -28,12 +28,14 @@
   withEffects = alias: resources: realizations:
     emptyComposition
     // {
-      requests = builtins.mapAttrs (key: resource: {
-        requirement = "effects";
-        scope = ["effects"];
-        slot = resource.resource.key;
-        parameters = resource.value;
-      }) resources;
+      requests =
+        builtins.mapAttrs (key: resource: {
+          requirement = "effects";
+          scope = ["effects"];
+          slot = resource.resource.key;
+          parameters = resource.value;
+        })
+        resources;
       inherit realizations;
     };
   transitionFor = alias: action: resourceLifetime: context:
@@ -70,7 +72,8 @@
       };
     };
   bindingFor = bindings: requestName: let
-    matches = builtins.filter
+    matches =
+      builtins.filter
       (binding: binding.request == requestName)
       (builtins.attrValues bindings);
   in
@@ -104,7 +107,7 @@
     else if entry.source.kind == "artifact-file"
     then "${entry.source.reference.artifact.store_path}/${entry.source.reference.path}"
     else entry.source.path;
-  provide = interface: lifetime: plannedPath: publishedOutput: {
+  provide = interface: lifetime: plannedPath: {
     instance,
     requests,
     bindings,
@@ -122,13 +125,10 @@
     // {
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
-          value =
-            {
-              planned-path = plannedPath entry.resource entry.request.parameters;
-            }
-            // lib.optionalAttrs (publishedOutput != null) {
-              ${publishedOutput} = referenceFor interface lifetime entry.resource;
-            };
+          value = {
+            planned-path = plannedPath entry.resource entry.request.parameters;
+            resource = referenceFor interface lifetime entry.resource;
+          };
         })
         entries);
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {
@@ -143,10 +143,10 @@
     };
   storageCompose = alias: persistent: {resources, ...}:
     withEffects alias resources (builtins.mapAttrs (_: resource: {
-          schema = realizationSchemaFor alias;
-          path = storagePath persistent resource.resource resource.value;
-        })
-        resources);
+        schema = realizationSchemaFor alias;
+        path = storagePath persistent resource.resource resource.value;
+      })
+      resources);
   storageViewPath = request:
     if (request.relative_path or null) == null
     then request.source_path
@@ -156,6 +156,7 @@
         relativePath = request.relative_path;
       };
   storageViewProvide = {
+    instance,
     requests,
     bindings,
     ...
@@ -163,46 +164,50 @@
     emptyProvision
     // {
       outputs =
-        builtins.mapAttrs (_: request: {
+        builtins.mapAttrs (requestName: request: let
+          binding = bindingFor bindings requestName;
+          resource = resourceIdFor instance binding;
+        in {
           planned-path = storageViewPath request.parameters;
+          resource = referenceFor interfaces.storageView "instance" resource;
         })
         requests;
       resourceFragments = builtins.listToAttrs (builtins.map (requestName: let
-          request = requests.${requestName};
-          binding = bindingFor bindings requestName;
-        in {
-          name = binding.slot;
-          value = {
-            kind = interfaces.storageView.identity.name;
-            lifetime = "instance";
-            value = request.parameters;
-          };
-        }) (builtins.attrNames requests));
+        request = requests.${requestName};
+        binding = bindingFor bindings requestName;
+      in {
+        name = binding.slot;
+        value = {
+          kind = interfaces.storageView.identity.name;
+          lifetime = "instance";
+          value = request.parameters;
+        };
+      }) (builtins.attrNames requests));
     };
   storageViewCompose = {resources, ...}:
     withEffects "storage-view" resources (builtins.mapAttrs (_: resource: {
-          schema = realizationSchemaFor "storage-view";
-          inherit (resource.value) source;
-          relative_path = resource.value.relative_path or null;
-          path = storageViewPath resource.value;
-        })
-        resources);
+        schema = realizationSchemaFor "storage-view";
+        inherit (resource.value) source;
+        relative_path = resource.value.relative_path or null;
+        path = storageViewPath resource.value;
+      })
+      resources);
   entryCompose = {resources, ...}:
     withEffects "filesystem-entry" resources (builtins.mapAttrs (_: resource: {
-          schema = realizationSchemaFor "filesystem-entry";
-          path = resource.value.destination;
-          source_path = sourcePath resource.value.entry;
-        })
-        resources);
+        schema = realizationSchemaFor "filesystem-entry";
+        path = resource.value.destination;
+        source_path = sourcePath resource.value.entry;
+      })
+      resources);
 in {
   config.aos.abilities.implementations = {
     storage-allocation = {
-      provide = provide interfaces.storageAllocation "instance" (storagePath false) null;
+      provide = provide interfaces.storageAllocation "instance" (storagePath false);
       compose = storageCompose "storage-allocation" false;
       transition = transitionFor "storage-allocation" "allocate" "instance";
     };
     persistent-storage-allocation = {
-      provide = provide interfaces.persistentStorageAllocation "persistent" (storagePath true) null;
+      provide = provide interfaces.persistentStorageAllocation "persistent" (storagePath true);
       compose = storageCompose "persistent-storage-allocation" true;
       transition = transitionFor "persistent-storage-allocation" "allocate" "persistent";
     };
@@ -212,7 +217,7 @@ in {
       transition = transitionFor "storage-view" "materialize" "instance";
     };
     filesystem-entry = {
-      provide = provide interfaces.filesystemEntry "instance" (_: request: request.destination) "entry-resource";
+      provide = provide interfaces.filesystemEntry "instance" (_: request: request.destination);
       compose = entryCompose;
       transition = transitionFor "filesystem-entry" "materialize" "instance";
     };

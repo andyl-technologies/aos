@@ -14,7 +14,13 @@
     abi = 1;
     description = "Selects integration that registers authenticated login sessions with the system manager.";
     inherit requestType;
-    outputs = {};
+    outputs.selected-policy = {
+      schema = requestType;
+      phase = "planning";
+      lifetime = "instance";
+      visibility = "protected";
+      description = "Returns the selected login-session tracking policy for this system instance.";
+    };
     methods = {};
     lifecycle.persistentDeleteMethod = null;
     guarantees = [];

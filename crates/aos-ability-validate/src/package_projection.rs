@@ -198,6 +198,8 @@ pub struct ProviderImplementationProjection {
     pub description: String,
     /// Exact public interface implemented by this provider.
     pub interface: InterfaceKey,
+    /// Exact interface methods supported by this provider.
+    pub methods: Vec<LocalKey>,
     /// Exact execution guarantees supplied by this provider.
     pub guarantees: Vec<GuaranteeKey>,
     /// Symbolic implementation artifact.
@@ -681,6 +683,7 @@ pub fn resolve_package_projection(
                 name: provider.name,
                 description: provider.description,
                 interface: provider.interface,
+                methods: provider.methods,
                 guarantees: provider.guarantees,
                 artifact,
                 requirements: provider.requirements,

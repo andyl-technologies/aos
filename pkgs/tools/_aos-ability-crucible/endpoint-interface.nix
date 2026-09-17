@@ -47,7 +47,7 @@
       };
     };
     outputs = {
-      retained-resource =
+      resource =
         output
         "planning"
         "instance"

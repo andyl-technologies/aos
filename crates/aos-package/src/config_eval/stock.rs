@@ -683,6 +683,21 @@ fn resolved_registry_package_module(
         return Ok(None);
     };
     let root = crate::registry::store_path_hash(&module.artifact.store_path);
+    let selector_outputs = selector_outputs(
+        &package.name,
+        package
+            .contract
+            .as_ref()
+            .into_iter()
+            .flat_map(|contract| contract.selectors.iter())
+            .map(|selector| {
+                (
+                    selector.package.as_str(),
+                    selector.output.as_str(),
+                    selector.artifact.store_path.as_str(),
+                )
+            }),
+    )?;
 
     Ok(Some(ResolvedPackageModule {
         registry: registry.config.name.clone(),
@@ -695,6 +710,7 @@ fn resolved_registry_package_module(
         version: package.version.clone(),
         platform: package.platform.clone(),
         runtime_output: package.store_path.clone(),
+        selector_outputs,
         contract: super::ResolvedPackageContract {
             document,
             interfaces,
@@ -719,6 +735,16 @@ fn resolved_image_package_module(
         origin,
         store_view,
     )?;
+    let selector_outputs = selector_outputs(
+        name,
+        resolved.resolved_outputs.iter().map(|output| {
+            (
+                output.package.as_str(),
+                output.output.as_str(),
+                output.artifact.store_path.as_str(),
+            )
+        }),
+    )?;
 
     Ok(Some(ResolvedPackageModule {
         registry: String::new(),
@@ -728,11 +754,32 @@ fn resolved_image_package_module(
         version: package.version.clone(),
         platform: package.platform.clone(),
         runtime_output: package.store_path.clone(),
+        selector_outputs,
         contract: super::ResolvedPackageContract {
             document: resolved.document,
             interfaces: resolved.interfaces,
         },
     }))
+}
+
+fn selector_outputs<'a>(
+    owner: &str,
+    outputs: impl Iterator<Item = (&'a str, &'a str, &'a str)>,
+) -> Result<BTreeMap<String, String>> {
+    #[derive(serde::Serialize)]
+    struct Selector<'a> {
+        output: &'a str,
+        package: &'a str,
+    }
+
+    outputs
+        .map(|(package, output, store_path)| {
+            let package = if package == "self" { owner } else { package };
+            let key = serde_json::to_string(&Selector { output, package })
+                .context("serializing authenticated package output selector")?;
+            Ok((key, store_path.to_string()))
+        })
+        .collect()
 }
 
 impl PackageModuleResolver for RegistryPackageModules {

@@ -128,16 +128,16 @@ in
   == [
     {
       name = "schedule";
-      resource = outputReference "zfstools:hourly-schedule" "activation-resource";
+      resource = outputReference "zfstools:hourly-schedule" "resource";
       relationship = "resource-triggers-service";
     }
   ];
   assert requests."zfstools:zfs-auto-snapshot-hourly-dependencies".parameters.requires
-  == [(outputReference "zfstools:prepare-lifecycle" "service-resource")];
+  == [(outputReference "zfstools:prepare-lifecycle" "resource")];
   assert storageReadiness
   == [
-    (outputReference poolRequest "readiness-resource")
-    (outputReference datasetRequest "readiness-resource")
+    (outputReference poolRequest "resource")
+    (outputReference datasetRequest "resource")
   ];
   assert requests."zfstools:prepare-dependencies".parameters.requires == storageReadiness;
   assert requests."zfstools:zfs-auto-snapshot-hourly-dependencies".parameters.after == storageReadiness;

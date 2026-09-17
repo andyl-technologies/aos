@@ -94,7 +94,7 @@
         permit_core_dumps = false;
       };
       dependencies = let
-        readiness = resultOf "ingress" "readiness-resource";
+        readiness = resultOf "ingress" "resource";
       in {
         prerequisites = [readiness];
         after = [readiness];

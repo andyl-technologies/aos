@@ -92,7 +92,12 @@ pub struct SourceStageExecutionObserver {
 pub struct SourceStageInstance {
     /// Identifies the package carrier that declared the instance.
     pub package: LocalKey,
-    /// Selects the exact provider implementation for enabled providers.
+    /// Retains the package-local declaration key when the instance was package-authored.
+    pub local_key: Option<LocalKey>,
+    /// Selects an instance's configured implementation, when it has one.
+    ///
+    /// Bindings remain authoritative for the implementations used through an
+    /// instance because one provider instance may expose several interfaces.
     pub implementation: Option<String>,
     /// Carries typed instance configuration.
     pub configuration: AbilityValue,
@@ -363,10 +368,6 @@ fn selected_resource_implementation<'a>(
         .instances
         .get(instance_name)
         .with_context(|| format!("source resource instance {instance_name:?} is absent"))?;
-    ensure!(
-        instance.implementation.as_deref() == Some(implementation_name),
-        "source resource binding differs from its instance implementation"
-    );
     let identity = fixed_point
         .instance_identities
         .get(instance_name)
@@ -863,11 +864,13 @@ impl SourceStageFixedPoint {
         &self,
         packages: &[PackageDocument],
     ) -> Result<Vec<crate::transition::SourceEnabledProvider>, SourceStageBundleError> {
-        let mut providers = Vec::new();
-        for (name, instance) in &self.instances {
-            let Some(qualified) = &instance.implementation else {
-                continue;
-            };
+        let selected = |name: &str,
+                        instance: &SourceStageInstance,
+                        qualified: &str|
+         -> Result<
+            crate::transition::SourceEnabledProvider,
+            SourceStageBundleError,
+        > {
             let identity = self
                 .instance_identities
                 .get(name)
@@ -888,7 +891,7 @@ impl SourceStageFixedPoint {
                 .iter()
                 .find(|provider| provider.name.as_str() == implementation_name)
                 .ok_or(SourceStageBundleError::FixedPointAuthority)?;
-            providers.push(crate::transition::SourceEnabledProvider {
+            Ok(crate::transition::SourceEnabledProvider {
                 instance: identity.clone(),
                 implementation: aos_ability_model::ProviderImplementationReference {
                     descriptor: implementation
@@ -900,15 +903,38 @@ impl SourceStageFixedPoint {
                 package: package
                     .content_digest()
                     .map_err(|error| SourceStageBundleError::Encode(anyhow::Error::new(error)))?,
-            });
+            })
+        };
+
+        let mut providers = Vec::new();
+        for binding in self.bindings.values() {
+            let instance = self
+                .instances
+                .get(&binding.provider_instance)
+                .ok_or(SourceStageBundleError::FixedPointAuthority)?;
+            providers.push(selected(
+                &binding.provider_instance,
+                instance,
+                &binding.implementation,
+            )?);
+        }
+        for (name, instance) in &self.instances {
+            let Some(qualified) = &instance.implementation else {
+                continue;
+            };
+            providers.push(selected(name, instance, qualified)?);
         }
         providers.sort_by(|left, right| {
-            left.instance.cmp(&right.instance).then_with(|| {
-                left.implementation
-                    .descriptor
-                    .cmp(&right.implementation.descriptor)
-            })
+            left.instance
+                .cmp(&right.instance)
+                .then_with(|| left.package.cmp(&right.package))
+                .then_with(|| {
+                    left.implementation
+                        .descriptor
+                        .cmp(&right.implementation.descriptor)
+                })
         });
+        providers.dedup();
         Ok(providers)
     }
 }
@@ -1088,6 +1114,7 @@ mod tests {
                     name,
                     SourceStageInstance {
                         package: package.package.name.clone(),
+                        local_key: None,
                         implementation,
                         configuration: instance
                             .configuration
@@ -1103,6 +1130,7 @@ mod tests {
                 .entry(name)
                 .or_insert_with(|| SourceStageInstance {
                     package: request.package.clone(),
+                    local_key: None,
                     implementation: None,
                     configuration: AbilityValue::new(serde_json::json!({}))
                         .expect("consumer configuration"),
@@ -1120,6 +1148,7 @@ mod tests {
                 .entry(name)
                 .or_insert_with(|| SourceStageInstance {
                     package: package.package.name.clone(),
+                    local_key: None,
                     implementation: implementation_name(binding.packages(), selected),
                     configuration: AbilityValue::new(serde_json::json!({}))
                         .expect("provider configuration"),

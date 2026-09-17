@@ -28,10 +28,8 @@
     output "runtime" "instance"
     "References the exact retained resource controlled by this completed operation."
     serviceTypes.resourceReference;
-  plannedServiceResourceOutput =
-    output "planning" "instance"
-    "References the exact service resource selected for composition before effects execute."
-    serviceTypes.resourceReference;
+  plannedResourceOutput = lifetime: description:
+    output "planning" lifetime description serviceTypes.resourceReference;
   semantics = requiredTargetAccess: stopsProvider: {
     inherit requiredTargetAccess stopsProvider;
   };
@@ -78,8 +76,6 @@
     hostStageReceived = "aos.boot.host-stage-received";
     imageBootCommitted = "aos.boot.image-committed";
     espReady = "aos.boot.esp-ready";
-    packageProfileConverged = "aos.image.package-profile-converged";
-    imageMeasurementIndexed = "aos.image.measurement-indexed";
     initrdFilesystems = "aos.boot.initrd-filesystems";
     initrdRootFilesystems = "aos.boot.initrd-root-filesystems";
     rootDevice = "aos.boot.root-device";
@@ -168,7 +164,9 @@
       inherit name description requestType methods;
       abi = 1;
       configurationType = null;
-      outputs = interfaceOutputs;
+      outputs =
+        {resource = plannedResourceOutput "instance" "References the exact resource selected for this request.";}
+        // interfaceOutputs;
       lifecycle = lifecyclePolicy;
       inherit guarantees;
       inherit aggregation;
@@ -225,7 +223,7 @@
         output "planning" "instance"
         "Returns the deterministic runtime path selected for this configuration."
         serviceTypes.executionPath;
-      configuration-resource =
+      resource =
         output "planning" "instance"
         "References the exact managed configuration resource selected for this request."
         serviceTypes.resourceReference;
@@ -259,7 +257,7 @@
     description = "Publishes and observes readiness for a provider-neutral network scope.";
     abi = 1;
     requestType = serviceTypes.networkReadiness;
-    outputs.readiness-resource =
+    outputs.resource =
       output "planning" "instance"
       "References the exact network readiness resource selected for this request."
       serviceTypes.resourceReference;
@@ -292,7 +290,7 @@
     description = "Publishes and observes readiness for a provider-neutral filesystem scope.";
     abi = 1;
     requestType = serviceTypes.filesystemReadiness;
-    outputs.readiness-resource =
+    outputs.resource =
       output "planning" "instance"
       "References the exact filesystem readiness resource selected for this request."
       serviceTypes.resourceReference;
@@ -325,7 +323,7 @@
     description = "Publishes readiness for a provider-neutral system activation milestone.";
     abi = 1;
     requestType = serviceTypes.activationMilestone;
-    outputs.readiness-resource =
+    outputs.resource =
       output "planning" "instance"
       "References the exact activation milestone selected for this request."
       serviceTypes.resourceReference;
@@ -358,7 +356,7 @@
     description = "Publishes readiness for a qualified provider-neutral system milestone.";
     abi = 1;
     requestType = serviceTypes.systemMilestoneReadiness;
-    outputs.readiness-resource =
+    outputs.resource =
       output "planning" "instance"
       "References the exact system milestone selected for this request."
       serviceTypes.resourceReference;
@@ -391,7 +389,7 @@
     description = "Publishes the lifecycle boundary at which configured runtime filesystem entries have been populated.";
     abi = 1;
     requestType = serviceTypes.runtimeEntryPopulation;
-    outputs.lifecycle-resource =
+    outputs.resource =
       output "planning" "instance"
       "References the exact runtime entry population lifecycle selected for this request."
       serviceTypes.resourceReference;
@@ -438,7 +436,7 @@
     description = "Loads and observes a bounded provider-neutral set of kernel modules.";
     abi = 1;
     requestType = serviceTypes.kernelModules;
-    outputs.readiness-resource =
+    outputs.resource =
       output "planning" "persistent"
       "References the exact kernel-module set whose readiness gates dependent resources."
       serviceTypes.resourceReference;
@@ -471,7 +469,7 @@
     description = "Resolves one credential name in a provider-owned scope to an exact credential resource.";
     abi = 1;
     requestType = serviceTypes.namedCredential;
-    outputs.credential-resource =
+    outputs.resource =
       output "planning" "instance"
       "References the exact resolved credential resource without exposing its bytes."
       serviceTypes.resourceReference;
@@ -495,15 +493,15 @@
     requestType,
     observationType,
     action,
-    outputName,
-    outputType,
+    outputName ? null,
+    outputType ? null,
     outputLifetime ? "instance",
     interfaceOutputs ? {},
     lifecycle ? lifecyclePolicy,
     releaseDescription ? "Releases the exact active resource ownership established by this request.",
     actionDescription,
     observationDescription,
-    outputDescription,
+    outputDescription ? null,
   }: let
     retainingAction = retainingMethod requestType observationType name action actionDescription write;
     actionMethod =
@@ -516,8 +514,12 @@
               output "runtime" outputLifetime
               "References the exact retained resource controlled by this completed operation."
               serviceTypes.resourceReference;
-            ${outputName} = output "runtime" outputLifetime outputDescription outputType;
-          };
+          }
+          // (
+            if outputName == null
+            then {}
+            else {${outputName} = output "runtime" outputLifetime outputDescription outputType;}
+          );
       };
     methods = {
       ${action} = actionMethod;
@@ -530,7 +532,9 @@
     declaration = declareInterface {
       inherit name description requestType methods;
       abi = 1;
-      outputs = interfaceOutputs;
+      outputs =
+        {resource = plannedResourceOutput outputLifetime "References the exact resource selected for this request.";}
+        // interfaceOutputs;
       inherit lifecycle;
       guarantees = [];
       aggregation = {
@@ -627,7 +631,7 @@
           output "planning" "instance"
           "Returns the provider-selected identity name before realization."
           outputType;
-        identity-resource =
+        resource =
           output "planning" "instance"
           "References the exact identity resource selected for realization."
           serviceTypes.resourceReference;
@@ -657,7 +661,7 @@
       serviceTypes.observations.lifecycle
       (_: {});
     lifecycle =
-      (canonicalWithGuarantees [templateInstanceGuarantee] {service-resource = plannedServiceResourceOutput;}
+      (canonicalWithGuarantees [templateInstanceGuarantee] {}
         "service-lifecycle" "aos.service.lifecycle"
         "Controls and observes the lifecycle of one assembled service resource."
         serviceTypes.lifecycle
@@ -686,7 +690,7 @@
         }))
       // {guaranteesByKind.instance = guaranteeAliasFor templateInstanceGuarantee;};
     templateDefinition =
-      canonicalWithGuarantees [] {service-resource = plannedServiceResourceOutput;}
+      canonicalWithGuarantees [] {}
       "service-template-definition" "aos.service.template-definition"
       "Materializes and observes one static service template without controlling a concrete service instance."
       serviceTypes.templateDefinition
@@ -851,7 +855,7 @@
           read;
       });
     resources =
-      canonical "service-resources" "aos.service.resources"
+      canonical "resources" "aos.service.resources"
       "Contributes finite or unbounded runtime resource limits to a service resource."
       serviceTypes.resources
       serviceTypes.observations.resources
@@ -1140,10 +1144,6 @@
         output "planning" "instance"
         "Returns the exact destination selected for this filesystem entry before materialization."
         serviceTypes.executionPath;
-      interfaceOutputs.entry-resource =
-        output "planning" "instance"
-        "References the exact filesystem entry selected for preparation ordering."
-        serviceTypes.resourceReference;
     };
     hostPathView = producer {
       alias = "host-path-view";
@@ -1217,13 +1217,6 @@
       action = "reconcile";
       actionDescription = "Adds declared principals to the exact group and removes principals previously owned by this request.";
       observationDescription = "Observes whether the exact declared group membership is present.";
-      outputName = "membership-resource";
-      outputDescription = "References the exact retained group membership resource.";
-      outputType = serviceTypes.resourceReference;
-      interfaceOutputs.membership-resource =
-        output "planning" "instance"
-        "References the exact group-membership resource selected for reconciliation."
-        serviceTypes.resourceReference;
       releaseDescription = "Removes only the group memberships established by this request.";
     };
     scheduledActivation = producer {
@@ -1235,9 +1228,6 @@
       action = "realize";
       actionDescription = "Realizes the requested scheduled activation resource.";
       observationDescription = "Observes whether the exact scheduled activation resource is retained.";
-      outputName = "activation-resource";
-      outputDescription = "References the retained scheduled activation resource.";
-      outputType = serviceTypes.resourceReference;
     };
     pathActivation = producer {
       alias = "path-activation";
@@ -1248,9 +1238,6 @@
       action = "realize";
       actionDescription = "Realizes the requested path activation resource.";
       observationDescription = "Observes whether the exact path activation resource is retained.";
-      outputName = "activation-resource";
-      outputDescription = "References the retained path activation resource.";
-      outputType = serviceTypes.resourceReference;
     };
     mountResource = producer {
       alias = "mount-resource";
@@ -1261,9 +1248,6 @@
       action = "mount";
       actionDescription = "Realizes the requested filesystem mount resource.";
       observationDescription = "Observes whether the exact filesystem mount resource is retained.";
-      outputName = "mount-resource";
-      outputDescription = "References the retained filesystem mount resource.";
-      outputType = serviceTypes.resourceReference;
     };
     automountResource = producer {
       alias = "automount-resource";
@@ -1274,9 +1258,6 @@
       action = "realize";
       actionDescription = "Realizes the requested demand-mounted filesystem resource.";
       observationDescription = "Observes whether the exact demand-mounted filesystem resource is retained.";
-      outputName = "automount-resource";
-      outputDescription = "References the retained demand-mounted filesystem resource.";
-      outputType = serviceTypes.resourceReference;
     };
     swapResource = producer {
       alias = "swap-resource";
@@ -1287,9 +1268,6 @@
       action = "enable";
       actionDescription = "Realizes and enables the requested swap resource.";
       observationDescription = "Observes whether the exact swap resource is retained.";
-      outputName = "swap-resource";
-      outputDescription = "References the retained swap resource.";
-      outputType = serviceTypes.resourceReference;
     };
     activationGroup = producer {
       alias = "activation-group";
@@ -1300,13 +1278,6 @@
       action = "realize";
       actionDescription = "Realizes the requested activation membership group.";
       observationDescription = "Observes whether the exact activation membership group is retained.";
-      outputName = "activation-resource";
-      outputDescription = "References the retained activation membership group.";
-      outputType = serviceTypes.resourceReference;
-      interfaceOutputs.activation-resource =
-        output "planning" "instance"
-        "References the exact activation group selected for realization."
-        serviceTypes.resourceReference;
     };
     devicePresence = observer {
       alias = "device-presence";

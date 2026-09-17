@@ -99,7 +99,7 @@
     description = "Selects and applies exact immutable BPF-LSM policy artifacts.";
     abi = 1;
     inherit requestType methods aggregation;
-    outputs.readiness-resource = output "planning" "instance" "References readiness for the exact policy set." types.resourceReference;
+    outputs.resource = output "planning" "instance" "References readiness for the exact policy set." types.resourceReference;
     lifecycle.persistentDeleteMethod = null;
     guarantees = [];
   };

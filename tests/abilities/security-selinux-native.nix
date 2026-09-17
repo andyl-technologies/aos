@@ -36,12 +36,12 @@ in
     {
       _type = "aos-request-output-reference";
       request = "refpolicy:early-system";
-      output = "readiness-resource";
+      output = "resource";
     }
     {
       _type = "aos-request-output-reference";
       request = "refpolicy:runtime-entry-population";
-      output = "lifecycle-resource";
+      output = "resource";
     }
   ];
   assert loaderDependencies.wanted_by
@@ -49,7 +49,7 @@ in
     {
       _type = "aos-request-output-reference";
       request = "refpolicy:early-system";
-      output = "readiness-resource";
+      output = "resource";
     }
   ];
   assert autorelabel.enabled;

@@ -68,6 +68,12 @@ let
   # packages, which arrive at stage-2 as authenticated `packageModules`).
   baseModules = import ./modules;
   systemModules = import ./system-modules.nix;
+  hostPackageModules =
+    builtins.fromJSON
+    (builtins.unsafeDiscardStringContext (builtins.readFile ./host-package-modules.json));
+  frozenHostEvaluationInputs =
+    builtins.fromJSON
+    (builtins.unsafeDiscardStringContext (builtins.readFile ./host-evaluation-inputs.json));
   initrdPackageModules =
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-package-modules.json));
@@ -78,7 +84,6 @@ let
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-evaluation-inputs.json));
   storeViewLib = import ./lib/build/store-view.nix {inherit lib;};
-
 in rec {
   inherit lib imageManifest;
   inherit (storeViewLib) readPathFor;
@@ -116,7 +121,10 @@ in rec {
     runtimeModules ? [],
     packageModules ? [],
     selectedProviderModules ? [],
+    abilityInstances ? {},
     abilityBindings ? {},
+    abilityRequests ? {},
+    abilityRequirements ? {},
     factsModules ? [],
     configurationModules ? [],
   }:
@@ -141,30 +149,75 @@ in rec {
         ++ configurationModules
         ++ lib.optional (environment != null) {
           aos.abilities.environment = environment;
+        }
+        ++ lib.optional (abilityInstances != {} || abilityBindings != {}) {
+          aos.abilities = {
+            instances = abilityInstances;
+            bindings = abilityBindings;
+          };
         };
       pkgs = frozenPkgs;
       inherit lib operatorModules packageModules selectedProviderModules;
       enableAbilitySelection = true;
-      runtimeModules =
-        runtimeModules
-        ++ lib.optional (abilityBindings != {}) {
-          aos.abilities.bindings = abilityBindings;
+      inherit runtimeModules;
+      specialArgs.abilityResolution = {
+        requests = abilityRequests;
+        requirements = abilityRequirements;
+      };
+    };
+
+  ## Resolves selected provider modules around the complete host module graph.
+  resolveHostConfig = {
+    operatorModules ? [],
+    runtimeModules ? [],
+    packageModules ? [],
+    factsModules ? [],
+  }: let
+    dynamicNames = builtins.listToAttrs (builtins.map (record: {
+        name = record.name;
+        value = true;
+      })
+      packageModules);
+    imageModules =
+      builtins.filter
+      (record: !(builtins.hasAttr record.name dynamicNames))
+      hostPackageModules;
+    initialPackageModules = imageModules ++ packageModules;
+    resolution = import ./lib/build/resolve-ability-configuration.nix {
+      inherit lib initialPackageModules;
+      evaluate = {
+        packageModules,
+        providerModules,
+        selectionModule,
+      }:
+        evalCompleteConfig {
+          environment = frozenHostEvaluationInputs.environment;
+          inherit operatorModules runtimeModules packageModules factsModules;
+          selectedProviderModules = providerModules;
+          abilityInstances = selectionModule.module.aos.abilities.instances;
+          abilityBindings = selectionModule.module.aos.abilities.bindings;
+          abilityRequests = selectionModule.requests;
+          abilityRequirements = selectionModule.requirements;
         };
     };
+  in
+    builtins.seq resolution.checked resolution.evaluation;
 
   ## Maps the frozen canonical initrd inputs into one checked read view.
   initrdEvaluationInputs = storeView: let
     checked = storeViewLib.validate storeView;
     staticContractIdentity = frozenInitrdEvaluationInputs.staticContractIdentity;
     staticContract = storeViewLib.staticContractFor checked staticContractIdentity;
-  in
-    {
-      environment = frozenInitrdEvaluationInputs.environment;
-      abilityBindings = frozenInitrdEvaluationInputs.abilityBindings;
-      packageModules = builtins.map (storeViewLib.mapAuthenticatedModule checked) initrdPackageModules;
-      selectedProviderModules = builtins.map (storeViewLib.mapAuthenticatedModule checked) initrdProviderModules;
-      inherit staticContract;
-    };
+  in {
+    environment = frozenInitrdEvaluationInputs.environment;
+    abilityInstances = frozenInitrdEvaluationInputs.abilityInstances;
+    abilityBindings = frozenInitrdEvaluationInputs.abilityBindings;
+    abilityRequests = frozenInitrdEvaluationInputs.abilityRequests;
+    abilityRequirements = frozenInitrdEvaluationInputs.abilityRequirements;
+    packageModules = builtins.map (storeViewLib.mapAuthenticatedModule checked) initrdPackageModules;
+    selectedProviderModules = builtins.map (storeViewLib.mapAuthenticatedModule checked) initrdProviderModules;
+    inherit staticContract;
+  };
 
   ## Evaluates the frozen initrd through the same complete configuration graph.
   evalCompleteInitrdConfig = {
@@ -177,7 +230,7 @@ in rec {
     frozen = initrdEvaluationInputs storeView;
     evaluated = evalCompleteConfig {
       inherit operatorModules runtimeModules factsModules configurationModules;
-      inherit (frozen) environment abilityBindings packageModules selectedProviderModules;
+      inherit (frozen) environment abilityInstances abilityBindings abilityRequests abilityRequirements packageModules selectedProviderModules;
     };
   in
     evaluated // {initrdStaticContract = frozen.staticContract;};
@@ -187,18 +240,9 @@ in rec {
     operatorModules ? [],
     runtimeModules ? [],
     packageModules ? [],
-    selectedProviderModules ? [],
-    abilityBindings ? {},
     factsModules ? [],
   }:
-    evalCompleteConfig {
-      inherit
-        operatorModules
-        runtimeModules
-        packageModules
-        selectedProviderModules
-        abilityBindings
-        factsModules
-        ;
+    resolveHostConfig {
+      inherit operatorModules runtimeModules packageModules factsModules;
     };
 }

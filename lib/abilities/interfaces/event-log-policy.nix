@@ -38,7 +38,13 @@
     abi = 1;
     description = "Selects bounded event-log storage, retention, rate limiting, and forwarding policy.";
     inherit requestType;
-    outputs = {};
+    outputs.selected-policy = {
+      schema = requestType;
+      phase = "planning";
+      lifetime = "instance";
+      visibility = "protected";
+      description = "Returns the selected event-log policy for this system instance.";
+    };
     methods = {};
     lifecycle.persistentDeleteMethod = null;
     guarantees = [];

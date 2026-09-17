@@ -105,27 +105,27 @@ in
   ];
   assert dependencies.prerequisites
   == [
-    (resultOf "aos:package-store-read-view" "read-view-resource")
-    (resultOf "aos:nix-store-database" "readiness-resource")
+    (resultOf "aos:nix-store-database" "resource")
+    (resultOf "aos:package-store-read-view" "resource")
   ];
   assert dependencies.after
   == [
-    (resultOf "aos:host-stage-received" "readiness-resource")
-    (resultOf "aos:local-filesystems" "readiness-resource")
-    (resultOf "aos:network-readiness" "readiness-resource")
-    (resultOf "aos:registry-synchronization-lifecycle" "service-resource")
+    (resultOf "aos:host-stage-received" "resource")
+    (resultOf "aos:local-filesystems" "resource")
+    (resultOf "aos:network-readiness" "resource")
+    (resultOf "aos:registry-synchronization-lifecycle" "resource")
   ];
   assert dependencies.requires
   == [
-    (resultOf "aos:host-stage-received" "readiness-resource")
-    (resultOf "aos:local-filesystems" "readiness-resource")
+    (resultOf "aos:host-stage-received" "resource")
+    (resultOf "aos:local-filesystems" "resource")
   ];
   assert dependencies.wanted_by
-  == [(resultOf "aos:user-sessions-ready" "readiness-resource")];
+  == [(resultOf "aos:user-sessions-ready" "resource")];
   assert dependencies.wants
   == [
-    (resultOf "aos:network-readiness" "readiness-resource")
-    (resultOf "aos:registry-synchronization-lifecycle" "service-resource")
+    (resultOf "aos:network-readiness" "resource")
+    (resultOf "aos:registry-synchronization-lifecycle" "resource")
   ];
   assert requests."aos:configuration-evaluation-manager_identity".parameters.name == "aos-eval";
   assert bootCommitLifecycle.start
@@ -144,20 +144,20 @@ in
   ];
   assert bootCommitDependencies.after
   == [
-    (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "service-resource")
-    (resultOf "aos:aos-graph-compile-lifecycle" "service-resource")
-    (resultOf "aos:aos-activate-lifecycle" "service-resource")
-    (resultOf "aos:aos-config" "activation-resource")
+    (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "resource")
+    (resultOf "aos:aos-graph-compile-lifecycle" "resource")
+    (resultOf "aos:aos-activate-lifecycle" "resource")
+    (resultOf "aos:aos-config" "resource")
   ];
   assert bootCommitDependencies.requires
   == [
-    (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "service-resource")
-    (resultOf "aos:aos-graph-compile-lifecycle" "service-resource")
+    (resultOf "aos-boot-storage:aos-mount-esp-lifecycle" "resource")
+    (resultOf "aos:aos-graph-compile-lifecycle" "resource")
   ];
   assert bootCommitDependencies.before
-  == [(resultOf "aos:multi-user" "readiness-resource")];
+  == [(resultOf "aos:multi-user" "resource")];
   assert bootCommitDependencies.wanted_by
-  == [(resultOf "aos:multi-user" "readiness-resource")];
+  == [(resultOf "aos:multi-user" "resource")];
   assert measurementLifecycle.start
   == [
     {
@@ -173,13 +173,10 @@ in
   ];
   assert measurementDependencies.after
   == [
-    (resultOf "systemd:measurement-esp-ready" "readiness-resource")
-    (resultOf "systemd:measurement-local-filesystems" "readiness-resource")
-    (resultOf "systemd:measurement-runtime-entries" "lifecycle-resource")
+    (resultOf "systemd:measurement-esp-ready" "resource")
+    (resultOf "systemd:measurement-local-filesystems" "resource")
+    (resultOf "systemd:measurement-runtime-entries" "resource")
   ];
   assert measurementDependencies.before
-  == [
-    (resultOf "systemd:measurement-indexed" "readiness-resource")
-    (resultOf "systemd:measurement-multi-user" "readiness-resource")
-  ];
+  == [(resultOf "systemd:measurement-multi-user" "resource")];
   assert measurementDependencies.requires == measurementDependencies.after; true

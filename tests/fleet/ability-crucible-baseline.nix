@@ -37,7 +37,7 @@
   assert enabledConfig.aos.abilities.executionObserver
   == {
     request = "aos-ability-boundary-observer:endpoint";
-    resourceOutput = "retained-resource";
+    resourceOutput = "resource";
     socketOutput = "socket-path";
   };
   assert enabledConfig.aos.abilities.requests."aos-ability-crucible:observer-endpoint".parameters.endpoint == "default";

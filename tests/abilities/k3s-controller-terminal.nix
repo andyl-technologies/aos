@@ -22,75 +22,92 @@
       package = pkgs.k3s-combined;
       implementation = controllerAlias;
     };
-    childRequestKey = lib.abilities.compositionRequestKey {
-      implementation = "k3s-combined:${controllerAlias}";
-      providerInstance = "k3s-combined:${controllerInstance}";
-      key = slot;
-    };
-    evaluated = lib.evalModules {
-      inherit lib;
-      modules = [
-        lib.abilities.module
-        {
-          aos.abilities = {
-            environment = {
-              authority = "test";
-              key = "k3s-controller-terminal";
-              stage = "host";
-            };
-            instances."k3s-combined:${controllerInstance}" = {};
-            bindings."test:controller" = {
-              request = "consumer:${requestKey}";
-              implementation = "k3s-combined:${controllerAlias}";
-              providerInstance = "k3s-combined:${controllerInstance}";
-              inherit slot;
-            };
-            bindings."test:terminal" = {
-              request = childRequestKey;
-              implementation = "k3s-combined:${terminalAlias}";
-              providerInstance = "k3s-combined:${controllerInstance}";
-              inherit slot;
-            };
-          };
-        }
-      ];
-      packageModules = [
-        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
-        {
-          name = "k3s-combined";
-          version = pkgs.k3s-combined.version;
-          module = pkgs.k3s-combined.module + "/module.nix";
-        }
-        {
-          name = "consumer";
-          version = "1";
-          module = {
-            config.aos.abilities = {
-              instances.workload = {};
-              requirementTemplates.${requestKey} =
-                lib.abilities.interfaceSelector {
-                  name = requestInterfaceName;
-                  abi = 1;
-                }
-                // {
-                  description = "Selects the package-owned K3s controller under test.";
-                  methods = requestMethods;
-                  guarantees = [];
-                  strength = "required";
-                  fallback = null;
-                };
-              requests.${requestKey} = {
-                requirement = requestKey;
-                consumer = "workload";
-                scope = [requestKey];
-                inherit parameters;
+    systemdModule = lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd;
+    packageModules = [
+      (systemdModule
+        // {module = "${systemdModule.configRoot}/linux-service-features.nix";})
+      {
+        name = "k3s-combined";
+        version = pkgs.k3s-combined.version;
+        module = pkgs.k3s-combined.module + "/module.nix";
+      }
+      {
+        name = "consumer";
+        version = "1";
+        module = {
+          config.aos.abilities = {
+            instances.workload = {};
+            requirementTemplates.${requestKey} =
+              lib.abilities.interfaceSelector {
+                name = requestInterfaceName;
+                abi = 1;
+              }
+              // {
+                description = "Selects the package-owned K3s controller under test.";
+                methods = requestMethods;
+                guarantees = [];
+                strength = "required";
+                fallback = null;
               };
+            requests.${requestKey} = {
+              requirement = requestKey;
+              consumer = "workload";
+              scope = [requestKey];
+              inherit parameters;
             };
           };
-        }
-      ];
-      selectedProviderModules = [selectedProvider];
+        };
+      }
+    ];
+    evaluate = selection:
+      lib.evalModules {
+        inherit lib packageModules;
+        modules = [
+          lib.abilities.module
+          {
+            aos.abilities = {
+              environment = {
+                authority = "test";
+                key = "k3s-controller-terminal";
+                stage = "host";
+              };
+              instances =
+                {"k3s-combined:${controllerInstance}" = {};}
+                // selection.instances;
+              bindings =
+                {
+                  "test:controller" = {
+                    request = "consumer:${requestKey}";
+                    implementation = "k3s-combined:${controllerAlias}";
+                    providerInstance = "k3s-combined:${controllerInstance}";
+                    inherit slot;
+                  };
+                }
+                // selection.bindings;
+            };
+          }
+        ];
+        selectedProviderModules = [selectedProvider];
+        specialArgs.abilityResolution = {
+          inherit (selection) requests requirements;
+        };
+      };
+    initial = evaluate {
+      instances = {};
+      bindings = {};
+      requests = {};
+      requirements = {};
     };
+    selected = import ../../lib/build/select-ability-bindings.nix {
+      inherit lib;
+      abilities = initial.config.aos.abilities;
+    };
+    evaluated = evaluate selected;
+    childRequestKeys = builtins.attrNames selected.requests;
+    childRequestKey =
+      if builtins.length childRequestKeys == 1
+      then builtins.head childRequestKeys
+      else throw "K3s controller selection must resolve one terminal request";
   in {
     inherit childRequestKey;
     abilities = evaluated.config.aos.abilities;

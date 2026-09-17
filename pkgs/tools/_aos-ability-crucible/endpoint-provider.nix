@@ -48,7 +48,7 @@
     outputs = builtins.listToAttrs (builtins.map (entry: {
         name = entry.requestName;
         value = {
-          retained-resource = reference;
+          resource = reference;
           socket-path = settings.socketPath;
         };
       })

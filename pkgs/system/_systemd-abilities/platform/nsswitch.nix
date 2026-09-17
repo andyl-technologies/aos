@@ -8,9 +8,7 @@
     if abilitySelection == null
     then []
     else abilitySelection.bindingsForImplementation "system-manager";
-  selected =
-    builtins.length managerBindings == 1
-    && (builtins.head managerBindings).binding.request == "system:manager";
+  selected = builtins.length managerBindings == 1;
   source = database: name: order: actions: {
     inherit database order actions;
     source = name;

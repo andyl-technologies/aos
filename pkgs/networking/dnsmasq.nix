@@ -20,8 +20,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -183,7 +194,7 @@ in
         && builtins.map
         (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
         dependencies.prerequisites
-        == [(expectedRequestOutput "network-ingress" "readiness-resource")]
+        == [(expectedRequestOutput "network-ingress" "resource")]
         && dependencies.after == []
         && dependencies.requires == [];
     in {

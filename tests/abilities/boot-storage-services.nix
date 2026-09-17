@@ -53,11 +53,11 @@
     request = requestName;
     inherit output;
   };
-  imageBootCommitted = resultOf "aos-boot-storage:image-boot-committed" "readiness-resource";
-  bootStorageEarlySystem = resultOf "aos-boot-storage:early-system" "readiness-resource";
-  preparationsEarlySystem = resultOf "aos-boot-preparations:early-system" "readiness-resource";
-  storageMilestone = key: resultOf "aos-boot-storage:${key}" "readiness-resource";
-  preparationsMilestone = key: resultOf "aos-boot-preparations:${key}" "readiness-resource";
+  imageBootCommitted = resultOf "aos-boot-storage:image-boot-committed" "resource";
+  bootStorageEarlySystem = resultOf "aos-boot-storage:early-system" "resource";
+  preparationsEarlySystem = resultOf "aos-boot-preparations:early-system" "resource";
+  storageMilestone = key: resultOf "aos-boot-storage:${key}" "resource";
+  preparationsMilestone = key: resultOf "aos-boot-preparations:${key}" "resource";
 
   mountLifecycle = request hostRequests "aos-boot-storage" "aos-mount-esp-lifecycle";
   mountDependencies = request hostRequests "aos-boot-storage" "aos-mount-esp-dependencies";
@@ -72,7 +72,7 @@
   stageCredentialDependencies =
     request initrdRequests "aos-boot-storage" "aos-stage-zfs-credential-dependencies";
   stageCredentialResource =
-    resultOf "aos-boot-storage:aos-stage-zfs-credential-lifecycle" "service-resource";
+    resultOf "aos-boot-storage:aos-stage-zfs-credential-lifecycle" "resource";
   transactionStorageRequest =
     request initrdRequests "aos-boot-storage" "boot-transaction-storage-view";
   transactionStorageLifecycle =

@@ -493,10 +493,10 @@
         stop_timeout_millis = 90000;
       };
       dependencies = {
-        after = [(resultOf "network-readiness" "readiness-resource")];
+        after = [(resultOf "network-readiness" "resource")];
         before = [];
         requires = [];
-        wants = [(resultOf "network-readiness" "readiness-resource")];
+        wants = [(resultOf "network-readiness" "resource")];
       };
       supervision = {
         startup_protocol = "process";
@@ -581,12 +581,12 @@
       };
       dependencies = {
         after = [
-          (resultOf "initialize-lifecycle" "retained-resource")
-          (resultOf "network-readiness" "readiness-resource")
+          (resultOf "initialize-lifecycle" "resource")
+          (resultOf "network-readiness" "resource")
         ];
         before = [];
-        requires = [(resultOf "initialize-lifecycle" "retained-resource")];
-        wants = [(resultOf "network-readiness" "readiness-resource")];
+        requires = [(resultOf "initialize-lifecycle" "resource")];
+        wants = [(resultOf "network-readiness" "resource")];
       };
       supervision = {
         startup_protocol = "notification";

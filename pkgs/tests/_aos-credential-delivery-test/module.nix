@@ -35,7 +35,7 @@
     interface = serviceManagement.interfaces.credentialDelivery;
     parameters = {
       name = "join-token";
-      source = resultOf "join-token-source" "credential-resource";
+      source = resultOf "join-token-source" "resource";
       encrypted = cfg.encrypted;
     };
   };

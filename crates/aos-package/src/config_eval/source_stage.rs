@@ -784,10 +784,6 @@ impl<'a> SourceComposition<'a> {
             .instances
             .get(&binding.provider_instance)
             .with_context(|| format!("binding {binding_name:?} has no provider instance"))?;
-        ensure!(
-            instance.implementation.as_deref() == Some(binding.implementation.as_str()),
-            "binding {binding_name:?} differs from its provider instance"
-        );
         let (package_name, implementation_name) = declaration_parts(&binding.implementation)?;
         ensure!(
             package_name == instance.package,

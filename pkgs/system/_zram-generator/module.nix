@@ -80,8 +80,8 @@
     serviceManagement.forProducer {
       inherit consumerInstance key interface parameters;
     };
-  kernelReadiness = resultOf kernelModulesRequest "readiness-resource";
-  retainedBy = request: resultOf request "retained-resource";
+  kernelReadiness = resultOf kernelModulesRequest "resource";
+  retainedBy = request: resultOf request "resource";
   plannedGeneratorExecutable = resultOf generatorExecutableRequest "planned-path";
   plannedGeneratorConfiguration =
     resultOf generatorConfigurationEntryRequest "planned-path";
@@ -191,7 +191,7 @@
               kind = "copied-file";
               source = {
                 kind = "execution-path";
-                resource = resultOf generatorConfigurationRequest "retained-resource";
+                resource = resultOf generatorConfigurationRequest "resource";
                 path = resultOf generatorConfigurationRequest "planned-path";
               };
               maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;

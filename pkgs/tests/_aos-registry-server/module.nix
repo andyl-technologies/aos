@@ -241,7 +241,7 @@
       ];
     } {
       dependencies.prerequisites = [
-        (resultOf "git-ingress" "readiness-resource")
+        (resultOf "git-ingress" "resource")
       ];
       configuration.views = [
         {
@@ -272,7 +272,7 @@
       ];
     } {
       dependencies.prerequisites = [
-        (resultOf "cache-ingress" "readiness-resource")
+        (resultOf "cache-ingress" "resource")
       ];
       environment = {
         variables = {

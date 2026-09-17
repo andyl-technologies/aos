@@ -38,7 +38,7 @@ in {
     aos.tests.executionObserver = observerConfig;
     aos.abilities.executionObserver = {
       request = "aos-ability-boundary-observer:endpoint";
-      resourceOutput = "retained-resource";
+      resourceOutput = "resource";
       socketOutput = "socket-path";
     };
     aos.abilities.bindings =
@@ -66,7 +66,7 @@ in {
     aos.tests.executionObserver.mode = ${builtins.toJSON mode};
     aos.abilities.executionObserver = {
       request = "aos-ability-boundary-observer:endpoint";
-      resourceOutput = "retained-resource";
+      resourceOutput = "resource";
       socketOutput = "socket-path";
     };
     aos.abilities.bindings."fleet-observer:endpoint" = {

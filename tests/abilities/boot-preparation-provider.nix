@@ -15,65 +15,89 @@
     providerInstance = "aos-boot-preparation-provider:manager";
     key = "prepare";
   };
-  evaluated = lib.evalModules {
-    inherit lib;
-    modules = [
-      lib.abilities.module
-      {
-        aos.abilities = {
-          environment = {
-            authority = "test";
-            key = "boot-preparation-provider";
-            stage = "initrd";
-          };
-          instances."aos-boot-preparation-provider:manager" = {};
-          bindings."test:prepare" = {
-            request = "consumer:prepare";
-            implementation = "aos-boot-preparation-provider:boot-preparation";
-            providerInstance = "aos-boot-preparation-provider:manager";
-            slot = "prepare";
-          };
-          bindings."test:prepare-command" = {
-            request = childRequest;
-            implementation = "aos-boot-preparation-provider:boot-preparation-command";
-            providerInstance = "aos-boot-preparation-provider:manager";
-            slot = "prepare";
-          };
-        };
-      }
-    ];
-    packageModules = [
-      {
-        name = "aos-boot-preparation-provider";
-        inherit (pkgs.aos-boot-preparation-provider) version;
-        module = pkgs.aos-boot-preparation-provider.module + "/module.nix";
-      }
-      {
-        name = "consumer";
-        module.config.aos.abilities = lib.mkMerge [
-          {instances.workload = {};}
-          (serviceManagement.forProducer {
-            consumerInstance = "workload";
-            key = "prepare";
-            interface = preparation;
-            methods = ["observe" "prepare"];
-            parameters = {
-              execution = {
-                artifact = lib.abilities.packageOutput {};
-                entry_point = "libexec/prepare";
-                arguments = [];
-              };
-              prerequisites = [];
+  evaluate = {
+    includeCommand,
+    abilityResolution,
+  }:
+    lib.evalModules {
+      inherit lib;
+      modules = [
+        lib.abilities.module
+        {
+          aos.abilities = {
+            environment = {
+              authority = "test";
+              key = "boot-preparation-provider";
+              stage = "initrd";
             };
-          })
-        ];
-      }
-    ];
-    selectedProviderModules = [selectedProvider];
+            instances."aos-boot-preparation-provider:manager" = {};
+            bindings =
+              {
+                "test:prepare" = {
+                  request = "consumer:prepare";
+                  implementation = "aos-boot-preparation-provider:boot-preparation";
+                  providerInstance = "aos-boot-preparation-provider:manager";
+                  slot = "prepare";
+                };
+              }
+              // lib.optionalAttrs includeCommand {
+                "test:prepare-command" = {
+                  request = childRequest;
+                  implementation = "aos-boot-preparation-provider:boot-preparation-command";
+                  providerInstance = "aos-boot-preparation-provider:manager";
+                  slot = "prepare";
+                };
+              };
+          };
+        }
+      ];
+      packageModules = [
+        {
+          name = "aos-boot-preparation-provider";
+          inherit (pkgs.aos-boot-preparation-provider) version;
+          module = pkgs.aos-boot-preparation-provider.module + "/module.nix";
+        }
+        {
+          name = "consumer";
+          module.config.aos.abilities = lib.mkMerge [
+            {instances.workload = {};}
+            (serviceManagement.forProducer {
+              consumerInstance = "workload";
+              key = "prepare";
+              interface = preparation;
+              methods = ["observe" "prepare"];
+              parameters = {
+                execution = {
+                  artifact = lib.abilities.packageOutput {};
+                  entry_point = "libexec/prepare";
+                  arguments = [];
+                };
+                prerequisites = [];
+              };
+            })
+          ];
+        }
+      ];
+      selectedProviderModules = [selectedProvider];
+      specialArgs = {inherit abilityResolution;};
+    };
+  initial = evaluate {
+    includeCommand = false;
+    abilityResolution = {
+      requests = {};
+      requirements = {};
+    };
+  };
+  evaluated = evaluate {
+    includeCommand = true;
+    abilityResolution = import ./_composition-resolution.nix {
+      abilities = initial.config.aos.abilities;
+      requestKeys = [childRequest];
+    };
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
-  output = abilities.compositionOutputs."consumer:prepare".preparation-resource;
+  output = abilities.compositionOutputs."consumer:prepare".resource;
   controller = abilities.implementations."aos-boot-preparation-provider:boot-preparation";
   terminal = abilities.implementations."aos-boot-preparation-provider:boot-preparation-command";
 in

@@ -47,7 +47,7 @@
     interface = interfaces.activationMilestone;
     parameters.milestone = "early-system";
   };
-  earlySystemReadiness = resultOf "early-system" "readiness-resource";
+  earlySystemReadiness = resultOf "early-system" "resource";
   systemMilestone = key: milestone:
     serviceManagement.forProducer {
       inherit consumerInstance key;
@@ -68,20 +68,20 @@
   bootStorageUnlocked = systemMilestone "boot-storage-unlocked" milestones.bootStorageUnlocked;
   localFilesystems = systemMilestone "local-filesystems" milestones.localFilesystems;
   hostStageReceived = systemMilestone "host-stage-received" milestones.hostStageReceived;
-  switchRootReadiness = resultOf "switch-root" "readiness-resource";
-  sysrootReadiness = resultOf "sysroot" "readiness-resource";
-  varReadiness = resultOf "var" "readiness-resource";
-  nixOverlayReadiness = resultOf "nix-overlay" "readiness-resource";
-  etcOverlayReadiness = resultOf "etc-overlay" "readiness-resource";
-  runEtcReadiness = resultOf "run-etc" "readiness-resource";
-  initrdFilesystemsReadiness = resultOf "initrd-filesystems" "readiness-resource";
-  initrdRootFilesystemsReadiness = resultOf "initrd-root-filesystems" "readiness-resource";
-  deviceSettleReadiness = resultOf "device-settle" "readiness-resource";
-  initrdStageReadiness = resultOf "initrd-stage" "readiness-resource";
-  bootIdentityReadiness = resultOf "boot-identity" "readiness-resource";
-  bootStorageUnlockedReadiness = resultOf "boot-storage-unlocked" "readiness-resource";
-  localFilesystemsReadiness = resultOf "local-filesystems" "readiness-resource";
-  hostStageReceivedReadiness = resultOf "host-stage-received" "readiness-resource";
+  switchRootReadiness = resultOf "switch-root" "resource";
+  sysrootReadiness = resultOf "sysroot" "resource";
+  varReadiness = resultOf "var" "resource";
+  nixOverlayReadiness = resultOf "nix-overlay" "resource";
+  etcOverlayReadiness = resultOf "etc-overlay" "resource";
+  runEtcReadiness = resultOf "run-etc" "resource";
+  initrdFilesystemsReadiness = resultOf "initrd-filesystems" "resource";
+  initrdRootFilesystemsReadiness = resultOf "initrd-root-filesystems" "resource";
+  deviceSettleReadiness = resultOf "device-settle" "resource";
+  initrdStageReadiness = resultOf "initrd-stage" "resource";
+  bootIdentityReadiness = resultOf "boot-identity" "resource";
+  bootStorageUnlockedReadiness = resultOf "boot-storage-unlocked" "resource";
+  localFilesystemsReadiness = resultOf "local-filesystems" "resource";
+  hostStageReceivedReadiness = resultOf "host-stage-received" "resource";
   service = {
     key,
     description,
@@ -174,7 +174,7 @@
     required_mounts = [];
     implicit_dependencies = false;
   };
-  serviceResource = key: resultOf "${key}-lifecycle" "service-resource";
+  serviceResource = key: resultOf "${key}-lifecycle" "resource";
   handoffCommand = arguments: {
     executable = {
       artifact = runtimeArtifact;
@@ -641,7 +641,7 @@
     if lifecycleRequests == []
     then null
     else if builtins.length lifecycleRequests == 1
-    then resultOf (builtins.head lifecycleRequests) "service-resource"
+    then resultOf (builtins.head lifecycleRequests) "resource"
     else throw "one package-owned service fragment emitted several lifecycle requests";
   handoffPreparationResources =
     builtins.sort

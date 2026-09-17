@@ -194,8 +194,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -490,7 +506,7 @@ in
           inherit requests;
           reference = passwordDelivery.source;
         }
-        == expectedRequestOutput "master-password-source" "credential-resource"
+        == expectedRequestOutput "master-password-source" "resource"
         && passwordDelivery.name == "master-password"
         && clientSource.kind == "inline-text"
         && lib.hasInfix "default_realm = EXAMPLE.TEST" clientSource.content
@@ -503,15 +519,15 @@ in
         && builtins.map
         (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
         kdcDependencies.after
-        == [(expectedRequestOutput "initialize-lifecycle" "service-resource")]
+        == [(expectedRequestOutput "initialize-lifecycle" "resource")]
         && builtins.map
         (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
         kdcDependencies.requires
-        == [(expectedRequestOutput "initialize-lifecycle" "service-resource")]
+        == [(expectedRequestOutput "initialize-lifecycle" "resource")]
         && builtins.map
         (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
         kdcDependencies.prerequisites
-        == [(expectedRequestOutput "kdc-ingress" "readiness-resource")]
+        == [(expectedRequestOutput "kdc-ingress" "resource")]
         && builtins.map
         (reference:
           lib.abilities.requestOutputIdentity {
@@ -519,7 +535,7 @@ in
             inherit reference;
           })
         administrationDependencies.after
-        == [(expectedRequestOutput "initialize-lifecycle" "service-resource")]
+        == [(expectedRequestOutput "initialize-lifecycle" "resource")]
         && builtins.map
         (reference:
           lib.abilities.requestOutputIdentity {
@@ -527,7 +543,7 @@ in
             inherit reference;
           })
         administrationDependencies.requires
-        == [(expectedRequestOutput "initialize-lifecycle" "service-resource")]
+        == [(expectedRequestOutput "initialize-lifecycle" "resource")]
         && builtins.map
         (reference:
           lib.abilities.requestOutputIdentity {
@@ -535,7 +551,7 @@ in
             inherit reference;
           })
         administrationDependencies.prerequisites
-        == [(expectedRequestOutput "administration-ingress" "readiness-resource")]
+        == [(expectedRequestOutput "administration-ingress" "resource")]
         && kdcIngress.endpoints
         == [
           {

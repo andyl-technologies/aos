@@ -8,11 +8,13 @@
   controllerAlias = "k3s-configuration";
   contributionAlias = "k3s-integration";
   controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
+  aggregationSlot = controllerDeclaration.aggregation.key;
   controllerIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
   );
   controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
-  realizationSchema = lib.abilities.singletonSchemaDiscriminator
+  realizationSchema =
+    lib.abilities.singletonSchemaDiscriminator
     "K3s configuration controller realization"
     controller.desiredType;
   effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
@@ -30,7 +32,7 @@
       then builtins.head matches
       else throw "a K3s configuration request must have exactly one selected binding";
   in
-    if binding.slot == "configuration"
+    if binding.slot == aggregationSlot
     then binding
     else throw "the K3s provider accepts only its canonical 'configuration' aggregate slot";
   entriesFor = context:
@@ -45,7 +47,7 @@
     interface = controllerIdentity;
     resource = {
       provider = instance.id;
-      key = "configuration";
+      key = aggregationSlot;
     };
     operations = ["observe"];
     lifetime = "instance";
@@ -62,7 +64,7 @@
         name = entry.requestName;
         value = {
           execution-path = executionPath instance;
-          readiness-resource = resourceReference instance;
+          resource = resourceReference instance;
         };
       })
       entries
@@ -77,7 +79,7 @@
     emptyResult
     // {
       outputs = outputsFor context.instance [entry];
-      resourceFragments.configuration = {
+      resourceFragments.${aggregationSlot} = {
         kind = controllerIdentity.name;
         lifetime = "instance";
         value = entry.request.parameters;
@@ -97,7 +99,7 @@
     // {
       outputs = outputsFor context.instance checked;
       resourceFragments = lib.optionalAttrs (checked != []) {
-        configuration = {
+        ${aggregationSlot} = {
           kind = controllerIdentity.name;
           lifetime = "instance";
           value.contributions = builtins.listToAttrs (
@@ -124,7 +126,7 @@
     resources,
     ...
   }: let
-    resource = resources.configuration or (throw "K3s configuration resource is absent");
+    resource = resources.${aggregationSlot} or (throw "K3s configuration resource is absent");
     labels =
       [resource.value.base.node_labels]
       ++ map (entry: entry.node_labels) (builtins.attrValues resource.value.contributions);
@@ -136,7 +138,7 @@
     else {
       requests = builtins.mapAttrs effectRequest resources;
       outputs = {};
-      realizations.configuration = {
+      realizations.${aggregationSlot} = {
         schema = realizationSchema;
         path = executionPath instance;
       };

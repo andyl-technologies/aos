@@ -1259,6 +1259,7 @@ fn planner_fixture_with_contract(
         name: key("provider"),
         description: "Shared test provider.".to_string(),
         interface: interface.clone(),
+        methods: Vec::new(),
         guarantees: Vec::new(),
         artifact: artifact.clone(),
         requirements: Vec::new(),

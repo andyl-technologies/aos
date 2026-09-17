@@ -36,47 +36,71 @@
       })
     ];
   };
-  evaluated = lib.evalModules {
-    inherit lib;
-    enableAbilitySelection = true;
-    modules = [
-      lib.abilities.module
-      ../../modules/base/_runtime-check-contributions.nix
-      {
-        aos.abilities = {
-          environment = {
-            authority = "test";
-            key = "nix-store-database";
-            stage = "initrd";
+  evaluate = {
+    includeEffects,
+    abilityResolution,
+  }:
+    lib.evalModules {
+      inherit lib;
+      enableAbilitySelection = true;
+      modules = [
+        lib.abilities.module
+        ../../modules/base/_runtime-check-contributions.nix
+        {
+          aos.abilities = {
+            environment = {
+              authority = "test";
+              key = "nix-store-database";
+              stage = "initrd";
+            };
+            instances."aos-nix-store-provider:manager" = {};
+            bindings =
+              {
+                "test:nix-store-database" = {
+                  request = "consumer:database";
+                  implementation = "aos-nix-store-provider:nix-store-database";
+                  providerInstance = "aos-nix-store-provider:manager";
+                  slot = "database";
+                };
+              }
+              // lib.optionalAttrs includeEffects {
+                "test:nix-store-database-effects" = {
+                  request = childRequestKey;
+                  implementation = "aos-nix-store-provider:nix-store-database-effects";
+                  providerInstance = "aos-nix-store-provider:manager";
+                  slot = "database";
+                };
+              };
           };
-          instances."aos-nix-store-provider:manager" = {};
-          bindings."test:nix-store-database" = {
-            request = "consumer:database";
-            implementation = "aos-nix-store-provider:nix-store-database";
-            providerInstance = "aos-nix-store-provider:manager";
-            slot = "database";
-          };
-          bindings."test:nix-store-database-effects" = {
-            request = childRequestKey;
-            implementation = "aos-nix-store-provider:nix-store-database-effects";
-            providerInstance = "aos-nix-store-provider:manager";
-            slot = "database";
-          };
-        };
-      }
-    ];
-    packageModules = [
-      {
-        name = "aos-nix-store-provider";
-        inherit (pkgs.aos-nix-store-provider) version;
-        module = pkgs.aos-nix-store-provider.module + "/module.nix";
-      }
-      {
-        name = "consumer";
-        module = consumer;
-      }
-    ];
-    selectedProviderModules = [selectedProvider];
+        }
+      ];
+      packageModules = [
+        {
+          name = "aos-nix-store-provider";
+          inherit (pkgs.aos-nix-store-provider) version;
+          module = pkgs.aos-nix-store-provider.module + "/module.nix";
+        }
+        {
+          name = "consumer";
+          module = consumer;
+        }
+      ];
+      selectedProviderModules = [selectedProvider];
+      specialArgs = {inherit abilityResolution;};
+    };
+  initial = evaluate {
+    includeEffects = false;
+    abilityResolution = {
+      requests = {};
+      requirements = {};
+    };
+  };
+  evaluated = evaluate {
+    includeEffects = true;
+    abilityResolution = import ./_composition-resolution.nix {
+      abilities = initial.config.aos.abilities;
+      requestKeys = [childRequestKey];
+    };
   };
   abilities = evaluated.config.aos.abilities;
   desired = builtins.head (
@@ -84,7 +108,7 @@
     (resource: resource.kind == "aos.nix.store-database")
     (builtins.attrValues abilities.desiredResources)
   );
-  readiness = abilities.compositionOutputs."consumer:database".readiness-resource;
+  readiness = abilities.compositionOutputs."consumer:database".resource;
   transition = abilities.implementations."aos-nix-store-provider:nix-store-database".transition;
   effectsInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."aos-nix-store-provider:nix-store-database-effects"

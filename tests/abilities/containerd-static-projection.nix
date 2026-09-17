@@ -21,7 +21,7 @@ in
     "service-lifecycle"
     "service-logging"
     "service-readiness"
-    "service-resources"
+    "resources"
     "service-storage"
     "service-supervision"
     "storage-allocation"

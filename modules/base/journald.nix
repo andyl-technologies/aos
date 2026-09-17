@@ -1,22 +1,5 @@
 ##! Provider-neutral event-log policy selection.
-{
-  config,
-  lib,
-  ...
-}: let
-  cfg = config.aos.journald;
-  interface = lib.abilities.interfaces.eventLogPolicy.interface;
-  parameters = {
-    inherit (cfg) storage;
-    max_retention_seconds = cfg.maxRetentionSeconds;
-    max_use_bytes = cfg.maxUseBytes;
-    max_file_bytes = cfg.maxFileSizeBytes;
-    rate_limit_interval_millis = cfg.rateLimitIntervalMillis;
-    rate_limit_burst = cfg.rateLimitBurst;
-    forward_to_syslog = cfg.forwardToSyslog;
-    compress = cfg.compress;
-  };
-in {
+{lib, ...}: {
   options.aos.journald = {
     storage = lib.mkOption {
       type = lib.abilities.types.enum ["persistent" "volatile" "automatic"];
@@ -72,21 +55,6 @@ in {
       type = lib.abilities.types.boolean;
       default = true;
       description = "Compress retained event-log segments.";
-    };
-  };
-
-  config.aos.abilities = {
-    instances."event-log:policy" = {};
-    requirementTemplates."event-log:policy" = {
-      description = "Requires an event-log policy implementation.";
-      interface = interface.identity.name;
-      inherit (interface.identity) abi descriptor;
-    };
-    requests."event-log:policy" = {
-      requirement = "event-log:policy";
-      consumer = "event-log:policy";
-      scope = ["event-log"];
-      inherit parameters;
     };
   };
 }

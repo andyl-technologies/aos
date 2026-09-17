@@ -795,7 +795,9 @@ pub(crate) fn verify_embedded_static_package(
     })
 }
 
-fn artifact_reference(artifact: &PackageContractArtifactMeta) -> Result<ArtifactReference> {
+pub(crate) fn artifact_reference(
+    artifact: &PackageContractArtifactMeta,
+) -> Result<ArtifactReference> {
     Ok(ArtifactReference {
         content: validate_sha256_identity("package contract artifact content", &artifact.content)?,
         store_path: artifact.store_path.clone(),

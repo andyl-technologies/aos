@@ -188,7 +188,7 @@
       prerequisites = cfg.storageReadiness;
       after = cfg.storageReadiness;
       before = [];
-      requires = lib.optional (cfg.datasets != []) (resultOf "prepare-lifecycle" "service-resource");
+      requires = lib.optional (cfg.datasets != []) (resultOf "prepare-lifecycle" "resource");
       wants = cfg.storageReadiness;
     };
     service = serviceManagement.forService {
@@ -215,7 +215,7 @@
         activation.bindings = [
           {
             name = "schedule";
-            resource = resultOf scheduleKey "activation-resource";
+            resource = resultOf scheduleKey "resource";
             relationship = "resource-triggers-service";
           }
         ];

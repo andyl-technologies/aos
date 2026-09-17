@@ -8,6 +8,13 @@
     name = "base-kernel";
     module = ../../modules/base/kernel.nix;
     packages = [pkgs.kmod pkgs.aos-kernel-tunable-provider];
+    extraPackageModules = [
+      {
+        name = "aos";
+        version = pkgs.aos.version;
+        module = pkgs.aos.module + "/kernel-policy.nix";
+      }
+    ];
     extraModules = [
       {aos.kernel.sysctl."vm.vfs_cache_pressure" = "50";}
     ];
@@ -17,27 +24,27 @@
 in
   assert builtins.attrNames requests
   == [
-    "system:kernel-modules"
-    "system:kernel-tunables"
+    "aos:kernel-modules"
+    "aos:kernel-tunables"
   ];
-  assert requests."system:kernel-modules".parameters
+  assert requests."aos:kernel-modules".parameters
   == {
     modules = ["tcp_bbr"];
     required = false;
   };
-  assert requests."system:kernel-tunables".parameters.dependencies
+  assert requests."aos:kernel-tunables".parameters.dependencies
   == [
     {
       _type = "aos-request-output-reference";
-      request = "system:kernel-modules";
-      output = "readiness-resource";
+      request = "aos:kernel-modules";
+      output = "resource";
     }
   ];
-  assert requests."system:kernel-tunables".parameters.values."net.core.default_qdisc" == "fq";
-  assert requests."system:kernel-tunables".parameters.values."net.ipv4.tcp_congestion_control" == "bbr";
-  assert requests."system:kernel-tunables".parameters.values."vm.swappiness" == "10";
-  assert requests."system:kernel-tunables".parameters.values."vm.vfs_cache_pressure" == "50";
-  assert requests."system:kernel-tunables".parameters.values."net.core.somaxconn" == "32768";
+  assert requests."aos:kernel-tunables".parameters.values."net.core.default_qdisc" == "fq";
+  assert requests."aos:kernel-tunables".parameters.values."net.ipv4.tcp_congestion_control" == "bbr";
+  assert requests."aos:kernel-tunables".parameters.values."vm.swappiness" == "10";
+  assert requests."aos:kernel-tunables".parameters.values."vm.vfs_cache_pressure" == "50";
+  assert requests."aos:kernel-tunables".parameters.values."net.core.somaxconn" == "32768";
   assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "modules-load.d/10-aos-kernel.conf");
   assert !(config.environment.etc ? "sysctl.d/10-aos-kernel.conf");

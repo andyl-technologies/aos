@@ -214,7 +214,7 @@
     abi = 1;
     requestType = policyType;
     inherit methods lifecycle aggregation;
-    outputs.readiness-resource =
+    outputs.resource =
       output "planning" "persistent" "References readiness for this exact network configuration." types.resourceReference;
     guarantees = [];
   };

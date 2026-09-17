@@ -14,21 +14,18 @@
     if abilitySelection == null
     then []
     else abilitySelection.bindingsForImplementation "kernel";
-  selected =
-    builtins.length selectedBindings
-    == 1
-    && (builtins.head selectedBindings).binding.request == "system:kernel";
+  selected = builtins.length selectedBindings == 1;
   selectedBinding =
     if selected
     then builtins.head selectedBindings
     else if selectedBindings != []
-    then throw "the Linux kernel implementation requires exactly one system:kernel binding"
+    then throw "the Linux kernel implementation requires exactly one selected binding"
     else null;
   providerReady =
     selected
     && selectedBinding.implementation.value.provide != null;
   selectedKernelOutput =
-    config.aos.abilities.compositionOutputs."system:kernel"."selected-kernel".value or null;
+    config.aos.abilities.compositionOutputs.${selectedBinding.binding.request}."selected-kernel".value or null;
   kernelArtifact = packageArtifactFor kernelArtifactSelector;
   authoredKernel = {
     _type = "aos-selected-kernel";
