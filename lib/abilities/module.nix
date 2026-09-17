@@ -1451,6 +1451,13 @@
       description = "Protected planning-phase execution-path output for the observer socket.";
     };
   };
+  resolvedExecutionObserverType = strictSubmodule {
+    request = mkOption {type = declarationKeyType;};
+    resource = mkOption {
+      type = checkedType "resource reference" "a typed ability resource reference" abilityTypes.resourceReference.check;
+    };
+    socket = mkOption {type = abilityTypes.executionPath;};
+  };
   resolvedExecutionObserver = let
     selected = config.aos.abilities.executionObserver;
     outputs =
@@ -1623,7 +1630,7 @@ in {
       '';
     };
     resolvedExecutionObserver = mkOption {
-      type = moduleTypes.nullOr moduleTypes.attrs;
+      type = moduleTypes.nullOr resolvedExecutionObserverType;
       default = resolvedExecutionObserver;
       readOnly = true;
       internal = true;
