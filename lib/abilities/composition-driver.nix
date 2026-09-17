@@ -345,7 +345,7 @@
   publishedPlanningResources = builtins.concatLists (builtins.map (group:
     builtins.concatLists (builtins.map (requestName:
       builtins.concatMap (outputName: let
-        value = group.result.outputs.${requestName}.${outputName};
+        value = normalizeProviderOutput group.result.outputs.${requestName}.${outputName};
       in
         lib.optional
         (lib.abilities.types.resolvedResourceReference.check value
@@ -568,6 +568,10 @@
     composition.resources)
   compositionGroups));
 
+  normalizeProviderOutput = value:
+    if builtins.isAttrs value && (value._type or null) == "aos-resource-reference"
+    then builtins.removeAttrs value ["_type"]
+    else value;
   outputFor = group: requestName: outputName: value: let
     request = group.context.requests.${requestName} or (fail "provider output references an unselected request '${requestName}'");
     selectionsForRequest =
@@ -586,7 +590,7 @@
     else if !(lib.abilities.types.deferredResult descriptor.schema).check value
     then fail "provider output '${requestName}.${outputName}' does not match its declared type"
     else {
-      inherit value;
+      value = normalizeProviderOutput value;
       inherit (descriptor) phase visibility lifetime;
     };
   checkedOutputsForRequest = requestName: let

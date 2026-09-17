@@ -130,7 +130,7 @@ in
   assert composedAbilities.resolvedExecutionObserver
   == {
     request = "aos-ability-crucible:observer-endpoint";
-    resource = endpointReference;
+    resource = builtins.removeAttrs endpointReference ["_type"];
     socket = runtimePath;
   };
   assert builtins.length resolvedResources == 1;
