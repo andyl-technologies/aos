@@ -240,8 +240,9 @@ AArch64's uncompressed kernel makes its UKIs larger than the x86_64 images:
 Recovery-enabled Secure Boot fixtures use ESP maxima of 544 MiB on x86_64
 and 768 MiB on AArch64, retaining both recovery copies throughout an update.
 The `server-2` HTTP fixture uses runtime closure maxima of 832 and 960 MiB,
-respectively. Development payload and forbidden-artifact checks remain the
-same on both architectures.
+respectively, and an 800 MiB download ceiling to accommodate its x86_64 VHD.
+Development payload and forbidden-artifact checks remain the same on both
+architectures.
 
 The server and edge golden images cap compressed raw downloads at 768 MiB
 with `maxDownloadMiB`. The uncompressed qcow2, VMDK, and VHD encodings use
@@ -253,7 +254,7 @@ on both architectures. Converted limits follow the measured target payloads:
 | Converted maximum (MiB) | x86_64 | AArch64 |
 | --- | ---: | ---: |
 | Server and edge | 768 | 801 |
-| Server-2 | 768 | 832 |
+| Server-2 | 800 | 832 |
 | Diagnostic server-test | 832 | 896 |
 | Secure Boot and recovery fixtures | 896 | 1024 |
 
