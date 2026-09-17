@@ -1568,7 +1568,7 @@ CREATE TABLE package_documentation(
   document_size INTEGER NOT NULL,
   semantic_schema_sha256 KEYTEXT128 NOT NULL,
   PRIMARY KEY(registry_id, package_name, package_version, platform),
-  CHECK(format = 'aos.package-documentation/v1+json'),
+  CHECK(format = 'aos.package-reference/v1+json'),
   CHECK(nar_size > 0 AND nar_size <= 4194304),
   CHECK(document_size > 0 AND document_size <= 4194304)
 );
@@ -4512,7 +4512,7 @@ CREATE TABLE release_package_documentation(
   metadata_digest KEYTEXT128 NOT NULL,
   PRIMARY KEY(snapshot_id, package_name, package_version, platform),
   CHECK(artifact_kind = 'documentation'),
-  CHECK(format = 'aos.package-documentation/v1+json'),
+  CHECK(format = 'aos.package-reference/v1+json'),
   CHECK(nar_size > 0 AND nar_size <= 4194304),
   CHECK(document_size > 0 AND document_size <= 4194304),
   FOREIGN KEY(snapshot_id, release_id, registry_id)

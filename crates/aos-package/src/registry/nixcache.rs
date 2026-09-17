@@ -1688,7 +1688,7 @@ store_path = "/nix/store/info111-system-image-info"
 store_path = "/nix/store/payload111-system-update-payload"
 
 [versions.platforms.x86_64-linux.documentation]
-format = "aos.package-documentation/v1+json"
+format = "aos.package-reference/v1+json"
 store_path = "/nix/store/docs111-kernel-docs.json"
 nar_hash = "sha256:docs"
 nar_size = 6

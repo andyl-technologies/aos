@@ -106,7 +106,6 @@ pub(super) async fn publish_evaluated_package(
             Some(&publication.license_expression),
             Some(&maintainer),
             false,
-            true,
             previous,
             Some(&package.derivation),
             &[],

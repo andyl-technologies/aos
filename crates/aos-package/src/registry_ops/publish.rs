@@ -16,7 +16,7 @@ use crate::registry_ops::git::{
 };
 use crate::registry_ops::images::{PublishedImage, inspect_published_image};
 use crate::registry_ops::metadata::{
-    build_package_toml_with_documentation, record_named_output, record_package_contract,
+    build_package_toml, record_named_output, record_package_contract, record_package_documentation,
 };
 use crate::registry_ops::package_contract::{
     PackageContractSelectorRegistry, resolve_release_projection, resolve_store_artifact,
@@ -24,8 +24,7 @@ use crate::registry_ops::package_contract::{
 use crate::registry_ops::package_contract_transparency::append_package_contract_transparency_log;
 use crate::registry_ops::provenance::{
     append_package_provenance_transparency_log, bind_documentation_provenance,
-    publish_documentation_provenance_artifact, resolve_package_provenance_signer,
-    validate_external_provenance_signer,
+    publish_documentation_provenance_artifact, validate_external_provenance_signer,
 };
 use crate::registry_ops::signing::resolve_producer_signing_key;
 use crate::registry_ops::store_paths::{
@@ -144,7 +143,6 @@ pub async fn publish(
         license,
         maintainer,
         sysroot,
-        false,
         previous,
         source_drv,
         image_payload_paths,
@@ -184,7 +182,6 @@ pub(crate) async fn publish_to_registry_directory(
     license: Option<&str>,
     maintainer: Option<&str>,
     sysroot: bool,
-    documentation_authorized: bool,
     previous: Option<&str>,
     source_drv: Option<&str>,
     image_payload_paths: &[String],
@@ -198,7 +195,7 @@ pub(crate) async fn publish_to_registry_directory(
     message: Option<&str>,
     key: Option<&str>,
     key_id: Option<&str>,
-    external_provenance_signer: Option<&mut dyn ProvenanceSigner>,
+    _external_provenance_signer: Option<&mut dyn ProvenanceSigner>,
     printer: &Printer,
 ) -> Result<()> {
     let description = required_publish_metadata(description, "--description", "No description")?;
@@ -278,31 +275,6 @@ pub(crate) async fn publish_to_registry_directory(
             &platform,
         )?);
     }
-    let documentation = documentation_authorized
-        .then(|| {
-            publish_package_documentation(
-                pkg_name,
-                pkg_version,
-                &platform,
-                description,
-                homepage,
-                license,
-                &info,
-                source_info.as_ref(),
-            )
-        })
-        .transpose()?;
-    let mut local_provenance_signer;
-    let provenance_signer: &mut dyn ProvenanceSigner =
-        if let Some(signer) = external_provenance_signer {
-            validate_external_provenance_signer(dir, signer)?;
-            signer
-        } else {
-            local_provenance_signer =
-                resolve_package_provenance_signer(dir, name, signing_key.as_ref(), key_id)?;
-            &mut local_provenance_signer
-        };
-
     let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(&dir)?;
 
     printer.step(2, 4, "Writing package TOML...");
@@ -319,18 +291,7 @@ pub(crate) async fn publish_to_registry_directory(
         String::new()
     };
 
-    let documentation_attestation = documentation
-        .as_ref()
-        .map(|documentation| {
-            bind_documentation_provenance(
-                publish_documentation_attestation_meta(pkg_name, pkg_version, &platform, &info)?,
-                pkg_name,
-                &platform,
-                &documentation.metadata,
-            )
-        })
-        .transpose()?;
-    let new_content = build_package_toml_with_documentation(
+    let new_content = build_package_toml(
         &content,
         pkg_name,
         pkg_version,
@@ -344,46 +305,9 @@ pub(crate) async fn publish_to_registry_directory(
         previous,
         &image_infos,
         source_info.as_ref(),
-        documentation
-            .as_ref()
-            .map(|documentation| &documentation.metadata),
-        documentation_attestation.as_ref(),
     )?;
-    let provenance_artifact = if let (Some(documentation), Some(attestation)) =
-        (documentation.as_ref(), documentation_attestation.as_ref())
-    {
-        Some(
-            publish_documentation_provenance_artifact(
-                &name,
-                pkg_name,
-                pkg_version,
-                &platform,
-                &info,
-                source_info.as_ref(),
-                &documentation.metadata,
-                attestation,
-                provenance_signer,
-            )
-            .await?,
-        )
-    } else {
-        None
-    };
 
     std::fs::write(&toml_path, &new_content)?;
-    let provenance_path = if let Some(artifact) = &provenance_artifact {
-        let path = dir.join(&artifact.path);
-        let parent = path
-            .parent()
-            .with_context(|| format!("provenance path has no parent: {}", path.display()))?;
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating provenance directory {}", parent.display()))?;
-        std::fs::write(&path, &artifact.jsonl)
-            .with_context(|| format!("writing provenance artifact {}", path.display()))?;
-        Some(path)
-    } else {
-        None
-    };
 
     printer.step(3, 4, "Computing realisation graph...");
     let content_addressed = registry_content_addressed(&dir) && !no_ca;
@@ -400,41 +324,6 @@ pub(crate) async fn publish_to_registry_directory(
             );
         }
     }
-    let documentation_store_report = documentation
-        .as_ref()
-        .map(|documentation| {
-            write_store_files(
-                &dir,
-                &documentation.info.path,
-                content_addressed,
-                bless,
-                printer,
-            )
-            .with_context(|| {
-                format!(
-                    "writing store/ realisation graph for documentation {}",
-                    documentation.info.path
-                )
-            })
-        })
-        .transpose()?;
-    let transparency_log_path = if let Some(artifact) = &provenance_artifact {
-        let provenance_file_path = provenance_path
-            .as_ref()
-            .context("provenance artifact path missing before transparency log append")?;
-        Some(append_package_provenance_transparency_log(
-            &dir,
-            pkg_name,
-            pkg_version,
-            &platform,
-            &info,
-            source_info.as_ref(),
-            artifact,
-            provenance_file_path,
-        )?)
-    } else {
-        None
-    };
 
     printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
@@ -449,23 +338,6 @@ pub(crate) async fn publish_to_registry_directory(
         printer.kv(
             &format!("Image artifact graph {}", index + 1),
             &report.summary(),
-        );
-    }
-    if let (Some(documentation), Some(report)) = (&documentation, &documentation_store_report) {
-        printer.kv("Documentation", &documentation.info.path);
-        printer.kv("Documentation graph", &report.summary());
-    }
-    if let Some(artifact) = &provenance_artifact {
-        printer.kv("Provenance", &artifact.path);
-    }
-    if let Some(path) = &transparency_log_path {
-        printer.kv(
-            "Transparency log",
-            &path
-                .strip_prefix(&dir)
-                .unwrap_or(path)
-                .display()
-                .to_string(),
         );
     }
     if let Some(source_info) = &source_info {
@@ -492,13 +364,7 @@ pub(crate) async fn publish_to_registry_directory(
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
-        let mut staged_paths = vec![toml_path.clone(), dir.join(store::STORE_DIR)];
-        if let Some(path) = &provenance_path {
-            staged_paths.push(path.clone());
-        }
-        if let Some(path) = &transparency_log_path {
-            staged_paths.push(path.clone());
-        }
+        let staged_paths = vec![toml_path.clone(), dir.join(store::STORE_DIR)];
         commit_registry_paths(
             &dir,
             msg,
@@ -551,13 +417,6 @@ pub(crate) async fn publish_to_registry_directory(
                 "unchanged": store_report.unchanged,
                 "content_addressed": store_report.content_addressed,
             },
-            "provenance": provenance_artifact.as_ref().map(|artifact| artifact.path.as_str()),
-            "transparency_log": transparency_log_path.as_ref().map(|path| {
-                path.strip_prefix(&dir)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string()
-            }),
             "references": info.references,
             "source": source,
             "sysroot": sysroot,
@@ -619,7 +478,6 @@ pub(crate) async fn publish_canonical_release_entry(
         Some(license),
         Some(maintainer),
         false,
-        true,
         None,
         None,
         &[],
@@ -754,6 +612,8 @@ pub(crate) async fn publish_package_contract(
     validate_store_path_release_policy(&primary)?;
     let primary_nar_hash = canonical_nar_hash(&primary.nar_hash)?;
     let payload = resolve_store_artifact(&primary.path)?;
+    let source_info = introspect_store_path(&platform_entry.source_drv)?;
+    validate_store_path_release_policy(&source_info)?;
     let source = resolve_store_artifact(&platform_entry.source_drv)?;
     let (package_document, interface_bytes, selector_bindings) = resolve_release_projection(
         &projection.path,
@@ -765,13 +625,47 @@ pub(crate) async fn publish_package_contract(
         selectors,
     )?;
     let manifest_bytes = aos_ability_model::encode_canonical(&package_document)?;
-    aos_ability_validate::validate_ability_contract(
+    let checked = aos_ability_validate::validate_ability_contract(
         aos_ability_validate::AbilityContractData::PackageSource {
             manifest: &manifest_bytes,
             retained_interfaces: &interface_bytes,
         },
     )
     .context("validating the resolved package contract")?;
+    let aos_ability_validate::CheckedAbilityContract::PackageSource(checked) = checked else {
+        bail!("resolved package contract returned another contract family");
+    };
+    let ability_reference = aos_doc_model::PackageAbilityReference::from_checked_contract(&checked)
+        .context("deriving the signed package reference from the checked contract")?;
+    let documentation = publish_package_documentation(
+        package,
+        version,
+        platform,
+        &parsed.package.description,
+        parsed.package.homepage.as_deref(),
+        &parsed.package.license,
+        &primary,
+        Some(&source_info),
+        ability_reference,
+    )?;
+    let documentation_attestation = bind_documentation_provenance(
+        publish_documentation_attestation_meta(package, version, platform, &primary)?,
+        package,
+        platform,
+        &documentation.metadata,
+    )?;
+    let documentation_provenance = publish_documentation_provenance_artifact(
+        registry,
+        package,
+        version,
+        platform,
+        &primary,
+        Some(&source_info),
+        &documentation.metadata,
+        &documentation_attestation,
+        provenance_signer,
+    )
+    .await?;
 
     let package_digest = package_document.content_digest()?;
     let mut contract = PackageContractMeta {
@@ -808,6 +702,14 @@ pub(crate) async fn publish_package_contract(
         ability_provenance_statement(&coordinate, &contract, registry, provenance_signer.key_id())?;
     let provenance_jsonl =
         sign_statement_dsse_jsonl_external(&statement, provenance_signer).await?;
+    let content = record_package_documentation(
+        &content,
+        package,
+        version,
+        platform,
+        &documentation.metadata,
+        &documentation_attestation,
+    )?;
     let new_content = record_package_contract(
         &content,
         package,
@@ -838,6 +740,30 @@ pub(crate) async fn publish_package_contract(
             provenance_path.display()
         )
     })?;
+    let documentation_provenance_path = dir.join(&documentation_provenance.path);
+    let documentation_provenance_parent =
+        documentation_provenance_path.parent().with_context(|| {
+            format!(
+                "package reference provenance path has no parent: {}",
+                documentation_provenance_path.display()
+            )
+        })?;
+    fs::create_dir_all(documentation_provenance_parent).with_context(|| {
+        format!(
+            "creating package reference provenance directory {}",
+            documentation_provenance_parent.display()
+        )
+    })?;
+    fs::write(
+        &documentation_provenance_path,
+        &documentation_provenance.jsonl,
+    )
+    .with_context(|| {
+        format!(
+            "writing package reference provenance {}",
+            documentation_provenance_path.display()
+        )
+    })?;
     append_package_contract_transparency_log(
         dir,
         package,
@@ -850,6 +776,29 @@ pub(crate) async fn publish_package_contract(
     )?;
 
     let content_addressed = registry_content_addressed(dir);
+    write_store_files(
+        dir,
+        &documentation.info.path,
+        content_addressed,
+        false,
+        printer,
+    )
+    .with_context(|| {
+        format!(
+            "writing store/ realisation graph for package reference {}",
+            documentation.info.path
+        )
+    })?;
+    append_package_provenance_transparency_log(
+        dir,
+        package,
+        version,
+        platform,
+        &primary,
+        Some(&source_info),
+        &documentation_provenance,
+        &documentation_provenance_path,
+    )?;
     write_store_files(dir, &projection.path, content_addressed, false, printer).with_context(
         || format!("writing store/ realisation graph for package contract {store_path}"),
     )?;

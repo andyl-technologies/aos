@@ -8,8 +8,7 @@
 //!
 //! These snapshots are intentionally limited to registry and artifact listing
 //! data. The SPA does not interpret them as package option or method schemas;
-//! schema-aware views consume the separately verified package tooling response
-//! from Hub.
+//! schema-aware views consume the signed package reference served by Hub.
 //!
 //! ```json
 //! // web/config.json

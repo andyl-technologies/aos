@@ -12,9 +12,9 @@
 
 ## Summary
 
-AOS package documentation becomes a versioned, canonical, structured document
-produced from package and Nix module declarations. The trusted publisher stores
-that document as an independent content-addressed Nix store object, signs its
+AOS package documentation becomes part of a versioned, canonical package
+reference produced from package metadata and the checked package fixed point.
+The trusted publisher stores that reference as a content-addressed Nix store object, signs its
 identity alongside the package's other platform artifacts, and uploads its NAR
 and narinfo through the ordinary registry/cache publication path.
 
@@ -43,7 +43,7 @@ identity.
 ## Load-bearing decisions
 
 1. **Structured canonical JSON is the source format.** Its initial media/schema
-   identifier is `aos.package-documentation/v1+json`.
+   identifier is `aos.package-reference/v1+json`.
 2. **Every documentation document is a separate Nix store object.** The signed
    package platform entry associates that object with the exact package version
    and platform.
@@ -57,9 +57,9 @@ identity.
 5. **Installed-package docs are offline and generation-correct.** APM profiles
    retain the exact documentation store object selected with the package, so
    upgrade and rollback switch code and documentation together.
-6. **All schema-aware interfaces share one checked tooling response.** Hub,
-   `apm schema`, and LSP bind the canonical documentation object to the checked
-   ability reference and derive option and method schemas from that reference.
+6. **All schema-aware interfaces share one signed package reference.** Hub,
+   `apm schema`, and LSP consume its checked ability reference directly and
+   derive option and method views without serialized duplicate rows.
    The standalone registry Web surface remains a narrower distribution listing.
 7. **Handwritten package references are transitional.** They are removed only
    after the checked package projection reaches acceptance parity. Unique
@@ -85,9 +85,9 @@ identity.
 
 The completed implementation uses these repository seams:
 
-- `PlatformEntry` authenticates payload, package-contract, expose, and
-  documentation companion artifacts, including packages without a package
-  module.
+- `PlatformEntry` authenticates payload, package-contract, expose, and package
+  reference artifacts. The publisher emits the reference only after checking
+  the package module fixed point.
 - `PackageDocument.option_declarations` carries sorted option paths and stable
   type signatures. It is the checked machine-readable source used to derive the
   human and tooling document proposed here.

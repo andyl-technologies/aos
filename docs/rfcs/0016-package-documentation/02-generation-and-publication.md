@@ -22,10 +22,10 @@ canonical package ability projection
 resolved signed PackageDocument
                  |
                  v
-shared package validator + documentation projection
+shared package validator + package reference projection
                  |
                  v
-single-file Nix store documentation object
+single-file Nix store package reference object
                  |
                  v
 store realization + provenance + signed package TOML
@@ -57,7 +57,7 @@ untrusted `builtins.derivation`. It returns a closed Nix value to the trusted
 publisher.
 
 The publisher validates that package contract through the shared Rust package
-gate, derives the transient documentation view, enforces limits and
+gate, derives the signed package reference, enforces limits and
 cross-artifact invariants, and encodes canonical JSON. A trusted fixed builder
 or Nix store API then adds the single regular file to the store. Keeping
 materialization after validation preserves the evaluation boundary.
@@ -89,12 +89,12 @@ These constraints are normative:
 
 ## Signed metadata association
 
-`PlatformEntry` authenticates the documentation companion beside the package's
-single ability contract:
+`PlatformEntry` authenticates the package reference produced from the package's
+single checked ability contract:
 
 ```toml
 [versions.platforms.x86_64-linux.documentation]
-format = "aos.package-documentation/v1+json"
+format = "aos.package-reference/v1+json"
 store_path = "/nix/store/...-nginx-1.30.4-aos-docs.json"
 nar_hash = "sha256:..."
 nar_size = 123456
@@ -111,8 +111,9 @@ between package/version/platform and documentation identity. The store graph
 authenticates its realization. Provenance includes the documentation NAR as a
 named subject.
 
-The document repeats package/version/platform, semantic digest, and selected NAR
-digests for self-description. It does not repeat store paths or store-hash
+The reference repeats package/version/platform, semantic digest, and selected NAR
+digests for self-description, and retains the exact checked ability projection.
+It does not repeat store paths or store-hash
 components, which would create content-scanned store references. Publication
 cross-checks the repeated fields; the signed metadata remains the selection
 authority.

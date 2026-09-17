@@ -13,7 +13,8 @@
 //! This surface is deliberately a distribution listing. Its snapshots contain
 //! registry package and artifact coordinates only; they do not claim to be a
 //! package option or method schema. Schema-aware clients use the checked
-//! `PackageToolingResponse` served by APM, Hub, or the language server.
+//! signed `PackageDocumentationProjection` served by APM, Hub, or the language
+//! server.
 //!
 //! When [`WebConfig::spa_dist`] points at a built SPA dist (the output of
 //! `trunk build --release` in `crates/aos-registry-spa`), the generator

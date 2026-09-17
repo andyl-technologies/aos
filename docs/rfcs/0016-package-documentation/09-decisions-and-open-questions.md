@@ -5,7 +5,7 @@
 1. Documentation is generated from Nix/package declarations before Hub
    indexing.
 2. The canonical document is a closed, canonical JSON format, initially
-   `aos.package-documentation/v1+json`.
+   `aos.package-reference/v1+json`.
 3. The document is one independent content-addressed Nix store object selected
    by signed per-platform package metadata.
 4. The v1 NAR is uncompressed and contains exactly one non-executable regular
@@ -26,9 +26,9 @@
     secret values.
 12. Handwritten per-package reference pages are removed only after generated
     parity and migration of unique conceptual content.
-13. Package documentation and ability references remain separate authenticated
-    artifacts. A versioned tooling response binds their exact identities and
-    derives option and method schemas from the checked ability reference.
+13. Package metadata and the checked ability reference share one signed package
+    reference object. Option and method rows are derived at read time and are
+    never serialized as a parallel catalog.
 14. The standalone registry Web generator and SPA are distribution listings;
     they do not define or mirror package schema objects.
 
@@ -96,7 +96,7 @@ of truth. They may be cached or image-built from the authenticated document.
 
 ### Exact v1 limits
 
-Version 1 admits a canonical document of at most 4 MiB. The shared validator,
+Version 1 admits a canonical package reference of at most 12 MiB. The shared validator,
 NAR reader, publisher, native Hub, Worker, APM, and cache all apply the same
 closed-schema and bounded-collection policy before using the object.
 

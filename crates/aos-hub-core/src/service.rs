@@ -60,7 +60,7 @@ use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::keymap;
 use crate::lease::PublishLease;
 use crate::placement_read::{self, PlacementReadOutcome};
-use crate::ratelimit::{RateClass, RateDecision, RateLimiter, MAX_ORGS_PER_OWNER};
+use crate::ratelimit::{MAX_ORGS_PER_OWNER, RateClass, RateDecision, RateLimiter};
 use crate::reindex::Reindexer;
 use crate::storage_credential::{DatabaseStorageCredentialResolver, StorageCredentialResolver};
 use crate::surface_write::{PartTag, SurfaceWrite, SurfaceWriteProvider};
@@ -1105,19 +1105,6 @@ fn package_documentation_identity(
         release: locator.release.clone().unwrap_or_default(),
         verified_tag_oid: locator.verified_tag_oid.clone().unwrap_or_default(),
         release_snapshot_id: locator.release_snapshot_id.clone().unwrap_or_default(),
-    }
-}
-
-fn package_ability_reference_identity(
-    locator: &crate::db::PackageAbilityReferenceLocator,
-) -> pb::PackageAbilityReferenceIdentity {
-    pb::PackageAbilityReferenceIdentity {
-        registry_commit: locator.indexed_commit.clone(),
-        package: locator.package_name.clone(),
-        version: locator.package_version.clone(),
-        platform: locator.platform.clone(),
-        manifest_sha256: locator.manifest_sha256.clone(),
-        package_digest: locator.package_digest.clone(),
     }
 }
 
@@ -2353,7 +2340,7 @@ fn advance_multipart_sha256(
 
 #[cfg(test)]
 mod multipart_digest_tests {
-    use super::{advance_multipart_sha256, multipart_next_part, REGISTRY_PUBLICATION_PART_BYTES};
+    use super::{REGISTRY_PUBLICATION_PART_BYTES, advance_multipart_sha256, multipart_next_part};
     use crate::db::RegistryPublicationMultipartUploadRecord;
     use sha2::{Digest as _, Sha256};
 
@@ -11578,7 +11565,7 @@ impl RpcService {
         })
     }
 
-    /// Returns one canonical public ability reference derived during indexing.
+    /// Returns a compatibility ability view derived from the signed package reference.
     ///
     /// The response keeps the release contract's manifest and semantic package
     /// identities separate from package-authored documentation identity.
@@ -11588,8 +11575,8 @@ impl RpcService {
     ///
     /// # Errors
     ///
-    /// Returns registry visibility failures, not-found for an absent ability
-    /// companion, and internal errors for corrupted indexed reference bytes.
+    /// Returns registry visibility failures, not-found for an absent package
+    /// reference, and internal errors for corrupted signed reference bytes.
     pub async fn get_package_ability_reference(
         &self,
         auth: Option<&str>,
@@ -11597,67 +11584,46 @@ impl RpcService {
     ) -> Result<pb::GetPackageAbilityReferenceResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-        let release_commit = if req.release.is_empty() {
-            None
+        let documentation_locator = if req.release.is_empty() {
+            self.db
+                .resolve_package_documentation_locator(
+                    registry.id,
+                    &req.package,
+                    &req.version,
+                    &req.platform,
+                )
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("package reference"))?
         } else {
-            Some(
-                self.db
-                    .list_releases(registry.id)
-                    .await
-                    .map_err(RpcError::internal)?
-                    .into_iter()
-                    .find(|release| {
-                        release.semver == req.release || release.commit_oid == req.release
-                    })
-                    .map(|release| release.commit_oid)
-                    .ok_or_else(|| RpcError::not_found("release"))?,
-            )
+            self.db
+                .package_documentation_locator_at_release(
+                    registry.id,
+                    &req.release,
+                    &req.package,
+                    &req.version,
+                    &req.platform,
+                )
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("package reference"))?
         };
-        let locator = match release_commit.as_deref() {
-            Some(commit) => {
-                self.db
-                    .resolve_package_ability_reference_at_commit(
-                        registry.id,
-                        commit,
-                        &req.package,
-                        &req.version,
-                        &req.platform,
-                    )
-                    .await
-            }
-            None => {
-                self.db
-                    .resolve_package_ability_reference(
-                        registry.id,
-                        &req.package,
-                        &req.version,
-                        &req.platform,
-                    )
-                    .await
-            }
-        }
-        .map_err(RpcError::internal)?
-        .ok_or_else(|| RpcError::not_found("package ability reference"))?;
-        let supported_features =
-            aos_doc_model::ability_reference_supported_features().map_err(RpcError::internal)?;
-        let reference = aos_doc_model::PackageAbilityReference::from_canonical_json(
-            &locator.canonical_json,
-            &supported_features,
-        )
-        .map_err(RpcError::internal)?;
-        if reference.package.as_str() != locator.package_name
-            || reference.version != locator.package_version
-            || reference.manifest_sha256.to_string() != locator.manifest_sha256
-            || reference.package_digest.to_string() != locator.package_digest
-        {
-            return Err(RpcError::internal(anyhow::anyhow!(
-                "indexed package ability reference identity mismatch"
-            )));
-        }
+        let projection = self
+            .load_package_documentation_locator(registry.id, &documentation_locator)
+            .await
+            .map_err(RpcError::internal)?;
+        let reference = projection.ability_reference;
         let canonical_json = reference.canonical_json().map_err(RpcError::internal)?;
         let etag = hex::encode(Sha256::digest(&canonical_json));
         Ok(pb::GetPackageAbilityReferenceResponse {
-            identity: Some(package_ability_reference_identity(&locator)),
+            identity: Some(pb::PackageAbilityReferenceIdentity {
+                registry_commit: documentation_locator.indexed_commit,
+                package: documentation_locator.package_name,
+                version: documentation_locator.package_version,
+                platform: documentation_locator.platform,
+                manifest_sha256: reference.manifest_sha256.to_string(),
+                package_digest: reference.package_digest.to_string(),
+            }),
             canonical_json,
             etag,
         })
@@ -12066,9 +12032,9 @@ impl RpcService {
         ),
         RpcError,
     > {
-        let locator = self
+        let documentation_locator = self
             .db
-            .resolve_package_ability_reference_at_commit(
+            .package_documentation_locator_at_release(
                 registry_id,
                 registry_commit,
                 package,
@@ -12077,14 +12043,22 @@ impl RpcService {
             )
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("exact package ability reference"))?;
-        let supported =
-            aos_doc_model::ability_reference_supported_features().map_err(RpcError::internal)?;
-        let reference = aos_doc_model::PackageAbilityReference::from_canonical_json(
-            &locator.canonical_json,
-            &supported,
-        )
-        .map_err(RpcError::internal)?;
+            .ok_or_else(|| RpcError::not_found("exact package reference"))?;
+        let projection = self
+            .load_package_documentation_projection_locator(registry_id, &documentation_locator)
+            .await
+            .map_err(RpcError::internal)?;
+        let reference = projection.ability_reference;
+        let canonical_json = reference.canonical_json().map_err(RpcError::internal)?;
+        let locator = crate::db::PackageAbilityReferenceLocator {
+            indexed_commit: documentation_locator.indexed_commit,
+            package_name: documentation_locator.package_name,
+            package_version: documentation_locator.package_version,
+            platform: documentation_locator.platform,
+            manifest_sha256: reference.manifest_sha256.to_string(),
+            package_digest: reference.package_digest.to_string(),
+            canonical_json,
+        };
         Ok((locator, reference))
     }
 
@@ -12202,39 +12176,8 @@ impl RpcService {
         registry_id: i64,
         locator: &crate::db::PackageDocumentationLocator,
     ) -> anyhow::Result<aos_doc_model::PackageDocumentationProjection> {
-        let document = self
-            .load_package_documentation_locator(registry_id, locator)
-            .await?;
-        let ability_reference = if let Some(ability) = self
-            .db
-            .resolve_package_ability_reference_at_commit(
-                registry_id,
-                &locator.indexed_commit,
-                &locator.package_name,
-                &locator.package_version,
-                &locator.platform,
-            )
-            .await?
-        {
-            let supported = aos_doc_model::ability_reference_supported_features()?;
-            let reference = aos_doc_model::PackageAbilityReference::from_canonical_json(
-                &ability.canonical_json,
-                &supported,
-            )?;
-            anyhow::ensure!(
-                reference.package.as_str() == locator.package_name
-                    && reference.version == locator.package_version
-                    && ability.platform == locator.platform,
-                "package documentation and ability reference coordinates differ"
-            );
-            Some(reference)
-        } else {
-            None
-        };
-        Ok(aos_doc_model::PackageDocumentationProjection::new(
-            document,
-            ability_reference,
-        )?)
+        self.load_package_documentation_locator(registry_id, locator)
+            .await
     }
 
     /// Fetches and verifies a previously authorized indexed documentation reference.
@@ -12245,7 +12188,7 @@ impl RpcService {
         &self,
         registry_id: i64,
         locator: &crate::db::PackageDocumentationLocator,
-    ) -> anyhow::Result<aos_doc_model::PackageDocumentation> {
+    ) -> anyhow::Result<aos_doc_model::PackageDocumentationProjection> {
         let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
         crate::indexer::fetch_package_documentation(
             fetch.as_ref(),
@@ -12331,7 +12274,7 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("package documentation"))?;
         let identity = package_documentation_identity(&locator);
         let mut options = Vec::new();
-        for option in &document.options {
+        for option in &document.options() {
             if !req.prefix.is_empty() && !option.display_path.starts_with(&req.prefix) {
                 continue;
             }
@@ -12385,8 +12328,8 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("package documentation"))?;
-        let option = document
-            .options
+        let options = document.options();
+        let option = options
             .iter()
             .find(|option| option.path == requested)
             .ok_or_else(|| RpcError::not_found("package option"))?;
@@ -12484,7 +12427,7 @@ impl RpcService {
     /// # Errors
     ///
     /// Returns ordinary registry authorization and selection failures, or an
-    /// internal error if either authenticated source object fails verification.
+    /// internal error if the signed package reference fails verification.
     pub async fn get_package_documentation_schema(
         &self,
         auth: Option<&str>,
@@ -12493,10 +12436,8 @@ impl RpcService {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
 
-        let (documentation_locator, ability_locator, ability_reference) = if req.release.is_empty()
-        {
-            let documentation_locator = self
-                .db
+        let documentation_locator = if req.release.is_empty() {
+            self.db
                 .resolve_package_documentation_locator(
                     registry.id,
                     &req.package,
@@ -12505,72 +12446,29 @@ impl RpcService {
                 )
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("package documentation"))?;
-            let (ability_locator, ability_reference) = self
-                .load_exact_package_ability_reference(
-                    registry.id,
-                    &documentation_locator.indexed_commit,
-                    &documentation_locator.package_name,
-                    &documentation_locator.package_version,
-                    &documentation_locator.platform,
-                )
-                .await?;
-            (documentation_locator, ability_locator, ability_reference)
+                .ok_or_else(|| RpcError::not_found("package documentation"))?
         } else {
-            let release_commit = self
-                .db
-                .list_releases(registry.id)
-                .await
-                .map_err(RpcError::internal)?
-                .into_iter()
-                .find(|release| release.semver == req.release || release.commit_oid == req.release)
-                .map(|release| release.commit_oid)
-                .ok_or_else(|| RpcError::not_found("release"))?;
-            let (ability_locator, ability_reference) = self
-                .load_exact_package_ability_reference(
+            self.db
+                .package_documentation_locator_at_release(
                     registry.id,
-                    &release_commit,
+                    &req.release,
                     &req.package,
                     &req.version,
                     &req.platform,
                 )
-                .await?;
-            let documentation_locator = self
-                .db
-                .package_documentation_locator_at_release(
-                    registry.id,
-                    &req.release,
-                    &ability_locator.package_name,
-                    &ability_locator.package_version,
-                    &ability_locator.platform,
-                )
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("package documentation"))?;
-            (documentation_locator, ability_locator, ability_reference)
+                .ok_or_else(|| RpcError::not_found("package documentation"))?
         };
-        if documentation_locator.indexed_commit != ability_locator.indexed_commit
-            || documentation_locator.package_name != ability_locator.package_name
-            || documentation_locator.package_version != ability_locator.package_version
-            || documentation_locator.platform != ability_locator.platform
-            || ability_reference.manifest_sha256.to_string() != ability_locator.manifest_sha256
-            || ability_reference.package_digest.to_string() != ability_locator.package_digest
-        {
-            return Err(RpcError::internal(anyhow::anyhow!(
-                "package tooling source identities differ"
-            )));
-        }
-        let documentation = self
+        let projection = self
             .load_package_documentation_locator(registry.id, &documentation_locator)
             .await
             .map_err(RpcError::internal)?;
-        let tooling = aos_doc_model::PackageToolingResponse::new(documentation, ability_reference)
-            .map_err(RpcError::internal)?;
-        let canonical_json = tooling.canonical_json().map_err(RpcError::internal)?;
+        let canonical_json = projection.canonical_json().map_err(RpcError::internal)?;
         Ok(pb::GetPackageDocumentationSchemaResponse {
             documentation_identity: Some(package_documentation_identity(&documentation_locator)),
-            ability_reference_identity: Some(package_ability_reference_identity(&ability_locator)),
-            etag: tooling.response_sha256().map_err(RpcError::internal)?,
+            ability_reference_identity: None,
+            etag: projection.response_sha256().map_err(RpcError::internal)?,
             canonical_json,
         })
     }
@@ -12699,7 +12597,10 @@ impl RpcService {
                 download_url: if store_backed {
                     String::new()
                 } else {
-                    Self::image_object_url(download_base, &delivery.artifact_contract.document.object_key)?
+                    Self::image_object_url(
+                        download_base,
+                        &delivery.artifact_contract.document.object_key,
+                    )?
                 },
                 object_key: delivery.artifact_contract.document.object_key,
                 media_type: delivery.artifact_contract.document.media_type,
@@ -28235,9 +28136,9 @@ impl RpcService {
         request: crate::image_http::ImageHttpRequest<'_>,
     ) -> Result<RegistryServeOutcome, RpcError> {
         use crate::db::IndexedSystemImageObject;
-        use crate::image_http::{plan_image_response, ImageAccess, ImageHttpMetadata};
+        use crate::image_http::{ImageAccess, ImageHttpMetadata, plan_image_response};
         use axum::body::Body;
-        use axum::http::{header, HeaderName, HeaderValue, StatusCode};
+        use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 
         let object = self
             .db
@@ -28395,7 +28296,7 @@ impl RpcService {
         path: &str,
         read: crate::fetch::StreamedRead,
     ) -> Result<axum::response::Response, RpcError> {
-        use axum::http::{header, StatusCode};
+        use axum::http::{StatusCode, header};
         let ct = keymap::content_type(path);
         let cc = keymap::cache_control(path);
         let mut builder = axum::response::Response::builder();
@@ -36849,7 +36750,7 @@ fn resolve_endpoint_grant_generation(
 
 #[cfg(test)]
 mod endpoint_grant_generation_tests {
-    use super::{resolve_endpoint_grant_generation, RpcError};
+    use super::{RpcError, resolve_endpoint_grant_generation};
 
     #[test]
     fn resolves_cli_sentinel_and_preserves_stale_generation_fence() {
@@ -36936,7 +36837,7 @@ mod route_reservation_keyring_tests {
 #[cfg(test)]
 mod image_body_tests {
     use super::exact_image_body;
-    use axum::body::{to_bytes, Body, Bytes};
+    use axum::body::{Body, Bytes, to_bytes};
 
     #[tokio::test]
     async fn exact_signed_full_and_range_bodies_complete() {
@@ -37055,7 +36956,7 @@ mod publication_upload_limit_tests {
 
     #[test]
     fn replaceable_loose_object_bytes_must_match_their_git_identity() {
-        use aos_registry_surface::object::{encode_loose, hash_object, ObjectKind};
+        use aos_registry_surface::object::{ObjectKind, encode_loose, hash_object};
 
         let content = b"canonical registry object";
         let oid = hash_object(ObjectKind::Blob, content);
@@ -37076,14 +36977,14 @@ mod cache_upload_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use anyhow::{bail, Result};
+    use anyhow::{Result, bail};
     use base64::Engine as _;
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        collect_plan_pin_impacts, multipart_completion_matches, narinfo_store_hash,
-        parse_cache_narinfo, pb, render_nix_cache_info,
-        validate_signing_key_consumer_compatibility, RpcError, RpcService,
+        RpcError, RpcService, collect_plan_pin_impacts, multipart_completion_matches,
+        narinfo_store_hash, parse_cache_narinfo, pb, render_nix_cache_info,
+        validate_signing_key_consumer_compatibility,
     };
     use crate::auth::jwt::JwtKeys;
     use crate::auth::seal::SecretSealer;
@@ -38023,10 +37924,12 @@ mod cache_upload_tests {
         assert_eq!(first.uploads.len(), 2);
         assert_eq!(first.uploads[0].path, "nar/bulk-one.nar");
         assert_eq!(first.uploads[1].path, "nar/bulk-two.nar");
-        assert!(first
-            .uploads
-            .iter()
-            .all(|upload| upload.expires_at == 0 && !upload.upload_url.is_empty()));
+        assert!(
+            first
+                .uploads
+                .iter()
+                .all(|upload| upload.expires_at == 0 && !upload.upload_url.is_empty())
+        );
         assert_eq!(
             first
                 .uploads
@@ -38405,11 +38308,12 @@ mod cache_upload_tests {
             .await
             .unwrap();
         assert!(deleted.deleted);
-        assert!(db
-            .list_memberships_for("service_account", created.id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.list_memberships_for("service_account", created.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -38503,9 +38407,11 @@ mod cache_upload_tests {
             .domain
             .unwrap();
         assert_eq!(claimed.state, "pending");
-        assert!(claimed
-            .resource_version
-            .starts_with("1@domain-incarnation-"));
+        assert!(
+            claimed
+                .resource_version
+                .starts_with("1@domain-incarnation-")
+        );
         let replay = service
             .plan_claim_organization_domain(Some(&auth), claim_request)
             .await
@@ -38540,9 +38446,11 @@ mod cache_upload_tests {
             .domain
             .unwrap();
         assert_eq!(verified.state, "verified");
-        assert!(verified
-            .resource_version
-            .starts_with("2@domain-incarnation-"));
+        assert!(
+            verified
+                .resource_version
+                .starts_with("2@domain-incarnation-")
+        );
         assert!(verified.verified_at > 0);
         let replay = service
             .plan_verify_organization_domain(Some(&auth), verify_request)
@@ -38907,16 +38815,18 @@ mod cache_upload_tests {
             db.list_memberships_for("user", invitee).await.unwrap(),
             vec![(org.stable_id, "developer".to_string())]
         );
-        assert!(service
-            .accept_invitation(
-                Some(&invitee_auth),
-                pb::AcceptInvitationRequest {
-                    org_slug: org.slug,
-                    secret: created.secret,
-                },
-            )
-            .await
-            .is_err());
+        assert!(
+            service
+                .accept_invitation(
+                    Some(&invitee_auth),
+                    pb::AcceptInvitationRequest {
+                        org_slug: org.slug,
+                        secret: created.secret,
+                    },
+                )
+                .await
+                .is_err()
+        );
 
         let cancel_plan = service
             .plan_create_invitation(
@@ -39177,7 +39087,10 @@ mod cache_upload_tests {
                     VerifiedRegistryImageObject {
                         object_key: image.delivery.artifact_contract.document.object_key.clone(),
                         sha256: image.delivery.artifact_contract.document.sha256.clone(),
-                        byte_size: i64::try_from(image.delivery.artifact_contract.document.byte_size).unwrap(),
+                        byte_size: i64::try_from(
+                            image.delivery.artifact_contract.document.byte_size,
+                        )
+                        .unwrap(),
                         strong_etag: "test-version".into(),
                     },
                 ]
@@ -39245,9 +39158,11 @@ mod cache_upload_tests {
             panic!("signed image HEAD must return metadata response");
         };
         assert_eq!(head.status(), StatusCode::OK);
-        assert!(!head
-            .headers()
-            .contains_key(axum::http::header::CONTENT_RANGE));
+        assert!(
+            !head
+                .headers()
+                .contains_key(axum::http::header::CONTENT_RANGE)
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         let unsatisfied = service
@@ -39266,15 +39181,17 @@ mod cache_upload_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         let (service, registry, object_key, calls) = image_metadata_service("private").await;
-        assert!(service
-            .registry_serve(
-                ReadAuthorization::AuthorizationHeader(None),
-                &registry,
-                &object_key,
-                image_http_request(DeliveryMethod::Get, None),
-            )
-            .await
-            .is_err());
+        assert!(
+            service
+                .registry_serve(
+                    ReadAuthorization::AuthorizationHeader(None),
+                    &registry,
+                    &object_key,
+                    image_http_request(DeliveryMethod::Get, None),
+                )
+                .await
+                .is_err()
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
@@ -39321,16 +39238,19 @@ mod cache_upload_tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(service
-            .mint_presigned_cache_write(&cache, "nar/direct-preflight.nar", 4, 9)
-            .await
-            .unwrap()
-            .is_none());
-        assert!(db
-            .test_cache_write_ticket_for_key("nar/direct-preflight.nar")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            service
+                .mint_presigned_cache_write(&cache, "nar/direct-preflight.nar", 4, 9)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.test_cache_write_ticket_for_key("nar/direct-preflight.nar")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -39561,15 +39481,17 @@ mod cache_upload_tests {
             assert!(!error.message().contains("FOREIGN KEY"));
         }
 
-        assert!(RpcService::placement_delete_blocker_error(
-            SurfacePlacementBlockers {
-                object_presence: true,
-                publication: true,
-                ..Default::default()
-            },
-            true,
-        )
-        .is_none());
+        assert!(
+            RpcService::placement_delete_blocker_error(
+                SurfacePlacementBlockers {
+                    object_presence: true,
+                    publication: true,
+                    ..Default::default()
+                },
+                true,
+            )
+            .is_none()
+        );
         assert_eq!(
             RpcService::placement_delete_blocker_error(
                 SurfacePlacementBlockers {
@@ -39713,9 +39635,11 @@ mod cache_upload_tests {
                 pb::PinResolutionAction::Release as i32,
             ]
         );
-        assert!(!impact
-            .allowed_actions
-            .contains(&(pb::PinResolutionAction::Unspecified as i32)));
+        assert!(
+            !impact
+                .allowed_actions
+                .contains(&(pb::PinResolutionAction::Unspecified as i32))
+        );
     }
 
     #[test]

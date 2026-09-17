@@ -157,7 +157,7 @@ impl Server {
                                 let mut item = params.clone();
                                 item["documentation"] = json!({
                                     "kind": "markdown",
-                                    "value": option_markdown(loaded, option)
+                                    "value": option_markdown(loaded, &option)
                                 });
                                 item["data"] = json!({
                                     "package": loaded.projection.document.package.name,
@@ -244,13 +244,12 @@ impl Server {
         Some((text, line, character))
     }
 
-    fn options(&self) -> impl Iterator<Item = (&LoadedDocumentation, &OptionDocument)> {
+    fn options(&self) -> impl Iterator<Item = (&LoadedDocumentation, OptionDocument)> {
         self.documents.iter().flat_map(|loaded| {
             loaded
-                .tooling
-                .as_ref()
+                .projection
+                .options()
                 .into_iter()
-                .flat_map(|tooling| tooling.options.iter())
                 .map(move |option| (loaded, option))
         })
     }
@@ -262,17 +261,17 @@ impl Server {
         let matches = self
             .documents
             .iter()
-            .filter_map(|loaded| loaded.tooling.as_ref())
-            .filter(|tooling| {
-                package.is_none_or(|value| tooling.documentation.package.name == value)
-                    && version.is_none_or(|value| tooling.documentation.package.version == value)
-                    && platform.is_none_or(|value| tooling.documentation.package.platform == value)
+            .map(|loaded| &loaded.projection)
+            .filter(|projection| {
+                package.is_none_or(|value| projection.document.package.name == value)
+                    && version.is_none_or(|value| projection.document.package.version == value)
+                    && platform.is_none_or(|value| projection.document.package.platform == value)
             })
             .collect::<Vec<_>>();
         let [tooling] = matches.as_slice() else {
             bail!("tooling schema request must select exactly one authenticated package")
         };
-        serde_json::to_value(tooling).context("serializing checked package tooling response")
+        serde_json::to_value(tooling).context("serializing signed package reference")
     }
 
     fn completions(&self, text: &str, line: usize, character: usize) -> Value {
@@ -290,7 +289,7 @@ impl Server {
                     "detail": format!("{} — {}", option.type_signature, loaded.projection.document.package.name),
                     "documentation": {
                         "kind": "markdown",
-                        "value": option_markdown(loaded, option)
+                        "value": option_markdown(loaded, &option)
                     },
                     "filterText": option.display_path,
                     "insertText": option.display_path,
@@ -317,7 +316,7 @@ impl Server {
                 json!({
                     "contents": {
                         "kind": "markdown",
-                        "value": option_markdown(loaded, option)
+                        "value": option_markdown(loaded, &option)
                     }
                 })
             })
@@ -328,7 +327,7 @@ impl Server {
         let word = word_at_position(text, line, character, false)?;
         self.options()
             .find(|(_, option)| option_matches(option, &word) || option.display_path == word)
-            .and_then(|(_, option)| option.source.as_ref())
+            .and_then(|(_, option)| option.source)
             .map(|source| {
                 json!({
                     "uri": format!("aos-source:///{}", source.path.as_str()),
@@ -372,18 +371,19 @@ impl Server {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let actions = diagnostics
+        let option_paths = self
+            .options()
+            .map(|(_, option)| option.display_path)
+            .collect::<Vec<_>>();
+        let mut actions = diagnostics
             .iter()
             .filter(|diagnostic| {
                 diagnostic.get("code").and_then(Value::as_str) == Some("aos-unknown-option")
             })
             .filter_map(|diagnostic| {
                 let candidate = diagnostic.pointer("/data/candidate")?.as_str()?;
-                let replacement = nearest_option(
-                    self.options()
-                        .map(|(_, option)| option.display_path.as_str()),
-                    candidate,
-                )?;
+                let replacement =
+                    nearest_option(option_paths.iter().map(String::as_str), candidate)?;
                 Some(json!({
                     "title": format!("Replace with '{replacement}'"),
                     "kind": "quickfix",
@@ -396,19 +396,23 @@ impl Server {
                 }))
             })
             .collect::<Vec<_>>();
+        actions.extend(
+            self.ability_catalog
+                .code_actions(&diagnostics, text_document_uri(params).as_deref()),
+        );
         Value::Array(actions)
     }
 
     fn diagnostics(&self, text: &str) -> Vec<Value> {
         let roots: BTreeSet<String> = self
             .options()
-            .filter_map(|(_, option)| option.path.first())
+            .filter_map(|(_, option)| option.path.into_iter().next())
             .filter_map(|segment| match segment {
-                PathSegment::Literal { value } => Some(value.clone()),
+                PathSegment::Literal { value } => Some(value),
                 PathSegment::Wildcard { .. } => None,
             })
             .collect();
-        let options: Vec<&OptionDocument> = self.options().map(|(_, option)| option).collect();
+        let options: Vec<OptionDocument> = self.options().map(|(_, option)| option).collect();
         let mut diagnostics = Vec::new();
         for (line_number, line) in text.lines().enumerate() {
             let line_without_comment = line.split('#').next().unwrap_or_default();
@@ -520,10 +524,10 @@ fn option_markdown(loaded: &LoadedDocumentation, option: &OptionDocument) -> Str
 
 fn package_digest(loaded: &LoadedDocumentation) -> String {
     loaded
-        .tooling
-        .as_ref()
-        .map(|tooling| tooling.identity.ability_package_digest.to_string())
-        .unwrap_or_default()
+        .projection
+        .ability_reference
+        .package_digest
+        .to_string()
 }
 
 pub(super) fn markdown_code_span(value: &str) -> String {
@@ -833,7 +837,7 @@ mod tests {
             requirements: Vec::new(),
             handlers: Vec::new(),
         };
-        LoadedDocumentation::from_parts(document(), Some(reference))
+        LoadedDocumentation::from_parts(document(), reference)
             .expect("checked documentation projection")
     }
 
@@ -843,8 +847,6 @@ mod tests {
         let expected_package_digest = loaded
             .projection
             .ability_reference
-            .as_ref()
-            .unwrap()
             .package_digest
             .to_string();
         let server = Server::new(vec![loaded]).unwrap();
@@ -936,13 +938,7 @@ mod tests {
     #[test]
     fn ability_catalog_rejects_an_invalid_authenticated_reference() {
         let mut loaded = loaded_document();
-        loaded
-            .tooling
-            .as_mut()
-            .unwrap()
-            .ability_reference
-            .version
-            .clear();
+        loaded.projection.ability_reference.version.clear();
 
         let error = match AbilityCatalog::new(&[loaded]) {
             Ok(_) => panic!("invalid ability reference unexpectedly entered the catalog"),
@@ -954,7 +950,7 @@ mod tests {
     #[test]
     fn schema_request_returns_the_shared_checked_tooling_response() {
         let loaded = loaded_document();
-        let expected = serde_json::to_value(loaded.tooling.as_ref().unwrap()).unwrap();
+        let expected = serde_json::to_value(&loaded.projection).unwrap();
         let server = Server::new(vec![loaded]).unwrap();
 
         let response = server
@@ -966,9 +962,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response, expected);
-        assert_eq!(response["schema"], "aos.package-tooling-response/v1");
-        assert_eq!(response["options"].as_array().map(Vec::len), Some(1));
-        assert_eq!(response["methods"].as_array().map(Vec::len), Some(3));
+        assert_eq!(response["schema"], "aos.package-reference/v1");
+        assert!(response.get("options").is_none());
+        assert!(response.get("methods").is_none());
     }
 
     #[test]
@@ -976,11 +972,10 @@ mod tests {
         let first = loaded_document();
         let mut second = loaded_document();
         second.projection.document.package.name = "fixture-second".to_string();
-        let second_reference = second.projection.ability_reference.as_mut().unwrap();
+        let second_reference = &mut second.projection.ability_reference;
         second_reference.package = LocalKey::new("fixture-second").unwrap();
         second_reference.version = "2`\n[link](https://example.invalid)".to_string();
-        let second_tooling = second.tooling.as_mut().unwrap();
-        second_tooling.ability_reference = second_reference.clone();
+        second.projection.document.package.version = second_reference.version.clone();
         let server = Server::new(vec![first.clone(), second]).unwrap();
 
         let completions = server.completions("test.life", 0, 9);
@@ -1005,7 +1000,7 @@ mod tests {
     #[test]
     fn ability_editor_resolves_the_exact_authenticated_reference_and_virtual_document() {
         let loaded = loaded_document();
-        let expected_reference = loaded.projection.ability_reference.clone().unwrap();
+        let expected_reference = loaded.projection.ability_reference.clone();
         let documents = vec![loaded];
         let catalog = AbilityCatalog::new(&documents).unwrap();
 
@@ -1039,6 +1034,100 @@ mod tests {
     }
 
     #[test]
+    fn ability_diagnostics_are_static_exact_and_offer_standard_workspace_edits() {
+        let loaded = loaded_document();
+        let key = loaded.projection.ability_reference.exports[0]
+            .interface
+            .clone();
+        let server = Server::new(vec![loaded]).unwrap();
+
+        let unknown = server.diagnostics(
+            r#"lib.abilities.request { interface = "aos.missing"; abi = 1; descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; request = config.value; }"#,
+        );
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(unknown[0]["code"], "aos-ability-missing-reference");
+        assert!(
+            unknown[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("loaded authenticated ability catalog"))
+        );
+
+        let partial = server.diagnostics(
+            r#"lib.abilities.request { interface = "test.lifecycle"; abi = 1; request = config.value; }"#,
+        );
+        assert!(partial.is_empty());
+
+        let dynamic = server.diagnostics(&format!(
+            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = config.unit; }}; }}",
+            key.name, key.abi, key.descriptor,
+        ));
+        assert!(dynamic.is_empty());
+
+        let shadowable_literal = server.diagnostics(&format!(
+            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = 1; extra = true; }}; }}",
+            key.name, key.abi, key.descriptor,
+        ));
+        assert!(shadowable_literal.is_empty());
+
+        let invalid_literal = server.diagnostics(&format!(
+            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = 1; extra = 2; }}; }}",
+            key.name, key.abi, key.descriptor,
+        ));
+        assert!(invalid_literal.len() >= 2);
+        assert!(invalid_literal.iter().all(|diagnostic| {
+            diagnostic["code"] == "aos-ability-value-type-mismatch"
+                && diagnostic
+                    .pointer("/data/contractDiagnostic/code")
+                    .is_some()
+        }));
+
+        let mismatched = server.diagnostics(&format!(
+            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"sha256:{}\"; request = config.value; }}",
+            key.name,
+            key.abi,
+            "0".repeat(64),
+        ));
+        assert_eq!(mismatched.len(), 1);
+        assert_eq!(mismatched[0]["code"], "aos-ability-interface-mismatch");
+        let actions = server.code_actions(&json!({
+            "textDocument": { "uri": "file:///workspace/configuration.nix" },
+            "context": { "diagnostics": mismatched }
+        }));
+        assert_eq!(actions.as_array().unwrap().len(), 1);
+        assert!(actions[0].get("command").is_none());
+        assert_eq!(
+            actions[0]["edit"]["changes"]["file:///workspace/configuration.nix"][0]["newText"],
+            format!("\"{}\"", key.descriptor)
+        );
+    }
+
+    #[test]
+    fn contextual_ability_completion_uses_the_authenticated_request_schema() {
+        let documents = vec![loaded_document()];
+        let catalog = AbilityCatalog::new(&documents).unwrap();
+        let key = documents[0].projection.ability_reference.exports[0]
+            .interface
+            .clone();
+        let nested = format!(
+            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{  }}; }}",
+            key.name, key.abi, key.descriptor,
+        );
+        let cursor = nested.rfind("{  }").unwrap() + 2;
+        assert!(
+            catalog
+                .contextual_completions(&nested, 0, cursor)
+                .is_some_and(|items| items.iter().any(|item| item["label"] == "unit"))
+        );
+
+        let value = format!(
+            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = \"demo.service\"; }}; }}",
+            key.name, key.abi, key.descriptor,
+        );
+        let cursor = value.find("demo.service").unwrap() + 2;
+        assert!(catalog.contextual_completions(&value, 0, cursor).is_none());
+    }
+
+    #[test]
     fn editor_uses_the_cross_frontend_golden_graph_slice() -> Result<(), Box<dyn std::error::Error>>
     {
         let fixture = aos_ability_inspect::test_support::reference_inspection_fixture()?;
@@ -1047,8 +1136,7 @@ mod tests {
         let mut loaded = loaded_document();
         loaded.projection.document.package.name = input.reference().package.as_str().to_string();
         loaded.projection.document.package.version = input.reference().version.clone();
-        loaded.projection.ability_reference = Some(input.reference().clone());
-        loaded.tooling.as_mut().unwrap().ability_reference = input.reference().clone();
+        loaded.projection.ability_reference = input.reference().clone();
         let documents = vec![loaded];
         let catalog = AbilityCatalog::new(&documents)?;
 
@@ -1071,8 +1159,8 @@ mod tests {
             "Clarifies usage without changing configuration meaning.".to_string();
 
         assert_ne!(
-            before.projection.document.document_sha256().unwrap(),
-            after.projection.document.document_sha256().unwrap()
+            before.projection.document_sha256().unwrap(),
+            after.projection.document_sha256().unwrap()
         );
         assert_eq!(
             before.projection.document.identity.semantic_schema_sha256,
@@ -1086,11 +1174,7 @@ mod tests {
             before.projection.ability_reference,
             after.projection.ability_reference
         );
-        let reference = before
-            .projection
-            .ability_reference
-            .as_ref()
-            .ok_or("test ability reference is absent")?;
+        let reference = &before.projection.ability_reference;
         let query = aos_ability_inspect::GraphQuery::new(
             [aos_ability_inspect::NodeKey::Package(
                 reference.manifest_sha256,

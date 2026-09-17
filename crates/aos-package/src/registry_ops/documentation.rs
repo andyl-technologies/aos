@@ -7,7 +7,7 @@ use crate::types::{DocumentationArtifactMeta, validate_documentation_artifact_me
 use anyhow::{Context, Result, bail};
 use aos_doc_model::{
     DOCUMENT_FORMAT, DOCUMENT_SCHEMA, DocumentationIdentity, DocumentedPackage,
-    PackageDocumentation,
+    PackageAbilityReference, PackageDocumentation, PackageDocumentationProjection,
 };
 use std::fs;
 use std::fs::OpenOptions;
@@ -28,6 +28,7 @@ pub(in crate::registry_ops) fn publish_package_documentation(
     license: &str,
     runtime: &StorePathInfo,
     source: Option<&StorePathInfo>,
+    ability_reference: PackageAbilityReference,
 ) -> Result<PublishedDocumentation> {
     let mut document = PackageDocumentation {
         schema: DOCUMENT_SCHEMA.to_string(),
@@ -53,9 +54,11 @@ pub(in crate::registry_ops) fn publish_package_documentation(
     document
         .verify_semantic_schema_sha256()
         .context("verifying package documentation semantic schema digest")?;
-    let bytes = document
+    let projection = PackageDocumentationProjection::new(document, ability_reference)
+        .context("constructing the signed package reference")?;
+    let bytes = projection
         .canonical_json()
-        .context("encoding canonical package documentation")?;
+        .context("encoding the canonical package reference")?;
     let document_sha256 = format!("sha256:{}", sha256_hex(&bytes));
 
     let directory = tempfile::tempdir().context("creating documentation materialization input")?;
@@ -113,7 +116,7 @@ pub(in crate::registry_ops) fn publish_package_documentation(
         nar_size: info.nar_size,
         document_sha256,
         document_size: bytes.len() as u64,
-        semantic_schema_sha256: document.identity.semantic_schema_sha256,
+        semantic_schema_sha256: projection.document.identity.semantic_schema_sha256,
         references: Vec::new(),
     };
     validate_documentation_artifact_meta(&metadata)

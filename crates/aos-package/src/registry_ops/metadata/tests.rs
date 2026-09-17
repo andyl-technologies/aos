@@ -1,8 +1,7 @@
 //! Tests for package catalog TOML construction and platform metadata recording.
 
 use super::{
-    build_package_toml, build_package_toml_with_documentation, record_named_output,
-    record_package_contract,
+    build_package_toml, record_named_output, record_package_contract, record_package_documentation,
 };
 use crate::registry_ops::provenance::bind_documentation_provenance;
 use crate::registry_ops::store_paths::StorePathInfo;
@@ -234,7 +233,7 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
     );
 }
 #[test]
-fn build_package_toml_binds_documentation_as_a_signed_platform_artifact() {
+fn checked_package_reference_is_recorded_as_one_signed_platform_artifact() {
     let info = StorePathInfo {
         path: "/nix/store/0000000000000000000000000000000d-firewall-1".to_string(),
         nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -265,7 +264,7 @@ fn build_package_toml_binds_documentation_as_a_signed_platform_artifact() {
         ..AttestationMeta::default()
     };
 
-    let content = build_package_toml_with_documentation(
+    let content = build_package_toml(
         "",
         "firewall",
         "1",
@@ -279,10 +278,20 @@ fn build_package_toml_binds_documentation_as_a_signed_platform_artifact() {
         None,
         &[],
         None,
-        Some(&documentation),
-        Some(&attestation),
     )
-    .expect("render documentation-bearing package metadata");
+    .expect("render package metadata");
+    let documented_attestation =
+        bind_documentation_provenance(attestation, "firewall", "x86_64-linux", &documentation)
+            .expect("bind documentation provenance");
+    let content = record_package_documentation(
+        &content,
+        "firewall",
+        "1",
+        "x86_64-linux",
+        &documentation,
+        &documented_attestation,
+    )
+    .expect("record checked package reference");
 
     let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
         .expect("parse package metadata")
@@ -294,16 +303,6 @@ fn build_package_toml_binds_documentation_as_a_signed_platform_artifact() {
             .iter()
             .any(|feature| feature == FEATURE_PACKAGE_DOCUMENTATION_V1)
     );
-    let documented_attestation = bind_documentation_provenance(
-        attestation,
-        "firewall",
-        "x86_64-linux",
-        parsed
-            .documentation
-            .as_ref()
-            .expect("parsed documentation metadata"),
-    )
-    .expect("bind documentation provenance");
     assert_eq!(
         parsed.attestation.provenance,
         documented_attestation.provenance

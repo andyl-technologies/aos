@@ -54,32 +54,25 @@ between native SQL backends and Worker D1.
 
 ## Terminology
 
-**Documentation document**
-: The canonical JSON value describing one package version/platform's authored
-  metadata and independent integrity identity. It is not mutated to carry the
-  package ability contract.
+**Package reference**
+: The canonical signed JSON value for one package version/platform. It retains
+  authored package metadata and the `PackageAbilityReference` derived from the
+  checked package fixed point. Option and method rows are disposable views
+  derived when read and are never stored inside the reference.
 
-**Package tooling response**
-: The versioned, checked response that binds one authenticated documentation
-  object to one checked `PackageAbilityReference` and mechanically derives its
-  option and exported-method schemas. It is a disposable projection, not a
-  third authored package artifact.
-
-**Documentation object**
+**Package reference object**
 : The content-addressed Nix store regular-file object whose bytes are the
-  canonical documentation document.
+  canonical package reference.
 
-**Documentation artifact reference**
-: Signed package metadata that binds a documentation object store path, NAR
+**Package reference artifact reference**
+: Signed package metadata that binds a package reference object store path, NAR
   identity, content digest, format, and limits to a platform entry.
 
 **Semantic schema digest**
-: The documentation object's digest over its own configuration-independent
-  semantic fields. Option and method identity comes from the separately checked
-  ability manifest and package digest; the tooling response binds all of these
-  identities rather than pretending one documentation digest covers both
-  artifacts. Editorial prose is excluded from the documentation semantic
-  digest.
+: The package metadata digest over its configuration-independent semantic
+  fields. Ability semantics retain their checked manifest and package digests
+  inside the same signed reference. Editorial prose is excluded from the
+  semantic schema digest.
 
 **Search projection**
 : Disposable SQL rows derived deterministically from authenticated documents.
@@ -93,11 +86,10 @@ between native SQL backends and Worker D1.
 
 ### One authenticated authority
 
-For a selected `registry/package/version/platform`, authored package prose and
-metadata come from the documentation object named by that signed platform
-entry. Option and method schemas come only from the checked ability reference
-for the same signed coordinate. The versioned tooling response binds both
-identities and recomputes all schema rows. Hub rows, rendered pages, browser
+For a selected `registry/package/version/platform`, authored package prose,
+metadata, and the checked ability reference come from the single package
+reference object named by that signed platform entry. Readers recompute option
+and method rows directly from its checked ability reference. Hub rows, rendered pages, browser
 caches, CLI caches, generated man pages, and LSP caches are discardable
 derivatives.
 

@@ -10,7 +10,6 @@
 //! ```
 
 use crate::registry_ops::images::PublishedImage;
-use crate::registry_ops::provenance::bind_documentation_provenance;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::types::{
     AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ATTESTATION_V1,
@@ -27,7 +26,7 @@ use std::collections::{BTreeSet, HashSet};
 /// unrelated versions and platforms. Panics if an existing `versions` array
 /// entry is not a table.
 #[allow(clippy::too_many_arguments)]
-pub(in crate::registry_ops) fn build_package_toml_with_documentation(
+pub(in crate::registry_ops) fn build_package_toml(
     existing: &str,
     name: &str,
     version: &str,
@@ -41,8 +40,6 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
     previous: Option<&str>,
     image_infos: &[PublishedImage],
     source_info: Option<&StorePathInfo>,
-    documentation: Option<&DocumentationArtifactMeta>,
-    documentation_attestation: Option<&AttestationMeta>,
 ) -> Result<String> {
     let desc = description.context("package description is required")?;
     let lic = license.context("package license is required")?;
@@ -61,57 +58,6 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
             .context("new sysroot platform metadata is not a TOML table")?;
         record_image_artifact_contract_gate(table)?;
     }
-    if let Some(documentation) = documentation {
-        let table = platform_table
-            .as_table_mut()
-            .context("new package platform metadata is not a TOML table")?;
-        record_documentation_platform_fields(table, documentation)?;
-    }
-    if let Some(attestation) = documentation_attestation {
-        let table = platform_table
-            .as_table_mut()
-            .context("new package platform metadata is not a TOML table")?;
-        record_attestation_platform_fields(table, attestation)?;
-    }
-    if let Some(documentation) = documentation {
-        let table = platform_table
-            .as_table_mut()
-            .context("new package platform metadata is not a TOML table")?;
-        let measurement = table
-            .get("measurement")
-            .and_then(toml::Value::as_str)
-            .context("documented package platform is missing its measurement")?;
-        let attestation = bind_documentation_provenance(
-            AttestationMeta {
-                root_digest: table
-                    .get("root_digest")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_string),
-                root_hash: table
-                    .get("root_hash")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_string),
-                root_hash_sig: table
-                    .get("root_hash_sig")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_string),
-                provenance: None,
-                measurement: Some(measurement.to_string()),
-            },
-            name,
-            platform,
-            documentation,
-        )?;
-        table.insert(
-            "provenance".into(),
-            toml::Value::String(
-                attestation
-                    .provenance
-                    .context("documented attestation is missing provenance")?,
-            ),
-        );
-    }
-
     if existing.is_empty() {
         let mut package = toml::map::Map::new();
         package.insert("name".into(), toml::Value::String(name.to_string()));
@@ -391,6 +337,41 @@ pub(crate) fn record_package_contract(
     toml::to_string_pretty(&document).context("serializing package TOML with package contract")
 }
 
+/// Records the one signed package reference beside its package contract.
+///
+/// # Errors
+///
+/// Returns an error when the package coordinate is absent or either the
+/// reference locator or its provenance metadata is invalid.
+pub(crate) fn record_package_documentation(
+    existing: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    documentation: &DocumentationArtifactMeta,
+    attestation: &AttestationMeta,
+) -> Result<String> {
+    let mut document: toml::Value =
+        toml::from_str(existing).context("parsing package TOML for package reference")?;
+    let platform_entry = document
+        .get_mut("versions")
+        .and_then(toml::Value::as_array_mut)
+        .and_then(|versions| {
+            versions.iter_mut().find(|candidate| {
+                candidate.get("version").and_then(toml::Value::as_str) == Some(version)
+            })
+        })
+        .and_then(|version| version.get_mut("platforms"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|platforms| platforms.get_mut(platform))
+        .and_then(toml::Value::as_table_mut)
+        .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
+
+    record_documentation_platform_fields(platform_entry, documentation)?;
+    record_attestation_platform_fields(platform_entry, attestation)?;
+    toml::to_string_pretty(&document).context("serializing package TOML with package reference")
+}
+
 fn merge_feature_gate(
     table: &mut toml::map::Map<String, toml::Value>,
     key: &str,
@@ -465,42 +446,6 @@ fn record_image_artifact_contract_gate(
     merge_minimum_format(&mut reference_gate, "sysroot references")?;
     platform.insert("references".into(), toml::Value::Table(reference_gate));
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-fn build_package_toml(
-    existing: &str,
-    name: &str,
-    version: &str,
-    platform: &str,
-    info: &StorePathInfo,
-    description: Option<&str>,
-    homepage: Option<&str>,
-    license: Option<&str>,
-    maintainer: Option<&str>,
-    sysroot: bool,
-    previous: Option<&str>,
-    image_infos: &[PublishedImage],
-    source_info: Option<&StorePathInfo>,
-) -> Result<String> {
-    build_package_toml_with_documentation(
-        existing,
-        name,
-        version,
-        platform,
-        info,
-        description,
-        homepage,
-        license,
-        maintainer,
-        sysroot,
-        previous,
-        image_infos,
-        source_info,
-        None,
-        None,
-    )
 }
 
 fn package_platform_table(
