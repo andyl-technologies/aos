@@ -65,10 +65,10 @@ budget:
 {
   aos.journald = {
     storage = "persistent";
-    maxRetentionSec = "14d";
-    maxUse = "1G";
-    systemMaxFileSize = "100M";
-    rateLimitInterval = "30s";
+    maxRetentionSeconds = 1209600;
+    maxUseBytes = 1073741824;
+    maxFileSizeBytes = 104857600;
+    rateLimitIntervalMillis = 30000;
     rateLimitBurst = 20000;
   };
 }
