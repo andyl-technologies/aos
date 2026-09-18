@@ -181,7 +181,7 @@ fn artifact_collection_includes_module_and_state_format_semantic_identities() {
 }
 
 #[test]
-fn legacy_package_omits_state_format_and_round_trips_exactly() {
+fn stateless_package_omits_state_format_and_round_trips_exactly() {
     let mut package = stateful_package();
     package
         .required_features
@@ -200,7 +200,7 @@ fn legacy_package_omits_state_format_and_round_trips_exactly() {
     );
 
     let decoded = super::decode_package_manifest(&manifest)
-        .expect("the package reader retains the legacy absent-field contract");
+        .expect("the package reader accepts a stateless provider");
     assert_eq!(decoded.implementation.providers[0].state_format, None);
     assert_eq!(encode_canonical(&decoded).unwrap(), manifest);
 }
