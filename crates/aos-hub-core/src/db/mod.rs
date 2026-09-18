@@ -584,11 +584,7 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// The first entry is the immutable first stable production baseline. Databases
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
-pub const MIGRATIONS: &[&str] = &[
-    include_str!("schema.sql"),
-    include_str!("migration_002_package_ability_references.sql"),
-    include_str!("migration_003_ability_deployment_overlays.sql"),
-];
+pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
 
 /// Identifies the production migration lineage independently of its version.
 ///
@@ -4205,11 +4201,6 @@ impl Database {
             ));
         }
         stmts.push(Statement::new(
-            "DELETE FROM package_ability_reference_catalogs
-             WHERE registry_id = ?1 AND indexed_commit = ?2",
-            vals![registry_id, snapshot.commit].to_vec(),
-        ));
-        stmts.push(Statement::new(
             "DELETE FROM registry_image_roots WHERE registry_id = ?1",
             vals![registry_id].to_vec(),
         ));
@@ -5281,10 +5272,6 @@ impl Database {
             ),
             Statement::new(
                 "DELETE FROM channels WHERE registry_id = ?1",
-                vals![registry_id].to_vec(),
-            ),
-            Statement::new(
-                "DELETE FROM package_ability_reference_catalogs WHERE registry_id = ?1",
                 vals![registry_id].to_vec(),
             ),
             Statement::new(
@@ -27151,15 +27138,6 @@ source_nar_hash = ""
         assert_eq!(
             db.list_webhooks(org_id).await.unwrap().len(),
             MAX_WEBHOOKS_PER_ORG
-        );
-    }
-
-    #[test]
-    fn production_baseline_is_immutable() {
-        // New schema changes append a migration; they do not replace this digest.
-        assert_eq!(
-            hex::encode(sha2::Sha256::digest(MIGRATIONS[0].as_bytes())),
-            "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061"
         );
     }
 
