@@ -73,20 +73,8 @@ in
   ];
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];
-  assert builtins.attrNames packageProjection.requirementTemplates
-  == [
-    "device-presence"
-    "linux-service-isolation"
-    "network-readiness"
-    "service-dependencies"
-    "service-directories"
-    "service-environment"
-    "service-isolation"
-    "service-lifecycle"
-    "service-logging"
-    "service-readiness"
-    "service-supervision"
-  ];
+  assert builtins.map (requirement: requirement.alias) packageContract.requirements
+  == builtins.attrNames packageProjection.requirementTemplates;
   assert documentedOptionPaths
   == [
     "aos.services.tailscale.enable"

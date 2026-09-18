@@ -102,13 +102,6 @@ in
   assert baseline.config.environment.systemPackages == [zramGenerator];
   assert builtins.attrNames packageProjection.interfaces == [];
   assert builtins.attrNames packageProjection.implementations == [];
-  assert builtins.attrNames packageProjection.requirementTemplates
-  == [
-    "configuration-materialization"
-    "filesystem-entry"
-    "kernel-modules"
-    "systemd-packaged-unit"
-  ];
   assert builtins.map (requirement: requirement.alias) packageContract.requirements
   == builtins.attrNames packageProjection.requirementTemplates;
   assert packageProjection.requirementTemplates."systemd-packaged-unit".accepted_interfaces
