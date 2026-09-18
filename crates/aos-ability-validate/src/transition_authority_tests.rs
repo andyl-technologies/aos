@@ -720,7 +720,7 @@ fn adoption_authority_fixture() -> AuthorityFixture {
     let document = TransitionAuthorizationDocument {
         schema: TransitionAuthorizationDocument::SCHEMA.to_string(),
         required_features: vec![
-            RequiredFeature::new(PROVIDER_STATE_ADOPTION_V1).expect("adoption feature"),
+            RequiredFeature::new(PROVIDER_STATE_ADOPTION_FEATURE).expect("adoption feature"),
         ],
         desired_planning,
         current_planning,
@@ -1044,7 +1044,7 @@ fn multi_export_owner_fixture(
                 .expect("effect feature"),
             RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
                 .expect("state-format feature"),
-            RequiredFeature::new(PROVIDER_STATE_ADOPTION_V1).expect("adoption feature"),
+            RequiredFeature::new(PROVIDER_STATE_ADOPTION_FEATURE).expect("adoption feature"),
         ]),
         fixture.interfaces,
     )

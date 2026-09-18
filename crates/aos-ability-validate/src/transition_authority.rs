@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
-    AccessMode, Binding, BindingId, PROVIDER_STATE_ADOPTION_V1, PackageDocument, PlanId,
+    AccessMode, Binding, BindingId, PROVIDER_STATE_ADOPTION_FEATURE, PackageDocument, PlanId,
     ProviderAdoptionEndpoint, ProviderImplementation, ResourceLifetime, RevisionId,
     TransitionAuthorizationDocument, VersionedDocument, encode_canonical,
 };
@@ -211,7 +211,7 @@ fn validate_document(
             "persistent deletions are not in strict canonical resource order".to_string(),
         ));
     }
-    let adoption_feature = aos_ability_model::RequiredFeature::new(PROVIDER_STATE_ADOPTION_V1)
+    let adoption_feature = aos_ability_model::RequiredFeature::new(PROVIDER_STATE_ADOPTION_FEATURE)
         .map_err(|error| TransitionAuthorityError::InvalidDocument(error.to_string()))?;
     let declares_adoption = document.required_features.contains(&adoption_feature);
     if declares_adoption != !document.provider_adoptions.is_empty() {

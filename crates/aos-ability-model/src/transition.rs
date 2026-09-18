@@ -17,8 +17,8 @@ use crate::{
     VersionedDocument,
 };
 
-/// Names the version-1 explicit provider-state adoption semantics.
-pub const PROVIDER_STATE_ADOPTION_V1: &str = "provider-state-adoption-v1";
+/// Names the required semantic feature for explicit provider-state adoption.
+pub const PROVIDER_STATE_ADOPTION_FEATURE: &str = "provider-state-adoption-v1";
 
 /// Pins one side of an explicit provider-state ownership transfer.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
