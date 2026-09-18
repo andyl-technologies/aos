@@ -38,6 +38,25 @@
   };
   sourceRoot = builtins.head sourceEvidence.sourcePaths;
   testing = import ../../lib/testing {inherit pkgs lib;};
+  containerReport = reportOnly:
+    (import ../../lib/testing/qualification-container.nix {
+      inherit lib;
+      pkgs =
+        pkgs
+        // {
+          # A guest report producer must not depend on the host response binder.
+          aos =
+            if reportOnly
+            then throw "guest report uses aos"
+            else pkgs.aos;
+          writeShellScriptBin = _: script: script;
+        };
+    }) {
+      name = "container-report-fixture";
+      identity = "container-report-fixture";
+      inherit reportOnly;
+    };
+
   declarativeProbe = testing.mkQualificationPackageProbe {
     name = "fixture";
     spec = {
@@ -243,6 +262,10 @@
       true))
     .success;
 in
+  assert lib.hasInfix "cat scenario-report.json" (containerReport true);
+  assert !(lib.hasInfix "release qualification respond" (containerReport true));
+  assert lib.hasInfix "release qualification respond" (containerReport false);
+  assert lib.hasInfix "lifecycle_cycles" (containerReport true);
   assert fixture == capturedFixture;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");

@@ -514,7 +514,11 @@ from the executing machine.
 The ARM64 container claim uses the report-import adapter. Provision the ARM64
 TCG guest on the recorded x86_64 host, execute the same lifecycle checks with
 the exact downloaded candidate, and retain a report containing all three
-observed layers. A guest-local two-layer report cannot satisfy this profile;
+observed layers. Build `mkQualificationContainerScenario` with `reportOnly = true`
+for the guest-side collector. It writes the raw `scenario-report.json` after
+all lifecycle checks and does not issue a qualification response. The host
+collector must attach its observed physical and QEMU inventory, then bind and
+validate the combined report through `qualification respond`. A guest-local two-layer report cannot satisfy this profile;
 report import does not synthesize the missing outer host or QEMU evidence.
 Missing reports fail closed. Automated guest provisioning and collection of
 this combined inventory remain operator setup work before release readiness.
