@@ -8,7 +8,7 @@
 assert builtins.substring 0 11 packageExecutable == "/nix/store/";
 assert builtins.substring 0 11 imageExecutable == "/nix/store/";
 assert systemVariant != "";
-  pkgs.writeShellScriptBin name ''
+  pkgs.buildPackages.writeShellScriptBin name ''
     set -euo pipefail
 
     export AOS_QUALIFICATION_BOUND_IMAGE_VARIANT=${builtins.toJSON systemVariant}
