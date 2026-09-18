@@ -3,12 +3,14 @@
 //! This opt-in integration check needs the repository's Nix evaluator and its
 //! source inputs. It does not realize packages or generate a release plan.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context as _, Result, ensure};
 use aos_release::inventory::{DerivationInventoryV1, PackageInventoryV1};
 use aos_release::platform::{MatrixCell, Platform};
+use aos_release::qualification::QualificationContract;
 use serde::de::DeserializeOwned;
 
 fn evaluate<T: DeserializeOwned>(
@@ -49,6 +51,25 @@ fn source_inventory_materializes_the_linux_release_and_retains_platform_blockers
         .collect::<Result<Vec<_>>>()?;
 
     let packages = inventory.package_plan(&derivations)?;
+
+    let contract: QualificationContract = evaluate(&root, "releaseQualification", None)?;
+    let eligible: BTreeSet<_> = packages
+        .iter()
+        .filter(|package| {
+            package
+                .platforms
+                .iter()
+                .any(|cell| !matches!(cell.decision, MatrixCell::NotApplicable { .. }))
+        })
+        .map(|package| package.name.as_str())
+        .collect();
+    let classified: BTreeSet<_> = contract
+        .package_rules
+        .iter()
+        .map(|rule| rule.name.as_str())
+        .collect();
+    assert_eq!(eligible, classified);
+    assert!(eligible.len() < packages.len());
 
     for platform in Platform::LINUX {
         let cells = packages
