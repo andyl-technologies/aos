@@ -74,146 +74,151 @@
               "systemd:manager" = {};
               "systemd:package-store-read-view" = {};
             };
-            bindings = {
-              "test:mapping" = {
-                request = "consumer:mapping";
-                implementation = "aos-cryptsetup-provider:encrypted-block-mapping";
-                providerInstance = "aos-cryptsetup-provider:manager";
-                slot = "mapping";
+            bindings =
+              lib.filterAttrs
+              (_: binding:
+                !lib.hasPrefix "composition:" binding.request
+                || builtins.hasAttr binding.request abilityResolution.requests)
+              {
+                "test:mapping" = {
+                  request = "consumer:mapping";
+                  implementation = "aos-cryptsetup-provider:encrypted-block-mapping";
+                  providerInstance = "aos-cryptsetup-provider:manager";
+                  slot = "mapping";
+                };
+                "test:mapping-effects" = {
+                  request = mappingEffects;
+                  implementation = "aos-cryptsetup-provider:encrypted-block-mapping-effects";
+                  providerInstance = "aos-cryptsetup-provider:manager";
+                  slot = "mapping";
+                };
+                "test:format" = {
+                  request = "consumer:format";
+                  implementation = "aos-storage-format-provider:storage-format";
+                  providerInstance = "aos-storage-format-provider:manager";
+                  slot = "format";
+                };
+                "test:format-effects" = {
+                  request = formatEffects;
+                  implementation = "aos-storage-format-provider:storage-format-effects";
+                  providerInstance = "aos-storage-format-provider:manager";
+                  slot = "format";
+                };
+                "test:pool" = {
+                  request = "consumer:pool";
+                  implementation = "aos-zfs-provider:storage-pool";
+                  providerInstance = "aos-zfs-provider:manager";
+                  slot = "pool";
+                };
+                "test:pool-effects" = {
+                  request = poolEffects;
+                  implementation = "aos-zfs-provider:storage-pool-effects";
+                  providerInstance = "aos-zfs-provider:manager";
+                  slot = "pool";
+                };
+                "test:dataset" = {
+                  request = "consumer:dataset";
+                  implementation = "aos-zfs-provider:storage-dataset";
+                  providerInstance = "aos-zfs-provider:manager";
+                  slot = "dataset";
+                };
+                "test:dataset-effects" = {
+                  request = datasetEffects;
+                  implementation = "aos-zfs-provider:storage-dataset-effects";
+                  providerInstance = "aos-zfs-provider:manager";
+                  slot = "dataset";
+                };
+                "test:provisioning" = {
+                  request = "consumer:provisioning";
+                  implementation = "aos-storage-provisioning-provider:storage-provisioning";
+                  providerInstance = "aos-storage-provisioning-provider:manager";
+                  slot = "provisioning";
+                };
+                "test:provisioning-effects" = {
+                  request = provisioningEffects;
+                  implementation = "aos-storage-provisioning-provider:storage-provisioning-effects";
+                  providerInstance = "aos-storage-provisioning-provider:manager";
+                  slot = "provisioning";
+                };
+                "test:provisioning-detection" = {
+                  request = provisioningDetection;
+                  implementation = "aos-metadata-provider:storage-provisioning-platform-detector";
+                  providerInstance = "aos-metadata-provider:storage-provisioning-platform-detector";
+                  slot = "provisioning";
+                };
+                "test:provisioning-acquisition" = {
+                  request = provisioningAcquisition;
+                  implementation = "aos-metadata-provider:storage-provisioning-metadata-acquirer";
+                  providerInstance = "aos-metadata-provider:storage-provisioning-metadata-acquirer";
+                  slot = "provisioning";
+                };
+                "test:provisioning-authorization" = {
+                  request = provisioningAuthorization;
+                  implementation = "aos-metadata-provider:storage-provisioning-input-authorizer";
+                  providerInstance = "aos-metadata-provider:storage-provisioning-input-authorizer";
+                  slot = "provisioning";
+                };
+                "test:provisioning-evaluation" = {
+                  request = provisioningEvaluation;
+                  implementation = "aos:storage-provisioning-configuration-evaluator";
+                  providerInstance = "aos:storage-provisioning-configuration-evaluator";
+                  slot = "provisioning";
+                };
+                "test:provisioning-store-view" = {
+                  request = provisioningStoreView;
+                  implementation = "systemd:package-store-read-view";
+                  providerInstance = "systemd:package-store-read-view";
+                  slot = "boot-image";
+                };
+                "test:provisioning-marker" = {
+                  request = provisioningMarker;
+                  implementation = "aos-storage-provisioning-provider:storage-provisioning-marker-observer";
+                  providerInstance = "aos-storage-provisioning-provider:marker-observer";
+                  slot = "provisioning-marker";
+                };
+                "test:provisioning-network" = {
+                  request = provisioningNetwork;
+                  implementation = "network-provider:network-readiness";
+                  providerInstance = "network-provider:manager";
+                  slot = "network";
+                };
+                "test:network-configuration" = {
+                  request = "consumer:host-network";
+                  implementation = "network-provider:network-configuration";
+                  providerInstance = "network-provider:network-config-manager";
+                  slot = "host-network";
+                };
+                "test:network-effects" = {
+                  request = networkEffects;
+                  implementation = "network-provider:network-configuration-effects";
+                  providerInstance = "network-provider:network-config-manager";
+                  slot = "host-network";
+                };
+                "test:provisioning-network-effects" = {
+                  request = provisioningNetworkEffects;
+                  implementation = "network-provider:network-configuration-effects";
+                  providerInstance = "network-provider:network-config-manager";
+                  slot = "host-network";
+                };
+                "test:provisioning-content" = {
+                  request = provisioningContent;
+                  implementation = "aos-nix-store-provider:content-addressed-object";
+                  providerInstance = "aos-nix-store-provider:manager";
+                  slot = "authorized-provisioning-input-provisioning";
+                };
+                "test:content-effects" = {
+                  request = contentEffects;
+                  implementation = "aos-nix-store-provider:content-addressed-object-operations";
+                  providerInstance = "aos-nix-store-provider:manager";
+                  slot = "authorized-provisioning-input-provisioning";
+                };
+                "test:provisioning-content-operations" = {
+                  request = provisioningContentOperations;
+                  implementation = "aos-nix-store-provider:content-addressed-object-operations";
+                  providerInstance = "aos-nix-store-provider:manager";
+                  slot = "authorized-provisioning-input-provisioning-provisioning-operations";
+                };
               };
-              "test:mapping-effects" = {
-                request = mappingEffects;
-                implementation = "aos-cryptsetup-provider:encrypted-block-mapping-effects";
-                providerInstance = "aos-cryptsetup-provider:manager";
-                slot = "mapping";
-              };
-              "test:format" = {
-                request = "consumer:format";
-                implementation = "aos-storage-format-provider:storage-format";
-                providerInstance = "aos-storage-format-provider:manager";
-                slot = "format";
-              };
-              "test:format-effects" = {
-                request = formatEffects;
-                implementation = "aos-storage-format-provider:storage-format-effects";
-                providerInstance = "aos-storage-format-provider:manager";
-                slot = "format";
-              };
-              "test:pool" = {
-                request = "consumer:pool";
-                implementation = "aos-zfs-provider:storage-pool";
-                providerInstance = "aos-zfs-provider:manager";
-                slot = "pool";
-              };
-              "test:pool-effects" = {
-                request = poolEffects;
-                implementation = "aos-zfs-provider:storage-pool-effects";
-                providerInstance = "aos-zfs-provider:manager";
-                slot = "pool";
-              };
-              "test:dataset" = {
-                request = "consumer:dataset";
-                implementation = "aos-zfs-provider:storage-dataset";
-                providerInstance = "aos-zfs-provider:manager";
-                slot = "dataset";
-              };
-              "test:dataset-effects" = {
-                request = datasetEffects;
-                implementation = "aos-zfs-provider:storage-dataset-effects";
-                providerInstance = "aos-zfs-provider:manager";
-                slot = "dataset";
-              };
-              "test:provisioning" = {
-                request = "consumer:provisioning";
-                implementation = "aos-storage-provisioning-provider:storage-provisioning";
-                providerInstance = "aos-storage-provisioning-provider:manager";
-                slot = "provisioning";
-              };
-              "test:provisioning-effects" = {
-                request = provisioningEffects;
-                implementation = "aos-storage-provisioning-provider:storage-provisioning-effects";
-                providerInstance = "aos-storage-provisioning-provider:manager";
-                slot = "provisioning";
-              };
-              "test:provisioning-detection" = {
-                request = provisioningDetection;
-                implementation = "aos-metadata-provider:storage-provisioning-platform-detector";
-                providerInstance = "aos-metadata-provider:storage-provisioning-platform-detector";
-                slot = "provisioning";
-              };
-              "test:provisioning-acquisition" = {
-                request = provisioningAcquisition;
-                implementation = "aos-metadata-provider:storage-provisioning-metadata-acquirer";
-                providerInstance = "aos-metadata-provider:storage-provisioning-metadata-acquirer";
-                slot = "provisioning";
-              };
-              "test:provisioning-authorization" = {
-                request = provisioningAuthorization;
-                implementation = "aos-metadata-provider:storage-provisioning-input-authorizer";
-                providerInstance = "aos-metadata-provider:storage-provisioning-input-authorizer";
-                slot = "provisioning";
-              };
-              "test:provisioning-evaluation" = {
-                request = provisioningEvaluation;
-                implementation = "aos:storage-provisioning-configuration-evaluator";
-                providerInstance = "aos:storage-provisioning-configuration-evaluator";
-                slot = "provisioning";
-              };
-              "test:provisioning-store-view" = {
-                request = provisioningStoreView;
-                implementation = "systemd:package-store-read-view";
-                providerInstance = "systemd:package-store-read-view";
-                slot = "boot-image";
-              };
-              "test:provisioning-marker" = {
-                request = provisioningMarker;
-                implementation = "aos-storage-provisioning-provider:storage-provisioning-marker-observer";
-                providerInstance = "aos-storage-provisioning-provider:marker-observer";
-                slot = "provisioning-marker";
-              };
-              "test:provisioning-network" = {
-                request = provisioningNetwork;
-                implementation = "network-provider:network-readiness";
-                providerInstance = "network-provider:manager";
-                slot = "network";
-              };
-              "test:network-configuration" = {
-                request = "consumer:host-network";
-                implementation = "network-provider:network-configuration";
-                providerInstance = "network-provider:network-config-manager";
-                slot = "host-network";
-              };
-              "test:network-effects" = {
-                request = networkEffects;
-                implementation = "network-provider:network-configuration-effects";
-                providerInstance = "network-provider:network-config-manager";
-                slot = "host-network";
-              };
-              "test:provisioning-network-effects" = {
-                request = provisioningNetworkEffects;
-                implementation = "network-provider:network-configuration-effects";
-                providerInstance = "network-provider:network-config-manager";
-                slot = "host-network";
-              };
-              "test:provisioning-content" = {
-                request = provisioningContent;
-                implementation = "aos-nix-store-provider:content-addressed-object";
-                providerInstance = "aos-nix-store-provider:manager";
-                slot = "authorized-provisioning-input-provisioning";
-              };
-              "test:content-effects" = {
-                request = contentEffects;
-                implementation = "aos-nix-store-provider:content-addressed-object-operations";
-                providerInstance = "aos-nix-store-provider:manager";
-                slot = "authorized-provisioning-input-provisioning";
-              };
-              "test:provisioning-content-operations" = {
-                request = provisioningContentOperations;
-                implementation = "aos-nix-store-provider:content-addressed-object-operations";
-                providerInstance = "aos-nix-store-provider:manager";
-                slot = "authorized-provisioning-input-provisioning-provisioning-operations";
-              };
-            };
           };
         }
       ];
@@ -509,13 +514,7 @@
         };
       };
     };
-  initial = evaluate {
-    requests = {};
-    requirements = {};
-  };
-  evaluated = evaluate (import ./_composition-resolution.nix {
-    abilities = initial.config.aos.abilities;
-  });
+  evaluated = import ./_complete-composition-evaluation.nix {inherit evaluate;};
   abilities = evaluated.config.aos.abilities;
   resources = builtins.attrValues abilities.desiredResources;
   resourceByKind = kind:
