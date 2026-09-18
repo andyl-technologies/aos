@@ -9,10 +9,16 @@
     [pkgs.systemd]
     ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable pkgs.aos-systemd-var-policy;
 
-  aos.boot.initrd.packageRoots = lib.mkIf (
-    config.aos.boot.secureBoot.measuredBoot.enable
-    && config.aos.boot.storage.backend != "zfs-zvol"
-  ) [pkgs.aos-systemd-var-policy];
+  # The initrd selects systemd's ability module explicitly. Provider
+  # resolution may only inspect this authenticated root set; a binding does
+  # not grant authority to discover a package through the ambient package set.
+  aos.boot.initrd.packageRoots =
+    [pkgs.systemd]
+    ++ lib.optional (
+      config.aos.boot.secureBoot.measuredBoot.enable
+      && config.aos.boot.storage.backend != "zfs-zvol"
+    )
+    pkgs.aos-systemd-var-policy;
 
   aos.abilities.instances."systemd:system-manager-provider".implementation = "systemd:system-manager";
 

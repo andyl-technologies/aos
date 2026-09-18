@@ -9,8 +9,9 @@
     lib.abilities.canonicalizeAuthenticatedModuleRecords packageModules;
   packageRecordFor = implementationName: implementation: let
     packageName =
-      implementation.package
-      or (builtins.head (lib.splitString ":" implementationName));
+      if implementation.package == null
+      then throw "selected implementation '${implementationName}' has no authenticated package owner"
+      else implementation.package;
     matches =
       builtins.filter
       (record: record.name == packageName)

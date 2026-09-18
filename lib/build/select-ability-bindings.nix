@@ -125,8 +125,9 @@
     (name: implementationMatches requirement candidatesByName.${name}.implementation)
     (builtins.attrNames candidatesByName);
   packageForImplementation = implementationName: implementation:
-    implementation.package
-    or (builtins.head (lib.splitString ":" implementationName));
+    if implementation.package == null
+    then throw "ability implementation '${implementationName}' has no authenticated package owner"
+    else implementation.package;
 
   generatedProviderInstance = implementationName: requestName: request: let
     implementation = abilities.implementations.${implementationName};
@@ -152,11 +153,14 @@
       (name: abilities.instances.${name}.implementation == implementationName)
       (builtins.attrNames abilities.instances);
     pending = abilities.compositionPendingRequests.${requestName} or null;
-    implementationPackage = builtins.head (lib.splitString ":" implementationName);
+    implementationPackage = packageForImplementation implementationName abilities.implementations.${implementationName};
     parentPackage =
       if pending == null
       then null
-      else builtins.head (lib.splitString ":" pending.implementation);
+      else
+        packageForImplementation
+        pending.implementation
+        abilities.implementations.${pending.implementation};
   in
     if builtins.length matching == 1
     then builtins.head matching

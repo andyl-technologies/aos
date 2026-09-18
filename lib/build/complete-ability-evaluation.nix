@@ -91,7 +91,6 @@
           };
         };
     };
-  forceBindings = bindings: builtins.deepSeq (builtins.attrValues bindings) bindings;
   resolveStage = {
     environment,
     configurationModules,
@@ -145,19 +144,13 @@
   hostAbilityEvaluation = builtins.seq hostResolution.checked hostResolution.evaluation;
   initrdEnvironment = abilityEnvironment "initrd";
   initrdConfigurationModules = selectionEvaluation.config.aos.abilities.stages.initrd.modules;
-  selectionBindings = forceBindings selectionEvaluation.config.aos.abilities.bindings;
   initrdResolution = resolveStage {
     environment = initrdEnvironment;
     configurationModules = initrdConfigurationModules;
-    initialPackages =
-      initrdSelectedAbilityPackages
-      ++ builtins.map
-      (binding: let
-        packageName = builtins.head (lib.splitString ":" binding.implementation);
-      in
-        pkgs.${packageName}
-        or (throw "explicit binding selects unavailable package '${packageName}'"))
-      (builtins.attrValues selectionBindings);
+    # Explicit bindings select among the authenticated package roots above.
+    # They cannot pull a package from the ambient package set by encoding its
+    # name in an implementation key.
+    initialPackages = initrdSelectedAbilityPackages;
   };
   initrdPackageModules = initrdResolution.packageModules;
   initrdProviderModules = initrdResolution.providerModules;
