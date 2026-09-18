@@ -7,83 +7,10 @@
 }: let
   generatedModule = "aos_selinux_native_service";
   generatedType = "${generatedModule}_t";
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  consumerInstance = "system:selinux-base-test";
-  command = entry_point: arguments: {
-    executable = {
-      artifact = lib.abilities.packageOutput {package = "coreutils";};
-      inherit entry_point arguments;
-    };
-    ignore_failure = false;
+  packageModuleRoot = builtins.path {
+    path = ../../tests/fixtures/selinux-base-package;
+    name = "aos-selinux-base-test-package-module";
   };
-  lifecycle = description: execution_model: start: {
-    inherit description execution_model start;
-    environment_files = [];
-    condition = [];
-    pre_start = [];
-    post_start = [];
-    stop = [];
-    post_stop = [];
-    restart = "never";
-    restart_delay_millis = 100;
-    remain_after_exit = false;
-    start_timeout_millis = 30000;
-    stop_timeout_millis = 30000;
-  };
-  linuxIsolation = {
-    allow_privilege_escalation = true;
-    ambient_capabilities = [];
-    capability_bounds = {
-      kind = "unrestricted";
-      capabilities = [];
-    };
-    control_group_delegation = false;
-    control_group_access = "host";
-    device_namespace = "shared";
-    kernel_clock_mutation = true;
-    kernel_hostname_mutation = true;
-    kernel_log_access = true;
-    kernel_module_access = true;
-    kernel_tunable_access = true;
-    lock_personality = false;
-    memory_write_execute = true;
-    namespace_isolation = [];
-    network_address_families = [];
-    oom_score_adjust = 0;
-    permit_realtime = true;
-    permit_suid_sgid = true;
-    process_visibility = "all";
-    security_label = "system_u:system_r:${generatedType}";
-    syscall_architectures = [];
-    syscall_allow = [];
-    syscall_deny = [];
-    syscall_profile = "privileged";
-    user_namespace_ownership = "none";
-  };
-  serviceFragments = builtins.map (
-    declaration:
-      serviceManagement.forService {
-        inherit serviceTypes consumerInstance declaration;
-      }
-  ) [
-    {
-      service = "selinux-native";
-      enabled = true;
-      lifecycle = lifecycle "Native service provider SELinux domain check" "foreground" [
-        (command "bin/sleep" ["300"])
-      ];
-      linux_isolation = linuxIsolation;
-    }
-    {
-      service = "selinux-native-deny";
-      enabled = false;
-      lifecycle = lifecycle "Native service provider SELinux denial check" "oneshot" [
-        (command "bin/touch" ["/tmp/aos-selinux-denied"])
-      ];
-      linux_isolation = linuxIsolation;
-    }
-  ];
   generatedPolicySource = pkgs.writeTextFile {
     name = "${generatedModule}.te";
     destination = "/${generatedModule}.te";
@@ -155,33 +82,41 @@
     ];
   };
   system = mkSystem {
-    modules =
-      [
-        {
-          aos.system.name = "aos-selinux-base-test";
-          aos.security.selinux = {
-            enable = true;
-            mode = "enforcing";
-            policy = "refpolicy";
-            autorelabel = false;
-          };
+    modules = [
+      {
+        aos.system.name = "aos-selinux-base-test";
+        aos.security.selinux = {
+          enable = true;
+          mode = "enforcing";
+          policy = "refpolicy";
+          autorelabel = false;
+        };
 
-          environment.systemPackages = [
-            pkgs.aos-landlock
-            pkgs.aos-selinux-run
-            pkgs.checkpolicy
-            pkgs.semodule-utils
-            # `semodule` (the policy loader) lives in policycoreutils; image
-            # slimming dropped it from the server PATH (semodule-utils only
-            # provides semodule_package/_link/_expand).
-            pkgs.policycoreutils
-            pkgs.coreutils
-          ];
-
-          aos.abilities.instances.${consumerInstance} = {};
-        }
-      ]
-      ++ builtins.map (fragment: {aos.abilities = fragment;}) serviceFragments;
+        environment.systemPackages = [
+          pkgs.aos-landlock
+          pkgs.aos-selinux-run
+          pkgs.checkpolicy
+          pkgs.semodule-utils
+          # `semodule` (the policy loader) lives in policycoreutils; image
+          # slimming dropped it from the server PATH (semodule-utils only
+          # provides semodule_package/_link/_expand).
+          pkgs.policycoreutils
+          pkgs.coreutils
+        ];
+      }
+    ];
+    packageModules = [
+      {
+        name = "selinux-base-test";
+        version = "1";
+        configRoot = builtins.toString packageModuleRoot;
+        module = "${packageModuleRoot}/module.nix";
+        outputs = {
+          self = builtins.toString packageModuleRoot;
+          dependencies.coreutils = builtins.toString pkgs.coreutils;
+        };
+      }
+    ];
   };
 in
   testing.mkVMTest {

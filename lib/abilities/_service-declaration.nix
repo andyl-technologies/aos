@@ -2,32 +2,9 @@
 {
   serviceInterfaces,
   serviceTypes,
-  types,
   interfaceDocumentFromDeclaration,
   interfaceIdentity,
 }: let
-  declarationReferenceFor = consumerInstance: localKey: let
-    qualified = builtins.match "([^:]+):[^:]+" consumerInstance;
-  in
-    if types.declarationKey.check consumerInstance && qualified != null
-    then "${builtins.head qualified}:${localKey}"
-    else localKey;
-  qualifyRequestReference = consumerInstance: reference:
-    reference
-    // {
-      request =
-        if types.declarationKey.check reference.request
-        then reference.request
-        else declarationReferenceFor consumerInstance reference.request;
-    };
-  qualifyRequestReferences = consumerInstance: value:
-    if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
-    then qualifyRequestReference consumerInstance value
-    else if builtins.isAttrs value
-    then builtins.mapAttrs (_: qualifyRequestReferences consumerInstance) value
-    else if builtins.isList value
-    then builtins.map (qualifyRequestReferences consumerInstance) value
-    else value;
   featureInterfaces = {
     lifecycle = serviceInterfaces.lifecycle;
     template_definition = serviceInterfaces.templateDefinition;
@@ -429,7 +406,7 @@
     };
   };
 
-  requestParameters = consumerInstance: declaration: feature: let
+  requestParameters = declaration: feature: let
     featureValue =
       if feature == "template_definition"
       then declaration.lifecycle
@@ -437,15 +414,13 @@
       then {selection = declaration.instantiation;}
       else declaration.${feature};
   in
-    qualifyRequestReferences consumerInstance (
-      {inherit (declaration) service;}
-      // (
-        if feature == "template_definition"
-        then {}
-        else {inherit (declaration) enabled;}
-      )
-      // featureValue
-    );
+    {inherit (declaration) service;}
+    // (
+      if feature == "template_definition"
+      then {}
+      else {inherit (declaration) enabled;}
+    )
+    // featureValue;
 
   structuredSource = {
     format,
@@ -691,39 +666,38 @@
       then [featureInterfaces.lifecycle.guaranteesByKind.instance]
       else [];
     coreRequirementTemplates = builtins.listToAttrs (builtins.map (feature: {
-        name = declarationReferenceFor consumerInstance "${checked.service}-${featureInterfaces.${feature}.alias}";
+        name = "${checked.service}-${featureInterfaces.${feature}.alias}";
         value = requirementFor featureInterfaces.${feature} (methodsFor feature) (guaranteesFor feature);
       })
       enabledFeatures);
     coreRequests = builtins.listToAttrs (builtins.map (feature: {
-        name = declarationReferenceFor consumerInstance "${checked.service}-${feature}";
+        name = "${checked.service}-${feature}";
         value = {
-          requirement = declarationReferenceFor consumerInstance "${checked.service}-${featureInterfaces.${feature}.alias}";
+          requirement = "${checked.service}-${featureInterfaces.${feature}.alias}";
           consumer = consumerInstance;
           scope = [checked.service];
-          parameters = requestParameters consumerInstance checked feature;
+          parameters = requestParameters checked feature;
         };
       })
       enabledFeatures);
     featureKeys = builtins.map (feature: feature.key) featureContributions;
     requirementAliases = builtins.map (feature: feature.requirementAlias) featureContributions;
     externalRequirementTemplates = builtins.listToAttrs (builtins.map (feature: {
-        name = declarationReferenceFor consumerInstance "${checked.service}-${feature.requirementAlias}";
+        name = "${checked.service}-${feature.requirementAlias}";
         value = feature.requirement;
       })
       featureContributions);
     externalRequests = builtins.listToAttrs (builtins.map (feature: {
-        name = declarationReferenceFor consumerInstance "${checked.service}-${feature.key}";
+        name = "${checked.service}-${feature.key}";
         value = {
-          requirement = declarationReferenceFor consumerInstance "${checked.service}-${feature.requirementAlias}";
+          requirement = "${checked.service}-${feature.requirementAlias}";
           consumer = consumerInstance;
           scope = [checked.service];
-          parameters = qualifyRequestReferences consumerInstance (
+          parameters =
             {
               inherit (checked) service enabled;
             }
-            // feature.parameters
-          );
+            // feature.parameters;
         };
       })
       featureContributions);
@@ -803,12 +777,12 @@
       else checked;
     interface = serviceInterfaces.managedConfiguration;
     contribution = {
-      requirementTemplates.${declarationReferenceFor consumerInstance interface.alias} = requirementFor interface interface.methods [];
-      requests.${declarationReferenceFor consumerInstance validated.name} = {
-        requirement = declarationReferenceFor consumerInstance interface.alias;
+      requirementTemplates.${interface.alias} = requirementFor interface interface.methods [];
+      requests.${validated.name} = {
+        requirement = interface.alias;
         consumer = consumerInstance;
         scope = [validated.name];
-        parameters = qualifyRequestReferences consumerInstance validated;
+        parameters = validated;
       };
     };
   in
@@ -846,14 +820,14 @@
       else if !storageViewPairsValid
       then throw "storage views must pair resource and planned-path outputs from one allocation request"
       else {
-        requirementTemplates.${declarationReferenceFor consumerInstance selectedInterface.alias} = requirementFor selectedInterface selectedMethods [];
+        requirementTemplates.${selectedInterface.alias} = requirementFor selectedInterface selectedMethods [];
         requests = builtins.listToAttrs (builtins.map (producer: {
-            name = declarationReferenceFor consumerInstance producer.key;
+            name = producer.key;
             value = {
-              requirement = declarationReferenceFor consumerInstance selectedInterface.alias;
+              requirement = selectedInterface.alias;
               consumer = consumerInstance;
               scope = [producer.key];
-              parameters = qualifyRequestReferences consumerInstance producer.parameters;
+              parameters = producer.parameters;
             };
           })
           producers);
