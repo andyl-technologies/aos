@@ -123,6 +123,30 @@
         };
       };
 
+  canonicalizeAuthenticatedPackages = packages: let
+    grouped = builtins.groupBy packageNameFor packages;
+    canonicalizePackage = name: candidates: let
+      ordered =
+        builtins.sort (
+          left: right: builtins.toString left < builtins.toString right
+        )
+        candidates;
+      selected = builtins.head ordered;
+      sameContract = candidate:
+        candidate.contract.value
+        == selected.contract.value
+        && builtins.toString candidate.contract.document
+        == builtins.toString selected.contract.document
+        && builtins.toString candidate.module == builtins.toString selected.module;
+    in
+      if builtins.all sameContract ordered
+      then selected
+      else throw "selected outputs carry conflicting authenticated contracts for package '${name}'";
+  in
+    builtins.map
+    (name: canonicalizePackage name grouped.${name})
+    (builtins.attrNames grouped);
+
   checkedPackageOutputSelector = selector: let
     normalized =
       if builtins.isAttrs selector
@@ -320,6 +344,7 @@ in {
     authenticatedPackageOutputsFor
     authenticatedPackageModuleRecordFor
     authenticatedPackageProjectionFor
+    canonicalizeAuthenticatedPackages
     checkedAuthenticatedPackageProjection
     authenticatedProjectionOutputFor
     authenticatedModuleRecordIdentity

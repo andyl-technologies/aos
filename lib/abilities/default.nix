@@ -792,6 +792,7 @@ in rec {
     authenticatedPackageOutputsFor
     authenticatedPackageModuleRecordFor
     authenticatedPackageProjectionFor
+    canonicalizeAuthenticatedPackages
     checkedAuthenticatedPackageProjection
     authenticatedProjectionOutputFor
     authenticatedModuleRecordIdentity

@@ -13,6 +13,7 @@
   requests = config.aos.abilities.requests;
   daemon = requests."openssh:sshd-lifecycle".parameters;
   dependencies = requests."openssh:sshd-dependencies".parameters;
+  keygenDependencies = requests."openssh:sshd-keygen-dependencies".parameters;
 in
   assert daemon.service == "sshd";
   assert daemon.execution_model == "foreground";
@@ -42,6 +43,16 @@ in
     }
   ];
   assert requests."openssh:sshd-keygen-environment".parameters.search_path == [];
+  assert keygenDependencies.prerequisites
+  == [
+    {
+      _type = "aos-request-output-reference";
+      request = "openssh:host-key-storage";
+      output = "resource";
+    }
+  ];
+  assert keygenDependencies.after == [];
+  assert keygenDependencies.requires == [];
   assert !requests."openssh:aos-ssh-ready-lifecycle".parameters.enabled;
   assert requests."openssh:aos-ssh-ready-lifecycle".parameters.start_timeout_millis == 90000;
   assert requests."openssh:aos-ssh-ready-lifecycle".parameters.start
@@ -63,14 +74,22 @@ in
       request = "openssh:sshd-keygen-lifecycle";
       output = "resource";
     }
+  ];
+  assert dependencies.prerequisites
+  == [
     {
       _type = "aos-request-output-reference";
-      request = "openssh:sshd-config";
+      request = "openssh:authorized-keys-directory";
       output = "resource";
     }
     {
       _type = "aos-request-output-reference";
       request = "openssh:privilege-separation-directory";
+      output = "resource";
+    }
+    {
+      _type = "aos-request-output-reference";
+      request = "openssh:sshd-config";
       output = "resource";
     }
   ];

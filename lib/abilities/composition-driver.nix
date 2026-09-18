@@ -464,7 +464,7 @@
         && builtins.hasAttr outputName group.result.outputs.${requestName}
       then [group.result.outputs.${requestName}.${outputName}]
       else [])
-    provisionGroups);
+    resultGroups);
     selected =
       builtins.filter (
         entry: entry.binding.request == requestName
@@ -497,15 +497,16 @@
         else if builtins.length matchingChildren == 1
         then builtins.head matchingChildren
         else fail "composition resultOf names ambiguous child request '${value.request}'";
+    in let
+      requestName =
+        if child == null
+        then value.request
+        else child.request;
+      reference = "${requestName}.${value.output}";
     in
-      if child == null
-      then value
-      else let
-        reference = "${child.request}.${value.output}";
-      in
-        if builtins.elem reference trail
-        then fail "composition output cycle includes '${reference}'"
-        else resolveCompositionValue groupKey (trail ++ [reference]) (planningOutputFor child.request value.output)
+      if builtins.elem reference trail
+      then fail "composition output cycle includes '${reference}'"
+      else resolveCompositionValue groupKey (trail ++ [reference]) (planningOutputFor requestName value.output)
     else if builtins.isAttrs value
     then builtins.mapAttrs (_: resolveCompositionValue groupKey trail) value
     else if builtins.isList value

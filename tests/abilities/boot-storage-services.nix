@@ -106,6 +106,8 @@ in
   ];
   assert mountDependencies.wanted_by == [(storageMilestone "local-filesystems")];
   assert !mountDependencies.implicit_dependencies;
+  assert builtins.hasAttr "aos-boot-storage:esp-ready" hostRequests;
+  assert builtins.hasAttr "aos-boot-storage:image-boot-committed" hostRequests;
   assert syncDependencies.after == [imageBootCommitted];
   assert syncDependencies.requires == [imageBootCommitted];
   assert syncDependencies.wanted_by == [(storageMilestone "multi-user")];
